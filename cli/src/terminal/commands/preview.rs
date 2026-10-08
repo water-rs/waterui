@@ -17,11 +17,10 @@ use waterui_cli::preview::request::{
     ResolvedPreviewBackend,
 };
 use waterui_cli::preview::{
-    ApplePreviewRequest, HydrolysisAndroidPreviewRequest, HydrolysisPreviewEventKind,
-    HydrolysisPreviewPointerButton, HydrolysisPreviewRequest, HydrolysisPreviewScenario,
-    HydrolysisPreviewScenarioEvent, HydrolysisPreviewTheme, discover_hydrolysis_preview_exports,
-    launch_preview_session, render_preview_with_apple, render_preview_with_hydrolysis,
-    render_preview_with_hydrolysis_android, test_preview_with_hydrolysis,
+    ApplePreviewRequest, HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton,
+    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent,
+    HydrolysisPreviewTheme, discover_hydrolysis_preview_exports, launch_preview_session,
+    render_preview_with_apple, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
 use waterui_cli::project::read_project_crate_name;
 
@@ -246,40 +245,6 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             &args.output,
             scenario.as_ref(),
         ))
-        .await?;
-        if let Some(s) = spinner {
-            s.finish_and_clear();
-        }
-        if let Some(scenario) = scenario {
-            success!(
-                shell,
-                "Preview frames saved to {}",
-                scenario.output_dir.display()
-            );
-        } else {
-            success!(shell, "Preview saved to {}", args.output.display());
-        }
-        return Ok(());
-    }
-
-    if request.backend == ResolvedPreviewBackend::HydrolysisAndroid {
-        let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
-        let spinner = shell.spinner("Building and rendering with hydrolysis...");
-        render_preview_with_hydrolysis_android(
-            HydrolysisAndroidPreviewRequest {
-                project_path: &project_path,
-                source: request.target.source(),
-                theme: request
-                    .hydrolysis_theme
-                    .expect("hydrolysis preview theme must be resolved"),
-                width: request.width,
-                height: request.height,
-                sccache_path,
-                progress: Some(shell.build_progress()),
-            },
-            &args.output,
-            scenario.as_ref(),
-        )
         .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();

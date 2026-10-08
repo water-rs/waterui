@@ -151,6 +151,27 @@ fn ndk_bin_dir(ndk_path: &Path) -> PathBuf {
         .join("bin")
 }
 
+/// An LLVM binary tool (`llvm-strip`, `llvm-readelf`, …) from the NDK's
+/// prebuilt host toolchain — the same `prebuilt/<host-tag>/bin` directory
+/// the linker and `ar` resolve from, with the host's executable suffix
+/// (`llvm-strip.exe` on Windows).
+///
+/// # Errors
+/// Returns an error when the NDK's bin directory does not ship `tool` —
+/// naming the tool and where it was looked for.
+pub(crate) fn ndk_llvm_tool(ndk_path: &Path, tool: &str) -> eyre::Result<PathBuf> {
+    let path = ndk_bin_dir(ndk_path).join(format!("{tool}{}", std::env::consts::EXE_SUFFIX));
+    if path.is_file() {
+        Ok(path)
+    } else {
+        eyre::bail!(
+            "the NDK at {} ships no {tool} — expected {}",
+            ndk_path.display(),
+            path.display()
+        )
+    }
+}
+
 /// Get the NDK ar path.
 fn ndk_ar_path(ndk_path: &Path) -> PathBuf {
     ndk_bin_dir(ndk_path).join("llvm-ar")
@@ -319,6 +340,7 @@ pub struct AndroidPlatform {
     abi: AndroidAbi,
 }
 
+#[derive(Debug)]
 pub(crate) struct AndroidBuildContext {
     pub(crate) abi: AndroidAbi,
     pub(crate) ndk_path: PathBuf,

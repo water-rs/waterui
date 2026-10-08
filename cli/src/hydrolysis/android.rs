@@ -392,6 +392,23 @@ async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
     Ok(())
 }
 
+/// What an Android launcher build leaves behind: the cargo result, the
+/// resolved NDK/SDK context callers reuse for post-build steps like
+/// `llvm-strip`, and the staged shared libraries in `System.load` order.
+#[derive(Debug)]
+pub struct HydrolysisAndroidBuild {
+    /// The cargo build result — the cdylib artifact and its app symbols.
+    pub built: BuiltTarget,
+    /// The build context this build resolved — the NDK path, linker and
+    /// friends — so a caller post-processing the artifact never resolves
+    /// the same toolchain a second time.
+    pub(crate) context: AndroidBuildContext,
+    /// The staged shared-library file names in load order:
+    /// `libc++_shared.so` first when the staged libraries needed the STL,
+    /// the launcher cdylib last.
+    pub staged_libraries: Vec<String>,
+}
+
 /// Build the Hydrolysis launcher crate's cdylib for one Android ABI.
 ///
 /// The same configured environment and caller-built application the desktop
@@ -409,7 +426,9 @@ pub async fn build(
     abi: AndroidAbi,
     options: BuildOptions,
 ) -> eyre::Result<BuiltTarget> {
-    build_with_features(project, host, abi, options, &[]).await
+    Ok(build_with_features(project, host, abi, options, &[])
+        .await?
+        .built)
 }
 
 /// [`build`] with extra Cargo features — the preview entry compiles the
@@ -425,7 +444,7 @@ pub async fn build_with_features(
     abi: AndroidAbi,
     options: BuildOptions,
     features: &[&str],
-) -> eyre::Result<BuiltTarget> {
+) -> eyre::Result<HydrolysisAndroidBuild> {
     // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
     // prebuilt `libstd.so`, so the launcher — which never `dlopen`s modules —
     // links the runtime in.
@@ -465,20 +484,26 @@ pub async fn build_with_features(
         .await
         .wrap_err("failed to build the hydrolysis android launcher with cargo")?;
 
-    copy_build_outputs(project, &options, abi, &context, &built).await?;
-    Ok(built)
+    let staged_libraries = copy_build_outputs(project, &options, abi, &context, &built).await?;
+    Ok(HydrolysisAndroidBuild {
+        built,
+        context,
+        staged_libraries,
+    })
 }
 
 /// Stage the built cdylib where the generated Gradle project packages it:
 /// `app/src/main/jniLibs/<abi>/`, plus `libc++_shared.so` when the staged
 /// libraries need the STL, with 16 KiB `LOAD`-segment alignment enforced.
+/// Returns the staged library file names in load order — `libc++_shared.so`
+/// first, the launcher cdylib last.
 async fn copy_build_outputs(
     project: &Project,
     options: &BuildOptions,
     abi: AndroidAbi,
     context: &AndroidBuildContext,
     built: &BuiltTarget,
-) -> eyre::Result<()> {
+) -> eyre::Result<Vec<String>> {
     let output_dir = options.output_dir().map_or_else(
         || {
             android_dir(&project.backend_path::<HydrolysisBackend>())
@@ -495,20 +520,25 @@ async fn copy_build_outputs(
             &project.hydrolysis_backend_crate_name()
         )
     );
-    let library = output_dir.join(library_name);
+    let library = output_dir.join(&library_name);
     crate::utils::copy_file_if_changed(&built.artifact, &library).await?;
 
     // The NDK's shared STL follows the libraries that actually need it —
-    // a Rust-only build never does.
+    // a Rust-only build never does — and loads first, ahead of the cdylib
+    // that depends on it.
+    let mut staged = Vec::new();
     if staged_libs_need_libcxx(&output_dir).await? {
+        let libcxx = "libc++_shared.so".to_string();
         crate::utils::copy_file_if_changed(
             ndk_libcxx_path(&context.ndk_path, abi),
-            output_dir.join("libc++_shared.so"),
+            output_dir.join(&libcxx),
         )
         .await?;
+        staged.push(libcxx);
     }
+    staged.push(library_name);
     crate::elf::require_aligned_shared_libraries(&output_dir).await?;
-    Ok(())
+    Ok(staged)
 }
 
 /// Stage the project's `res`/`assets` tree into the generated Gradle app —
@@ -711,35 +741,32 @@ fn preview_host_dir(backend_path: &Path) -> PathBuf {
 /// for — a match plus a resolvable APK skips the Gradle build entirely.
 const PREVIEW_HOST_STAMP_FILE: &str = ".waterui-preview-host-fingerprint";
 
-/// The sha256 of everything a preview host APK bakes in: the embedded
-/// `hydrolysis_android_preview`/`hydrolysis_android_shared`/`android_shared`
-/// template trees, every source file of the pinned host's `preview` module
-/// (its `build/` and `.gradle/` outputs excluded), and the host's
-/// `settings.gradle.kts` — hashed sorted by relative path.
+/// The sha256 of everything a preview host APK bakes in: the host's
+/// rendered scaffold (`rendered_outputs` with `versionCode` held constant,
+/// so the hash covers the inputs — template trees, `minSdk`, host path —
+/// not the fingerprint's own projection), every source file of the pinned
+/// host's `preview` module (its `build/` and `.gradle/` outputs excluded),
+/// and the host's `settings.gradle.kts` — hashed sorted by relative path,
+/// each entry length-prefixed so no pair of inputs can alias.
 ///
 /// # Errors
 ///
 /// Returns an error when a host file cannot be walked or read.
-fn preview_host_fingerprint(host_project_dir: &Path) -> eyre::Result<String> {
+fn preview_host_fingerprint(
+    host_project_dir: &Path,
+    rendered: &[(PathBuf, Vec<u8>)],
+) -> eyre::Result<String> {
     use sha2::Digest as _;
 
-    let mut fingerprint_inputs: Vec<(String, Vec<u8>)> = Vec::new();
-    for embedded_dir in [
-        &templates::embedded::HYDROLYSIS_ANDROID_PREVIEW,
-        &templates::embedded::HYDROLYSIS_ANDROID_SHARED,
-        &templates::embedded::ANDROID_SHARED,
-    ] {
-        let mut dirs = vec![embedded_dir];
-        while let Some(dir) = dirs.pop() {
-            for file in dir.files() {
-                fingerprint_inputs.push((
-                    file.path().to_string_lossy().into_owned(),
-                    file.contents().to_vec(),
-                ));
-            }
-            dirs.extend(dir.dirs());
-        }
-    }
+    let mut fingerprint_inputs: Vec<(String, Vec<u8>)> = rendered
+        .iter()
+        .map(|(path, contents)| {
+            (
+                format!("rendered:{}", path.to_string_lossy().replace('\\', "/")),
+                contents.clone(),
+            )
+        })
+        .collect();
 
     let preview_module = host_project_dir.join("preview");
     for entry in walkdir::WalkDir::new(&preview_module)
@@ -770,7 +797,7 @@ fn preview_host_fingerprint(host_project_dir: &Path) -> eyre::Result<String> {
     }
     let settings = host_project_dir.join("settings.gradle.kts");
     fingerprint_inputs.push((
-        "settings.gradle.kts".to_string(),
+        "host:settings.gradle.kts".to_string(),
         std::fs::read(&settings).wrap_err_with(|| {
             format!(
                 "failed to read the preview host settings {}",
@@ -782,7 +809,9 @@ fn preview_host_fingerprint(host_project_dir: &Path) -> eyre::Result<String> {
     fingerprint_inputs.sort_by(|(a, _), (b, _)| a.cmp(b));
     let mut hasher = sha2::Sha256::new();
     for (path, contents) in &fingerprint_inputs {
+        hasher.update((path.len() as u64).to_le_bytes());
         hasher.update(path.as_bytes());
+        hasher.update((contents.len() as u64).to_le_bytes());
         hasher.update(contents);
     }
     Ok(hex::encode(hasher.finalize()))
@@ -831,9 +860,6 @@ pub async fn ensure_preview_host_apk(
             preview_module.display()
         );
     }
-    let fingerprint = preview_host_fingerprint(&host_project_dir)?;
-    let version_code = preview_host_version_code(&fingerprint);
-
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let host_dir = preview_host_dir(&backend_path);
     let relative_host = pathdiff::diff_paths(&host_project_dir, &host_dir).ok_or_else(|| {
@@ -843,13 +869,30 @@ pub async fn ensure_preview_host_apk(
             host_dir.display()
         )
     })?;
+    let min_api_level = resolved.android_min_api_level()?;
+    let entry = |version_code| HydrolysisAndroidPreviewTemplateEntry {
+        host_project_dir: relative_host.to_string_lossy().replace('\\', "/"),
+        min_api_level,
+        version_code,
+    };
+
+    // The fingerprint covers the rendered scaffold with `versionCode` held
+    // constant — hashing the real code would feed the projection back into
+    // its own input.
+    let fingerprint_ctx = HydrolysisBackend::template_context(project)
+        .await?
+        .with_hydrolysis_android_preview(entry(0));
+    let rendered = templates::hydrolysis_android_preview::rendered_outputs(&fingerprint_ctx)?;
+    let fingerprint = smol::unblock({
+        let host_project_dir = host_project_dir.clone();
+        move || preview_host_fingerprint(&host_project_dir, &rendered)
+    })
+    .await?;
+    let version_code = preview_host_version_code(&fingerprint);
+
     let ctx = HydrolysisBackend::template_context(project)
         .await?
-        .with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
-            host_project_dir: relative_host.to_string_lossy().replace('\\', "/"),
-            min_api_level: resolved.android_min_api_level()?,
-            version_code,
-        });
+        .with_hydrolysis_android_preview(entry(version_code));
     templates::hydrolysis_android_preview::scaffold(&host_dir, &ctx).await?;
 
     let stamp = host_dir.join(PREVIEW_HOST_STAMP_FILE);

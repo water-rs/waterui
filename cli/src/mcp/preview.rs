@@ -20,9 +20,8 @@ use crate::preview::request::{
     PreviewRequest, PreviewTarget, ResolvedPreviewBackend,
 };
 use crate::preview::{
-    ApplePreviewRequest, HydrolysisAndroidPreviewRequest, HydrolysisPreviewRequest,
-    PreviewPlatform, launch_preview_session, render_preview_with_apple,
-    render_preview_with_hydrolysis, render_preview_with_hydrolysis_android,
+    ApplePreviewRequest, HydrolysisPreviewRequest, PreviewPlatform, launch_preview_session,
+    render_preview_with_apple, render_preview_with_hydrolysis,
 };
 use crate::project::read_project_crate_name;
 
@@ -179,26 +178,6 @@ impl PreviewTool {
                     &output_path,
                     None,
                 ))
-                .await?;
-            }
-            ResolvedPreviewBackend::HydrolysisAndroid => {
-                render_preview_with_hydrolysis_android(
-                    HydrolysisAndroidPreviewRequest {
-                        project_path: &self.project_path,
-                        source: request.target.source(),
-                        theme: request
-                            .hydrolysis_theme
-                            .expect("resolve guarantees a theme for hydrolysis"),
-                        width: request.width,
-                        height: request.height,
-                        sccache_path: self.sccache_path.clone(),
-                        // MCP serves JSON-RPC over stdio — there is no
-                        // terminal sink to render compile progress into.
-                        progress: None,
-                    },
-                    &output_path,
-                    None,
-                )
                 .await?;
             }
             ResolvedPreviewBackend::Apple => {

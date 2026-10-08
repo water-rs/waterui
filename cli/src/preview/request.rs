@@ -64,18 +64,17 @@ pub enum CliPreviewBackend {
 /// The preview execution path `resolve_preview_backend` resolved, carrying
 /// the target each path builds for or serves.
 ///
-/// A Hydrolysis render compiles a managed backend binary for a desktop
-/// [`TargetPlatform`]; a support-app render talks the preview protocol to a
-/// [`PreviewPlatform`]. Carrying the target on the variant keeps call sites
-/// from re-deriving it from the CLI platform label.
+/// A Hydrolysis render compiles a managed backend for a desktop
+/// [`TargetPlatform`] — or for `TargetPlatform::Android`, where the launcher
+/// cdylib registers `preview_runtime::run` on `JNI_OnLoad` inside the
+/// preview host's instrumentation; a support-app render talks the preview
+/// protocol to a [`PreviewPlatform`]. Carrying the target on the variant
+/// keeps call sites from re-deriving it from the CLI platform label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvedPreviewBackend {
-    /// Hydrolysis render for the given desktop target.
+    /// Hydrolysis render for the given target — a desktop binary, or the
+    /// Android preview host's instrumentation for `TargetPlatform::Android`.
     Hydrolysis(TargetPlatform),
-    /// Hydrolysis render inside the Android preview host's instrumentation —
-    /// the launcher cdylib registers `preview_runtime::run` on `JNI_OnLoad`
-    /// and `am instrument` is the completion signal.
-    HydrolysisAndroid,
     /// The in-process Apple preview binary `water preview --platform macos`
     /// builds and execs — the native Apple render needs no protocol
     /// platform, it runs on the host.
@@ -259,7 +258,7 @@ pub fn resolve_preview_backend(
                 ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Windows)
             }
             (CliPreviewPlatform::Android, CliPreviewBackend::Hydrolysis) => {
-                ResolvedPreviewBackend::HydrolysisAndroid
+                ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android)
             }
             (platform, backend) => {
                 bail!(
@@ -311,11 +310,11 @@ fn native_preview_platform_for_os(os: &str) -> Option<CliPreviewPlatform> {
 /// Returns an error when `platform` does not support the Hydrolysis backend.
 pub fn resolve_hydrolysis_test_platform(platform: CliPreviewPlatform) -> Result<TargetPlatform> {
     match resolve_preview_backend(platform, Some(CliPreviewBackend::Hydrolysis))? {
-        ResolvedPreviewBackend::Hydrolysis(target) => Ok(target),
-        ResolvedPreviewBackend::HydrolysisAndroid => Err(eyre::eyre!(
+        ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => Err(eyre::eyre!(
             "`water preview test` runs on desktop Hydrolysis only; \
              --platform android renders through the preview host instrumentation"
         )),
+        ResolvedPreviewBackend::Hydrolysis(target) => Ok(target),
         ResolvedPreviewBackend::Apple | ResolvedPreviewBackend::SupportApp(_) => {
             unreachable!("a forced Hydrolysis backend resolves to Hydrolysis")
         }
@@ -336,10 +335,7 @@ pub fn resolve_hydrolysis_preview_theme(
     theme: Option<CliHydrolysisPreviewTheme>,
 ) -> Result<Option<HydrolysisPreviewTheme>> {
     match (backend, theme) {
-        (
-            ResolvedPreviewBackend::Hydrolysis(_) | ResolvedPreviewBackend::HydrolysisAndroid,
-            theme,
-        ) => Ok(Some(
+        (ResolvedPreviewBackend::Hydrolysis(_), theme) => Ok(Some(
             theme.unwrap_or(CliHydrolysisPreviewTheme::Material3).into(),
         )),
         (_, Some(_)) => {
@@ -361,7 +357,7 @@ pub async fn check_toolchain_for_backend(backend: ResolvedPreviewBackend) -> Res
             // the same toolchain `water run` needs.
             toolchain_checks::check_apple(&host, AppleSdk::Macos).await?;
         }
-        ResolvedPreviewBackend::HydrolysisAndroid => {
+        ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => {
             toolchain_checks::check_android_run(&host).await?;
         }
         ResolvedPreviewBackend::SupportApp(platform) => match platform {
@@ -495,7 +491,7 @@ mod tests {
     fn android_resolves_to_the_hydrolysis_preview_host() {
         assert_eq!(
             resolve_preview_backend(CliPreviewPlatform::Android, None).unwrap(),
-            ResolvedPreviewBackend::HydrolysisAndroid
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android)
         );
         assert_eq!(
             resolve_preview_backend(
@@ -503,7 +499,7 @@ mod tests {
                 Some(CliPreviewBackend::Hydrolysis)
             )
             .unwrap(),
-            ResolvedPreviewBackend::HydrolysisAndroid
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android)
         );
     }
 
@@ -558,8 +554,11 @@ mod tests {
             Some(HydrolysisPreviewTheme::Material3)
         );
         assert_eq!(
-            resolve_hydrolysis_preview_theme(ResolvedPreviewBackend::HydrolysisAndroid, None)
-                .unwrap(),
+            resolve_hydrolysis_preview_theme(
+                ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android),
+                None
+            )
+            .unwrap(),
             Some(HydrolysisPreviewTheme::Material3)
         );
         assert!(

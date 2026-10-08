@@ -1982,12 +1982,14 @@ pub async fn stage_project_assets_for_android(
 /// (`waterui_assets` + sync stamp only — no app-level `res` files).
 /// `symbols` is the target build's app library — see
 /// [`stage_project_assets_for_apple`].
+///
+/// Returns the manifest and the directory the assets were staged into.
 pub async fn stage_project_assets_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<BundleManifest> {
+) -> eyre::Result<(BundleManifest, PathBuf)> {
     unified::stage_for_android_library(project, module_dir, symbols, dev_server).await
 }
 

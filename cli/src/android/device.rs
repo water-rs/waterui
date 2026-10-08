@@ -32,6 +32,10 @@ enum AndroidRuntimeEvent {
 
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `adb wait-for-device` waits until the device is online, so its bound
+/// covers a device mid-boot, not a stalled transport alone.
+const WAIT_FOR_DEVICE_TIMEOUT: Duration = Duration::from_secs(120);
+
 const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 
 /// The launch-intent extra carrying the `--logs` level to a Hydrolysis
@@ -75,8 +79,17 @@ impl Device for AndroidDevice {
 
     async fn launch(&self, host: &Host) -> eyre::Result<()> {
         let adb = Adb::locate(host).await?;
-        host.run(adb.path(), ["-s", &self.identifier, "wait-for-device"])
-            .await?;
+        // A connected device answers instantly; the bound only catches a
+        // wedged transport — `wait-for-device` itself never returns without
+        // one.
+        run_bounded_adb_command(
+            host,
+            &adb,
+            ["-s", self.identifier.as_str(), "wait-for-device"],
+            "waiting for the Android device",
+            WAIT_FOR_DEVICE_TIMEOUT,
+        )
+        .await?;
         Ok(())
     }
 
@@ -647,7 +660,7 @@ async fn wait_for_app_pid(
     }
 
     // App likely crashed on startup - fetch logcat for crash info
-    let crash_info = crate::android::adb::recent_crash_log(host, adb, device_id).await;
+    let crash_info = crate::android::adb::recent_crash_log(host, adb, device_id, None).await;
 
     let mut error_msg = format!("App {bundle_id} crashed on startup (process not found).\n\n");
 

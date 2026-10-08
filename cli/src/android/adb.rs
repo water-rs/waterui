@@ -50,20 +50,24 @@ pub(crate) enum AdbCommandError {
     #[error(transparent)]
     Spawn(#[from] CommandError),
     /// The command did not finish within the bound.
-    #[error("{operation} timed out after {seconds} seconds")]
+    #[error("{operation} timed out after {seconds} seconds running `{command}`")]
     Timeout {
         /// Human-readable name of the operation.
         operation: String,
         /// The bound that elapsed.
         seconds: u64,
+        /// The adb invocation that timed out.
+        command: String,
     },
     /// The command exited with a non-zero status.
-    #[error("{operation} failed with status {status}{details}")]
+    #[error("{operation} failed with status {status} running `{command}`{details}")]
     Failed {
         /// Human-readable name of the operation.
         operation: String,
         /// The process exit status.
         status: ExitStatus,
+        /// The adb invocation that failed.
+        command: String,
         /// Formatted stdout/stderr tail.
         details: String,
     },
@@ -96,7 +100,8 @@ impl Adb {
         &self.path
     }
 
-    /// `adb -s <serial> <args…>` under `timeout`, returning the full output.
+    /// `adb -s <serial> <args…>` under `timeout`, returning the output and
+    /// the rendered invocation for the caller's error messages.
     async fn device_output<A, S>(
         &self,
         host: &Host,
@@ -104,7 +109,7 @@ impl Adb {
         args: A,
         operation: &str,
         timeout: Duration,
-    ) -> Result<Output, AdbCommandError>
+    ) -> Result<(Output, String), AdbCommandError>
     where
         A: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -114,7 +119,9 @@ impl Adb {
             .map(OsString::from)
             .chain(args.into_iter().map(|arg| arg.as_ref().to_os_string()))
             .collect();
-        run_bounded_adb_output(host, self, full_args, operation, timeout).await
+        let invocation = command_string(self.path(), &full_args);
+        let output = run_bounded_adb_output(host, self, full_args, operation, timeout).await?;
+        Ok((output, invocation))
     }
 
     /// `adb -s <serial> push <local> <remote>`.
@@ -164,7 +171,8 @@ impl Adb {
                 "running a shell command on the device",
                 timeout,
             )
-            .await?)
+            .await?
+            .0)
     }
 
     /// [`Self::shell`] failing on a non-zero exit and returning stdout —
@@ -184,8 +192,9 @@ impl Adb {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
             Err(eyre::eyre!(
-                "adb -s {serial} shell {} failed: {}{}",
+                "adb -s {serial} shell {} failed with status {}: {}{}",
                 words.join(" "),
+                output.status,
                 String::from_utf8_lossy(&output.stderr),
                 String::from_utf8_lossy(&output.stdout)
             ))
@@ -194,7 +203,8 @@ impl Adb {
 
     /// `adb -s <serial> shell run-as <package> <words>` — a command inside
     /// `package`'s private data, so a debuggable host's staged files stay
-    /// reachable. Returns stdout, failing on a non-zero exit.
+    /// reachable. The whole command is one quoted `shell` argv, exactly like
+    /// [`Self::shell_run`]. Returns stdout, failing on a non-zero exit.
     ///
     /// # Errors
     /// Returns an error if `words` cannot be quoted or the command fails.
@@ -206,33 +216,24 @@ impl Adb {
         words: &[&str],
         timeout: Duration,
     ) -> eyre::Result<String> {
-        let joined = shlex::try_join(words.iter().copied())
-            .map_err(|error| eyre::eyre!("cannot quote the run-as words {words:?}: {error}"))?;
-        Ok(run_bounded_adb_command(
-            host,
-            self,
-            [
-                OsString::from("-s"),
-                OsString::from(serial),
-                OsString::from("shell"),
-                OsString::from("run-as"),
-                OsString::from(package),
-                OsString::from(joined),
-            ],
-            "running a command inside the preview host's private data",
-            timeout,
-        )
-        .await?)
+        let argv: Vec<&str> = ["run-as", package]
+            .into_iter()
+            .chain(words.iter().copied())
+            .collect();
+        self.shell_run(host, serial, &argv, timeout).await
     }
 
-    /// `adb -s <serial> exec-out run-as <package> cat <path>` — the bytes of
-    /// a file inside `package`'s private data. A non-zero status or empty
-    /// stdout is an error naming the path: a pushed payload never reads back
-    /// empty.
+    /// `adb -s <serial> shell -T run-as <package> cat <path>` — the bytes of
+    /// a file inside `package`'s private data.
+    ///
+    /// `exec-out` always exits 0 and mixes remote stderr into its stdout, so
+    /// a failing `cat` there would hand back its own error text as file
+    /// bytes; `shell -T` keeps the remote exit status and stderr separate,
+    /// and `-T` pins the no-PTY byte channel a binary read needs.
     ///
     /// # Errors
     /// Returns an error if the read fails or produces nothing.
-    pub(crate) async fn exec_out_run_as_cat(
+    pub(crate) async fn run_as_cat(
         &self,
         host: &Host,
         serial: &str,
@@ -240,18 +241,26 @@ impl Adb {
         path: &str,
         timeout: Duration,
     ) -> eyre::Result<Vec<u8>> {
-        let output = self
+        let joined = shlex::try_join(["run-as", package, "cat", path]).map_err(|error| {
+            eyre::eyre!("cannot quote the run-as cat words for {path}: {error}")
+        })?;
+        let (output, _) = self
             .device_output(
                 host,
                 serial,
-                ["exec-out", "run-as", package, "cat", path],
+                [
+                    OsStr::new("shell"),
+                    OsStr::new("-T"),
+                    OsStr::new(joined.as_str()),
+                ],
                 "reading a file from the preview host's private data",
                 timeout,
             )
             .await?;
         if !output.status.success() || output.stdout.is_empty() {
             eyre::bail!(
-                "failed to read {path} from package {package} on {serial}: {}{}",
+                "`run-as {package} cat {path}` on {serial} failed with status {}: {}{}",
+                output.status,
                 String::from_utf8_lossy(&output.stderr),
                 String::from_utf8_lossy(&output.stdout)
             );
@@ -263,14 +272,16 @@ impl Adb {
     /// not installed — parsed from `pm list packages --show-versioncode`.
     ///
     /// # Errors
-    /// Returns an error if the query fails.
+    /// Returns an error if the query fails or its output names `package` in
+    /// a line that does not parse — silently treating a malformed line as
+    /// "not installed" would reinstall over a working host.
     pub(crate) async fn installed_version_code(
         &self,
         host: &Host,
         serial: &str,
         package: &str,
         timeout: Duration,
-    ) -> Result<Option<u32>, AdbCommandError> {
+    ) -> eyre::Result<Option<u32>> {
         let output = self
             .device_command(
                 host,
@@ -287,7 +298,7 @@ impl Adb {
                 timeout,
             )
             .await?;
-        Ok(parse_installed_version_code(&output, package))
+        parse_installed_version_code(&output, package)
     }
 
     /// `adb -s <serial> install -r -d <apk>` — replace any installed copy of
@@ -332,10 +343,10 @@ impl Adb {
         A: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let output = self
+        let (output, command) = self
             .device_output(host, serial, args, operation, timeout)
             .await?;
-        check_bounded_output(&output, operation)
+        check_bounded_output(&output, operation, &command)
     }
 }
 
@@ -365,6 +376,7 @@ where
         .into_iter()
         .map(|argument| argument.as_ref().to_os_string())
         .collect::<Vec<_>>();
+    let invocation = command_string(adb.path(), &args);
     let operation = operation.to_owned();
     let command = Box::pin(async move {
         host.output(adb.path(), &args)
@@ -374,7 +386,11 @@ where
     let seconds = timeout.as_secs();
     let timeout = Box::pin(async move {
         smol::Timer::after(timeout).await;
-        Err(AdbCommandError::Timeout { operation, seconds })
+        Err(AdbCommandError::Timeout {
+            operation,
+            seconds,
+            command: invocation,
+        })
     });
 
     match select(command, timeout).await {
@@ -398,56 +414,89 @@ where
     A: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    let args = args
+        .into_iter()
+        .map(|argument| argument.as_ref().to_os_string())
+        .collect::<Vec<_>>();
+    let command = command_string(adb.path(), &args);
     let output = run_bounded_adb_output(host, adb, args, operation, timeout).await?;
-    check_bounded_output(&output, operation)
+    check_bounded_output(&output, operation, &command)
+}
+
+/// One line naming the invocation an [`AdbCommandError`] reports.
+fn command_string(adb: &Path, args: &[OsString]) -> String {
+    let mut command = adb.display().to_string();
+    for arg in args {
+        command.push(' ');
+        command.push_str(&arg.to_string_lossy());
+    }
+    command
 }
 
 /// The non-zero-status branch shared by [`run_bounded_adb_command`] and
 /// [`Adb::device_command`].
-fn check_bounded_output(output: &Output, operation: &str) -> Result<String, AdbCommandError> {
+fn check_bounded_output(
+    output: &Output,
+    operation: &str,
+    command: &str,
+) -> Result<String, AdbCommandError> {
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).to_string());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let details = if !stderr.is_empty() {
-        format!("\nstderr:\n{stderr}")
-    } else if !stdout.is_empty() {
-        format!("\nstdout:\n{stdout}")
-    } else {
-        String::new()
-    };
+    let mut details = String::new();
+    if !stderr.is_empty() {
+        details.push_str("\nstderr:\n");
+        details.push_str(&stderr);
+    }
+    if !stdout.is_empty() {
+        details.push_str("\nstdout:\n");
+        details.push_str(&stdout);
+    }
     Err(AdbCommandError::Failed {
         operation: operation.to_owned(),
         status: output.status,
+        command: command.to_owned(),
         details,
     })
 }
 
 /// The recent crash evidence `logcat` holds for a launch or preview that
 /// produced no output — the AndroidRuntime/DEBUG/WaterUI tags plus the
-/// `hydrolysis` tag the preview entry writes under.
+/// `hydrolysis` tag the preview entry writes under and the
+/// `HydrolysisPreview` tag the instrumentation logs failures with.
+///
+/// `since` bounds the dump to lines from this run — a `logcat -T` time spec
+/// (`MM-DD HH:MM:SS.mmm`) captured on the device before the run started.
+/// `None` bounds by the last 100 lines instead.
 ///
 /// # Errors
 /// Never fails: a `logcat` that itself errors answers the failure text, so
 /// the caller's diagnostic is always complete.
-pub(crate) async fn recent_crash_log(host: &Host, adb: &Adb, serial: &str) -> String {
+pub(crate) async fn recent_crash_log(
+    host: &Host,
+    adb: &Adb,
+    serial: &str,
+    since: Option<&str>,
+) -> String {
+    let mut args = vec!["-s", serial, "logcat", "-d"];
+    match since {
+        Some(time) => args.extend(["-T", time]),
+        None => args.extend(["-t", "100"]),
+    }
+    args.extend([
+        "-s",
+        "AndroidRuntime:E",
+        "DEBUG:*",
+        "WaterUI:*",
+        "hydrolysis:*",
+        "HydrolysisPreview:*",
+    ]);
     match run_bounded_adb_command(
         host,
         adb,
-        [
-            "-s",
-            serial,
-            "logcat",
-            "-d",
-            "-t",
-            "100",
-            "-s",
-            "AndroidRuntime:E",
-            "DEBUG:*",
-            "WaterUI:*",
-            "hydrolysis:*",
-        ],
+        args,
         "collecting Android crash logs",
         Duration::from_secs(10),
     )
@@ -459,17 +508,32 @@ pub(crate) async fn recent_crash_log(host: &Host, adb: &Adb, serial: &str) -> St
 }
 
 /// Parse `pm list packages --show-versioncode` output for `package`: a line
-/// `package:<package> versionCode:<n>`. Missing or malformed output answers
-/// `None` — the device simply does not have that package.
-fn parse_installed_version_code(output: &str, package: &str) -> Option<u32> {
-    output.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix("package:")?;
-        let (name, version) = rest.split_once(' ')?;
+/// `package:<package> versionCode:<n>`. A missing package answers `None`; a
+/// line that names `package` without a well-formed `versionCode` is a
+/// malformed response — an error, not "not installed".
+fn parse_installed_version_code(output: &str, package: &str) -> eyre::Result<Option<u32>> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("package:") else {
+            continue;
+        };
+        // A bare `package:<name>` carries no versionCode field at all —
+        // malformed, and below it errors rather than skipping.
+        let (name, version) = rest.split_once(' ').unwrap_or((rest, ""));
         if name != package {
-            return None;
+            continue;
         }
-        version.strip_prefix("versionCode:")?.parse().ok()
-    })
+        return version
+            .strip_prefix("versionCode:")
+            .and_then(|code| code.parse::<u32>().ok())
+            .map(Some)
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "malformed `pm list packages --show-versioncode` line for {package}: {trimmed}"
+                )
+            });
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -538,12 +602,14 @@ mod tests {
             parse_installed_version_code(
                 "package:dev.waterui.hydrolysis.preview versionCode:42\n",
                 "dev.waterui.hydrolysis.preview"
-            ),
+            )
+            .expect("the line parses"),
             Some(42)
         );
         // A package that is not installed yields no line at all.
         assert_eq!(
-            parse_installed_version_code("", "dev.waterui.hydrolysis.preview"),
+            parse_installed_version_code("", "dev.waterui.hydrolysis.preview")
+                .expect("an absent package is not an error"),
             None
         );
         // Another package's line is not this package's.
@@ -551,24 +617,46 @@ mod tests {
             parse_installed_version_code(
                 "package:dev.waterui.other versionCode:7\n",
                 "dev.waterui.hydrolysis.preview"
-            ),
+            )
+            .expect("an unrelated line parses"),
             None
         );
     }
 
-    /// The fake `adb` records nothing, but its shell dispatch answers every
-    /// verb the same way; what matters here is that `push` and `run-as`
-    /// construct their word lists without a quoting escape.
+    /// A line that names the package without a well-formed `versionCode` is
+    /// malformed output — an error, never "not installed".
+    #[test]
+    fn a_malformed_version_code_line_is_an_error() {
+        for line in [
+            "package:dev.waterui.hydrolysis.preview versionCode:NaN\n",
+            "package:dev.waterui.hydrolysis.preview\n",
+            "package:dev.waterui.hydrolysis.preview versionCode:\n",
+        ] {
+            let error = parse_installed_version_code(line, "dev.waterui.hydrolysis.preview")
+                .expect_err("a malformed line must error");
+            assert!(error.to_string().contains("malformed"), "{error}");
+        }
+    }
+
+    /// `push`, `run-as` and the `shell -T` read-back log their argv through
+    /// the fake — paths with spaces travel inside one quoted shell word.
     #[test]
     #[cfg(unix)]
-    fn push_and_run_as_construct_their_word_lists() {
+    fn push_run_as_and_cat_log_their_invocations() {
         let machine = TestMachine::new();
         let sdk = machine.install_android_sdk();
         machine.install_adb();
-        let host = machine.host([(
-            OsString::from("ANDROID_SDK_ROOT"),
-            sdk.as_os_str().to_os_string(),
-        )]);
+        let log = machine.root().join("adb-argv.log");
+        let host = machine.host([
+            (
+                OsString::from("ANDROID_SDK_ROOT"),
+                sdk.as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_LOG"),
+                log.as_os_str().to_os_string(),
+            ),
+        ]);
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
 
         smol::block_on(async {
@@ -581,17 +669,110 @@ mod tests {
             )
             .await
             .expect("the fake adb accepts push");
-            let pwd = adb
-                .run_as(
-                    &host,
-                    "serial",
-                    "dev.waterui.hydrolysis.preview",
-                    &["pwd"],
-                    Duration::from_secs(5),
-                )
-                .await
-                .expect("the fake adb accepts run-as");
-            let _ = pwd;
+            adb.run_as(
+                &host,
+                "serial",
+                "dev.waterui.hydrolysis.preview",
+                &[
+                    "sh",
+                    "-c",
+                    "rm -rf \"$1\"",
+                    "sh",
+                    "files/payload with space",
+                ],
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("the fake adb accepts run-as");
+            std::fs::create_dir_all(machine.responses()).expect("responses dir");
+            std::fs::write(
+                machine.responses().join("ADB_CAT"),
+                b"\x89PNG\r\n\x1a\nbytes",
+            )
+            .expect("stage canned cat");
+            adb.run_as_cat(
+                &host,
+                "serial",
+                "dev.waterui.hydrolysis.preview",
+                "files/payload/out.png",
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("the fake adb reads back");
         });
+
+        let argv = std::fs::read_to_string(&log).expect("read the argv log");
+        assert!(
+            argv.lines()
+                .any(|line| line.contains("push") && line.contains("dir with space")),
+            "the push invocation logged: {argv}"
+        );
+        assert!(
+            argv.contains("run-as dev.waterui.hydrolysis.preview sh -c"),
+            "the run-as invocation logged: {argv}"
+        );
+        assert!(
+            argv.contains("-T") && argv.contains("cat files/payload/out.png"),
+            "the shell -T cat invocation logged: {argv}"
+        );
+    }
+
+    /// A non-zero `run-as` carries its status into the error.
+    #[test]
+    #[cfg(unix)]
+    fn a_failing_run_as_reports_its_status() {
+        let machine = TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        let host = machine.host([
+            (
+                OsString::from("ANDROID_SDK_ROOT"),
+                sdk.as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_RUN_AS_STATUS"),
+                OsString::from("7"),
+            ),
+        ]);
+        let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
+        let error = smol::block_on(adb.run_as(
+            &host,
+            "serial",
+            "dev.waterui.hydrolysis.preview",
+            &["ls", "files"],
+            Duration::from_secs(5),
+        ))
+        .expect_err("a non-zero run-as must fail");
+        let message = error.to_string();
+        assert!(message.contains("status"), "{message}");
+    }
+
+    /// A wedged `adb` surfaces as a timeout naming the invocation. The
+    /// hanging host must not be the one `locate` runs under — its
+    /// `start-server` would hang too.
+    #[test]
+    #[cfg(unix)]
+    fn a_hanging_adb_times_out_with_its_argv() {
+        let machine = TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        let host = machine.host([(
+            OsString::from("ANDROID_SDK_ROOT"),
+            sdk.as_os_str().to_os_string(),
+        )]);
+        let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
+        let wedged = machine.host([(OsString::from("WATERUI_FAKE_ADB_HANG"), OsString::from("1"))]);
+        let error = smol::block_on(adb.shell(
+            &wedged,
+            "serial",
+            &["getprop", "ro.build.id"],
+            Duration::from_millis(200),
+        ))
+        .expect_err("a wedged adb must time out");
+        let message = error.to_string();
+        assert!(
+            message.contains("timed out") && message.contains("getprop"),
+            "{message}"
+        );
     }
 }

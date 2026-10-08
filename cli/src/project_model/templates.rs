@@ -6362,8 +6362,54 @@ pub mod hydrolysis {
 /// painter band, and the Rust cdylib wiring — rendered under
 /// `<backend>/android` beside the launcher crate `templates::hydrolysis`
 /// scaffolds.
+/// The shared embedded trees every Hydrolysis Android composite writes
+/// alongside its own module tree — the Gradle root files and the generic
+/// Android wrapper set — so `scaffold` and `rendered_outputs` for both the
+/// app and the preview host walk one list.
+const HYDROLYSIS_ANDROID_SHARED_DIRS: &[(TemplateNamespace, &Dir<'_>)] = &[
+    (
+        TemplateNamespace::HydrolysisAndroidShared,
+        &embedded::HYDROLYSIS_ANDROID_SHARED,
+    ),
+    (TemplateNamespace::AndroidShared, &embedded::ANDROID_SHARED),
+];
+
+/// The rendered file set for one Hydrolysis Android composite: its own
+/// module tree plus the shared trees.
+fn hydrolysis_android_rendered_outputs(
+    namespace: TemplateNamespace,
+    module: &Dir<'_>,
+    ctx: &TemplateContext,
+) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+    let mut outputs = render_dir_outputs(namespace, module, ctx)?;
+    for (shared_namespace, shared_dir) in HYDROLYSIS_ANDROID_SHARED_DIRS {
+        outputs.extend(render_dir_outputs(*shared_namespace, shared_dir, ctx)?);
+    }
+    Ok(outputs)
+}
+
+/// Write a Hydrolysis Android composite — the module tree plus the shared
+/// trees — through `write_file_if_changed`, so a re-scaffold that produced
+/// nothing new dirties no Gradle input, then finish with `gradlew`'s
+/// executable bit and `local.properties`.
+async fn scaffold_hydrolysis_android_project(
+    base_dir: &Path,
+    namespace: TemplateNamespace,
+    module: &Dir<'static>,
+    ctx: &TemplateContext,
+) -> io::Result<()> {
+    for (relative, contents) in hydrolysis_android_rendered_outputs(namespace, module, ctx)? {
+        let path = base_dir.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        write_file_if_changed(&path, &contents).await?;
+    }
+    finish_hydrolysis_android_scaffold(base_dir).await
+}
+
 pub mod hydrolysis_android {
-    use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io, scaffold_dir};
+    use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io};
 
     /// Write all Hydrolysis Android app templates to the given directory.
     ///
@@ -6371,14 +6417,13 @@ pub mod hydrolysis_android {
     ///
     /// Returns an error if file operations fail.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        scaffold_dir(
+        super::scaffold_hydrolysis_android_project(
+            base_dir,
             TemplateNamespace::HydrolysisAndroid,
             &embedded::HYDROLYSIS_ANDROID,
-            base_dir,
             ctx,
         )
-        .await?;
-        super::scaffold_hydrolysis_android_support(base_dir, ctx).await
+        .await
     }
 
     /// Every file `scaffold` would write, as backend-relative path and
@@ -6388,13 +6433,11 @@ pub mod hydrolysis_android {
     ///
     /// Returns an error if template rendering fails.
     pub fn rendered_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
-        let mut outputs = super::render_dir_outputs(
+        super::hydrolysis_android_rendered_outputs(
             TemplateNamespace::HydrolysisAndroid,
             &embedded::HYDROLYSIS_ANDROID,
             ctx,
-        )?;
-        outputs.extend(super::hydrolysis_android_shared_outputs(ctx)?);
-        Ok(outputs)
+        )
     }
 }
 
@@ -6404,7 +6447,7 @@ pub mod hydrolysis_android {
 /// rendered under `<backend>/android-preview-host/` beside the launcher crate
 /// `templates::hydrolysis` scaffolds.
 pub mod hydrolysis_android_preview {
-    use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, fs, io};
+    use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io};
 
     /// Write all preview host templates to the given directory.
     ///
@@ -6416,14 +6459,13 @@ pub mod hydrolysis_android_preview {
     ///
     /// Returns an error if template rendering or file writing fails.
     pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        for (relative, contents) in rendered_outputs(ctx)? {
-            let path = base_dir.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).await?;
-            }
-            super::write_file_if_changed(&path, &contents).await?;
-        }
-        super::finish_hydrolysis_android_scaffold(base_dir).await
+        super::scaffold_hydrolysis_android_project(
+            base_dir,
+            TemplateNamespace::HydrolysisAndroidPreview,
+            &embedded::HYDROLYSIS_ANDROID_PREVIEW,
+            ctx,
+        )
+        .await
     }
 
     /// Every file `scaffold` would write, as host-relative path and content,
@@ -6433,38 +6475,12 @@ pub mod hydrolysis_android_preview {
     ///
     /// Returns an error if template rendering fails.
     pub fn rendered_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
-        let mut outputs = super::render_dir_outputs(
+        super::hydrolysis_android_rendered_outputs(
             TemplateNamespace::HydrolysisAndroidPreview,
             &embedded::HYDROLYSIS_ANDROID_PREVIEW,
             ctx,
-        )?;
-        outputs.extend(super::hydrolysis_android_shared_outputs(ctx)?);
-        Ok(outputs)
+        )
     }
-}
-
-/// The Gradle project files every Hydrolysis Android composite shares — the
-/// root `build.gradle.kts`/`gradle.properties` and the wrapper — plus an
-/// executable `gradlew` and the `local.properties` pinning the detected SDK.
-async fn scaffold_hydrolysis_android_support(
-    base_dir: &Path,
-    ctx: &TemplateContext,
-) -> io::Result<()> {
-    scaffold_dir(
-        TemplateNamespace::HydrolysisAndroidShared,
-        &embedded::HYDROLYSIS_ANDROID_SHARED,
-        base_dir,
-        ctx,
-    )
-    .await?;
-    scaffold_dir(
-        TemplateNamespace::AndroidShared,
-        &embedded::ANDROID_SHARED,
-        base_dir,
-        ctx,
-    )
-    .await?;
-    finish_hydrolysis_android_scaffold(base_dir).await
 }
 
 /// The `gradlew` executable bit and `local.properties` that end a Hydrolysis
@@ -6495,22 +6511,6 @@ async fn finish_hydrolysis_android_scaffold(base_dir: &Path) -> io::Result<()> {
     }
 
     Ok(())
-}
-
-/// The shared Gradle files [`scaffold_hydrolysis_android_support`] writes,
-/// as rendered output pairs.
-fn hydrolysis_android_shared_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
-    let mut outputs = render_dir_outputs(
-        TemplateNamespace::HydrolysisAndroidShared,
-        &embedded::HYDROLYSIS_ANDROID_SHARED,
-        ctx,
-    )?;
-    outputs.extend(render_dir_outputs(
-        TemplateNamespace::AndroidShared,
-        &embedded::ANDROID_SHARED,
-        ctx,
-    )?);
-    Ok(outputs)
 }
 
 /// ESP32 firmware harness templates.

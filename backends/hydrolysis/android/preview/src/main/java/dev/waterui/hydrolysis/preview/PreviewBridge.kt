@@ -4,38 +4,49 @@ import android.annotation.SuppressLint
 import android.content.Context
 
 /**
- * JNI boundary to the preview-mode launcher cdylib.
+ * Loads the push-staged launcher cdylib and hands it the run.
  *
- * [SCHEMA] moves in lock-step with `PREVIEW_JNI_SCHEMA` in the hydrolysis
- * crate's `runner/android/preview.rs`: a library built against a different
- * schema is rejected at `nativeInit` rather than letting the host call entry
- * points that changed underneath it.
+ * [System.load] loads absolute paths — the cdylib lives inside this app's
+ * private files, exactly where the CLI copied it — so the bridge loads the
+ * payload directly rather than adding `lib/` to the app's native library
+ * path, which `Context` exposes no API for.
  */
-internal object PreviewBridge {
-    private const val SCHEMA = 1
+object PreviewBridge {
+    /**
+     * Incremented in lock-step with `PREVIEW_JNI_SCHEMA` on the launcher
+     * side. History:
+     *  - 1: `nativeInit(schema, logLevel)` + `nativeRunPreview(context)`;
+     *  - 2: `nativeInit(schema)` — the cdylib checks the argument it is
+     *    handed instead of trusting it, and the run's log level reads the
+     *    usual `RUST_LOG` environment.
+     */
+    const val SCHEMA = 2
 
     /**
-     * Loads [libraries] in order — `libc++_shared.so` first when the CLI
-     * staged it, the launcher cdylib last so its `JNI_OnLoad` registers the
-     * preview — checks the schema, then runs the registered preview.
+     * Load the staged libraries in order — `libc++_shared.so` first when the
+     * CLI staged it — run the schema handshake, then the registered preview.
      */
-    // The debug-only preview host exists to `System.load` the push-staged
-    // payload; it ships in no release artifact.
-    @SuppressLint("UnsafeDynamicallyLoadedCode")
-    fun run(libraries: List<String>, context: Context, logLevel: String?) {
+    fun run(
+        libraries: List<String>,
+        context: Context,
+    ) {
         for (library in libraries) {
-            System.load(library)
+            loadStagedLibrary(library)
         }
-        val reported = nativeInit(SCHEMA, logLevel)
+        val reported = nativeInit(SCHEMA)
         check(reported == SCHEMA) {
-            "hydrolysis preview JNI schema mismatch: the host speaks $SCHEMA " +
-                "but the loaded library reported $reported"
+            "hydrolysis preview: the launcher cdylib speaks schema $reported but this host speaks $SCHEMA"
         }
         nativeRunPreview(context)
     }
 
+    // The debug-only preview host exists to `System.load` the push-staged
+    // payload; it ships in no release artifact.
+    @SuppressLint("UnsafeDynamicallyLoadedCode")
+    private fun loadStagedLibrary(path: String) = System.load(path)
+
     @JvmStatic
-    private external fun nativeInit(schema: Int, logLevel: String?): Int
+    private external fun nativeInit(schema: Int): Int
 
     @JvmStatic
     private external fun nativeRunPreview(context: Context)

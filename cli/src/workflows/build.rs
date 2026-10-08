@@ -453,51 +453,25 @@ impl RustDynamicLibraries {
             None => StagedDynamicLibrary::reported(reported)?,
         };
 
-        // A `-Zbuild-std` build publishes its freshly compiled `libstd` into
-        // the profile's `deps/` directory via the rustc wrapper; that copy —
-        // not the toolchain's prebuilt one — is what the build linked against,
-        // so it is the one that has to ship. The needed-name lookups below
-        // search the same two directories in that order; the prefix scan is
-        // the fallback for an artifact that records no `libstd` at all (a
-        // Mach-O binary, whose `libstd` dependency is the runtime dylib's own).
+        // The toolchain's prebuilt libdir is the `libstd` a normal build
+        // links against; the prefix scan is the fallback for an artifact
+        // that records no `libstd` at all (a Mach-O binary, whose `libstd`
+        // dependency is the runtime dylib's own).
         let needed_std = needed.iter().find(|name| is_rust_standard_library(name));
-        let standard_library = match needed_std {
-            Some(name) if deps_dir.join(needed_file_name(name)).is_file() => {
-                StagedDynamicLibrary::needed(name, deps_dir.join(needed_file_name(name)))
-            }
-            Some(name) => {
-                let toolchain = project_toolchain(project).await?;
-                let target_libdir = rust_target_libdir(triple, &toolchain).await?;
-                StagedDynamicLibrary::needed(
-                    name,
-                    needed_library_source(
-                        name,
-                        &[deps_dir.clone(), target_libdir],
-                        &built.artifact,
-                    )?,
-                )
-            }
-            None => {
-                let resolution_triple = triple.clone();
-                let staged = unblock(move || {
-                    resolve_rust_standard_library_in(&deps_dir, &resolution_triple)
-                })
-                .await;
-                match staged {
-                    Ok(path) => StagedDynamicLibrary::reported(path)?,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        let toolchain = project_toolchain(project).await?;
-                        let target_libdir = rust_target_libdir(triple, &toolchain).await?;
-                        let resolution_triple = triple.clone();
-                        let path = unblock(move || {
-                            resolve_rust_standard_library_in(&target_libdir, &resolution_triple)
-                        })
-                        .await?;
-                        StagedDynamicLibrary::reported(path)?
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-            }
+        let toolchain = project_toolchain(project).await?;
+        let target_libdir = rust_target_libdir(triple, &toolchain).await?;
+        let standard_library = if let Some(name) = needed_std {
+            StagedDynamicLibrary::needed(
+                name,
+                needed_library_source(name, std::slice::from_ref(&target_libdir), &built.artifact)?,
+            )
+        } else {
+            let resolution_triple = triple.clone();
+            let path = unblock(move || {
+                resolve_rust_standard_library_in(&target_libdir, &resolution_triple)
+            })
+            .await?;
+            StagedDynamicLibrary::reported(path)?
         };
 
         Ok(Self {
@@ -3617,10 +3591,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BuildOptions, BuildProfile, BuiltTarget, CargoTarget, CompileEvent,
-        RustDynamicLibraries, RustLinkage, classify_compile_line, combined_build_output,
-        dynamic_library_file_name, executable_suffix, lib_extension_for_triple,
-        reported_shared_runtime, resolve_dxc_runtime_in, resolve_rust_standard_library_in,
+        BuildOptions, BuildProfile, BuiltTarget, CargoTarget, CompileEvent, RustDynamicLibraries,
+        RustLinkage, classify_compile_line, combined_build_output, dynamic_library_file_name,
+        executable_suffix, lib_extension_for_triple, reported_shared_runtime,
+        resolve_dxc_runtime_in, resolve_rust_standard_library_in,
     };
 
     fn shared_runtime_artifact_json(

@@ -6,15 +6,17 @@
 use std::sync::OnceLock;
 
 use jni::JNIEnv;
-use jni::objects::{JClass, JObject, JString};
+use jni::objects::{JClass, JObject};
 use jni::sys::jint;
 
 use super::jni::{JniError, guard, guard_val, init_process, publish_application_context};
 
 /// Incremented in lock-step with `PreviewBridge.SCHEMA` in the host's
-/// `preview` module. History: 1 = `nativeInit(schema, logLevel)` and
-/// `nativeRunPreview(context)`.
-pub const PREVIEW_JNI_SCHEMA: jint = 1;
+/// `preview` module. History:
+///  - 1: `nativeInit(schema, logLevel)` + `nativeRunPreview(context)`;
+///  - 2: `nativeInit(schema)` — the schema argument is checked, and the log
+///    level reads the usual `RUST_LOG` environment rather than a JNI extra.
+pub const PREVIEW_JNI_SCHEMA: jint = 2;
 
 static PREVIEW_ENTRY: OnceLock<fn()> = OnceLock::new();
 
@@ -31,17 +33,24 @@ pub fn register_preview(entry: fn()) {
 }
 
 /// Schema handshake plus the shared process setup. A library built against a
-/// different schema reports so rather than letting the host call entry points
-/// that changed underneath it.
+/// different schema reports so rather than letting the host call entry
+/// points that changed underneath it — the host sends the schema it speaks
+/// and is rejected here when it differs, in addition to checking the value
+/// this call reports back.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_preview_PreviewBridge_nativeInit(
     mut env: JNIEnv,
     _class: JClass,
-    _schema: jint,
-    log_level: JString,
+    schema: jint,
 ) -> jint {
     guard_val(&mut env, 0, |env| {
-        init_process(env, &log_level)?;
+        if schema != PREVIEW_JNI_SCHEMA {
+            return Err(JniError(format!(
+                "hydrolysis preview: the host speaks schema {schema} but this launcher \
+                 speaks {PREVIEW_JNI_SCHEMA}"
+            )));
+        }
+        init_process(env, None)?;
         Ok(PREVIEW_JNI_SCHEMA)
     })
 }

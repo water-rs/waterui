@@ -227,7 +227,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit(
     log_level: JString,
 ) -> jint {
     guard_val(&mut env, 0, |env| {
-        init_process(env, &log_level)?;
+        // A null `waterui.log.level` extra keeps the INFO default.
+        let level = if log_level.as_raw().is_null() {
+            None
+        } else {
+            Some(get_string(env, &log_level)?)
+        };
+        init_process(env, level.as_deref())?;
         Ok(JNI_SCHEMA)
     })
 }
@@ -253,25 +259,22 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeUiThreadSe
 
 /// The one-time process setup every Hydrolysis JNI entry runs first: capture
 /// the `JavaVM` for the host's later calls, parse the caller's optional
-/// `tracing` level name (`null` keeps [`super::init_logging`]'s default), and
+/// `tracing` level name (`None` keeps [`super::init_logging`]'s default), and
 /// install logging.
-pub(super) fn init_process(env: &mut JNIEnv, log_level: &JString) -> Result<(), JniError> {
+pub(super) fn init_process(env: &mut JNIEnv, log_level: Option<&str>) -> Result<(), JniError> {
     let vm = env.get_java_vm()?;
     let _ = JAVA_VM.set(vm);
-    let level = if log_level.as_raw().is_null() {
-        None
-    } else {
-        let level = get_string(env, log_level)?;
-        Some(
+    let level = log_level
+        .map(|level| {
             level
                 .parse::<tracing::level_filters::LevelFilter>()
                 .map_err(|_| {
                     JniError(format!(
                         "hydrolysis android: unrecognized log level {level:?}"
                     ))
-                })?,
-        )
-    };
+                })
+        })
+        .transpose()?;
     super::init_logging(level);
     Ok(())
 }
