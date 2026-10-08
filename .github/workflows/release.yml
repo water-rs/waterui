@@ -17,6 +17,7 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -448,7 +449,18 @@ jobs:
       # builds the workspace's metadata against every crate's dependencies.
       - uses: ./.github/actions/setup-linux-deps
       - uses: ./.github/actions/release-plz
+        id: release_plz
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The workflow token's pull request triggers no workflow, so its
+      # required gate is dispatched on the release branch here. The report
+      # lists the release pull request release-plz created or updated, if any.
+      - name: Pass the release pull request's gate
+        if: fromJSON(steps.release_plz.outputs.report).prs[0] != null
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ fromJSON(steps.release_plz.outputs.report).prs[0].head_branch }}
+        run: gh workflow run pr-base-gate.yml --repo "${GITHUB_REPOSITORY}" --ref "${HEAD_BRANCH}"
