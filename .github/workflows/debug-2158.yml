@@ -4,6 +4,7 @@ on:
     branches: [debug/2158-metal-sim]
 jobs:
   probe:
+    if: false
     runs-on: macos-26
     timeout-minutes: 20
     steps:
@@ -36,3 +37,48 @@ jobs:
           done
           rm -f p.air; xcrun --sdk iphonesimulator metal -std=ios-metal1.0 -c -o p.air "$src" 2>/dev/null && xcrun --sdk iphonesimulator metal-objdump --macho --private-headers p.air 2>&1 | grep -iA4 'LC_BUILD_VERSION\|platform' | head -12 || true
           env | grep -i deployment || echo "no deployment target env"
+  package:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: "1.98.1"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./.github/scripts/setup-e2e.sh
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.98.1"
+          targets: aarch64-apple-ios-sim
+          cache: "false"
+      - uses: ./.github/actions/metal-toolchain
+      - uses: ./.github/actions/cargo-sources
+      - name: Build the water CLI
+        run: cargo install --path cli --locked --root "${{ github.workspace }}/cli-bin" && echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+      - name: Shim xcrun to record what build scripts see
+        run: |
+          mkdir -p "${{ github.workspace }}/shim"
+          cat > "${{ github.workspace }}/shim/xcrun" <<'SHIM'
+          #!/bin/bash
+          {
+            echo "xcrun $*"
+            env | grep -E 'DEPLOYMENT_TARGET|^SDKROOT=|^TARGET=|^CARGO_PKG_NAME=' | sed 's/^/  /'
+          } >> "${GITHUB_WORKSPACE}/xcrun-calls.log"
+          exec /usr/bin/xcrun "$@"
+          SHIM
+          chmod +x "${{ github.workspace }}/shim/xcrun"
+          echo "${{ github.workspace }}/shim" >> "$GITHUB_PATH"
+      - name: Package video_player for iOS
+        continue-on-error: true
+        env:
+          PLATFORM: ios
+          EXAMPLES: video_player
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          WATERUI_DIR: ${{ github.workspace }}
+          EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+          PACKAGE_OUT_DIR: ${{ github.workspace }}/packaged-ios
+        run: ./.github/scripts/package-examples.sh
+      - name: Show xcrun calls
+        if: always()
+        run: grep -B1 -A4 -E 'yuv_color|CARGO_PKG_NAME=waterkit-codec' xcrun-calls.log | head -60; echo ---; grep -c '^xcrun' xcrun-calls.log
