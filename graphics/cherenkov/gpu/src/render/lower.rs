@@ -992,10 +992,6 @@ struct BackdropPlan {
     /// The member paint-order counter: `ord` is the union field's fold
     /// order and its earlier-member tie-break.
     next_ord: u32,
-    /// Each member's paint-order record for an anchored group's range
-    /// check: the compositing canvas it paints in (`None` at the surface
-    /// level) and its paint-order index.
-    pos: Vec<(Option<LayerId>, usize)>,
 }
 
 /// One backdrop member's plan entry.
@@ -1023,12 +1019,20 @@ struct MemberEntry {
     reach: f32,
 }
 
-/// Reusable state for anchor planning and capture emission.
+/// Reusable state for anchor planning and capture emission, owned by the
+/// surface and lent to each lowering so its capacity carries across
+/// frames.
 #[derive(Default)]
 pub(super) struct AnchorScratch {
+    /// The layers the surface's groups anchor at.
     refs: FxHashSet<LayerId>,
+    /// Each anchor's compositing canvas (`None` at the surface level) and
+    /// paint-order index.
     pos: FxHashMap<LayerId, (Option<LayerId>, usize)>,
-    group_ids: Vec<u64>,
+    /// Each anchored group's members as `(group, canvas, paint order)`,
+    /// pushed in paint order.
+    members: Vec<(u64, Option<LayerId>, usize)>,
+    /// `(anchor, group)` capture links, sorted for range lookup.
     links: Vec<(LayerId, u64)>,
 }
 
@@ -1036,7 +1040,7 @@ impl AnchorScratch {
     fn clear(&mut self) {
         self.refs.clear();
         self.pos.clear();
-        self.group_ids.clear();
+        self.members.clear();
         self.links.clear();
     }
 
@@ -1049,7 +1053,7 @@ impl AnchorScratch {
     pub(super) fn heap_bytes(&self) -> u64 {
         (self.refs.capacity() * size_of::<LayerId>()
             + self.pos.capacity() * size_of::<(LayerId, (Option<LayerId>, usize))>()
-            + self.group_ids.capacity() * size_of::<u64>()
+            + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
             + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
     }
 }
@@ -1401,7 +1405,6 @@ impl<'a> Lowering<'a> {
     fn plan_anchors(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
         let result = self.plan_anchors_inner(tree);
         if result.is_err() {
-            self.anchor_scratch.group_ids.clear();
             self.anchor_scratch.links.clear();
         }
         result
@@ -1409,17 +1412,20 @@ impl<'a> Lowering<'a> {
 
     fn plan_anchors_inner(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
         let scratch = &mut *self.anchor_scratch;
-        scratch.group_ids.extend(
-            self.backdrops
-                .iter()
-                .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
-                .map(|(gid, _)| *gid),
-        );
-        scratch.group_ids.sort_unstable();
-        for i in 0..scratch.group_ids.len() {
-            let gid = scratch.group_ids[i];
-            let plan = &self.backdrops[&gid];
-            let anchor = plan.spec.anchor_layer().expect("anchored above");
+        // Groups in ascending id, each group's members in paint order:
+        // paint-order indices are unique, so the unstable sort is exact.
+        scratch
+            .members
+            .sort_unstable_by_key(|&(gid, _, order)| (gid, order));
+        let mut start = 0;
+        while let Some(&(gid, _, _)) = scratch.members.get(start) {
+            let end = start + scratch.members[start..].partition_point(|m| m.0 == gid);
+            let members = &scratch.members[start..end];
+            start = end;
+            let anchor = self.backdrops[&gid]
+                .spec
+                .anchor_layer()
+                .expect("only anchored groups record members");
             if anchor == tree.root() {
                 return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
             }
@@ -1435,7 +1441,7 @@ impl<'a> Lowering<'a> {
                     },
                 ));
             };
-            for &(canvas, order) in &plan.pos {
+            for &(_, canvas, order) in members {
                 if canvas == anchor_canvas && order > anchor_order {
                     continue;
                 }
@@ -1529,7 +1535,6 @@ impl<'a> Lowering<'a> {
                 aproned: Vec::new(),
                 regions: Vec::new(),
                 members: FxHashMap::default(),
-                pos: Vec::new(),
                 next_ord: 0,
             });
             plan.union = plan.union.union(footprint);
@@ -1550,7 +1555,7 @@ impl<'a> Lowering<'a> {
                 },
             );
             if spec.anchor_layer().is_some() {
-                plan.pos.push((canvas, order));
+                self.anchor_scratch.members.push((g, canvas, order));
             }
         }
         // A semantically isolating layer — filtered or blended — is its
@@ -5918,7 +5923,6 @@ mod tests {
                 regions: Vec::new(),
                 members: FxHashMap::default(),
                 next_ord: 0,
-                pos: vec![(None, 2)],
             }
         }
 
@@ -5938,12 +5942,13 @@ mod tests {
         let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch);
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));
+        lowering.anchor_scratch.members.push((7, None, 2));
         lowering
             .plan_anchors(&tree)
             .expect("the first anchor plan is valid");
         let capacity = (
             lowering.anchor_scratch.pos.capacity(),
-            lowering.anchor_scratch.group_ids.capacity(),
+            lowering.anchor_scratch.members.capacity(),
             lowering.anchor_scratch.links.capacity(),
         );
         assert!(lowering.anchor_scratch.heap_bytes() > 0);
@@ -5953,6 +5958,7 @@ mod tests {
         lowering.anchor_scratch.clear();
         lowering.anchor_scratch.pos.insert(anchor_b, (None, 1));
         lowering.backdrops.insert(8, plan(anchor_b, member));
+        lowering.anchor_scratch.members.push((8, None, 2));
         lowering
             .plan_anchors(&tree)
             .expect("the second anchor plan is valid");
@@ -5960,7 +5966,7 @@ mod tests {
         assert_eq!(
             (
                 lowering.anchor_scratch.pos.capacity(),
-                lowering.anchor_scratch.group_ids.capacity(),
+                lowering.anchor_scratch.members.capacity(),
                 lowering.anchor_scratch.links.capacity(),
             ),
             capacity
@@ -5970,8 +5976,8 @@ mod tests {
         lowering.anchor_scratch.clear();
         lowering.anchor_scratch.pos.insert(tree.root(), (None, 1));
         lowering.backdrops.insert(9, plan(tree.root(), member));
+        lowering.anchor_scratch.members.push((9, None, 2));
         assert!(lowering.plan_anchors(&tree).is_err());
-        assert_eq!(lowering.anchor_scratch.group_ids, [] as [u64; 0]);
         assert_eq!(
             lowering.anchor_scratch.links,
             [] as [(cherenkov::LayerId, u64); 0]
@@ -5979,7 +5985,7 @@ mod tests {
         assert_eq!(
             (
                 lowering.anchor_scratch.pos.capacity(),
-                lowering.anchor_scratch.group_ids.capacity(),
+                lowering.anchor_scratch.members.capacity(),
                 lowering.anchor_scratch.links.capacity(),
             ),
             capacity
@@ -5989,6 +5995,7 @@ mod tests {
         lowering.anchor_scratch.clear();
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(10, plan(anchor_a, member));
+        lowering.anchor_scratch.members.push((10, None, 2));
         lowering
             .plan_anchors(&tree)
             .expect("a plan after an error has no stale links");

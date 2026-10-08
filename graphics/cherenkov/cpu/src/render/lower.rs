@@ -388,10 +388,6 @@ struct BackdropPlan {
     union_members: Arc<[Arc<[Edge]>]>,
     /// The innermost filter scope the capture item lands in.
     scope: Option<LayerId>,
-    /// Each member's paint-order record for an anchored group's range
-    /// check: the member's compositing canvas (its innermost semantic
-    /// level) and its paint-order index.
-    pos: Vec<(Option<LayerId>, usize)>,
 }
 
 impl BackdropPlan {
@@ -425,7 +421,6 @@ impl BackdropPlan {
             union_k: 0.0,
             union_members: Arc::from([]),
             scope,
-            pos: Vec::new(),
         }
     }
 
@@ -614,11 +609,20 @@ pub struct Lowering<'a, 'b> {
     projected: FxHashMap<LayerId, crate::render::projective::Placed>,
 }
 
+/// Reusable state for anchor planning and capture emission, owned by the
+/// surface and lent to each lowering so its capacity carries across
+/// frames.
 #[derive(Default)]
 pub(super) struct AnchorScratch {
+    /// The layers the surface's groups anchor at.
     refs: FxHashSet<LayerId>,
+    /// Each anchor's compositing canvas (its innermost semantic level),
+    /// paint-order index and innermost filter scope.
     pos: FxHashMap<LayerId, (Option<LayerId>, usize, Option<LayerId>)>,
-    group_ids: Vec<u64>,
+    /// Each anchored group's members as `(group, canvas, paint order)`,
+    /// pushed in paint order.
+    members: Vec<(u64, Option<LayerId>, usize)>,
+    /// `(anchor, group)` capture links, sorted for range lookup.
     links: Vec<(LayerId, u64)>,
 }
 
@@ -626,7 +630,7 @@ impl AnchorScratch {
     fn clear(&mut self) {
         self.refs.clear();
         self.pos.clear();
-        self.group_ids.clear();
+        self.members.clear();
         self.links.clear();
     }
 
@@ -634,7 +638,7 @@ impl AnchorScratch {
         (self.refs.capacity() * size_of::<LayerId>()
             + self.pos.capacity()
                 * size_of::<(LayerId, (Option<LayerId>, usize, Option<LayerId>))>()
-            + self.group_ids.capacity() * size_of::<u64>()
+            + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
             + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
     }
 }
@@ -1141,7 +1145,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 },
             );
             if spec.anchor_layer().is_some() {
-                plan.pos.push((canvas, order));
+                self.anchor_scratch.members.push((g, canvas, order));
             }
         }
         // A semantically isolating layer — filtered or blended — is its
@@ -1294,7 +1298,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
     fn plan_anchors(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
         let result = self.plan_anchors_inner(tree);
         if result.is_err() {
-            self.anchor_scratch.group_ids.clear();
             self.anchor_scratch.links.clear();
         }
         result
@@ -1302,18 +1305,21 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     fn plan_anchors_inner(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
         let scratch = &mut *self.anchor_scratch;
-        scratch.group_ids.extend(
-            self.backdrops
-                .iter()
-                .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
-                .map(|(gid, _)| *gid),
-        );
-        scratch.group_ids.sort_unstable();
-        for i in 0..scratch.group_ids.len() {
-            let gid = scratch.group_ids[i];
+        // Groups in ascending id, each group's members in paint order:
+        // paint-order indices are unique, so the unstable sort is exact.
+        scratch
+            .members
+            .sort_unstable_by_key(|&(gid, _, order)| (gid, order));
+        let mut start = 0;
+        while let Some(&(gid, _, _)) = scratch.members.get(start) {
+            let end = start + scratch.members[start..].partition_point(|m| m.0 == gid);
+            let members = &scratch.members[start..end];
+            start = end;
             let (anchor, anchor_scope) = {
-                let plan = &self.backdrops[&gid];
-                let anchor = plan.spec.anchor_layer().expect("anchored above");
+                let anchor = self.backdrops[&gid]
+                    .spec
+                    .anchor_layer()
+                    .expect("only anchored groups record members");
                 if anchor == tree.root() {
                     return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
                 }
@@ -1333,7 +1339,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         },
                     ));
                 };
-                for &(canvas, order) in &plan.pos {
+                for &(_, canvas, order) in members {
                     if canvas == anchor_canvas && order > anchor_order {
                         continue;
                     }
@@ -1345,7 +1351,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 }
                 (anchor, anchor_scope)
             };
-            let plan = self.backdrops.get_mut(&gid).expect("listed above");
+            let plan = self.backdrops.get_mut(&gid).expect("planned above");
             // The capture lands at the anchor — its scope is the
             // anchor's, not the first member's.
             plan.scope = anchor_scope;
@@ -2478,12 +2484,12 @@ mod tests {
         let first = LayerId::new(1);
         scratch.refs.insert(first);
         scratch.pos.insert(first, (None, 1, None));
-        scratch.group_ids.push(7);
+        scratch.members.push((7, None, 2));
         scratch.links.push((first, 7));
         let capacity = (
             scratch.refs.capacity(),
             scratch.pos.capacity(),
-            scratch.group_ids.capacity(),
+            scratch.members.capacity(),
             scratch.links.capacity(),
         );
         assert!(scratch.heap_bytes() > 0);
@@ -2491,20 +2497,20 @@ mod tests {
         scratch.clear();
         assert!(scratch.refs.is_empty());
         assert!(scratch.pos.is_empty());
-        assert_eq!(scratch.group_ids, [] as [u64; 0]);
+        assert_eq!(scratch.members, [] as [(u64, Option<LayerId>, usize); 0]);
         assert_eq!(scratch.links, [] as [(cherenkov::LayerId, u64); 0]);
 
         let next = LayerId::new(2);
         scratch.refs.insert(next);
         scratch.pos.insert(next, (None, 2, None));
-        scratch.group_ids.push(8);
+        scratch.members.push((8, None, 3));
         scratch.links.push((next, 8));
         assert_eq!(scratch.links, [(next, 8)]);
         assert_eq!(
             (
                 scratch.refs.capacity(),
                 scratch.pos.capacity(),
-                scratch.group_ids.capacity(),
+                scratch.members.capacity(),
                 scratch.links.capacity(),
             ),
             capacity
