@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.os.Looper
 import android.view.Surface
 
 /**
@@ -74,6 +75,9 @@ object NativeBridge {
         val nativeSchema = nativeInit(SCHEMA, logLevel)
         check(nativeSchema == SCHEMA) {
             "hydrolysis JNI schema mismatch: host expects $SCHEMA, native library reports $nativeSchema"
+        }
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "hydrolysis: load must run on the main thread, whose looper the executor registers with"
         }
         uiThreadServices = nativeUiThreadServices()
         check(uiThreadServices != 0L) { "hydrolysis: the UI-thread executor was not created" }
