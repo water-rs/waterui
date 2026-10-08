@@ -25,6 +25,7 @@ use crate::resource::ResourceId;
 use crate::shape::Shape;
 use crate::size::LayoutSize;
 use crate::style::{Group, Shadow};
+use crate::text::TextLayoutId;
 
 /// The drawing verbs, shared by [`StaticRecorder`] and [`Recorder`].
 ///
@@ -74,6 +75,10 @@ pub trait Draw {
 
     /// Draws a shared picture.
     fn picture(&mut self, picture: &Picture, transform: impl Into<Self::Value<Affine>>);
+
+    /// Draws a text layout the render target registered, placed by
+    /// `transform`. The layout carries its own colours and spans.
+    fn text(&mut self, layout: TextLayoutId, transform: impl Into<Self::Value<Affine>>);
 
     /// Runs `body` clipped to a shape.
     fn clip<S: Shape>(&mut self, shape: impl Into<Self::Value<S>>, body: impl FnOnce(&mut Self));
@@ -175,6 +180,13 @@ impl Draw for StaticRecorder {
     fn picture(&mut self, picture: &Picture, transform: impl Into<Fixed<Affine>>) {
         self.list.push(Command::Picture {
             picture: picture.clone(),
+            transform: transform.into().0,
+        });
+    }
+
+    fn text(&mut self, layout: TextLayoutId, transform: impl Into<Fixed<Affine>>) {
+        self.list.push(Command::Text {
+            layout,
             transform: transform.into().0,
         });
     }
@@ -982,6 +994,15 @@ impl Draw for Recorder {
         self.subscribe(transform.subscription, command, Operand::Transform);
     }
 
+    fn text(&mut self, layout: TextLayoutId, transform: impl Into<Live<Affine>>) {
+        let transform = transform.into();
+        let command = self.list.push(Command::Text {
+            layout,
+            transform: transform.value,
+        });
+        self.subscribe(transform.subscription, command, Operand::Transform);
+    }
+
     fn clip<S: Shape>(&mut self, shape: impl Into<Live<S>>, body: impl FnOnce(&mut Self)) {
         let shape = shape.into();
         let shape_data = shape.value.into_data();
@@ -1538,6 +1559,55 @@ mod tests {
             panic!("command 1 is the circle fill");
         };
         assert_eq!(*shape, ShapeData::Circle(Circle::new((50., 50.), 16.)));
+    }
+
+    #[test]
+    fn a_text_layout_is_a_resource_whose_placement_is_a_slot() {
+        let layout = TextLayoutId::new(7);
+        let offset = binding::<f64>(0.);
+        let mut content = Content::record(&LayoutSize::new(), |c| {
+            c.fill(Rect::new(0., 0., 10., 10.), red());
+            c.text(layout, offset.map(|y| Affine::translate((4., y))));
+        });
+        assert!(content.references(ResourceId::TextLayout(layout)));
+        assert!(!content.references(ResourceId::TextLayout(TextLayoutId::new(8))));
+
+        let Some(ContentChange::Replace(mut remote)) = content.take_change() else {
+            panic!("the first commit sends the whole list");
+        };
+        let slots: Vec<_> = remote
+            .display_list()
+            .view()
+            .operands(1)
+            .map(|(slot, _)| slot)
+            .collect();
+        assert_eq!(
+            slots,
+            [Slot {
+                command: 1,
+                operand: crate::display_list::OperandKind::Transform,
+            }]
+        );
+
+        offset.set(12.);
+        let Some(ContentChange::Update(updates)) = content.take_change() else {
+            panic!("a changed placement sends an update");
+        };
+        let dirty = remote.apply(updates);
+        assert_eq!(dirty.ranges(), [Range { start: 1, end: 2 }]);
+        assert_eq!(
+            remote.display_list().commands()[1],
+            Command::Text {
+                layout,
+                transform: Affine::translate((4., 12.)),
+            }
+        );
+        let fixed = Picture::record(|c| c.text(layout, Affine::IDENTITY));
+        assert!(
+            fixed
+                .display_list()
+                .references(ResourceId::TextLayout(layout))
+        );
     }
 
     #[test]

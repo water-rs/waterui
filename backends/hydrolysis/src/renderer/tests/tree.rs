@@ -1,7 +1,7 @@
 //! Phase 1 unit tests for the persistent retained render tree.
 
 use super::{MinimalTestTheme, test_environment, test_renderer};
-use crate::renderer::{ContainerNode, RenderContext, RenderId, RenderNode, TextNode};
+use crate::renderer::{ContainerNode, NodeCore, RenderContext, RenderNode, TextNode};
 use core::cell::{Cell, RefCell};
 use kurbo::{Affine, Rect};
 use nami::Computed;
@@ -33,7 +33,7 @@ fn text_node(content: &'static str) -> RenderNode {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         _guards: [content.watch(|_| {}), alignment.watch(|_| {})],
         content,
         alignment,
@@ -51,7 +51,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -95,12 +95,13 @@ fn render_node_container_lays_out_and_flushes_text() {
         _ => panic!("expected a container node"),
     }
 
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
-    node.flush(&mut renderer, ctx, &env);
-    // Check before `finish_rebuild_frame`, which moves the scene into the
-    // compositor's layer stack (leaving `renderer.scene` reset).
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "flushing two text nodes must draw glyphs into the scene"
     );
     renderer.finish_rebuild_frame();
@@ -115,7 +116,7 @@ fn geometry_static_flush_reuses_cached_placement() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -148,11 +149,14 @@ fn geometry_static_flush_reuses_cached_placement() {
 
     // A geometry-static frame re-encodes without re-running layout; the cached
     // placement must survive untouched across flushes.
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
     renderer.reset_scene();
-    node.flush(&mut renderer, ctx, &env);
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     renderer.reset_scene();
-    node.flush(&mut renderer, ctx, &env);
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     renderer.finish_rebuild_frame();
 
     match &node {
@@ -191,10 +195,13 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
-    node.flush(&mut renderer, ctx, &env);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "an opacity-wrapped text must still draw glyphs"
     );
     renderer.finish_rebuild_frame();
@@ -216,7 +223,7 @@ fn capture_window_tree_renders_mixed_widgets() {
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "the render-tree path must draw a mixed text + widget view"
     );
     renderer.finish_rebuild_frame();
@@ -241,7 +248,7 @@ fn flush_window_tree_reuses_retained_tree() {
     // scene into the compositor's layer stack), so verify a scene segment resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let scene_layers = renderer.render_layer_stats().scene_segments;
+    let scene_layers = renderer.commit_mirror().scene_segments;
     assert!(
         scene_layers > 0,
         "re-flushing the retained tree must produce a scene segment layer"
@@ -1115,6 +1122,10 @@ fn lifecycle_hooks_fire_after_first_flush_and_on_drop() {
 /// active animation instead of binding the already-settled value on the first
 /// frame and popping directly to the final state.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the entrance target is the binding's literal value read back, not a sampled interpolation"
+)]
 fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     use core::time::Duration;
     use std::time::Instant;
@@ -1136,10 +1147,11 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     renderer.set_frame_instant(start);
     renderer.prepare_window_tree(view, &env);
 
-    assert_eq!(
+    assert!(
+        opacity.snapshot() == 0.0,
+        "the entrance target must remain hidden until the child first flushes: left {:?}, right {:?}",
         opacity.snapshot(),
-        0.0,
-        "the entrance target must remain hidden until the child first flushes"
+        0.0
     );
     assert!(
         !renderer.animations_active(),
@@ -1157,10 +1169,11 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     );
     renderer.finish_rebuild_frame();
 
-    assert_eq!(
+    assert!(
+        opacity.snapshot() == 1.0,
+        "on_appear must update the entrance target after the initial sample: left {:?}, right {:?}",
         opacity.snapshot(),
-        1.0,
-        "on_appear must update the entrance target after the initial sample"
+        1.0
     );
     assert!(
         renderer.animations_active(),
@@ -1201,7 +1214,7 @@ fn applied_filter_renders_through_retained_tree() {
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "the retained tree must re-flush");
     assert_eq!(
-        renderer.render_layer_stats().filtered_subtrees,
+        renderer.commit_mirror().filtered,
         1,
         "a .blur() view must mount a node-owned filtered layer on the retained tree, \
          not fall through to a dispatch/capture path"
@@ -1212,7 +1225,7 @@ fn applied_filter_renders_through_retained_tree() {
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "the retained tree must re-flush a second time");
     assert_eq!(
-        renderer.render_layer_stats().filtered_subtrees,
+        renderer.commit_mirror().filtered,
         1,
         "the node-owned filter mount must survive a geometry-static re-flush \
          (the retained FilteredView node keeps owning it across frames)"
@@ -1364,6 +1377,10 @@ fn menu_picker_draws_its_label_above_the_value() {
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[expect(
+    clippy::float_cmp,
+    reason = "the labelled row must keep exactly the unlabelled row's height; any drift is the regression under test"
+)]
 fn radio_picker_draws_its_label_above_the_option_rows() {
     use accesskit::Role;
     use std::time::Instant;
@@ -1454,9 +1471,9 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
         .reduce(|a, b| if a.y0 <= b.y0 { a } else { b })
         .map(|rect| rect.y1 - rect.y0)
         .expect("radio option nodes must carry bounds");
-    assert_eq!(
-        labelled_first_row_height, hidden_first_row_height,
-        "the labelled first row must keep exactly the unlabelled row's height"
+    assert!(
+        labelled_first_row_height == hidden_first_row_height,
+        "the labelled first row must keep exactly the unlabelled row's height: left {labelled_first_row_height:?}, right {hidden_first_row_height:?}"
     );
     let snapshot = result.snapshot.expect("a snapshot must be captured");
     let bands = text_ink_bands(&snapshot, group);
@@ -1485,6 +1502,10 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
 #[expect(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "the labelled row must keep exactly the unlabelled row's height; any drift is the regression under test"
 )]
 fn segmented_picker_draws_its_label_above_the_segment_row() {
     use accesskit::Role;
@@ -1603,9 +1624,9 @@ fn segmented_picker_draws_its_label_above_the_segment_row() {
         .map(|rect| rect.y1 - rect.y0)
         .reduce(f64::min)
         .expect("segment nodes must carry bounds");
-    assert_eq!(
-        labelled_segment_height, hidden_segment_height,
-        "the labelled segment row must keep exactly the unlabelled row's height"
+    assert!(
+        labelled_segment_height == hidden_segment_height,
+        "the labelled segment row must keep exactly the unlabelled row's height: left {labelled_segment_height:?}, right {hidden_segment_height:?}"
     );
 }
 
@@ -1664,7 +1685,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     // it reads `unwrap_or_default` — both derive from the same `Binding`.
     let label = binding(Some(Str::from("HELLO")));
     // `armed` flags the write `MidFlushWrite::get` performs inside the flush;
-    // `drive` only raises `patch_requested` so the pump runs a refresh frame.
+    // `drive` only marks the reading cell so the pump runs a refresh frame.
     let armed = Rc::new(Cell::new(0u8));
     let drive = binding::<u32>(0u32);
     let builder = {

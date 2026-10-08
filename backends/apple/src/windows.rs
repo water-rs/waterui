@@ -23,11 +23,10 @@ mod imp {
     use cocoa_ui::appkit::{AttentionRequest, HostView, WindowLevel as KitLevel, WindowStyle};
     use cocoa_ui::{MainThreadMarker, Retained};
     use waterui::animation::Animation;
-    use waterui::graphics::color::WorkingColor;
     use waterui::reactive::{Binding, Computed, Signal};
     use waterui::window::{
-        UserAttention, Window, WindowBackground, WindowLevel, WindowState, WindowStyle as WuiStyle,
-        resolve_background,
+        ResolvedWindowBackground, UserAttention, Window, WindowBackground, WindowLevel,
+        WindowState, WindowStyle as WuiStyle, resolve_background,
     };
     use waterui_backend_core::Environment;
 
@@ -40,8 +39,13 @@ mod imp {
     fn install_toolbar(
         window: &cocoa_ui::objc2_app_kit::NSWindow,
         view: &cocoa_ui::objc2_app_kit::NSView,
+        env: &Environment,
+        keepalive: &mut KeepAlive,
     ) {
-        crate::toolbar::install_toolbar_items(window, view);
+        // The mounted jobs handle travels in the window's keep-alive:
+        // closing or remounting the toolbar cancels every icon raster the
+        // install started.
+        keepalive.keep(crate::toolbar::install_toolbar_items(window, view, env));
     }
 
     /// What an open window owns: the platform object, its host view, and
@@ -239,13 +243,6 @@ mod imp {
             declaration.resizable,
         );
 
-        // Background: the framework resolves the reactive background to one
-        // colour signal — the theme background for opaque, the declared
-        // colour otherwise — that follows a change of background and of
-        // colour alike, as `observeWindowBackground` did.
-        let background = declaration.resolved_background(env);
-        wire_background(&window, &mut keepalive, &background);
-
         // Content: the declared tree becomes one leaf whose view fills the
         // host each layout pass, at the safe-area-aware frame `content_frame`
         // resolves.
@@ -257,6 +254,8 @@ mod imp {
         let host = HostView::new(mtm, window.content_rect());
         host.add_subview(leaf.view());
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
+        #[cfg(feature = "gpu_surface")]
+        let reveal_view = leaf_view.clone();
 
         // First-paint marking happens on the leaf the fallback produced.
         crate::first_paint::mark(&leaf_view, env);
@@ -273,6 +272,15 @@ mod imp {
         keepalive.keep(leaf);
         keepalive.keep(host.clone());
 
+        // Background: the framework resolves the reactive background to a
+        // colour — the theme background for opaque, the declared colour
+        // otherwise — or the window's material, following a change of
+        // background and of colour alike. A material fills the host — the
+        // window's content view, which WaterUI owns here — behind the
+        // content.
+        let background = declaration.resolved_background(env);
+        wire_background(&window, &host, &mut keepalive, &background, env, mtm);
+
         // The declared toolbar goes through the window's one `NSToolbar`:
         // each child becomes an `NSToolbarItem`, which is what gives it the
         // system's capsule, spacing and overflow.
@@ -280,14 +288,19 @@ mod imp {
             let toolbar_leaf = crate::dispatch::dispatcher(env)
                 .render(toolbar, env, mtm)
                 .expect("window toolbar must render: no handler or fallback claims it");
-            install_toolbar(window.native(), toolbar_leaf.view());
+            install_toolbar(window.native(), toolbar_leaf.view(), env, &mut keepalive);
             keepalive.keep(toolbar_leaf);
         }
 
-        // Reveal: adopt the declared state, then fade in once the content
-        // reports its first frame — a GPU surface's content may still be
-        // empty while the window exists.
+        // Reveal: the window is ordered in at `alphaValue` 0 — still
+        // onscreen to AppKit, still effectively visible to the presenter,
+        // so its link delivers while invisible — and the first
+        // `PresentedFrame` receipt turns the alpha up. No timer, no
+        // force-reveal: a window that never presents simply never appears,
+        // which is the failure the acceptance asks to see.
         apply_state(&window, declaration.state.snapshot());
+        // `alphaValue` is already 0 from construction — ordering in stays
+        // invisible until the first presented frame says otherwise.
         window.make_key_and_order_front();
         // The leaf tree is mounted before the window becomes key, so AppKit's
         // automatic first-responder pick lands on the first editable field;
@@ -295,6 +308,20 @@ mod imp {
         // none was ever picked. Clear the pick to match that launch state.
         window.clear_first_responder();
         window.display_if_needed();
+        #[cfg(feature = "gpu_surface")]
+        {
+            // The reveal task is owned by the window's `KeepAlive` — dropping
+            // the handle cancels it — and holds the window weakly: a task
+            // must never retain the window that owns it.
+            let window = Rc::downgrade(&window);
+            keepalive.keep(executor_core::spawn_local(async move {
+                crate::components::gpu_surface::wait_for_first_frames(&reveal_view).await;
+                if let Some(window) = window.upgrade() {
+                    window.fade_in(0.12);
+                }
+            }));
+        }
+        #[cfg(not(feature = "gpu_surface"))]
         window.fade_in(0.12);
 
         WindowHost {
@@ -338,7 +365,10 @@ mod imp {
     }
 
     /// `WuiRootWindowBinding`'s port: binds the app's first declared window to
-    /// an `NSWindow` the host already created — the embed path.
+    /// an `NSWindow` the host already created — the embed path. `root` is
+    /// the WaterUI-owned view the embedding mounted the content in; the
+    /// window's content view belongs to the host application, so a material
+    /// background fills `root`, not it.
     ///
     /// The frame is the one exception to "the declaration wins": the host's
     /// window already has a position on a real screen, so the real (outer)
@@ -349,6 +379,7 @@ mod imp {
     #[expect(clippy::too_many_arguments, reason = "the declared window's surface")]
     pub fn bind_root_window(
         window: Retained<cocoa_ui::objc2_app_kit::NSWindow>,
+        root: &cocoa_ui::PlatformView,
         env: &Environment,
         title: &Computed<waterui::Str>,
         frame: &Binding<super::WRect>,
@@ -378,7 +409,7 @@ mod imp {
             let toolbar_leaf = crate::dispatch::dispatcher(env)
                 .render(toolbar, env, mtm)
                 .expect("window toolbar must render: no handler or fallback claims it");
-            install_toolbar(window.native(), toolbar_leaf.view());
+            install_toolbar(window.native(), toolbar_leaf.view(), env, &mut keepalive);
             keepalive.keep(toolbar_leaf);
         }
 
@@ -405,7 +436,7 @@ mod imp {
         wire_resize_increments(&window, &mut keepalive, resize_increments);
 
         let resolved = resolve_background(background, env);
-        wire_background(&window, &mut keepalive, &resolved);
+        wire_background(&window, root, &mut keepalive, &resolved, env, mtm);
 
         let (applying_state, publish_state) = state_publisher(state);
         wire_frame(&window, &mut keepalive, frame, &publish_state);
@@ -716,14 +747,19 @@ mod imp {
         }
     }
 
-    /// `observeWindowBackground`'s wiring: the resolved colour applies now
-    /// and follows every change.
+    /// `observeWindowBackground`'s wiring: the resolved background applies
+    /// now and follows every change — a colour to the window, a material as
+    /// the effect view filling `container`, the WaterUI-owned view holding
+    /// the window's content, behind that content.
     fn wire_background(
         window: &Rc<cocoa_ui::appkit::Window>,
+        container: &cocoa_ui::PlatformView,
         keepalive: &mut KeepAlive,
-        resolved: &Computed<WorkingColor>,
+        resolved: &Computed<ResolvedWindowBackground>,
+        env: &Environment,
+        mtm: MainThreadMarker,
     ) {
-        keepalive.bind(resolved, {
+        crate::window_background::bind(keepalive, container, resolved, env, mtm, {
             let window = window.clone();
             move |color| apply_background(&window, color)
         });
@@ -776,7 +812,6 @@ mod imp {
         ColorSchemeObservation, HostView, ViewController, WindowScene, window_root,
     };
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::Signal;
     use waterui::window::Window;
     use waterui_backend_core::Environment;
 
@@ -800,6 +835,9 @@ mod imp {
             self.controller.host_view().clear_handlers();
         }
     }
+
+    #[cfg(feature = "gpu_surface")]
+    use objc2::rc::Weak;
 
     /// A scene connected before its declaration landed: `UIKit` asks for a
     /// window eagerly at connection, so the platform objects exist already
@@ -1040,18 +1078,20 @@ mod imp {
         mtm: MainThreadMarker,
     ) -> WindowHost {
         let mut keepalive = KeepAlive::default();
-        let host = Retained::from(pending.controller.host_view());
+        let host: Retained<HostView> = Retained::from(pending.controller.host_view());
 
-        // Background: the framework resolves the reactive background to one
-        // colour signal — the theme background for opaque, the declared
-        // colour otherwise — that follows a change of background and of
-        // colour alike.
-        let background = declaration.resolved_background(env);
-        apply_background(&host, &background.snapshot());
-        keepalive.watch(&background, {
-            let host = host.clone();
-            move |context| apply_background(&host, context.value())
-        });
+        // Background: the framework resolves the reactive background to a
+        // colour — the theme background for opaque, the declared colour
+        // otherwise — or the window's material, following a change of
+        // background and of colour alike. A material fills the host behind
+        // the content.
+        bind_background(
+            &mut keepalive,
+            &host,
+            &declaration.resolved_background(env),
+            env,
+            mtm,
+        );
 
         let content = declaration.build_content();
         let leaf = crate::dispatch::dispatcher(env)
@@ -1067,8 +1107,29 @@ mod imp {
             cocoa_ui::uikit::view_controller::did_move_to_parent(&controller);
         }
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
+        #[cfg(feature = "gpu_surface")]
+        let reveal_view = leaf_view.clone();
 
         crate::first_paint::mark(&leaf_view, env);
+
+        // Reveal: the scene's window orders in at `alpha` 0 — still onscreen
+        // to UIKit, still effectively visible to the presenter — and the
+        // first `PresentedFrame` receipt restores it. The probe-validated
+        // mechanism: alpha before `makeKeyAndVisible`, no timer, no
+        // force-reveal.
+        #[cfg(feature = "gpu_surface")]
+        {
+            pending.window.setAlpha(0.0);
+            // Owned by the scene `KeepAlive` (drop cancels); the window edge
+            // is weak for the same reason as the macOS reveal.
+            let window = Weak::from_retained(&pending.window);
+            keepalive.keep(executor_core::spawn_local(async move {
+                crate::components::gpu_surface::wait_for_first_frames(&reveal_view).await;
+                if let Some(window) = window.load() {
+                    window.setAlpha(1.0);
+                }
+            }));
+        }
 
         crate::inspector::install(&host, env, &mut keepalive);
         host.set_layout_handler(move |host| {
@@ -1098,25 +1159,33 @@ mod imp {
         }
     }
 
-    /// `applyWindowBackground`'s write on `UIKit`: the resolved color as the
-    /// host view's `backgroundColor`, matching the Swift controller.
-    fn apply_background(host: &HostView, color: &waterui::graphics::color::WorkingColor) {
-        let rgba = {
+    /// `applyWindowBackground` on `UIKit`: the resolved colour as the host
+    /// view's `backgroundColor`, matching the Swift controller, and a
+    /// material as the effect view filling the host behind its content.
+    pub fn bind_background(
+        keepalive: &mut KeepAlive,
+        host: &cocoa_ui::PlatformView,
+        resolved: &waterui::reactive::Computed<waterui::window::ResolvedWindowBackground>,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) {
+        let painted = cocoa_ui::view::retain_base(host);
+        crate::window_background::bind(keepalive, host, resolved, env, mtm, move |color| {
             let [red, green, blue, alpha] = color.components;
-            cocoa_ui::uikit::colors::extended_linear_display_p3(
+            let rgba = cocoa_ui::uikit::colors::extended_linear_display_p3(
                 f64::from(red),
                 f64::from(green),
                 f64::from(blue),
                 f64::from(alpha),
-            )
-        };
-        cocoa_ui::view::set_background_color(host, Some(&rgba));
+            );
+            cocoa_ui::view::set_background_color(&painted, Some(&rgba));
+        });
     }
 }
 
 pub use imp::install_manager;
 #[cfg(target_os = "ios")]
-pub use imp::{Scenes, connect, connect_embedded, declare};
+pub use imp::{Scenes, bind_background, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
 pub use imp::{bind_root_window, realize, track};
 

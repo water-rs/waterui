@@ -1,28 +1,25 @@
-use super::{CapturedLayers, HydrolysisRenderer, TailMark};
+use super::{HydrolysisRenderer, TailMark};
 
-use crate::renderer::Edge;
-use crate::renderer::EdgeOffsets;
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
-use crate::renderer::frame::LayerTransforms;
 use crate::renderer::grow_rect;
-use crate::renderer::navigation::{
-    NavigationCapturedScene, NavigationTransitionFrame, draw_navigation_transition,
-};
-use waterui::navigation::{AnyNavigationTransition, NavigationTransitionDirection};
-use waterui_backend_core::widget::NavigationMotion;
 use waterui_core::Environment;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
 
 /// Render context passed to handlers.
+///
+/// `local` places the widget's drawing space in the scene — ops recorded
+/// through it are node-local, and the transform maps them down. `bounds`
+/// is the widget's own rect in that space (`0,0,w,h` for a node). Hit
+/// tests no longer read a transform here: registrations carry the
+/// node-local rect plus the node's [`crate::renderer::Placement`], which
+/// resolves them in window space.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderContext {
-    /// The transform placing the widget in the scene.
-    pub transform: kurbo::Affine,
-    /// The transform used to resolve hit tests inside the widget.
-    pub hit_transform: kurbo::Affine,
-    /// The widget's bounds in scene coordinates.
+    /// The transform placing the widget's local drawing space in the scene.
+    pub local: kurbo::Affine,
+    /// The widget's bounds in its local space.
     pub bounds: kurbo::Rect,
 }
 
@@ -40,8 +37,7 @@ pub enum HydrolysisTextContextMenuMode {
 
 pub struct WidgetRenderContext<'a> {
     renderer: &'a mut HydrolysisRenderer,
-    pub transform: kurbo::Affine,
-    pub hit_transform: kurbo::Affine,
+    pub local: kurbo::Affine,
     pub bounds: kurbo::Rect,
     /// The §7.1 context this widget was laid out against — `None` inside a
     /// scroll surface's context-free content. Retained sub-views the handler
@@ -60,24 +56,11 @@ pub fn bounded_proposal(bounds: kurbo::Rect) -> waterui_core::layout::ProposalSi
 }
 
 impl RenderContext {
-    pub(crate) const fn with_transforms(
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        hit_transform: kurbo::Affine,
-    ) -> Self {
-        Self {
-            transform,
-            hit_transform,
-            bounds,
-        }
-    }
-
     #[must_use]
     /// The context for a child widget at `transform`/`bounds`, composed with this one.
     pub fn child(&self, transform: kurbo::Affine, bounds: kurbo::Rect) -> Self {
         Self {
-            transform: self.transform * transform,
-            hit_transform: self.hit_transform * transform,
+            local: self.local * transform,
             bounds,
         }
     }
@@ -91,8 +74,7 @@ impl<'a> WidgetRenderContext<'a> {
     ) -> Self {
         Self {
             renderer,
-            transform: ctx.transform,
-            hit_transform: ctx.hit_transform,
+            local: ctx.local,
             bounds: ctx.bounds,
             safe_area,
         }
@@ -133,20 +115,6 @@ impl<'a> WidgetRenderContext<'a> {
             .map(|area| area.hosted(self.hosted_frame(area, rect)))
     }
 
-    /// The §7.1 paint extension a bar the widget draws at `rect` in its own
-    /// bounds space earns — "Chrome": a bar extends its background under the
-    /// regions of every edge it touches, to the window edge. The answer is
-    /// [`SafeAreaLayout::touched_edge_offsets`] on the bar's own window-space
-    /// frame — the same computation a slot fill's layout-recorded extension
-    /// runs — so a bar whose edge clears the subtree's boundary extends
-    /// nowhere, and a widget with no context (inside a scroll surface's
-    /// content) extends nothing.
-    fn chrome_extension(&self, rect: kurbo::Rect) -> EdgeOffsets {
-        self.safe_area_for(rect)
-            .map(|area| area.touched_edge_offsets())
-            .unwrap_or_default()
-    }
-
     /// `self.bounds` grown by the touched-edge offsets of the area its
     /// content paints — the reach a transition clip and a stack backdrop
     /// fill must both cover so an extended bar surface is never clipped and
@@ -161,33 +129,47 @@ impl<'a> WidgetRenderContext<'a> {
         )
     }
 
-    /// The surface rect a bar docked at `dock` paints — `rect` grown by
-    /// [`Self::chrome_extension`] on every edge except `dock`'s opposite,
-    /// the one boundary a bar docked at `dock` can never reach. The mask
-    /// matters when a bar's measured frame is clamped to the widget's
-    /// bounds — a top bar on a `NavigationView` shorter than the bar lands
-    /// its inner edge on the bottom boundary and would otherwise extend
-    /// through that inset.
-    pub(crate) fn chrome_surface(&self, rect: kurbo::Rect, dock: Edge) -> kurbo::Rect {
-        self.chrome_surface_except(rect, &[dock.opposite()])
-    }
-
-    /// `rect` grown by [`Self::chrome_extension`] with every edge in
-    /// `except` cleared — the surface of a bar that must keep some edges it
-    /// touches unextended, e.g. because a decoration the `WidgetTheme`
-    /// contract receives no placement for would move off its edge.
-    pub(crate) fn chrome_surface_except(&self, rect: kurbo::Rect, except: &[Edge]) -> kurbo::Rect {
-        grow_rect(
-            rect,
-            except
-                .iter()
-                .copied()
-                .fold(self.chrome_extension(rect), EdgeOffsets::cleared),
+    /// §7.1's chrome split over every `(edge, extent)` in `bars` for
+    /// this widget's [`bounds`](Self::bounds), derived in one call: each
+    /// bar's [`ChromeBar`] — band, context, surface and per-rect area
+    /// bound together — plus the one content rect `bounds` leaves once
+    /// every band is carved and the one composed content context — see
+    /// [`SafeAreaLayout::chrome_splits`]. A widget with no safe-area
+    /// context keeps `bounds`' own edges, the placement every
+    /// context-free chrome container gets: the bars come back
+    /// [`ChromeBar::contextless`] and `content_area` stays `None`.
+    pub(crate) fn chrome_splits<const N: usize>(
+        &self,
+        bars: [(crate::renderer::Edge, f64); N],
+    ) -> ChromeGroup<N> {
+        self.safe_area.as_ref().map_or_else(
+            || {
+                let bars = bars.map(|(edge, extent)| {
+                    crate::renderer::ChromeBar::contextless(self.bounds, edge, extent)
+                });
+                ChromeGroup {
+                    content: bars
+                        .iter()
+                        .fold(self.bounds, |content, bar| content.intersect(bar.rest)),
+                    bars,
+                    content_area: None,
+                }
+            },
+            |area| {
+                let splits = area.chrome_splits(self.bounds, bars);
+                ChromeGroup {
+                    bars: splits.bars,
+                    content: splits.content,
+                    content_area: Some(splits.content_area),
+                }
+            },
         )
     }
-
     pub(crate) const fn render_context(&self) -> RenderContext {
-        RenderContext::with_transforms(self.bounds, self.transform, self.hit_transform)
+        RenderContext {
+            local: self.local,
+            bounds: self.bounds,
+        }
     }
 
     /// The renderer-owned widget theme, cloned out as an `Rc` so callers can
@@ -216,50 +198,56 @@ impl<'a> WidgetRenderContext<'a> {
         &mut self.renderer.state
     }
 
-    pub(crate) fn push_layer_rect(&mut self, alpha: f32, clip: kurbo::Rect) {
-        self.renderer.push_layer_rect(
+    /// Opens the named scope `key` clipped to `clip` at `alpha`, through
+    /// this context's transform.
+    pub(crate) fn open_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        alpha: f32,
+        clip: kurbo::Rect,
+    ) {
+        self.renderer.open_scope(
+            key,
             alpha,
-            LayerTransforms {
-                paint: self.transform,
-                hit: self.hit_transform,
-            },
-            clip,
+            self.local,
+            &crate::renderer::frame::ScopeClip::Rect(clip),
+            crate::renderer::ScopeDelta::RECORD_SPACE,
         );
     }
 
-    pub(crate) fn pop_layer(&mut self) {
-        self.renderer.pop_layer();
+    pub(crate) fn close_scope(&mut self) {
+        self.renderer.close_scope();
     }
 
-    /// The [`HydrolysisRenderer::with_clip_rect_scope`] pairing through this
-    /// context's transforms.
-    pub(crate) fn with_clip_rect_scope(
+    /// [`Self::open_scope`] around `f`.
+    pub(crate) fn with_scope(
         &mut self,
+        key: crate::renderer::mount::ScopeKey,
         alpha: f32,
         clip: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {
-        self.push_layer_rect(alpha, clip);
+        self.open_scope(key, alpha, clip);
         f(self);
-        self.pop_layer();
+        self.close_scope();
     }
 
-    /// [`Self::with_clip_rect_scope`] when the scope only exists conditionally
-    /// (a disabled-control alpha group, a viewport clip that only out-scrolls
-    /// need): pairing stays lexical either way.
-    pub(crate) fn with_clip_rect_scope_if(
+    /// [`Self::with_scope`] when the scope only exists conditionally (a
+    /// disabled-control alpha group): pairing stays lexical either way.
+    pub(crate) fn with_scope_if(
         &mut self,
         enabled: bool,
+        key: crate::renderer::mount::ScopeKey,
         alpha: f32,
         clip: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {
         if enabled {
-            self.push_layer_rect(alpha, clip);
+            self.open_scope(key, alpha, clip);
         }
         f(self);
         if enabled {
-            self.pop_layer();
+            self.close_scope();
         }
     }
 
@@ -286,7 +274,7 @@ impl<'a> WidgetRenderContext<'a> {
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        let (state, scene) = renderer.state_and_scene_mut();
+        let (state, scene) = renderer.state_and_run_mut();
         HydrolysisRenderer::render_styled_text_limited(
             state,
             scene,
@@ -309,45 +297,27 @@ impl<'a> WidgetRenderContext<'a> {
             kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
-        let (state, scene) = renderer.state_and_scene_mut();
+        let (state, scene) = renderer.state_and_run_mut();
         HydrolysisRenderer::render_styled_text_single_line_centered(
             state, scene, child_ctx, styled, env,
         );
     }
+}
 
-    /// Presents captured layers at this context's transform.
-    pub(crate) fn present_layers(&mut self, layers: &CapturedLayers) {
-        self.renderer.present_layers(layers, self.transform);
-    }
-
-    pub(crate) fn draw_navigation_transition(
-        &mut self,
-        style: AnyNavigationTransition,
-        motion: NavigationMotion,
-        direction: NavigationTransitionDirection,
-        progress: f64,
-        from_scene: &NavigationCapturedScene,
-        to_scene: &NavigationCapturedScene,
-    ) {
-        // The transition's page clips and the stack's backdrop fill cover
-        // the same reach — `chrome_paint_bounds` — so an extended bar
-        // surface is never clipped mid-animation. `bounds` stays the
-        // scale-centre reference.
-        let paint_bounds = self.chrome_paint_bounds();
-        draw_navigation_transition(NavigationTransitionFrame {
-            renderer: self.renderer,
-            transforms: LayerTransforms {
-                paint: self.transform,
-                hit: self.hit_transform,
-            },
-            bounds: self.bounds,
-            paint_bounds,
-            style,
-            motion,
-            direction,
-            progress,
-            from_scene,
-            to_scene,
-        });
-    }
+/// The pieces of [`WidgetRenderContext::chrome_splits`]: each bar's
+/// [`ChromeBar`] — its band and its context bound together, so a band is
+/// never paired with another bar's context — plus the one content rect
+/// and composed content context; a context-free widget's bars come back
+/// [`ChromeBar::contextless`] and `content_area` `None`.
+pub struct ChromeGroup<const N: usize> {
+    /// Each bar's share of the split, in the order the edges were given.
+    pub bars: [crate::renderer::ChromeBar; N],
+    /// The remainder of `bounds` outside every band — always inside
+    /// `bounds`, clear of both regions.
+    pub content: kurbo::Rect,
+    /// The hosted content's context: `hosted` plus every bar's `Docked`
+    /// boundary — nothing inside touches, releases or extends through an
+    /// edge a bar sits on, and a nested bar whose frame lands on a dock
+    /// edge stacks on the outer bar.
+    pub content_area: Option<SafeAreaLayout>,
 }

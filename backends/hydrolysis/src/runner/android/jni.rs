@@ -608,7 +608,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent(
         let session = session(session_ptr);
         super::ime::ImeBridge::key_event(
             &mut session.runtime.platform,
-            key,
+            &key,
             pressed != 0,
             modifiers,
         );

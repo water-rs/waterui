@@ -4,12 +4,14 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::frame::ScopeClip;
 use waterui_graphics::draw::Draw as _;
 
 impl HydrolysisRenderer {
-    /// Apply a clip-shape layer around the given content render. Shared by the
-    /// dispatch handler and the retained `Wrapper` node so the clip effect lives
-    /// in exactly one place.
+    /// Apply a clip-shape prop on the recording node's own frame layer (§A.1):
+    /// the wrapper's `frame` carries the clip, not a `("clip", 0)` scope layer.
+    /// Callers must be layer nodes — a pass-through would clip the enclosing
+    /// node's whole program.
     pub(super) fn apply_clip_shape(
         renderer: &mut Self,
         ctx: RenderContext,
@@ -22,34 +24,27 @@ impl HydrolysisRenderer {
         // non-square rect makes every circular corner elliptical.
         let clip_path = shape_kind_path(value.kind(), ctx.bounds)
             .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds));
-        let transforms = LayerTransforms {
-            paint: ctx.transform,
-            hit: ctx.hit_transform,
-        };
-        if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
+        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
             .or_else(|| regular_clip_shape(value.commands(), ctx.bounds))
         {
             match regular_clip {
-                RegularClipShape::Rect(rect) => {
-                    renderer.with_clip_rect_scope(1.0, transforms, rect, render_content);
-                }
-                RegularClipShape::RoundedRect {
+                RegularClipShape::Rect(rect) => ScopeClip::Rect(rect),
+                RegularClipShape::RoundedRect { rect, .. } => ScopeClip::RoundedRect {
+                    path: clip_path,
                     rect,
-                    corner_width,
-                    corner_height,
-                } => renderer.with_clip_rounded_rect_scope(
-                    1.0,
-                    transforms,
-                    clip_path,
-                    rect,
-                    corner_width,
-                    corner_height,
-                    render_content,
-                ),
+                },
             }
         } else {
-            renderer.with_clip_path_scope(1.0, transforms, clip_path, render_content);
-        }
+            ScopeClip::Path(clip_path)
+        };
+        // The layer clip in the frame's content space — the node's own
+        // bounds — with the conservative hit bound the placement scope
+        // used to carry now on the node's placement itself.
+        renderer.program().program_mut().clip = Some(clip.in_space(kurbo::Affine::IDENTITY));
+        renderer
+            .current_placement()
+            .set_clip(Some(clip.hit_bounds()));
+        render_content(renderer);
     }
 
     /// Render the given content then stroke the border over it, mirroring the
@@ -77,8 +72,8 @@ impl HydrolysisRenderer {
                 kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
             let stroke = kurbo::Stroke::new(width);
             renderer
-                .scene
-                .stroke_paint(&stroke, ctx.transform, paint(), &rounded);
+                .scene_mut()
+                .stroke_paint(&stroke, ctx.local, paint(), &rounded);
             return;
         }
 
@@ -90,8 +85,8 @@ impl HydrolysisRenderer {
                 ctx.bounds.y0 + width,
             );
             renderer
-                .scene
-                .fill_paint(peniko::Fill::NonZero, ctx.transform, paint(), &top);
+                .scene_mut()
+                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &top);
         }
         if border.edges.bottom {
             let bottom = kurbo::Rect::new(
@@ -101,8 +96,8 @@ impl HydrolysisRenderer {
                 ctx.bounds.y1,
             );
             renderer
-                .scene
-                .fill_paint(peniko::Fill::NonZero, ctx.transform, paint(), &bottom);
+                .scene_mut()
+                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &bottom);
         }
         if border.edges.leading {
             let leading = kurbo::Rect::new(
@@ -112,8 +107,8 @@ impl HydrolysisRenderer {
                 ctx.bounds.y1,
             );
             renderer
-                .scene
-                .fill_paint(peniko::Fill::NonZero, ctx.transform, paint(), &leading);
+                .scene_mut()
+                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &leading);
         }
         if border.edges.trailing {
             let trailing = kurbo::Rect::new(
@@ -123,8 +118,8 @@ impl HydrolysisRenderer {
                 ctx.bounds.y1,
             );
             renderer
-                .scene
-                .fill_paint(peniko::Fill::NonZero, ctx.transform, paint(), &trailing);
+                .scene_mut()
+                .fill_paint(peniko::Fill::NonZero, ctx.local, paint(), &trailing);
         }
     }
 
@@ -160,8 +155,8 @@ impl HydrolysisRenderer {
             None => None,
         };
         match uniform_radius {
-            Some(corner_radius) => renderer.scene.blurred_rounded_rect(
-                ctx.transform,
+            Some(corner_radius) => renderer.scene_mut().blurred_rounded_rect(
+                ctx.local,
                 shadow_rect,
                 shadow_color,
                 corner_radius,
@@ -169,7 +164,7 @@ impl HydrolysisRenderer {
             ),
             None => Self::draw_blurred_silhouette(
                 renderer,
-                ctx.transform,
+                ctx.local,
                 silhouette,
                 shadow_rect,
                 shadow_color,
@@ -202,7 +197,7 @@ impl HydrolysisRenderer {
         let placement = transform * kurbo::Affine::translate((rect.x0, rect.y0));
 
         if blur <= 0.0 {
-            renderer.scene.fill_paint(
+            renderer.scene_mut().fill_paint(
                 peniko::Fill::NonZero,
                 placement,
                 Paint::Solid(color),
@@ -214,7 +209,7 @@ impl HydrolysisRenderer {
         // `blur` is already in device pixels; the engine scales `sigma` by
         // the transform's axis length, so the path arrives pre-transformed
         // and the op transform is identity.
-        renderer.scene.shadow(
+        renderer.scene_mut().shadow(
             kurbo::Affine::IDENTITY,
             &(placement * &local_path),
             blur,
@@ -237,7 +232,7 @@ impl HydrolysisRenderer {
     ) {
         {
             let theme = renderer.theme();
-            renderer.scene.record_picture(ctx.transform, |draw| {
+            renderer.scene_mut().record_picture(ctx.local, |draw| {
                 theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds);
             });
         }
@@ -257,10 +252,11 @@ impl HydrolysisRenderer {
         render_content: impl FnOnce(&mut Self),
     ) {
         let should_focus = renderer.read_signal(&value.0);
-        let text_start = renderer.text_editing.text_input_targets.len();
-        let embedded_start = renderer.hit_test.embedded_input_targets.len();
+        let scope = renderer
+            .reader_cell()
+            .expect("hydrolysis .focused() applied outside a record");
         render_content(renderer);
-        renderer.wire_focused_target(value, should_focus, text_start, embedded_start);
+        renderer.wire_focused_target(value, should_focus, &scope);
     }
 
     /// The semantic counterpart of [`Self::apply_focused`]: the same focus
@@ -273,10 +269,11 @@ impl HydrolysisRenderer {
         render_content: impl FnOnce(&mut SemanticCore),
     ) {
         let should_focus = renderer.read_signal(&value.0);
-        let text_start = renderer.text_editing.text_input_targets.len();
-        let embedded_start = renderer.hit_test.embedded_input_targets.len();
+        let scope = renderer
+            .reader_cell()
+            .expect("hydrolysis .focused() applied outside a record");
         render_content(renderer);
-        renderer.wire_focused_target(value, should_focus, text_start, embedded_start);
+        renderer.wire_focused_target(value, should_focus, &scope);
     }
 
     /// Render the given content and, when hit-testing is disabled, truncate every
@@ -285,76 +282,31 @@ impl HydrolysisRenderer {
     /// handler and the retained `Wrapper` node. The bookkeeping counts targets
     /// registered during the content render, so it works identically whether the
     /// content is dispatched or node-flushed.
+    /// `.hittable(false)`: the subtree's retained registrations sit under a
+    /// [`HitGate::Unhittable`](crate::renderer::HitGate::Unhittable) scope,
+    /// which removes exactly the input kinds dev's per-frame truncation
+    /// took (drop and context-menu targets, back targets, modal scopes and
+    /// native-view occlusions stay). Materialization clears the hover of a
+    /// target the gate removed, as the truncation did; focus needs no
+    /// eager pass — `finish_rebuild_frame`'s absent-target sweep retires a
+    /// focused target the materialized list no longer emits.
     pub(super) fn apply_hittable(
         renderer: &mut Self,
         value: &Hittable,
         render_content: impl FnOnce(&mut Self),
     ) {
         let enabled = renderer.read_signal(&value.enabled);
-        let pointer_start = renderer.hit_test.pointer_targets.len();
-        let gesture_start = renderer.gesture_engine.target_count();
-        let gesture_region_start = renderer.hit_test.gesture_regions.len();
-        let cursor_start = renderer.hit_test.cursor_targets.len();
-        let hover_start = renderer.hit_test.hover_targets.len();
-        let scroll_start = renderer.hit_test.scroll_targets.len();
-        let text_start = renderer.text_editing.text_input_targets.len();
-        let embedded_start = renderer.hit_test.embedded_input_targets.len();
-
-        render_content(renderer);
-
         if enabled {
+            render_content(renderer);
             return;
         }
-
-        renderer.hit_test.pointer_targets.truncate(pointer_start);
-        renderer.ensure_active_pointer_drag_target_is_live();
-        renderer.gesture_engine.truncate_targets(gesture_start);
-        renderer
-            .hit_test
-            .gesture_regions
-            .truncate(gesture_region_start);
-        renderer.hit_test.cursor_targets.truncate(cursor_start);
-        let removed_hover: Vec<_> = renderer.hit_test.hover_targets[hover_start..]
-            .iter()
-            .map(|target| (target.slot.clone(), target.handles.clone()))
-            .collect();
-        let now = renderer.frame_instant();
-        for (slot, handles) in removed_hover {
-            renderer.hit_test.interaction.set_hovering(&slot, false);
-            if let Some(handles) = handles {
-                handles.set_hovering(false, now);
-            }
-        }
-        renderer.hit_test.hover_targets.truncate(hover_start);
-        renderer.hit_test.scroll_targets.truncate(scroll_start);
-        // The focused field may be registered later in this frame, so "not
-        // currently emitted" is not yet meaningful here — ask instead whether the
-        // focused identity is among the targets this modifier is dropping.
-        let focus_was_dropped = renderer.text_editing.text_input_targets[text_start..]
-            .iter()
-            .any(|target| renderer.text_editing.is_focused(&target.interaction_key));
-        renderer
-            .text_editing
-            .text_input_targets
-            .truncate(text_start);
-        if focus_was_dropped {
-            renderer.set_focused_text_input_key(None);
-        }
-        // The same goes for an input surface under the modifier: a surface
-        // that is no longer hittable must not keep keyboard focus.
-        let embedded_focus_was_dropped = renderer.hit_test.embedded_input_targets[embedded_start..]
-            .iter()
-            .any(|target| renderer.is_focused_embedded(&target.interaction_key));
-        renderer
-            .hit_test
-            .embedded_input_targets
-            .truncate(embedded_start);
-        if embedded_focus_was_dropped {
-            // The hidden surface releases focus now; the end of the frame
-            // relocates it to the next focusable.
-            renderer.hit_test.focus_dropped_this_frame = true;
-            renderer.set_focused_embedded_key(None);
-        }
+        // Regions flushed inside carry the unhittable scope on their
+        // chain, so materialization drops their input kinds; a stale
+        // in-flight drag against the content clears in the materialization
+        // signature check.
+        renderer.push_hit_gate_scope(crate::renderer::HitGate::Unhittable);
+        render_content(renderer);
+        renderer.pop_placement_scope();
     }
 
     /// Register the cursor hit-target, then render the given content. Shared by
@@ -366,7 +318,7 @@ impl HydrolysisRenderer {
         render_content: impl FnOnce(&mut Self),
     ) {
         let style = renderer.read_signal(&value.style);
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let bounds = ctx.bounds;
         renderer.register_cursor_target(bounds, style);
         render_content(renderer);
     }
@@ -421,7 +373,7 @@ impl HydrolysisRenderer {
         // modifier chain. Every dispatch arm — a11y Activate, `layered_action`,
         // the press slot, keyboard activation, hover — applies this same
         // `captured_env.layered_on(runtime_env)` rule.
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let bounds = ctx.bounds;
         let disabled = env
             .get::<waterui_core::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
@@ -477,8 +429,10 @@ impl HydrolysisRenderer {
                 scope.delegate_activation(
                     Self::tap_accessibility_activation(env, &effect.action),
                     Some(NodePlacement {
-                        bounds,
-                        clip: renderer.hit_test.hit_clip_stack.last().copied(),
+                        region: crate::renderer::mount::Region {
+                            local: bounds,
+                            placement: renderer.current_placement(),
+                        },
                     }),
                 );
             }
@@ -535,7 +489,8 @@ impl HydrolysisRenderer {
             let state = renderer.reported_interaction_state(&interaction_key);
             let color_signal = style.state_layer_color.resolve(env);
             let color = renderer.read_signal(&color_signal);
-            let interaction = local_interaction_state(interaction, ctx.hit_transform);
+            let interaction =
+                local_interaction_state(interaction, renderer.current_hit_transform());
             {
                 let theme = renderer.theme();
                 let layer_bounds = style.state_layer_bounds(ctx.bounds);
@@ -578,12 +533,14 @@ impl HydrolysisRenderer {
             renderer.register_retained_gesture_target(&target, bounds, group_id);
             effect.gesture_target.set(Some(target));
         } else {
-            effect.gesture_target.set(renderer.register_gesture_target(
-                bounds,
-                group_id,
-                effect.gesture.clone(),
-                layered_action,
-            ));
+            effect
+                .gesture_target
+                .set(Some(renderer.register_gesture_target(
+                    bounds,
+                    group_id,
+                    effect.gesture.clone(),
+                    layered_action,
+                )));
         }
         Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
         #[cfg(feature = "accessibility")]
@@ -693,7 +650,7 @@ impl HydrolysisRenderer {
     ) {
         let event = handler.borrow().event();
         let interaction_key = InteractionKey::for_rc(&handler, 0);
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let bounds = ctx.bounds;
         match event {
             Event::HoverEnter => {
                 let captured_env = env.clone();
@@ -743,7 +700,7 @@ impl HydrolysisRenderer {
         value: &ContextMenuEffect,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let bounds = ctx.bounds;
         renderer.register_context_menu_target(
             bounds,
             value.items.clone(),
@@ -769,7 +726,7 @@ impl HydrolysisRenderer {
         value: &AnchoredOverlayEffect,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let bounds = renderer.resolve_window_rect(ctx.bounds);
         let presented = renderer.read_signal(&value.is_presented);
         renderer
             .popup_menu
@@ -798,7 +755,7 @@ impl HydrolysisRenderer {
         value: &Rc<Draggable>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let bounds = ctx.bounds;
         renderer.register_draggable_target(bounds, Rc::clone(value));
         render_content(renderer);
     }
@@ -814,7 +771,7 @@ impl HydrolysisRenderer {
         handles: &DropDestinationHandles,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let bounds = ctx.bounds;
         renderer.register_drop_destination_handles(bounds, handles, env);
         render_content(renderer);
     }

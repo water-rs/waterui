@@ -768,7 +768,9 @@ async fn handle_render(
         "Preview support app rendered view"
     );
     let png_start = Instant::now();
-    let png_data = result.into_png().map_err(PreviewError::RenderFailed)?;
+    let png_data = result
+        .into_png()
+        .map_err(|error| PreviewError::RenderFailed(error.to_string()))?;
     let png_encode_ms = elapsed_ms(png_start);
     let total_ms = elapsed_ms(total_start);
     tracing::info!(

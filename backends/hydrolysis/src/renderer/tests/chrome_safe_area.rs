@@ -73,6 +73,7 @@ fn render_frame_in(
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, env, window, Affine::IDENTITY, Affine::IDENTITY);
     renderer.finish_rebuild_frame();
+    renderer.commit_mirror();
 }
 
 fn render_frame(renderer: &mut HydrolysisRenderer, view: AnyView, env: &Environment) {
@@ -109,10 +110,7 @@ fn capture_in(
 /// got.
 fn content_extents(renderer: &HydrolysisRenderer) -> (Vec<f64>, Vec<Rect>) {
     let mut ys = Vec::new();
-    for recording in renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
-    {
+    for recording in std::iter::once(&renderer.painted_scene()) {
         for (transform, glyphs) in recording.glyph_runs() {
             for glyph in glyphs {
                 let point = transform * Point::new(f64::from(glyph.x), f64::from(glyph.y));
@@ -329,6 +327,49 @@ fn the_bottom_bar_extends_through_the_keyboard_region() {
     );
 }
 
+/// The docked counterpart of
+/// [`the_bottom_bar_extends_through_the_keyboard_region`]: with the
+/// keyboard deeper than the bottom container inset the tab bar's frame
+/// sits under the keyboard, and its surface still reaches the window's
+/// bottom edge — the extension comes from the bar's keyboard-released
+/// context, which the ambient context (its bottom boundary ends at the
+/// keyboard top) could no longer supply.
+#[test]
+fn the_docked_tab_bar_surface_reaches_the_window_edge_under_the_keyboard() {
+    let theme = MinimalTestTheme::default();
+    let tab_draws = Rc::clone(&theme.tabs_bar_draws);
+    let selection = Binding::container(0i32);
+    capture(
+        Tabs::new(
+            &selection,
+            vec![
+                Tab::new(0, "First", || NavigationView::new("One", text("one"))),
+                Tab::new(1, "Second", || NavigationView::new("Two", text("two"))),
+            ],
+        ),
+        &env_with_insets(
+            edge_insets(),
+            EdgeInsets::new(0.0, KEYBOARD_INSET, 0.0, 0.0),
+        ),
+        theme,
+    );
+
+    // The bar's draw space shares the widget's frame, which starts below
+    // the top inset — the window's bottom edge lands a bottom inset below
+    // the content height there, the same measure the keyboard-down case
+    // asserts.
+    let content_height = WINDOW.height() - f64::from(TOP_INSET) - f64::from(BOTTOM_INSET);
+    let window_bottom = content_height + f64::from(BOTTOM_INSET);
+    let tab_draws = tab_draws.borrow();
+    assert_eq!(tab_draws.len(), 1, "the tab bar draws once: {tab_draws:?}");
+    let bar = tab_draws[0];
+    assert!(
+        (bar.y1 - window_bottom).abs() <= EDGE_EPS,
+        "with the keyboard past the container inset the docked tab bar's \
+         surface still reaches the window's bottom edge: {bar:?}"
+    );
+}
+
 /// The realistic overlap case: a `NavigationView` with a bottom tool-bar
 /// item inside `Tabs` content — the nested bottom bar ends on the tab bar's
 /// inner edge but touches no boundary itself, so its surface keeps its own
@@ -515,9 +556,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
         // Every clip scope the frame pushed, in window space — the page
         // scopes among them are stack-sized and must cover the edges their
         // surfaces paint to.
-        let clips: Vec<Rect> = renderer
-            .painted_recordings()
-            .chain(std::iter::once(renderer.scene()))
+        let clips: Vec<Rect> = std::iter::once(&renderer.painted_scene())
             .flat_map(crate::renderer::recording::Recording::clip_scopes)
             .map(|(transform, clip)| transform.transform_rect_bbox(clip))
             .collect();
@@ -536,9 +575,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
     // The stack's backdrop fill covers the same reach the clips do — a
     // stack-sized fill that reaches the window edges, so an extended bar
     // surface never lands on the window background.
-    let fills: Vec<Rect> = renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
+    let fills: Vec<Rect> = std::iter::once(&renderer.painted_scene())
         .flat_map(crate::renderer::recording::Recording::fill_bounds)
         .map(|(transform, shape)| transform.transform_rect_bbox(shape))
         .collect();
@@ -590,9 +627,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
             .expect("test frame instant overflow"),
     );
     render_frame(&mut renderer, AnyView::new(()), &env);
-    let clips: Vec<Rect> = renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
+    let clips: Vec<Rect> = std::iter::once(&renderer.painted_scene())
         .flat_map(crate::renderer::recording::Recording::clip_scopes)
         .map(|(transform, clip)| transform.transform_rect_bbox(clip))
         .collect();

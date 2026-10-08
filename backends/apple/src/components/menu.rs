@@ -34,7 +34,7 @@ use crate::proposal;
 use super::menu_items::append_items;
 #[cfg(target_os = "ios")]
 use super::menu_items::build_menu;
-use super::menu_items::{collect_item_watchers, item_title, with_platform_animation};
+use super::menu_items::{collect_item_watchers, item_title};
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -123,7 +123,7 @@ fn apply_items(state: &Rc<RefCell<MenuState>>, items: Vec<ResolvedMenuItem>) {
             let Some(state) = state.upgrade() else {
                 return;
             };
-            with_platform_animation(metadata, move || {
+            crate::animation::with_platform_animation(metadata, move || {
                 let items = state.borrow().items.clone();
                 apply_items(&state, items);
             });
@@ -324,7 +324,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             move |wctx| {
                 let items = wctx.value().clone();
                 let state = Rc::clone(&state);
-                with_platform_animation(wctx.metadata(), move || {
+                crate::animation::with_platform_animation(wctx.metadata(), move || {
                     apply_items(&state, items);
                 });
             }

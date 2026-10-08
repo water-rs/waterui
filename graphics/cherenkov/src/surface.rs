@@ -34,7 +34,7 @@ use crate::record::Content;
 ///
 /// It holds the surface's host waker and the render-thread channel. A
 /// hidden surface drains inline — the drained [`ChangeSet`] leaves as
-/// [`Message::Apply`] in order with the surface's other messages — a
+/// `Message::Apply` in order with the surface's other messages — a
 /// visible one wakes the host for the frame's drain instead.
 pub struct EngineQueue<B: Backend> {
     /// The surface's identifier on the render thread.
@@ -86,7 +86,7 @@ impl<B: Backend> Queue<B> for EngineQueue<B> {
 }
 
 /// A surface: a render target plus its layer tree. `!Send`; dropping sends
-/// [`Message::DestroySurface`].
+/// `Message::DestroySurface`.
 pub struct Surface<B: Backend> {
     /// The shared pending-changes state, also registered with the engine
     /// for the per-frame drain.
@@ -320,7 +320,7 @@ impl<B: Backend> Surface<B> {
     }
 
     /// Records live content for this surface. The recording reads the root
-    /// layer's [`layout_size`](LayerEdit::layout_size); content for another
+    /// layer's [`layout_size`](crate::LayerEdit::layout_size); content for another
     /// layer that reads its size is recorded with
     /// [`LayerEdit::record`].
     ///
@@ -434,30 +434,36 @@ impl<B: Backdrop> Surface<B> {
     }
 
     /// Creates a backdrop group on this surface whose members sample the
-    /// unfiltered backdrop, captured at `scale`.
+    /// unfiltered backdrop, captured per `spec` ([`BackdropSpec`](crate::BackdropSpec)).
     #[must_use]
-    pub fn backdrop_group_unfiltered(&self, scale: crate::CaptureScale) -> crate::BackdropGroup {
+    pub fn backdrop_group_unfiltered(
+        &self,
+        spec: impl Into<crate::BackdropSpec>,
+    ) -> crate::BackdropGroup {
+        let spec = spec.into();
         self.new_backdrop_group(move |r, surface, id| {
-            B::add_backdrop_group(r, surface, id, scale);
+            B::add_backdrop_group(r, surface, id, spec);
         })
     }
 
-    /// Creates a backdrop group whose capture, taken at `scale`, runs
-    /// through `filter` once; members share the result. The filter runs
-    /// on the reduced capture, its footprint counted in capture texels.
+    /// Creates a backdrop group whose capture, taken per `spec`
+    /// ([`BackdropSpec`](crate::BackdropSpec)), runs through `filter` once; members share the
+    /// result. The filter runs on the reduced capture, its footprint
+    /// counted in capture texels.
     #[must_use]
     pub fn backdrop_group<K, F>(
         &self,
         filter: F,
-        scale: crate::CaptureScale,
+        spec: impl Into<crate::BackdropSpec>,
     ) -> crate::BackdropGroup
     where
         K: filtrate_core::kind::Kind,
         F: BackdropChain<K> + crate::RenderTransfer,
         B: BackdropRuns<K, F>,
     {
+        let spec = spec.into();
         self.new_backdrop_group(move |r, surface, id| {
-            B::add_filtered_backdrop_group(r, surface, id, filter, scale);
+            B::add_filtered_backdrop_group(r, surface, id, filter, spec);
         })
     }
 }

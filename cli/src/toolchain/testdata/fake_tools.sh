@@ -236,6 +236,10 @@ cargo)
         --version)
             printf 'cargo %s (waterui-test)\n' "${WATERUI_FAKE_CARGO_VERSION:-1.95.0}"
             ;;
+        metadata)
+            # `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
+            respond CARGO_METADATA
+            ;;
         install | binstall)
             # `cargo install <crate>` drops the crate's binary beside cargo —
             # model that by copying this dispatcher under the crate's name.
@@ -316,6 +320,9 @@ xcrun)
             ;;
         "simctl delete unavailable" | "simctl create "*)
             exit 0
+            ;;
+        "devicectl device info processes "*)
+            respond XCRUN_DEVICE_INFO_PROCESSES
             ;;
         *)
             exit 1

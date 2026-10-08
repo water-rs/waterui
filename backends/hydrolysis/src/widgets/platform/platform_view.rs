@@ -22,7 +22,6 @@ use crate::platform_view::{
 };
 use crate::renderer::{
     HydroNativeView, HydroState, WidgetRenderContext, graphics_dimensions_from_proposal,
-    transformed_rect,
 };
 
 /// The retained state of one platform-view leaf: the factory key, the stable
@@ -92,32 +91,24 @@ pub fn render_platform_view_node(
     env: &Environment,
 ) {
     let _ = env;
-    let frame = transformed_rect(ctx.hit_transform, ctx.bounds);
-    let (clipped, order) = ctx.renderer_mut().platform_view_placement(frame);
-    #[allow(clippy::cast_possible_truncation)]
-    let clip = (clipped != frame).then(|| {
-        [
-            clipped.x0 as f32,
-            clipped.y0 as f32,
-            clipped.width() as f32,
-            clipped.height() as f32,
-        ]
-    });
+    // The leaf registers its node-local frame plus the sink table handle;
+    // materialization resolves the window rect, clip, visibility and paint
+    // rank and writes the record into the table.
+    let local_bounds = ctx.bounds;
     let state = state.borrow();
-    state.sink.table.borrow_mut().record(PlatformViewPlacement {
-        id: state.id,
-        kind: state.kind.clone(),
-        #[allow(clippy::cast_possible_truncation)]
-        x: frame.x0 as f32,
-        #[allow(clippy::cast_possible_truncation)]
-        y: frame.y0 as f32,
-        #[allow(clippy::cast_possible_truncation)]
-        width: frame.width() as f32,
-        #[allow(clippy::cast_possible_truncation)]
-        height: frame.height() as f32,
-        clip,
-        #[allow(clippy::cast_possible_truncation)]
-        order: order as u32,
-        visible: !clipped.is_zero_area(),
-    });
+    ctx.renderer_mut().register_platform_view_placement(
+        local_bounds,
+        Rc::clone(&state.sink.table),
+        PlatformViewPlacement {
+            id: state.id,
+            kind: state.kind.clone(),
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            clip: None,
+            order: 0,
+            visible: false,
+        },
+    );
 }

@@ -1,7 +1,8 @@
 //! The committed layer ops a [`SurfaceTree`](crate::SurfaceTree) applies,
-//! and the change sets a [`Shared`](crate::Shared) queue drains. Everything
-//! crossing to a consumer is owned; there are no locks anywhere in the
-//! queue.
+//! and the change sets a [`Shared`](crate::Shared) queue drains.
+//!
+//! Everything crossing to a consumer is owned; there are no locks anywhere
+//! in the queue.
 
 use kurbo::{Affine, Vec2};
 
@@ -214,9 +215,11 @@ impl LayerOp {
     }
 }
 
-/// A target's render-side install payload, sealed: only a [`GpuInstalls`]
-/// target can wrap one, through [`LayerContent::install`]. The consumer
-/// unwraps it with [`into_inner`](Install::into_inner) and applies it.
+/// A target's sealed render-side install payload.
+///
+/// Only a [`GpuInstalls`] target can wrap one, through
+/// [`LayerContent::install`]. The consumer unwraps it with
+/// [`into_inner`](Install::into_inner) and applies it.
 ///
 /// [`GpuInstalls`]: crate::GpuInstalls
 /// [`LayerContent::install`]: crate::LayerContent::install

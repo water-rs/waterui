@@ -269,6 +269,34 @@ fn a_radial_gradient_interpolates_from_the_centre() {
 }
 
 #[test]
+fn identical_radial_circles_cannot_repeat_or_reflect() {
+    for extend in [Extend::Repeat, Extend::Reflect] {
+        let engine = engine();
+        let grad = RadialGradient {
+            extend,
+            ..RadialGradient::two_point((32.0, 32.0), 16.0, (32.0, 32.0), 16.0)
+                .stop(0.0, RED)
+                .stop(1.0, RED)
+        };
+        let surface = engine
+            .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 64.0, 64.0), Paint::from(grad.clone()));
+            }));
+        });
+        let Err(err) = engine.render(FrameTime::now()) else {
+            panic!("identical circles rendered under {extend:?}");
+        };
+        assert!(
+            matches!(err, cherenkov::RenderError::IdenticalRadialCircles(e) if e == extend),
+            "{extend:?}: {err}"
+        );
+    }
+}
+
+#[test]
 fn srgb_encoded_interpolation_midpoint_is_not_linear_half() {
     let engine = engine();
     let grad = LinearGradient::new((0.0, 0.0), (64.0, 0.0))

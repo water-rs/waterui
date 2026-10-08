@@ -2,6 +2,7 @@ use core::{any::Any, cmp::Ordering, fmt};
 use std::rc::Rc;
 
 use super::HydrolysisRenderer;
+use crate::renderer::mount::RetainedScopes;
 
 /// Strong identity lease for one retained semantic object.
 ///
@@ -80,6 +81,8 @@ impl HydrolysisRenderer {
     /// push pairs with this on the flush path, so both stacks stay balanced.
     pub(crate) fn push_render_owner(&mut self, owner: &Rc<()>) {
         self.owner_stack.push(RetainedIdentity::for_rc(owner));
+        self.core
+            .record_scope(|scopes| scopes.push_render_owner(owner));
         #[cfg(feature = "accessibility")]
         self.accessibility.push_owner(owner);
     }
@@ -89,6 +92,7 @@ impl HydrolysisRenderer {
         self.owner_stack
             .pop()
             .expect("hydrolysis render owner stack underflow");
+        self.core.record_scope(RetainedScopes::pop_render_owner);
         #[cfg(feature = "accessibility")]
         self.accessibility.pop_owner();
     }
@@ -98,6 +102,8 @@ impl HydrolysisRenderer {
     /// without joining the accessibility owner chain.
     pub(crate) fn push_input_owner(&mut self, owner: &Rc<()>) {
         self.owner_stack.push(RetainedIdentity::for_rc(owner));
+        self.core
+            .record_scope(|scopes| scopes.push_input_owner(owner));
     }
 
     /// Pops the owner [`Self::push_input_owner`] pushed.
@@ -105,5 +111,6 @@ impl HydrolysisRenderer {
         self.owner_stack
             .pop()
             .expect("hydrolysis input owner stack underflow");
+        self.core.record_scope(RetainedScopes::pop_input_owner);
     }
 }

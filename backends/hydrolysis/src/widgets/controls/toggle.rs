@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, InteractionKey, RenderContext, WidgetRenderContext,
-    measure_label_intrinsic, transformed_rect,
+    measure_label_intrinsic,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -164,6 +164,10 @@ pub fn render_toggle_node(
     render_toggle_parts(ctx, state, env);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the render sequence is one continuous scenario; splitting it would obscure the order"
+)]
 pub fn render_toggle_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ToggleRenderState>>,
@@ -192,8 +196,12 @@ pub fn render_toggle_parts(
         // alpha (Material: on-surface at 38% for default-colored labels).
         // The label's semantics are merged into the toggle's own node by
         // `toggle_accessibility`, so the sub-view flushes visual-only.
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             label_bounds,
             |ctx| {
@@ -202,7 +210,7 @@ pub fn render_toggle_parts(
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label_view.flush_in_rect(
+                        label_view.place(
                             renderer,
                             render_ctx,
                             env,
@@ -223,15 +231,16 @@ pub fn render_toggle_parts(
         ctx.renderer_mut()
             .resolve_toggle_progress(&binding, theme.toggle_value_animation())
     };
-    let visual_hit_bounds = transformed_rect(ctx.hit_transform, control_bounds);
-    let activation_hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+    let visual_hit_bounds = control_bounds;
+    let activation_hit_bounds = ctx.bounds;
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
         visual_interaction_key.clone(),
         visual_hit_bounds,
         env,
         disabled,
     );
-    let interaction = local_interaction_state(interaction, ctx.hit_transform);
+    let interaction = local_interaction_state(interaction, hit_transform);
     {
         ctx.draw_context(|draw| match style {
             ToggleStyle::Automatic | ToggleStyle::Switch => {

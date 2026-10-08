@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::future::Future;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use cargo_metadata::PackageId;
@@ -20,13 +20,18 @@ use smol::fs;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
-use waterui_assets_planner::BundleManifest;
+use waterui_assets_planner::{
+    BundleManifest, FontDeclaration, FontSource, GraphScope, dependency_font_declarations,
+};
 use zenwave::{Client as _, Method};
 
 use crate::project::Project;
 use crate::project_model::project_types::PermissionKey;
 
 mod android_manifest;
+mod app_values;
+mod apple_metadata;
+mod gradle_plugins;
 pub mod icon;
 mod unified;
 mod web;
@@ -34,6 +39,11 @@ mod web;
 pub use android_manifest::ManifestComponents;
 #[cfg(test)]
 pub use android_manifest::assert_component_markers_inside_application;
+pub use app_values::{AppValuesConfig, RequiredAppValues};
+pub use apple_metadata::{AppleDeclarations, SigningEnvironment};
+pub use gradle_plugins::GradlePlugins;
+#[cfg(test)]
+pub use gradle_plugins::{assert_module_plugin_markers, assert_settings_plugin_markers};
 
 /// A font the CLI can fetch when a crate names it and nothing else.
 #[derive(Debug, Clone, Deserialize)]
@@ -89,37 +99,6 @@ impl FontRegistry {
 const HYDROLYSIS_DEFAULT_FONT_FAMILY: &str = "Roboto";
 const FONT_MANIFEST_FILE_NAME: &str = "waterui-fonts.json";
 
-/// A font declaration — from `[[assets.font]]` in `Water.toml` or a crate's
-/// `[package.metadata.waterui.assets.font]` Cargo.toml metadata.
-#[derive(Debug, Clone)]
-pub struct FontDeclaration {
-    /// Font family name (used as `font_family` in Text).
-    pub name: String,
-    /// Source of the font file.
-    pub source: FontSource,
-    /// Crate or project that declared this font.
-    pub crate_name: String,
-}
-
-/// Source of a font file.
-#[derive(Debug, Clone)]
-pub enum FontSource {
-    /// Font bundled with the crate at a local path.
-    Local {
-        /// Absolute path to the crate root.
-        crate_root: PathBuf,
-        /// Relative path within the crate.
-        relative_path: PathBuf,
-    },
-    /// Font that must be fetched out of band into the font cache.
-    Remote {
-        /// URL to fetch the font from when pre-seeding the cache.
-        url: String,
-    },
-    /// Font from the built-in registry.
-    BuiltIn,
-}
-
 /// A resolved font with its absolute path.
 #[derive(Debug, Clone)]
 pub struct ResolvedFont {
@@ -146,11 +125,11 @@ struct FontManifestEntry {
     file_name: String,
 }
 
-/// Font metadata from Cargo.toml `[package.metadata.waterui.assets]`.
+/// The CLI's own keys of a crate's `[package.metadata.waterui]`; font
+/// declarations under `assets` are read by
+/// [`waterui_assets_planner::dependency_font_declarations`].
 #[derive(Debug, Deserialize)]
 struct WaterUIMetadata {
-    #[serde(default)]
-    assets: AssetsMetadata,
     /// Permissions this crate cannot work without, keyed by logical permission.
     #[serde(default)]
     permissions: BTreeMap<PermissionKey, PermissionRequirement>,
@@ -158,24 +137,79 @@ struct WaterUIMetadata {
     /// application classpath, from `[package.metadata.waterui.android]`.
     #[serde(default)]
     android: AndroidMetadata,
+    /// Entitlements and `Info.plist` keys for the packaged Apple app, from
+    /// `[package.metadata.waterui.apple]`.
+    #[serde(default)]
+    apple: apple_metadata::AppleMetadata,
+    /// Values the app supplies in `Water.toml`, from
+    /// `[[package.metadata.waterui.app-value]]`.
+    #[serde(default, rename = "app-value")]
+    app_value: Vec<app_values::AppValueRequest>,
 }
 
-/// One crate's `[package.metadata.waterui.android]` table.
+/// One crate's `[package.metadata.waterui.android]` table: an unconditional
+/// base plus `feature.<cargo-feature>` subtables carrying the same keys.
+type AndroidMetadata = FeatureTables<AndroidTable>;
+
+/// A crate's `[package.metadata.waterui.<platform>]` table, split into its
+/// unconditional `base` keys and `feature.<cargo-feature>` subtables that
+/// carry the same keys but contribute only while the resolved dependency
+/// graph enables that feature on the declaring crate.
+#[derive(Debug, Default)]
+struct FeatureTables<T> {
+    /// The table's unconditional keys.
+    base: T,
+    /// `feature.<cargo-feature>` subtables, keyed by cargo feature name.
+    feature: BTreeMap<String, T>,
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for FeatureTables<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // `deny_unknown_fields` cannot see through `flatten`, so the keys
+        // neither `base` nor `feature` claims land in a catch-all that fails
+        // the parse itself.
+        #[derive(Deserialize)]
+        #[serde(bound(deserialize = "T: Deserialize<'de>"))]
+        struct Wire<T> {
+            #[serde(flatten)]
+            base: T,
+            #[serde(default)]
+            feature: BTreeMap<String, T>,
+            #[serde(flatten)]
+            unknown: BTreeMap<String, serde_json::Value>,
+        }
+        let wire = Wire::<T>::deserialize(deserializer)?;
+        if let Some(key) = wire.unknown.into_keys().next() {
+            return Err(<D::Error as serde::de::Error>::custom(format!(
+                "unknown field `{key}`"
+            )));
+        }
+        Ok(Self {
+            base: wire.base,
+            feature: wire.feature,
+        })
+    }
+}
+
+/// The keys of one crate's `[package.metadata.waterui.android]` table and of
+/// each `[package.metadata.waterui.android.feature.<cargo-feature>]` subtable.
 ///
 /// A crate whose Rust side resolves helper classes through the application
 /// class loader declares the `.kt` files that must be compiled into the app
 /// dex and the Maven coordinates the helpers need. The generated Gradle
 /// module performs the compile — the crate's build script does not. A crate
 /// whose platform code needs an entry inside the manifest's `<application>`
-/// declares it as a `[[provider]]`, `[[service]]`, `[[receiver]]` or
-/// `[[meta-data]]` table (see [`android_manifest`]).
+/// declares it as an `[[activity]]`, `[[provider]]`, `[[service]]`,
+/// `[[receiver]]` or `[[meta-data]]` table (see [`android_manifest`]). A crate whose platform
+/// code needs a Gradle plugin applied to the application module declares it
+/// as a `[[gradle-plugin]]` table (see [`gradle_plugins`]).
 ///
 /// Every key is the CLI's, so an unknown one — a misspelling, or a key a
 /// newer CLI understands — is an error rather than a declaration silently
 /// left out of the app.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct AndroidMetadata {
+struct AndroidTable {
     /// Crate-relative `.kt` files to stage into the generated module.
     #[serde(default)]
     kotlin_sources: Vec<PathBuf>,
@@ -183,6 +217,9 @@ struct AndroidMetadata {
     /// run against.
     #[serde(default)]
     maven: Vec<String>,
+    /// `<activity>` entries for the generated manifest.
+    #[serde(default)]
+    activity: Vec<android_manifest::Activity>,
     /// `<provider>` entries for the generated manifest.
     #[serde(default)]
     provider: Vec<android_manifest::Provider>,
@@ -195,10 +232,23 @@ struct AndroidMetadata {
     /// Application-level `<meta-data>` entries for the generated manifest.
     #[serde(default)]
     meta_data: Vec<android_manifest::MetaData>,
-    /// Only required when this cargo feature is enabled on the declaring
-    /// crate; gates every key of the table.
+    /// Gradle plugins to apply to the generated application module.
     #[serde(default)]
-    required_feature: Option<String>,
+    gradle_plugin: Vec<gradle_plugins::GradlePlugin>,
+}
+
+impl AndroidTable {
+    /// Whether the table declares nothing.
+    const fn is_empty(&self) -> bool {
+        self.kotlin_sources.is_empty()
+            && self.maven.is_empty()
+            && self.activity.is_empty()
+            && self.provider.is_empty()
+            && self.service.is_empty()
+            && self.receiver.is_empty()
+            && self.meta_data.is_empty()
+            && self.gradle_plugin.is_empty()
+    }
 }
 
 /// One crate's declaration that it needs a permission to function.
@@ -234,26 +284,6 @@ pub enum PermissionEvidence {
     Inferred,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct AssetsMetadata {
-    #[serde(default)]
-    font: Vec<FontMetadata>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FontMetadata {
-    name: String,
-    #[serde(default)]
-    local_path: Option<String>,
-    #[serde(default)]
-    remote_path: Option<String>,
-    /// Optional feature that must be enabled for this font to be included.
-    /// If specified, the font will only be bundled if this feature is enabled
-    /// for the declaring package.
-    #[serde(default, rename = "required-feature")]
-    required_feature: Option<String>,
-}
-
 /// Fonts the project itself declares as `[[assets.font]]` tables in
 /// `Water.toml`.
 ///
@@ -270,37 +300,14 @@ fn manifest_font_declarations(
     };
     let mut declarations = Vec::with_capacity(assets.font.len());
     for font in &assets.font {
-        let source = match (&font.local_path, &font.remote_path) {
-            (Some(local_path), None) => {
-                let relative_path = PathBuf::from(local_path);
-                // A rooted path in any flavor — `/x`, `\x`, `C:\x`, `C:x` —
-                // escapes the project root on some platform, so reject it on
-                // all of them.
-                if matches!(
-                    relative_path.components().next(),
-                    Some(Component::Prefix(_) | Component::RootDir)
-                ) {
-                    eyre::bail!(
-                        "[[assets.font]] entry '{}' in Water.toml: local_path must be \
-                         relative to the project root",
-                        font.name
-                    );
-                }
-                FontSource::Local {
-                    crate_root: root.to_path_buf(),
-                    relative_path,
-                }
-            }
-            (None, Some(url)) => FontSource::Remote { url: url.clone() },
-            (None, None) => FontSource::BuiltIn,
-            (Some(_), Some(_)) => {
-                eyre::bail!(
-                    "[[assets.font]] entry '{}' in Water.toml sets both local_path and \
-                     remote_path; a declaration has exactly one source",
-                    font.name
-                );
-            }
-        };
+        let source = FontSource::from_declaration(
+            root,
+            font.local_path.clone(),
+            font.remote_path.clone(),
+            &manifest.package.name,
+            &font.name,
+        )
+        .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
         declarations.push(FontDeclaration {
             name: font.name.clone(),
             source,
@@ -398,6 +405,52 @@ pub async fn crate_metadata(
     .map_err(Into::into)
 }
 
+/// The features cargo resolved on each package of `metadata`'s graph — what
+/// every feature-gated declaration is checked against.
+fn resolved_features(metadata: &cargo_metadata::Metadata) -> HashMap<&PackageId, HashSet<&str>> {
+    metadata
+        .resolve
+        .as_ref()
+        .map(|resolve| {
+            resolve
+                .nodes
+                .iter()
+                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether cargo resolved `feature` on `package`.
+fn feature_enabled(
+    enabled: &HashMap<&PackageId, HashSet<&str>>,
+    package: &cargo_metadata::Package,
+    feature: &str,
+) -> bool {
+    enabled
+        .get(&package.id)
+        .is_some_and(|features| features.contains(feature))
+}
+
+/// `package`'s `[package.metadata.waterui]` table; `None` when it declares
+/// none. A table that does not parse — an unknown or misspelt key, a value
+/// of the wrong shape — is an error naming the crate.
+fn parse_waterui_metadata(
+    package: &cargo_metadata::Package,
+) -> eyre::Result<Option<WaterUIMetadata>> {
+    let Some(waterui) = package.metadata.get("waterui") else {
+        return Ok(None);
+    };
+    serde_json::from_value(waterui.clone())
+        .map(Some)
+        .map_err(|error| {
+            eyre::eyre!(
+                "crate {} declares malformed `[package.metadata.waterui]`: {error}",
+                package.name
+            )
+        })
+}
+
 /// Scans `build_manifest`'s dependency graph for
 /// `[package.metadata.waterui.assets.font]` declarations via `cargo metadata`.
 ///
@@ -408,7 +461,10 @@ pub async fn crate_metadata(
 /// would miss the backend's declarations entirely.
 ///
 /// Fonts with a `required-feature` field will only be included if that feature
-/// is enabled for the declaring package (checked via cargo metadata's resolved graph).
+/// is enabled for the declaring package (checked via cargo metadata's resolved
+/// graph, which is why the metadata is resolved rather than `--no-deps`). A
+/// declaration that is malformed, roots its `local_path`, or sets both
+/// `local_path` and `remote_path` fails the scan.
 async fn scan_crate_font_declarations(
     project: &Project,
     build_manifest: &Path,
@@ -439,109 +495,34 @@ async fn scan_crate_font_declarations(
         message
     })?;
 
-    // Build map of package_id -> enabled features from resolved graph
-    let enabled_features_map: HashMap<&PackageId, HashSet<&str>> = metadata
-        .resolve
-        .as_ref()
-        .map(|resolve| {
-            resolve
-                .nodes
-                .iter()
-                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut fonts = Vec::new();
-
-    for package in &metadata.packages {
-        // Skip if no waterui metadata
-        let Some(waterui) = package.metadata.get("waterui") else {
-            continue;
-        };
-
-        // Parse the metadata
-        let waterui_meta: WaterUIMetadata =
-            serde_json::from_value(waterui.clone()).map_err(|error| {
-                eyre::eyre!(
-                    "crate {} declares malformed `[package.metadata.waterui]`: {error}",
-                    package.name
-                )
-            })?;
-
-        // Get enabled features for this package from resolve
-        let enabled_features = enabled_features_map
-            .get(&package.id)
-            .cloned()
-            .unwrap_or_default();
-
-        // Process font declarations
-        for font_meta in waterui_meta.assets.font {
-            // Skip if required feature is not enabled
-            if let Some(required) = &font_meta.required_feature
-                && !enabled_features.contains(required.as_str())
-            {
-                debug!(
-                    "Skipping font '{}': feature '{}' not enabled for {}",
-                    font_meta.name, required, package.name
-                );
-                continue;
-            }
-
-            let source = if let Some(local_path) = font_meta.local_path {
-                let local_path = PathBuf::from(local_path);
-                if local_path.is_absolute() {
-                    warn!(
-                        "Skipping font '{}': local_path must be relative (crate: {})",
-                        font_meta.name, package.name
-                    );
-                    continue;
-                }
-
-                // Local path - resolve relative to crate root
-                let crate_root = package
-                    .manifest_path
-                    .parent()
-                    .ok_or_eyre("Package has no parent directory")?
-                    .as_std_path()
-                    .to_path_buf();
-
-                FontSource::Local {
-                    crate_root,
-                    relative_path: local_path,
-                }
-            } else if let Some(url) = font_meta.remote_path {
-                FontSource::Remote { url }
-            } else {
-                // Just name - use built-in registry
-                FontSource::BuiltIn
-            };
-
-            fonts.push(FontDeclaration {
-                name: font_meta.name,
-                source,
-                crate_name: package.name.to_string(),
-            });
-        }
-    }
+    let fonts = dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
+        format!(
+            "Invalid font declaration in the dependency graph of {}",
+            build_manifest.display()
+        )
+    })?;
 
     info!("Found {} font declarations from dependencies", fonts.len());
     Ok(fonts)
 }
 
 /// Everything the dependency graph's `[package.metadata.waterui.android]`
-/// tables contribute to a generated Gradle module, after `required-feature`
-/// gating.
+/// tables contribute to a generated Gradle module, after
+/// `feature.<cargo-feature>` gating.
 #[derive(Debug, Default)]
 pub struct AndroidDeclarations {
     /// Kotlin sources and Maven coordinates for the module's classpath.
     pub classpath: AndroidClasspath,
     /// Components for the `<application>` element of the module's manifest.
     pub manifest: ManifestComponents,
+    /// Gradle plugins for the application module and the project settings.
+    pub gradle_plugins: GradlePlugins,
+    /// Values the graph requests from the app's `Water.toml`.
+    pub app_values: RequiredAppValues,
 }
 
 /// Kotlin sources and Maven coordinates the dependency graph asks to place on
-/// the Android application classpath, after `required-feature` gating.
+/// the Android application classpath, after `feature.<cargo-feature>` gating.
 #[derive(Debug, Default)]
 pub struct AndroidClasspath {
     /// Absolute paths of `.kt` files to stage into the generated module.
@@ -596,53 +577,57 @@ pub async fn scan_android_declarations(
     collect_android_declarations(&metadata)
 }
 
+/// A `feature.<name>` subtable must name a cargo feature the declaring crate
+/// actually has: a misspelt one would gate its declarations behind a switch
+/// nothing can turn on.
+fn check_feature_tables<'a>(
+    package: &cargo_metadata::Package,
+    table: &str,
+    features: impl Iterator<Item = &'a String>,
+) -> eyre::Result<()> {
+    for feature in features {
+        eyre::ensure!(
+            package.features.contains_key(feature.as_str()),
+            "{} declares `[package.metadata.waterui.{table}.feature.{feature}]` but has no cargo feature `{feature}`",
+            package.name
+        );
+    }
+    Ok(())
+}
+
 /// The graph walk of [`scan_android_declarations`], split from the
 /// `cargo metadata` call so collection runs against any resolved graph.
 fn collect_android_declarations(
     metadata: &cargo_metadata::Metadata,
 ) -> eyre::Result<AndroidDeclarations> {
-    let enabled_features: HashMap<&PackageId, HashSet<&str>> = metadata
-        .resolve
-        .as_ref()
-        .map(|resolve| {
-            resolve
-                .nodes
-                .iter()
-                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let enabled_features = resolved_features(metadata);
 
     let mut declarations = AndroidDeclarations::default();
     for package in &metadata.packages {
-        let Some(waterui) = package.metadata.get("waterui") else {
+        let Some(parsed) = parse_waterui_metadata(package)? else {
             continue;
         };
-        let parsed: WaterUIMetadata = serde_json::from_value(waterui.clone()).map_err(|error| {
-            eyre::eyre!(
-                "crate {} declares malformed `[package.metadata.waterui]`: {error}",
-                package.name
-            )
-        })?;
+        request_app_values(
+            &mut declarations.app_values,
+            &enabled_features,
+            package,
+            parsed.app_value,
+        );
         let android = parsed.android;
-        let components = android_manifest::DeclaredComponents {
-            providers: android.provider,
-            services: android.service,
-            receivers: android.receiver,
-            meta_data: android.meta_data,
-        };
-        if android.kotlin_sources.is_empty() && android.maven.is_empty() && components.is_empty() {
-            continue;
+        check_feature_tables(package, "android", android.feature.keys())?;
+        let mut tables = Vec::with_capacity(android.feature.len() + 1);
+        tables.push(android.base);
+        for (feature, table) in android.feature {
+            if feature_enabled(&enabled_features, package, &feature) {
+                tables.push(table);
+            } else {
+                debug!(
+                    "Skipping `[package.metadata.waterui.android.feature.{feature}]` of {}: the feature is not enabled",
+                    package.name
+                );
+            }
         }
-        if let Some(gate) = &android.required_feature
-            && !enabled_features
-                .get(&package.id)
-                .is_some_and(|features| features.contains(gate.as_str()))
-        {
-            debug!(
-                "Skipping android declarations of {}: feature `{gate}` is not enabled",
-                package.name
-            );
+        if tables.iter().all(AndroidTable::is_empty) {
             continue;
         }
         let crate_root = package
@@ -651,32 +636,132 @@ fn collect_android_declarations(
             .ok_or_eyre("Package has no parent directory")?
             .as_std_path()
             .to_path_buf();
-        for source in android.kotlin_sources {
-            let path = crate_root.join(&source);
-            if !path.is_file() {
-                eyre::bail!(
-                    "{} declares Kotlin source `{}`: no such file at {}",
-                    package.name,
-                    source.display(),
-                    path.display()
-                );
+        for table in tables {
+            let components = android_manifest::DeclaredComponents {
+                activities: table.activity,
+                providers: table.provider,
+                services: table.service,
+                receivers: table.receiver,
+                meta_data: table.meta_data,
+            };
+            for source in table.kotlin_sources {
+                let path = crate_root.join(&source);
+                if !path.is_file() {
+                    eyre::bail!(
+                        "{} declares Kotlin source `{}`: no such file at {}",
+                        package.name,
+                        source.display(),
+                        path.display()
+                    );
+                }
+                declarations.classpath.kotlin_sources.push(path);
             }
-            declarations.classpath.kotlin_sources.push(path);
+            for coordinate in table.maven {
+                let parts: Vec<&str> = coordinate.split(':').collect();
+                eyre::ensure!(
+                    parts.len() == 3 && parts.iter().all(|part| !part.is_empty()),
+                    "{} declares Maven coordinate `{coordinate}`: expected `group:artifact:version`",
+                    package.name
+                );
+                declarations.classpath.maven.insert(coordinate);
+            }
+            declarations
+                .manifest
+                .merge(package.name.as_str(), components)?;
+            declarations
+                .gradle_plugins
+                .merge(package.name.as_str(), table.gradle_plugin)?;
         }
-        for coordinate in android.maven {
-            let parts: Vec<&str> = coordinate.split(':').collect();
-            eyre::ensure!(
-                parts.len() == 3 && parts.iter().all(|part| !part.is_empty()),
-                "{} declares Maven coordinate `{coordinate}`: expected `group:artifact:version`",
-                package.name
-            );
-            declarations.classpath.maven.insert(coordinate);
-        }
-        declarations
-            .manifest
-            .merge(package.name.as_str(), components)?;
     }
     Ok(declarations)
+}
+
+/// Scans `build_manifest`'s dependency graph for
+/// `[package.metadata.waterui.apple]` declarations via `cargo metadata` —
+/// the same channel the Android declarations travel.
+///
+/// # Errors
+///
+/// Returns an error when `cargo metadata` fails, a table is malformed, or two
+/// crates declare one key with values that cannot merge.
+pub async fn scan_apple_declarations(
+    project: &Project,
+    build_manifest: &Path,
+    features: &[String],
+) -> eyre::Result<AppleDeclarations> {
+    seed_managed_crate_lock(project, build_manifest).await?;
+    let metadata = crate_metadata(build_manifest, features)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "Failed to run cargo metadata on {}",
+                build_manifest.display()
+            )
+        })?;
+    collect_apple_declarations(&metadata)
+}
+
+/// The graph walk of [`scan_apple_declarations`], split from the
+/// `cargo metadata` call so collection runs against any resolved graph.
+fn collect_apple_declarations(
+    metadata: &cargo_metadata::Metadata,
+) -> eyre::Result<AppleDeclarations> {
+    let enabled_features = resolved_features(metadata);
+    let mut declarations = AppleDeclarations::default();
+    for package in &metadata.packages {
+        let Some(parsed) = parse_waterui_metadata(package)? else {
+            continue;
+        };
+        request_app_values(
+            &mut declarations.app_values,
+            &enabled_features,
+            package,
+            parsed.app_value,
+        );
+        let apple = parsed.apple;
+        check_feature_tables(package, "apple", apple.feature.keys())?;
+        let mut tables = Vec::with_capacity(apple.feature.len() + 1);
+        tables.push(apple.base);
+        for (feature, table) in apple.feature {
+            if feature_enabled(&enabled_features, package, &feature) {
+                tables.push(table);
+            } else {
+                debug!(
+                    "Skipping `[package.metadata.waterui.apple.feature.{feature}]` of {}: the feature is not enabled",
+                    package.name
+                );
+            }
+        }
+        for table in tables {
+            if table.is_empty() {
+                continue;
+            }
+            declarations.merge(package.name.as_str(), table)?;
+        }
+    }
+    Ok(declarations)
+}
+
+/// Records the app values `package` requests whose `required-feature` cargo
+/// resolved.
+fn request_app_values(
+    required: &mut RequiredAppValues,
+    enabled_features: &HashMap<&PackageId, HashSet<&str>>,
+    package: &cargo_metadata::Package,
+    requests: Vec<app_values::AppValueRequest>,
+) {
+    for request in requests {
+        if let Some(gate) = &request.required_feature
+            && !feature_enabled(enabled_features, package, gate)
+        {
+            debug!(
+                "Skipping app value `{:?}` requested by {}: feature `{gate}` is not enabled",
+                request.key, package.name
+            );
+            continue;
+        }
+        required.request(package.name.as_str(), request.key);
+    }
 }
 
 /// Markers bracketing the R8 keep block [`stage_android_declarations`] maintains
@@ -692,6 +777,11 @@ const ANDROID_KEEPS_END: &str = "# --- end waterui android classpath keeps ---";
 /// compile and run against, emitted into the module's managed dependencies
 /// block as `implementation(...)` for application modules or `api(...)` for
 /// the embedded AAR so the published POM propagates them to consumers.
+///
+/// Declared Gradle plugins are pinned in the project's `settings.gradle.kts`
+/// and applied in the module's `plugins {}` block for application modules;
+/// the embedded AAR is a library, so its host application must apply them
+/// and the stage names each one.
 ///
 /// Both destinations are managed: whatever an earlier stage left is removed
 /// first, so a dependency or feature that is no longer in the graph stops
@@ -712,7 +802,44 @@ pub async fn stage_android_declarations(
 ) -> eyre::Result<()> {
     let declarations = scan_android_declarations(project, build_manifest, features).await?;
     stage_classpath_files(&declarations.classpath, module_dir, scope).await?;
-    android_manifest::write_manifest_components(module_dir, &declarations.manifest).await
+    android_manifest::write_manifest_components(module_dir, &declarations.manifest).await?;
+    app_values::stage_android_app_values(
+        module_dir,
+        project.root(),
+        &declarations.app_values,
+        &project.manifest().app_values,
+        scope,
+    )
+    .await?;
+    match scope {
+        AndroidDependencyScope::Implementation => {
+            let project_dir = module_dir
+                .parent()
+                .ok_or_eyre("the Gradle module has no parent project directory")?;
+            gradle_plugins::write_gradle_plugins(
+                project_dir,
+                module_dir,
+                &declarations.gradle_plugins,
+            )
+            .await
+        }
+        AndroidDependencyScope::Api => {
+            warn_host_applies_gradle_plugins(&declarations.gradle_plugins);
+            Ok(())
+        }
+    }
+}
+
+/// A Gradle plugin acts on the application module — `google-services`
+/// matches its configuration against the application id — so the embedded
+/// AAR, a library, cannot apply one for its host. The host application
+/// module must apply each plugin the graph declares itself.
+fn warn_host_applies_gradle_plugins(plugins: &GradlePlugins) {
+    for (crate_name, id, version) in plugins.iter() {
+        warn!(
+            "{crate_name} needs Gradle plugin `{id}` version `{version}`; the embedded library cannot apply it, so the host application module must declare `id(\"{id}\") version \"{version}\"`"
+        );
+    }
 }
 
 /// The classpath half of [`stage_android_declarations`], split from the cargo-metadata
@@ -807,6 +934,27 @@ fn managed_block_span(
             path.display()
         ),
     }
+}
+
+/// `existing` with its managed block between `begin_marker` and
+/// `end_marker` replaced by `block`, which carries the markers itself;
+/// `None` when `existing` has no such block.
+fn splice_managed_block(
+    existing: &str,
+    path: &Path,
+    begin_marker: &str,
+    end_marker: &str,
+    block: &str,
+) -> eyre::Result<Option<String>> {
+    Ok(
+        managed_block_span(existing, path, begin_marker, end_marker)?.map(|(begin, end)| {
+            let mut body = String::with_capacity(existing.len() + block.len());
+            body.push_str(&existing[..begin]);
+            body.push_str(block);
+            body.push_str(&existing[end..]);
+            body
+        }),
+    )
 }
 
 /// Rewrites the managed dependencies block inside `module_dir`'s
@@ -1216,6 +1364,17 @@ pub enum FetchOutcome {
     },
 }
 
+/// Why seeding the font cache failed.
+#[derive(Debug, thiserror::Error)]
+pub enum SeedFontCacheError {
+    /// A generated crate whose manifest a build scans could not be scaffolded.
+    #[error("{0:#}")]
+    Scaffold(eyre::Report),
+    /// The font declarations could not be read, or a declared font could not be fetched.
+    #[error("{0:#}")]
+    Fonts(eyre::Report),
+}
+
 /// Seeds the font cache with every font a build of `project` would demand.
 ///
 /// `water fetch` and the tail of `water create` share this one path:
@@ -1233,7 +1392,7 @@ pub enum FetchOutcome {
 /// the font and its URL. Declarations fetching can never satisfy arrive as
 /// [`FetchOutcome::Unsatisfiable`] instead, carrying the same report the
 /// build gives them.
-pub async fn seed_font_cache(project: &Project) -> eyre::Result<Vec<FetchOutcome>> {
+pub async fn seed_font_cache(project: &Project) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
     seed_font_cache_scoped(project, None).await
 }
 
@@ -1250,19 +1409,30 @@ pub async fn seed_font_cache(project: &Project) -> eyre::Result<Vec<FetchOutcome
 pub async fn seed_font_cache_for_backend(
     project: &Project,
     backend: crate::platform::TargetBackend,
-) -> eyre::Result<Vec<FetchOutcome>> {
+) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
     seed_font_cache_scoped(project, Some(backend)).await
 }
 
 async fn seed_font_cache_scoped(
     project: &Project,
     scope: Option<crate::platform::TargetBackend>,
-) -> eyre::Result<Vec<FetchOutcome>> {
-    let mut declarations = manifest_font_declarations(project.manifest(), project.root())?;
-    for manifest in ensure_font_scan_manifests(project, scope).await? {
-        declarations.extend(scan_crate_font_declarations(project, &manifest).await?);
+) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
+    let mut declarations = manifest_font_declarations(project.manifest(), project.root())
+        .map_err(SeedFontCacheError::Fonts)?;
+    let manifests = ensure_font_scan_manifests(project, scope)
+        .await
+        .map_err(SeedFontCacheError::Scaffold)?;
+    for manifest in manifests {
+        declarations.extend(
+            scan_crate_font_declarations(project, &manifest)
+                .await
+                .map_err(SeedFontCacheError::Fonts)?,
+        );
     }
-    fetch_fonts(declarations, &cache_dir()?, download_font).await
+    let cache_dir = cache_dir().map_err(SeedFontCacheError::Fonts)?;
+    fetch_fonts(declarations, &cache_dir, download_font)
+        .await
+        .map_err(SeedFontCacheError::Fonts)
 }
 
 /// The crate manifests a build of `project` scans for font declarations —
@@ -2721,29 +2891,13 @@ pub async fn scan_required_permissions(
             )
         })?;
 
-    let enabled_features: HashMap<&PackageId, HashSet<&str>> = metadata
-        .resolve
-        .as_ref()
-        .map(|resolve| {
-            resolve
-                .nodes
-                .iter()
-                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let enabled_features = resolved_features(&metadata);
 
     let mut required = Vec::new();
     for package in &metadata.packages {
-        let Some(waterui) = package.metadata.get("waterui") else {
+        let Some(parsed) = parse_waterui_metadata(package)? else {
             continue;
         };
-        let parsed: WaterUIMetadata = serde_json::from_value(waterui.clone()).map_err(|error| {
-            eyre::eyre!(
-                "crate {} declares malformed `[package.metadata.waterui]`: {error}",
-                package.name
-            )
-        })?;
         let features = enabled_features
             .get(&package.id)
             .cloned()
@@ -3098,15 +3252,14 @@ mod permission_audit_tests {
     }
 
     /// Manifest components are collected across the resolved graph the way
-    /// Kotlin sources are: a table behind a disabled `required-feature`
-    /// contributes nothing, the same table with the feature on contributes
-    /// its components, and two crates declaring one component differently
-    /// fail the collection naming both.
+    /// Kotlin sources are: a `feature.<name>` table whose cargo feature is
+    /// disabled contributes nothing, the same table with the feature on
+    /// contributes its components, and two crates declaring one component
+    /// differently fail the collection naming both.
     #[test]
     fn manifest_components_are_collected_across_the_graph() {
         let project = tempdir().expect("temp project");
-        let provider = "[[package.metadata.waterui.android.provider]]\n\
-                        name = \"waterkit.clipboard.ClipboardFileProvider\"\n\
+        let provider = "name = \"waterkit.clipboard.ClipboardFileProvider\"\n\
                         authorities = [\"${applicationId}.waterkit.clipboard\"]\n\
                         exported = false\n\
                         grant-uri-permissions = true\n";
@@ -3115,7 +3268,7 @@ mod permission_audit_tests {
             "clipboard",
             &format!(
                 "[features]\nfiles = []\n\n\
-                 [package.metadata.waterui.android]\nrequired-feature = \"files\"\n\n{provider}"
+                 [[package.metadata.waterui.android.feature.files.provider]]\n{provider}"
             ),
         );
         let gated = write_crate(
@@ -3154,7 +3307,7 @@ mod permission_audit_tests {
             &project.path().join("other"),
             "other-clipboard",
             &format!(
-                "[package.metadata.waterui.android]\n\n{}",
+                "[[package.metadata.waterui.android.provider]]\n{}",
                 provider.replace("exported = false", "exported = true")
             ),
         );
@@ -3169,6 +3322,280 @@ mod permission_audit_tests {
         let message = error.to_string();
         assert!(message.contains("`clipboard`"), "{message}");
         assert!(message.contains("`other-clipboard`"), "{message}");
+
+        // A feature table naming a cargo feature the crate does not declare.
+        write_crate(
+            &project.path().join("typo"),
+            "typo",
+            "[package.metadata.waterui.android.feature.phantom]\nmaven = []\n",
+        );
+        let mistyped = write_crate(
+            &project.path().join("mistyped"),
+            "app-mistyped",
+            "[dependencies]\ntypo = { path = \"../typo\" }\n",
+        );
+        let message = collect(&mistyped)
+            .expect_err("a feature table the crate does not declare must fail")
+            .to_string();
+        assert!(message.contains("typo"), "{message}");
+        assert!(message.contains("phantom"), "{message}");
+    }
+
+    /// Gradle plugins are collected across the resolved graph like every
+    /// other Android declaration: a `feature.<name>` table whose cargo
+    /// feature is disabled contributes nothing, the same table with the
+    /// feature on contributes its plugin, and two crates pinning one plugin
+    /// at different versions fail the collection naming both.
+    #[test]
+    fn gradle_plugins_are_collected_across_the_graph() {
+        let project = tempdir().expect("temp project");
+        let plugin = "id = \"com.google.gms.google-services\"\n\
+                      version = \"4.4.2\"\n";
+        write_crate(
+            &project.path().join("push"),
+            "push",
+            &format!(
+                "[features]\nremote = []\n\n\
+                 [[package.metadata.waterui.android.feature.remote.gradle-plugin]]\n{plugin}"
+            ),
+        );
+        let gated = write_crate(
+            &project.path().join("gated"),
+            "app-gated",
+            "[dependencies]\npush = { path = \"../push\" }\n",
+        );
+        let enabled = write_crate(
+            &project.path().join("enabled"),
+            "app-enabled",
+            "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
+        );
+        let collect = |manifest: &Path| {
+            let metadata =
+                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            collect_android_declarations(&metadata)
+        };
+
+        let gated = collect(&gated).expect("collect the gated graph");
+        assert_eq!(gated.gradle_plugins.iter().count(), 0);
+        let enabled = collect(&enabled).expect("collect the enabled graph");
+        let plugins: Vec<String> = enabled
+            .gradle_plugins
+            .iter()
+            .map(|(crate_name, id, version)| format!("{crate_name} {id} {version}"))
+            .collect();
+        assert_eq!(plugins, ["push com.google.gms.google-services 4.4.2"]);
+
+        write_crate(
+            &project.path().join("other"),
+            "other-push",
+            &format!(
+                "[[package.metadata.waterui.android.gradle-plugin]]\n{}",
+                plugin.replace("4.4.2", "4.3.0")
+            ),
+        );
+        let conflicting = write_crate(
+            &project.path().join("conflicting"),
+            "app-conflicting",
+            "[dependencies]\n\
+             push = { path = \"../push\", features = [\"remote\"] }\n\
+             other-push = { path = \"../other\" }\n",
+        );
+        let message = collect(&conflicting)
+            .expect_err("two versions of one plugin must fail")
+            .to_string();
+        assert!(message.contains("`push`"), "{message}");
+        assert!(message.contains("`other-push`"), "{message}");
+    }
+
+    /// Apple declarations are collected across the resolved graph: a
+    /// `feature.<name>` table whose cargo feature is disabled contributes
+    /// nothing, the same table with the feature on reaches the entitlements
+    /// and `Info.plist`, and two crates giving one entitlement different
+    /// values fail naming both.
+    #[test]
+    fn apple_declarations_are_collected_across_the_graph() {
+        let project = tempdir().expect("temp project");
+        write_crate(
+            &project.path().join("push"),
+            "push",
+            "[features]\nremote = []\n\n\
+             [package.metadata.waterui.apple.feature.remote]\n\
+             environment-entitlements = [\"aps-environment\"]\n\n\
+             [package.metadata.waterui.apple.feature.remote.entitlements]\n\
+             \"com.apple.developer.usernotifications.time-sensitive\" = true\n\n\
+             [package.metadata.waterui.apple.feature.remote.info-plist]\n\
+             UIBackgroundModes = [\"remote-notification\"]\n",
+        );
+        let gated = write_crate(
+            &project.path().join("gated"),
+            "app-gated",
+            "[dependencies]\npush = { path = \"../push\" }\n",
+        );
+        let enabled = write_crate(
+            &project.path().join("enabled"),
+            "app-enabled",
+            "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
+        );
+        let collect = |manifest: &Path| {
+            let metadata =
+                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            collect_apple_declarations(&metadata)
+        };
+        let signed = |declarations: &AppleDeclarations| {
+            let mut entitlements = plist::Dictionary::new();
+            declarations
+                .merge_into_entitlements(
+                    &mut entitlements,
+                    crate::platform::TargetPlatform::IOS,
+                    SigningEnvironment::Development,
+                )
+                .expect("merge entitlements");
+            entitlements
+        };
+
+        let gated = collect(&gated).expect("collect the gated graph");
+        assert!(signed(&gated).is_empty());
+        let mut plist = plist::Dictionary::new();
+        gated
+            .merge_into_info_plist(&mut plist)
+            .expect("merge Info.plist");
+        assert!(plist.is_empty());
+
+        let enabled = collect(&enabled).expect("collect the enabled graph");
+        let entitlements = signed(&enabled);
+        assert_eq!(
+            entitlements.get("aps-environment"),
+            Some(&plist::Value::String("development".to_owned()))
+        );
+        assert_eq!(
+            entitlements.get("com.apple.developer.usernotifications.time-sensitive"),
+            Some(&plist::Value::Boolean(true))
+        );
+        enabled
+            .merge_into_info_plist(&mut plist)
+            .expect("merge Info.plist");
+        assert_eq!(
+            plist.get("UIBackgroundModes"),
+            Some(&plist::Value::Array(vec![plist::Value::String(
+                "remote-notification".to_owned()
+            )]))
+        );
+
+        write_crate(
+            &project.path().join("other"),
+            "other-push",
+            "[package.metadata.waterui.apple.entitlements]\n\
+             \"com.apple.developer.usernotifications.time-sensitive\" = false\n",
+        );
+        let conflicting = write_crate(
+            &project.path().join("conflicting"),
+            "app-conflicting",
+            "[dependencies]\n\
+             push = { path = \"../push\", features = [\"remote\"] }\n\
+             other-push = { path = \"../other\" }\n",
+        );
+        let message = collect(&conflicting)
+            .expect_err("two values of one entitlement must fail")
+            .to_string();
+        assert!(message.contains("`push`"), "{message}");
+        assert!(message.contains("`other-push`"), "{message}");
+
+        // A feature table naming a cargo feature the crate does not declare.
+        write_crate(
+            &project.path().join("typo"),
+            "typo",
+            "[package.metadata.waterui.apple.feature.phantom.entitlements]\n\
+             \"com.apple.developer.applesignin\" = [\"Default\"]\n",
+        );
+        let mistyped = write_crate(
+            &project.path().join("mistyped"),
+            "app-mistyped",
+            "[dependencies]\ntypo = { path = \"../typo\" }\n",
+        );
+        let message = collect(&mistyped)
+            .expect_err("a feature table the crate does not declare must fail")
+            .to_string();
+        assert!(message.contains("typo"), "{message}");
+        assert!(message.contains("phantom"), "{message}");
+    }
+
+    /// App-value requests are collected across the resolved graph and gated
+    /// per entry: a request behind a disabled `required-feature` asks the
+    /// app for nothing.
+    #[test]
+    fn app_value_requests_are_collected_across_the_graph() {
+        let project = tempdir().expect("temp project");
+        write_crate(
+            &project.path().join("push"),
+            "push",
+            "[features]\nremote = []\n\n\
+             [[package.metadata.waterui.app-value]]\n\
+             key = \"firebase_config\"\n\
+             required-feature = \"remote\"\n\n\
+             [[package.metadata.waterui.app-value]]\n\
+             key = \"cast_receiver_app_id\"\n",
+        );
+        let gated = write_crate(
+            &project.path().join("gated"),
+            "app-gated",
+            "[dependencies]\npush = { path = \"../push\" }\n",
+        );
+        let enabled = write_crate(
+            &project.path().join("enabled"),
+            "app-enabled",
+            "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
+        );
+        let collect = |manifest: &Path| {
+            let metadata =
+                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            collect_android_declarations(&metadata).expect("collect the graph")
+        };
+        let push = ["push".to_owned()];
+
+        let gated = collect(&gated);
+        assert_eq!(
+            gated
+                .app_values
+                .requesters(app_values::AppValueKey::FirebaseConfig),
+            None
+        );
+        assert_eq!(
+            gated
+                .app_values
+                .requesters(app_values::AppValueKey::CastReceiverAppId),
+            Some(&push[..])
+        );
+
+        let enabled = collect(&enabled);
+        assert_eq!(
+            enabled
+                .app_values
+                .requesters(app_values::AppValueKey::FirebaseConfig),
+            Some(&push[..])
+        );
+    }
+
+    /// An unknown key in `[package.metadata.waterui.apple]` fails the
+    /// collection instead of silently dropping a declaration from the app.
+    #[test]
+    fn unknown_apple_metadata_keys_fail_the_scan() {
+        let project = tempdir().expect("temp project");
+        write_crate(
+            &project.path().join("typo"),
+            "typo",
+            "[package.metadata.waterui.apple]\nentitlement = { \"com.apple.developer.applesignin\" = [\"Default\"] }\n",
+        );
+        let app = write_crate(
+            &project.path().join("app"),
+            "app",
+            "[dependencies]\ntypo = { path = \"../typo\" }\n",
+        );
+        let metadata =
+            smol::block_on(crate_metadata(&app, &[])).expect("resolve the fixture graph");
+        let message = collect_apple_declarations(&metadata)
+            .expect_err("an unknown key must fail")
+            .to_string();
+        assert!(message.contains("typo"), "{message}");
     }
 
     /// Every key of `[package.metadata.waterui.android]` is the CLI's: a

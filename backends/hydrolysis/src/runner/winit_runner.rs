@@ -48,7 +48,9 @@ use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
 };
+use crate::text::SessionTextEngine;
 
+#[derive(Debug)]
 pub(super) enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
@@ -73,6 +75,11 @@ pub(super) enum RunnerEvent {
     /// Windows console control events.
     #[cfg(any(unix, windows))]
     Terminate,
+    /// Sent by the [`WindowCloser`](crate::renderer::WindowCloser) the
+    /// runner installs: a declared `MenuItem::CloseWindow` was chosen, or
+    /// its chord pressed, for the given window — the payload names it.
+    #[cfg(hydrolysis_closable_windows)]
+    CloseWindow(crate::renderer::WindowId),
     /// The termination machine finished its work — the runner's
     /// [`TerminationHost`] sent it — so teardown happens on the event loop,
     /// where runtime cleanup is safe.
@@ -84,7 +91,7 @@ pub(super) enum RunnerEvent {
 }
 
 /// What a termination signal does, given how many arrived before it.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminationAction {
     /// Ask the event loop to tear the runtime down, the way the last window
@@ -100,13 +107,13 @@ enum TerminationAction {
 /// this a wedged process becomes unkillable from the terminal that started it:
 /// the graceful request is only reachable through the very event loop the hang
 /// lives in.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 #[derive(Debug, Default)]
 struct TerminationRequests {
     requested: std::sync::atomic::AtomicBool,
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 impl TerminationRequests {
     fn record(&self) -> TerminationAction {
         if self
@@ -123,19 +130,36 @@ impl TerminationRequests {
 /// Shell convention for a process killed by SIGINT (128 + 2). `ctrlc` does not
 /// report which signal arrived, and Ctrl-C is what a user is pressing when the
 /// forced path is reached.
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 const FORCED_TERMINATION_EXIT_CODE: i32 = 130;
 
-/// Turns termination signals into [`RunnerEvent::Terminate`].
+/// Turns the termination signals into [`RunnerEvent::Terminate`].
 ///
-/// The `termination` feature of `ctrlc` covers SIGINT, SIGTERM and SIGHUP on
-/// Unix and Ctrl+C and Ctrl+Break on Windows, so every way a desktop shell or
-/// session manager asks a windowed app to stop reaches the same teardown the
-/// last window closing does. Closing the Windows console goes to
+/// [`TerminationSignals`] owns the contract: the first delivery of a watched
+/// signal is this send — the graceful request the event loop serves — and a
+/// repeated signal ends the process by the signal's own default action. The
+/// returned guard keeps the watcher alive for the duration of the run.
+#[cfg(unix)]
+fn install_termination_handler(
+    event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>,
+) -> super::termination::TerminationSignals {
+    let signal_proxy = event_proxy.clone();
+    super::termination::TerminationSignals::install(move |_signal| {
+        // The watcher reads deliveries on its own thread rather than inside a
+        // signal handler, so waking the loop from here is an ordinary send.
+        let _ = signal_proxy.send_event(RunnerEvent::Terminate);
+    })
+}
+
+/// Turns the console control events into [`RunnerEvent::Terminate`].
+///
+/// The `termination` feature of `ctrlc` covers Ctrl+C and Ctrl+Break, so every
+/// way a desktop shell or session manager asks a windowed app to stop reaches
+/// the same teardown the last window closing does. Closing the console goes to
 /// `console_close_handler` instead, which holds the event open until
 /// `on_terminate` finished; a logoff or shutdown reaches the application
 /// windows as `WM_ENDSESSION` (see `session_end_proc`).
-#[cfg(any(unix, windows))]
+#[cfg(windows)]
 fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     let requests = TerminationRequests::default();
     let signal_proxy = event_proxy.clone();
@@ -153,7 +177,6 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
         }
     })
     .expect("hydrolysis runner: failed to install the termination handler");
-    #[cfg(target_os = "windows")]
     install_console_close_handler(event_proxy);
 }
 
@@ -167,6 +190,26 @@ const fn ends_event_loop(policy: LastWindowPolicy, open_windows: usize) -> bool 
         LastWindowPolicy::Quit => open_windows == 0,
         LastWindowPolicy::StayResident => false,
     }
+}
+
+/// The window a `MenuItem::CloseWindow` request acts on: the window the
+/// dispatch invoked it for — a chord's dispatching window, a popup row's
+/// owner — resolved to its native id, provided it still lives. `None` when
+/// no window may take the request: the source named no window (`None` in),
+/// it is a popup (which owns no close button), or it is already gone.
+/// Whether the window may close is the shared close path's check, not this
+/// one's.
+#[cfg(hydrolysis_closable_windows)]
+fn close_window_target<K, W>(
+    source: Option<K>,
+    popup_ids: &std::collections::HashSet<K>,
+    windows: &HashMap<K, W>,
+) -> Option<K>
+where
+    K: Copy + Eq + std::hash::Hash,
+{
+    let native = source?;
+    (!popup_ids.contains(&native) && windows.contains_key(&native)).then_some(native)
 }
 
 /// The runner's [`TerminationHost`]: the machine's `terminate` arrives on
@@ -645,7 +688,9 @@ pub fn run(
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     super::install_native_component_hooks(&mut env);
-    #[cfg(any(unix, windows))]
+    #[cfg(unix)]
+    let _termination_signals = install_termination_handler(&event_proxy);
+    #[cfg(windows)]
     install_termination_handler(&event_proxy);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui::window::WindowManager::new({
@@ -682,9 +727,7 @@ pub fn run(
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(super::native_resource_fonts(
-        waterui_core::ResourceContext::from_environment(&env),
-    ));
+    let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
     let window_icon =
         load_staged_window_icon(waterui_core::ResourceContext::from_environment(&env));
@@ -701,8 +744,21 @@ pub fn run(
             session_end: Rc::clone(&session_end),
         },
     );
-    // The app's menu bar resolves after the machine installed `Quit`, so a
-    // declared `MenuItem::Quit` and `|quit: Quit|` command actions find it.
+    // A declared `MenuItem::CloseWindow` closes the window it was invoked
+    // for through the runner, which owns the windows: the primitive only
+    // posts the target's identity to the event loop.
+    #[cfg(hydrolysis_closable_windows)]
+    env.insert(crate::renderer::WindowCloser::new({
+        let event_proxy = event_proxy.clone();
+        move |window| {
+            event_proxy
+                .send_event(RunnerEvent::CloseWindow(window))
+                .expect("the runner's event loop outlives the WindowCloser it installs");
+        }
+    }));
+    // The app's menu bar resolves after the machine installed `Quit` and
+    // the close primitive went in, so a declared `MenuItem::Quit` or
+    // `MenuItem::CloseWindow` and `|quit: Quit|` command actions find them.
     // Its command chords arm on the shared registry, and the native
     // menu-bar surface installs where the platform has one — see `menu_bar`
     // for the per-platform contract (the two chord paths see disjoint keys,
@@ -900,6 +956,7 @@ fn native_window_attributes(
         .with_window_icon(icon)
         .with_title(window.display_title().snapshot().as_str())
         .with_resizable(window.resizable)
+        .with_enabled_buttons(crate::platform::enabled_window_buttons(window.closable))
         .with_visible(false)
         .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
         .with_maximized(maximized)
@@ -1120,14 +1177,15 @@ impl WinitRunner {
         }
         let mut platform = self.create_platform_window(native_window, &window);
         platform.apply_properties(&window);
-        let mut renderer =
-            HydrolysisRenderer::new(Rc::clone(&self.theme), FontFamilyResolution::Lenient);
-        super::seed_core(&mut renderer, &self.fonts);
+        let text = SessionTextEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
+        let closable = window.closable;
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
         runtime
             .renderer
             .set_window_id(crate::renderer::WindowId::Winit(runtime.platform.id()));
+        runtime.renderer.set_window_closable(closable);
         if !activates {
             self.popup_window_ids.insert(runtime.platform.id());
         }
@@ -1297,9 +1355,118 @@ impl WinitRunner {
         self.exit_if_last_window_closed();
     }
 
+    /// A declared `MenuItem::CloseWindow` asks `source` to close — the
+    /// window the command was invoked for, carried by the dispatch —
+    /// through the window's ordinary close path, so closing the last one
+    /// still follows the `LastWindowPolicy`.
+    #[cfg(hydrolysis_closable_windows)]
+    fn close_window(&mut self, source: crate::renderer::WindowId) {
+        let Some(window_id) =
+            close_window_target(source.as_winit(), &self.popup_window_ids, &self.windows)
+        else {
+            return;
+        };
+        let runtime = self
+            .windows
+            .get_mut(&window_id)
+            .expect("close_window_target only names a window in `self.windows`");
+        // The request lands in the window's own event queue, so it takes
+        // the identical path the title-bar close button takes — its
+        // `closable` check lives there, in the one close path.
+        runtime.platform.request_close();
+        if Self::handle_input_events(runtime, &self.env) {
+            self.reap_closed_window(window_id);
+        }
+    }
+
+    /// Removes a window whose close ran: its native bar attachment, adapter
+    /// and cached tree go with it, and the last-window policy answers
+    /// whether the app exits.
+    fn reap_closed_window(&mut self, window_id: WindowId) {
+        #[cfg(target_os = "windows")]
+        if let Some(runtime) = self.windows.get(&window_id) {
+            self.detach_menu_bar_hwnd(runtime);
+        }
+        self.windows.remove(&window_id);
+        self.popup_window_ids.remove(&window_id);
+        self.accesskit_adapters.remove(&window_id);
+        self.last_accessibility_updates.remove(&window_id);
+        self.exit_if_last_window_closed();
+    }
+
+    /// An accesskit adapter's request for one of the runner's windows: the
+    /// initial tree, or an action an assistive technology performs.
+    fn accesskit_event(&mut self, event: AccessKitEvent) {
+        let Some(runtime) = self.windows.get_mut(&event.window_id) else {
+            return;
+        };
+        let Some(adapter) = self.accesskit_adapters.get_mut(&event.window_id) else {
+            return;
+        };
+        match event.window_event {
+            AccessKitWindowEvent::InitialTreeRequested => {
+                tracing::trace!(
+                    target: "waterui::hydrolysis::a11y",
+                    window_id = ?event.window_id,
+                    "accesskit initial tree requested"
+                );
+                if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
+                    self.last_accessibility_updates
+                        .insert(event.window_id, update.clone());
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::a11y",
+                        window_id = ?event.window_id,
+                        "publishing accessibility tree update for initial request"
+                    );
+                    adapter.update_if_active(|| update);
+                } else if let Some(update) = self
+                    .last_accessibility_updates
+                    .get(&event.window_id)
+                    .cloned()
+                {
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::a11y",
+                        window_id = ?event.window_id,
+                        "replaying cached accessibility tree update for initial request"
+                    );
+                    adapter.update_if_active(|| update);
+                } else {
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::a11y",
+                        window_id = ?event.window_id,
+                        "missing accessibility tree update for initial request, scheduling rebuild"
+                    );
+                    runtime.request_refresh();
+                    runtime.request_redraw();
+                    runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+                }
+            }
+            AccessKitWindowEvent::ActionRequested(request) => {
+                tracing::trace!(
+                    target: "waterui::hydrolysis::a11y",
+                    window_id = ?event.window_id,
+                    action = ?request.action,
+                    target = ?request.target_node,
+                    "accesskit action requested"
+                );
+                let action_env = self.env.extending(Self::current_window_origin(runtime));
+                if runtime
+                    .renderer
+                    .handle_accessibility_action(request, &action_env)
+                {
+                    runtime.request_refresh();
+                    runtime.request_redraw();
+                    runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
+                }
+                self.flush_cross_window_rebuild_requests();
+            }
+            AccessKitWindowEvent::AccessibilityDeactivated => {}
+        }
+    }
+
     fn flush_cross_window_rebuild_requests(&mut self) {
         for runtime in self.windows.values_mut() {
-            if runtime.renderer.take_rebuild_request() {
+            if runtime.renderer.has_structure_marks() {
                 runtime.request_refresh();
                 runtime.request_redraw();
                 runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -1384,15 +1551,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         self.flush_cross_window_rebuild_requests();
 
         if should_close {
-            #[cfg(target_os = "windows")]
-            if let Some(runtime) = self.windows.get(&window_id) {
-                self.detach_menu_bar_hwnd(runtime);
-            }
-            self.windows.remove(&window_id);
-            self.popup_window_ids.remove(&window_id);
-            self.accesskit_adapters.remove(&window_id);
-            self.last_accessibility_updates.remove(&window_id);
-            self.exit_if_last_window_closed();
+            self.reap_closed_window(window_id);
             return;
         }
 
@@ -1428,8 +1587,11 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         let _ = self.drain_local_executor_queue();
         // Native menu-bar clicks: muda posts them on its channel from the
         // main thread — drain here so each dispatches on the event loop.
+        // A bar item's action acts on the focused window — Close Window's
+        // request names it through the shared `WindowCloser` path.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        self.native_menu_bar.pump_menu_events();
+        self.native_menu_bar
+            .pump_menu_events(self.focused_window.map(crate::renderer::WindowId::Winit));
         self.mount_pending_windows(event_loop);
         let now = Instant::now();
         let mut next_gesture_deadline: Option<Instant> = None;
@@ -1493,73 +1655,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 }
             }
 
-            RunnerEvent::AccessKit(event) => {
-                let Some(runtime) = self.windows.get_mut(&event.window_id) else {
-                    return;
-                };
-                let Some(adapter) = self.accesskit_adapters.get_mut(&event.window_id) else {
-                    return;
-                };
-                match event.window_event {
-                    AccessKitWindowEvent::InitialTreeRequested => {
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::a11y",
-                            window_id = ?event.window_id,
-                            "accesskit initial tree requested"
-                        );
-                        if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
-                            self.last_accessibility_updates
-                                .insert(event.window_id, update.clone());
-                            tracing::trace!(
-                                target: "waterui::hydrolysis::a11y",
-                                window_id = ?event.window_id,
-                                "publishing accessibility tree update for initial request"
-                            );
-                            adapter.update_if_active(|| update);
-                        } else if let Some(update) = self
-                            .last_accessibility_updates
-                            .get(&event.window_id)
-                            .cloned()
-                        {
-                            tracing::trace!(
-                                target: "waterui::hydrolysis::a11y",
-                                window_id = ?event.window_id,
-                                "replaying cached accessibility tree update for initial request"
-                            );
-                            adapter.update_if_active(|| update);
-                        } else {
-                            tracing::trace!(
-                                target: "waterui::hydrolysis::a11y",
-                                window_id = ?event.window_id,
-                                "missing accessibility tree update for initial request, scheduling rebuild"
-                            );
-                            runtime.request_refresh();
-                            runtime.request_redraw();
-                            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
-                        }
-                    }
-                    AccessKitWindowEvent::ActionRequested(request) => {
-                        tracing::trace!(
-                            target: "waterui::hydrolysis::a11y",
-                            window_id = ?event.window_id,
-                            action = ?request.action,
-                            target = ?request.target_node,
-                            "accesskit action requested"
-                        );
-                        let action_env = self.env.extending(Self::current_window_origin(runtime));
-                        if runtime
-                            .renderer
-                            .handle_accessibility_action(request, &action_env)
-                        {
-                            runtime.request_refresh();
-                            runtime.request_redraw();
-                            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
-                        }
-                        self.flush_cross_window_rebuild_requests();
-                    }
-                    AccessKitWindowEvent::AccessibilityDeactivated => {}
-                }
-            }
+            RunnerEvent::AccessKit(event) => self.accesskit_event(event),
             #[cfg(any(unix, windows))]
             RunnerEvent::Terminate => {
                 self.termination.request(TerminationKind::Required);
@@ -1572,6 +1668,8 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             RunnerEvent::TerminationFinished => {
                 self.exit_after_runtime_cleanup(event_loop);
             }
+            #[cfg(hydrolysis_closable_windows)]
+            RunnerEvent::CloseWindow(source) => self.close_window(source),
             #[cfg(hydrolysis_wayland_platform)]
             RunnerEvent::X11VisibilitySignal => {
                 // `_NET_WM_STATE`/`WM_STATE` changed or a window
@@ -1590,13 +1688,13 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(unix, windows))]
+    #[cfg(windows)]
     use super::{TerminationAction, TerminationRequests};
     use super::{ends_event_loop, native_window_attributes};
     use waterui::window::{Window, WindowState};
     use waterui_core::{Binding, binding};
 
-    #[cfg(any(unix, windows))]
+    #[cfg(windows)]
     #[test]
     fn first_termination_signal_asks_the_loop_and_later_ones_do_not() {
         let requests = TerminationRequests::default();
@@ -1678,5 +1776,45 @@ mod tests {
                 800.0, 300.0
             ))),
         );
+    }
+
+    #[test]
+    fn window_attributes_disable_only_the_close_button_on_a_non_closable_window() {
+        use winit::window::WindowButtons;
+
+        let mut window = Window::new("", binding(WindowState::Normal), || ());
+        window.closable = false;
+        let env = crate::renderer::tests::test_environment();
+
+        assert_eq!(
+            native_window_attributes(&window, &env, false, None).enabled_buttons,
+            WindowButtons::MINIMIZE | WindowButtons::MAXIMIZE,
+            "a non-closable window drops only the close button"
+        );
+
+        let window = Window::new("", binding(WindowState::Normal), || ());
+        assert_eq!(
+            native_window_attributes(&window, &env, false, None).enabled_buttons,
+            WindowButtons::all(),
+            "a closable window keeps every title-bar button"
+        );
+    }
+
+    /// The window a Close Window request acts on is the window the
+    /// dispatch invoked it for, and a popup is never the target — its
+    /// owner is, which the bare source cannot name.
+    #[cfg(hydrolysis_closable_windows)]
+    #[test]
+    fn a_close_request_targets_the_dispatching_window_never_a_popup() {
+        let windows = std::collections::HashMap::from([(1_u32, "window"), (2, "popup")]);
+        let popups = std::collections::HashSet::from([2_u32]);
+        let pick = |source| super::close_window_target(source, &popups, &windows);
+
+        assert_eq!(
+            pick(Some(1)),
+            Some(1),
+            "the dispatching window's id is the target"
+        );
+        assert_eq!(pick(Some(2)), None, "a popup is never the target");
     }
 }

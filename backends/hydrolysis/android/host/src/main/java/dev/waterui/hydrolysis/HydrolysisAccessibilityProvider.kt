@@ -12,6 +12,7 @@ import android.view.accessibility.AccessibilityNodeInfo.CollectionInfo
 import android.view.accessibility.AccessibilityNodeInfo.CollectionItemInfo
 import android.view.accessibility.AccessibilityNodeInfo.RangeInfo
 import android.view.accessibility.AccessibilityNodeProvider
+import androidx.autofill.HintConstants
 import org.json.JSONObject
 
 /**
@@ -24,8 +25,11 @@ import org.json.JSONObject
  * itself is pulled lazily the next time a service asks for a node, so a
  * publish costs a JNI read only when a service is actually watching.
  *
- * The JSON shape is accesskit's serde: `nodes` is `[id, node]` pairs, `tree`
- * names the root id, `focus` the keyboard-focused node. Each node carries
+ * The publish is a serde envelope: `{"update": <TreeUpdate>, "contentTypes":
+ * {"<id>": "<camelCase ContentType name>"}}` — a missing field is a
+ * mismatched host and an error, not a state to render around. Inside
+ * `update` the shape is accesskit's serde: `nodes` is `[id, node]` pairs,
+ * `tree` names the root id, `focus` the keyboard-focused node. Each node carries
  * `role` (camelCase), `actions`/`childActions`/`flags` (u32 bitmasks indexed
  * by accesskit enum ordinal) and `properties` (camelCase map: `children`,
  * `label`, `description`, `value`, `bounds` {x0,y0,x1,y1} logical units,
@@ -54,6 +58,8 @@ internal class HydrolysisAccessibilityProvider(
     private var childrenOf = HashMap<Long, List<Long>>()
     private var parentOf = HashMap<Long, Long>()
     private var rootId = INVALID_ID
+    /** The autofill hints each node declared — from the publish's `contentTypes` map. */
+    private var autofillHints = HashMap<Long, Array<String>>()
     /** Keyboard focus — the tree update's `focus` field. */
     private var keyboardFocusId = INVALID_ID
     /** Accessibility focus — owned by this provider, never sent to the session. */
@@ -107,8 +113,16 @@ internal class HydrolysisAccessibilityProvider(
         dirty = false
         val sessionPtr = session?.nativePtr ?: return
         val json = NativeBridge.nativeAccessibilityTree(sessionPtr) ?: return
-        val update = runCatching { JSONObject(json) }.getOrNull() ?: return
-        val array = update.optJSONArray("nodes") ?: return
+        // The envelope is a serde struct — a missing field is a mismatched
+        // host, and propagating the error beats serving a half-read tree.
+        val payload = JSONObject(json)
+        val update = payload.getJSONObject("update")
+        val array = update.getJSONArray("nodes")
+        val newHints = HashMap<Long, Array<String>>()
+        val contentTypes = payload.getJSONObject("contentTypes")
+        for (key in contentTypes.keys()) {
+            newHints[key.toLong()] = arrayOf(autofillHint(contentTypes.getString(key)))
+        }
         val newNodes = HashMap<Long, JSONObject>()
         val newChildren = HashMap<Long, List<Long>>()
         for (i in 0 until array.length()) {
@@ -131,6 +145,7 @@ internal class HydrolysisAccessibilityProvider(
         nodes = newNodes
         childrenOf = newChildren
         parentOf = newParents
+        autofillHints = newHints
         rootId = update.optJSONObject("tree")?.optLong("root", INVALID_ID) ?: INVALID_ID
         keyboardFocusId = update.optLong("focus", INVALID_ID)
         // A focus that pointed at a removed node drops cleanly.
@@ -697,7 +712,7 @@ internal class HydrolysisAccessibilityProvider(
                         value = properties?.optString("value").orEmpty(),
                         sensitive = node.optString("role") == "passwordInput",
                         bounds = boundsRect(properties),
-                        autofillHints = autofillHints(node),
+                        autofillHints = autofillHints(id, node),
                     )
                 )
             }
@@ -748,24 +763,43 @@ internal class HydrolysisAccessibilityProvider(
         )
     }
 
-    /** Autofill has no hints of its own here — infer from role and label. */
-    private fun autofillHints(node: JSONObject): Array<String> {
-        val label = props(node)?.optString("label").orEmpty().lowercase()
-        val role = node.optString("role")
-        val hint =
-            when {
-                role == "passwordInput" -> View.AUTOFILL_HINT_PASSWORD
-                "email" in label -> View.AUTOFILL_HINT_EMAIL_ADDRESS
-                "phone" in label -> View.AUTOFILL_HINT_PHONE
-                "username" in label || "user name" in label ->
-                    View.AUTOFILL_HINT_USERNAME
-                "name" in label -> View.AUTOFILL_HINT_NAME
-                "postal" in label || "zip" in label -> View.AUTOFILL_HINT_POSTAL_CODE
-                "card" in label -> View.AUTOFILL_HINT_CREDIT_CARD_NUMBER
-                else -> null
-            }
-        return hint?.let { arrayOf(it) } ?: emptyArray()
+    /**
+     * The node's autofill hints: the declared content type when the publish
+     * carries one; else a secure field's role still gives the password hint.
+     * The label never guesses — it is display text in the app's language,
+     * not a semantic.
+     */
+    private fun autofillHints(id: Long, node: JSONObject): Array<String> {
+        autofillHints[id]?.let { return it }
+        return if (node.optString("role") == "passwordInput") {
+            arrayOf(View.AUTOFILL_HINT_PASSWORD)
+        } else {
+            emptyArray()
+        }
     }
+
+    /**
+     * Maps a serialized `ContentType` (its camelCase serde name) onto the
+     * androidx.autofill hint. An unknown name is a mismatched host — the
+     * envelope is a serde struct the two sides share — so it throws rather
+     * than dropping the hint.
+     */
+    private fun autofillHint(contentType: String): String =
+        when (contentType) {
+            "username" -> HintConstants.AUTOFILL_HINT_USERNAME
+            "password" -> HintConstants.AUTOFILL_HINT_PASSWORD
+            "newPassword" -> HintConstants.AUTOFILL_HINT_NEW_PASSWORD
+            "emailAddress" -> HintConstants.AUTOFILL_HINT_EMAIL_ADDRESS
+            "phoneNumber" -> HintConstants.AUTOFILL_HINT_PHONE_NUMBER
+            "oneTimeCode" -> HintConstants.AUTOFILL_HINT_SMS_OTP
+            "personName" -> HintConstants.AUTOFILL_HINT_PERSON_NAME
+            "postalAddress" -> HintConstants.AUTOFILL_HINT_POSTAL_ADDRESS
+            "postalCode" -> HintConstants.AUTOFILL_HINT_POSTAL_CODE
+            "creditCardNumber" -> HintConstants.AUTOFILL_HINT_CREDIT_CARD_NUMBER
+            else -> throw IllegalArgumentException(
+                "hydrolysis: unknown accessibility content type \"$contentType\""
+            )
+        }
 
     private fun androidClassName(role: String): String =
         when (role) {

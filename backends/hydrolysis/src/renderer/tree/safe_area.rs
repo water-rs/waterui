@@ -22,10 +22,13 @@ use super::*;
 use core::cell::{Cell, RefCell};
 use core::ops::Range;
 
+use waterui_core::animation::Animation;
 use waterui_core::layout::{Rect, Size};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui_layout::scroll::Axis as ScrollAxis;
+
+use crate::scroll::ScrollRunOutcome;
 
 /// One of the four edges §7.1's regions sit on.
 #[derive(Clone, Copy)]
@@ -74,7 +77,7 @@ impl Edge {
     }
 
     /// This edge's coordinate on `rect`: the frame edge the touch test reads.
-    const fn frame_edge(self, rect: kurbo::Rect) -> f64 {
+    pub(crate) const fn frame_edge(self, rect: kurbo::Rect) -> f64 {
         match self {
             Self::Top => rect.y0,
             Self::Leading => rect.x0,
@@ -120,6 +123,66 @@ impl Edge {
             Self::Leading => frame.x0 - position,
             Self::Bottom => position - frame.y1,
             Self::Trailing => position - frame.x1,
+        }
+    }
+
+    /// `bounds` split into the band `extent` thick whose edge-side edge is
+    /// `position` — in `bounds` space — and the remainder clamped inside
+    /// `bounds`: the geometry a chrome container's docked bar and its
+    /// hosted content share (§7.1). The band may sit past `bounds`' own
+    /// edge — a docked bar under a raised keyboard does; the remainder
+    /// never does. The band's thickness clamps to the span `position`
+    /// leaves to `bounds`' far edge, so a band docked outside `bounds`
+    /// keeps `extent` instead of squashing against it.
+    pub(crate) fn split_band(
+        self,
+        bounds: kurbo::Rect,
+        position: f64,
+        extent: f64,
+    ) -> (kurbo::Rect, kurbo::Rect) {
+        let span = match self {
+            Self::Top => bounds.y1 - position,
+            Self::Bottom => position - bounds.y0,
+            Self::Leading => bounds.x1 - position,
+            Self::Trailing => position - bounds.x0,
+        };
+        let depth = extent.min(span.max(0.0));
+        let inner = match self {
+            Self::Top | Self::Leading => position + depth,
+            Self::Bottom | Self::Trailing => position - depth,
+        };
+        let (low, high, across) = if self.is_vertical() {
+            (bounds.y0, bounds.y1, (bounds.x0, bounds.x1))
+        } else {
+            (bounds.x0, bounds.x1, (bounds.y0, bounds.y1))
+        };
+        let on_axis = |start: f64, end: f64| {
+            if self.is_vertical() {
+                kurbo::Rect::new(across.0, start, across.1, end)
+            } else {
+                kurbo::Rect::new(start, across.0, end, across.1)
+            }
+        };
+        match self {
+            Self::Top | Self::Leading => (
+                on_axis(position, inner),
+                on_axis(inner.clamp(low, high), high),
+            ),
+            Self::Bottom | Self::Trailing => (
+                on_axis(inner, position),
+                on_axis(low, inner.clamp(low, high)),
+            ),
+        }
+    }
+
+    /// The band edge facing the hosted content — the counterpart of
+    /// [`Self::frame_edge`] on the other side of a docked band.
+    pub(crate) const fn inner_edge(self, band: kurbo::Rect) -> f64 {
+        match self {
+            Self::Top => band.y1,
+            Self::Leading => band.x1,
+            Self::Bottom => band.y0,
+            Self::Trailing => band.x0,
         }
     }
 }
@@ -175,6 +238,18 @@ pub enum EdgeBoundary {
         position: f64,
         released: ReleasedRegions,
     },
+    /// Covered by a bar the host docks on this edge — the subtree touches
+    /// nothing and releases and extends nowhere through it (§7.1: "its
+    /// content touches no edge where a bar sits"). `edge_at` is the hosted
+    /// content frame's edge in window space — the only frame edge the dock
+    /// applies to, so the boundary reaches a nested bar that lands on the
+    /// edge it covers and nothing else (`hosted` keeps it only there,
+    /// [`SafeAreaLayout::docked_bar_position`] answers only there). `inner`
+    /// is the bar's inner edge in window space: the dock position a bar a
+    /// nested chrome container lays out on the same edge lands on, so
+    /// nested chrome stacks on the outer bar instead of floating free of
+    /// it — or riding onto the keyboard the outer bar ducked under.
+    Docked { edge_at: f64, inner: f64 },
     /// No boundary: a hosted subtree's edge that does not touch the host's
     /// boundary is covered — nothing inside can touch, release or extend
     /// past it (§7.1: hosted content inherits, never reseeds).
@@ -182,14 +257,24 @@ pub enum EdgeBoundary {
 }
 
 impl EdgeBoundary {
-    /// The regions released past the boundary — none while covered.
+    /// The regions released past the boundary — none while covered, and
+    /// none through a bar's band.
     const fn released(&self) -> ReleasedRegions {
         match self {
             Self::Reachable { released, .. } => *released,
-            Self::Covered => ReleasedRegions {
+            Self::Docked { .. } | Self::Covered => ReleasedRegions {
                 container: false,
                 keyboard: false,
             },
+        }
+    }
+
+    /// The window-space position a `Reachable` boundary records — `None`
+    /// for edges a bar's band or a host's coverage owns.
+    const fn position(&self) -> Option<f64> {
+        match self {
+            Self::Reachable { position, .. } => Some(*position),
+            Self::Docked { .. } | Self::Covered => None,
         }
     }
 }
@@ -345,17 +430,188 @@ impl SafeAreaLayout {
     /// boundary (§7.1's touch, at display resolution) the boundary stays
     /// reachable with its released regions, so a scroll surface inside
     /// still extends and clears and `.ignore_safe_area` inside still
-    /// releases; every other edge is `Covered` — nothing inside can touch,
-    /// release or extend past it, so chrome content never reseeds a band
-    /// the host did not leave on the boundary.
+    /// releases; an edge whose frame edge lands on a recorded dock edge
+    /// keeps its `Docked` boundary — the host's bar edge follows this
+    /// content's edge wherever the deeper layout places it, so a bar a
+    /// nested chrome container docks there stacks on the outer bar; every
+    /// other edge is `Covered` — nothing inside can touch, release or
+    /// extend past it, so chrome content never reseeds a band the host
+    /// did not leave on the boundary.
     pub fn hosted(&self, frame: kurbo::Rect) -> Self {
         let mut next = self.with_frame(frame);
         for edge in EDGES {
-            if !next.touches(edge) {
+            let covered = match next.boundary(edge) {
+                EdgeBoundary::Docked { .. } => !next.touches_dock(edge),
+                _ => !next.touches(edge),
+            };
+            if covered {
                 next.set_boundary(edge, EdgeBoundary::Covered);
             }
         }
         next
+    }
+
+    /// §7.1's chrome split over every edge in `bars`, produced in one
+    /// derivation so a chrome container drawing bars on several edges
+    /// pairs every bar with the context the split derived and never
+    /// re-derives or allocates per bar: each bar's [`ChromeBar`], the one
+    /// content rect `bounds` leaves once every band is carved, and the
+    /// one content context — [`Self::hosted`] on the content's frame with
+    /// each bar's edge `Docked` on its band's inner edge.
+    #[must_use]
+    pub fn chrome_splits<const N: usize>(
+        &self,
+        bounds: kurbo::Rect,
+        bars: [(Edge, f64); N],
+    ) -> ChromeSplits<N> {
+        let splits = bars.map(|(edge, extent)| {
+            let (band, rest, bar_area, inner) = self.bar_split(bounds, edge, extent);
+            ChromeBar {
+                bounds,
+                edge,
+                inner: (extent > 0.0).then_some(inner),
+                band,
+                rest,
+                bar_area: Some(bar_area),
+            }
+        });
+        let content = splits
+            .iter()
+            .fold(bounds, |content, bar| content.intersect(bar.rest));
+        let content_area = self.chrome_content_area(
+            self.hosted_frame(bounds, content),
+            splits.iter().filter_map(ChromeBar::dock),
+        );
+        ChromeSplits {
+            bars: splits,
+            content,
+            content_area,
+        }
+    }
+
+    /// The per-edge derivation both chrome splits build on: the band
+    /// `extent` thick, the remainder of `bounds` outside it, the context
+    /// the bar's subtree lays out against, and the band's inner edge in
+    /// window space — in `bounds` space for the rects (the context
+    /// records window space).
+    ///
+    /// On an edge whose boundary this context's frame touches, the band's
+    /// outer edge lands on the *container* region's boundary: a bar
+    /// docked to its edge is laid out clear of the container region only,
+    /// so the keyboard region covers it instead of lifting it — under a
+    /// raised keyboard the band sits wholly past `bounds`' own edge. On
+    /// an edge the frame does not touch, the band keeps `bounds`' edge;
+    /// on a `Docked` edge whose dock the frame's edge lands on, the band
+    /// stacks on the outer bar's inner edge. The bar's context is this
+    /// context with the keyboard region released on `edge`, so the bar's
+    /// fills and extensions still reach the window edge through both
+    /// regions.
+    fn bar_split(
+        &self,
+        bounds: kurbo::Rect,
+        edge: Edge,
+        extent: f64,
+    ) -> (kurbo::Rect, kurbo::Rect, Self, f64) {
+        let bar_area = self.releasing_keyboard(edge);
+        let position = self
+            .docked_bar_position(&bar_area, bounds, edge)
+            .unwrap_or_else(|| edge.frame_edge(bounds));
+        let (band, rest) = edge.split_band(bounds, position, extent);
+        let inner = edge.inner_edge(self.hosted_frame(bounds, band));
+        (band, rest, bar_area, inner)
+    }
+
+    /// The context for hosted content laid out at `frame` with a bar
+    /// docked on each of `docks`' edges — [`Self::hosted`] plus a `Docked`
+    /// boundary carrying the bar's inner edge in window space and
+    /// recording `frame`'s edge as the dock edge, so the content touches
+    /// no edge a bar sits on and a nested bar whose own frame edge lands
+    /// on it stacks on it (§7.1). Module-internal: `Docked` boundaries
+    /// are minted only by [`Self::chrome_splits`], never forged.
+    #[must_use]
+    fn chrome_content_area(
+        &self,
+        frame: kurbo::Rect,
+        docks: impl IntoIterator<Item = (Edge, f64)>,
+    ) -> Self {
+        let mut area = self.hosted(frame);
+        for (edge, inner) in docks {
+            area.set_boundary(
+                edge,
+                EdgeBoundary::Docked {
+                    edge_at: edge.frame_edge(frame),
+                    inner,
+                },
+            );
+        }
+        area
+    }
+
+    /// This context with the keyboard region released on `edge` — the
+    /// context a chrome container hands its bar's subtree: §7.1 lays a
+    /// bar docked to its edge out clear of the container region only, so
+    /// the keyboard covers it instead of lifting it — while the bar's
+    /// fills and extensions still reach the window edge through both
+    /// regions. When releasing the keyboard would leave the boundary
+    /// where it stands — the keyboard is down, already released, carries
+    /// no depth on this edge, or sits shallower than the container region
+    /// — the context keeps its recorded boundary rather than rebuilding
+    /// it from f64 inset depths (the module seeds boundaries from f32
+    /// frames on purpose).
+    #[must_use]
+    fn releasing_keyboard(&self, edge: Edge) -> Self {
+        let mut next = self.clone();
+        let EdgeBoundary::Reachable { released, .. } = self.boundary(edge) else {
+            return next;
+        };
+        let released_with_keyboard = released.union(SafeAreaRegions::KEYBOARD);
+        if released_with_keyboard == released {
+            return next;
+        }
+        let unreleased = self.unreleased_depth(edge, released_with_keyboard);
+        // Releasing the keyboard changes nothing when it is not the
+        // deepest unreleased region — keyboard down, a bottom-only
+        // keyboard on the top edge, or a keyboard shallower than the
+        // container inset: keep the recorded boundary rather than
+        // rebuilding the same position from f64 inset depths. Releasing
+        // a region can only shrink the unreleased depth, so `>=` is
+        // equality.
+        if unreleased >= self.unreleased_depth(edge, released) {
+            return next;
+        }
+        let position = edge.boundary_at(self.window, unreleased);
+        next.set_boundary(
+            edge,
+            EdgeBoundary::Reachable {
+                position,
+                released: released_with_keyboard,
+            },
+        );
+        next
+    }
+
+    /// The bounds-space position a bar docked to `edge` reaches: the
+    /// recorded dock — the outer bar's inner edge — when the frame's edge
+    /// lands on the dock edge, or, on an edge the frame touches, the
+    /// boundary the keyboard-released context `bar_area` records (§7.1's
+    /// docked bar clears the container region only). Mapped into `bounds`
+    /// space through [`Self::hosted_frame`]'s offset. `None` on an edge
+    /// this context's frame does not touch and does not end at a dock on:
+    /// the band keeps `bounds`' edge.
+    fn docked_bar_position(&self, bar_area: &Self, bounds: kurbo::Rect, edge: Edge) -> Option<f64> {
+        let position = match self.boundary(edge) {
+            EdgeBoundary::Docked { inner, .. } if self.touches_dock(edge) => Some(inner),
+            EdgeBoundary::Reachable { .. } if self.touches(edge) => {
+                bar_area.boundary(edge).position()
+            }
+            EdgeBoundary::Docked { .. }
+            | EdgeBoundary::Reachable { .. }
+            | EdgeBoundary::Covered => None,
+        }?;
+        Some(match edge {
+            Edge::Top | Edge::Bottom => position - self.frame.y0 + bounds.y0,
+            Edge::Leading | Edge::Trailing => position - self.frame.x0 + bounds.x0,
+        })
     }
 
     const fn boundary(&self, edge: Edge) -> EdgeBoundary {
@@ -405,6 +661,18 @@ impl SafeAreaLayout {
             return false;
         };
         (edge.frame_edge(self.frame) - position).abs() < self.touch_tolerance(edge)
+    }
+
+    /// Whether the frame's `edge` lands on this edge's recorded dock edge —
+    /// the same half-physical-pixel test [`Self::touches`] runs, against
+    /// the hosted content edge the dock was built for. A `Docked` boundary
+    /// answers to frames that end where the dock was established and stays
+    /// inert under any other frame (`hosted` covers it there).
+    fn touches_dock(&self, edge: Edge) -> bool {
+        let EdgeBoundary::Docked { edge_at, .. } = self.boundary(edge) else {
+            return false;
+        };
+        (edge.frame_edge(self.frame) - edge_at).abs() < self.touch_tolerance(edge)
     }
 
     /// The context and laid-out size for the child of an
@@ -521,6 +789,120 @@ pub struct ScrollSurfaceFacts {
     pub keyboard_top: f64,
 }
 
+/// One bar's share of [`ChromeSplits`]: its band, the context its
+/// subtree lays out against, and the dock it hands the composed content
+/// context. Band and context live in one type so a bar's surface or
+/// placed views can never be paired with another bar's context.
+pub struct ChromeBar {
+    /// The `bounds` the split ran on — the space `band`, `rest` and
+    /// [`Self::bar_area_for`]'s `rect` live in.
+    bounds: kurbo::Rect,
+    /// The edge this bar's split ran on.
+    edge: Edge,
+    /// The band's inner edge in window space — the dock position a nested
+    /// bar on `edge` lands on. `Some` only when a bar exists (`extent > 0`).
+    inner: Option<f64>,
+    /// The band the bar occupies, in `bounds` space — it may sit wholly
+    /// past `bounds`' own edge once the keyboard covers it.
+    pub band: kurbo::Rect,
+    /// The remainder of `bounds` outside this bar's band alone —
+    /// intersected with every other bar's into [`ChromeSplits::content`].
+    pub rest: kurbo::Rect,
+    /// The context for views placed inside the band — the keyboard
+    /// region released on the bar's edge so the bar's fills and
+    /// extensions still reach the window edge. Its frame is the chrome
+    /// container's own; re-frame it per placed rect with
+    /// [`Self::area_for`]. `None` where the widget owns no §7.1 context —
+    /// the band then keeps `bounds`' own edge and extends nothing.
+    bar_area: Option<SafeAreaLayout>,
+}
+
+impl ChromeBar {
+    /// A bar with no §7.1 context — the shape a context-free chrome
+    /// container's split takes: the band keeps `bounds`' own edge, the
+    /// placement every context-free chrome container gets.
+    pub(crate) fn contextless(bounds: kurbo::Rect, edge: Edge, extent: f64) -> Self {
+        let (band, rest) = edge.split_band(bounds, edge.frame_edge(bounds), extent);
+        Self {
+            bounds,
+            edge,
+            inner: None,
+            band,
+            rest,
+            bar_area: None,
+        }
+    }
+
+    /// The `(edge, inner-edge-in-window-space)` pair a composed
+    /// [`SafeAreaLayout::chrome_content_area`] call takes — the dock this
+    /// bar establishes, `None` when the split ran for no bar.
+    fn dock(&self) -> Option<(Edge, f64)> {
+        self.inner.map(|inner| (self.edge, inner))
+    }
+
+    /// The context for a view placed at `rect` inside the band — the
+    /// bar's context re-framed the way [`SafeAreaLayout::hosted_frame`]
+    /// maps `rect` inside `bounds`. `None` where the bar owns no §7.1
+    /// context.
+    pub fn area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
+        self.bar_area
+            .as_ref()
+            .map(|area| area.with_frame(area.hosted_frame(self.bounds, rect)))
+    }
+
+    /// The surface rect this bar paints — its band grown by the
+    /// touched-edge offsets of its own keyboard-released context on every
+    /// edge except `dock`'s opposite, the one boundary a bar docked at
+    /// `dock` can never reach. Because the offsets come from the bar's
+    /// context, a docked bar still extends to the window edge once the
+    /// keyboard sits deeper than the container inset (the ambient
+    /// context's boundary would then sit at the keyboard top). The mask
+    /// matters when a bar's measured frame is clamped to the widget's
+    /// bounds — a top bar on a `NavigationView` shorter than the bar
+    /// lands its inner edge on the bottom boundary and would otherwise
+    /// extend through that inset. A bar with no §7.1 context extends
+    /// nothing.
+    pub fn surface(&self, dock: Edge) -> kurbo::Rect {
+        self.surface_except(&[dock.opposite()])
+    }
+
+    /// The band grown by [`Self::area_for`]'s touched-edge offsets with
+    /// every edge in `except` cleared — the surface of a bar that must
+    /// keep some edges it touches unextended, e.g. because a decoration
+    /// the `WidgetTheme` contract receives no placement for would move
+    /// off its edge.
+    pub fn surface_except(&self, except: &[Edge]) -> kurbo::Rect {
+        grow_rect(
+            self.band,
+            except.iter().copied().fold(
+                self.area_for(self.band)
+                    .map_or_else(EdgeOffsets::default, |area| area.touched_edge_offsets()),
+                EdgeOffsets::cleared,
+            ),
+        )
+    }
+}
+
+/// The answers [`SafeAreaLayout::chrome_splits`] derives together for a
+/// chrome container's bars (§7.1): each bar's [`ChromeBar`], the one
+/// content rect `bounds` leaves once every band is carved, and the one
+/// content context — [`SafeAreaLayout::hosted`] on the content's frame
+/// plus every bar's `Docked` boundary. A one-bar container calls it as
+/// `chrome_splits::<1>` — the single content rect is then `bars[0].rest`.
+pub struct ChromeSplits<const N: usize> {
+    /// Each bar's share of the split, in the order `chrome_splits` took
+    /// the edges.
+    pub bars: [ChromeBar; N],
+    /// The remainder of `bounds` outside every band — always inside
+    /// `bounds`, clear of both regions.
+    pub content: kurbo::Rect,
+    /// The hosted content's context: `Docked` on every edge a bar sits
+    /// on, carrying that band's inner edge, so nothing inside touches,
+    /// releases or extends through those edges and a nested bar whose
+    /// frame lands on a dock edge stacks on the outer bar.
+    pub content_area: SafeAreaLayout,
+}
+
 /// `rect` grown by `offsets` on each edge, in the same space.
 pub fn grow_rect(rect: kurbo::Rect, offsets: EdgeOffsets) -> kurbo::Rect {
     kurbo::Rect::new(
@@ -552,11 +934,10 @@ pub fn released_ctx(ctx: RenderContext, released: EdgeOffsets) -> RenderContext 
 /// laid-out frame touched — the transforms unchanged, so nothing else
 /// moves (§7.1: extension is a paint fact, not a layout fact).
 pub fn fill_paint_ctx(ctx: RenderContext, extension: EdgeOffsets) -> RenderContext {
-    RenderContext::with_transforms(
-        grow_rect(ctx.bounds, extension),
-        ctx.transform,
-        ctx.hit_transform,
-    )
+    RenderContext {
+        local: ctx.local,
+        bounds: grow_rect(ctx.bounds, extension),
+    }
 }
 
 /// The §7.1 bookkeeping one scroll surface carries: the facts layout
@@ -651,34 +1032,65 @@ impl ScrollSurfaceArea {
     /// branch of §7.1's clearance. While the keyboard inset changes, the
     /// offset follows each frame directly — the host's own animation is
     /// the pacing, never an eased chase — using the previous frame's
-    /// stored field rect, so the content paints already clear. Returns the
-    /// text-input target count before the subtree's registrations to hand
-    /// to [`Self::end_flush`].
-    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) -> usize {
-        let targets_start = renderer.text_editing.text_input_targets.len();
+    /// stored field rect, so the content paints already clear.
+    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) {
         let Some(facts) = self.facts.get() else {
-            return targets_start;
+            return;
         };
         let moved = self.keyboard_top.replace(Some(facts.keyboard_top)) != Some(facts.keyboard_top);
         self.keyboard_moved.set(moved);
         if moved && let Some(field) = self.field_window_rect(handle.metrics().offset_y) {
             Self::scroll_field_clear(renderer, handle, facts, field, false);
         }
-        targets_start
     }
 
-    /// Runs after the surface's content flushes: the focus-change branch —
-    /// a field this subtree's own registrations reported gaining focus
+    /// Registers this surface for the frame's post-record focus clearance
+    /// ([`HydrolysisRenderer::clear_focused_fields`]). The registration is
+    /// retained: a clean surface that does not record keeps it, so a field
+    /// gaining focus under it is still scrolled clear.
+    pub fn register_clearance(
+        self: &std::rc::Rc<Self>,
+        renderer: &HydrolysisRenderer,
+        handle: &ScrollHandle,
+    ) {
+        let scope = renderer
+            .reader_cell()
+            .expect("hydrolysis: a surface registers its focus clearance under its own record");
+        let cell = std::rc::Rc::downgrade(&scope);
+        let mut surfaces = renderer.text_editing.clearance_surfaces.borrow_mut();
+        let entry = crate::renderer::input::text_editing::ClearanceSurface {
+            cell,
+            area: std::rc::Rc::downgrade(self),
+            handle: handle.clone(),
+        };
+        match surfaces
+            .iter_mut()
+            .find(|surface| surface.cell.ptr_eq(&entry.cell))
+        {
+            Some(surface) => *surface = entry,
+            None => surfaces.push(entry),
+        }
+    }
+
+    /// The post-record focus-change branch — a field the registrations
+    /// of `scope`'s subtree reported gaining focus
     /// scrolls the minimum distance to `min(keyboard top, surface bottom)`,
     /// eased while the keyboard is settled and directly while it moves.
     /// The cleared field is refreshed for the next frame's early pass, and
     /// dropped when nothing in this subtree holds focus — so a user scroll
     /// afterwards is never fought.
-    pub fn end_flush(
+    ///
+    /// "This subtree's own registrations" is the owner check the retained
+    /// model keeps: dev cut the frame's emission list at the count its
+    /// content began with, and per-owner buckets carry no such boundary —
+    /// [`HydrolysisRenderer::focused_field_frame_in_scope`] reads the
+    /// focused field out of the buckets the cells under this surface's own
+    /// record wrote, so it answers exactly dev's set.
+    fn clear_focused_field(
         &self,
         renderer: &HydrolysisRenderer,
+        scope: &std::rc::Rc<crate::renderer::mount::cell::NodeCell>,
         handle: &ScrollHandle,
-        targets_start: usize,
     ) {
         let Some(facts) = self.facts.get() else {
             self.cleared.replace(None);
@@ -690,13 +1102,10 @@ impl ScrollSurfaceArea {
         // here is always one it alone covers — nested surfaces clear the
         // same field once through the outer surface.
         let field = renderer
-            .text_editing
-            .focused_index()
-            .filter(|index| *index >= targets_start)
-            .map(|index| renderer.text_editing.text_input_targets[index].clone())
-            .map(|target| ClearedField {
-                key: target.interaction_key,
-                rect: target.frame,
+            .focused_field_frame_in_scope(scope)
+            .map(|(key, rect)| ClearedField {
+                key,
+                rect,
                 offset_y,
             });
         let newly_focused = field.as_ref().is_some_and(|field| {
@@ -722,7 +1131,7 @@ impl ScrollSurfaceArea {
     /// change since — a user scroll or a previous clearance — translates
     /// it back. This assumes the field did not move inside the content
     /// between frames — a relayout that moves it re-captures through
-    /// `end_flush` before the next keyboard-moving pass reads it.
+    /// `clear_focused_field` before the next keyboard-moving pass reads it.
     fn field_window_rect(&self, offset_y: f64) -> Option<kurbo::Rect> {
         self.cleared
             .borrow()
@@ -752,7 +1161,16 @@ impl ScrollSurfaceArea {
         let metrics = handle.metrics();
         let target_y = (metrics.offset_y + distance).clamp(0.0, metrics.max_y);
         let scrolled = if animated {
-            handle.scroll_to_animated(metrics.offset_x, target_y)
+            // A glide needs frames while it runs; a request that needed no
+            // travel already landed, so nothing further has to present.
+            handle
+                .scroll_to_animated(
+                    metrics.offset_x,
+                    target_y,
+                    Animation::default(),
+                    renderer.frame_instant(),
+                )
+                .is_some_and(|run| handle.scroll_run_outcome(&run) == ScrollRunOutcome::Running)
         } else {
             handle.scroll_to(metrics.offset_x, target_y)
         };
@@ -760,7 +1178,7 @@ impl ScrollSurfaceArea {
         // that applies it (a glide also arms the pump through the scroll
         // target the surface registers every flush).
         if scrolled {
-            renderer.request_refresh();
+            renderer.core.signals.request_refresh();
         }
     }
 }
@@ -776,4 +1194,33 @@ pub fn released_size(size: Size, released: EdgeOffsets) -> Size {
         size.width + (released.horizontal() as f32),
         size.height + (released.vertical() as f32),
     )
+}
+
+impl HydrolysisRenderer {
+    /// The frame's post-record focus clearance (§B step 7): every live
+    /// registered surface clears the focused field its subtree holds,
+    /// reading the retained registrations after recording, so a focus
+    /// change under a surface that did not record still scrolls the field
+    /// clear. Surfaces whose node or area dropped leave the list.
+    pub(crate) fn clear_focused_fields(&self) {
+        let live: Vec<_> = {
+            let mut surfaces = self.text_editing.clearance_surfaces.borrow_mut();
+            surfaces.retain(|surface| {
+                surface.cell.strong_count() > 0 && surface.area.strong_count() > 0
+            });
+            surfaces
+                .iter()
+                .filter_map(|surface| {
+                    Some((
+                        surface.cell.upgrade()?,
+                        surface.area.upgrade()?,
+                        surface.handle.clone(),
+                    ))
+                })
+                .collect()
+        };
+        for (scope, area, handle) in live {
+            area.clear_focused_field(self, &scope, &handle);
+        }
+    }
 }

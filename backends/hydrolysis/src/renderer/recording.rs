@@ -387,18 +387,16 @@ impl Recording {
         Self::default()
     }
 
+    /// Whether nothing was recorded.
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+
     /// Clears all recorded commands.
+    #[cfg(test)]
     pub(crate) fn reset(&mut self) {
         self.ops.clear();
         self.open_layers = 0;
-    }
-
-    /// Whether the recording encodes any visible content.
-    ///
-    /// Layer scopes alone emit clip geometry in the lowered content, matching
-    /// what the old encoder counted as non-empty.
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.ops.is_empty()
     }
 
     /// Fills `shape` under `transform` with `brush`.
@@ -659,12 +657,6 @@ impl Recording {
             }));
     }
 
-    /// Push scopes still open, for the tracked-stack invariant the flush
-    /// asserts.
-    pub(crate) const fn open_clip_count(&self) -> u32 {
-        self.open_layers
-    }
-
     /// Each clip/opacity scope's clip rect with the transform it was pushed
     /// under, in op order — `transform` maps the clip's own rect into scene
     /// space, so `transform * clip` is the rect the scope clips to. For
@@ -677,6 +669,20 @@ impl Recording {
             } => Some((*transform, clip.bounds())),
             _ => None,
         })
+    }
+
+    /// Opens a plain clip scope of `clip` under `transform` — for tests
+    /// flattening committed layer clips back into one recording.
+    #[cfg(test)]
+    pub(crate) fn push_clip_data(&mut self, transform: Affine, clip: ShapeData) {
+        self.open_layers += 1;
+        self.ops.push(Op::PushGroup {
+            rule: Fill::NonZero,
+            blend: BlendMode::default(),
+            opacity: 1.0,
+            transform,
+            clip,
+        });
     }
 
     /// Each fill op's shape bounds with the transform it was drawn under,

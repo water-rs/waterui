@@ -31,5 +31,8 @@ android {
 dependencies {
     // HydrolysisActivity exposes ComponentActivity in its public API.
     api("androidx.activity:activity:1.11.0")
-    implementation("androidx.core:core:1.17.0")
+    implementation("androidx.core:core-ktx:1.17.0")
+    // `HintConstants`: the OTP/password hints beyond `View.AUTOFILL_HINT_*`
+    // (`AUTOFILL_HINT_SMS_OTP`, `AUTOFILL_HINT_NEW_PASSWORD`).
+    implementation("androidx.autofill:autofill:1.3.0")
 }

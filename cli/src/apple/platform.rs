@@ -186,7 +186,7 @@ pub(crate) async fn apple_dependency_features(
     Ok(features)
 }
 
-async fn apple_build_features(
+pub(crate) async fn apple_build_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
     linkage: RustLinkage,
@@ -533,6 +533,7 @@ const fn apple_deployment_target_for(platform: TargetPlatform) -> Option<&'stati
         TargetPlatform::MacOS
         | TargetPlatform::IOS
         | TargetPlatform::IOSSimulator
+        | TargetPlatform::MacCatalyst
         | TargetPlatform::TvOS
         | TargetPlatform::TvOSSimulator
         | TargetPlatform::WatchOS
@@ -566,14 +567,20 @@ pub async fn apple_deployment_target(
 /// Every cargo process the CLI starts whose compilation target is Apple gets
 /// this — including host builds, where the host triple *is* the Apple target.
 /// A simulator triple shares its device variant's setting name and floor, so
-/// `Environment::Sim` never reaches the pair.
+/// `Environment::Sim` reaches the same pair as `Environment::Unknown`.
+/// Mac Catalyst keys on the iOS variable: the build scripts a macabi
+/// compilation runs read `IPHONEOS_DEPLOYMENT_TARGET`, and no consumer in
+/// the graph reads `MACOSX_DEPLOYMENT_TARGET` for it.
 pub(crate) fn apple_deployment_target_env(
     triple: &target_lexicon::Triple,
 ) -> Option<(&'static str, &'static str)> {
-    use target_lexicon::OperatingSystem;
+    use target_lexicon::{Environment, OperatingSystem};
     let platform = match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
-        OperatingSystem::IOS(_) => TargetPlatform::IOS,
+        OperatingSystem::IOS(_) => match triple.environment {
+            Environment::Macabi => TargetPlatform::MacCatalyst,
+            _ => TargetPlatform::IOS,
+        },
         OperatingSystem::TvOS(_) => TargetPlatform::TvOS,
         OperatingSystem::WatchOS(_) => TargetPlatform::WatchOS,
         OperatingSystem::VisionOS(_) | OperatingSystem::XROS(_) => TargetPlatform::VisionOS,
@@ -692,10 +699,19 @@ pub async fn package_apple(
         .bundle_identifier()
         .apple_bundle_identifier()
         .map_err(|error| eyre::eyre!("{error}"))?;
-    #[cfg(target_os = "macos")]
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple)
         .await?;
+    // Crate-declared entitlements and `Info.plist` keys, collected from the
+    // graph the companion compiles with — a conflict fails before any
+    // bundle work.
+    let mut apple_declarations = crate::assets::scan_apple_declarations(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &apple_dependency_features(project, browser_runtime_plan).await?,
+    )
+    .await?;
+    apple_declarations.supply_app_values(&project.manifest().app_values)?;
 
     let project_path = project.backend_path::<AppleBackend>();
 
@@ -747,7 +763,7 @@ pub async fn package_apple(
     let layout = app_bundle::AppleAppLayout::for_app(&app_path, sdk_name);
 
     let executable = built.profile_dir.join(APPLE_ENTRY_BINARY_NAME);
-    let info_plist = app_bundle::apple_info_plist(
+    let mut info_plist = app_bundle::apple_info_plist(
         &ctx,
         project,
         platform,
@@ -755,6 +771,7 @@ pub async fn package_apple(
         &product_name,
         &bundle_id,
     );
+    apple_declarations.merge_into_info_plist(&mut info_plist)?;
 
     app_bundle::assemble_app_bundle(
         &layout,
@@ -824,6 +841,7 @@ pub async fn package_apple(
         project_path.as_path(),
         project,
         &deployment_target,
+        &apple_declarations,
     )
     .await?;
 

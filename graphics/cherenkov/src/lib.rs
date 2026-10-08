@@ -104,10 +104,11 @@ pub use crate::text::{TextLayout, draw_text};
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
     BackdropEffect, BackdropId, BackdropSample, BackdropSampling, BackdropShaderEffect,
-    BackdropShaderId, BackdropShaderSource, CaptureScale, CaptureScaleError, ColorMatrix,
-    ContentOp, GpuInstalls, ImageLimits, Install, Layer, LayerAnimations, LayerContent, LayerEdit,
-    LayerId, LayerNode, LayerOwner, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue,
-    Realize, Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target,
-    Transaction, snap_animating,
+    BackdropShaderId, BackdropShaderSource, BackdropSpec, CaptureLevels, CaptureLevelsError,
+    CaptureScale, CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install,
+    Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
+    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize, Refraction,
+    RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
+    snap_animating,
 };
 pub use kurbo::Stroke;

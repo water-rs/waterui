@@ -31,6 +31,7 @@ use waterui::window::WindowManager;
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::Retain;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::key::KeyPress;
 use waterui_core::view::Hook;
@@ -46,7 +47,7 @@ pub mod android;
     any(target_os = "android", all(test, not(target_arch = "wasm32")))
 ))]
 pub mod android_accessibility;
-// Bare wasm has no window pump to drive these modules' diagnostics, fonts
+// Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
@@ -55,8 +56,6 @@ mod diagnostics;
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod editing;
 mod executor;
-#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-mod fonts;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 pub mod ime;
@@ -65,6 +64,11 @@ pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub mod placement;
 mod semantic;
+/// The windowed runner's SIGINT/SIGTERM/SIGHUP contract on Unix — compiled
+/// where the winit runner needs it, and in test builds for its child-process
+/// suite, which runs without the `winit` feature.
+#[cfg(all(unix, not(target_os = "android"), any(hydrolysis_winit, test)))]
+mod termination;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
@@ -84,8 +88,6 @@ use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig, RenderPhaseSample,
 #[cfg(not(target_arch = "wasm32"))]
 use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
 #[cfg(not(target_arch = "wasm32"))]
-use fonts::native_resource_fonts;
-use fonts::seed_core;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
@@ -144,9 +146,56 @@ use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 use crate::readback::readback_texture_rgba8;
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
+    SemanticCore,
 };
 use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
+use crate::text::SessionTextEngine;
 use crate::time::Instant;
+
+/// Subscribes every reactive input of a window declaration once, for the
+/// window's whole lifetime: `title`, `frame`, `state`, `style`,
+/// `background`, `level`, `attention`, and `resize_increments`, `min_size`
+/// and `max_size` when present.
+///
+/// Each subscription requests a refresh through
+/// [`SemanticCore::refresh_watch`] — the same `FrameSignals::request_refresh`
+/// wake every reactive read uses — so a binding an app flips while the
+/// window is parked reaches the next pump, where `apply_properties`,
+/// `apply_window_size_limits` and the accessibility root label re-read the
+/// values. A per-frame watch cannot serve this: the frame watch registry
+/// keeps a subscription for one unread frame, and an idle window runs no
+/// frame to re-register it (water-rs/waterui#2131).
+///
+/// Both window kinds hold the returned guards as their last field so they
+/// drop after the core — whose teardown owns every frame-scoped
+/// subscription — in the outermost scope, the same tail position the
+/// frame-level `lifecycle` teardown takes inside a flush (water-rs/waterui#1213).
+///
+/// The runtime's own writes land on the same flag — a resize writes
+/// `frame`, so that write is one bounded extra frame, not a loop: the
+/// frame the flag arms performs no further write to the declaration.
+fn subscribe_window_declaration_signals(window: &Window, core: &SemanticCore) -> Vec<Retain> {
+    let mut watches = vec![
+        core.refresh_watch(&window.title),
+        core.refresh_watch(&window.frame),
+        core.refresh_watch(&window.state),
+        core.refresh_watch(&window.style),
+        core.refresh_watch(&window.background),
+        core.refresh_watch(&window.level),
+        core.refresh_watch(&window.attention),
+    ];
+    for signal in [
+        &window.resize_increments,
+        &window.min_size,
+        &window.max_size,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        watches.push(core.refresh_watch(signal));
+    }
+    watches
+}
 
 /// The global executor every runner installs before anything can spawn.
 fn init_global_executor() {
@@ -300,9 +349,7 @@ pub fn run(app: App, style: impl crate::Style) {
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(native_resource_fonts(
-        waterui_core::ResourceContext::from_environment(&env),
-    ));
+    let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry>()
@@ -316,10 +363,12 @@ pub fn run(app: App, style: impl crate::Style) {
         let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
             .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
-        let mut renderer =
-            HydrolysisRenderer::new(Rc::clone(&theme), FontFamilyResolution::Lenient);
-        seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&theme),
+            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+        );
         renderer.set_window_id(shortcuts.mint_window_id());
+        renderer.set_window_closable(window.closable);
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));

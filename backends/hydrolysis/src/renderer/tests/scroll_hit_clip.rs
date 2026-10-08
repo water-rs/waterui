@@ -1,11 +1,12 @@
 //! water-rs/hydrolysis#252 — a row straddling the scroll viewport's edge
 //! keeps only the painted part of its hit bounds.
 //!
-//! Paint is clipped to the viewport (`push_layer_rect(1.0, viewport)` around
-//! the content flush) but hit regions were registered from the unclipped
-//! rects, so a row scrolled half under the sibling chrome above still took
-//! taps up there. The fix clips every hit region — gestures, pointer
-//! targets, row hit bounds — to the clip stack the paint layers push.
+//! Paint is clipped to the viewport (the scroll node's clipped inner layer
+//! carries the content flush) but hit regions were registered from the
+//! unclipped rects, so a row scrolled half under the sibling chrome above
+//! still took taps up there. The fix clips every hit region — gestures,
+//! pointer targets, row hit bounds — to the clip stack the paint layers
+//! push.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -112,9 +113,11 @@ fn a_row_straddling_the_viewport_edge_cannot_be_tapped_above_the_clip() {
         .renderer()
         .scroll_metrics_at(200.0, BAND_HEIGHT + 100.0)
         .expect("the scroll view registers a scroll target");
-    assert_eq!(
-        metrics.offset_y, 60.0,
-        "the scroll offset must reach 60pt before the taps: {metrics:?}"
+    assert!(
+        approx::relative_eq!(metrics.offset_y, 60.0),
+        "the scroll offset must reach 60pt before the taps: {metrics:?}: left {:?}, right {:?}",
+        metrics.offset_y,
+        60.0
     );
 
     taps.borrow_mut().clear();

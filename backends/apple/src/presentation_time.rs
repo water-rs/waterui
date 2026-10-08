@@ -65,12 +65,18 @@ impl PresentationTime {
         self.map(objc2_quartz_core::CACurrentMediaTime())
     }
 
-    /// Installs the anchor in `env`. Idempotent per environment — the first
-    /// anchor stands so every presenter shares one axis.
+    /// Installs the anchor in `env` — once: [`crate::gpu_runtime::prepare`]
+    /// runs it before any mount exists.
+    ///
+    /// # Panics
+    ///
+    /// When an anchor was already installed on this environment.
     pub fn install(env: &mut waterui_backend_core::Environment) {
-        if env.get::<Rc<Self>>().is_none() {
-            env.insert(Rc::new(Self::new()));
-        }
+        assert!(
+            env.get::<Rc<Self>>().is_none(),
+            "a presentation anchor is already installed in the WaterUI environment"
+        );
+        env.insert(Rc::new(Self::new()));
     }
 
     /// The environment's shared anchor.

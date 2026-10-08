@@ -253,6 +253,7 @@ Keep unrelated changes out of the change set.
 - Every UI component is expected to produce a meaningful accessibility tree. If a component cannot be covered by `waterui-testing`, treat that as a bug to fix rather than a gap to paper over.
 - Keep a component body's shape as simple and concrete as its semantics: do not wrap otherwise static content in a `Dynamic` because the body has a branch.
 - Do not add `anyhow` as a direct dependency in any `Cargo.toml` in this workspace. The error type is re-exported as `waterui_core::Error`; reach for that re-export when implementing traits whose associated error is `anyhow::Error` (e.g. `Extractor`). `thiserror` and other error-construction utilities are unaffected.
+- No dependency, direct or transitive, comes from the Tauri project (crates published by tauri-apps); the capability is implemented in waterkit instead.
 
 <important>
     For rust: YOU CANNOT USE println, use tracing::debug!() instead for debug output.

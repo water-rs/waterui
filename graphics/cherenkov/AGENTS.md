@@ -8,7 +8,8 @@ contract.
 
 The engine moved into water-rs/waterui under `graphics/` (#1449): bare `#N`
 references in this file are issues in the water-rs/cherenkov repository
-(archived read-only), and the per-decision log is its issue #2. New issues
+(archived read-only, its open issues transferred to water-rs/waterui, where
+the old links redirect), and the per-decision log is its issue #2. New issues
 belong to water-rs/waterui.
 
 ## Correctness
