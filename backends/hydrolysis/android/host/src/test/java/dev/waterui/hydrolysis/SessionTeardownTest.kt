@@ -31,7 +31,7 @@ import org.robolectric.annotation.internal.DoNotInstrument
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(
-    shadows = [ShadowNativeBridge::class],
+    shadows = [ShadowNativeBridge::class, ShadowHydrolysisEnvironment::class],
     // The shadow can only replace `NativeBridge`'s natives on an
     // instrumented class.
     instrumentedPackages = ["dev.waterui.hydrolysis"],
@@ -166,6 +166,64 @@ class SessionTeardownTest {
     }
 
     @Test
+    fun aGenuineFinishReachesNoNativeCallAfterTeardown() {
+        val controller = Robolectric.buildActivity(ClosingActivity::class.java).setup()
+        val activity = controller.get()
+        val host =
+            HydrolysisEmbedding.createView(
+                activity,
+                activity,
+                activity,
+                activity.onBackPressedDispatcher,
+                "waterui_app",
+                onCloseRequested = {},
+                createContentView = { session -> HydrolysisHostView(activity, session) },
+            )
+        activity.setContentView(host)
+        assertTrue(host.isAttachedToWindow)
+
+        // A real finish's order, inside `destroy`: `onDestroy` clears the
+        // ViewModel store — destroy defers on the still-attached view —
+        // the window's removal detaches it, `unbind` parks the live
+        // session and tears it down, and the embedding's attach-state
+        // listener runs last. Every shadow entry asserts the session is
+        // live, so a call landing after that teardown — the listener's
+        // old `setVisible` — fails the test inside `destroy`.
+        controller.destroy()
+
+        assertTrue(ShadowNativeBridge.destroyed)
+        assertFalse(host.isAttachedToWindow)
+    }
+
+    @Test
+    fun aClearedStoreParksTheSessionWhileItsViewStaysAttached() {
+        val activity = Robolectric.buildActivity(ClosingActivity::class.java).setup().get()
+        val host =
+            HydrolysisEmbedding.createView(
+                activity,
+                activity,
+                activity,
+                activity.onBackPressedDispatcher,
+                "waterui_app",
+                onCloseRequested = {},
+                createContentView = { session -> HydrolysisHostView(activity, session) },
+            )
+        activity.setContentView(host)
+
+        // A Compose navigation entry or a custom owner clears the store
+        // with the view still attached: the session parks at once — it
+        // stops pumping — and only waits on the view to end.
+        activity.viewModelStore.clear()
+
+        assertEquals(false, ShadowNativeBridge.visibilities.last())
+        assertFalse(ShadowNativeBridge.destroyed)
+        assertTrue(host.isAttachedToWindow)
+
+        (host.parent as ViewGroup).removeView(host)
+        assertTrue(ShadowNativeBridge.destroyed)
+    }
+
+    @Test
     fun aCallAfterDestroyIsANamedError() {
         val session = HydrolysisSession(context)
         session.destroy()
@@ -185,7 +243,7 @@ class SessionTeardownTest {
 }
 
 /** An activity whose `finish` runs the test's close handler synchronously. */
-class ClosingActivity : Activity() {
+class ClosingActivity : androidx.activity.ComponentActivity() {
     var onFinish: () -> Unit = {}
 
     override fun finish() {
@@ -214,6 +272,9 @@ class ShadowNativeBridge {
         var deadlineQueries = 0
             private set
 
+        /** Every `nativeSetVisible` call, in order. */
+        val visibilities = mutableListOf<Boolean>()
+
         /** Runs inside `nativeDestroySession`, as the runner's drop does. */
         var onDestroy: () -> Unit = {}
 
@@ -224,6 +285,7 @@ class ShadowNativeBridge {
             frames = 0
             destroyed = false
             deadlineQueries = 0
+            visibilities.clear()
             onDestroy = {}
             onFrame = { 0L }
         }
@@ -232,6 +294,20 @@ class ShadowNativeBridge {
             assertEquals(SESSION_PTR, sessionPtr)
             assertFalse("a native call reached a destroyed session", destroyed)
         }
+
+        /** `NativeBridge.SCHEMA` — kept in lock-step with the bridge. */
+        private const val SCHEMA = 11
+
+        @JvmStatic
+        @Implementation
+        fun nativeInit(
+            @Suppress("UNUSED_PARAMETER") schema: Int,
+            @Suppress("UNUSED_PARAMETER") logLevel: String?,
+        ): Int = SCHEMA
+
+        @JvmStatic
+        @Implementation
+        fun nativeUiThreadServices(): Long = 0x1111_2eadL
 
         @JvmStatic
         @Implementation
@@ -267,8 +343,9 @@ class ShadowNativeBridge {
 
         @JvmStatic
         @Implementation
-        fun nativeSetVisible(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") visible: Boolean) {
+        fun nativeSetVisible(sessionPtr: Long, visible: Boolean) {
             assertLive(sessionPtr)
+            visibilities += visible
         }
 
         @JvmStatic
@@ -277,4 +354,16 @@ class ShadowNativeBridge {
             assertLive(sessionPtr)
         }
     }
+}
+
+/**
+ * Asset sync and `Os.setenv` have no file system they can reach under
+ * Robolectric — `prepare` does nothing; the mount paths are what these
+ * tests exercise.
+ */
+@Implements(HydrolysisEnvironment::class, isInAndroidSdk = false)
+@DoNotInstrument
+class ShadowHydrolysisEnvironment {
+    @Implementation
+    fun prepare(@Suppress("UNUSED_PARAMETER") context: Context) {}
 }
