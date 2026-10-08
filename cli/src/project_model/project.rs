@@ -2761,10 +2761,7 @@ impl Project {
             .map_err(|error| FailToOpenProject::Framework(eyre::eyre!(error)))?;
 
         let build_cache_start = std::time::Instant::now();
-        // The create path resolves the same directory without creating it —
-        // the scaffolds that write under it create it then — and a project
-        // open must never write to `~/.water` merely to exist.
-        let managed_backends_root = crate::water_dir::project_build_cache_dir(host, &path)
+        let managed_backends_root = crate::water_dir::ensure_project_build_cache(host, &path)
             .await
             .map_err(FailToOpenProject::BuildCache)?;
         let graph_cache_dir = crate::water_dir::project_graph_cache_dir_on(&host, &path)
@@ -5453,10 +5450,12 @@ mod scaffold_tests {
         document["waterui_path"] = toml_edit::value(waterui_root.to_string_lossy().as_ref());
         std::fs::write(&water_toml, document.to_string()).expect("name the framework checkout");
 
-        // Resolve the build cache the way the open path does — a test never
-        // writes to the real `~/.water`; the scaffold seeds the files it
-        // needs under it itself.
-        let ffi_dir = smol::block_on(crate::water_dir::project_build_cache_dir(
+        // Shape the build cache before seeding, on the machine the open
+        // runs on: `ensure_project_build_cache` records the project root
+        // and this CLI's commit in its metadata and wipes any cache
+        // directory whose metadata does not match, so only a companion
+        // left inside a shaped cache survives to the open.
+        let ffi_dir = smol::block_on(crate::water_dir::ensure_project_build_cache(
             &real_toolchain_host(&machine),
             &root,
         ))
