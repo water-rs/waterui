@@ -8,6 +8,7 @@
 //! commit lowers it.
 
 use std::cell::RefCell;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 
 use rustc_hash::FxHashSet;
@@ -150,7 +151,7 @@ pub struct SceneContentSource {
 pub struct MaterialRequest {
     /// The nearest enclosing `.material_group()` node's identity — the
     /// address of its cell — or `None` for a group of the member's own.
-    pub scope: Option<usize>,
+    pub scope: Option<NonZeroU64>,
     /// The member's within-window level — part of its backdrop-group key.
     pub level: crate::renderer::material::WithinWindowLevel,
     /// The member's resolved colour scheme at flush: a subtree may

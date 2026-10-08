@@ -12,7 +12,7 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, JoinOutcome,
     MaterialBackdropGroups, MaterialMembership, MemberJoin,
 };
 use crate::renderer::recording::SceneResources;
@@ -67,6 +67,10 @@ pub trait LayerTarget: cherenkov::Target {
     /// rebuilding it when `display_scale` changes. The membership the
     /// layer's node holds ends with its layers; its owner link is how a
     /// rebuild re-points every member at the replacement group.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one mount step per parameter; bundling them obscures the target contract"
+    )]
     fn mount_material(
         host: &Self::Host,
         tx: &mut Transaction<'_, Self>,
@@ -75,6 +79,7 @@ pub trait LayerTarget: cherenkov::Target {
         key: BackdropGroupKey,
         display_scale: f64,
         membership: &MaterialMembership,
+        always_bind: bool,
     );
 
     /// Clears the backdrop membership [`mount_material`](Self::mount_material)
@@ -110,6 +115,7 @@ pub trait LayerTarget: cherenkov::Target {
         display_scale: f64,
         membership: &MaterialMembership,
         payload: ChromeMemberPayload<Self::Shader>,
+        always_bind: bool,
     );
 
     /// Clears the backdrop membership [`mount_chrome`](Self::mount_chrome)
@@ -168,7 +174,7 @@ pub fn attach_material_shaders(
                 .unwrap_or_else(|error| {
                     panic!(
                         "hydrolysis materials: backdrop shader {key:?} failed to register on the \
-                     attached engine: {error}"
+                         attached engine: {error}"
                     )
                 });
             (key, shader)
@@ -279,12 +285,20 @@ impl LayerTarget for cherenkov_gpu::Gpu {
         key: BackdropGroupKey,
         display_scale: f64,
         membership: &MaterialMembership,
+        always_bind: bool,
     ) {
         let surface = host
             .surface
             .upgrade()
             .expect("hydrolysis material: the engine surface was dropped during its commit");
-        groups.join(
+        let apply = |tx: &mut Transaction<'_, Self>,
+                     member: &Layer,
+                     _payload: &(),
+                     group: &cherenkov::BackdropGroup,
+                     _scale: f64| {
+            tx[member].backdrop(group.sample());
+        };
+        let outcome = groups.join(
             tx,
             key,
             key.runtime(),
@@ -302,15 +316,15 @@ impl LayerTarget for cherenkov_gpu::Gpu {
                         crate::renderer::material::capture_scale(),
                     )
                 },
-                |tx: &mut Transaction<'_, Self>,
-                 layer,
-                 _payload: &(),
-                 group: &cherenkov::BackdropGroup,
-                 _scale| {
-                    tx[layer].backdrop(group.sample());
-                },
+                apply,
             ),
         );
+        if always_bind || outcome != JoinOutcome::Unchanged {
+            let group = groups
+                .group(&key)
+                .expect("a join leaves its key's group mounted");
+            apply(tx, layer, &(), group, display_scale);
+        }
     }
 
     fn clear_material(tx: &mut Transaction<'_, Self>, layer: &Layer) {
@@ -331,13 +345,28 @@ impl LayerTarget for cherenkov_gpu::Gpu {
         display_scale: f64,
         membership: &MaterialMembership,
         payload: ChromeMemberPayload<cherenkov::BackdropShader>,
+        always_bind: bool,
     ) {
         let surface = host
             .surface
             .upgrade()
             .expect("hydrolysis materials: the engine surface was dropped during its commit");
         let class = payload.class;
-        groups.join(
+        let apply = |tx: &mut Transaction<'_, Self>,
+                     member: &Layer,
+                     payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
+                     group: &cherenkov::BackdropGroup,
+                     scale: f64| {
+            let id = group.id();
+            let shader = payload.shader.clone();
+            tx[member].backdrop(
+                payload
+                    .effect
+                    .rebound()
+                    .map(move |effect| group_sample_with(id, &shader, &effect, scale)),
+            );
+        };
+        let outcome = groups.join(
             tx,
             key,
             params,
@@ -356,22 +385,18 @@ impl LayerTarget for cherenkov_gpu::Gpu {
                     }
                     surface.backdrop_group_unfiltered(spec)
                 },
-                |tx,
-                 member,
-                 payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
-                 group,
-                 scale| {
-                    let id = group.id();
-                    let shader = payload.shader.clone();
-                    tx[member].backdrop(
-                        payload
-                            .effect
-                            .clone()
-                            .map(move |effect| group_sample_with(id, &shader, &effect, scale)),
-                    );
-                },
+                apply,
             ),
         );
+        if always_bind || outcome != JoinOutcome::Unchanged {
+            let group = groups
+                .group(&key)
+                .expect("a join leaves its key's group mounted");
+            let payload = groups
+                .payload(layer.id())
+                .expect("a join leaves its member's entry mounted");
+            apply(tx, layer, payload, group, display_scale);
+        }
     }
 
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {

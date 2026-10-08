@@ -515,6 +515,7 @@ impl<T: LayerTarget> Mount<T> {
                     BackdropGroupKey::new(window.id(), request, None),
                     display_scale,
                     membership,
+                    false,
                 );
             } else if window_state.is_some() {
                 groups.clear(window.id());
@@ -887,6 +888,8 @@ fn commit_material<T: LayerTarget>(
         let membership = layers
             .material
             .get_or_insert_with(|| MaterialMembership::new(layers.token.owner.clone()));
+        // A no-program commit binds only a new membership or a rebuilt
+        // group — an unchanged member keeps its bind.
         T::mount_material(
             cx.host,
             cx.tx,
@@ -895,6 +898,7 @@ fn commit_material<T: LayerTarget>(
             key,
             cx.display_scale,
             membership,
+            false,
         );
     } else if layers.material.is_some() {
         cx.groups.clear(layers.frame.id());
@@ -1654,6 +1658,7 @@ fn lower_chrome<T: LayerTarget>(
             cx.display_scale,
             membership,
             payload,
+            true,
         );
         member.params = Some(params);
     } else {
@@ -1729,6 +1734,9 @@ fn commit_chrome<T: LayerTarget>(
             canvas,
         );
         let payload = chrome_member_payload::<T>(cx.host, chrome, class);
+        // A no-program commit binds only a new membership or a rebuilt
+        // group — an unchanged member keeps its bind and queues no
+        // `LayerOp::Backdrop`.
         T::mount_chrome(
             cx.host,
             cx.tx,
@@ -1739,6 +1747,7 @@ fn commit_chrome<T: LayerTarget>(
             cx.display_scale,
             membership,
             payload,
+            false,
         );
     }
 }

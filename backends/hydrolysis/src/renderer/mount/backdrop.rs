@@ -11,6 +11,7 @@
 //! or the node's commit clears it.
 
 use std::collections::hash_map::Entry;
+use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 
 use cherenkov::{Layer, LayerId, Transaction};
@@ -32,7 +33,7 @@ pub enum BackdropScope {
     /// its cell, which the scope stack holds an `Rc` to while its
     /// children flush, so the pointer cannot be reused mid-frame. Two
     /// modifier instances are two groups.
-    Scoped(usize),
+    Scoped(NonZeroU64),
 }
 
 /// Which backdrop group a material member joins: the tuple `(scope,
@@ -114,10 +115,7 @@ impl ChromeGroupKey {
     ) -> Self {
         Self {
             scope: match scope.id() {
-                Some(scope) if grouping != MaterialGrouping::Solo => BackdropScope::Scoped(
-                    usize::try_from(scope.get())
-                        .expect("hydrolysis materials: a scope id fits usize"),
-                ),
+                Some(scope) if grouping != MaterialGrouping::Solo => BackdropScope::Scoped(scope),
                 _ => BackdropScope::Solo(member),
             },
             class,
@@ -190,6 +188,23 @@ struct MountedBackdrop<P, G> {
     /// it during the commit, and the sweep drops the members whose layers
     /// unmounted. An empty set releases the group at the same commit.
     members: FxHashSet<LayerId>,
+}
+
+/// What [`BackdropGroups::join`] did with the member's membership,
+/// reported so the caller can bind the member's sample only when it
+/// must.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinOutcome {
+    /// The member joined a group it was not in — a new group or a
+    /// re-keyed one. Its layer samples nothing of the group yet: bind.
+    Joined,
+    /// Its group was rebuilt on a display-scale change; every member was
+    /// re-pointed inside the join, this member's bind is still the
+    /// caller's.
+    Rebuilt,
+    /// Same group, same display scale — nothing of the membership
+    /// changed.
+    Unchanged,
 }
 
 /// The member side of a [`BackdropGroups::join`]: the joining layer, its
@@ -276,8 +291,11 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
     /// the display scale; `apply` installs a member layer on a group from
     /// the member's own payload, handed the display scale the group was
     /// built for — a member's device-pixel terms convert at that scale,
-    /// and a scale rebuild re-runs it for every member with the payload
-    /// its entry holds.
+    /// and a scale rebuild re-runs it for every *other* member with the
+    /// payload its entry holds. The joining member's own bind is the
+    /// caller's step: `join` returns a [`JoinOutcome`] and the caller
+    /// applies when the outcome — or the fresh payload it carries —
+    /// asks for it.
     pub(crate) fn join<T: cherenkov::Target>(
         &mut self,
         tx: &mut Transaction<'_, T>,
@@ -293,7 +311,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
             impl Fn(&P, f64) -> G,
             impl Fn(&mut Transaction<'_, T>, &Layer, &M, &G, f64),
         ),
-    ) {
+    ) -> JoinOutcome {
         let (create, apply) = hooks;
         let MemberJoin {
             layer: member,
@@ -311,22 +329,18 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
                 .get(&key)
                 .is_some_and(|group| group.display_scale == bits)
         {
-            // Membership unchanged: still bind the member's (possibly
-            // new) payload — a re-record on the same key carries a new
-            // effect, and the member samples it, not its old bind.
-            let group = &self
-                .groups
-                .get(&key)
-                .expect("the group the check found")
-                .group;
-            apply(tx, member, &payload, group, display_scale);
+            // Membership unchanged: store the (possibly new) payload for a
+            // later rebuild, bind nothing — the caller decides whether the
+            // member's sample rebinds (`lower_*` always does, `commit_*`
+            // only on a new membership or a rebuild).
             self.members
                 .get_mut(&member.id())
                 .expect("the entry the check found")
                 .payload = payload;
-            return;
+            return JoinOutcome::Unchanged;
         }
         self.leave(member.id());
+        let mut outcome = JoinOutcome::Joined;
         let group = match self.groups.entry(key) {
             Entry::Occupied(mut entry) => {
                 if entry.get().display_scale != bits {
@@ -343,6 +357,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
                         display_scale: bits,
                         members: std::mem::take(&mut entry.get_mut().members),
                     };
+                    outcome = JoinOutcome::Rebuilt;
                     for other in &rebuilt.members {
                         let Some(retained) = self
                             .members
@@ -386,7 +401,6 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
                 members: FxHashSet::default(),
             }),
         };
-        apply(tx, member, &payload, &group.group, display_scale);
         group.members.insert(member.id());
         self.members.insert(
             member.id(),
@@ -397,6 +411,21 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
                 owner: membership.owner.clone(),
             },
         );
+        outcome
+    }
+
+    /// The group object `key` joined, for the caller's binding step:
+    /// [`join`](Self::join) handles membership and reports the outcome;
+    /// binding the member's sample is the caller's (`lower_*` always,
+    /// `commit_*` on [`JoinOutcome::Joined`] or [`JoinOutcome::Rebuilt`]).
+    pub(crate) fn group(&self, key: &K) -> Option<&G> {
+        self.groups.get(key).map(|mounted| &mounted.group)
+    }
+
+    /// The binding payload `member`'s entry holds — the joiner's own
+    /// after a [`join`](Self::join), for the caller's binding step.
+    pub(crate) fn payload(&self, member: LayerId) -> Option<&M> {
+        self.members.get(&member).map(|entry| &entry.payload)
     }
 
     /// Takes `member` out of its group's membership. The member's layer

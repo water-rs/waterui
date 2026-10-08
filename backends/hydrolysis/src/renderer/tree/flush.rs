@@ -1,8 +1,8 @@
 //! Per-frame flush: [`RenderNode::flush`] records the laid-out subtree
 //! into the nodes' programs using the cached placements.
 
-#[cfg(feature = "accessibility")]
 use super::layout::kurbo_rect;
+use std::num::NonZeroU64;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -370,11 +370,16 @@ impl RenderNode {
                         let scheme =
                             renderer.read_signal(&waterui::theme::current_color_scheme(child_env));
                         let visible = renderer.record_alpha() != 0.0;
-                        let scope = renderer
-                            .material_group_scopes
-                            .last()
-                            .map(Rc::as_ptr)
-                            .map(|cell| cell as usize);
+                        let scope =
+                            renderer
+                                .material_group_scopes
+                                .last()
+                                .map(Rc::as_ptr)
+                                .map(|cell| {
+                                    NonZeroU64::new(cell as usize as u64).expect(
+                                        "hydrolysis materials: a live Rc address is never zero",
+                                    )
+                                });
                         let program = renderer.program().program_mut();
                         program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
                         program.material = Some(mount::MaterialRequest {

@@ -177,8 +177,9 @@ impl LayerTarget for MirrorTarget {
         key: crate::renderer::mount::backdrop::BackdropGroupKey,
         display_scale: f64,
         membership: &crate::renderer::mount::backdrop::MaterialMembership,
+        always_bind: bool,
     ) {
-        groups.join(
+        let outcome = groups.join(
             tx,
             key,
             key.runtime(),
@@ -194,6 +195,11 @@ impl LayerTarget for MirrorTarget {
                 |_tx, _member, _p: &(), _group, _scale| {},
             ),
         );
+        // The mirror's material bind installs nothing of its own; the
+        // membership outcome is still read so a stale bind is never
+        // skipped — there is just nothing to queue for it.
+        let _ = always_bind;
+        let _ = outcome;
     }
 
     fn material_terms(host: &MirrorHost) -> &MaterialTerms<Self> {
@@ -213,12 +219,26 @@ impl LayerTarget for MirrorTarget {
         display_scale: f64,
         membership: &crate::renderer::mount::backdrop::MaterialMembership,
         payload: crate::renderer::mount::backdrop::ChromeMemberPayload<cherenkov::BackdropShader>,
+        always_bind: bool,
     ) {
         // The mirror's group id is the id its members' samples carry: the
         // install binds `BackdropSample::with_effect(id, …)` from the
         // member's own payload, exactly as the GPU target's.
         let class = payload.class;
-        groups.join(
+        let apply = |tx: &mut Transaction<'_, Self>,
+                     member: &Layer,
+                     payload: &crate::renderer::mount::backdrop::ChromeMemberPayload<
+            cherenkov::BackdropShader,
+        >,
+                     id: &BackdropId,
+                     scale: f64| {
+            let id = *id;
+            let shader = payload.shader.clone();
+            tx[member].backdrop(payload.effect.rebound().map(move |effect| {
+                crate::renderer::mount::target::group_sample_with(id, &shader, &effect, scale)
+            }));
+        };
+        let outcome = groups.join(
             tx,
             key,
             params,
@@ -240,23 +260,18 @@ impl LayerTarget for MirrorTarget {
                         ));
                     key_id(&key)
                 },
-                |tx: &mut Transaction<'_, Self>,
-                 member: &Layer,
-                 payload: &crate::renderer::mount::backdrop::ChromeMemberPayload<
-                    cherenkov::BackdropShader,
-                >,
-                 id: &BackdropId,
-                 scale: f64| {
-                    let id = *id;
-                    let shader = payload.shader.clone();
-                    tx[member].backdrop(payload.effect.clone().map(move |effect| {
-                        crate::renderer::mount::target::group_sample_with(
-                            id, &shader, &effect, scale,
-                        )
-                    }));
-                },
+                apply,
             ),
         );
+        if always_bind || outcome != crate::renderer::mount::backdrop::JoinOutcome::Unchanged {
+            let id = groups
+                .group(&key)
+                .expect("a join leaves its key's group mounted");
+            let payload = groups
+                .payload(layer.id())
+                .expect("a join leaves its member's entry mounted");
+            apply(tx, layer, payload, id, display_scale);
+        }
     }
 
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
@@ -512,6 +527,7 @@ impl LayerTarget for NoShaderTarget {
         _key: crate::renderer::mount::backdrop::BackdropGroupKey,
         _display_scale: f64,
         _membership: &crate::renderer::mount::backdrop::MaterialMembership,
+        _always_bind: bool,
     ) {
     }
 
@@ -529,6 +545,7 @@ impl LayerTarget for NoShaderTarget {
         _display_scale: f64,
         _membership: &crate::renderer::mount::backdrop::MaterialMembership,
         _payload: crate::renderer::mount::backdrop::ChromeMemberPayload<()>,
+        _always_bind: bool,
     ) {
     }
 }

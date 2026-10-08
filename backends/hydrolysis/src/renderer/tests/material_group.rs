@@ -86,9 +86,12 @@ fn rendered_at_scale(view: impl Fn() -> AnyView + 'static, scale: f64) -> Headle
     runtime
 }
 
-/// The `.material_group()` scope `member` flushed under — the cell address
-/// its key's `Scoped` identity carries — `None` outside every group.
-fn member_scope(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> Option<usize> {
+/// The `.material_group()` scope `member` flushed under — the cell
+/// identity its key's `Scoped` carries — `None` outside every group.
+fn member_scope(
+    runtime: &HeadlessRuntime,
+    member: cherenkov::LayerId,
+) -> Option<std::num::NonZeroU64> {
     match mounts(runtime).backdrop_scope(member)? {
         BackdropScope::Scoped(scope) => Some(scope),
         BackdropScope::Solo(_) => None,
