@@ -557,13 +557,7 @@ async fn package_artifact(
     built: Option<&BuiltTarget>,
 ) -> Result<()> {
     let spinner = shell.spinner("Packaging application...");
-    let artifact = package_artifact_inner(
-        args,
-        &context.project.with_std_output(shell.is_interactive()),
-        context,
-        built,
-    )
-    .await?;
+    let artifact = package_artifact_inner(args, context, built, shell.is_interactive()).await?;
     let artifact = place_in_project(&context.project, artifact).await?;
     // Consumers read the host library beside the `.app` this command reports,
     // so it stages against the placed path, which only exists after the move.
@@ -597,10 +591,13 @@ async fn package_artifact(
 
 async fn package_artifact_inner(
     args: &Args,
-    project: &Project,
     context: &PackagingContext,
     built: Option<&BuiltTarget>,
+    std_output: bool,
 ) -> Result<Artifact> {
+    // The only project in scope carries the output policy the packaging
+    // tools run under.
+    let project = &context.project.with_std_output(std_output);
     let package_options = context.package_options.clone();
     match context.backend {
         TargetBackend::Android => {
