@@ -675,18 +675,28 @@ impl NavigationTracker {
     }
 
     /// A main-frame `onReceivedError` for the request at `url` — the native
-    /// drops every subframe error. It ends the navigation with it; one for
-    /// the request its navigation already ended on — the cancellation a
-    /// blocked redirect or `stop` causes — is dropped.
+    /// drops every subframe error. It ends the open navigation it names, and
+    /// with nothing open it still reports: an unannounced `POST` fails the
+    /// same way. One that names a different request — the cancellation of a
+    /// navigation that already ended, or a late error for a navigation a
+    /// newer `open` superseded — is dropped: `WebViewClient` callbacks are
+    /// posted to the looper, so a `stop` or `go_to` delivers the old
+    /// request's error after the next navigation is already open.
     pub fn received_error(&mut self, url: Url, error: WebViewError) -> Vec<WebViewEvent> {
-        if matches!(&self.phase, NavigationPhase::Ended { url: ended, .. } if *ended == url) {
-            return Vec::new();
+        match &self.phase {
+            // The cancellation of the request that already ended.
+            NavigationPhase::Ended { url: ended, .. } if *ended == url => Vec::new(),
+            // A late error for a navigation a newer `open` superseded —
+            // not the open navigation's failure.
+            NavigationPhase::Open { url: open, .. } if *open != url => Vec::new(),
+            _ => {
+                self.phase = NavigationPhase::Ended {
+                    url,
+                    error_page: true,
+                };
+                vec![WebViewEvent::Error(error)]
+            }
         }
-        self.phase = NavigationPhase::Ended {
-            url,
-            error_page: true,
-        };
-        vec![WebViewEvent::Error(error)]
     }
 
     /// `onReceivedSslError`, which the bridge always cancels. The error is
@@ -1697,6 +1707,30 @@ mod tests {
     }
 
     #[test]
+    fn navigation_a_late_error_for_a_superseded_navigation_reports_nothing() {
+        // `WebViewClient` callbacks are posted to the looper, so a `go_to(B)`
+        // while A's error is still in flight delivers the error after B
+        // already opened. The error is A's: it ends nothing and reports
+        // nothing, and B's own sequence runs undisturbed.
+        let mut drive = Drive::new();
+        drive.open("https://a.dev/").progress(40);
+        drive.take();
+        drive.open("https://b.dev/");
+        drive.error("https://a.dev/", "net::ERR_ABORTED");
+        drive.started("https://b.dev/", 30).progress(100);
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://b.dev/"),
+                loading(0),
+                loading(30),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+    }
+
+    #[test]
     fn navigation_an_ended_navigation_drops_only_its_own_errors() {
         // After `stop` the cancellation of that same request is dropped, but
         // an error for a different request still reports — a form `POST`
@@ -1933,5 +1967,4 @@ mod tests {
             "every member Rust calls on HydrolysisWebView/AssetResponse needs a matching @CalledFromNative member in HydrolysisWebView.kt, and vice versa"
         );
     }
-
 }
