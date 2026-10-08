@@ -954,6 +954,48 @@ fn pending_lazy_height_refresh_precedes_scroll_input() {
     );
 }
 
+/// The background a frame pumps reaches the platform's compositor hook:
+/// `set_blur_behind(true)` for the behind-window levels, `false` for a
+/// within-window level and for a colour — the headless window records the
+/// last request the way a winit window records its protocol state.
+#[test]
+fn a_behind_window_material_asks_the_platform_to_blur_behind() {
+    use waterui::background::Material;
+
+    let env = crate::renderer::tests::test_environment();
+    for (material, expected) in [
+        (Material::UltraThin, true),
+        (Material::Thin, true),
+        (Material::Regular, false),
+        (Material::Thick, false),
+        (Material::UltraThick, false),
+    ] {
+        let window = Window::new("", binding(WindowState::Normal), || ()).background(material);
+        let mut runtime = runtime_window_for(window);
+        render_window(&mut runtime, &env, &mut || false);
+        assert_eq!(
+            runtime.platform.blur_behind(),
+            Some(expected),
+            "{material:?} must dispatch set_blur_behind({expected})"
+        );
+    }
+
+    // A colour asks for no compositor blur, translucent or not.
+    for color in [
+        waterui::Color::srgb(51, 51, 51),
+        waterui::Color::srgb(51, 51, 51).with_opacity(0.5),
+    ] {
+        let window = Window::new("", binding(WindowState::Normal), || ()).background(color);
+        let mut runtime = runtime_window_for(window);
+        render_window(&mut runtime, &env, &mut || false);
+        assert_eq!(
+            runtime.platform.blur_behind(),
+            Some(false),
+            "a colour window background must dispatch set_blur_behind(false)"
+        );
+    }
+}
+
 fn runtime_window_for(window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
     runtime_window_sized(window, 16, 16)
 }

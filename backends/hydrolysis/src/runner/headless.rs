@@ -27,6 +27,10 @@ pub(super) struct HeadlessPlatformWindow {
     /// through [`HeadlessRuntime::set_touch_scroll_config`], like a real
     /// touch platform pushing its `ViewConfiguration` values.
     touch_scroll_config: Cell<Option<crate::platform::TouchScrollConfig>>,
+    /// The last blur-behind request `set_blur_behind` delivered — the
+    /// headless stand-in for the compositor protocol a real host dispatches
+    /// to, read by the runner's background tests.
+    blur_behind: Cell<Option<bool>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +58,7 @@ impl HeadlessPlatformWindow {
             occluded: Cell::new(false),
             pointer_position: None,
             touch_scroll_config: Cell::new(None),
+            blur_behind: Cell::new(None),
         }
     }
 
@@ -144,6 +149,10 @@ impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
     fn surface(&mut self) -> &mut dyn crate::platform::SurfaceProvider {
         crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
     }
+
+    fn set_blur_behind(&mut self, blur: bool) {
+        self.blur_behind.set(Some(blur));
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -152,6 +161,12 @@ impl HeadlessPlatformWindow {
     /// — a test's stand-in for the window-system visibility signal.
     pub(super) fn set_occluded(&self, occluded: bool) {
         self.occluded.set(occluded);
+    }
+
+    /// The last blur-behind request the runner pushed — `None` until the
+    /// first `set_blur_behind` arrives.
+    pub(super) const fn blur_behind(&self) -> Option<bool> {
+        self.blur_behind.get()
     }
 
     /// The last (min, max) content-size limits the runner applied, for tests.
@@ -502,6 +517,7 @@ impl HeadlessRuntime {
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
+        renderer.set_window_closable(window.closable);
 
         Self {
             env,
@@ -548,6 +564,7 @@ impl HeadlessRuntime {
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
+        renderer.set_window_closable(window.closable);
         RuntimeWindow::new(
             window,
             platform,

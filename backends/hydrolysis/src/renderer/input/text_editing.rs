@@ -2068,9 +2068,12 @@ impl SemanticCore {
     /// `selection_menu` items go through the same [`popup_menu_nodes`]
     /// conversion `.context_menu` items take — a nested `Menu` keeps its
     /// structure and opens as a submenu rather than flattening or panicking.
+    /// `owner_closable` is the owning window's `closable`, the enabled state
+    /// a Close Window row carries.
     pub(crate) fn build_text_context_menu_nodes(
         target: &TextInputTarget,
         env: &Environment,
+        owner_closable: bool,
     ) -> Vec<PopupMenuNode> {
         let has_selection = {
             let slot = target.selection.borrow();
@@ -2098,6 +2101,7 @@ impl SemanticCore {
             nodes.extend(crate::renderer::views::popup_menu_nodes(
                 &target.model.custom_selection_menu_items(),
                 env,
+                owner_closable,
             ));
         }
         nodes
@@ -2125,7 +2129,11 @@ impl HydrolysisRenderer {
         // this dispatch's, so `.state(&value)` overlays reach the item
         // actions (water-rs/hydrolysis#140).
         let menu_env = target.env.layered_on(env);
-        let nodes = SemanticCore::build_text_context_menu_nodes(&target, &menu_env);
+        // The menu's rows carry this window's identity, so a Close Window
+        // row they fire targets the window the menu belongs to.
+        let menu_env = menu_env.extending(self.window_id);
+        let nodes =
+            SemanticCore::build_text_context_menu_nodes(&target, &menu_env, self.window_closable);
         if nodes.is_empty() {
             self.dismiss_active_text_context_menu();
             return false;

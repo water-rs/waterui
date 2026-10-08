@@ -68,6 +68,20 @@ fn trials() -> Vec<Trial> {
                 window::bind_root_window_wires_a_live_window(mtm());
                 Ok(())
             }),
+            Trial::test(
+                "menus::the_window_menu_opens_with_the_standard_close_item",
+                || {
+                    menus::the_window_menu_opens_with_the_standard_close_item();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "menus::a_pull_down_validates_its_callback_rows_from_their_command",
+                || {
+                    menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                    Ok(())
+                },
+            ),
         ]);
         #[cfg(feature = "gpu_surface")]
         {
@@ -78,6 +92,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(target_os = "ios")]
     {
         tests.extend(tabs::trials());
+        tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
     }
     tests.extend(migration::trials());
@@ -141,6 +156,13 @@ fn base_trials() -> Vec<Trial> {
             "resolve::unclaimed_wrappers_panic_while_claimed_render",
             || {
                 resolve::unclaimed_wrappers_panic_while_claimed_render();
+                Ok(())
+            },
+        ),
+        Trial::test(
+            "resolve::control_leaves_answer_their_intrinsic_height",
+            || {
+                resolve::control_leaves_answer_their_intrinsic_height();
                 Ok(())
             },
         ),
@@ -685,8 +707,15 @@ mod leaf {
 /// to hand it back to), so a spurious empty render could not masquerade as
 /// a pass.
 mod resolve {
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::form::picker::{PickerItem, picker};
+    use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::slider::slider;
+    use waterui::component::text_field::TextField;
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
+    use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
@@ -822,6 +851,51 @@ mod resolve {
         render(());
         render(Spacer::new(8.0));
         render(IgnorableMetadata::new((), Unregistered));
+    }
+
+    /// §6's control contract: a finite height offer is advice, not an
+    /// allocation. The slider, the default-style picker and both text
+    /// fields answer their intrinsic height to it — a `VStack` above them
+    /// cannot starve a trailing `ScrollView` by handing out space that
+    /// only exists because the control claimed it.
+    pub fn control_leaves_answer_their_intrinsic_height() {
+        let volume = binding(0.5_f64);
+        let selection = binding("Alpha");
+        let text_value = binding(Str::from(""));
+        let secret = binding(Secure::new(String::new()));
+        let items: Vec<PickerItem<&'static str>> = vec![
+            waterui::text!("Alpha").tag("Alpha"),
+            waterui::text!("Beta").tag("Beta"),
+            waterui::text!("Gamma").tag("Gamma"),
+        ];
+        let leaves = [
+            ("slider", render(slider("Volume", &volume))),
+            ("picker", render(picker("Letter", items, &selection))),
+            ("text field", render(TextField::new("Name", &text_value))),
+            (
+                "secure field",
+                render(SecureField::new("Password", &secret)),
+            ),
+        ];
+        for (name, leaf) in leaves {
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), Some(500.0)))
+                .size;
+            let unspecified = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), None))
+                .size;
+            assert_eq!(
+                offered.height.to_bits(),
+                unspecified.height.to_bits(),
+                "{name} answers a finite height offer with its intrinsic height"
+            );
+            assert!(
+                offered.height < 500.0,
+                "{name} must not grow into the offered height"
+            );
+        }
     }
 }
 
@@ -1510,6 +1584,97 @@ mod window {
     pub use waterui_apple::native_test_support::{
         bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
     };
+}
+
+/// The standard menu bar's content, read back off the installed `NSMenu`s.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod menus {
+    use std::rc::Rc;
+
+    use cocoa_ui::appkit::{Command, Menu, MenuButton, MenuItem};
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+    use waterui_apple::native_test_support::menus::window_menu_rows;
+
+    use crate::mtm;
+
+    /// `build_default`'s Window menu starts with the standard Close item —
+    /// ⌘W, untargeted `performClose:`, disabled while no key window takes
+    /// it — unless a declared menu carries Close, when the Window menu has
+    /// none.
+    pub fn the_window_menu_opens_with_the_standard_close_item() {
+        let rows = window_menu_rows(
+            mtm(),
+            CloseWindowPlacement::WindowMenu,
+            Some(Shortcut::new('w').command()).as_ref(),
+        );
+        let first = rows.first().expect("the Window menu has rows");
+        assert_eq!(first.title, "Close");
+        assert_eq!(first.key_equivalent, "w");
+        assert_eq!(first.action.as_deref(), Some("performClose:"));
+        assert!(first.modifiers.contains(NSEventModifierFlags::Command));
+        assert!(!first.enabled, "no key window takes `performClose:`");
+
+        let declared = window_menu_rows(mtm(), CloseWindowPlacement::Declared, None);
+        assert!(!declared.is_empty(), "the Window menu keeps its other rows");
+        assert!(
+            declared
+                .iter()
+                .all(|row| row.title != "Close" && row.action.as_deref() != Some("performClose:")),
+            "a declared Close is never repeated in the Window menu: {declared:?}"
+        );
+    }
+
+    /// A mounted pull-down validates its rows each time it opens, and a
+    /// callback row answers from its command's enabled state — set on the
+    /// item before or after its action, or carried by the [`Command`].
+    pub fn a_pull_down_validates_its_callback_rows_from_their_command() {
+        let mtm = mtm();
+        // Validation asks the application for each row's target, as it
+        // does in a launched app.
+        let _app = NSApplication::sharedApplication(mtm);
+        let button = MenuButton::new(mtm);
+        let menu = Menu::new(mtm, "");
+        menu.add_item(MenuItem::new(mtm, "", None, ""));
+        menu.add_item(
+            MenuItem::new(mtm, "on", None, "")
+                .with_enabled(true)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off", None, "")
+                .with_enabled(false)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off after", None, "")
+                .with_action(|| {})
+                .with_enabled(false),
+        );
+        let off_command = Command {
+            label: "off command".to_owned(),
+            enabled: false,
+            ..Command::default()
+        };
+        menu.add_item(MenuItem::command(mtm, &off_command, Rc::new(|| {})));
+        button.set_menu(&menu);
+
+        let native = menu.menu();
+        assert!(
+            native.autoenablesItems(),
+            "the pull-down validates its rows"
+        );
+        native.update();
+        let enabled: Vec<bool> = (1..native.numberOfItems())
+            .map(|index| {
+                native
+                    .itemAtIndex(index)
+                    .expect("a row at every index")
+                    .isEnabled()
+            })
+            .collect();
+        assert_eq!(enabled, [true, false, false, false]);
+    }
 }
 
 /// GPU-surface ownership regression coverage (#1725): a real mounted
@@ -4277,5 +4442,315 @@ mod list_scroll {
             Box::new(a_bare_request_takes_over_an_in_flight_animation),
         ));
         trial_each(named)
+    }
+}
+
+/// Navigation-chrome trials: the bar intents a page records in
+/// `set_page` apply through the stack's `UINavigationControllerDelegate`.
+#[cfg(target_os = "ios")]
+mod navigation {
+    use cocoa_ui::objc2_ui_kit::{UINavigationController, UIView, UIViewController};
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::{NavContentController, NavPage};
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::navigation::{
+        NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView,
+    };
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    use super::{mtm, resolve};
+
+    /// The `UINavigationController` owning a view in the subtree,
+    /// depth-first — either the view's own controller is the nav
+    /// controller, or the page controller answers one.
+    fn nav_controller_in(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "navigation::a_first_page_bottom_bar_unhides_the_toolbar",
+                || {
+                    a_first_page_bottom_bar_unhides_the_toolbar();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::the_top_page_drives_the_navigation_bar",
+                || {
+                    the_top_page_drives_the_navigation_bar();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_buried_pages_set_page_leaves_the_bar_alone",
+                || {
+                    a_buried_pages_set_page_leaves_the_bar_alone();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::the_top_pages_reactive_hidden_writes_and_rides_transitions",
+                || {
+                    the_top_pages_reactive_hidden_writes_and_rides_transitions();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_buried_pages_reactive_hidden_leaves_the_bar_alone",
+                || {
+                    a_buried_pages_reactive_hidden_leaves_the_bar_alone();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The root page's intent is recorded in `set_page` while
+    /// `navigationController()` is still nil — a first page declaring
+    /// bottom items must still unhide the stack's toolbar once the page
+    /// resolves. Without it the iOS 26 floating bottom bar never mounts.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_first_page_bottom_bar_unhides_the_toolbar() {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::BottomBar,
+                    text("Action"),
+                )],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isToolbarHidden(),
+            "the first page's bottom bar unhides the toolbar"
+        );
+    }
+
+    /// A stack whose root page hides the navigation bar — the fixture
+    /// the bar trials push onto. The leaf mounts in a key window:
+    /// `UINavigationController` only delivers its transition delegate
+    /// callbacks to an attached view hierarchy. The returned leaf and
+    /// window keep the driver and the hierarchy alive; the controller
+    /// is the stack's `UINavigationController`.
+    fn hidden_root_stack() -> (
+        waterui_apple::contract::NativeLeaf,
+        Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+        Retained<UINavigationController>,
+    ) {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(false),
+        ));
+        let window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        (leaf, window, nav)
+    }
+
+    /// A pushed page carrying its own `hidden` intent — chrome the
+    /// harness installs natively, the way the driver installs the
+    /// model's pushed pages.
+    fn pushed_page(hidden: bool) -> Retained<NavContentController> {
+        let page = NavContentController::new(mtm(), &UIView::new(mtm()));
+        page.set_page(&NavPage {
+            hidden,
+            ..NavPage::default()
+        });
+        page
+    }
+
+    /// Root hides the bar, a pushed page shows it: each transition
+    /// applies the incoming page's recorded intent — the bar is shown
+    /// after the push and hidden again after the pop. `willShow` lands
+    /// inside the transition's main-queue delivery, so the assertions
+    /// pump the run loop rather than read the flag mid-flush.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn the_top_page_drives_the_navigation_bar() {
+        let (_leaf, _window, nav) = hidden_root_stack();
+        assert!(
+            nav.isNavigationBarHidden(),
+            "the root page's hidden intent applies at mount"
+        );
+
+        nav.pushViewController_animated(&pushed_page(false), false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "the pushed page's shown intent rides the push"
+        );
+
+        nav.popViewControllerAnimated(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || nav.isNavigationBarHidden()),
+            "the pop applies the root page's hidden intent"
+        );
+    }
+
+    /// `set_page` on a page under the top records intent without
+    /// writing the bar — a re-rendered root page never touches the
+    /// chrome the pushed page shows.
+    fn a_buried_pages_set_page_leaves_the_bar_alone() {
+        let (_leaf, _window, nav) = hidden_root_stack();
+        nav.pushViewController_animated(&pushed_page(false), false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "precondition: the pushed page shows the bar"
+        );
+
+        let root = nav
+            .viewControllers()
+            .objectAtIndex(0)
+            .downcast::<NavContentController>()
+            .expect("the root page is a NavContentController");
+        root.set_page(&NavPage {
+            hidden: true,
+            ..NavPage::default()
+        });
+        assert!(
+            !pump_main_until(0.5, || nav.isNavigationBarHidden()),
+            "a buried page's set_page never reaches the bar"
+        );
+
+        // The re-run still recorded the intent: popping back applies it.
+        nav.popViewControllerAnimated(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || nav.isNavigationBarHidden()),
+            "the re-rendered root's intent applies when it becomes top"
+        );
+    }
+
+    /// Pumps the main queue until `page` is `nav`'s top, the bar reads
+    /// `hidden`, and the transition coordinator has torn down — the
+    /// three flushes arrive unordered: `topViewController` can re-point
+    /// either before or after `willShow` applies the incoming page's
+    /// intent, and a bar write issued while the coordinator is still
+    /// live is swallowed with it.
+    fn settles_with_bar(
+        nav: &UINavigationController,
+        page: &UIViewController,
+        hidden: bool,
+    ) -> bool {
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            nav.topViewController()
+                .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), page))
+                && nav.isNavigationBarHidden() == hidden
+                && nav.transitionCoordinator().is_none()
+        })
+    }
+
+    /// The top page's reactive `hidden` signal writes the bar at once
+    /// — and what it records is what a later round trip re-applies:
+    /// show reactively on top, hide by pushing, and the pop back shows
+    /// the bar — the record the reactive path kept, not the
+    /// mount-time flag.
+    ///
+    /// The reactive write goes first: a harness-driven pop reports a
+    /// model pop that drops the popped `Entry` — and the binding
+    /// watcher with it — so no reactive write can follow one.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn the_top_pages_reactive_hidden_writes_and_rides_transitions() {
+        let visible = binding(false);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(visible.clone()),
+        ));
+        let _window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            nav.isNavigationBarHidden(),
+            "precondition: the root page hides the bar"
+        );
+
+        // The top page's reactive change writes the bar at once.
+        visible.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "the top page's reactive show reaches the bar"
+        );
+
+        // Push a hiding page, then pop: the willShow intent the pop
+        // re-applies is the reactively-kept record — the bar shows.
+        let pushed = pushed_page(true);
+        nav.pushViewController_animated(&pushed, false);
+        assert!(
+            settles_with_bar(&nav, &pushed, true),
+            "precondition: the push settles on the pushed page hiding the bar"
+        );
+        nav.popViewControllerAnimated(false);
+        let root = nav.viewControllers().objectAtIndex(0);
+        assert!(
+            settles_with_bar(&nav, &root, false),
+            "the top page's reactive intent survives the push/pop round trip"
+        );
+    }
+
+    /// A buried page's reactive `hidden` change stays recorded-only
+    /// while another page is top — the bar keeps the pushed page's
+    /// shown intent — and the record applies when the pop shows the
+    /// page again.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_buried_pages_reactive_hidden_leaves_the_bar_alone() {
+        let visible = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(visible.clone()),
+        ));
+        let _window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isNavigationBarHidden(),
+            "precondition: the root page shows the bar"
+        );
+
+        let pushed = pushed_page(false);
+        nav.pushViewController_animated(&pushed, false);
+        assert!(
+            settles_with_bar(&nav, &pushed, false),
+            "precondition: the push settles on the pushed page showing the bar"
+        );
+
+        // The buried root asks for a hidden bar — intent only: the
+        // pushed page's chrome stays up.
+        visible.set(false);
+        assert!(
+            !pump_main_until(0.5, || nav.isNavigationBarHidden()),
+            "a buried page's reactive change leaves the bar alone"
+        );
+
+        nav.popViewControllerAnimated(false);
+        let root = nav.viewControllers().objectAtIndex(0);
+        assert!(
+            settles_with_bar(&nav, &root, true),
+            "the buried page's recorded intent applies when it shows again"
+        );
     }
 }

@@ -83,6 +83,7 @@ impl SemanticWindow {
             SessionTextEngine::from_collection(fonts, family_resolution),
         );
         core.set_window_id(window_id);
+        core.set_window_closable(window.closable);
         #[cfg(feature = "accessibility")]
         {
             core.use_semantic_keyboard_activation();

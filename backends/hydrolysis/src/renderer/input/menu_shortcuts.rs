@@ -23,10 +23,13 @@ use std::rc::{Rc, Weak};
 use nami::{Computed, Signal as _};
 use waterui::app::Quit;
 use waterui::window::WindowState;
-use waterui_controls::menu::{NamedKey, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey};
+use waterui_controls::menu::{
+    CloseWindowChord, MenuItem, NamedKey, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey,
+};
 use waterui_core::Environment;
 use waterui_core::Str;
 use waterui_core::handler::SharedAction;
+use waterui_core::impl_extractor;
 
 use super::popup_menu::{PopupMenuNode, PopupMenuStateGroup};
 use crate::HydrolysisRenderer;
@@ -210,6 +213,70 @@ pub const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the run
      environment — the winit runner, headless run and HeadlessRuntime, SemanticRuntime and \
      the web runner all install one; a renderer built outside a runner seeds its own";
 
+/// The window-close primitive a declared `MenuItem::CloseWindow` stands
+/// for: handed a [`WindowId`], it asks that window to close through the
+/// window's ordinary close path, so closing the last one still follows the
+/// application's `LastWindowPolicy`. Which window is handed over is the
+/// dispatch's business — a chord's dispatching window, a popup row's owner
+/// — never a tracked "key window".
+///
+/// Only a runner whose windows the application can close installs one — the
+/// winit desktop runner. Hosts whose windows the system or the host owns
+/// (Android, the web, the headless and semantic runtimes) install none, and
+/// a declared Close Window is omitted there.
+#[derive(Clone)]
+pub struct WindowCloser(Rc<dyn Fn(WindowId)>);
+
+impl std::fmt::Debug for WindowCloser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowCloser").finish_non_exhaustive()
+    }
+}
+
+impl WindowCloser {
+    /// A primitive that runs `close` with the window to close. Only runners
+    /// with closable windows build one.
+    #[cfg(any(hydrolysis_closable_windows, test))]
+    pub fn new(close: impl Fn(WindowId) + 'static) -> Self {
+        Self(Rc::new(close))
+    }
+
+    /// Asks `window` to close.
+    pub fn request(&self, window: WindowId) {
+        (self.0)(window);
+    }
+}
+
+/// The command a declared `MenuItem::CloseWindow` stands for wherever
+/// Hydrolysis renders it as a command — a popup-menu row, a chord in the
+/// shortcut table: the framework's [`MenuItem::close_window_command`]
+/// (its label and the application's decided close chord —
+/// [`CloseWindowChord`], the one `App::into_parts` installs over the
+/// resolved menu bar, so a mounted or context menu carries the same chord
+/// as the bar: ⌘W on macOS and Ctrl+W elsewhere through
+/// [`ChordModifiers`]' command→control mapping) acting through the runner's
+/// [`WindowCloser`].
+///
+/// The window the command acts on rides in the action's environment: the
+/// chord registry injects the window it dispatches for, and a popup menu
+/// injects its owner window's identity when the menu is built.
+/// `owner_closable` is the owner window's `closable` — fixed at mount — so
+/// a popup row built for a window without a close button reads disabled;
+/// the shared close path still re-checks it. `None` when `env` carries no
+/// [`WindowCloser`]: the host's windows are not the application's to
+/// close, and the item is omitted.
+pub fn close_window_command(env: &Environment, owner_closable: bool) -> Option<ResolvedCommand> {
+    let close = env.get::<WindowCloser>()?.clone();
+    let mut command =
+        MenuItem::close_window_command(env, CloseWindowChord::of(env), move |window: WindowId| {
+            close.request(window);
+        });
+    if !owner_closable {
+        command.disabled = Computed::constant(true);
+    }
+    Some(command)
+}
+
 /// A window's identity for menu-chord dispatch: the runner assigns one when it
 /// creates the window and hands it to the window's renderer, so the shared
 /// [`MenuShortcutRegistry`] can scope a mounted `Menu`'s chords to the window
@@ -228,6 +295,19 @@ pub enum WindowId {
     /// dispatch.
     Orphan,
 }
+
+impl WindowId {
+    /// The winit window this id names, when it names one.
+    #[cfg(hydrolysis_winit)]
+    pub(crate) const fn as_winit(self) -> Option<winit::window::WindowId> {
+        match self {
+            Self::Winit(id) => Some(id),
+            Self::Runner(_) | Self::Orphan => None,
+        }
+    }
+}
+
+impl_extractor!(WindowId);
 
 impl HydrolysisRenderer {
     /// (Re)register a mounted `Menu` trigger's chords on the app's shared
@@ -254,7 +334,10 @@ impl HydrolysisRenderer {
 /// The commands of a `Menu` resolve into shortcut entries through the items
 /// signal, so a menu whose items change mounts its new chords on the next
 /// lookup without any registration churn. A declared Quit arms the chord of
-/// [`Quit::command`], and nothing where `env` has no application quit.
+/// [`Quit::command`], and nothing where `env` has no application quit; a
+/// declared Close Window arms the application's decided chord of
+/// [`close_window_command`], and nothing where the host's windows cannot be
+/// closed.
 fn collect_menu_shortcuts(
     items: &[ResolvedMenuItem],
     env: &Environment,
@@ -265,6 +348,15 @@ fn collect_menu_shortcuts(
             ResolvedMenuItem::Command(command) => collect_command_shortcut(command, out),
             ResolvedMenuItem::Quit => {
                 if let Some(command) = env.get::<Quit>().map(|quit| quit.command(env)) {
+                    collect_command_shortcut(&command, out);
+                }
+            }
+            ResolvedMenuItem::CloseWindow => {
+                // The mounted/app-bar chord acts on the dispatching window,
+                // which the registry injects at dispatch time — whether that
+                // window is closable is the shared close path's check, not
+                // this chord's, so the command always builds enabled.
+                if let Some(command) = close_window_command(env, true) {
                     collect_command_shortcut(&command, out);
                 }
             }
@@ -566,10 +658,22 @@ impl MenuShortcutRegistry {
         if shortcut.disabled.snapshot() {
             return true;
         }
+        // A `WindowId` a command's action extracts names the window it acts
+        // on: mounted and app-bar chords act on the window the chord
+        // dispatched for, so that window rides in the action's environment.
+        // A popup source's rows carry their owner window's id already — it
+        // is the row's target, never the window the chord happened to
+        // dispatch on.
+        let action_env = menu_env.layered_on(env);
+        let action_env = if group.is_none() {
+            action_env.extending(window)
+        } else {
+            action_env
+        };
         if let Some(group) = group {
             group.close_all();
         }
-        call_action_discarding_result(&shortcut.action, &menu_env.layered_on(env));
+        call_action_discarding_result(&shortcut.action, &action_env);
         true
     }
 }

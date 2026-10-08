@@ -380,6 +380,10 @@ pub struct SemanticCore {
     /// Renderers no runner claimed — embedded GPU hosts, direct test
     /// construction — keep [`WindowId::Orphan`].
     window_id: WindowId,
+    /// The `closable` the runner's window was declared with — fixed at
+    /// mount, so a menu's Close Window row reads it when the row is built
+    /// and needs no signal.
+    window_closable: bool,
     render_depth: usize,
     /// The retained nodes whose subtrees are currently flushing, innermost
     /// last — the ancestry chain input registration reads to tell a gesture
@@ -627,6 +631,18 @@ impl SemanticCore {
         self.window_id = window_id;
     }
 
+    /// Assigns the `closable` the runner's window was declared with — called
+    /// once when the runner creates the window, so menus built in it render
+    /// a Close Window row enabled or disabled accordingly.
+    pub(crate) const fn set_window_closable(&mut self, closable: bool) {
+        self.window_closable = closable;
+    }
+
+    /// The `closable` the runner's window was declared with.
+    pub(crate) const fn window_closable(&self) -> bool {
+        self.window_closable
+    }
+
     /// Enters an `OnKeyPress` scope for the subtree now flushing; targets
     /// registered inside snapshot it as their bubble chain.
     pub(crate) fn push_key_handler_scope(
@@ -700,6 +716,7 @@ impl SemanticCore {
             text_editing: TextEditingState::default(),
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
+            window_closable: true,
             render_depth: 0,
             owner_stack: Vec::new(),
             root_core,

@@ -193,12 +193,17 @@ fn pixel_extent(value: usize) -> f64 {
 /// the target; a surface partially outside keeps its full producer size
 /// and crops through `uv_origin`/`uv_scale` instead. `None` when the rect
 /// is empty or lands entirely outside.
+///
+/// `pixel_format` is a closure so it is asked only once the spec is known
+/// to produce a rendered surface: a surface the geometry rejects has no
+/// format to declare, and asking it can panic on a surface that never
+/// configured one.
 #[must_use]
 pub fn surface_spec(
     surface_id: usize,
     bounds: Rect,
     geometry: CaptureGeometry,
-    pixel_format: MTLPixelFormat,
+    pixel_format: impl FnOnce() -> MTLPixelFormat,
     target_width: usize,
     target_height: usize,
 ) -> Option<SurfaceSpec> {
@@ -293,7 +298,7 @@ pub fn surface_spec(
         },
         uv_origin,
         uv_scale,
-        pixel_format,
+        pixel_format: pixel_format(),
     })
 }
 
@@ -405,6 +410,11 @@ pub trait CapturableSurface {
     /// Arms `waker` to wake after the next successfully presented frame;
     /// an output that has already presented may leave it unarmed.
     fn register_ready_waiter(&self, waker: std::task::Waker);
+    /// `true` once this surface's first presented frame can never land —
+    /// a settled terminal failure the capture wait resolves on rather
+    /// than hanging. Not a substitute for [`Self::has_presented_frame`]:
+    /// the wait covers `presented || failed`, nothing else.
+    fn presentation_failed(&self) -> bool;
 }
 
 impl fmt::Debug for dyn CapturableSurface {
@@ -1775,7 +1785,7 @@ impl ViewCapture {
                 view_key(view),
                 bounds,
                 geometry,
-                surface.capture_pixel_format(),
+                || surface.capture_pixel_format(),
                 target_width,
                 target_height,
             ) {
@@ -2371,7 +2381,7 @@ mod tests {
         }
 
         fn spec_for(geometry: CaptureGeometry, child: Rect) -> SurfaceSpec {
-            surface_spec(0, child, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400)
+            surface_spec(0, child, geometry, || MTLPixelFormat::BGRA8Unorm, 400, 400)
                 .expect("the child intersects the target")
         }
 
@@ -2486,7 +2496,8 @@ mod tests {
                 Rect::new(0.9, 0.9, 10.0, -10.0),
             ] {
                 assert!(
-                    surface_spec(0, rect, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400).is_none(),
+                    surface_spec(0, rect, geometry, || MTLPixelFormat::BGRA8Unorm, 400, 400)
+                        .is_none(),
                     "an empty child rect maps to None: {rect:?}"
                 );
             }
@@ -2540,7 +2551,7 @@ mod tests {
                 Rect::new(-500.0, 0.0, 100.0, 100.0),
             ] {
                 assert!(
-                    surface_spec(0, child, geometry, MTLPixelFormat::BGRA8Unorm, 400, 400)
+                    surface_spec(0, child, geometry, || MTLPixelFormat::BGRA8Unorm, 400, 400)
                         .is_none(),
                     "a surface entirely outside maps to None: {child:?}"
                 );
@@ -2555,7 +2566,7 @@ mod tests {
                 0,
                 Rect::new(40.0, 20.0, 100.0, 100.0),
                 geometry,
-                MTLPixelFormat::BGRA8Unorm,
+                || MTLPixelFormat::BGRA8Unorm,
                 400,
                 800,
             )

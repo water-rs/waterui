@@ -5,11 +5,19 @@
 //! responder-chain items keyboard shortcuts route through) and Window menus,
 //! with the declared `menu_bar` content appended — macOS rebuilds the whole
 //! bar on every change, iOS rebuilds through `application:buildMenuWith:`.
+//!
+//! The standard Window menu carries Close unless a declared menu places
+//! `MenuItem::CloseWindow` itself — [`CloseWindowPlacement`] decides which,
+//! from the declared items alone — and its chord is the application's one
+//! decision, [`CloseWindowChord`], which `App::into_parts` installs: ⌘W
+//! unless the application binds it, ⇧⌘W then, none when it binds both.
 
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+#[cfg(target_os = "macos")]
+use waterui::component::menu::{CloseWindowChord, CloseWindowPlacement};
 use waterui::component::menu::{
     CommandRole, Menu as DeclaredMenu, NamedKey, ResolvedCommand, ResolvedMenuItem,
     ResolvedNestedMenu, ShortcutKey,
@@ -272,6 +280,17 @@ pub fn menu_tree(
             // (`build_default`), so a declared one is dropped rather than
             // shown twice. iOS has no application quit, so it is omitted.
             ResolvedMenuItem::Quit => None,
+            // macOS: the standard Close item where it was declared, with the
+            // application's decided chord — the Window menu then leaves its
+            // own out (`CloseWindowPlacement`).
+            #[cfg(target_os = "macos")]
+            ResolvedMenuItem::CloseWindow => Some(standard_close_window_node(
+                CloseWindowChord::of(env).as_ref(),
+            )),
+            // iOS: the system owns every scene's window, so a declared Close
+            // Window is omitted.
+            #[cfg(not(target_os = "macos"))]
+            ResolvedMenuItem::CloseWindow => None,
         })
         .collect()
 }
@@ -289,11 +308,13 @@ mod imp {
 
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::appkit::{Application, KeyModifiers, Menu, MenuAction, MenuItem};
-    use waterui::component::menu::Menu as DeclaredMenu;
+    use waterui::component::menu::{
+        CloseWindowChord, CommandRole, Menu as DeclaredMenu, ResolvedMenuItem, Shortcut,
+    };
     use waterui::reactive::{Computed, Signal};
     use waterui_backend_core::Environment;
 
-    use super::{menu_tree, resolve};
+    use super::{CloseWindowPlacement, kit_command_fields, menu_tree, resolve};
 
     /// What this application calls itself in its own menu: the display name a
     /// bundle chooses for people to read, then the bundle name, then the
@@ -318,28 +339,76 @@ mod imp {
 
     /// The standard Quit item as a kit menu-tree node, for the menus built
     /// from `MenuTreeNode`s (context menus): the same title and chord, its
-    /// action the same `terminate:` the application menu's item sends.
+    /// action the same untargeted `terminate:` the application menu's item
+    /// sends.
     #[cfg(feature = "context_menu")]
     pub fn standard_quit_node() -> cocoa_ui::menu::MenuTreeNode {
-        cocoa_ui::menu::MenuTreeNode::Command(
+        cocoa_ui::menu::MenuTreeNode::Standard(
             cocoa_ui::menu::Command {
                 label: quit_title(),
-                enabled: true,
                 key_equivalent: String::from("q"),
                 modifiers: KeyModifiers::COMMAND,
                 ..cocoa_ui::menu::Command::default()
             },
-            Rc::new(|| {
-                let mtm = MainThreadMarker::new().expect("menu actions run on the main thread");
-                Application::shared(mtm).terminate();
-            }),
+            MenuAction::Quit,
+        )
+    }
+
+    /// The standard Close Window item's title — `AppKit`'s own word for
+    /// it, untranslated like the other standard items' titles here.
+    const CLOSE_WINDOW_TITLE: &str = "Close";
+
+    /// The standard Close Window item as a kit [`Command`] payload: the
+    /// title and the application's decided chord — ⌘W while the
+    /// application leaves it free, ⇧⌘W when a declared command holds ⌘W,
+    /// no key equivalent when it binds both.
+    fn standard_close_window_command(chord: Option<&Shortcut>) -> cocoa_ui::menu::Command {
+        kit_command_fields(
+            String::from(CLOSE_WINDOW_TITLE),
+            None,
+            None,
+            CommandRole::Standard,
+            chord,
+        )
+    }
+
+    /// The standard Close Window item — `performClose:` sent untargeted up
+    /// the responder chain, so the key window closes as its close button
+    /// would close it, and `AppKit` disables the item while no window can
+    /// close. Its key equivalent is the application's decided chord.
+    /// The Window menu carries it unless the application declares
+    /// `MenuItem::CloseWindow`; a declared one in a menu a window mounts
+    /// renders as this same item.
+    pub fn standard_close_window_item(mtm: MainThreadMarker, chord: Option<&Shortcut>) -> MenuItem {
+        MenuItem::standard(
+            mtm,
+            &standard_close_window_command(chord),
+            MenuAction::CloseWindow,
+        )
+    }
+
+    /// The standard Close Window item as a kit menu-tree node, for the
+    /// menus built from `MenuTreeNode`s (the declared menu bar, context
+    /// menus): the same title and chord, its action the same untargeted
+    /// `performClose:` sent up the responder chain — `AppKit` greys the
+    /// row out while no window can close.
+    pub fn standard_close_window_node(chord: Option<&Shortcut>) -> cocoa_ui::menu::MenuTreeNode {
+        cocoa_ui::menu::MenuTreeNode::Standard(
+            standard_close_window_command(chord),
+            MenuAction::CloseWindow,
         )
     }
 
     /// The standard menu bar's content: App, Edit, Window — the same menus
-    /// `main.swift.tpl` installed before `app.run()`. Declared menus append
-    /// to it in [`install`].
-    fn build_default(mtm: MainThreadMarker, application: &Application) -> Menu {
+    /// `main.swift.tpl` installed before `app.run()`, with Close in the
+    /// Window menu when `close_window` places it there, armed with
+    /// `close_chord`. Declared menus append to it in [`install`].
+    fn build_default(
+        mtm: MainThreadMarker,
+        application: &Application,
+        close_window: CloseWindowPlacement,
+        close_chord: Option<&Shortcut>,
+    ) -> Menu {
         let name = app_name();
         let main = Menu::new(mtm, "");
 
@@ -401,7 +470,12 @@ mod imp {
         main.add_item(MenuItem::new(mtm, "Edit", None, "").with_submenu(&edit_menu));
 
         // Window menu: registered so AppKit fills it with the window list.
+        // Close comes first, in the order of the title-bar buttons it
+        // shares a window with: close, minimize, zoom.
         let window_menu = Menu::new(mtm, "Window");
+        if close_window == CloseWindowPlacement::WindowMenu {
+            window_menu.add_item(standard_close_window_item(mtm, close_chord));
+        }
         window_menu.add_item(MenuItem::new(
             mtm,
             "Minimize",
@@ -424,19 +498,30 @@ mod imp {
 
     /// The standard macOS menu bar: the default menus plus the declared
     /// `nodes` appended in order — `menuBarDidChange`'s full rebuild.
+    /// `close_window` says whether the declared menus carry Close Window or
+    /// the Window menu does, and `close_chord` is the chord it carries.
     pub fn install(
         mtm: MainThreadMarker,
         application: &Application,
         nodes: &[cocoa_ui::menu::MenuTreeNode],
+        close_window: CloseWindowPlacement,
+        close_chord: Option<&Shortcut>,
     ) {
-        let main = build_default(mtm, application);
+        let main = build_default(mtm, application, close_window, close_chord);
         main.append_nodes(nodes);
         application.set_main_menu(&main);
     }
 
-    /// The menu bar before `app(env)` reports its declared content.
+    /// The menu bar before `app(env)` reports its declared content: nothing
+    /// is declared, so the Window menu carries Close with its free chord.
     pub fn install_default(mtm: MainThreadMarker, application: &Application) {
-        install(mtm, application, &[]);
+        install(
+            mtm,
+            application,
+            &[],
+            CloseWindowPlacement::WindowMenu,
+            ResolvedMenuItem::close_window_chord(&[]).as_ref(),
+        );
     }
 
     /// Installs `menu_bar` and rebuilds the bar on every change —
@@ -456,7 +541,13 @@ mod imp {
             Rc::new(move || {
                 let items = resolved.snapshot();
                 let nodes = menu_tree(&items, &env);
-                install(mtm, &application, &nodes);
+                install(
+                    mtm,
+                    &application,
+                    &nodes,
+                    CloseWindowPlacement::for_declared(&items),
+                    CloseWindowChord::of(&env).as_ref(),
+                );
             })
         };
         rebuild();
@@ -540,8 +631,17 @@ mod imp {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::{NamedKey, ShortcutKey, key_equivalent_for};
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use cocoa_ui::appkit::{KeyModifiers, MenuAction};
+    use cocoa_ui::menu::MenuTreeNode;
     use cocoa_ui::objc2_app_kit::{NSDeleteFunctionKey, NSF5FunctionKey};
+    use waterui::component::menu::{CloseWindowChord, Menu, MenuItem, ResolvedMenuItem};
+    use waterui::reactive::{Computed, Signal};
+    use waterui_backend_core::Environment;
+
+    use super::{NamedKey, ShortcutKey, key_equivalent_for, menu_tree, resolve};
 
     fn function_key(code: u32) -> String {
         String::from(char::from_u32(code).expect("function keys are scalar values"))
@@ -569,5 +669,50 @@ mod tests {
     #[should_panic(expected = "has no AppKit key equivalent")]
     fn a_named_key_without_an_appkit_equivalent_panics() {
         let _ = key_equivalent_for(&ShortcutKey::from(NamedKey::AudioVolumeUp));
+    }
+
+    /// `menus` resolved as the declared menu bar.
+    fn declared(menus: Vec<Menu>) -> Vec<ResolvedMenuItem> {
+        resolve(&Computed::constant(menus), &Environment::new()).snapshot()
+    }
+
+    /// A bare environment with the application's decided chord installed,
+    /// as `App::into_parts` installs it — here over an empty bar, so the
+    /// chord is ⌘W.
+    fn chord_env() -> Environment {
+        let mut env = Environment::new();
+        env.insert(CloseWindowChord::new(&Computed::constant(Vec::new()), &env));
+        env
+    }
+
+    /// A declared Close Window is the standard item, armed with the chord
+    /// the menu bar leaves free — ⌘W here, since nothing binds it.
+    #[test]
+    fn a_declared_close_window_emits_the_standard_item() {
+        let env = chord_env();
+        let nodes = menu_tree(&[ResolvedMenuItem::CloseWindow], &env);
+        let [MenuTreeNode::Standard(command, MenuAction::CloseWindow)] = nodes.as_slice() else {
+            panic!("a declared Close Window emits the standard Close node: {nodes:?}");
+        };
+        assert_eq!(command.label, "Close");
+        assert_eq!(command.key_equivalent, "w");
+        assert_eq!(command.modifiers, KeyModifiers::COMMAND);
+    }
+
+    #[test]
+    fn a_nested_declared_close_window_emits_the_standard_item() {
+        let env = chord_env();
+        let items = declared(vec![Menu::new("Window", (MenuItem::CloseWindow,))]);
+        let nodes = menu_tree(&items, &env);
+        let [MenuTreeNode::Submenu(_, children)] = nodes.as_slice() else {
+            panic!("a declared menu nests: {nodes:?}");
+        };
+        assert!(
+            matches!(
+                children.as_slice(),
+                [MenuTreeNode::Standard(_, MenuAction::CloseWindow)]
+            ),
+            "a nested Close Window emits the standard Close node: {children:?}"
+        );
     }
 }

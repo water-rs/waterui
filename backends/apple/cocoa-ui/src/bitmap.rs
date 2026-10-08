@@ -186,15 +186,15 @@ pub fn template_image(image: &CGImage, size: Size) -> Retained<objc2_app_kit::NS
     ns
 }
 
-/// A borderless offscreen `NSWindow` at `(-10_000, -10_000)` for headless
-/// capture — it never appears, but attaching a view to it drives `AppKit`'s
-/// window-dependent rendering paths.
+/// A borderless `NSWindow` that is never ordered in, for capture — it has
+/// no on-screen position to hide, but attaching a view to it drives
+/// `AppKit`'s window-dependent rendering paths.
 #[cfg(target_os = "macos")]
 #[must_use]
 /// # Panics
 ///
 /// On a failure to allocate the window.
-pub fn make_offscreen_window(
+pub fn capture_window(
     mtm: objc2::MainThreadMarker,
     size: Size,
 ) -> Retained<objc2_app_kit::NSWindow> {
@@ -205,7 +205,7 @@ pub fn make_offscreen_window(
     unsafe {
         let window: Retained<NSWindow> = NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
-            Rect::new(-10_000.0, -10_000.0, size.width, size.height).into(),
+            Rect::new(0.0, 0.0, size.width, size.height).into(),
             NSWindowStyleMask::Borderless,
             NSBackingStoreType::Buffered,
             false,
@@ -288,20 +288,6 @@ pub fn force_text_fields_display(view: &crate::PlatformView) {
     for subview in crate::view::subviews(view) {
         force_text_fields_display(&subview);
     }
-}
-
-/// Sends a macOS capture window front without activating the app — the
-/// ordering `orderFrontRegardless` implies.
-#[cfg(target_os = "macos")]
-pub fn show_capture_window(window: &objc2_app_kit::NSWindow) {
-    window.orderFrontRegardless();
-    window.display();
-}
-
-/// Closes a capture window after the bitmap lands.
-#[cfg(target_os = "macos")]
-pub fn close_capture_window(window: &objc2_app_kit::NSWindow) {
-    window.orderOut(None);
 }
 
 /// Mounts `view` in `window` through a plain `UIViewController`, unhides the

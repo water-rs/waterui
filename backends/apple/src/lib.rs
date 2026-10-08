@@ -6,12 +6,26 @@
 
 extern crate alloc;
 
+/// The offscreen capture shared by `view_renderer` and the macOS
+/// `preview` entry — nothing else references it. With `gpu_surface` the
+/// `AppKit` captures go through `capture_image`'s `ViewCapture` instead,
+/// so the bitmap-readback half only exists without it.
+#[cfg(all(
+    not(feature = "gpu_surface"),
+    any(
+        feature = "view_renderer",
+        all(target_os = "macos", feature = "preview")
+    )
+))]
+pub(crate) mod capture;
 pub mod contract;
 pub mod dispatch;
 pub mod embedding;
 pub mod entry;
 mod native_layout;
 mod native_log;
+#[cfg(all(target_os = "macos", feature = "preview"))]
+pub mod preview;
 pub mod resources;
 
 #[cfg(any(platform_timing, frame_progress))]
