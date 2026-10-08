@@ -474,7 +474,12 @@ pub struct RequestDecision {
 /// and history steps alike.
 /// A load the application starts (`loadUrl`, `goBack`, `goForward`,
 /// `reload`) never reaches `shouldOverrideUrlLoading`, so the Kotlin
-/// wrapper reports its target through [`Self::open`] before issuing it.
+/// wrapper reports its target through [`Self::open`].
+///
+/// Every URL the tracker compares is the engine's spelling, never the
+/// application's: the system `WebView` fixes up and canonicalizes what
+/// `loadUrl` is given, and every callback carries the result, so a
+/// `go_to("https://waterui.dev#b")` commits as `https://waterui.dev/#b`.
 ///
 /// Every input returns the events it produced instead of emitting them, so
 /// the caller emits after its borrow of the tracker ends — an application
@@ -515,7 +520,8 @@ impl NavigationTracker {
 
     /// A navigation begins — one the application started, or a main-frame
     /// request `shouldOverrideUrlLoading` admitted. Supersedes whatever was
-    /// open.
+    /// open. `url` is the engine's spelling of the target: the commit is
+    /// matched against it, and a redirect reports it as `from`.
     pub fn open(&mut self, url: Url) -> Vec<WebViewEvent> {
         self.phase = NavigationPhase::Open {
             url: url.clone(),
@@ -1397,9 +1403,10 @@ mod tests {
 
     #[test]
     fn navigation_a_blocked_redirect_is_the_last_event() {
-        // The order the device reports for `google.com` with redirects
-        // blocked: the cancelled load never commits, and the 100% that
-        // follows is the previous document's.
+        // The order the device reports for `go_to("https://google.com")`
+        // with redirects blocked: the cancelled load never commits, and the
+        // 100% that follows is the previous document's. The wrapper opens
+        // the engine's spelling of the target, so the redirect reports it.
         let mut drive = Drive::new();
         drive.tracker.set_redirects_enabled(false);
         drive.open("https://google.com/").progress(10);
@@ -1418,6 +1425,41 @@ mod tests {
         assert_eq!(
             drive.tracker.current_url(),
             Some(&url("https://google.com/"))
+        );
+    }
+
+    #[test]
+    fn navigation_a_same_document_go_to_commits_through_the_history_update() {
+        // `go_to("https://waterui.dev#b")` from `https://waterui.dev/`, in
+        // the device's order: no `onPageStarted`, `doUpdateVisitedHistory`
+        // commits it — `onPageFinished` feeds the tracker nothing — and the
+        // 100% report finishes it. The wrapper opens the engine's spelling,
+        // the one `doUpdateVisitedHistory` repeats.
+        let mut drive = Drive::new();
+        drive
+            .open("https://waterui.dev/")
+            .started("https://waterui.dev/", 0)
+            .progress(100);
+        drive.take();
+        drive
+            .open("https://waterui.dev/#b")
+            .progress(10)
+            .history("https://waterui.dev/#b")
+            .progress(100)
+            .progress(100);
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://waterui.dev/#b"),
+                loading(0),
+                loading(10),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+        assert_eq!(
+            drive.tracker.current_url(),
+            Some(&url("https://waterui.dev/#b"))
         );
     }
 

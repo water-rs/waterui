@@ -680,7 +680,8 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
     // The four loads the application starts go through Kotlin's
     // `navigate…` methods: Android reports none of them to
     // `shouldOverrideUrlLoading`, so the wrapper reports each target to
-    // `nativeOpenNavigation` before issuing it.
+    // `nativeOpenNavigation` itself, in the engine's spelling — the one
+    // every later callback carries, not the string handed to `go_to`.
     fn go_back(&self) {
         self.inner.call(WebViewMethodId::NavigateBack, &[]);
     }
@@ -914,8 +915,8 @@ fn percent(progress: jint) -> Result<u8, JniError> {
 }
 
 /// An application-started load — `navigateTo`, `navigateBack`,
-/// `navigateForward` or `navigateReload` — reporting its target before the
-/// Kotlin wrapper issues it. Android routes none of them through
+/// `navigateForward` or `navigateReload` — reporting its target as the
+/// engine spells it. Android routes none of them through
 /// `shouldOverrideUrlLoading`, so this is where they open.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeOpenNavigation(

@@ -355,16 +355,47 @@ private constructor(
     // ------------------------------------------------------------------
     // Application-started loads. Android reports none of them to
     // `shouldOverrideUrlLoading`, so each reports its target to Rust
-    // before it is issued — never a bare `loadUrl`/`goBack`/... from Rust.
+    // itself — never a bare `loadUrl`/`goBack`/... from Rust.
+    //
+    // The target is always the engine's spelling of the URL, never the
+    // application's: every later callback carries the engine's, and the
+    // tracker matches the commit against it. `loadUrl` and `reload` report
+    // after the call, because only then does the engine hold the entry it
+    // is loading; that is in time, because every `WebViewClient` and
+    // `WebChromeClient` callback is posted to this looper rather than
+    // called from inside them.
     // ------------------------------------------------------------------
 
+    /**
+     * `loadUrl`, then the URL the engine is loading. On the UI thread
+     * `loadUrl` creates the navigation's pending entry before it returns,
+     * and `getUrl()` is the visible entry, which for a load the application
+     * starts is that pending entry: the application's string after URL
+     * fixup and canonicalization, so `https://waterui.dev#b` reads back as
+     * `https://waterui.dev/#b`. A URL the engine refuses — invalid after
+     * fixup, or too long — leaves no pending entry, and on a view with no
+     * document `getUrl()` is then null. On a view that shows a document it
+     * is that document's URL instead, the same answer a load of that very
+     * URL gives (the engine turns it into a reload): this API cannot tell
+     * the two apart, and the refused load is then opened and never ends.
+     */
     @CalledFromNative
     fun navigateTo(url: String) {
-        openNavigation(url)
         loadUrl(url)
+        val target =
+            this.url
+                ?: throw IllegalStateException(
+                    "hydrolysis webview: the system WebView refused to load \"$url\"",
+                )
+        openNavigation(target)
     }
 
-    /** `goBack`, when there is an entry to go back to. */
+    /**
+     * `goBack`, when there is an entry to go back to. A history step never
+     * makes its entry the visible one before it commits, so the target is
+     * read from the back-forward list first; its URL is already the
+     * engine's.
+     */
     @CalledFromNative
     fun navigateBack() {
         val target = historyTarget(-1) ?: return
@@ -372,7 +403,7 @@ private constructor(
         goBack()
     }
 
-    /** `goForward`, when there is an entry to go forward to. */
+    /** `goForward`, when there is an entry to go forward to; see [navigateBack]. */
     @CalledFromNative
     fun navigateForward() {
         val target = historyTarget(1) ?: return
@@ -380,12 +411,17 @@ private constructor(
         goForward()
     }
 
-    /** `reload`, once there is a document to reload. */
+    /**
+     * `reload`, then the URL of the entry it reloads: the current document,
+     * which drops a load still pending, or the pending entry of the view's
+     * first load. `getUrl()` is that entry's URL once `reload` returns; with
+     * no document `reload` starts nothing and `getUrl()` is null.
+     */
     @CalledFromNative
     fun navigateReload() {
+        reload()
         val target = url ?: return
         openNavigation(target)
-        reload()
     }
 
     /** The URL of the history entry `offset` steps from the current one. */
