@@ -916,7 +916,7 @@ pub async fn ensure_preview_host_apk(
         let _host_build =
             crate::water_dir::android_host_build_lock(host, &composite.host_project_dir).await?;
         info!("Building the hydrolysis preview host APK");
-        run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[]).await?;
+        run_gradle_tasks(host, &host_dir, &[":app:assembleDebug"], &[]).await?;
     }
     fs::write(&stamp, fingerprint.to_string()).await?;
     let apk = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await?;

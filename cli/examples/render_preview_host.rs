@@ -32,6 +32,7 @@ fn main() -> eyre::Result<()> {
     };
     let project_dir = PathBuf::from(project_dir);
     let out = PathBuf::from(out);
+    let host = Host::current();
 
     smol::block_on(async {
         let (out, project) = futures_util::try_join!(
@@ -50,13 +51,13 @@ fn main() -> eyre::Result<()> {
                         .wrap_err_with(|| {
                             format!("failed to canonicalize {}", project_dir.display())
                         })?;
-                Project::open(&project_dir, ManagedBackends::NONE)
+                Project::open(&host, &project_dir, ManagedBackends::NONE)
                     .await
                     .wrap_err_with(|| {
                         format!("failed to open the project {}", project_dir.display())
                     })
             },
         )?;
-        render_preview_host(&project, &Host::current(), &out, VERSION_CODE).await
+        render_preview_host(&project, &host, &out, VERSION_CODE).await
     })
 }
