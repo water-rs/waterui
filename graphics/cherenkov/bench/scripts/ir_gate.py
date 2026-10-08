@@ -188,7 +188,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
         print(tag, scene, 'pid', process.pid, 'running to frame', pause_at, flush=True)
 
         def done():
-            used = max(after[p][2] for p in after) if all(len(v) >= 3 for v in after.values()) else None
+            used = max(v[2][0] for v in after.values()) if all(len(v) >= 3 for v in after.values()) else None
             return used is not None and latest > used
         try:
             while not done():
