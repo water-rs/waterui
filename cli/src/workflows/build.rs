@@ -540,7 +540,8 @@ impl RustDynamicLibraries {
     }
 
     /// Copy the resolved `waterui_dylib` into `destination` under the
-    /// canonical Apple name [`apple_canonical_waterui`] returns, alongside
+    /// canonical Apple name [`apple_canonical_waterui`](Self::apple_canonical_waterui)
+    /// returns, alongside
     /// the recorded name [`stage`](Self::stage) writes.
     ///
     /// The reported artifact can already occupy the canonical destination —
@@ -1852,7 +1853,7 @@ impl RustBuild {
     /// uplift the message names is shared by every same-named unit in the
     /// target directory, so it is only trusted while the lock is held; the
     /// marked link stays this variant's bytes afterwards. See
-    /// [`binary_artifact_lock`] and [`marked_binary_artifact`].
+    /// `binary_artifact_lock` and `marked_binary_artifact`.
     ///
     /// # Errors
     ///
