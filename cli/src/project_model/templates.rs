@@ -271,7 +271,7 @@ pub struct BrowserAnswers {
 }
 
 /// What the application's own dependency graph says about browser
-/// components, per desktop OS.
+/// components, for exactly the OSes the manifest's sections serve.
 ///
 /// Nothing here is configuration: the engine that draws a `WebView` is a crate
 /// the application links and installs, so the generated backend only has to
@@ -279,46 +279,169 @@ pub struct BrowserAnswers {
 /// package needs a CEF subprocess helper. The answers legitimately differ
 /// per OS — `waterui-browser-wpe` enters the graph on Linux only — so every
 /// `cfg(...)` section whose serving set is one OS renders from that OS's
-/// own answers. A context records one entry per OS its manifest writes;
-/// asking for an OS nobody resolved panics rather than rendering a
-/// section nobody computed.
+/// own answers.
+///
+/// Each generated manifest renders answers for a fixed set of OSes, and
+/// each variant carries exactly that set — an OS nobody resolved is
+/// unrepresentable here, so a section can never read answers for a graph
+/// nobody ran.
+#[derive(Debug, Clone)]
+pub enum BrowserTemplateContext {
+    /// The shared native manifest's `cfg` sections — one per desktop OS.
+    Desktop(DesktopBrowserContext),
+    /// The managed Apple crates — the FFI companion and the Apple preview
+    /// package. Their tables read only the macOS engine, so no other
+    /// answer is representable.
+    AppleManaged {
+        /// The engine the macOS table links, if any.
+        macos_engine: Option<ResolvedWebViewBackend>,
+    },
+    /// The GTK4 manifest — one Linux `[dependencies]` table.
+    Linux(BrowserAnswers),
+}
+
+/// The `BrowserAnswers` for each desktop OS — the serving set the shared
+/// native manifest's per-OS sections render.
 #[derive(Debug, Clone, Default)]
-pub struct BrowserTemplateContext {
-    /// The recorded answers, keyed by the OS each generated section serves.
-    answers: std::collections::BTreeMap<crate::platform::NativeOs, BrowserAnswers>,
+pub struct DesktopBrowserContext {
+    /// macOS's `cfg` section.
+    pub macos: BrowserAnswers,
+    /// Linux's `cfg` section.
+    pub linux: BrowserAnswers,
+    /// Windows's `cfg` section.
+    pub windows: BrowserAnswers,
+}
+
+impl DesktopBrowserContext {
+    /// The answers `os`'s generated-manifest section renders — all three
+    /// fields are recorded, so the lookup is total.
+    pub(crate) const fn for_os(&self, os: crate::platform::NativeOs) -> BrowserAnswers {
+        match os {
+            crate::platform::NativeOs::MacOs => self.macos,
+            crate::platform::NativeOs::Linux => self.linux,
+            crate::platform::NativeOs::Windows => self.windows,
+        }
+    }
+
+    /// The backend feature that bridges `os`'s own web engine.
+    ///
+    /// An application that linked an engine of its own draws through that
+    /// instead, and the bridge would take the component by type before the
+    /// application's realization was ever consulted — so the backend compiles
+    /// no web engine at all.
+    const fn webview_backend_feature(&self, os: crate::platform::NativeOs) -> Option<&'static str> {
+        webview_backend_feature(self.for_os(os))
+    }
+}
+
+/// The backend feature `answers`'s section selects — `webview-system`
+/// when the application enables `WebView` without an engine crate of its
+/// own.
+const fn webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str> {
+    if answers.webview_enabled && answers.engine.is_none() {
+        Some("webview-system")
+    } else {
+        None
+    }
+}
+
+impl Default for BrowserTemplateContext {
+    fn default() -> Self {
+        Self::Desktop(DesktopBrowserContext::default())
+    }
 }
 
 impl BrowserTemplateContext {
-    /// Record the answers `os`'s generated-manifest section renders.
+    /// A context for the shared native manifest — every desktop OS's
+    /// section renders its own resolved answers.
     #[must_use]
-    pub(crate) fn with_answers(
-        mut self,
-        os: crate::platform::NativeOs,
-        answers: BrowserAnswers,
+    pub(crate) const fn desktop(
+        macos: BrowserAnswers,
+        linux: BrowserAnswers,
+        windows: BrowserAnswers,
     ) -> Self {
-        self.answers.insert(os, answers);
-        self
+        Self::Desktop(DesktopBrowserContext {
+            macos,
+            linux,
+            windows,
+        })
     }
 
-    /// The answers `os`'s generated-manifest section renders.
-    ///
-    /// # Panics
-    /// Panics when no answers were recorded for `os` — a section resolved
-    /// for some other serving set.
-    pub(crate) fn for_os(&self, os: crate::platform::NativeOs) -> BrowserAnswers {
-        *self
-            .answers
-            .get(&os)
-            .unwrap_or_else(|| panic!("no browser answers were resolved for {os:?}"))
+    /// A context for the managed Apple crates — the only browser input
+    /// their sections read is macOS's engine, so that is all it carries.
+    #[must_use]
+    pub(crate) const fn apple_managed(macos_engine: Option<ResolvedWebViewBackend>) -> Self {
+        Self::AppleManaged { macos_engine }
     }
 
-    /// Whether any recorded OS links the CEF engine. An OS without a
-    /// recorded answer contributes nothing — its manifest writes no
-    /// browser table for it either way.
+    /// A context for the GTK4 manifest — its one section is Linux's.
+    #[must_use]
+    pub(crate) const fn linux(answers: BrowserAnswers) -> Self {
+        Self::Linux(answers)
+    }
+
+    /// The whole desktop set — the shared native manifest's per-OS
+    /// sections require it, and a context that serves fewer OSes is an
+    /// error rather than a partial render.
+    fn desktop_answers(&self) -> io::Result<&DesktopBrowserContext> {
+        match self {
+            Self::Desktop(context) => Ok(context),
+            Self::AppleManaged { .. } | Self::Linux(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the shared native manifest renders one section per desktop OS, \
+                 so its context must carry all three",
+            )),
+        }
+    }
+
+    /// Linux's answers — the GTK4 manifest's `[dependencies]` table
+    /// requires them; a context serving other OSes only is an error.
+    fn linux_answers(&self) -> io::Result<BrowserAnswers> {
+        match self {
+            Self::Linux(answers) => Ok(*answers),
+            Self::Desktop(context) => Ok(context.linux),
+            Self::AppleManaged { .. } => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the GTK4 manifest renders a Linux section, so its context \
+                 must carry Linux's answers",
+            )),
+        }
+    }
+
+    /// The engine this manifest's CEF runtime init gates on — macOS's
+    /// engine for the shared native and managed Apple contexts (the init
+    /// is a macOS-only code path), Linux's own for the GTK4 manifest.
+    const fn cef_engine(&self) -> Option<ResolvedWebViewBackend> {
+        match self {
+            Self::Desktop(context) => context.macos.engine,
+            Self::AppleManaged { macos_engine } => *macos_engine,
+            Self::Linux(answers) => answers.engine,
+        }
+    }
+
+    /// The `(os, engine)` pair for every OS this context serves — the
+    /// CEF helper's `#[cfg]` predicate iterates exactly the set its
+    /// manifest's sections render.
+    fn os_engines(&self) -> Vec<(crate::platform::NativeOs, Option<ResolvedWebViewBackend>)> {
+        match self {
+            Self::Desktop(context) => crate::platform::NativeOs::ALL
+                .iter()
+                .map(|os| (*os, context.for_os(*os).engine))
+                .collect(),
+            Self::AppleManaged { macos_engine } => {
+                vec![(crate::platform::NativeOs::MacOs, *macos_engine)]
+            }
+            Self::Linux(answers) => vec![(crate::platform::NativeOs::Linux, answers.engine)],
+        }
+    }
+
+    /// Whether any served OS links the CEF engine. An OS outside the
+    /// served set contributes nothing — its manifest writes no browser
+    /// table for it either way.
     fn declares_cef_helper(&self) -> bool {
-        self.answers
-            .values()
-            .any(|answers| crate::project_model::project_types::declares_cef_helper(answers.engine))
+        self.os_engines()
+            .into_iter()
+            .any(|(_, engine)| crate::project_model::project_types::declares_cef_helper(engine))
     }
 }
 
@@ -638,43 +761,22 @@ impl TemplateContext {
         self
     }
 
-    /// Record the `WebView` answers `os`'s generated-manifest sections
-    /// render — one call per OS the caller's `cfg(...)` tables serve.
+    /// Record the `WebView` answers this manifest's sections render — the
+    /// context carries exactly the OS set the manifest serves.
     #[must_use]
-    pub(crate) fn with_browser_answers(
-        mut self,
-        os: crate::platform::NativeOs,
-        answers: BrowserAnswers,
-    ) -> Self {
-        self.browser = self.browser.with_answers(os, answers);
+    pub(crate) const fn with_browser(mut self, browser: BrowserTemplateContext) -> Self {
+        self.browser = browser;
         self
     }
 
-    /// The backend feature that bridges `os`'s own web engine.
-    ///
-    /// An application that linked an engine of its own draws through that
-    /// instead, and the bridge would take the component by type before the
-    /// application's realization was ever consulted — so the backend compiles
-    /// no web engine at all.
-    fn webview_backend_feature(&self, os: crate::platform::NativeOs) -> Option<&'static str> {
-        let answers = self.browser.for_os(os);
-        if answers.webview_enabled && answers.engine.is_none() {
-            Some("webview-system")
-        } else {
-            None
-        }
+    /// Whether this manifest's CEF runtime init compiles — the early-init
+    /// code path the Apple entry points and the Hydrolysis `main` emit
+    /// exists only where the recorded engine is CEF.
+    const fn cef_runtime_enabled(&self) -> bool {
+        crate::project_model::project_types::declares_cef_helper(self.browser.cef_engine())
     }
 
-    /// Whether the macOS build draws its `WebView` through CEF — the early
-    /// runtime init the Apple entry points and the Hydrolysis `main` emit
-    /// is a macOS-only code path, so it keys on the macOS answers.
-    fn cef_runtime_enabled(&self) -> bool {
-        crate::project_model::project_types::declares_cef_helper(
-            self.browser.for_os(crate::platform::NativeOs::MacOs).engine,
-        )
-    }
-
-    /// Whether any recorded OS's section links the CEF engine. The
+    /// Whether any served OS's section links the CEF engine. The
     /// subprocess helper `[[bin]]` is declared once for the whole
     /// manifest — it exists wherever any OS's table gives it a crate to
     /// call — while the dependency itself lives in that OS's table.
@@ -686,21 +788,16 @@ impl TemplateContext {
     /// engine. The subprocess helper's source compiles its dispatch only
     /// where an OS's table provides `waterui-browser-cef` — on every other
     /// target the bin is never spawned and exits rather than missing the
-    /// crate. No OS is CEF: the predicate can never hold, which keeps the
-    /// still-rendered source compiling with an empty dispatch.
+    /// crate. No OS is CEF: `any()` is false for the empty set, which keeps
+    /// the still-rendered source compiling with an empty dispatch.
     fn cef_helper_condition(&self) -> String {
-        let oses: Vec<&'static str> = crate::platform::NativeOs::ALL
-            .iter()
-            .filter(|os| {
-                self.browser.answers.get(os).is_some_and(|answers| {
-                    crate::project_model::project_types::declares_cef_helper(answers.engine)
-                })
-            })
-            .map(|os| os.cfg_predicate())
+        let oses: Vec<&'static str> = self
+            .browser
+            .os_engines()
+            .into_iter()
+            .filter(|(_, engine)| crate::project_model::project_types::declares_cef_helper(*engine))
+            .map(|(os, _)| os.cfg_predicate())
             .collect();
-        if oses.is_empty() {
-            return "all(target_os = \"macos\", windows)".to_string();
-        }
         format!("any({})", oses.join(", "))
     }
 
@@ -1512,11 +1609,7 @@ mod tests {
         .expect("fixture checkout resolves canonical backend sources");
         // Fixture contexts answer "no webview, no engine" for every desktop
         // OS — the sections a render writes still need answers recorded.
-        let browser = crate::platform::NativeOs::ALL
-            .into_iter()
-            .fold(BrowserTemplateContext::default(), |browser, os| {
-                browser.with_answers(os, super::BrowserAnswers::default())
-            });
+        let browser = BrowserTemplateContext::default();
         TemplateContext {
             app_display_name: String::new(),
             app_name: String::new(),
@@ -1562,17 +1655,11 @@ mod tests {
         webview_enabled: bool,
         engine: Option<ResolvedWebViewBackend>,
     ) -> TemplateContext {
-        crate::platform::NativeOs::ALL
-            .into_iter()
-            .fold(ctx, |ctx, os| {
-                ctx.with_browser_answers(
-                    os,
-                    super::BrowserAnswers {
-                        webview_enabled,
-                        engine,
-                    },
-                )
-            })
+        let answers = super::BrowserAnswers {
+            webview_enabled,
+            engine,
+        };
+        ctx.with_browser(BrowserTemplateContext::desktop(answers, answers, answers))
     }
 
     /// A fake local framework checkout the generated crate's feature forwards
@@ -2903,28 +2990,20 @@ mod tests {
     /// engine pulls `waterui-browser-cef`.
     #[test]
     fn the_hydrolysis_manifest_splits_engine_dependent_pieces_per_os() {
-        let ctx = project_ctx()
-            .with_browser_answers(
-                crate::platform::NativeOs::MacOs,
-                super::BrowserAnswers {
-                    webview_enabled: true,
-                    engine: Some(ResolvedWebViewBackend::Cef),
-                },
-            )
-            .with_browser_answers(
-                crate::platform::NativeOs::Linux,
-                super::BrowserAnswers {
-                    webview_enabled: true,
-                    engine: Some(ResolvedWebViewBackend::Wpe),
-                },
-            )
-            .with_browser_answers(
-                crate::platform::NativeOs::Windows,
-                super::BrowserAnswers {
-                    webview_enabled: true,
-                    engine: None,
-                },
-            );
+        let ctx = project_ctx().with_browser(BrowserTemplateContext::desktop(
+            super::BrowserAnswers {
+                webview_enabled: true,
+                engine: Some(ResolvedWebViewBackend::Cef),
+            },
+            super::BrowserAnswers {
+                webview_enabled: true,
+                engine: Some(ResolvedWebViewBackend::Wpe),
+            },
+            super::BrowserAnswers {
+                webview_enabled: true,
+                engine: None,
+            },
+        ));
         let cargo_toml =
             crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
                 .expect("hydrolysis outputs should render")
@@ -3740,13 +3819,9 @@ mod tests {
             Some(ffi_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
-        .with_browser_answers(
-            crate::platform::NativeOs::MacOs,
-            super::BrowserAnswers {
-                webview_enabled: false,
-                engine: Some(ResolvedWebViewBackend::Cef),
-            },
-        );
+        .with_browser(BrowserTemplateContext::apple_managed(Some(
+            ResolvedWebViewBackend::Cef,
+        )));
 
         smol::block_on(crate::templates::ffi::scaffold(
             &ffi_dir,
@@ -5692,8 +5767,7 @@ pub mod gtk4 {
         package_name: &str,
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let mut outputs = super::render_dir_outputs(TemplateNamespace::Gtk4, &embedded::GTK4, ctx)?;
-        let features = ctx
-            .webview_backend_feature(crate::platform::NativeOs::Linux)
+        let features = super::webview_backend_feature(ctx.browser.linux_answers()?)
             .into_iter()
             .collect::<Vec<_>>();
         let dependencies = gtk4_dependencies(&features);
@@ -5711,8 +5785,7 @@ pub mod gtk4 {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        let features = ctx
-            .webview_backend_feature(crate::platform::NativeOs::Linux)
+        let features = super::webview_backend_feature(ctx.browser.linux_answers()?)
             .into_iter()
             .collect::<Vec<_>>();
         let dependencies = gtk4_dependencies(&features);
@@ -6173,10 +6246,11 @@ pub mod hydrolysis {
     fn native_os_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedTargetSection<GeneratedDependencyValue>>> {
+        let browser = ctx.browser.desktop_answers()?;
         let mut tables = BTreeMap::new();
         for os in crate::platform::NativeOs::ALL {
             let mut dependencies = BTreeMap::new();
-            if let Some(feature) = ctx.webview_backend_feature(os) {
+            if let Some(feature) = browser.webview_backend_feature(os) {
                 dependencies.insert(
                     "hydrolysis".to_string(),
                     GeneratedDependencyValue::detailed(
@@ -6198,9 +6272,7 @@ pub mod hydrolysis {
             // is the application's choice, so this dependency appears only
             // in the OS section whose graph links it — the helper source
             // gates its dispatch on the same set.
-            if crate::project_model::project_types::declares_cef_helper(
-                ctx.browser.for_os(os).engine,
-            ) {
+            if crate::project_model::project_types::declares_cef_helper(browser.for_os(os).engine) {
                 dependencies.insert(
                     "waterui-browser-cef".to_string(),
                     GeneratedDependencyValue::detailed(super::generated_dependency_from_spec(

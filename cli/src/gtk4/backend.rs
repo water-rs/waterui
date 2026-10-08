@@ -85,6 +85,9 @@ impl Gtk4Backend {
                 crate::project::GraphSection {
                     manifest: "the generated GTK4 manifest",
                     table: "[dependencies]",
+                    remedy: "the dependency graph answers differently per target, so that table \
+                             needs a per-target split — `cfg(target_env = ...)` sections \
+                             separate the disagreeing Linux targets",
                 },
             ),
         )
@@ -99,7 +102,7 @@ impl Gtk4Backend {
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
         .with_project_packages(project_packages)
-        .with_browser_answers(crate::platform::NativeOs::Linux, linux))
+        .with_browser(crate::templates::BrowserTemplateContext::linux(linux)))
     }
 }
 

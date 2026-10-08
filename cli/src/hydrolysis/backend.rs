@@ -104,6 +104,9 @@ impl HydrolysisBackend {
         let section = |os: crate::platform::NativeOs| crate::project::GraphSection {
             manifest: "the generated Hydrolysis launcher manifest",
             table: os.cfg(),
+            remedy: "the dependency graph answers differently per target, so that section \
+                     needs a per-target split inside its own OS — a narrower `cfg` \
+                     separates the disagreeing targets",
         };
         // The native table's serving set spans three OSes whose graphs
         // legitimately differ — `waterui-browser-wpe` enters on Linux —
@@ -136,9 +139,9 @@ impl HydrolysisBackend {
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
         .with_project_packages(project_packages)
-        .with_browser_answers(crate::platform::NativeOs::MacOs, macos)
-        .with_browser_answers(crate::platform::NativeOs::Linux, linux)
-        .with_browser_answers(crate::platform::NativeOs::Windows, windows))
+        .with_browser(crate::templates::BrowserTemplateContext::desktop(
+            macos, linux, windows,
+        )))
     }
 }
 

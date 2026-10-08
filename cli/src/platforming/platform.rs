@@ -541,9 +541,15 @@ impl NativeOs {
     /// `x86_64-unknown-linux-musl` build. Each is a literal built the way
     /// `TargetPlatform::triple` builds its answers, so the list cannot
     /// drift into an unparsable string the way a `from_str` table could.
+    ///
+    /// The running host's own triple rides along whenever the host's OS is
+    /// the served one: `Triple::host()` names the toolchain this CLI was
+    /// built with, so a `water` built from source on a triple `dist` never
+    /// shipped still checks the table the host itself compiles — it is not
+    /// a `cfg` answer to take at face value.
     #[must_use]
     pub(crate) fn serving_triples(self) -> Vec<Triple> {
-        match self {
+        let mut triples = match self {
             Self::MacOs => vec![TargetPlatform::MacOS.triple()],
             Self::Linux => vec![
                 linux_host(Architecture::X86_64, Environment::Gnu),
@@ -557,6 +563,23 @@ impl NativeOs {
                 windows_host(Architecture::X86_64),
                 windows_host(Architecture::Aarch64(Aarch64Architecture::Aarch64)),
             ],
+        };
+        let host = Triple::host();
+        if self == Self::running_host() && !triples.contains(&host) {
+            triples.push(host);
+        }
+        triples
+    }
+
+    /// The `NativeOs` this CLI build runs on — the OS `Triple::host()`
+    /// names.
+    const fn running_host() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
         }
     }
 }

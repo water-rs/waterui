@@ -992,9 +992,9 @@ mod tests {
         ctx: TemplateContext,
         answers: crate::templates::BrowserAnswers,
     ) -> TemplateContext {
-        crate::platform::NativeOs::ALL
-            .into_iter()
-            .fold(ctx, |ctx, os| ctx.with_browser_answers(os, answers))
+        ctx.with_browser(crate::templates::BrowserTemplateContext::desktop(
+            answers, answers, answers,
+        ))
     }
 
     fn rendered_bin_names(ctx: &TemplateContext, package_name: &str) -> Vec<String> {
@@ -1086,9 +1086,13 @@ mod tests {
             )
             .expect("fixture font");
 
-            let project = Project::open(&root, ManagedBackends::NONE)
-                .await
-                .expect("fixture project opens");
+            let project = Project::open_on(
+                &crate::toolchain::testing::real_toolchain_host(temporary.path()),
+                &root,
+                ManagedBackends::NONE,
+            )
+            .await
+            .expect("fixture project opens");
             // The managed backend crate the build compiles, kept dependency-
             // free so its `cargo metadata` resolves without the network.
             let backend_path =
