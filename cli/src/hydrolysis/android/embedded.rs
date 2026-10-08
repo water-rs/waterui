@@ -232,15 +232,17 @@ async fn embedded_template_context(
     crate_version: &str,
     modules: &[&str],
 ) -> Result<crate::templates::TemplateContext> {
-    Ok(HydrolysisBackend::template_context(project, &project.resolved_framework().await?)
-        .await?
-        .with_crate_version(crate_version)
-        .with_android_permissions(manifest_permissions(project.manifest()))
-        .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
-            app: template_entry(project, painter, host_project_dir, dir).await?,
-            host_version: version.to_owned(),
-            host_modules: modules.iter().map(|module| (*module).to_owned()).collect(),
-        }))
+    Ok(
+        HydrolysisBackend::template_context(project, &project.resolved_framework().await?)
+            .await?
+            .with_crate_version(crate_version)
+            .with_android_permissions(manifest_permissions(project.manifest()))
+            .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
+                app: template_entry(project, painter, host_project_dir, dir).await?,
+                host_version: version.to_owned(),
+                host_modules: modules.iter().map(|module| (*module).to_owned()).collect(),
+            }),
+    )
 }
 
 /// Every file the `android-embedded/` scaffold would write, as

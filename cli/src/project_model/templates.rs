@@ -1136,7 +1136,6 @@ impl TemplateNamespace {
             Self::HydrolysisAndroid => "src/templates/hydrolysis_android",
             Self::HydrolysisAndroidPreview => "src/templates/hydrolysis_android_preview",
             Self::HydrolysisAndroidShared => "src/templates/hydrolysis_android_shared",
-            Self::HydrolysisAndroidShared => "src/templates/hydrolysis_android_shared",
             Self::HydrolysisAndroidEmbedded => "src/templates/hydrolysis_android_embedded",
             Self::Esp32 => "src/templates/esp32",
             Self::Inspector => "src/templates/inspector",
