@@ -141,10 +141,9 @@ mod tests {
                 continue;
             };
             let name = rest.split('(').next().unwrap().to_owned();
-            let params = rest
+            let (params, _) = rest
                 .split_once('(')
                 .and_then(|(_, tail)| tail.split_once(')'))
-                .map(|(params, _)| params)
                 .unwrap_or_else(|| panic!("unparseable @CalledFromNative method line: {rest}"));
             let signature = params
                 .split(',')
