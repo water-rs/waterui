@@ -384,13 +384,9 @@ adb)
             ;;
         *" install "*)
             # A failed install still prints its `Failure […]` text before
-            # the exit status — `respond_or_empty` exits 0 itself, so the
-            # canned body is emitted inline here.
-            if [ -n "${WATERUI_FAKE_ADB_INSTALL-}" ]; then
-                printf '%s\n' "$WATERUI_FAKE_ADB_INSTALL"
-            elif [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/ADB_INSTALL" ]; then
-                print_file "${WATERUI_FAKE_RESPONSES}/ADB_INSTALL"
-            fi
+            # the exit status — `respond_or_empty` exits 0 itself, so it
+            # runs in a subshell and the status is this branch's own.
+            (respond_or_empty ADB_INSTALL)
             exit "${WATERUI_FAKE_ADB_INSTALL_STATUS:-0}"
             ;;
         *logcat*)

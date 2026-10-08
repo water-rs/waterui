@@ -879,14 +879,13 @@ jobs:
   # build — it analyses the Kotlin sources against `compileSdk` — so it
   # runs beside the cross-target clippy above on the same scope. The job
   # also assembles the generated preview-host app: the composite project
-  # is rendered by the CLI's own scaffold test into
+  # is rendered by the CLI's `render_preview_host` example — the same
+  # function `water preview` renders the managed host with — into
   # `backends/hydrolysis/android-preview-host` (never committed), then
   # `:app:assembleDebug` compiles it against the in-tree host checkout —
   # the only place the generated app's Kotlin↔Gradle wiring is checked.
   # The wrapper JAR is not committed (the CLI materializes it), so the
-  # distribution the wrapper pins is installed directly. Measured locally:
-  # 10 s warm, ~70 s with no build outputs and a warm dependency cache; a
-  # cold runner adds the Gradle and AGP downloads.
+  # distribution the wrapper pins is installed directly.
   hydrolysis-android-host:
     name: Hydrolysis Android host lint
     if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
@@ -914,19 +913,20 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: ""
+          cache: "false"
       # Reads the shared `cargo-sources` archive the lint lane owns on
-      # Linux, like every other read-only lane — the render test compiles
-      # waterui-cli once.
+      # Linux, like every other read-only lane — the render example
+      # compiles waterui-cli once.
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      # The CLI's own scaffold test renders the composite exactly as
-      # `ensure_preview_host_apk` does — the project is generated, never
-      # hand-written.
+      # The CLI's `render_preview_host` example renders the composite
+      # through the same function `ensure_preview_host_apk` calls — the
+      # project is generated, never hand-written. `examples/form` supplies
+      # the framework resolution (the in-tree checkout) the app's `minSdk`
+      # and JDK level come from.
       - name: Render the generated preview-host app
         working-directory: ${{ github.workspace }}
-        env:
-          WATERUI_PREVIEW_HOST_OUT: ${{ github.workspace }}/backends/hydrolysis/android-preview-host
-        run: cargo test --locked --profile ci-check -p waterui-cli the_preview_host_composite_renders_for_ci -- --ignored
+        run: cargo run --locked --profile ci-check -p waterui-cli --example render_preview_host -- examples/form backends/hydrolysis/android-preview-host
       - name: Assemble the generated preview-host app
         working-directory: backends/hydrolysis/android-preview-host
         run: gradle :app:assembleDebug

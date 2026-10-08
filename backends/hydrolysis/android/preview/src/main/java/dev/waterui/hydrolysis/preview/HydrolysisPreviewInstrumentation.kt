@@ -11,7 +11,7 @@ import java.io.File
  * The `water preview --platform android` entry point on-device.
  *
  * The CLI pushes the preview-mode launcher cdylib, the staged assets and a
- * JSON run config into a per-run directory under this host's private files,
+ * JSON run config into one fixed directory under this host's private files,
  * then runs this instrumentation through `am instrument -w -r`. `-w` makes
  * `am` return only when the run finishes, so its exit is the completion
  * signal — there is no polling, and the render's PNG lands where the run
@@ -47,11 +47,11 @@ class HydrolysisPreviewInstrumentation : Instrumentation() {
                 inFiles(filesDir, arguments.requireString("runConfig")),
                 true,
             )
-            // Absent when the project staged no assets — the runtime's own
-            // fallback applies then.
-            arguments.getString("assetsRoot")?.let {
-                Os.setenv("WATERUI_ASSETS_ROOT", inFiles(filesDir, it), true)
-            }
+            Os.setenv(
+                "WATERUI_ASSETS_ROOT",
+                inFiles(filesDir, arguments.requireString("assetsRoot")),
+                true,
+            )
             Os.setenv("WATER_CACHE_DIR", targetContext.cacheDir.absolutePath, true)
             PreviewBridge.run(
                 arguments.requireString("libraries").split(':').map { inFiles(filesDir, it) },

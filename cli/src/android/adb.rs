@@ -71,15 +71,6 @@ pub(crate) enum AdbCommandError {
         /// Formatted stdout/stderr tail.
         details: String,
     },
-    /// The command succeeded but produced no output where a payload was
-    /// expected.
-    #[error("{operation} produced no output running `{command}`")]
-    EmptyOutput {
-        /// Human-readable name of the operation.
-        operation: String,
-        /// The adb invocation that produced nothing.
-        command: String,
-    },
 }
 
 /// `adb` from the platform-tools on a host, its server already running.
@@ -210,8 +201,11 @@ impl Adb {
         timeout: Duration,
     ) -> eyre::Result<String> {
         let (output, command) = self.shell_output(host, serial, words, timeout).await?;
-        check_bounded_output(&output, "running a shell command on the device", &command)?;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        Ok(checked_stdout(
+            &output,
+            "running a shell command on the device",
+            &command,
+        )?)
     }
 
     /// `adb -s <serial> shell run-as <package> <words>` — a command inside
@@ -245,7 +239,7 @@ impl Adb {
     /// and `-T` pins the no-PTY byte channel a binary read needs.
     ///
     /// # Errors
-    /// Returns an error if the read fails or produces nothing.
+    /// Returns an error if the read fails.
     pub(crate) async fn run_as_cat(
         &self,
         host: &Host,
@@ -275,13 +269,6 @@ impl Adb {
             "reading a file from the preview host's private data",
             &command,
         )?;
-        if output.stdout.is_empty() {
-            return Err(AdbCommandError::EmptyOutput {
-                operation: "reading a file from the preview host's private data".to_owned(),
-                command,
-            }
-            .into());
-        }
         Ok(output.stdout)
     }
 
@@ -363,8 +350,7 @@ impl Adb {
         let (output, command) = self
             .device_output(host, serial, args, operation, timeout)
             .await?;
-        check_bounded_output(&output, operation, &command)?;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        checked_stdout(&output, operation, &command)
     }
 }
 
@@ -438,8 +424,18 @@ where
         .collect::<Vec<_>>();
     let command = command_string(adb.path(), &args);
     let output = run_bounded_adb_output(host, adb, args, operation, timeout).await?;
-    check_bounded_output(&output, operation, &command)?;
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    checked_stdout(&output, operation, &command)
+}
+
+/// [`check_bounded_output`] answering the stdout text of a successful
+/// invocation.
+fn checked_stdout(
+    output: &Output,
+    operation: &str,
+    command: &str,
+) -> Result<String, AdbCommandError> {
+    check_bounded_output(output, operation, command)?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// One line naming the invocation an [`AdbCommandError`] reports.

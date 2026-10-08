@@ -261,23 +261,31 @@ pub async fn stage_for_android(
 /// the app-level `res`/`theme`/launcher artwork belongs to the host.
 /// `symbols` is the target build's app library — see [`stage_for_apple`].
 ///
-/// Returns the manifest and the assets root the bundle was staged under —
-/// the `waterui_assets` directory itself lives at
-/// `<root>/waterui_assets`.
+/// Returns the manifest and where the bundle was staged.
 pub async fn stage_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<(BundleManifest, PathBuf)> {
+) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
-    let assets_root = module_dir.join("src/main/assets");
-    let assets_dest = assets_root.join(ASSET_ROOT_DIR);
-    reset_dir(&assets_dest).await?;
-    copy_manifest_assets(&manifest, &assets_dest).await?;
-    write_manifest_stamp(&manifest, &assets_dest).await?;
+    let root = module_dir.join("src/main/assets");
+    let bundle = root.join(ASSET_ROOT_DIR);
+    reset_dir(&bundle).await?;
+    copy_manifest_assets(&manifest, &bundle).await?;
+    write_manifest_stamp(&manifest, &bundle).await?;
 
-    Ok((manifest, assets_root))
+    Ok((manifest, StagedAndroidAssets { root, bundle }))
+}
+
+/// Where [`stage_for_android_library`] staged a library's assets.
+#[derive(Debug, Clone)]
+pub struct StagedAndroidAssets {
+    /// The module's `src/main/assets/` root.
+    pub root: PathBuf,
+    /// The staged bundle itself, the [`ASSET_ROOT_DIR`] directory in
+    /// `root` — always present once staging returns.
+    pub bundle: PathBuf,
 }
 
 /// Renders the project's macOS `.icns` app icon for hand-assembled bundles

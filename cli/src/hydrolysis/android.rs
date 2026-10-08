@@ -35,7 +35,10 @@ use crate::{
     hydrolysis::backend::HydrolysisBackend,
     platform::PackageOptions,
     project::Project,
-    templates::{self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry},
+    templates::{
+        self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
+        TemplateContext,
+    },
     toolchain::Host,
 };
 
@@ -814,10 +817,17 @@ fn preview_host_fingerprint(
             hash_module_file(entry.path())?;
         }
     }
-    for name in ["build.gradle.kts", "AndroidManifest.xml"] {
-        let path = preview_module.join(name);
-        if path.is_file() {
-            hash_module_file(&path)?;
+    // `build.gradle.kts` is a declared input: a module without one is a
+    // broken host checkout, not an empty input. Only the module-root
+    // manifest is optional — most modules keep theirs under `src/`.
+    hash_module_file(&preview_module.join("build.gradle.kts"))?;
+    let root_manifest = preview_module.join("AndroidManifest.xml");
+    match std::fs::symlink_metadata(&root_manifest) {
+        Ok(_) => hash_module_file(&root_manifest)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(eyre::Report::from(error))
+                .wrap_err_with(|| format!("failed to inspect {}", root_manifest.display()));
         }
     }
     let settings = host_project_dir.join("settings.gradle.kts");
@@ -860,53 +870,35 @@ pub async fn ensure_preview_host_apk(
     host: &Host,
 ) -> eyre::Result<(PathBuf, u32)> {
     let host_root = ensure_android_host(project, host).await?;
-    let resolved = project.resolved_framework().await?;
-    let host_project_dir = host_root.join(resolved.hydrolysis_android_host_subdirectory()?);
+    let host_project_dir = host_root.join(
+        project
+            .resolved_framework()
+            .await?
+            .hydrolysis_android_host_subdirectory()?,
+    );
     let preview_module = host_project_dir.join("preview");
-    if !fs::metadata(&preview_module)
-        .await
-        .is_ok_and(|meta| meta.is_dir())
-    {
-        bail!(
+    fs::metadata(&preview_module).await.wrap_err_with(|| {
+        format!(
             "the hydrolysis android host at {} ships no `preview` module: {} does not exist",
             host_root.display(),
             preview_module.display()
-        );
-    }
-    let backend_path = project.backend_path::<HydrolysisBackend>();
-    let host_dir = preview_host_dir(&backend_path);
-    let relative_host = pathdiff::diff_paths(&host_project_dir, &host_dir).ok_or_else(|| {
-        eyre::eyre!(
-            "cannot express the hydrolysis android host at {} relative to {}",
-            host_project_dir.display(),
-            host_dir.display()
         )
     })?;
-    let min_api_level = resolved.android_min_api_level()?;
-    let entry = |version_code| HydrolysisAndroidPreviewTemplateEntry {
-        host_project_dir: relative_host.to_string_lossy().replace('\\', "/"),
-        min_api_level,
-        version_code,
-    };
+    let host_dir = preview_host_dir(&project.backend_path::<HydrolysisBackend>());
 
     // The fingerprint covers the rendered scaffold with `versionCode` held
     // constant — hashing the real code would feed the projection back into
     // its own input.
-    let fingerprint_ctx = HydrolysisBackend::template_context(project)
-        .await?
-        .with_hydrolysis_android_preview(entry(0));
-    let rendered = templates::hydrolysis_android_preview::rendered_outputs(&fingerprint_ctx)?;
+    let rendered = templates::hydrolysis_android_preview::rendered_outputs(
+        &preview_host_context(project, &host_project_dir, &host_dir, 0).await?,
+    )?;
     let fingerprint = smol::unblock({
         let host_project_dir = host_project_dir.clone();
         move || preview_host_fingerprint(&host_project_dir, &rendered)
     })
     .await?;
     let version_code = fingerprint.version_code();
-
-    let ctx = HydrolysisBackend::template_context(project)
-        .await?
-        .with_hydrolysis_android_preview(entry(version_code));
-    templates::hydrolysis_android_preview::scaffold(&host_dir, &ctx).await?;
+    render_preview_host(project, &host_project_dir, &host_dir, version_code).await?;
 
     let stamp = host_dir.join(PREVIEW_HOST_STAMP_FILE);
     if fs::read_to_string(&stamp)
@@ -922,6 +914,60 @@ pub async fn ensure_preview_host_apk(
     fs::write(&stamp, fingerprint.to_string()).await?;
     let apk = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await?;
     Ok((apk, version_code))
+}
+
+/// Render the preview-host composite Gradle project into `out`: the `:app`
+/// that packages the instrumentation, `includeBuild`ing the Hydrolysis
+/// Android host at `host_project_dir` and stamped with `version_code`.
+///
+/// [`ensure_preview_host_apk`] renders the managed host this way, and the
+/// `render_preview_host` example renders the same composite against this
+/// checkout's own host so CI can assemble it without a device.
+///
+/// # Errors
+///
+/// Returns an error when the project's framework resolution or template
+/// context cannot be built, `host_project_dir` cannot be expressed
+/// relative to `out`, or the scaffold cannot be written.
+pub async fn render_preview_host(
+    project: &Project,
+    host_project_dir: &Path,
+    out: &Path,
+    version_code: u32,
+) -> eyre::Result<()> {
+    let ctx = preview_host_context(project, host_project_dir, out, version_code).await?;
+    templates::hydrolysis_android_preview::scaffold(out, &ctx).await?;
+    Ok(())
+}
+
+/// The template context a preview-host composite renders from — the one
+/// place its host path, `minSdk` and `versionCode` are assembled, shared
+/// by [`render_preview_host`] and the fingerprint
+/// [`ensure_preview_host_apk`] hashes.
+async fn preview_host_context(
+    project: &Project,
+    host_project_dir: &Path,
+    out: &Path,
+    version_code: u32,
+) -> eyre::Result<TemplateContext> {
+    let relative_host = pathdiff::diff_paths(host_project_dir, out).ok_or_else(|| {
+        eyre::eyre!(
+            "cannot express the hydrolysis android host at {} relative to {}",
+            host_project_dir.display(),
+            out.display()
+        )
+    })?;
+    let min_api_level = project
+        .resolved_framework()
+        .await?
+        .android_min_api_level()?;
+    Ok(HydrolysisBackend::template_context(project)
+        .await?
+        .with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
+            host_project_dir: relative_host.to_string_lossy().replace('\\', "/"),
+            min_api_level,
+            version_code,
+        }))
 }
 
 #[cfg(test)]
@@ -1383,47 +1429,6 @@ mod tests {
                 project.ffi_crate_path().join("Cargo.toml").exists(),
                 "the packaging path rendered the companion manifest it reads"
             );
-        });
-    }
-
-    /// Render the preview-host composite where `WATERUI_PREVIEW_HOST_OUT`
-    /// names it — the same `scaffold` call `ensure_preview_host_apk` makes,
-    /// against this checkout's own `backends/hydrolysis/android`. The
-    /// `hydrolysis-android-host` workflow job invokes it to assemble the
-    /// generated `:app` without a device; `cargo test` carries no argv, so
-    /// the output root arrives through the environment and the test is
-    /// `ignore`d for every ordinary run.
-    #[test]
-    #[ignore = "CI entry point: renders the composite into WATERUI_PREVIEW_HOST_OUT"]
-    fn the_preview_host_composite_renders_for_ci() {
-        smol::block_on(async {
-            let out = std::env::var_os("WATERUI_PREVIEW_HOST_OUT")
-                .map(PathBuf::from)
-                .expect("WATERUI_PREVIEW_HOST_OUT names the scaffold output");
-            let host_project_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../backends/hydrolysis/android")
-                .canonicalize()
-                .expect("the in-tree hydrolysis android host exists");
-            let relative_host = pathdiff::diff_paths(&host_project_dir, &out)
-                .expect("the host dir is expressible relative to the output");
-
-            let (_temporary, project) = fixture_project("").await;
-            let min_api_level = project
-                .resolved_framework()
-                .await
-                .and_then(|resolved| resolved.android_min_api_level())
-                .expect("the framework's api floor resolves");
-            let ctx = HydrolysisBackend::template_context(&project)
-                .await
-                .expect("the preview template context builds")
-                .with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
-                    host_project_dir: relative_host.to_string_lossy().replace('\\', "/"),
-                    min_api_level,
-                    version_code: 1,
-                });
-            templates::hydrolysis_android_preview::scaffold(&out, &ctx)
-                .await
-                .expect("the preview host composite renders");
         });
     }
 
