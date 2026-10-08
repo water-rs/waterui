@@ -360,6 +360,16 @@ impl<T: LayerTarget> Mount<T> {
         &self.window
     }
 
+    /// The window layer's child list as `reconcile` last committed it —
+    /// the engine's authoritative paint order. A test-facing answer.
+    #[cfg(test)]
+    pub fn window_children(&self) -> Vec<LayerId> {
+        self.window_committed
+            .iter()
+            .map(|&(id, _)| id)
+            .collect()
+    }
+
     /// The window layer's clip as last committed — `Some` over the window
     /// rect while its backdrop request bounds the window's material.
     /// A test-facing answer.

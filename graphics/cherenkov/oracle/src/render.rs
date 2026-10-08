@@ -59,7 +59,7 @@
 //! member's sample and earlier content. A member without a clip or
 //! referencing an undeclared group id is a render error.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cherenkov_scene::{
     BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Draw, FillRule, GroupItem, Item, Layer,
@@ -313,6 +313,7 @@ fn walk_anchor_positions(
     canvas: Option<usize>,
     anchor_of: &HashMap<u32, u32>,
     anchor_pos: &mut HashMap<u32, (Option<usize>, usize)>,
+    canvas_first: &mut HashMap<Option<usize>, usize>,
     member_pos: &mut MemberPositions,
     order: &mut usize,
 ) {
@@ -322,6 +323,7 @@ fn walk_anchor_positions(
         };
         *order += 1;
         let idx = *order;
+        canvas_first.entry(canvas).or_insert(idx);
         if let Some(id) = child.id {
             anchor_pos.insert(id.get(), (canvas, idx));
         }
@@ -340,7 +342,15 @@ fn walk_anchor_positions(
         } else {
             canvas
         };
-        walk_anchor_positions(child, canvas, anchor_of, anchor_pos, member_pos, order);
+        walk_anchor_positions(
+            child,
+            canvas,
+            anchor_of,
+            anchor_pos,
+            canvas_first,
+            member_pos,
+            order,
+        );
     }
 }
 
@@ -358,6 +368,12 @@ struct Backdrops<'a> {
     member_space: HashMap<u32, usize>,
     /// The groups anchored at each layer `id`, in group id order.
     anchors: HashMap<u32, Vec<u32>>,
+    /// Anchor layers that are the first item of their isolating canvas:
+    /// their capture reads the level below the canvas, not the canvas's
+    /// own — still empty at the anchor's paint position — so members
+    /// anchored inside a filtered level see what lies beneath it
+    /// (water-rs/waterui#2097).
+    canvas_first_anchors: HashSet<u32>,
     /// Each union group's member clip boxes — `(box shape,
     /// device-from-box-local)` — in paint order, collected ahead of the
     /// walk because a member's field reads every member's distance.
@@ -454,7 +470,7 @@ impl Renderer {
             space: BlendSpace::Linear,
             semantic: true,
         }];
-        Self::plan_anchors(scene)?;
+        let canvas_first_anchors = Self::plan_anchors(scene)?;
         let mut anchors: HashMap<u32, Vec<u32>> = HashMap::new();
         for group in &scene.backdrop_groups {
             if let Some(anchor) = group.anchor {
@@ -470,6 +486,7 @@ impl Renderer {
         let mut backdrops = Backdrops {
             groups: &scene.backdrop_groups,
             captures: HashMap::new(),
+            canvas_first_anchors,
             space: 0,
             spaces: 0,
             member_space: HashMap::new(),
@@ -497,13 +514,13 @@ impl Renderer {
     /// each member must paint after the group's anchor in the anchor's
     /// compositing canvas — the anchor's descendants or its later
     /// siblings — never falling back to a first-member capture.
-    fn plan_anchors(scene: &Scene) -> Result<(), RenderError> {
+    fn plan_anchors(scene: &Scene) -> Result<HashSet<u32>, RenderError> {
         if scene
             .backdrop_groups
             .iter()
             .all(|group| group.anchor.is_none())
         {
-            return Ok(());
+            return Ok(HashSet::new());
         }
         let anchor_of: HashMap<u32, u32> = scene
             .backdrop_groups
@@ -514,17 +531,20 @@ impl Renderer {
         // paint-order index; members' the same — the canvas is the
         // nearest enclosing filtered, blended or projective layer.
         let mut anchor_pos: HashMap<u32, (Option<usize>, usize)> = HashMap::new();
+        let mut canvas_first: HashMap<Option<usize>, usize> = HashMap::new();
         let mut member_pos: MemberPositions = HashMap::new();
         walk_anchor_positions(
             &scene.root,
             None,
             &anchor_of,
             &mut anchor_pos,
+            &mut canvas_first,
             &mut member_pos,
             &mut 0,
         );
         let mut anchored: Vec<(&u32, &u32)> = anchor_of.iter().collect();
         anchored.sort_unstable();
+        let mut canvas_first_anchors = HashSet::new();
         for &(gid, anchor) in &anchored {
             let Some(&(anchor_canvas, anchor_order)) = anchor_pos.get(anchor) else {
                 return Err(RenderError::Backdrop(
@@ -544,8 +564,13 @@ impl Renderer {
                     .into(),
                 ));
             }
+            if anchor_canvas.is_some()
+                && canvas_first.get(&anchor_canvas) == Some(&anchor_order)
+            {
+                canvas_first_anchors.insert(*anchor);
+            }
         }
-        Ok(())
+        Ok(canvas_first_anchors)
     }
 
     /// Every union group's member clip boxes — `(box shape,
@@ -677,7 +702,21 @@ impl Renderer {
                         let gids = gids.clone();
                         for gid in gids {
                             let group = backdrops.group(gid)?;
-                            let capture = backdrop_capture(chain, group);
+                            let capture = if child.id.is_some_and(|id| {
+                                backdrops.canvas_first_anchors.contains(&id.get())
+                            }) {
+                                // First item of an isolating canvas —
+                                // the canvas's own level is still empty:
+                                // capture the level it composites into —
+                                // what lies beneath the filtered level.
+                                let sem = chain
+                                    .iter()
+                                    .rposition(|level| level.semantic)
+                                    .expect("the root level is semantic");
+                                backdrop_capture(&chain[..sem], group)
+                            } else {
+                                backdrop_capture(chain, group)
+                            };
                             backdrops.captures.entry(gid).or_insert(capture);
                         }
                     }

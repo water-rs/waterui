@@ -1063,6 +1063,7 @@ fn shade_plain(
         &mut acc,
         &mut scratch.stack,
         &mut scratch.buffers,
+        None,
         &mut FrameCtx {
             surface,
             h,
@@ -1116,6 +1117,7 @@ fn shade_windowed(
         &mut acc,
         &mut scratch.stack,
         &mut scratch.buffers,
+        None,
         &mut FrameCtx {
             surface,
             h,
@@ -1154,6 +1156,7 @@ fn shade_windowed(
         &mut acc,
         &mut scratch.stack,
         &mut scratch.buffers,
+        None,
         &mut FrameCtx {
             surface,
             h,
@@ -1314,6 +1317,7 @@ fn run(
     acc: &mut Accum,
     stack: &mut Vec<Plane>,
     buffers: &mut Buffers,
+    underlay: Option<(usize, &[[f32; 4]])>,
     ctx: &mut FrameCtx<'_>,
 ) -> Result<(), cherenkov::RenderError> {
     let bh = band.fb.len() / band.w;
@@ -1391,6 +1395,7 @@ fn run(
                         &mut filter_acc,
                         &mut filter_stack,
                         buffers,
+                        Some((band.y0, &*band.fb)),
                         ctx,
                     );
                     for plane in filter_stack {
@@ -1420,7 +1425,15 @@ fn run(
             }
             Item::Capture(capture) => {
                 if let Some(rows) = capture_rows(capture, ctx.surface, h) {
-                    capture_band(band, stack.as_slice(), buffers, ctx, capture, rows)?;
+                    capture_band(
+                        band,
+                        stack.as_slice(),
+                        buffers,
+                        underlay,
+                        ctx,
+                        capture,
+                        rows,
+                    )?;
                 }
             }
             Item::Sample {
@@ -1500,6 +1513,7 @@ fn capture_band(
     band: &Band<'_>,
     stack: &[Plane],
     buffers: &mut Buffers,
+    underlay: Option<(usize, &[[f32; 4]])>,
     ctx: &mut FrameCtx<'_>,
     item: &CaptureItem,
     rows: CaptureRows,
@@ -1544,8 +1558,19 @@ fn capture_band(
         ));
     }
     let cw = c1 - c0;
+    let underlay = item
+        .underlay
+        .then(|| underlay.expect("an underlay capture's scope provides one"));
     let mut flat = buffers.take_color(cw * (d1 - d0));
-    let space = match flatten(band, stack, item.flatten, (d0, d1), (c0, c1), &mut flat) {
+    let space = match flatten(
+        band,
+        stack,
+        item.flatten,
+        underlay,
+        (d0, d1),
+        (c0, c1),
+        &mut flat,
+    ) {
         Ok(space) => space,
         Err(error) => {
             buffers.give_color(flat);
@@ -1699,6 +1724,7 @@ fn flatten(
     band: &Band<'_>,
     stack: &[Plane],
     count: usize,
+    underlay: Option<(usize, &[[f32; 4]])>,
     (d0, d1): (usize, usize),
     (c0, c1): (usize, usize),
     out: &mut [[f32; 4]],
@@ -1711,15 +1737,22 @@ fn flatten(
     let (w, cw) = (band.w, c1 - c0);
     let base = stack.len() - count;
     // The nearest semantic level: the framebuffer when every live level
-    // is looked through, else the level below the flattened ones.
-    let (src, space): (&[[f32; 4]], _) = if base == 0 {
+    // is looked through, else the level below the flattened ones — or,
+    // for an `underlay` capture, the enclosing scope's canvas beneath
+    // the scope: rows the parent band does not cover read transparent.
+    let (src, space): (&[[f32; 4]], _) = if let Some((_, fb)) = underlay {
+        (fb, band.space)
+    } else if base == 0 {
         (band.fb, band.space)
     } else {
         (&stack[base - 1].buf, stack[base - 1].space)
     };
+    let src_y0 = underlay.map_or(band.y0, |(y0, _)| y0);
     for row in d0..d1 {
         let dst = &mut out[(row - d0) * cw..(row - d0) * cw + cw];
-        dst.copy_from_slice(&src[(row - band.y0) * w + c0..(row - band.y0) * w + c0 + cw]);
+        if let Some(row) = row.checked_sub(src_y0) {
+            dst.copy_from_slice(&src[row * w + c0..row * w + c0 + cw]);
+        }
     }
     for level in &stack[base..] {
         for row in d0..d1 {

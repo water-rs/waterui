@@ -36,7 +36,7 @@ use waterui_layout::stack::{VStack, hstack, vstack, zstack};
 
 use super::{
     MinimalTestTheme, capture_bytes, material_layers, mounts, pumped_test_environment,
-    test_environment,
+    test_environment, window_mount,
 };
 use crate::HeadlessRuntime;
 use crate::engine::WidgetTheme;
@@ -816,7 +816,18 @@ fn thick_full() -> AnyView {
 /// The window's pixels after one rendered frame at `DISPLAY_SCALE`.
 fn snap(view: impl Fn() -> AnyView + 'static) -> crate::HeadlessSnapshot {
     let mut runtime = rendered(view);
-    runtime.pump_snapshot().snapshot.expect("a snapshot")
+    // Filtered nodes set up their capture asynchronously — the first pump
+    // mounts them, later frames run the pipeline. Render a handful of real
+    // frames so a filtered subtree has painted before the snapshot.
+    let start = Instant::now();
+    let mut snapshot = None;
+    for frame in 0..8 {
+        let pumped = runtime.pump_at(true, start + Duration::from_millis(frame * 16));
+        if pumped.snapshot.is_some() {
+            snapshot = pumped.snapshot;
+        }
+    }
+    snapshot.expect("a snapshot")
 }
 
 fn px(snap: &crate::HeadlessSnapshot, x: usize, y: usize) -> [u8; 4] {
@@ -948,6 +959,18 @@ fn a_scopes_anchor_releases_with_the_scope() {
         0,
         "the scope's anchor registration released with it"
     );
+    // The exited scope's anchor layer is gone from the engine's child
+    // list, not merely unregistered: the engine's committed children are
+    // structurally the mirror's own commit — a stale retained anchor
+    // layer would show as an extra engine child skewing `reconcile`'s
+    // insert indices. The two mounts own separate layer-id spaces, so
+    // the comparison is structural (count and position), not per-id.
+    runtime.renderer_mut().commit_mirror();
+    assert_eq!(
+        window_mount(&runtime).window_children().len(),
+        runtime.renderer().mirror().window_children().len(),
+        "the engine's window child list matches the mirror's"
+    );
 }
 
 /// The group's spec carries the anchor item's layer when the scope's
@@ -1005,7 +1028,7 @@ fn a_scope_inside_a_filtered_view_anchors_on_its_canvas() {
     let runtime = rendered(|| {
         AnyView::new(zstack((
             Color::srgb(230, 38, 38),
-            vstack((member(Material::Regular), thick_full()))
+            zstack((member(Material::Regular), thick_full()))
                 .material_group()
                 .blur(2.0f32),
         )))
@@ -1186,14 +1209,9 @@ fn members_inside_a_filtered_view_capture_beneath_the_filter() {
     let ungrouped = snap(|| {
         AnyView::new(zstack((
             Color::srgb(230, 38, 38),
-            vstack((member(Material::Regular), thick_full())).blur(2.0f32),
+            zstack((member(Material::Regular), thick_full())).blur(2.0f32),
         )))
     });
-    // Just below the `Regular` panel's bottom edge, inside the `Thick`
-    // member's blur reach: an anchored capture holds only the red
-    // backdrop beneath the filtered node, so the `Thick` member cannot
-    // show the `Regular` panel inside its blur — a first-member capture
-    // would bleed it in.
     for point in [(160, 122), (160, 126)] {
         assert_ne!(
             px(&grouped, point.0, point.1),
@@ -1202,3 +1220,5 @@ fn members_inside_a_filtered_view_capture_beneath_the_filter() {
         );
     }
 }
+
+
