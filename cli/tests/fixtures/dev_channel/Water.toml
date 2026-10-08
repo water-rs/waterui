@@ -11,8 +11,6 @@ minimum-cli-version = "0.4.0"
 rust-version = "1.95.0"
 
 [framework.metadata]
-android-backend-revision = "986bc4ed98aa68573f50a08cfb869c1d54a66284"
-android-backend-url = "https://github.com/water-rs/android-backend.git"
 android-min-api-level = 31
 android-runtime-module = "dev.waterui.android:waterui-android"
 apple-backend-path = "backends/apple"
@@ -27,8 +25,6 @@ scaffold-packages = [
 ]
 
 [framework.scaffold]
-android-backend-revision = "986bc4ed98aa68573f50a08cfb869c1d54a66284"
-android-backend-url = "https://github.com/water-rs/android-backend.git"
 apple-backend-path = "backends/apple"
 apple-backend-revision = "702019b695e593b72bbf86b50cbadc7852792e91"
 hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
@@ -39,7 +35,6 @@ waterui-core-version = "0.5.1"
 waterui-dew-git = "https://github.com/water-rs/dew"
 waterui-dew-rev = "db709fc0c29fd1b4493c014409406de710f8b915"
 waterui-dew-version = "0.3.0"
-waterui-ffi-version = "0.5.2"
 waterui-gtk-git = "https://github.com/water-rs/gtk-backend"
 waterui-gtk-rev = "fd2284f2a997ee8f31923fe8774e95450167bb0d"
 waterui-gtk-version = "0.2.1"
@@ -72,10 +67,6 @@ rev = "a6318b38c54b31cbfbc518b75bd9de737e229ff6"
 [framework.packages.waterui-dew]
 git = "https://github.com/water-rs/dew"
 rev = "db709fc0c29fd1b4493c014409406de710f8b915"
-
-[framework.packages.waterui-ffi]
-git = "https://github.com/water-rs/waterui"
-rev = "a6318b38c54b31cbfbc518b75bd9de737e229ff6"
 
 [framework.packages.waterui-gtk]
 git = "https://github.com/water-rs/gtk-backend"
