@@ -20,6 +20,7 @@ waterkit-permission.workspace = true
 shaderloom = { workspace = true, features = ["runtime"] }
 futures.workspace = true
 wgpu.workspace = true
+tracing.workspace = true
 
 [build-dependencies]
 shaderloom = { workspace = true, features = ["build"] }
