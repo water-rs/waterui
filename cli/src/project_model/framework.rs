@@ -1118,16 +1118,14 @@ impl ResolvedFramework {
         // directory (a preview module under `managed_backends/ffi/modules`)
         // is never read (#197).
         let workspace_root = {
-            let manifest_dir = directory.to_path_buf();
-            let metadata_host = project.host().clone();
-            smol::unblock(move || {
-                let mut command = cargo_metadata::MetadataCommand::new();
-                command.current_dir(manifest_dir).no_deps();
-                crate::project::metadata_on(&metadata_host, &command)
-            })
-            .await?
-            .workspace_root
-            .into_std_path_buf()
+            let mut command = cargo_metadata::MetadataCommand::new();
+            command.current_dir(directory).no_deps();
+            project
+                .host()
+                .cargo_metadata(&command)
+                .await?
+                .workspace_root
+                .into_std_path_buf()
         };
         let lock_path = workspace_root.join("Cargo.lock");
         let previous_lock = match smol::fs::read_to_string(&lock_path).await {
@@ -1654,17 +1652,11 @@ async fn managed_crate_metadata(
     root: &std::path::Path,
     features: &[String],
 ) -> std::result::Result<cargo_metadata::Metadata, cargo_metadata::Error> {
-    let host = host.clone();
-    let root = root.to_path_buf();
-    let features = features.to_vec();
-    smol::unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .current_dir(root)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(features));
-        crate::project::metadata_on(&host, &command)
-    })
-    .await
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command
+        .current_dir(root)
+        .features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
+    host.cargo_metadata(&command).await
 }
 
 /// Every version the framework's own lock records for a package name —

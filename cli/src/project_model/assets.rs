@@ -384,28 +384,21 @@ pub async fn seed_managed_crate_lock(
     Ok(true)
 }
 
-/// `cargo metadata` on a manifest, run on `host` on the blocking pool.
-/// `features` mirrors the feature selection the build invokes with — optional
-/// dependencies (and the metadata they declare) only enter the resolved graph
-/// under it; an empty slice resolves the manifest's default feature set.
+/// `cargo metadata` on a manifest, run on `host`. `features` mirrors the
+/// feature selection the build invokes with — optional dependencies (and the
+/// metadata they declare) only enter the resolved graph under it; an empty
+/// slice resolves the manifest's default feature set.
 pub async fn crate_metadata(
     host: &crate::toolchain::Host,
     build_manifest: &Path,
     features: &[String],
 ) -> eyre::Result<cargo_metadata::Metadata> {
-    let host = host.clone();
-    let manifest_path = build_manifest.to_path_buf();
-    let features = features.to_vec();
-    smol::unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command.manifest_path(&manifest_path);
-        if !features.is_empty() {
-            command.features(cargo_metadata::CargoOpt::SomeFeatures(features));
-        }
-        crate::project::metadata_on(&host, &command)
-    })
-    .await
-    .map_err(Into::into)
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(build_manifest);
+    if !features.is_empty() {
+        command.features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
+    }
+    host.cargo_metadata(&command).await.map_err(Into::into)
 }
 
 /// The features cargo resolved on each package of `metadata`'s graph — what
@@ -3514,11 +3507,8 @@ mod permission_audit_tests {
         assert!(message.contains("`other-push`"), "{message}");
     }
 
-    /// Apple declarations are collected across the resolved graph: a
-    /// `feature.<name>` table whose cargo feature is disabled contributes
-    /// nothing, the same table with the feature on reaches the entitlements
-    /// and `Info.plist`, and two crates giving one entitlement different
-    /// values fail naming both.
+    /// The iOS development entitlements `declarations` merge into an empty
+    /// table.
     fn signed_entitlements(declarations: &AppleDeclarations) -> plist::Dictionary {
         let mut entitlements = plist::Dictionary::new();
         declarations
@@ -3531,6 +3521,11 @@ mod permission_audit_tests {
         entitlements
     }
 
+    /// Apple declarations are collected across the resolved graph: a
+    /// `feature.<name>` table whose cargo feature is disabled contributes
+    /// nothing, the same table with the feature on reaches the entitlements
+    /// and `Info.plist`, and two crates giving one entitlement different
+    /// values fail naming both.
     #[test]
     fn apple_declarations_are_collected_across_the_graph() {
         let project = tempdir().expect("temp project");

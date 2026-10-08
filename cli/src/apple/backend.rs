@@ -338,7 +338,7 @@ mod tests {
         command
             .manifest_path(&manifest_path)
             .other_options(vec!["--offline".to_string()]);
-        crate::project::metadata_on(host, &command)
+        smol::block_on(host.cargo_metadata(&command))
             .expect("offline metadata resolves the patched project");
     }
 

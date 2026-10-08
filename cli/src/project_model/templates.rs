@@ -3478,13 +3478,8 @@ mod tests {
         );
     }
 
-    /// The channel path answers through real `cargo metadata`: a
-    /// `waterui-ffi` pinned at a git revision — the dev/nightly channel
-    /// shape — resolves through a local `file://` checkout, so the learned
-    /// table is the exact resolved package's, matched on the package's own
-    /// name while the resolved edge spells it `waterui_ffi`. Two distinct
-    /// resolved revisions yield their own tables, and an unresolvable probe
-    /// fails instead of forwarding the unfiltered set.
+    /// Run `git -C dir args` for a fixture checkout and return its trimmed
+    /// stdout.
     fn probe_git(dir: &Path, args: &[&str]) -> String {
         let output = crate::toolchain::Host::current()
             .std_command("git")
@@ -3504,6 +3499,13 @@ mod tests {
             .to_string()
     }
 
+    /// The channel path answers through real `cargo metadata`: a
+    /// `waterui-ffi` pinned at a git revision — the dev/nightly channel
+    /// shape — resolves through a local `file://` checkout, so the learned
+    /// table is the exact resolved package's, matched on the package's own
+    /// name while the resolved edge spells it `waterui_ffi`. Two distinct
+    /// resolved revisions yield their own tables, and an unresolvable probe
+    /// fails instead of forwarding the unfiltered set.
     #[test]
     fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata() {
         let tempdir = tempdir().expect("temporary probe fixture dir");
@@ -8494,15 +8496,14 @@ pub mod preview {
         workspace_root: &Path,
         package_name: &str,
     ) -> io::Result<std::path::PathBuf> {
-        let manifest = workspace_root.join("Cargo.toml");
-        let metadata_host = host.clone();
-        let metadata = smol::unblock(move || {
-            let mut command = cargo_metadata::MetadataCommand::new();
-            command.manifest_path(&manifest).no_deps();
-            crate::project::metadata_on(&metadata_host, &command)
-        })
-        .await
-        .map_err(io::Error::other)?;
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
+            .manifest_path(workspace_root.join("Cargo.toml"))
+            .no_deps();
+        let metadata = host
+            .cargo_metadata(&command)
+            .await
+            .map_err(io::Error::other)?;
         let member = metadata
             .packages
             .iter()
