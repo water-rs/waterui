@@ -2259,6 +2259,7 @@ pub mod native_menu_bar;
 
 #[cfg(hydrolysis_winit)]
 mod winit_impl {
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
