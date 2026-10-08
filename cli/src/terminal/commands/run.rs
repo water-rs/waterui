@@ -572,7 +572,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     let launcher_dir = waterui_cli::tui::ensure_launcher(&project).await?;
 
     let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-    let binary = shell
+    let built = shell
         .display_output(waterui_cli::tui::build(
             &project,
             &launcher_dir,
@@ -586,7 +586,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
         "The TUI backend replaces this terminal until the app exits"
     );
     shell.clear();
-    waterui_cli::tui::exec(&binary)
+    waterui_cli::tui::exec(built)
 }
 
 async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunContext>> {

@@ -197,8 +197,9 @@ struct LockedPackage {
 /// carries (`annotate-snippets` 0.11 beside the locked 0.12, through
 /// bindgen). Cargo keeps both, so that is an addition, not a change. A change
 /// is a resolved version that Cargo could only have reached by moving a
-/// locked one — a version the locked entry's caret requirement accepts, from
-/// the same source.
+/// locked one — a version in the locked entry's caret family, from the same
+/// source. Cargo keeps at most one version per family, so the direction is
+/// immaterial: a downgrade moved the locked entry just as an upgrade did.
 fn replaces_locked_package(
     allowed: &BTreeSet<LockedPackage>,
     name: &str,
@@ -217,9 +218,13 @@ fn replaces_locked_package(
         .iter()
         .filter(|locked| locked.name == identity.name && locked.source == identity.source)
         .any(|locked| {
-            semver::VersionReq::parse(&format!("^{}", locked.version))
-                .expect("a lockfile version is a valid caret requirement")
-                .matches(version)
+            same_caret_family(
+                &locked
+                    .version
+                    .parse()
+                    .expect("a lockfile version is valid semver"),
+                version,
+            )
         })
 }
 
@@ -1157,23 +1162,30 @@ impl ResolvedFramework {
         // `Cargo.lock.seed` stamp gates the write on the inputs — the
         // project lock and the canonical checksum — because the pruned lock
         // Cargo leaves behind can never say whether the inputs moved
-        // (#2073).
-        crate::templates::seed_lockfile(
+        // (#2073). The seed runs inside the scope a failure restores: a
+        // seed that failed mid-write still owes the lock and stamp it
+        // found their restore.
+        let seeded = crate::templates::seed_lockfile(
             &workspace_root,
             &project_lockfile,
             canonical_lock.as_ref(),
         )
-        .await?;
-        let result = self
-            .validate_seeded_build(
-                directory,
-                features,
-                allow_new,
-                &allowed,
-                canonical.as_deref(),
-                &lock_path,
-            )
-            .await;
+        .await
+        .map_err(eyre::Report::from);
+        let result = match seeded {
+            Ok(()) => {
+                self.validate_seeded_build(
+                    directory,
+                    features,
+                    allow_new,
+                    &allowed,
+                    canonical.as_deref(),
+                    &lock_path,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         if let Err(error) = &result {
             // Restore the lock's recorded bytes — not a re-serialisation,
             // which would drop its `[[patch.unused]]` layout and any
@@ -1755,54 +1767,50 @@ const fn same_caret_family(base: &semver::Version, candidate: &semver::Version) 
 
 /// The packages the generated crate's `Cargo.lock` seed carries.
 ///
-/// The seed is one resolution, not a union of locks: a name the pinned
-/// framework lock records resolves only to the identities the channel
-/// certifies, the project lock supplies every name the framework does
-/// not know, and the previous generated lock fills what neither names so
-/// packages only the managed crate adds stay put. Unioning the three
-/// keyed on the locked identity let a canonical name enter twice at
-/// divergent resolutions — the `wasm-bindgen`/`js-sys` lockstep split of
-/// #177 — and no resolution of the generated crate could then satisfy
-/// `Water.lock`: the divergent candidate either moved a shared edge off
-/// its pin or contradicted the pair a fresh version requires. Names the
-/// canonical lock does not record are exempt — the project may carry any
-/// version of a package the framework never names.
+/// The seed is one resolution, not a union of locks, and precedence is by
+/// resolution slot — the `(name, source, compatible range)` Cargo keeps at
+/// most one version of, where the range is [`same_caret_family`]'s `^`
+/// rule. The pinned framework lock owns every slot it records, the project
+/// lock fills the slots the framework does not occupy, and the previous
+/// generated lock fills what neither occupies — so a second compatible
+/// range of a locked name the managed crate still needs, `syn` 1 beside
+/// the project's `syn` 2, keeps its previous pin. Unioning the three keyed
+/// on the locked identity let a canonical name enter twice at divergent
+/// resolutions — the `wasm-bindgen`/`js-sys` lockstep split of #177 — and
+/// no resolution of the generated crate could then satisfy `Water.lock`:
+/// the divergent candidate either moved a shared edge off its pin or
+/// contradicted the pair a fresh version requires. Slots the canonical
+/// lock does not occupy are exempt — the project may carry any version of
+/// a package the framework never names.
 pub(crate) fn seed_packages(
     canonical: Option<&Lockfile>,
     project: &Lockfile,
     previous: Option<&Lockfile>,
 ) -> Vec<cargo_lock::Package> {
-    let canonical_names: BTreeSet<&str> = canonical
-        .into_iter()
-        .flat_map(|lock| lock.packages.iter().map(|package| package.name.as_str()))
-        .collect();
-    let project_names: BTreeSet<&str> = project
-        .packages
-        .iter()
-        .map(|package| package.name.as_str())
-        .collect();
     let mut packages: Vec<cargo_lock::Package> = canonical
         .into_iter()
         .flat_map(|lock| lock.packages.iter().cloned())
         .collect();
-    packages.extend(
-        project
-            .packages
-            .iter()
-            .filter(|package| !canonical_names.contains(package.name.as_str()))
-            .cloned(),
-    );
-    packages.extend(
-        previous
-            .into_iter()
-            .flat_map(|lock| lock.packages.iter())
-            .filter(|package| {
-                !canonical_names.contains(package.name.as_str())
-                    && !project_names.contains(package.name.as_str())
-            })
-            .cloned(),
-    );
+    for package in project
+        .packages
+        .iter()
+        .chain(previous.into_iter().flat_map(|lock| lock.packages.iter()))
+    {
+        if !packages.iter().any(|taken| same_seed_slot(taken, package)) {
+            packages.push(package.clone());
+        }
+    }
     packages
+}
+
+/// Whether `taken` fills `candidate`'s resolution slot — the `(name,
+/// source, compatible range)` [`seed_packages`] keys precedence on: the
+/// same `^` rule [`replaces_locked_package`] applies, so two entries of
+/// one slot could never both satisfy a resolution.
+fn same_seed_slot(taken: &cargo_lock::Package, candidate: &cargo_lock::Package) -> bool {
+    taken.name == candidate.name
+        && taken.source == candidate.source
+        && same_caret_family(&taken.version, &candidate.version)
 }
 
 /// `dev` has no certification; the repository tree's own gitlinks record which
@@ -3883,7 +3891,7 @@ mod tests {
     /// divergent `wasm-bindgen`/`js-sys` pair beside the pin and no
     /// resolution then satisfied `Water.lock` (#177) — while a name the
     /// canonical lock does not record keeps the project's entries, the
-    /// previous lock filling in only what neither names.
+    /// previous lock filling the resolution slots neither occupies.
     #[test]
     fn the_seed_resolves_a_canonical_name_to_the_pinned_identity() {
         let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
@@ -3928,9 +3936,11 @@ mod tests {
         assert_eq!(versions("cc"), ["1.4.5"]);
         assert_eq!(versions("app"), ["0.1.0"]);
         assert_eq!(versions("toml"), ["0.9.5"]);
-        // The project owns the `annotate-snippets` name: the previous
-        // lock's second entry cannot stand beside the project's pin.
-        assert_eq!(versions("annotate-snippets"), ["0.12.16"]);
+        // The previous lock's `annotate-snippets` sits in another caret
+        // family than the project's 0.12 — a different resolution slot,
+        // not a moved pin — so it still seeds beside the project's
+        // entry: a second range the managed crate resolved stays.
+        assert_eq!(versions("annotate-snippets"), ["0.11.5", "0.12.16"]);
         assert_eq!(versions("bindgen"), ["0.72.0"]);
 
         // Without a canonical lock — the stable channel — every input
@@ -3980,14 +3990,53 @@ mod tests {
         assert_eq!(versions("app"), ["0.1.0"]);
     }
 
+    /// The previous managed lock can carry a second compatible range of a
+    /// name the project locks — `syn` 1 beside the project's `syn` 2, a
+    /// dependency only the managed crate resolved. Same-family precedence
+    /// does not apply across ranges: the project's `syn` 2 occupies the
+    /// `^2` slot, so the previous `syn` 1 pin keeps seeding the slot it
+    /// owns instead of dropping as a superseded pin.
+    #[test]
+    fn the_seed_keeps_a_previous_pin_in_another_compatible_range() {
+        let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
+        let lock = |packages| Lockfile {
+            packages,
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let project = lock(vec![
+            package("app", "0.1.0", None),
+            package("syn", "2.0.106", registry),
+        ]);
+        let previous = lock(vec![
+            package("syn", "1.0.109", registry),
+            package("syn", "2.0.100", registry),
+        ]);
+
+        let seed = seed_packages(None, &project, Some(&previous));
+        let mut versions: Vec<_> = seed
+            .iter()
+            .filter(|package| package.name.as_str() == "syn")
+            .map(|package| package.version.to_string())
+            .collect();
+        versions.sort();
+        // The `^2` slot resolves to the project's pin — the previous
+        // lock's stale 2.0.100 drops — while the `^1` slot keeps the only
+        // entry any lock names for it.
+        assert_eq!(versions, ["1.0.109", "2.0.106"]);
+    }
+
     /// The divergence hydroterm hit: the previous generated lock, the
     /// channel's `Water.lock` and the application's `Cargo.lock` all record
     /// `accesskit`, at `0.25.0`, `0.25.0` and `0.25.1` respectively — three
     /// locks, one caret family, two identities. The union seed kept the
     /// application entry beside the pinned one, and Cargo could not satisfy
     /// both the pinned identity and the edges that named the other version.
-    /// The seed must carry only the canonical identity for a name the
-    /// channel records.
+    /// The seed must carry only the canonical identity for a resolution
+    /// slot the channel records — a different caret family is a different
+    /// slot, not a divergent pin.
     #[test]
     fn the_seed_drops_a_projects_divergent_patch_of_a_canonical_name() {
         let registry = Some("registry+https://github.com/rust-lang/crates.io-index");
@@ -4022,13 +4071,14 @@ mod tests {
             versions.sort();
             versions
         };
-        // A name the channel records resolves to its certified identity
-        // alone — the project's divergent 0.25.1 and the previous lock's
-        // duplicate 0.25.0 cannot both enter the seed.
+        // A caret family the channel records resolves to its certified
+        // identity alone — the project's divergent 0.25.1 and the previous
+        // lock's duplicate 0.25.0 cannot both enter the seed.
         assert_eq!(versions("accesskit"), ["0.25.0"]);
-        // The project's second-major addition beside a canonical name is
-        // dropped too: canonical owns the name.
-        assert_eq!(versions("dirs"), ["6.0.0"]);
+        // The project's second major is a different resolution slot, not a
+        // divergent pin: `dirs` 7 stays beside the framework's 6, the same
+        // `syn` 1 beside `syn` 2 case a previous lock can carry.
+        assert_eq!(versions("dirs"), ["6.0.0", "7.0.0"]);
         // Names only the previous generated lock knew stay seeded.
         assert_eq!(versions("aither"), ["0.12.0"]);
         assert_eq!(versions("app"), ["0.1.0"]);

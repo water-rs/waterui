@@ -448,6 +448,7 @@ fn packaged_binary_finds_every_shared_library_it_records() {
             profile_dir: profile_dir.clone(),
             artifact: executable.clone(),
             executable: Some(executable.clone()),
+            binary_artifact_lock: None,
             entry_binary: None,
             shared_runtime: Some(shared_runtime),
             app_library: None,
@@ -560,6 +561,10 @@ fn an_unchanged_build_leaves_the_binary_artifact_untouched() {
             .await
             .expect("first fixture build");
         let first_metadata = std::fs::metadata(&first.artifact).expect("first artifact metadata");
+        // `first` still holds the artifact lock the next `build_binary`
+        // waits on; the assertions only need its captured metadata.
+        let first_artifact = first.artifact.clone();
+        drop(first);
         let second = build
             .build_binary("backend", false)
             .await
@@ -568,7 +573,7 @@ fn an_unchanged_build_leaves_the_binary_artifact_untouched() {
             std::fs::metadata(&second.artifact).expect("second artifact metadata");
 
         assert_eq!(
-            first.artifact, second.artifact,
+            first_artifact, second.artifact,
             "an unchanged build reports the same marked artifact path"
         );
         #[cfg(unix)]
@@ -701,6 +706,8 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
 
         bump_vendored_dylib(root, &backend_dir);
 
+        // `built`'s artifact lock must close before the rebuild waits on it.
+        drop(built);
         let rebuilt = RustBuild::new(&backend_dir, triple.clone())
             .with_target_dir(target_dir)
             .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])

@@ -311,6 +311,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
         profile_dir: profile_dir.to_path_buf(),
         artifact: artifact.clone(),
         executable: Some(artifact),
+        binary_artifact_lock: None,
         entry_binary: None,
         shared_runtime: None,
         app_library: crate::build::app_library_artifact(

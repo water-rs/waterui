@@ -126,6 +126,55 @@ async fn remove_superseded_host_library(
     }
 }
 
+/// Whether `dest` still carries `source`'s last-processed bytes — `false`
+/// when `dest` is missing: the record asserts provenance, not presence.
+///
+/// `dest` is rewritten in place after each copy — the runtime retarget and
+/// install-name canonicalisation a shared-runtime build applies — so its
+/// bytes can never match `source`'s again and a plain
+/// [`crate::utils::copy_file_if_changed`] would recopy and re-rewrite on
+/// every build. A `.<file>.preimage` file beside `dest` records the source
+/// artifact the last completed staging processed instead; while it still
+/// names the same output — same size and mtime, the identity a Cargo
+/// artifact carries — `dest` already holds that artifact's post-processed
+/// form and the caller skips the copy.
+///
+/// # Errors
+/// - If `source` or `dest` cannot be statted.
+async fn staged_source_current(source: &Path, dest: &Path) -> eyre::Result<bool> {
+    let record = staged_source_record(dest);
+    let source = source.to_path_buf();
+    let dest = dest.to_path_buf();
+    smol::unblock(move || -> std::io::Result<bool> {
+        Ok(dest.try_exists()? && crate::utils::cargo_output_unmodified(&source, &record)?)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+/// Record `source` as `dest`'s preimage — the artifact `dest`'s
+/// post-processed bytes were made from. Call only once the rewrite the
+/// [`staged_source_current`] gate assumes done has completed: a failure
+/// before this point leaves the stale record, so the next build recopies.
+///
+/// # Errors
+/// - If `source` cannot be copied or the record cannot be written.
+async fn record_staged_source(source: &Path, dest: &Path) -> eyre::Result<()> {
+    copy_file(source, &staged_source_record(dest)).await?;
+    Ok(())
+}
+
+/// The `.<file>.preimage` path beside `dest` whose bytes record the source
+/// artifact its last completed staging processed.
+fn staged_source_record(dest: &Path) -> PathBuf {
+    dest.with_file_name(format!(
+        ".{}.preimage",
+        dest.file_name()
+            .expect("a staged library path names a file")
+            .to_string_lossy()
+    ))
+}
+
 /// Stage the packaged app's static host library beside the `.app` `water
 /// package` reports.
 ///
@@ -342,7 +391,21 @@ pub(crate) async fn build_rust_lib_with_links(
     if let Some(output_dir) = options.output_dir() {
         fs::create_dir_all(output_dir).await?;
         let dest_lib = output_dir.join(host_library.linked_file_name());
-        crate::utils::copy_file_if_changed(&built_target.artifact, &dest_lib).await?;
+        // The `Dynamic` shape's copy is rewritten in place below — the
+        // runtime retarget and install-name canonicalisation — so its
+        // bytes never match the artifact's again: the recorded preimage,
+        // not the copy's contents, gates the copy (#2073).
+        let rewrites_dest_lib = options.linkage() == RustLinkage::SharedRuntime
+            && host_library == AppleHostLibrary::Dynamic;
+        let mut restaged_dest_lib = false;
+        if rewrites_dest_lib {
+            restaged_dest_lib = !staged_source_current(&built_target.artifact, &dest_lib).await?;
+            if restaged_dest_lib {
+                copy_file(&built_target.artifact, &dest_lib).await?;
+            }
+        } else {
+            crate::utils::copy_file_if_changed(&built_target.artifact, &dest_lib).await?;
+        }
         remove_superseded_host_library(output_dir, host_library).await?;
         if options.linkage() == RustLinkage::SharedRuntime {
             let libraries = RustDynamicLibraries::resolve(&built_target, &triple, project).await?;
@@ -351,12 +414,20 @@ pub(crate) async fn build_rust_lib_with_links(
             );
             libraries.stage(output_dir).await?;
             let staged_runtime = libraries.stage_apple_canonical(output_dir).await?;
-            if host_library == AppleHostLibrary::Dynamic {
-                // The app library records the runtime's cargo-written install
-                // name; retarget while the canonical copy still carries it.
+            if rewrites_dest_lib {
+                // The app library records the runtime's cargo-written
+                // install name; retarget while the canonical copy still
+                // carries it. Both rewrites read the recorded names first
+                // and leave an already-canonical dylib untouched.
                 dynamic_runtime::retarget_module(&dest_lib, &staged_runtime).await?;
                 // The executable binds the app dylib by its install name.
                 dynamic_runtime::canonicalize_install_name(&dest_lib).await?;
+                // Only once the copy's rewrites completed may the preimage
+                // name the artifact again — a failure before this leaves
+                // it stale and the next build recopies.
+                if restaged_dest_lib {
+                    record_staged_source(&built_target.artifact, &dest_lib).await?;
+                }
             }
             dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
         }
@@ -805,6 +876,7 @@ pub async fn package_apple(
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),
             executable: Some(layout.executable_file(&product_name)),
+            binary_artifact_lock: None,
             entry_binary: None,
             shared_runtime: built.shared_runtime.clone(),
             app_library: None,
@@ -920,4 +992,58 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
             | TargetPlatform::VisionOS
             | TargetPlatform::VisionOSSimulator
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A second build over an unchanged artifact rewrites nothing: the
+    /// staged dylib is rewritten in place — retargeted and canonicalised —
+    /// so its bytes never match the source's again, and only the recorded
+    /// preimage keeps the copy from recopying on every build (#2073).
+    #[test]
+    fn staged_source_record_gates_rewritten_dylib_staging() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let output = temporary.path();
+        let source = output.join("libffi-cargo.dylib");
+        let dest = output.join("libffi.dylib");
+        std::fs::write(&source, b"cargo artifact").expect("write the artifact");
+
+        // Build 1: nothing recorded, so the caller copies, rewrites the
+        // copy in place — a byte append standing in for install_name_tool —
+        // and records the artifact the copy was made from.
+        assert!(
+            !smol::block_on(staged_source_current(&source, &dest)).expect("nothing is staged yet")
+        );
+        smol::block_on(copy_file(&source, &dest)).expect("copy the artifact");
+        let mut bytes = std::fs::read(&dest).expect("read the copy");
+        bytes.extend_from_slice(b" retargeted");
+        std::fs::write(&dest, bytes).expect("rewrite the copy");
+        smol::block_on(record_staged_source(&source, &dest)).expect("record the processed source");
+        let staged = std::fs::read(&dest).expect("read the staged dylib");
+        assert_eq!(staged, b"cargo artifact retargeted");
+
+        // Build 2: the copy's bytes no longer match the artifact's, but the
+        // record still names it — the dylib is already this artifact's
+        // post-processed form, so the caller skips the copy.
+        assert!(
+            smol::block_on(staged_source_current(&source, &dest))
+                .expect("the record gates the second build")
+        );
+        assert_eq!(std::fs::read(&dest).expect("read the staged dylib"), staged);
+
+        // A rebuilt artifact — every Cargo write carries a new mtime —
+        // restages, byte length aside.
+        std::fs::write(&source, b"cargo artifact").expect("rewrite the artifact");
+        filetime::set_file_mtime(
+            &source,
+            filetime::FileTime::from_unix_time(1_800_000_000, 0),
+        )
+        .expect("stamp the rebuilt artifact's mtime");
+        assert!(
+            !smol::block_on(staged_source_current(&source, &dest))
+                .expect("a rebuilt source restages")
+        );
+    }
 }

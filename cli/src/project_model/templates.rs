@@ -3771,17 +3771,19 @@ mod tests {
         );
 
         // The project re-resolved: the managed crate follows it — the new
-        // pin replaces the previous lock's stale `pins` entry — and the
-        // entries only the managed crate resolves stay put.
+        // `pins` pin takes the `^2` slot, while the previous lock's `^1`
+        // entry is a different compatible range and stays beside it — and
+        // the entries only the managed crate resolves stay put.
         std::fs::write(&project_lock, &pins_v2).expect("project lock");
         seed();
         assert_eq!(
             managed(),
             std::collections::BTreeSet::from([
                 ("ffi-entries".to_owned(), "0.1.0".to_owned()),
+                ("pins".to_owned(), "1.0.0".to_owned()),
                 ("pins".to_owned(), "2.0.0".to_owned()),
             ]),
-            "the project's new pin replaces the previous lock's; entries only the managed crate resolves stay put"
+            "the project's pin fills its range; a previous pin in another range stays seeded beside it"
         );
 
         // A managed lockfile that went missing is re-seeded from the current pins.
@@ -3913,8 +3915,8 @@ mod tests {
             .collect();
         assert_eq!(
             versions,
-            ["2.0.0"],
-            "a restored stamp must not pass for the new inputs"
+            ["2.0.0", "1.0.0"],
+            "a restored stamp must not pass for the new inputs — the re-seed ran, and the restored `^1` pin keeps its own range beside the project's `^2`"
         );
     }
 
@@ -4436,6 +4438,29 @@ pub async fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<(
     }
 
     fs::write(path, contents).await
+}
+
+/// Write `contents` to `path` atomically: the bytes land in a temporary
+/// file in the same directory that [`tempfile::NamedTempFile::persist`]
+/// then renames over `path`, so a crash mid-write — or a reader racing
+/// it — sees the old file or the new one, never a torn file.
+async fn write_file_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+
+    let path = path.to_path_buf();
+    let contents = contents.to_vec();
+    smol::unblock(move || {
+        let directory = path
+            .parent()
+            .ok_or_else(|| io::Error::other(format!("`{}` has no directory", path.display())))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        temporary.write_all(&contents)?;
+        temporary
+            .persist(&path)
+            .map(|_| ())
+            .map_err(|error| error.error)
+    })
+    .await
 }
 
 #[derive(serde::Serialize)]
@@ -6648,7 +6673,7 @@ pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
 /// way the project lock is: a CLI whose rules differ must re-seed once
 /// rather than trust a stamp an older merge wrote. Bump this when the
 /// merge — or the stamp's own layout — changes.
-const LOCKFILE_SEED_FORMAT: u32 = 1;
+const LOCKFILE_SEED_FORMAT: u32 = 2;
 
 /// Seed a managed crate's `Cargo.lock` from the application's lockfile.
 ///
@@ -6725,18 +6750,22 @@ pub async fn seed_lockfile(
         lockfile = %project_lockfile.display(),
         "seeding the managed crate's Cargo.lock from the project lockfile"
     );
-    write_file_if_changed(&managed_lockfile, merged.to_string().as_bytes()).await?;
-    write_file_if_changed(&seed_copy, &stamp).await
+    // Both writes are atomic: a torn lock or stamp is worse than an absent
+    // one — a reader racing the write sees the old pair or the new one,
+    // and an interrupted seed restores what it found.
+    write_file_atomic(&managed_lockfile, merged.to_string().as_bytes()).await?;
+    write_file_atomic(&seed_copy, &stamp).await
 }
 
 /// Restore a managed crate's `Cargo.lock` and its [`LOCKFILE_SEED`] stamp
 /// to the bytes a failed post-seed step found — or remove each file when
 /// the run found none.
 ///
-/// [`seed_lockfile`] writes the pair together; an error path that restored
-/// the lock alone would leave the stamp claiming the failed run's inputs
-/// already seeded, and the next build would skip the seed the restored
-/// lock no longer carries.
+/// The stamp comes down first and goes back only once the lock is whole:
+/// [`seed_lockfile`] writes the pair together, so any failure — a lock
+/// that will not write, a stamp that will not — must leave the stamp
+/// absent, never claiming the failed run's inputs already seeded while
+/// the restored lock no longer carries them.
 ///
 /// # Errors
 ///
@@ -6746,8 +6775,13 @@ pub async fn restore_seeded_lockfile(
     previous_lock: Option<&[u8]>,
     previous_stamp: Option<&[u8]>,
 ) -> io::Result<()> {
+    let stamp_path = base_dir.join(LOCKFILE_SEED);
+    restore_seeded_file(&stamp_path, None).await?;
     restore_seeded_file(&base_dir.join("Cargo.lock"), previous_lock).await?;
-    restore_seeded_file(&base_dir.join(LOCKFILE_SEED), previous_stamp).await
+    if let Some(stamp) = previous_stamp {
+        write_file_if_changed(&stamp_path, stamp).await?;
+    }
+    Ok(())
 }
 
 /// The per-file half of [`restore_seeded_lockfile`]: the recorded bytes

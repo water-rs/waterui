@@ -175,9 +175,18 @@ pub struct BuiltTarget {
     /// the staged shared runtime sits beside the uplift in the profile
     /// directory, so `@executable_path`/`$ORIGIN` resolves it.
     pub executable: Option<PathBuf>,
+    /// The exclusive per-binary artifact lock `build_inner` took before
+    /// Cargo's invocation — `Some` only for a `--bin` build. The shared
+    /// `<profile>/<name>` uplift at `executable` keeps this run's bytes
+    /// while the lock lives, so a launcher must keep this `BuiltTarget`
+    /// alive until the child process is spawned — or the `exec` happened,
+    /// the lock fd being closed-on-exec — before a concurrent same-named
+    /// build may re-uplift (#2073).
+    pub binary_artifact_lock: Option<std::fs::File>,
     /// The entry `[[bin]]` an Apple build produces beside the companion
     /// library — `Some` only on a non-embedded Apple build. Its own
-    /// `BuiltTarget` carries the reported `executable`, so packaging never
+    /// `BuiltTarget` carries the reported `artifact` — the marked
+    /// `deps/<name>-<marker>` link — which packaging reads, so it never
     /// reconstructs `<profile>/<name>` itself.
     pub entry_binary: Option<Box<Self>>,
     /// The CEF helper `[[bin]]` the generated hydrolysis backend crate
@@ -1803,13 +1812,13 @@ impl RustBuild {
         let profile_dir = self.lib_output_dir(release).await?;
         // The shared-target lease is a *shared* lease — concurrent `water`
         // builds in this target directory are expected. For a `--bin` unit,
-        // hold an exclusive per-binary lock from before Cargo's invocation
-        // until its reported executable has been relinked under the
-        // variant-stable `deps/<name>-<marker>` name: a same-named binary
-        // build uplifts the same `<profile>/<name>`, so without the lock it
-        // could replace this run's bytes in the window between Cargo
-        // exiting and the relink.
-        let _artifact_lock = match cargo_target {
+        // hold an exclusive per-binary lock from before Cargo's invocation;
+        // the `BuiltTarget` carries it on, so the lock covers the
+        // `deps/<name>-<marker>` relink and reaches a launcher's spawn: a
+        // same-named binary build uplifts the same `<profile>/<name>`, so
+        // without the lock it could replace this run's bytes in the window
+        // between Cargo exiting and the launcher exec'ing the uplift.
+        let artifact_lock = match cargo_target {
             CargoTarget::Binary(name) => Some(binary_artifact_lock(&profile_dir, name).await?),
             CargoTarget::Lib => None,
         };
@@ -1908,6 +1917,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             profile_dir,
             artifact,
             executable,
+            binary_artifact_lock: artifact_lock,
             entry_binary: None,
             shared_runtime,
             app_library,
@@ -2668,11 +2678,13 @@ pub(crate) fn reported_artifact(
 ///
 /// `shared_target_lease` is a *shared* lease — concurrent `water` builds
 /// into this target directory are expected — so this lock file takes fs4's
-/// exclusive lock for the span from before Cargo's invocation to after the
-/// reported executable is relinked by [`marked_binary_artifact`]. A second
-/// same-named build then uplifts `<profile>/<name>` only after this build
-/// owns its bytes, and its own `executable` report names its own output.
-/// The lock is per binary name: unrelated builds proceed in parallel.
+/// exclusive lock from before Cargo's invocation, through the reported
+/// executable's relink by [`marked_binary_artifact`], and on inside the
+/// returned [`BuiltTarget`] until the launcher that executes the uplift
+/// has spawned its child. A second same-named build then uplifts
+/// `<profile>/<name>` only after this build's launch read its bytes, and
+/// its own `executable` report names its own output. The lock is per
+/// binary name: unrelated builds proceed in parallel.
 async fn binary_artifact_lock(
     profile_dir: &Path,
     binary_name: &str,
@@ -2735,9 +2747,11 @@ async fn marked_binary_artifact(
     let marked_bytes = marked_path.clone();
     let uplift_bytes = uplift.to_path_buf();
     if same_file(uplift, &marked_path).await?
-        || smol::unblock(move || crate::utils::files_identical(&uplift_bytes, &marked_bytes))
-            .await
-            .map_err(RustBuildError::FailToBuildRustLibrary)?
+        || smol::unblock(move || {
+            crate::utils::cargo_output_unmodified(&uplift_bytes, &marked_bytes)
+        })
+        .await
+        .map_err(RustBuildError::FailToBuildRustLibrary)?
     {
         remove_staging_link(&staging).await?;
         return Ok(marked_path);
@@ -3689,6 +3703,7 @@ mod tests {
             profile_dir: profile_dir.clone(),
             artifact: temporary.path().join("app"),
             executable: None,
+            binary_artifact_lock: None,
             entry_binary: None,
             shared_runtime: None,
             app_library: None,

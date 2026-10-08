@@ -318,6 +318,13 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
 /// staged copy that already carries the right bytes is left untouched, so
 /// its mtime never marks a managed output as fresh input to the next build.
 ///
+/// The comparison is the size first and then the bytes themselves — every
+/// file under a Cargo registry source carries the same deterministic
+/// mtime, so a metadata check would read two different files as unchanged.
+/// A copy that does get written keeps the write's own mtime: stamping the
+/// source's could move it backwards, and nothing downstream needs the
+/// copy's metadata to name a source state.
+///
 /// An existing `to` that cannot be read is an error — only `NotFound`
 /// counts as absent, matching `write_file_if_changed`.
 ///
@@ -335,44 +342,81 @@ pub async fn copy_file_if_changed(from: impl AsRef<Path>, to: impl AsRef<Path>) 
 /// # Errors
 /// - If `from` or an existing `to` cannot be read, or the copy fails.
 pub fn copy_file_if_changed_sync(from: &Path, to: &Path) -> io::Result<()> {
-    if files_identical(from, to)? {
+    if files_same_contents(from, to)? {
         return Ok(());
     }
-    copy_file_overwriting(from, to)
+    replace_with_copy(from, to)
 }
 
+/// `replace_with_copy` plus the source's mtime stamped on the copy: a
+/// verbatim staged copy whose metadata mirrors the file it carries — the
+/// property [`cargo_output_unmodified`]'s size-and-mtime check relies on
+/// where it applies. The copy keeps the source's mode, which may be
+/// read-only, so the time is set by path — no write handle is needed.
 fn copy_file_overwriting(from: &Path, to: &Path) -> io::Result<()> {
     let from_modified = std::fs::metadata(from)?.modified()?;
-    // `reflink_or_copy` refuses to overwrite; every caller expects the
-    // staged file at `to` to carry `from`'s contents afterwards.
+    replace_with_copy(from, to)?;
+    filetime::set_file_mtime(to, filetime::FileTime::from_system_time(from_modified))
+}
+
+/// Remove `to` and copy `from`'s bytes in its place — `reflink_or_copy`
+/// refuses to overwrite, and every caller expects `to` to carry `from`'s
+/// contents afterwards. The write sets the copy's own modification time:
+/// [`copy_file_if_changed_sync`]'s byte-compare reads the copy's contents,
+/// never its mtime, so nothing stamps over it.
+fn replace_with_copy(from: &Path, to: &Path) -> io::Result<()> {
     match std::fs::remove_file(to) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    reflink_or_copy_stamped(from, to, from_modified)
+    reflink_copy::reflink_or_copy(from, to).map(|_| ())
 }
 
-/// `reflink_or_copy` plus the source's mtime stamped on the copy: the
-/// destination's metadata then says which source state it carries, the
-/// stamp `files_identical` compares against without reading either file.
-/// The copy keeps the source's mode, which may be read-only, so the time
-/// is set by path — no write handle is needed.
-fn reflink_or_copy_stamped(
-    from: &Path,
-    to: &Path,
-    from_modified: std::time::SystemTime,
-) -> io::Result<()> {
-    reflink_copy::reflink_or_copy(from, to).map(|_| ())?;
-    filetime::set_file_mtime(to, filetime::FileTime::from_system_time(from_modified))
+/// Whether `to` currently carries `from`'s bytes: the sizes first —
+/// different lengths cannot match — then a streamed compare through
+/// `BufReader`'s own buffers, never a whole-file read. `false` when `to`
+/// does not exist, an error for any other stat or read failure on either
+/// side.
+fn files_same_contents(from: &Path, to: &Path) -> io::Result<bool> {
+    use std::io::BufRead as _;
+
+    let from_meta = std::fs::metadata(from)?;
+    let to_meta = match std::fs::metadata(to) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if to_meta.len() != from_meta.len() {
+        return Ok(false);
+    }
+    let mut from = io::BufReader::new(std::fs::File::open(from)?);
+    let mut to = io::BufReader::new(std::fs::File::open(to)?);
+    loop {
+        let from_chunk = from.fill_buf()?;
+        let to_chunk = to.fill_buf()?;
+        // Both empty means equal at the end; one empty means different
+        // trailing bytes — the size check already kept the lengths equal.
+        if from_chunk.is_empty() || to_chunk.is_empty() {
+            return Ok(from_chunk.is_empty() && to_chunk.is_empty());
+        }
+        let common = from_chunk.len().min(to_chunk.len());
+        if from_chunk[..common] != to_chunk[..common] {
+            return Ok(false);
+        }
+        from.consume(common);
+        to.consume(common);
+    }
 }
 
-/// Whether `to` still stages `from`'s bytes: same size and the same mtime
-/// [`copy_file_overwriting`] stamped on it when it made the copy. A file
-/// whose metadata matches has no reason to be read, so a no-change build
-/// neither reads nor rewrites the staged copy — `false` when `to` does not
-/// exist, an error for any other stat failure on either side.
-pub(crate) fn files_identical(from: &Path, to: &Path) -> io::Result<bool> {
+/// Whether `to` still names the same Cargo output `from` reported: the
+/// same size and the same modification time. Sound only where the caller's
+/// contract holds — a Cargo build output's mtime changes on every write,
+/// so a matching mtime means the artifact was not rewritten. Anything else
+/// must compare bytes — registry sources share one deterministic mtime —
+/// which is what [`copy_file_if_changed`] does instead. `false` when `to`
+/// does not exist, an error for any other stat failure on either side.
+pub(crate) fn cargo_output_unmodified(from: &Path, to: &Path) -> io::Result<bool> {
     let from_meta = std::fs::metadata(from)?;
     let to_meta = match std::fs::metadata(to) {
         Ok(meta) => meta,
@@ -413,11 +457,33 @@ mod tests {
             .expect("copying a read-only source should succeed");
         for copy in [&staged, &staged_again] {
             assert_eq!(std::fs::read(copy).expect("staged copy"), b"read only");
-            assert!(
-                super::files_identical(&source, copy).expect("compare the copy"),
-                "the copy carries the source's mtime stamp"
-            );
         }
+        assert!(
+            super::cargo_output_unmodified(&source, &staged).expect("compare the copy"),
+            "a verbatim copy carries the source's mtime stamp"
+        );
+    }
+
+    /// `copy_file_if_changed` compares bytes, not the registry mtimes: two
+    /// sources with the same size and the same mtime but different bytes
+    /// still copy. A metadata compare would read them as unchanged and
+    /// leave the stale destination in place.
+    #[test]
+    fn copy_file_if_changed_compares_bytes_not_metadata() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let source = temporary.path().join("source.bin");
+        let staged = temporary.path().join("staged.bin");
+        std::fs::write(&source, b"new bytes").expect("write source");
+        std::fs::write(&staged, b"old bytes").expect("write stale copy");
+        // Same size, and the registry's deterministic mtime stamped on
+        // both: only the bytes distinguish them.
+        let shared = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+        filetime::set_file_mtime(&source, shared).expect("stamp source mtime");
+        filetime::set_file_mtime(&staged, shared).expect("stamp staged mtime");
+
+        smol::block_on(super::copy_file_if_changed(&source, &staged))
+            .expect("a different-bytes same-metadata copy must still run");
+        assert_eq!(std::fs::read(&staged).expect("staged copy"), b"new bytes");
     }
 
     #[test]
