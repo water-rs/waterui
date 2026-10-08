@@ -254,7 +254,7 @@ the app crashed** — read the log tail rather than treating it as success.
 | Platform | Default backend | Also possible |
 |---|---|---|
 | macOS, iOS, tvOS, watchOS, visionOS (+ simulators) | `apple` (UIKit/AppKit) | `hydrolysis` |
-| Android | `hydrolysis` | `android` (Kotlin runtime, Android View) |
+| Android | `hydrolysis` | — |
 | Linux | `gtk4` | `hydrolysis` |
 | Windows | `hydrolysis` | — |
 | Web | WASM + WebGPU | — |

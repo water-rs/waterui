@@ -274,7 +274,7 @@ The `Window` builder, precisely:
   (KWin), and under a Wayland compositor advertising
   `ext-background-effect-v1` and applying its blur by its own policy; older
   Windows, other X11 window managers and Wayland compositors not advertising
-  the global leave the window tinted with the level's colour but unblurred. The Kotlin Android runtime realizes no material
+  the global leave the window tinted with the level's colour but unblurred. The Hydrolysis Android host realizes no material
   and draws a material window background as the opaque theme background. The background is reactive:
   setting the binding (or `window.handle().set_background(..)`) re-applies it to the
   open window, e.g. to switch between opaque, a translucent colour and a material.

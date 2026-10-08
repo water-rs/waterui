@@ -258,7 +258,8 @@ Layouts communicate with native backends through the `Layout` trait's protocol:
 2. Backend calls `place(bounds, children)` to get child rectangles
 3. Backend renders native widgets at the calculated positions
 
-The FFI layer in `waterui-ffi` handles the Rust ↔ Native boundary.
+Each backend implements this protocol directly — `waterui-apple` bridges it
+to AppKit/UIKit and Hydrolysis maps it onto its Cherenkov renderer.
 
 ### Performance Characteristics
 
