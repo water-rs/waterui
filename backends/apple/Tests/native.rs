@@ -78,6 +78,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(target_os = "ios")]
     {
         tests.extend(tabs::trials());
+        tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
         tests.extend(safe_area::trials());
     }
@@ -2203,6 +2204,10 @@ mod filtered {
                 a_deferred_capture_pauses_the_link_until_the_child_redraws,
             ),
             Trial::test(
+                "filtered::a_lost_context_parks_the_link_until_the_publication",
+                a_lost_context_parks_the_link_until_the_publication,
+            ),
+            Trial::test(
                 "filtered::a_view_collapsed_mid_capture_renders_transparent",
                 a_view_collapsed_mid_capture_renders_transparent,
             ),
@@ -2286,6 +2291,61 @@ mod filtered {
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
             "the nested setup's redraw re-arms the link and the owed frame lands"
+        );
+        Ok(())
+    }
+
+    /// A GPU device loss while the filtered view is attached: the
+    /// delivered frame parks the leaf — the link pauses, one publication
+    /// watch arms, and a delivery that still arrives while parked drops
+    /// without rendering — and the rebuilt context's publication wakes
+    /// the wait, re-arms the link and lands the owed frame.
+    pub fn a_lost_context_parks_the_link_until_the_publication() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let filtered = pollster::block_on(MountedFilteredSurface::mount_filling(mtm))
+            .map_err(|error| format!("a mounted filling filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "the attached filtered view presents its first frame"
+        );
+        let encoded = filtered.encoded_frames();
+        let lost = filtered.current_generation();
+
+        // The link has demand again when the loss lands, so the next
+        // delivered frame hits `render_frame`'s lost-context arm.
+        filtered.request_render();
+        filtered.lose_device("test device loss");
+        assert!(
+            filtered.deliver_frame(0.0),
+            "a drawable checks out for the frame"
+        );
+        assert!(
+            filtered.parked() && filtered.link_paused(),
+            "the lost context parks the leaf: the link pauses and the publication watch arms"
+        );
+
+        // A delivery still arriving while parked drops unpresented:
+        // nothing renders and the one outstanding watch stays
+        // outstanding — no per-vsync re-arm.
+        assert!(
+            filtered.deliver_frame(0.0),
+            "a drawable checks out for the parked leaf"
+        );
+        assert!(
+            filtered.parked() && filtered.link_paused() && filtered.encoded_frames() == encoded,
+            "a parked leaf renders nothing and keeps its one outstanding watch"
+        );
+
+        // The rebuild's publication wakes the parked wait: the hold
+        // clears, the link re-arms, and the owed frame renders on the
+        // new generation — the encode count is the render's own record.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.current_generation() > lost
+                && !filtered.parked()
+                && filtered.encoded_frames() > encoded),
+            "the publication wake re-arms the link and the owed frame renders"
         );
         Ok(())
     }
@@ -2386,11 +2446,11 @@ mod filtered {
 
         let (log, errors) = ErrorLog::new("waterui_apple::components::filtered");
         tracing::subscriber::with_default(log, || {
-            filtered.settle_failed_capture(generation, first);
+            filtered.settle_failed_capture(generation, &first);
             // A later redraw of the failed child lands the same
             // terminal outcome on the same generation — logged once.
             let repeat = failed_child_carrier(&filtered.child);
-            filtered.settle_failed_capture(generation, repeat);
+            filtered.settle_failed_capture(generation, &repeat);
         });
         assert_eq!(
             errors.load(Ordering::SeqCst),
@@ -5929,5 +5989,76 @@ mod list_scroll {
             Box::new(a_bare_request_takes_over_an_in_flight_animation),
         ));
         trial_each(named)
+    }
+}
+
+/// Navigation-chrome trials: the toolbar intent a page records in
+/// `set_page` applies through the stack's `UINavigationControllerDelegate`.
+#[cfg(target_os = "ios")]
+mod navigation {
+    use cocoa_ui::objc2_ui_kit::UINavigationController;
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::navigation::{
+        NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView,
+    };
+    use waterui::prelude::text;
+
+    use super::resolve;
+
+    /// The `UINavigationController` owning a view in the subtree,
+    /// depth-first — either the view's own controller is the nav
+    /// controller, or the page controller answers one.
+    fn nav_controller_in(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![libtest_mimic::Trial::test(
+            "navigation::a_first_page_bottom_bar_unhides_the_toolbar",
+            || {
+                a_first_page_bottom_bar_unhides_the_toolbar();
+                Ok(())
+            },
+        )]
+    }
+
+    /// The root page's intent is recorded in `set_page` while
+    /// `navigationController()` is still nil — a first page declaring
+    /// bottom items must still unhide the stack's toolbar once the page
+    /// resolves. Without it the iOS 26 floating bottom bar never mounts.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_first_page_bottom_bar_unhides_the_toolbar() {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::BottomBar,
+                    text("Action"),
+                )],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isToolbarHidden(),
+            "the first page's bottom bar unhides the toolbar"
+        );
     }
 }

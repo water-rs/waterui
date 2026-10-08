@@ -41,6 +41,7 @@ use crate::gpu_runtime::EngineGeneration;
 #[cfg(all(feature = "native-test", target_os = "macos"))]
 use crate::gpu_runtime::SceneEngine;
 use crate::presentation_time::PresentationTime;
+use crate::publication_park::PublicationPark;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -341,11 +342,17 @@ struct SurfaceState {
     /// The environment's shared presentation-time anchor — the display
     /// link's target timestamp maps through it onto the engine's clock.
     presentation_time: Rc<PresentationTime>,
-    /// The presentation lifecycle's three independent axes: which epoch
-    /// owns the drawable path, whether a capture scope routes redraws,
-    /// and whether a hold — a parked wait or a settled failure — gates
-    /// recovery. Each axis reads alone, whatever the order of events.
+    /// The presentation lifecycle's independent axes: which epoch owns
+    /// the drawable path and whether a capture scope routes redraws.
+    /// The third axis — a parked wait or settled failure gating
+    /// recovery — is `park`: events land in any order, so each axis
+    /// reads alone, whatever the order of events.
     presentation: RefCell<Presentation>,
+    /// The parked wait on a context publication — `Parked` after device
+    /// loss or `Failed` after a typed frame failure. While it stands the
+    /// link stays paused and delivered frames drop; the publication's
+    /// wake clears it and replays the owed work.
+    park: Rc<PublicationPark>,
     /// The hosted semantic view.
     view: RefCell<Box<dyn HostedView>>,
     /// The view's engine layer bound to the context that built it —
@@ -401,25 +408,19 @@ struct SurfaceState {
     last_resolved_size: RefCell<Option<Size>>,
 }
 
-/// The presentation lifecycle: the drawable-path epoch, the open
-/// external-render scope and the publication wait. Three independent
-/// facts about one surface — events land in any order (a failure during
-/// a capture, a publication during a capture, a capture over a parked
-/// wait), so each axis is read and written on its own.
+/// The presentation lifecycle: the drawable-path epoch and the open
+/// external-render scope. Two independent facts about one surface —
+/// events land in any order (a failure during a capture, a publication
+/// during a capture, a capture over a parked wait), so each axis is
+/// read and written on its own; the wait itself is `SurfaceState::park`.
 struct Presentation {
     /// Who owns the drawable path right now.
     epoch: Epoch,
     /// Capture-owned rendering: the enclosing capture's redraw and the
     /// open scopes. Independent of the epoch — a mid-capture settle
-    /// lands on `hold` without disturbing the scope, and the scope's
+    /// lands on the park without disturbing the scope, and the scope's
     /// balance check never inspects a hold.
     capture: Option<External>,
-    /// A parked wait on a context publication — `Parked` after device
-    /// loss (transient: readiness keeps waiting for a real
-    /// `PresentedFrame`) or `Failed` after a typed frame failure
-    /// (terminal until a newer context rebinds: readiness resolved at
-    /// settle). Replacing it cancels the previous parked task.
-    hold: Option<Hold>,
 }
 
 /// The drawable-path epoch.
@@ -505,41 +506,6 @@ struct External {
     depth: NonZeroU32,
 }
 
-/// Which parked wait holds the surface — `Parked` is the transient
-/// device-loss wait; `Failed` is the terminal-until-rebind typed
-/// failure.
-#[derive(Clone)]
-enum HoldKind {
-    /// The frame's context generation reported device loss.
-    Parked,
-    /// A typed frame failure settled — the failed generation is the
-    /// key that makes a second settle for the same failure a no-op, and
-    /// the carrier is the terminal outcome a capture's completion
-    /// forwards.
-    Failed {
-        /// The generation the failure settled under.
-        generation: u64,
-        /// The typed failure the capture's `Failed` outcome carries.
-        error: Arc<dyn std::error::Error + Send + Sync>,
-    },
-}
-
-/// A parked wait on a context publication: `watch` is the parked task —
-/// replacing or dropping it cancels the wait — and its wake clears the
-/// hold, then replays the owed work through the surface's own demand or
-/// redraw contract.
-struct Hold {
-    /// Which wait this is.
-    kind: HoldKind,
-    /// The parked `context_after` subscription — dropping the task
-    /// cancels the wait; nothing else needs the handle.
-    #[expect(
-        dead_code,
-        reason = "the handle is kept for its Drop, which cancels the parked task"
-    )]
-    watch: executor_core::AnyLocalExecutorTask<()>,
-}
-
 impl Presentation {
     /// A surface with no presentation at all — the mount-time state and
     /// the teardown write.
@@ -547,7 +513,6 @@ impl Presentation {
         Self {
             epoch: Epoch::Detached,
             capture: None,
-            hold: None,
         }
     }
 
@@ -577,18 +542,6 @@ impl Presentation {
     /// untouched.
     fn detach(&mut self) {
         self.epoch = Epoch::Detached;
-    }
-
-    /// Whether the parked wait is the terminal kind — `participates`
-    /// and `register_waiter` consult it.
-    const fn is_failed(&self) -> bool {
-        matches!(
-            self.hold,
-            Some(Hold {
-                kind: HoldKind::Failed { .. },
-                ..
-            })
-        )
     }
 }
 
@@ -643,6 +596,7 @@ impl SurfaceState {
             runtime,
             presentation_time: PresentationTime::get(env),
             presentation: RefCell::new(Presentation::detached()),
+            park: Rc::new(PublicationPark::new()),
             view: RefCell::new(view),
             bound: RefCell::new(None),
             weak_self: weak.clone(),
@@ -902,7 +856,7 @@ fn fail_external_frame(
     completion: cocoa_ui::capture::SurfaceCaptureCompletion,
 ) {
     settle_failed(state, view, context.generation(), error);
-    completion(Err(hold_capture_error(state)));
+    completion(Err(state.park.capture_error()));
 }
 
 /// The frame just examined carries no pixels for this surface — mark it
@@ -1156,7 +1110,8 @@ fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     }
     {
         let slot = state.presentation.borrow();
-        if !matches!(slot.epoch, Epoch::Detached) || slot.capture.is_some() || slot.hold.is_some() {
+        if !matches!(slot.epoch, Epoch::Detached) || slot.capture.is_some() || state.park.is_held()
+        {
             return;
         }
     }
@@ -1172,9 +1127,8 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
             Presentation {
                 epoch: Epoch::Detached,
                 capture: None,
-                hold: None
             }
-        ),
+        ) && !state.park.is_held(),
         "attach only ever opens on a free surface"
     );
     let layer = view.presentation_layer();
@@ -1228,7 +1182,7 @@ fn detach_if_attached(state: &SurfaceState) {
 fn update_presentation_demand(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     {
         let slot = state.presentation.borrow();
-        if slot.capture.is_some() || slot.hold.is_some() {
+        if slot.capture.is_some() || state.park.is_held() {
             // A capture scope or a parked wait owns the surface's work
             // right now — the attach door and the link demand are theirs
             // to reopen, never this call's.
@@ -1268,47 +1222,35 @@ fn ensure_presenter(state: &SurfaceState, context: &Arc<SharedGpuContext>) {
     attached.context = context.clone();
 }
 
-/// `awaitNextContextGeneration` — the parked wait on a context newer than
-/// `generation`. The wake clears the hold, then replays the owed work
-/// through the surface's own contract: an enclosing capture is asked for
-/// a fresh frame through its redraw callback, a windowed surface gets
-/// the owed frame back as link demand — the next update answers it,
-/// ticking or not — and a detached surface owes the frame through
-/// `attach` anyway.
-fn arm_context_watch(
+/// The publication wake's replay — the `context_after` wait's wake runs
+/// it once it clears the hold: a new context generation is the one
+/// legitimate recovery, never a retry of the same frame on the
+/// generation that failed. An enclosing capture is asked for a fresh
+/// frame through its redraw contract, a windowed surface gets the owed
+/// frame back as link demand — the next update answers it, ticking or
+/// not — and a detached surface owes the frame through `attach` anyway.
+fn publication_replay(
     state: &Rc<SurfaceState>,
     view: &Retained<SurfaceView>,
-    generation: u64,
-) -> executor_core::AnyLocalExecutorTask<()> {
-    let runtime = state.runtime.clone();
+) -> impl FnOnce() + 'static {
     let weak = Rc::downgrade(state);
     let view = view.clone();
-    executor_core::spawn_local(async move {
-        let _published = runtime.context_after(generation).await;
+    move || {
         if let Some(state) = weak.upgrade() {
-            // A new context generation is the one legitimate recovery:
-            // the hold clears — never a retry of the same frame on the
-            // generation that failed.
-            let replay = {
-                let mut slot = state.presentation.borrow_mut();
-                if slot.hold.take().is_none() {
-                    // The wait was replaced or the hold already cleared —
-                    // this wake landed late and replays nothing.
-                    return;
-                }
-                // A capture scope open over the hold is asked for the owed
-                // frame through the enclosing capture's redraw contract.
-                slot.capture
-                    .as_ref()
-                    .map(|external| external.redraw.clone())
-            };
+            // A capture scope open over the hold is asked for the owed
+            // frame through the enclosing capture's redraw contract.
+            let replay = state
+                .presentation
+                .borrow()
+                .external()
+                .map(|external| external.redraw.clone());
             if let Some(redraw) = replay {
                 redraw();
             } else {
                 owe_and_reschedule(&state, &view);
             }
         }
-    })
+    }
 }
 
 /// Parks the surface on the `generation` publication wait — the
@@ -1317,28 +1259,18 @@ fn arm_context_watch(
 /// hold already parked or failed only re-arms on the newer generation;
 /// an open capture scope survives either way.
 fn park_for_publication(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, generation: u64) {
-    let mut slot = state.presentation.borrow_mut();
-    if slot.hold.is_none() {
-        // A live link is paused — a stale delivery still arriving drops
-        // its drawable in `render_drawable`.
-        if let Some(attached) = slot.attached_mut() {
-            attached.presenter.set_paused(true);
-        }
-    }
-    let kind = match &slot.hold {
-        // A settled failure keeps its kind — the failed generation still
-        // keys `settle_failed`'s no-op while the wait re-arms on the newer
-        // publication.
-        Some(Hold {
-            kind: failed @ HoldKind::Failed { .. },
-            ..
-        }) => failed.clone(),
-        _ => HoldKind::Parked,
-    };
-    slot.hold = Some(Hold {
-        kind,
-        watch: arm_context_watch(state, view, generation),
-    });
+    state.park.park(
+        &state.runtime,
+        generation,
+        || {
+            // A live link is paused — a stale delivery still arriving
+            // drops its drawable in `render_drawable`.
+            if let Some(attached) = state.presentation.borrow_mut().attached_mut() {
+                attached.presenter.set_paused(true);
+            }
+        },
+        publication_replay(state, view),
+    );
 }
 
 /// Renders one issued drawable and settles its receipt after GPU completion.
@@ -1355,7 +1287,7 @@ fn render_drawable(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, frame
             // A stale delivery — the link kept a queued update across a
             // detach, a failure settle or a device-loss park: release the
             // drawable's lease silently.
-            if slot.hold.is_some() || matches!(slot.epoch, Epoch::Detached) {
+            if state.park.is_held() || matches!(slot.epoch, Epoch::Detached) {
                 return;
             }
             None
@@ -1580,7 +1512,7 @@ fn settle_frame_completion(
     let presentable = {
         let slot = state.presentation.borrow();
         slot.capture.is_none()
-            && slot.hold.is_none()
+            && !state.park.is_held()
             && matches!(&slot.epoch, Epoch::Attached(attached)
                 if state.capture_suppression.get() == 0
                     && can_present_now(view)
@@ -1611,11 +1543,11 @@ fn settle_frame_completion(
 /// Settles a typed [`HostedError`] as an explicit native rendering
 /// failure: reported through tracing (the native `os_log` channel), native
 /// readiness resolves as failure so `ready` waiters never hang, and the
-/// instance stops scheduling — a `Hold` on the presentation gates out
-/// every later tick, on-demand render and redraw wake. There is no
+/// instance stops scheduling — the publication park gates out every
+/// later tick, on-demand render and redraw wake. There is no
 /// automatic retry and no fallback presentation; the only legitimate
-/// recovery is a new context generation, which `arm_context_watch`'s
-/// publication wake rebinds against — `settle_failed` arms that
+/// recovery is a new context generation, which the parked
+/// `context_after` wake rebinds against — `settle_failed` arms that
 /// subscription itself so a failure on an otherwise healthy context
 /// still reaches the recovery path.
 fn settle_failed(
@@ -1624,22 +1556,6 @@ fn settle_failed(
     generation: u64,
     error: HostedError,
 ) {
-    {
-        let slot = state.presentation.borrow();
-        if matches!(
-            slot.hold,
-            Some(Hold {
-                kind: HoldKind::Failed { generation: settled, .. },
-                ..
-            }) if settled == generation
-        ) {
-            // The owner already settled this failure — the requesting
-            // participant's own `Err` arm settled synchronously while its
-            // routed copy was still queued. No second log, no re-armed
-            // watch, no second readiness resolution.
-            return;
-        }
-    }
     // The terminal carrier the `Failed` hold stores — the capture's
     // terminal outcome forwards this same typed failure. The shared
     // scene failure is already `Arc`'d on the generation; a hosted-layer
@@ -1648,9 +1564,6 @@ fn settle_failed(
         HostedError::Scene(shared) => shared,
         HostedError::Layer(error) => Arc::new(error),
     };
-    tracing::error!(
-        "native rendering failed; the surface stops scheduling until a new context generation rebinds it: {failure}"
-    );
     // The failure IS the hold transition: the parked wait is armed on
     // the exact generation the failure happened under — `context_after`
     // never resolves on it, so the failed one is never retried, and a
@@ -1658,47 +1571,32 @@ fn settle_failed(
     // The failed frame's pixels never landed — the wake replays the owed
     // work through the surface's own contract. An open capture scope is
     // untouched: its `end` still balances.
-    {
-        let mut slot = state.presentation.borrow_mut();
-        if !matches!(
-            slot.hold,
-            Some(Hold {
-                kind: HoldKind::Failed { .. },
-                ..
-            })
-        ) {
+    let settled = state.park.fail(
+        &state.runtime,
+        generation,
+        failure.clone(),
+        || {
             // A failure supersedes a park — the parked wait is replaced
             // by the failed one, cancelling the previous task.
-            if let Some(attached) = slot.attached_mut() {
+            if let Some(attached) = state.presentation.borrow_mut().attached_mut() {
                 attached.demand.keep_redrawing.set(false);
                 attached.presenter.set_paused(true);
             }
-        }
-        slot.hold = Some(Hold {
-            kind: HoldKind::Failed {
-                generation,
-                error: failure,
-            },
-            watch: arm_context_watch(state, view, generation),
-        });
+        },
+        publication_replay(state, view),
+    );
+    if !settled {
+        // The owner already settled this failure — the requesting
+        // participant's own `Err` arm settled synchronously while its
+        // routed copy was still queued. No second log, no re-armed
+        // watch, no second readiness resolution.
+        return;
     }
+    tracing::error!(
+        "native rendering failed; the surface stops scheduling until a new context generation rebinds it: {failure}"
+    );
     complete_ready(state);
     update_presentation_demand(state, view);
-}
-
-/// The capture outcome the surface's current hold answers — a settled
-/// failure forwards the typed `Failed` carrier it stores, which is
-/// terminal on this context (a capture must stop, not retry a frame the
-/// failed generation can never produce), while a transient park defers
-/// to the publication wake.
-fn hold_capture_error(state: &Rc<SurfaceState>) -> cocoa_ui::capture::CaptureError {
-    match &state.presentation.borrow().hold {
-        Some(Hold {
-            kind: HoldKind::Failed { error, .. },
-            ..
-        }) => cocoa_ui::capture::CaptureError::Failed(error.clone()),
-        _ => cocoa_ui::capture::CaptureError::Deferred,
-    }
 }
 
 /// `handleRedrawRequest`: the redraw waker's main-queue body — republishes
@@ -1923,14 +1821,14 @@ impl Capturable {
     /// Whether this surface gates its window's first-paint readiness —
     /// see [`participates_in_first_paint`].
     fn participates(&self) -> bool {
-        !self.state.presentation.borrow().is_failed() && participates_in_first_paint(&self.view)
+        !self.state.park.is_failed() && participates_in_first_paint(&self.view)
     }
 
     /// Registers `waker` and requests the owed first frame: lay out, make
     /// sure the GPU context is up, arm the reveal wait so the link answers
     /// it instead of parking forever.
     fn register_waiter(&self, waker: std::task::Waker) {
-        if self.presented() || self.state.presentation.borrow().is_failed() {
+        if self.presented() || self.state.park.is_failed() {
             return;
         }
         cocoa_ui::view::layout_immediately(self.view.as_platform_view());
@@ -2040,14 +1938,14 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         height: u32,
         completion: cocoa_ui::capture::SurfaceCaptureCompletion,
     ) {
-        if self.state.presentation.borrow().hold.is_some() {
+        if self.state.park.is_held() {
             // A parked or failed surface owes its next frame to the
             // publication wake, not to a new render on the same context:
             // re-rendering here would retry the settled frame, log again
             // and re-arm the watch. The hold's outcome answers the
             // capture — terminal `Failed` for a settled failure, deferred
             // for a park — and the wake replays through `capture.redraw`.
-            completion(Err(hold_capture_error(&self.state)));
+            completion(Err(self.state.park.capture_error()));
             return;
         }
         // SAFETY: `texture` is the live texture the capture pipeline retained
@@ -2165,10 +2063,10 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                                     // The batch failure this completion
                                     // carried: the typed `Failed` the
                                     // freshly-settled hold now answers.
-                                    completion(Err(hold_capture_error(&state)));
+                                    completion(Err(state.park.capture_error()));
                                 }
                                 CompletionValidity::Current => {
-                                    if state.presentation.borrow().hold.is_some() {
+                                    if state.park.is_held() {
                                         // A hold landed between submission
                                         // and this completion — the
                                         // onscreen presentable check's
@@ -2176,7 +2074,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                                         // answers its terminal outcome,
                                         // a parked one defers to the
                                         // publication wake.
-                                        completion(Err(hold_capture_error(&state)));
+                                        completion(Err(state.park.capture_error()));
                                         return;
                                     }
                                     // Offscreen pixels are usable, but only a real
@@ -2269,6 +2167,7 @@ impl fmt::Debug for MountGuard {
 impl Drop for MountGuard {
     fn drop(&mut self) {
         *self.state.presentation.borrow_mut() = Presentation::detached();
+        self.state.park.clear();
         self.state.observers.borrow_mut().clear();
         self.state.view.borrow_mut().unmount();
         drop(self.state.bound.borrow_mut().take());

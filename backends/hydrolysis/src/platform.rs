@@ -1062,6 +1062,12 @@ pub trait GpuSurfaceWindow: PlatformWindow {
     fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
         None
     }
+
+    /// Asks the compositor to blur what lies behind the window, or stops
+    /// asking. A target with no compositor blur keeps this default no-op.
+    fn set_blur_behind(&mut self, blur: bool) {
+        let _ = blur;
+    }
 }
 
 /// The adapter, device and queue an [`OffscreenSurface`] renders on.
@@ -2215,6 +2221,9 @@ impl GpuSurfaceWindow for OffscreenWindow {
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod web_impl;
+
+#[cfg(hydrolysis_wayland_platform)]
+mod wayland_blur;
 
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 mod macos_display_link;
@@ -3370,6 +3379,27 @@ mod winit_impl {
         /// per-frame background push reaches winit and the surface only when
         /// the background switches between opaque and translucent.
         transparent: bool,
+        /// Whether the window currently asks the compositor to blur what lies
+        /// behind it, so the request reaches the platform only on a change.
+        /// Only platforms that realize the request keep it; elsewhere the
+        /// trait's default leaves the window as it is.
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "windows",
+            hydrolysis_wayland_platform
+        ))]
+        blur_behind: bool,
+        /// The window's `ext-background-effect-v1` state on Wayland: the
+        /// manager binds on the first blur ask, and a compositor that does
+        /// not advertise it is remembered, so the registry is read once per
+        /// window, not once per ask.
+        #[cfg(hydrolysis_wayland_platform)]
+        wayland_blur: super::wayland_blur::WaylandBlurSupport,
+        /// The behind-window effect view while `blur_behind` holds: the
+        /// platform sublayer under the self-drawn content, removed when the
+        /// window stops asking.
+        #[cfg(target_os = "macos")]
+        blur_effect_view: Option<objc2::rc::Retained<objc2_app_kit::NSVisualEffectView>>,
         /// Explicit `ProMotion` opt-in: declares the 120Hz frame-rate demand to
         /// the window server while redraws are being requested. `None` before
         /// macOS 14.
@@ -3451,6 +3481,16 @@ mod winit_impl {
                     applied_properties: None,
                     pending_mapped_request: MappedRequestRetry::default(),
                     transparent: requires_transparency,
+                    #[cfg(any(
+                        target_os = "macos",
+                        target_os = "windows",
+                        hydrolysis_wayland_platform
+                    ))]
+                    blur_behind: false,
+                    #[cfg(hydrolysis_wayland_platform)]
+                    wayland_blur: super::wayland_blur::WaylandBlurSupport::NotAsked,
+                    #[cfg(target_os = "macos")]
+                    blur_effect_view: None,
                 },
                 gpu,
             )
@@ -3511,6 +3551,76 @@ mod winit_impl {
                     UserAttention::Informational => winit::window::UserAttentionType::Informational,
                     UserAttention::Critical => winit::window::UserAttentionType::Critical,
                 }));
+        }
+
+        /// The `AppKit` half of `set_blur_behind`: while the window asks, an
+        /// `NSVisualEffectView` blending behind the window sits in the
+        /// content view's superview directly beneath the view hosting the
+        /// Metal layer; when it stops, the view is removed and dropped.
+        /// `underWindowBackground` is the material for both behind-window
+        /// levels — Hydrolysis's own tint, cleared to under the content,
+        /// supplies the level's colour, so the effect view only needs to
+        /// blur.
+        ///
+        /// Beneath means beneath: a subview of the Metal layer's host draws
+        /// above every layer the host owns, so the effect view goes in as a
+        /// sibling ordered below the host instead.
+        #[cfg(target_os = "macos")]
+        fn macos_apply_blur_behind(&mut self, blur: bool) {
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::{
+                NSAutoresizingMaskOptions, NSView, NSVisualEffectBlendingMode,
+                NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+                NSWindowOrderingMode,
+            };
+
+            if !blur {
+                if let Some(effect_view) = self.blur_effect_view.take() {
+                    effect_view.removeFromSuperview();
+                }
+                return;
+            }
+            if self.blur_effect_view.is_some() {
+                return;
+            }
+            let content_view = {
+                let handle = self
+                    .window
+                    .window_handle()
+                    .expect("Hydrolysis macOS window must expose an AppKit handle");
+                let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                    panic!("Hydrolysis macOS window returned a non-AppKit handle");
+                };
+                // SAFETY: winit hands out the window's live `NSView` pointer —
+                // the content view — and the borrow does not outlive the
+                // window handle it came from. AppKit calls run on the main
+                // thread, as every window method on this host does.
+                unsafe { appkit.ns_view.cast::<NSView>().as_ref() }
+            };
+            // SAFETY: the view is alive in its window on the AppKit main
+            // thread.
+            let parent = unsafe { content_view.superview() }
+                .expect("a mapped window's content view has the frame view as its superview");
+            let mtm = MainThreadMarker::new()
+                .expect("Hydrolysis macOS blur-behind must run on the AppKit main thread");
+            let effect_view = NSVisualEffectView::new(mtm);
+            effect_view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+            effect_view.setState(NSVisualEffectState::Active);
+            effect_view.setMaterial(NSVisualEffectMaterial::UnderWindowBackground);
+            effect_view.setFrame(content_view.frame());
+            effect_view.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            // Ordered below the content view itself, so the Metal layer the
+            // surface presents into draws the level's tint and the content
+            // above the blur.
+            parent.addSubview_positioned_relativeTo(
+                &effect_view,
+                NSWindowOrderingMode::Below,
+                Some(content_view),
+            );
+            self.blur_effect_view = Some(effect_view);
         }
 
         /// Pushes the requested `WindowState` to the window server. Shared
@@ -3759,13 +3869,12 @@ mod winit_impl {
             ))
         }
 
-        /// `XQueryPointer` on this window over the connection winit already
-        /// holds: `win_x`/`win_y` are window-local physical pixels,
-        /// converted to logical points.
+        /// The window's XID and a borrow of the XCB connection winit already
+        /// holds — borrowed through the raw display handle, never a second
+        /// connection. `None` when the window is not on X11.
         #[cfg(hydrolysis_wayland_platform)]
-        fn x11_live_pointer_position(&self) -> Option<(f32, f32)> {
+        fn x11_connection_and_window(&self) -> Option<(x11rb::xcb_ffi::XCBConnection, u32)> {
             use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-            use x11rb::protocol::xproto::ConnectionExt as _;
             use x11rb::xcb_ffi::XCBConnection;
             let window_xid = match self.window.window_handle().ok()?.as_raw() {
                 RawWindowHandle::Xcb(handle) => handle.window.get(),
@@ -3788,9 +3897,19 @@ mod winit_impl {
             // is a borrow, and dropping it must not disconnect.
             // SAFETY: `connection_ptr` is the live XCB connection winit owns
             // for this window; `false` keeps ownership with winit, so the
-            // wrapper only borrows it for this query.
-            let connection =
-                unsafe { XCBConnection::from_raw_xcb_connection(connection_ptr, false) }.ok()?;
+            // wrapper only borrows it for this call.
+            unsafe { XCBConnection::from_raw_xcb_connection(connection_ptr, false) }
+                .ok()
+                .map(|connection| (connection, window_xid))
+        }
+
+        /// `XQueryPointer` on this window over the connection winit already
+        /// holds: `win_x`/`win_y` are window-local physical pixels,
+        /// converted to logical points.
+        #[cfg(hydrolysis_wayland_platform)]
+        fn x11_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use x11rb::protocol::xproto::ConnectionExt as _;
+            let (connection, window_xid) = self.x11_connection_and_window()?;
             let reply = connection.query_pointer(window_xid).ok()?.reply().ok()?;
             let position = PhysicalPosition::new(f64::from(reply.win_x), f64::from(reply.win_y))
                 .to_logical::<f64>(self.window.scale_factor());
@@ -3798,6 +3917,96 @@ mod winit_impl {
                 crate::num_cast::f64_as_f32(position.x),
                 crate::num_cast::f64_as_f32(position.y),
             ))
+        }
+
+        /// Sets `_KDE_NET_WM_BLUR_BEHIND_REGION` when blur is asked for and
+        /// deletes it when it stops — `KWin`'s blur-behind contract. An empty
+        /// `CARDINAL` region blurs behind the whole window
+        /// (`BlurEffect::updateBlurRegion` reads a zero-length property as
+        /// "blur background behind whole window"), so resizes need no update.
+        /// A window manager that does not read the atom leaves the
+        /// translucent window unblurred.
+        ///
+        /// # Panics
+        /// Panics when the connection lookup, the `intern_atom` round, the
+        /// property request or the flush fails: the dispatch already matched
+        /// an X11 raw window handle, so each is a bug, not an unsupported
+        /// case.
+        #[cfg(hydrolysis_wayland_platform)]
+        fn x11_set_blur_behind(&self, blur: bool) {
+            use x11rb::connection::Connection as _;
+            use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode};
+            use x11rb::wrapper::ConnectionExt as _;
+            let (connection, window_xid) = self.x11_connection_and_window().expect(
+                "the dispatch matched an X11 raw window handle but its connection lookup failed",
+            );
+            let atom = connection
+                .intern_atom(false, b"_KDE_NET_WM_BLUR_BEHIND_REGION")
+                .expect("intern_atom(_KDE_NET_WM_BLUR_BEHIND_REGION) failed")
+                .reply()
+                .expect("intern_atom(_KDE_NET_WM_BLUR_BEHIND_REGION) returned no reply")
+                .atom;
+            if blur {
+                connection
+                    .change_property32(PropMode::REPLACE, window_xid, atom, AtomEnum::CARDINAL, &[])
+                    .expect("change_property32(_KDE_NET_WM_BLUR_BEHIND_REGION) failed");
+            } else {
+                connection
+                    .delete_property(window_xid, atom)
+                    .expect("delete_property(_KDE_NET_WM_BLUR_BEHIND_REGION) failed");
+            }
+            connection
+                .flush()
+                .expect("flushing the borrowed XCB connection failed");
+        }
+
+        /// Dispatches the blur-behind ask to the windowing system the window
+        /// lives on: the KDE blur-behind property on X11,
+        /// `ext-background-effect-v1` on Wayland.
+        ///
+        /// # Panics
+        /// Panics when the window carries neither an X11 nor a Wayland raw
+        /// handle — no other backend exists on this target — or when a
+        /// Wayland window's display handle is missing or is not Wayland.
+        #[cfg(hydrolysis_wayland_platform)]
+        fn linux_apply_blur_behind(&mut self, blur: bool) {
+            use super::wayland_blur::{WaylandBlur, WaylandBlurSupport};
+            use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+            match self
+                .window
+                .window_handle()
+                .expect("a winit window always has a window handle")
+                .as_raw()
+            {
+                RawWindowHandle::Xcb(_) | RawWindowHandle::Xlib(_) => {
+                    self.x11_set_blur_behind(blur);
+                }
+                RawWindowHandle::Wayland(handle) => {
+                    let surface = handle.surface.as_ptr();
+                    let RawDisplayHandle::Wayland(display) = self
+                        .window
+                        .display_handle()
+                        .expect("a winit window on Wayland always has a display handle")
+                        .as_raw()
+                    else {
+                        panic!(
+                            "a winit window with a Wayland window handle carries a non-Wayland display handle"
+                        );
+                    };
+                    if blur && matches!(self.wayland_blur, WaylandBlurSupport::NotAsked) {
+                        self.wayland_blur = WaylandBlur::new(display.display.as_ptr())
+                            .map_or(WaylandBlurSupport::Unsupported, |bound| {
+                                WaylandBlurSupport::Bound(Box::new(bound))
+                            });
+                    }
+                    if let WaylandBlurSupport::Bound(wayland_blur) = &mut self.wayland_blur {
+                        wayland_blur.set_blur(blur, surface);
+                    }
+                }
+                other => panic!(
+                    "a winit window on a free-unix target carries an unexpected raw window handle: {other:?}"
+                ),
+            }
         }
 
         /// Applies one winit `WindowEvent`: queues the `InputEvent`s it maps
@@ -4133,6 +4342,115 @@ mod winit_impl {
         }
     }
 
+    /// The Windows build the DWM's system-backdrop attribute exists on:
+    /// Windows 11 22H2.
+    #[cfg(target_os = "windows")]
+    const SYSTEM_BACKDROP_BUILD: u32 = 22621;
+
+    /// Applies or clears the DWM system backdrop that blurs what the desktop
+    /// shows through the window's transparent surface. A behind-window
+    /// `Material` asks for `DWMSBT_TRANSIENTWINDOW` — acrylic, the backdrop
+    /// that blurs whatever lies behind the window — with the frame extended
+    /// into the whole client area so it shows through the surface; the
+    /// level's tint stays the surface's clear colour. Clearing restores
+    /// `DWMSBT_NONE` and zero margins.
+    ///
+    /// The attribute exists on Windows 11 22H2 ([`SYSTEM_BACKDROP_BUILD`])
+    /// and later, decided from the OS build number rather than by probing
+    /// the call: on an older build the window stays translucent and
+    /// unblurred, the decided unsupported case. On a build that has the
+    /// attribute a failed call is unexpected, so the failure panics with the
+    /// HRESULT and the attribute rather than degrading silently.
+    ///
+    /// # Panics
+    /// Panics when a `DwmSetWindowAttribute` or `DwmExtendFrameIntoClientArea`
+    /// call fails on a build that has the attribute, when the window has no
+    /// handle, or when `RtlGetVersion` fails.
+    #[cfg(target_os = "windows")]
+    fn windows_apply_blur_behind(native_window: &NativeWindow, blur: bool) {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWM_SYSTEMBACKDROP_TYPE, DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW,
+            DWMWA_SYSTEMBACKDROP_TYPE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+        };
+        use windows_sys::Win32::UI::Controls::MARGINS;
+
+        if os_build() < SYSTEM_BACKDROP_BUILD {
+            return;
+        }
+        let RawWindowHandle::Win32(win32) = native_window
+            .window_handle()
+            .expect("a winit window on Windows always has a window handle")
+            .as_raw()
+        else {
+            panic!("a winit window on Windows carries a Win32 raw window handle");
+        };
+        let hwnd = win32.hwnd.get() as HWND;
+
+        let backdrop: DWM_SYSTEMBACKDROP_TYPE = if blur {
+            DWMSBT_TRANSIENTWINDOW
+        } else {
+            DWMSBT_NONE
+        };
+        // SAFETY: `hwnd` is the window's live handle for as long as the
+        // `NativeWindow` lives, and `pvAttribute` points at readable memory
+        // of exactly `cbAttribute` bytes, as the API requires.
+        let hr = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_SYSTEMBACKDROP_TYPE as u32,
+                (&raw const backdrop).cast(),
+                u32::try_from(size_of::<DWM_SYSTEMBACKDROP_TYPE>())
+                    .expect("a backdrop's size fits u32"),
+            )
+        };
+        assert_eq!(
+            hr, 0,
+            "DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE) failed: HRESULT {hr:#010x}"
+        );
+
+        // A margin of -1 extends the frame into the whole client area, so the
+        // backdrop shows through the transparent surface; 0 restores the
+        // ordinary frame.
+        let margin = if blur { -1 } else { 0 };
+        let margins = MARGINS {
+            cxLeftWidth: margin,
+            cxRightWidth: margin,
+            cyTopHeight: margin,
+            cyBottomHeight: margin,
+        };
+        // SAFETY: `hwnd` is live as above, and `pmarInset` points at a
+        // readable `MARGINS`, as the API requires.
+        let hr = unsafe { DwmExtendFrameIntoClientArea(hwnd, &raw const margins) };
+        assert_eq!(
+            hr, 0,
+            "DwmExtendFrameIntoClientArea failed: HRESULT {hr:#010x}"
+        );
+    }
+
+    /// The running OS's build number, from `RtlGetVersion` — the version
+    /// source the loader's compatibility lie cannot reach, unlike
+    /// `GetVersionEx`, which reports what the manifest claims.
+    ///
+    /// # Panics
+    /// Panics when `RtlGetVersion` returns a failing `NTSTATUS`.
+    #[cfg(target_os = "windows")]
+    fn os_build() -> u32 {
+        use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+        use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+        // SAFETY: an all-zeroed `OSVERSIONINFOW` is valid to fill once its
+        // declared size is set, which the line below does.
+        let mut info: OSVERSIONINFOW = unsafe { std::mem::zeroed() };
+        info.dwOSVersionInfoSize =
+            u32::try_from(size_of::<OSVERSIONINFOW>()).expect("a version info's size fits u32");
+        // SAFETY: `info` is a live `OSVERSIONINFOW` of the declared size, as
+        // the API requires.
+        let status = unsafe { RtlGetVersion(&raw mut info) };
+        assert_eq!(status, 0, "RtlGetVersion failed: NTSTATUS {status:#010x}");
+        info.dwBuildNumber
+    }
+
     fn map_cursor_position(position: &PhysicalPosition<f64>, scale_factor: f64) -> (f32, f32) {
         assert!(
             scale_factor.is_finite() && scale_factor > 0.0,
@@ -4444,6 +4762,31 @@ mod winit_impl {
                     wake.request_redraw();
                 }
             }))
+        }
+
+        /// Keeps the compositor's blur-behind request in step with the
+        /// resolved background: nothing is pushed while the answer is the
+        /// same, so the per-frame application stays free. A change asks the
+        /// platform's compositor to blur what lies behind the window, or
+        /// stops asking — the platform sublayer under the self-drawn
+        /// content, whose own tint already supplies the level's colour above
+        /// it.
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "windows",
+            hydrolysis_wayland_platform
+        ))]
+        fn set_blur_behind(&mut self, blur: bool) {
+            if self.blur_behind == blur {
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            self.macos_apply_blur_behind(blur);
+            #[cfg(target_os = "windows")]
+            windows_apply_blur_behind(&self.window, blur);
+            #[cfg(hydrolysis_wayland_platform)]
+            self.linux_apply_blur_behind(blur);
+            self.blur_behind = blur;
         }
     }
 
