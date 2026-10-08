@@ -119,8 +119,8 @@ pub fn cookie_url(cookie: &Cookie<'static>, current_url: Option<&str>) -> Option
 /// document can never settle a call the new one waits on, and the token is
 /// the per-call secret an iframe forging `{id, ok, value}` cannot guess.
 #[must_use]
-pub fn compose_async_call(id: u64, generation: u64, token: u64, body: &str) -> String {
-    format!("({ASYNC_CALL})({id}, {generation}, {token}, async function () {{\n{body}\n}});")
+pub fn compose_async_call(id: u64, generation: u64, token: &str, body: &str) -> String {
+    format!("({ASYNC_CALL})({id}, {generation}, \"{token}\", async function () {{\n{body}\n}});")
 }
 
 /// Install `apply` as `signal`'s watcher after running it once on the
@@ -138,14 +138,19 @@ pub fn watch_bool_with_initial(
 }
 
 /// A per-call token `compose_async_call` embeds and `settle_async`
-/// requires back: `RandomState`'s per-process keys mean a page forging a
-/// result envelope cannot guess the value the real call carries.
+/// requires back. 128 bits from `getrandom` as a hex *string*: a page
+/// forging a result envelope cannot guess it, and crossing as a string
+/// means the JS number path's 2^53 precision cap never corrupts it.
 #[must_use]
-pub fn fresh_async_token(id: u64) -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-    hasher.write_u64(id);
-    hasher.finish()
+pub fn fresh_async_token() -> String {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).expect("getrandom is available on every WaterUI target");
+    let mut token = String::with_capacity(32);
+    for byte in bytes {
+        use std::fmt::Write;
+        write!(token, "{byte:02x}").expect("writing into a String cannot fail");
+    }
+    token
 }
 
 /// Wraps a document-end script in the `DOMContentLoaded` hold.
@@ -163,8 +168,9 @@ pub struct AsyncResult {
     /// The document generation the call was issued against — stale when
     /// `onPageStarted` committed a new document since.
     pub generation: u64,
-    /// The per-call token `compose_async_call` embedded in the script.
-    pub token: u64,
+    /// The per-call token `compose_async_call` embedded in the script —
+    /// a string so a JS round trip preserves every bit.
+    pub token: String,
     /// Whether the promise resolved rather than rejected.
     pub ok: bool,
     /// The settled payload — the shared wrapper's JSON envelope, or the
@@ -220,7 +226,7 @@ pub enum PendingCall {
     /// the call id cannot forge the token.
     Async {
         settle: Box<dyn FnOnce(Result<Str, Str>)>,
-        token: u64,
+        token: String,
     },
     /// `get_cookies`: the reply is the `CookieManager` header the native
     /// splits into pairs.
@@ -248,9 +254,15 @@ impl PendingCall {
 pub struct PendingCalls {
     calls: HashMap<u64, PendingCall>,
     /// The document generation live calls were issued against, bumped on
-    /// every main-frame cross-document commit — an async result envelope
-    /// stamped with an older generation is a stale page's, never a live
-    /// call's answer.
+    /// every main-frame cross-document commit. Its honest scope: it is
+    /// documentation made executable, not added rejection coverage — the
+    /// drain plus unique call ids already reject everything a stale
+    /// generation could name, since a drained call is gone from the map
+    /// and a live call's id is never reused. What it buys is that an
+    /// envelope carries the document the call ran in: a call racing a
+    /// navigation reports "document replaced" even when the script
+    /// actually ran, the same race `WKWebView` admits — the generation makes
+    /// the losing document's late answer name why it was dropped.
     generation: u64,
     /// Set by [`Self::release`]: the view is gone (a `release`, or the
     /// render process died while the instance stays registered), so no
@@ -262,6 +274,16 @@ impl PendingCalls {
     /// Register `call` under `id` before the Kotlin call that answers it is
     /// issued — the reply may land on the same call.
     ///
+    /// Whether `release` ran — the Kotlin view's `nativeReleased` landed
+    /// and every further call must settle without a dispatch. The Android
+    /// handle gates every Kotlin-bound command on it (`begin` itself
+    /// covers the call registry).
+    #[cfg(hydrolysis_android_system_webview)]
+    #[must_use]
+    pub const fn dead(&self) -> bool {
+        self.dead
+    }
+
     /// On a dead view the call settles at once and `false` is returned, so
     /// the caller skips issuing the Kotlin call it could never answer.
     pub fn begin(&mut self, id: u64, call: PendingCall) -> bool {
@@ -281,7 +303,11 @@ impl PendingCalls {
 
     /// `onPageStarted` committed a new main-frame document: bump the
     /// generation so the old document's results die with it, and hand back
-    /// the calls the old document can no longer answer.
+    /// the calls the old document can no longer answer. The contract a
+    /// caller sees: a call that raced the commit reports "document
+    /// replaced" whether or not its script ran — the `WebView` gives no way
+    /// to learn which, so the failure is the honest answer (`WKWebView`'s
+    /// `evaluateJavaScript` admits the same race).
     ///
     /// The calls are returned, not settled: the settlement closures run in
     /// [`Self::settle_many`] after the registry's borrow ends, so a settler
@@ -392,7 +418,6 @@ impl PendingCalls {
             ),
         }
     }
-
 }
 
 /// The `HydrolysisWebView` members Rust calls by name — the webview module's
@@ -637,11 +662,11 @@ mod tests {
 
     #[test]
     fn compositions_carry_the_sentinel_and_object_names() {
-        let call = compose_async_call(7, 3, 42, "return 1;");
+        let call = compose_async_call(7, 3, "ab01", "return 1;");
         assert!(call.contains(ASYNC_CALL_SENTINEL));
         assert!(call.contains(ASYNC_RESULT_OBJECT));
         assert!(call.contains("async function () {\nreturn 1;\n}"));
-        assert!(call.contains("(7, 3, 42,"));
+        assert!(call.contains("(7, 3, \"ab01\","));
 
         let held = compose_document_end("document.title = 'x';");
         assert!(held.contains("DOMContentLoaded"));
@@ -653,17 +678,69 @@ mod tests {
         assert!(TRANSPORT_SCRIPT.contains(BRIDGE_OBJECT));
         assert!(ASYNC_CALL.contains(ASYNC_RESULT_OBJECT));
         assert!(ASYNC_CALL.contains(ASYNC_CALL_SENTINEL));
-        assert!(DOCUMENT_END.contains("(function (run)"));
+        assert!(DOCUMENT_END.contains("function (run)"));
+    }
+
+    /// The composed call must survive the trip through a real JS engine:
+    /// `JSON.stringify` in `async_call.js` posts back every field the
+    /// literal carried, so a token or id that loses precision inside a JS
+    /// number — anything past 2^53 — shows up here as a never-settling
+    /// call. Skipped when no JS engine is installed.
+    #[test]
+    fn the_composed_async_call_survives_a_real_js_round_trip() {
+        let bun = std::process::Command::new("bun")
+            .arg("--version")
+            .output()
+            .map(|_| "bun")
+            .or_else(|_| {
+                std::process::Command::new("node")
+                    .arg("--version")
+                    .output()
+                    .map(|_| "node")
+            });
+        let Ok(engine) = bun else {
+            tracing::warn!("no JS engine on PATH; the round-trip test skips");
+            return;
+        };
+
+        let mut pending = PendingCalls::default();
+        let (results, settle) = collect();
+        let token = begin_async(&mut pending, 7, settle);
+        let call = compose_async_call(7, pending.generation(), &token, r#"return "resolved";"#);
+        // `call` evaluates to the started sentinel; the envelope arrives on
+        // `__wateruiAsyncResult.postMessage` a task later.
+        let driver = format!(
+            r#"var __posted = null;
+var __wateruiAsyncResult = {{ postMessage: function (m) {{ __posted = m; }} }};
+if (eval({call:?}) !== "{ASYNC_CALL_SENTINEL}") {{ throw new Error("the call did not start"); }}
+setTimeout(function () {{ console.log(__posted); }}, 0);
+"#
+        );
+        let driver_path = std::env::temp_dir().join("waterui-async-call-driver.js");
+        std::fs::write(&driver_path, &driver).expect("the JS driver writes to the temp dir");
+        let output = std::process::Command::new(engine)
+            .arg(&driver_path)
+            .output()
+            .expect("the JS engine runs the driver");
+        assert!(
+            output.status.success(),
+            "the driver failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let envelope = String::from_utf8(output.stdout).expect("the envelope is UTF-8");
+        pending.settle_async(envelope.trim());
+        assert_eq!(results.borrow().as_slice(), &[Ok("resolved".to_owned())]);
     }
 
     #[test]
     fn async_result_parsing() {
-        let settled =
-            parse_async_result(r#"{"id":3,"generation":2,"token":9,"ok":true,"value":"\"done\""}"#)
-                .expect("a well-formed envelope parses");
+        let settled = parse_async_result(
+            r#"{"id":3,"generation":2,"token":"deadbeef","ok":true,"value":"\"done\""}"#,
+        )
+        .expect("a well-formed envelope parses");
         assert_eq!(settled.id, 3);
         assert_eq!(settled.generation, 2);
-        assert_eq!(settled.token, 9);
+        assert_eq!(settled.token, "deadbeef");
         assert!(settled.ok);
         assert_eq!(settled.value, "\"done\"");
 
@@ -724,16 +801,26 @@ mod tests {
 
     /// The async-call issuance the Android side performs: `begin` under the
     /// call id with the token `compose_async_call` embeds in the script.
-    fn begin_async(pending: &mut PendingCalls, id: u64, settle: impl Fn(Result<Str, Str>) + 'static) -> u64 {
-        let token = fresh_async_token(id);
-        assert!(pending.begin(id, PendingCall::Async { settle: Box::new(settle), token }));
+    fn begin_async(
+        pending: &mut PendingCalls,
+        id: u64,
+        settle: impl Fn(Result<Str, Str>) + 'static,
+    ) -> String {
+        let token = fresh_async_token();
+        assert!(pending.begin(
+            id,
+            PendingCall::Async {
+                settle: Box::new(settle),
+                token: token.clone()
+            }
+        ));
         token
     }
 
     /// The JSON envelope the composed script posts for a call.
-    fn envelope(id: u64, generation: u64, token: u64, ok: bool, value: &str) -> String {
+    fn envelope(id: u64, generation: u64, token: &str, ok: bool, value: &str) -> String {
         format!(
-            r#"{{"id":{id},"generation":{generation},"token":{token},"ok":{ok},"value":"{value}"}}"#
+            r#"{{"id":{id},"generation":{generation},"token":"{token}","ok":{ok},"value":"{value}"}}"#
         )
     }
 
@@ -746,7 +833,7 @@ mod tests {
         pending.settle(1, true, ASYNC_CALL_STARTED);
         assert!(results.borrow().is_empty());
         // The posted envelope then settles it.
-        pending.settle_async(&envelope(1, 0, token, true, "\\\"v\\\""));
+        pending.settle_async(&envelope(1, 0, &token, true, "\\\"v\\\""));
         assert_eq!(results.borrow().as_slice(), &[Ok("\"v\"".to_owned())]);
     }
 
@@ -791,7 +878,7 @@ mod tests {
         let token = begin_async(&mut pending, 1, settle);
         pending.settle(1, true, ASYNC_CALL_STARTED);
         // The call is live and its envelope still settles it.
-        pending.settle_async(&envelope(1, 0, token, true, "ok"));
+        pending.settle_async(&envelope(1, 0, &token, true, "ok"));
         assert_eq!(results.borrow().as_slice(), &[Ok("ok".to_owned())]);
     }
 
@@ -809,9 +896,9 @@ mod tests {
         // A stale-generation envelope for a NEW call id is rejected too.
         let (results2, settle2) = collect();
         let token2 = begin_async(&mut pending, 2, settle2);
-        pending.settle_async(&envelope(2, 0, token2, true, "stale"));
+        pending.settle_async(&envelope(2, 0, &token2, true, "stale"));
         assert!(results2.borrow().is_empty());
-        pending.settle_async(&envelope(2, 1, token2, true, "live"));
+        pending.settle_async(&envelope(2, 1, &token2, true, "live"));
         assert_eq!(results2.borrow().as_slice(), &[Ok("live".to_owned())]);
     }
 
@@ -823,9 +910,9 @@ mod tests {
         pending.settle(1, true, ASYNC_CALL_STARTED);
         // An envelope without the call's token — the shape a page forging
         // `{id, ok, value}` produces — is dropped, and the call waits on.
-        pending.settle_async(&envelope(1, 0, token.wrapping_add(1), true, "forged"));
+        pending.settle_async(&envelope(1, 0, "forged-token", true, "forged"));
         assert!(results.borrow().is_empty());
-        pending.settle_async(&envelope(1, 0, token, true, "real"));
+        pending.settle_async(&envelope(1, 0, &token, true, "real"));
         assert_eq!(results.borrow().as_slice(), &[Ok("real".to_owned())]);
     }
 
@@ -843,14 +930,17 @@ mod tests {
             &[Err("the web view was closed".to_owned())]
         );
         // A reply for an already-settled id is dropped, not settled again.
-        pending.settle_async(&envelope(1, 0, 0, true, "late"));
+        pending.settle_async(&envelope(1, 0, "late-token", true, "late"));
         assert_eq!(results.borrow().len(), 1);
         // A call begun on the dead view settles immediately, without a
         // Kotlin call ever being issued for it.
         let (results2, settle2) = collect();
         assert!(!pending.begin(
             2,
-            PendingCall::Async { settle: Box::new(settle2), token: 0 }
+            PendingCall::Async {
+                settle: Box::new(settle2),
+                token: String::new()
+            }
         ));
         assert_eq!(
             results2.borrow().as_slice(),
@@ -873,10 +963,9 @@ mod tests {
         // would keep its `true` default.
         let applied = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = std::rc::Rc::clone(&applied);
-        let _guard =
-            watch_bool_with_initial(&Computed::new(false), move |enabled| {
-                sink.borrow_mut().push(enabled);
-            });
+        let _guard = watch_bool_with_initial(&Computed::new(false), move |enabled| {
+            sink.borrow_mut().push(enabled);
+        });
         assert_eq!(applied.borrow().as_slice(), &[false]);
     }
 

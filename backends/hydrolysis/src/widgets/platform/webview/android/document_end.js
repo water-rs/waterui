@@ -11,10 +11,10 @@
 // ran once every image on the page had already been downloaded. The script is
 // therefore injected at document start and held until `DOMContentLoaded`,
 // which is the same moment WebKit means.
-(function (run) {
+function (run) {
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", run, { once: true });
     return;
   }
   run();
-});
+}

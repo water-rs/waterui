@@ -17,7 +17,7 @@
 // know. The synchronous value a launched call evaluates to is the sentinel
 // string `__wateruiAsyncCallStarted`, which the caller compares against the
 // JSON-quoted form `evaluateJavascript` delivers.
-(function (id, generation, token, body) {
+function (id, generation, token, body) {
   var report = function (ok, value) {
     __wateruiAsyncResult.postMessage(
       JSON.stringify({
@@ -55,4 +55,4 @@
   // above, so nothing would ever settle the call. It is the one failure the
   // promise cannot report.
   return "__wateruiAsyncCallStarted";
-});
+}

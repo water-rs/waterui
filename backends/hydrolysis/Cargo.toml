@@ -38,6 +38,10 @@ waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { workspace = true, features = ["std"] }
+# The Android WebView bridge's per-call result token — drawn here because
+# the protocol module (and its tests) builds on every target, not only
+# Android.
+getrandom.workspace = true
 cherenkov.workspace = true
 cherenkov-gpu.workspace = true
 kurbo.workspace = true

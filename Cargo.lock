@@ -4639,6 +4639,7 @@ dependencies = [
  "executor-core",
  "futures",
  "futures-lite",
+ "getrandom 0.4.3",
  "hydrolysis-m3",
  "icu_properties",
  "icu_provider",
