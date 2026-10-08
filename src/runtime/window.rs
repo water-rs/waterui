@@ -381,10 +381,8 @@ pub enum WindowBackground {
     ///   desktop. Window transparency is not realized on Android yet, so a
     ///   behind-window level renders as an opaque window
     ///   (water-rs/waterui#1966).
-    /// - **Android (the Kotlin runtime)** and the experimental backends realize
-    ///   no material: the window is drawn opaque in the theme's background
-    ///   colour. Hydrolysis is the Android backend that realizes it
-    ///   (water-rs/waterui#1899).
+    /// - **Experimental backends** that do not implement material backgrounds
+    ///   draw the window opaque in the theme's background colour.
     Material(Material),
 }
 

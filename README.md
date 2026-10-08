@@ -97,7 +97,7 @@ cd my-app
 water run --platform ios
 ```
 
-`Water.toml` holds package metadata, permissions, and theming. The backend is chosen per command — `water run --platform android` builds with Hydrolysis, and `--backend android` selects the Kotlin runtime.
+`Water.toml` holds package metadata, permissions, and theming. The backend is chosen per command — Android builds use Hydrolysis, which you can select explicitly with `--backend hydrolysis`.
 
 To give the app an icon, drop a square `Icon.svg` or `Icon.png` into `assets/`. The CLI renders every platform format from that one file: full-bleed squares for iOS, the rounded-rect shape for macOS, and adaptive icon layers for Android, so the artwork survives each platform's mask. New projects start with the `WaterUI` logo there until you replace it.
 

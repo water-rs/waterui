@@ -265,17 +265,18 @@ The `Window` builder, precisely:
 - `.background(..)` accepts a `Color` (a translucent one gives a transparent window), a
   `Material` (the window's material), a `WindowBackground` (`Opaque` is the theme
   background; `Color(..)` and `Material(..)` are the other two) or a
-  `Binding<WindowBackground>`. A material window background is realized at the window,
-  not on the content: `Regular`, `Thick` and `UltraThick` frost the window's own opaque
-  background behind the content; `UltraThin` and `Thin` make the window translucent so
+  `Binding<WindowBackground>`. A material can be realized within the window or behind
+  it, according to its level: `Regular`, `Thick` and `UltraThick` frost the window's own opaque background behind
+  its content; `UltraThin` and `Thin` make the window translucent so
   the desktop shows through — blurred on macOS on the Apple and Hydrolysis
   backends, through the DWM's acrylic system backdrop on Windows 11 22H2 and
   later, under an X11 window manager honouring `_KDE_NET_WM_BLUR_BEHIND_REGION`
   (KWin), and under a Wayland compositor advertising
   `ext-background-effect-v1` and applying its blur by its own policy; older
   Windows, other X11 window managers and Wayland compositors not advertising
-  the global leave the window tinted with the level's colour but unblurred. The Kotlin Android runtime realizes no material
-  and draws a material window background as the opaque theme background. The background is reactive:
+  the global leave the window tinted with the level's colour but unblurred.
+  Hydrolysis Android realizes within-window levels; behind-window levels render
+  as an opaque window until window transparency is supported. The background is reactive:
   setting the binding (or `window.handle().set_background(..)`) re-applies it to the
   open window, e.g. to switch between opaque, a translucent colour and a material.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
