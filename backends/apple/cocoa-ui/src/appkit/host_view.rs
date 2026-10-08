@@ -87,6 +87,13 @@ pub struct HostViewIvars {
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: std::cell::Cell<bool>,
+    /// Whether this view declares itself a fill — the color, gradient and
+    /// material leaves do — through `cocoaUiIsFill`. `AppKit` has no
+    /// keyboard region; the answer is kept for sibling parity.
+    is_fill: std::cell::Cell<bool>,
+    /// Which `BackgroundLayout` child slot this fixed-container host was
+    /// rendered as, when a `register_view` claim marked it.
+    background_slot: std::cell::Cell<Option<usize>>,
     /// Whether the Auto Layout width is tracked for intrinsic size; see
     /// [`set_intrinsic_auto_layout`](HostView::set_intrinsic_auto_layout).
     intrinsic_auto_layout: std::cell::Cell<bool>,
@@ -118,6 +125,8 @@ impl fmt::Debug for HostViewIvars {
             .field("last_auto_layout_width", &self.last_auto_layout_width.get())
             .field("measure", &self.measure.borrow().is_some())
             .field("manages_safe_area", &self.manages_safe_area.get())
+            .field("is_fill", &self.is_fill.get())
+            .field("background_slot", &self.background_slot.get())
             .field("intrinsic_auto_layout", &self.intrinsic_auto_layout.get())
             .field("pointer", &self.pointer.borrow().is_some())
             .field("pointer_events", &self.pointer_events.get())
@@ -227,6 +236,14 @@ define_class!(
         #[unsafe(method(cocoaUiManagesSafeArea))]
         fn manages_safe_area_override(&self) -> bool {
             self.ivars().manages_safe_area.get()
+        }
+
+        // SAFETY: see the module safety note. Exposed under a `cocoaUi`
+        // selector for the sibling backend's fill detection; it reads an
+        // ivar and performs no layout.
+        #[unsafe(method(cocoaUiIsFill))]
+        fn is_fill_override(&self) -> bool {
+            self.ivars().is_fill.get()
         }
 
         // SAFETY: see the module safety note. Exposed under a `cocoaUi`
@@ -709,6 +726,32 @@ impl HostView {
     /// `cocoaUiManagesSafeArea` selector.
     pub fn set_manages_safe_area(&self, manages: bool) {
         self.ivars().manages_safe_area.set(manages);
+    }
+
+    /// Whether this view is a fill — the color, gradient and material
+    /// leaves mark themselves through `cocoaUiIsFill`, and the wrappers the
+    /// sibling backend considers transparent propagate the answer.
+    pub fn set_is_fill(&self, fill: bool) {
+        self.ivars().is_fill.set(fill);
+    }
+
+    /// Whether this view answers `cocoaUiIsFill` — reads the ivar directly
+    /// for a caller holding the typed view.
+    #[must_use]
+    pub fn is_fill(&self) -> bool {
+        self.ivars().is_fill.get()
+    }
+
+    /// Which `BackgroundLayout` slot this host renders — the child index
+    /// that owns the background fill, `None` on an ordinary container.
+    pub fn set_background_slot(&self, slot: Option<usize>) {
+        self.ivars().background_slot.set(slot);
+    }
+
+    /// The `BackgroundLayout` slot marked at mount, if any.
+    #[must_use]
+    pub fn background_slot(&self) -> Option<usize> {
+        self.ivars().background_slot.get()
     }
 
     /// The primary content the sibling backend's wrappers descend to — the

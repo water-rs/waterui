@@ -115,7 +115,8 @@ impl Dispatcher {
         feature = "scale",
         feature = "secure",
         feature = "shadow",
-        feature = "env"
+        feature = "env",
+        feature = "fixed_container"
     ))]
     pub(crate) fn register_view<T: 'static>(
         &mut self,

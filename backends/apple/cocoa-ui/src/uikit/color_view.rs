@@ -37,6 +37,16 @@ define_class!(
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UIView` subclass.
     unsafe impl NSObjectProtocol for ColorView {}
+
+    impl ColorView {
+        // SAFETY: see the module safety note. A color view declares itself
+        // a fill to the sibling backend's safe-area extension — its whole
+        // painted surface is the fill.
+        #[unsafe(method(cocoaUiIsFill))]
+        fn is_fill_override(&self) -> bool {
+            true
+        }
+    }
 );
 
 impl ColorView {
