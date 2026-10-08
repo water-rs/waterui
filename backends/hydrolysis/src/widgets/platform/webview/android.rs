@@ -7,9 +7,11 @@
 //! arrives through the `native…` functions at the bottom of this file, the
 //! same division `ffi`'s webview bridge draws against the Kotlin runtime. The
 //! parts that need no JNI — origin-rule conversion, the cookie URL, script
-//! composition, async-result parsing, the pending-call registry and the
-//! method table — live in [`super::android_protocol`] so the host test suite
-//! exercises them.
+//! composition, async-result parsing, the pending-call registry, the
+//! navigation event state machine and the method table — live in
+//! [`super::android_protocol`] so the host test suite exercises them. Kotlin
+//! forwards the raw navigation callbacks; [`NavigationTracker`] alone decides
+//! which `WebViewEvent`s they report.
 
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -22,7 +24,7 @@ use executor_core::spawn_local;
 use futures::channel::oneshot;
 use jni::objects::{GlobalRef, JClass, JMethodID, JObject, JStaticMethodID, JString, JValue};
 use jni::signature::{Primitive, ReturnType};
-use jni::sys::{jboolean, jfloat, jint, jlong, jobject, jvalue};
+use jni::sys::{jboolean, jint, jlong, jobject, jvalue};
 use jni::{JNIEnv, JavaVM};
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
@@ -37,10 +39,10 @@ use waterui_webview::{
 use crate::runner::android::jni::{JniError, get_string, guard, guard_val};
 
 use super::android_protocol::{
-    ASYNC_RESULT_OBJECT, BRIDGE_OBJECT, PendingCall, PendingCalls, TRANSPORT_SCRIPT,
-    WEBVIEW_ASSET_RESPONSE_INIT, WEBVIEW_CREATE, WEBVIEW_METHODS, WebViewMethodId,
-    androidx_origin_rules, compose_async_call, compose_document_end, cookie_url, fresh_async_token,
-    origin_may_use_bridge, watch_bool_with_initial,
+    ASYNC_RESULT_OBJECT, BRIDGE_OBJECT, NavigationTracker, PendingCall, PendingCalls,
+    TRANSPORT_SCRIPT, WEBVIEW_ASSET_RESPONSE_INIT, WEBVIEW_CREATE, WEBVIEW_METHODS,
+    WebViewMethodId, androidx_origin_rules, compose_async_call, compose_document_end, cookie_url,
+    fresh_async_token, origin_may_use_bridge, watch_bool_with_initial,
 };
 
 /// The Kotlin wrapper class, resolved at session-create time: a thread that
@@ -131,9 +133,9 @@ pub(super) struct SharedState {
     /// The bridge origin policy as the androidx rule strings — the bridge
     /// listener admits a message by asking `nativeOriginMayUseBridge` here.
     origin_rules: RefCell<Vec<String>>,
-    /// The URL the view is committed to — what `webView.url` answered in the
-    /// Kotlin runtime's `cookieUrl`, kept from the navigation events.
-    current_url: RefCell<Option<String>>,
+    /// The navigation event state machine every navigation callback feeds;
+    /// it also knows the main-frame URL the cookie path stores against.
+    navigation: RefCell<NavigationTracker>,
     /// Set at `create`: the asset origin the view answers, when it was opened
     /// with a server.
     asset_origin: Option<Url>,
@@ -148,6 +150,20 @@ impl SharedState {
 
     fn emit_webview(&self, event: WebViewEvent) {
         self.emit(&BackendEvent::Event(event));
+    }
+
+    /// Feed one navigation input to the tracker and emit what it reports.
+    /// The emission runs after the tracker's borrow ends: an event handler
+    /// that navigates again re-enters the tracker through Kotlin.
+    fn navigate<T>(
+        &self,
+        input: impl FnOnce(&mut NavigationTracker) -> (Vec<WebViewEvent>, T),
+    ) -> T {
+        let (events, answer) = input(&mut self.navigation.borrow_mut());
+        for event in events {
+            self.emit_webview(event);
+        }
+        answer
     }
 
     /// `evaluateBridgeScript` — the fire-and-forget evaluation bridge replies
@@ -288,7 +304,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
             scripts: RefCell::new(Vec::new()),
             pending: RefCell::new(PendingCalls::default()),
             origin_rules: RefCell::new(Vec::new()),
-            current_url: RefCell::new(None),
+            navigation: RefCell::new(NavigationTracker::default()),
             asset_origin: (asset_server != 0).then(|| {
                 ASSET_HTTPS_ORIGIN
                     .parse()
@@ -661,25 +677,30 @@ impl AndroidSystemWebViewHandle {
 }
 
 impl WebViewHandle for AndroidSystemWebViewHandle {
+    // The four loads the application starts go through Kotlin's
+    // `navigate…` methods: Android reports none of them to
+    // `shouldOverrideUrlLoading`, so the wrapper reports each target to
+    // `nativeOpenNavigation` before issuing it.
     fn go_back(&self) {
-        self.inner.call(WebViewMethodId::GoBack, &[]);
+        self.inner.call(WebViewMethodId::NavigateBack, &[]);
     }
 
     fn go_forward(&self) {
-        self.inner.call(WebViewMethodId::GoForward, &[]);
+        self.inner.call(WebViewMethodId::NavigateForward, &[]);
     }
 
     fn go_to(&self, url: &Url) {
         self.inner
-            .call_str(WebViewMethodId::LoadUrl, url.as_str(), &[]);
+            .call_str(WebViewMethodId::NavigateTo, url.as_str(), &[]);
     }
 
     fn stop(&self) {
+        self.inner.shared.navigation.borrow_mut().stopped();
         self.inner.call(WebViewMethodId::StopLoading, &[]);
     }
 
     fn refresh(&self) {
-        self.inner.call(WebViewMethodId::Reload, &[]);
+        self.inner.call(WebViewMethodId::NavigateReload, &[]);
     }
 
     fn set_user_agent(&self, user_agent: &str) {
@@ -717,16 +738,16 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
 
     fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
         let enabled = Computed::new(enabled);
-        let weak = Rc::downgrade(&self.inner);
+        let weak = Rc::downgrade(&self.inner.shared);
         // `watch` alone fires only on change — and a constant's never — so
-        // the value the signal already holds is pushed first, or Kotlin
-        // would keep its own default (`true`) for a constant `false`.
+        // the value the signal already holds is applied first, or the
+        // tracker would keep its default (`true`) for a constant `false`.
         let guard = watch_bool_with_initial(&enabled, move |enabled| {
-            if let Some(inner) = weak.upgrade() {
-                inner.call(
-                    WebViewMethodId::SetRedirectsEnabled,
-                    &[JValue::Bool(jboolean::from(enabled))],
-                );
+            if let Some(shared) = weak.upgrade() {
+                shared
+                    .navigation
+                    .borrow_mut()
+                    .set_redirects_enabled(enabled);
             }
         });
         *self.inner.redirects_guard.borrow_mut() = Some(guard);
@@ -734,8 +755,8 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
         let url = {
-            let current = self.inner.shared.current_url.borrow();
-            cookie_url(&cookie, current.as_deref())
+            let navigation = self.inner.shared.navigation.borrow();
+            cookie_url(&cookie, navigation.current_url().map(Url::as_str))
         };
         let Some(url) = url else {
             // The Kotlin runtime's `cookieUrl` nullability: a host-only cookie
@@ -874,8 +895,30 @@ fn shared_from_handle(handle: jlong) -> Option<Rc<SharedState>> {
     unsafe { &*(handle as *const Weak<SharedState>) }.upgrade()
 }
 
+/// A URL a navigation callback carried; `what` names it in the error.
+fn parse_url(url: &str, what: &str) -> Result<Url, JniError> {
+    url.parse()
+        .map_err(|_| JniError(format!("android webview: {what} {url:?} is not a URL")))
+}
+
+/// `onProgressChanged`'s percentage, which the platform keeps in `0..=100`.
+fn percent(progress: jint) -> Result<u8, JniError> {
+    u8::try_from(progress)
+        .ok()
+        .filter(|percent| *percent <= 100)
+        .ok_or_else(|| {
+            JniError(format!(
+                "android webview: a progress report of {progress} is outside 0..=100"
+            ))
+        })
+}
+
+/// An application-started load — `navigateTo`, `navigateBack`,
+/// `navigateForward` or `navigateReload` — reporting its target before the
+/// Kotlin wrapper issues it. Android routes none of them through
+/// `shouldOverrideUrlLoading`, so this is where they open.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeWillNavigate(
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeOpenNavigation(
     mut env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -886,113 +929,154 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
             tracing::debug!("android webview: an event on a released view dropped");
             return Ok(());
         };
-        let url = get_string(env, &url)?;
-        let parsed: Url = url.parse().map_err(|_| {
-            JniError(format!(
-                "android webview: a navigation to {url:?} is not a URL"
-            ))
-        })?;
-        // A navigation event only: `shouldOverrideUrlLoading`,
-        // `onPageStarted` and `doUpdateVisitedHistory` all announce, so the
-        // event fires for navigations that never commit too — none of them
-        // may settle a call the live document still owes.
-        // `nativeDocumentReplaced` carries that settlement.
-        *shared.current_url.borrow_mut() = Some(url);
-        shared.emit_webview(WebViewEvent::WillNavigate { url: parsed });
+        let url = parse_url(&get_string(env, &url)?, "a navigation to")?;
+        shared.navigate(|tracker| (tracker.open(url), ()));
         Ok(())
     });
+}
+
+/// `shouldOverrideUrlLoading`, answered by the tracker: `true` cancels the
+/// request — a server redirect while redirects are disabled. A subframe
+/// request is the page's own and passes before its URL is read.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeShouldOverrideUrlLoading(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    url: JString,
+    is_main_frame: jboolean,
+    is_redirect: jboolean,
+) -> jboolean {
+    guard_val(&mut env, jboolean::from(false), |env| {
+        let Some(shared) = shared_from_handle(handle) else {
+            tracing::debug!("android webview: a request on a released view passed");
+            return Ok(jboolean::from(false));
+        };
+        if is_main_frame == 0 {
+            return Ok(jboolean::from(false));
+        }
+        let url = parse_url(&get_string(env, &url)?, "a request for")?;
+        let block = shared.navigate(|tracker| {
+            let decision = tracker.request(url, is_redirect != 0);
+            (decision.events, decision.block)
+        });
+        Ok(jboolean::from(block))
+    })
 }
 
 /// `onPageStarted` — the one client callback that fires exactly on a
 /// main-frame cross-document commit. The calls the old document owed
 /// settle here, and the generation bump retires its in-flight async
-/// results before the new document's calls begin.
+/// results before the new document's calls begin; then the tracker hears
+/// of the commit.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeDocumentReplaced(
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativePageStarted(
     mut env: JNIEnv,
     _class: JClass,
     handle: jlong,
+    url: JString,
+    progress: jint,
 ) {
-    guard(&mut env, |_env| {
+    guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
             tracing::debug!("android webview: a document commit on a released view dropped");
             return Ok(());
         };
+        let url = parse_url(&get_string(env, &url)?, "a commit of")?;
+        let progress = percent(progress)?;
         let calls = shared.pending.borrow_mut().document_replaced();
         PendingCalls::settle_many(calls, "the document was replaced before the script ran");
+        shared.navigate(|tracker| (tracker.page_started(url, progress), ()));
         Ok(())
     });
 }
 
+/// `doUpdateVisitedHistory`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeLoading(
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeHistoryUpdated(
     mut env: JNIEnv,
     _class: JClass,
     handle: jlong,
-    progress: jfloat,
-) {
-    guard(&mut env, |_env| {
-        let Some(shared) = shared_from_handle(handle) else {
-            tracing::debug!("android webview: an event on a released view dropped");
-            return Ok(());
-        };
-        shared.emit_webview(WebViewEvent::Loading { progress });
-        Ok(())
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeLoaded(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-) {
-    guard(&mut env, |_env| {
-        let Some(shared) = shared_from_handle(handle) else {
-            tracing::debug!("android webview: an event on a released view dropped");
-            return Ok(());
-        };
-        shared.emit_webview(WebViewEvent::Loaded);
-        Ok(())
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeRedirect(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    from: JString,
-    to: JString,
+    url: JString,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
             tracing::debug!("android webview: an event on a released view dropped");
             return Ok(());
         };
-        let from = get_string(env, &from)?;
-        let to = get_string(env, &to)?;
-        let parsed_from: Url = from.parse().map_err(|_| {
-            JniError(format!(
-                "android webview: a redirect from {from:?} is not a URL"
-            ))
-        })?;
-        let parsed_to: Url = to.parse().map_err(|_| {
-            JniError(format!(
-                "android webview: a redirect to {to:?} is not a URL"
-            ))
-        })?;
-        *shared.current_url.borrow_mut() = Some(to);
-        shared.emit_webview(WebViewEvent::Redirect {
-            from: parsed_from,
-            to: parsed_to,
-        });
+        let url = parse_url(&get_string(env, &url)?, "a history entry for")?;
+        shared.navigation.borrow_mut().history_updated(url);
         Ok(())
     });
 }
 
+/// `onProgressChanged`.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeError(
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeProgressChanged(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    progress: jint,
+) {
+    guard(&mut env, |_env| {
+        let Some(shared) = shared_from_handle(handle) else {
+            tracing::debug!("android webview: an event on a released view dropped");
+            return Ok(());
+        };
+        let progress = percent(progress)?;
+        shared.navigate(|tracker| (tracker.progress(progress), ()));
+        Ok(())
+    });
+}
+
+/// `onPageFinished`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativePageFinished(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    guard(&mut env, |_env| {
+        let Some(shared) = shared_from_handle(handle) else {
+            tracing::debug!("android webview: an event on a released view dropped");
+            return Ok(());
+        };
+        shared.navigate(|tracker| (tracker.page_finished(), ()));
+        Ok(())
+    });
+}
+
+/// `onReceivedError`, for any frame. A subframe's — a failed image, a
+/// blocked iframe — is no navigation's and drops before its URL is read.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeReceivedError(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    url: JString,
+    is_main_frame: jboolean,
+    message: JString,
+) {
+    guard(&mut env, |env| {
+        let Some(shared) = shared_from_handle(handle) else {
+            tracing::debug!("android webview: an event on a released view dropped");
+            return Ok(());
+        };
+        if is_main_frame == 0 {
+            return Ok(());
+        }
+        let url = parse_url(&get_string(env, &url)?, "a failed request for")?;
+        let message = get_string(env, &message)?;
+        let error = WebViewError::Network(Str::from(message));
+        shared.navigate(|tracker| (tracker.received_error(url, error), ()));
+        Ok(())
+    });
+}
+
+/// The render process is gone and the view is being torn down — not a
+/// navigation's end but the view's, reported unconditionally.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeRenderProcessGone(
     mut env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -1024,25 +1108,15 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
             tracing::debug!("android webview: an event on a released view dropped");
             return Ok(());
         };
-        let message = get_string(env, &message)?;
+        let message = Str::from(get_string(env, &message)?);
         // `SslError.url` can be absent — the error still reports, as a
-        // network-level failure carrying no URL rather than a parse error.
-        if url.is_null() {
-            shared.emit_webview(WebViewEvent::Error(WebViewError::Network(Str::from(
-                message,
-            ))));
-            return Ok(());
-        }
-        let url = get_string(env, &url)?;
-        let url: Url = url.parse().map_err(|_| {
-            JniError(format!(
-                "android webview: an SSL error on {url:?} is not a URL"
-            ))
-        })?;
-        shared.emit_webview(WebViewEvent::Error(WebViewError::Ssl {
-            url,
-            message: Str::from(message),
-        }));
+        // network-level failure carrying no URL.
+        let url = if url.is_null() {
+            None
+        } else {
+            Some(parse_url(&get_string(env, &url)?, "an SSL error on")?)
+        };
+        shared.navigate(|tracker| (tracker.ssl_error(url, message), ()));
         Ok(())
     });
 }

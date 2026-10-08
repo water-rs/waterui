@@ -147,15 +147,6 @@ private constructor(
     private var originRules: List<String> = emptyList()
     private var bridgeListenerInstalled = false
 
-    private var redirectsEnabled = true
-
-    /**
-     * The navigation already reported to Rust, cleared once it is over.
-     *
-     * Several client callbacks see one navigation, so this is what keeps them
-     * from reporting it several times over.
-     */
-    private var announcedNavigationUrl: String? = null
     private var released = false
 
     /** The bound Activity's lifecycle, re-observed on every host rebind. */
@@ -178,7 +169,9 @@ private constructor(
         webChromeClient =
             object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView, newProgress: Int) {
-                    emitLoading(newProgress / 100f)
+                    if (nativeHandle != 0L) {
+                        nativeProgressChanged(nativeHandle, newProgress)
+                    }
                 }
             }
         webViewClient = HydrolysisClient()
@@ -245,16 +238,38 @@ private constructor(
 
         // The natives `catch_unwind` guards on the Rust side; a released
         // handle upgrades to nothing and the callback is dropped there.
-        @JvmStatic private external fun nativeWillNavigate(handle: Long, url: String)
-
-        @JvmStatic private external fun nativeLoading(handle: Long, progress: Float)
-
-        @JvmStatic private external fun nativeLoaded(handle: Long)
+        //
+        // The navigation natives forward raw callbacks — URL, main-frame
+        // flag, progress — and Rust's `NavigationTracker` alone decides which
+        // `WebViewEvent`s they report.
+        @JvmStatic private external fun nativeOpenNavigation(handle: Long, url: String)
 
         @JvmStatic
-        private external fun nativeRedirect(handle: Long, from: String, to: String)
+        private external fun nativeShouldOverrideUrlLoading(
+            handle: Long,
+            url: String,
+            isMainFrame: Boolean,
+            isRedirect: Boolean,
+        ): Boolean
 
-        @JvmStatic private external fun nativeError(handle: Long, message: String)
+        @JvmStatic
+        private external fun nativePageStarted(handle: Long, url: String, progress: Int)
+
+        @JvmStatic private external fun nativeHistoryUpdated(handle: Long, url: String)
+
+        @JvmStatic private external fun nativeProgressChanged(handle: Long, progress: Int)
+
+        @JvmStatic private external fun nativePageFinished(handle: Long)
+
+        @JvmStatic
+        private external fun nativeReceivedError(
+            handle: Long,
+            url: String,
+            isMainFrame: Boolean,
+            message: String,
+        )
+
+        @JvmStatic private external fun nativeRenderProcessGone(handle: Long, message: String)
 
         @JvmStatic
         private external fun nativeSslError(handle: Long, url: String?, message: String)
@@ -273,8 +288,6 @@ private constructor(
         private external fun nativeOriginMayUseBridge(handle: Long, origin: String): Boolean
 
         @JvmStatic private external fun nativeReleased(handle: Long)
-
-        @JvmStatic private external fun nativeDocumentReplaced(handle: Long)
 
         @JvmStatic private external fun nativeAsyncResult(handle: Long, payload: String)
 
@@ -341,9 +354,56 @@ private constructor(
         rebuildDocumentStartScripts()
     }
 
+    // ------------------------------------------------------------------
+    // Application-started loads. Android reports none of them to
+    // `shouldOverrideUrlLoading`, so each reports its target to Rust
+    // before it is issued — never a bare `loadUrl`/`goBack`/... from Rust.
+    // ------------------------------------------------------------------
+
     @CalledFromNative
-    fun setRedirectsEnabled(enabled: Boolean) {
-        redirectsEnabled = enabled
+    fun navigateTo(url: String) {
+        openNavigation(url)
+        loadUrl(url)
+    }
+
+    /** `goBack`, when there is an entry to go back to. */
+    @CalledFromNative
+    fun navigateBack() {
+        val target = historyTarget(-1) ?: return
+        openNavigation(target)
+        goBack()
+    }
+
+    /** `goForward`, when there is an entry to go forward to. */
+    @CalledFromNative
+    fun navigateForward() {
+        val target = historyTarget(1) ?: return
+        openNavigation(target)
+        goForward()
+    }
+
+    /** `reload`, once there is a document to reload. */
+    @CalledFromNative
+    fun navigateReload() {
+        val target = url ?: return
+        openNavigation(target)
+        reload()
+    }
+
+    /** The URL of the history entry `offset` steps from the current one. */
+    private fun historyTarget(offset: Int): String? {
+        val history = copyBackForwardList()
+        val index = history.currentIndex + offset
+        if (index < 0 || index >= history.size) {
+            return null
+        }
+        return history.getItemAtIndex(index).url
+    }
+
+    private fun openNavigation(url: String) {
+        if (nativeHandle != 0L) {
+            nativeOpenNavigation(nativeHandle, url)
+        }
     }
 
     @CalledFromNative
@@ -503,49 +563,8 @@ private constructor(
     }
 
     // ------------------------------------------------------------------
-    // Events — one native callback per Rust `WebViewEvent`/`BackendEvent`.
+    // Reports the client callbacks share.
     // ------------------------------------------------------------------
-
-    private fun announceNavigation(url: String) {
-        if (url.isEmpty()) {
-            return
-        }
-        if (url == announcedNavigationUrl) {
-            return
-        }
-        announcedNavigationUrl = url
-        if (nativeHandle != 0L) {
-            nativeWillNavigate(nativeHandle, url)
-        }
-    }
-
-    private fun finishNavigationAnnouncement() {
-        announcedNavigationUrl = null
-    }
-
-    private fun emitLoading(progress: Float) {
-        if (nativeHandle != 0L) {
-            nativeLoading(nativeHandle, progress)
-        }
-    }
-
-    private fun emitLoaded() {
-        if (nativeHandle != 0L) {
-            nativeLoaded(nativeHandle)
-        }
-    }
-
-    private fun emitRedirect(from: String, to: String) {
-        if (nativeHandle != 0L) {
-            nativeRedirect(nativeHandle, from, to)
-        }
-    }
-
-    private fun emitError(message: String) {
-        if (nativeHandle != 0L) {
-            nativeError(nativeHandle, message)
-        }
-    }
 
     private fun emitSslError(url: String?, message: String) {
         if (nativeHandle != 0L) {
@@ -657,41 +676,46 @@ private constructor(
             view: WebView,
             request: WebResourceRequest,
         ): Boolean {
-            if (!request.isForMainFrame) {
+            val handle = nativeHandle
+            if (handle == 0L) {
                 return false
             }
-            val targetUrl = request.url?.toString() ?: return false
-            if (!redirectsEnabled && request.isRedirect) {
-                emitRedirect(announcedNavigationUrl ?: targetUrl, targetUrl)
-                return true
-            }
-            announceNavigation(targetUrl)
-            return false
+            // `true` cancels the request: a server redirect while redirects
+            // are disabled. Cancelling it ends the load, which is the
+            // blocked navigation's stop.
+            return nativeShouldOverrideUrlLoading(
+                handle,
+                request.url.toString(),
+                request.isForMainFrame,
+                request.isRedirect,
+            )
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             // The one callback that fires exactly on a main-frame
-            // cross-document commit — no dedup: `nativeDocumentReplaced`
-            // drains the calls the old document owed and bumps the
-            // generation, so a stale result can never settle a new call.
+            // cross-document commit — no dedup: `nativePageStarted` drains
+            // the calls the old document owed and bumps the generation, so
+            // a stale result can never settle a new call.
             val handle = nativeHandle
             if (handle != 0L) {
-                nativeDocumentReplaced(handle)
+                nativePageStarted(handle, url, view.progress)
             }
-            announceNavigation(url)
-            emitLoading(0f)
             emitNavigationState()
         }
 
         override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
-            announceNavigation(url)
-            finishNavigationAnnouncement()
+            val handle = nativeHandle
+            if (handle != 0L) {
+                nativeHistoryUpdated(handle, url)
+            }
             emitNavigationState()
         }
 
         override fun onPageFinished(view: WebView, url: String) {
-            finishNavigationAnnouncement()
-            emitLoaded()
+            val handle = nativeHandle
+            if (handle != 0L) {
+                nativePageFinished(handle)
+            }
             emitNavigationState()
         }
 
@@ -700,11 +724,15 @@ private constructor(
             request: WebResourceRequest,
             error: WebResourceError,
         ) {
-            if (!request.isForMainFrame) {
-                return
+            val handle = nativeHandle
+            if (handle != 0L) {
+                nativeReceivedError(
+                    handle,
+                    request.url.toString(),
+                    request.isForMainFrame,
+                    error.description?.toString() ?: "navigation failed",
+                )
             }
-            finishNavigationAnnouncement()
-            emitError(error.description?.toString() ?: "navigation failed")
             emitNavigationState()
         }
 
@@ -721,14 +749,17 @@ private constructor(
             view: WebView,
             detail: RenderProcessGoneDetail,
         ): Boolean {
-            finishNavigationAnnouncement()
-            emitError(
-                if (detail.didCrash()) {
-                    "the web content process crashed"
-                } else {
-                    "the system reclaimed the web content process"
-                },
-            )
+            val handle = nativeHandle
+            if (handle != 0L) {
+                nativeRenderProcessGone(
+                    handle,
+                    if (detail.didCrash()) {
+                        "the web content process crashed"
+                    } else {
+                        "the system reclaimed the web content process"
+                    },
+                )
+            }
             releaseInternal()
             return true
         }

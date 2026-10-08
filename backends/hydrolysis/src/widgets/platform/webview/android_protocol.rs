@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use waterui_core::{Computed, Signal, Str};
-use waterui_webview::{Cookie, OriginPolicy};
+use waterui_webview::{Cookie, OriginPolicy, Url, WebViewError, WebViewEvent};
 
 /// The token `OriginRule::LocalFiles` crosses as; Android spells a local-file
 /// origin rule `file://`.
@@ -126,9 +126,9 @@ pub fn compose_async_call(id: u64, generation: u64, token: &str, body: &str) -> 
 /// Install `apply` as `signal`'s watcher after running it once on the
 /// current value. `Computed::watch` fires only on change — and a
 /// constant's watch never fires — so the initial state would otherwise
-/// never reach the view. `set_redirects_enabled` is the Android bridge's
-/// one signal-driven setting; every other field crosses as an immediate
-/// setter call.
+/// never reach the [`NavigationTracker`]. `set_redirects_enabled` is the
+/// Android bridge's one signal-driven setting; every other field crosses as
+/// an immediate setter call.
 pub fn watch_bool_with_initial(
     signal: &Computed<bool>,
     apply: impl Fn(bool) + 'static,
@@ -419,6 +419,278 @@ impl PendingCalls {
     }
 }
 
+/// Where the main frame's navigation stands.
+#[derive(Debug)]
+enum NavigationPhase {
+    /// Nothing is loading: no navigation yet, or the last one finished.
+    Idle,
+    /// A navigation the application has been told about is in flight.
+    /// `committed` turns true once its document commits — `onPageStarted`,
+    /// or `doUpdateVisitedHistory` for a same-document history entry — and
+    /// only a committed navigation can finish.
+    Open { url: Url, committed: bool },
+    /// The last navigation ended before it finished: a blocked redirect, a
+    /// main-frame error, an SSL refusal, or `stop`. Its last event was
+    /// already reported, so what the engine still says about it — the
+    /// cancellation's error, the error page it commits at `url`, the
+    /// stopped load's progress and `onPageFinished` — is dropped until the
+    /// next navigation opens.
+    Ended { url: Url },
+}
+
+/// What a main-frame `shouldOverrideUrlLoading` resolves to: the events it
+/// reports, and whether the engine must cancel the request.
+#[derive(Debug, PartialEq)]
+pub struct RequestDecision {
+    /// The events to emit, in order.
+    pub events: Vec<WebViewEvent>,
+    /// `true` to cancel the request — `shouldOverrideUrlLoading`'s answer.
+    pub block: bool,
+}
+
+/// The navigation event contract on top of the raw `WebViewClient` and
+/// `WebChromeClient` callbacks.
+///
+/// The contract is the one the `WKWebView` bridge reports: a navigation
+/// opens with `WillNavigate` then `Loading(0)`; a server redirect reports
+/// `Redirect { from, to }` and, when allowed, `WillNavigate(to)`, while a
+/// blocked one cancels the load and is the navigation's last event; the
+/// commit reports the progress so far; the finish reports `Loading(1.0)`
+/// then `Loaded`, so `Loaded` is always last; a main-frame error is the
+/// last event of the navigation it ends.
+///
+/// Android's callbacks do not line up with that on their own.
+/// `onProgressChanged` covers the whole page — iframes, cancelled loads,
+/// loads that start after the finish — so it is forwarded only while a
+/// navigation is open, and never its 100% report, which is `Loaded`'s job.
+/// A load the application starts (`loadUrl`, `goBack`, `goForward`,
+/// `reload`) never reaches `shouldOverrideUrlLoading`, so the Kotlin
+/// wrapper reports its target through [`Self::open`] before issuing it.
+///
+/// Every input returns the events it produced instead of emitting them, so
+/// the caller emits after its borrow of the tracker ends — an application
+/// handler that drives the view again cannot re-enter it.
+#[derive(Debug)]
+pub struct NavigationTracker {
+    phase: NavigationPhase,
+    /// Whether a server redirect may proceed — the `redirects_enabled`
+    /// signal's current value.
+    redirects_enabled: bool,
+    /// The main-frame URL as last known: the open navigation's target, the
+    /// committed document, or a same-document history entry. It is the
+    /// cookie URL, and the `from` of a redirect whose navigation never
+    /// reached `shouldOverrideUrlLoading` (a form `POST`).
+    current_url: Option<Url>,
+}
+
+impl Default for NavigationTracker {
+    fn default() -> Self {
+        Self {
+            phase: NavigationPhase::Idle,
+            redirects_enabled: true,
+            current_url: None,
+        }
+    }
+}
+
+impl NavigationTracker {
+    /// The `redirects_enabled` signal changed.
+    pub const fn set_redirects_enabled(&mut self, enabled: bool) {
+        self.redirects_enabled = enabled;
+    }
+
+    /// The main-frame URL as last known; see the field.
+    pub const fn current_url(&self) -> Option<&Url> {
+        self.current_url.as_ref()
+    }
+
+    /// A navigation begins — one the application started, or a main-frame
+    /// request `shouldOverrideUrlLoading` admitted. Supersedes whatever was
+    /// open.
+    pub fn open(&mut self, url: Url) -> Vec<WebViewEvent> {
+        self.phase = NavigationPhase::Open {
+            url: url.clone(),
+            committed: false,
+        };
+        self.current_url = Some(url.clone());
+        vec![
+            WebViewEvent::WillNavigate { url },
+            WebViewEvent::Loading { progress: 0.0 },
+        ]
+    }
+
+    /// A main-frame `shouldOverrideUrlLoading` — a subframe request is the
+    /// page's own business, and the native passes it before its URL is even
+    /// read. A request either opens a navigation or, as a server redirect,
+    /// continues the open one.
+    ///
+    /// # Panics
+    ///
+    /// On a main-frame redirect before any main-frame URL was ever known —
+    /// a redirect needs a navigation, and every navigation is either opened
+    /// here or issued from a committed document.
+    pub fn request(&mut self, url: Url, is_redirect: bool) -> RequestDecision {
+        if !is_redirect {
+            return RequestDecision {
+                events: self.open(url),
+                block: false,
+            };
+        }
+        let from = match &self.phase {
+            NavigationPhase::Open { url, .. } => url.clone(),
+            NavigationPhase::Idle | NavigationPhase::Ended { .. } => self
+                .current_url
+                .clone()
+                .expect("android webview: a main-frame redirect arrived before any main-frame URL"),
+        };
+        let mut events = vec![WebViewEvent::Redirect {
+            from,
+            to: url.clone(),
+        }];
+        if !self.redirects_enabled {
+            self.phase = NavigationPhase::Ended { url };
+            return RequestDecision {
+                events,
+                block: true,
+            };
+        }
+        self.phase = NavigationPhase::Open {
+            url: url.clone(),
+            committed: false,
+        };
+        self.current_url = Some(url.clone());
+        events.push(WebViewEvent::WillNavigate { url });
+        RequestDecision {
+            events,
+            block: false,
+        }
+    }
+
+    /// `onPageStarted`: a main-frame document committed at `url`, with the
+    /// page's progress at that moment. A commit nothing announced — a form
+    /// `POST`, a page's own `location.reload()` — opens its navigation here;
+    /// the error page an ended navigation commits at its own URL is part of
+    /// that navigation and reports nothing.
+    pub fn page_started(&mut self, url: Url, progress: u8) -> Vec<WebViewEvent> {
+        let mut events = match &mut self.phase {
+            NavigationPhase::Open {
+                url: open,
+                committed,
+            } if !*committed || *open == url => {
+                *committed = true;
+                open.clone_from(&url);
+                Vec::new()
+            }
+            NavigationPhase::Ended { url: ended } if *ended == url => return Vec::new(),
+            NavigationPhase::Idle
+            | NavigationPhase::Open { .. }
+            | NavigationPhase::Ended { .. } => {
+                let events = self.open(url.clone());
+                self.phase = NavigationPhase::Open {
+                    url: url.clone(),
+                    committed: true,
+                };
+                events
+            }
+        };
+        self.current_url = Some(url);
+        if progress > 0 && progress < 100 {
+            events.push(WebViewEvent::Loading {
+                progress: f32::from(progress) / 100.0,
+            });
+        }
+        events
+    }
+
+    /// `doUpdateVisitedHistory`: the main frame's history entry is now
+    /// `url`. It commits the open navigation when that is where it was
+    /// going — a same-document history step has no `onPageStarted` — and
+    /// otherwise only moves the current URL (`pushState`, a fragment).
+    pub fn history_updated(&mut self, url: Url) {
+        if let NavigationPhase::Open {
+            url: open,
+            committed,
+        } = &mut self.phase
+            && *open == url
+        {
+            *committed = true;
+        }
+        self.current_url = Some(url);
+    }
+
+    /// `onProgressChanged`, as a percentage. Forwarded only while a
+    /// navigation is open, and never the 100% report.
+    #[must_use]
+    pub fn progress(&self, progress: u8) -> Vec<WebViewEvent> {
+        match self.phase {
+            NavigationPhase::Open { .. } if progress < 100 => vec![WebViewEvent::Loading {
+                progress: f32::from(progress) / 100.0,
+            }],
+            NavigationPhase::Open { .. }
+            | NavigationPhase::Idle
+            | NavigationPhase::Ended { .. } => Vec::new(),
+        }
+    }
+
+    /// `onPageFinished`. Finishes the open navigation once it committed;
+    /// before the commit it is the previous document's load stopping, and
+    /// with nothing open it is a late report for a navigation already over.
+    pub fn page_finished(&mut self) -> Vec<WebViewEvent> {
+        if !matches!(
+            self.phase,
+            NavigationPhase::Open {
+                committed: true,
+                ..
+            }
+        ) {
+            return Vec::new();
+        }
+        self.phase = NavigationPhase::Idle;
+        vec![
+            WebViewEvent::Loading { progress: 1.0 },
+            WebViewEvent::Loaded,
+        ]
+    }
+
+    /// A main-frame `onReceivedError` for the request at `url` — the native
+    /// drops every subframe error. It ends the navigation with it; one for a
+    /// navigation that already ended — the cancellation a blocked redirect
+    /// or `stop` causes — is dropped.
+    pub fn received_error(&mut self, url: Url, error: WebViewError) -> Vec<WebViewEvent> {
+        if matches!(self.phase, NavigationPhase::Ended { .. }) {
+            return Vec::new();
+        }
+        self.phase = NavigationPhase::Ended { url };
+        vec![WebViewEvent::Error(error)]
+    }
+
+    /// `onReceivedSslError`, which the bridge always cancels. The error is
+    /// always reported — `SslError` does not say which frame it is for —
+    /// and when it names the open navigation's URL it ends that navigation.
+    pub fn ssl_error(&mut self, url: Option<Url>, message: Str) -> Vec<WebViewEvent> {
+        let error = match url {
+            Some(url) => {
+                if let NavigationPhase::Open { url: open, .. } = &self.phase
+                    && *open == url
+                {
+                    self.phase = NavigationPhase::Ended { url: url.clone() };
+                }
+                WebViewError::Ssl { url, message }
+            }
+            None => WebViewError::Network(message),
+        };
+        vec![WebViewEvent::Error(error)]
+    }
+
+    /// `stop`: the open navigation ends where it stands, with no further
+    /// event — the `WKWebView` bridge drops the cancellation the same way.
+    pub fn stopped(&mut self) {
+        if let NavigationPhase::Open { url, .. } = &self.phase {
+            self.phase = NavigationPhase::Ended { url: url.clone() };
+        }
+    }
+}
+
 /// The `HydrolysisWebView` members Rust calls by name — the webview module's
 /// half of `runner::android_methods`' host contract. `install_controller`
 /// resolves each entry with `GetMethodID` once per session, so a member R8
@@ -430,17 +702,16 @@ impl PendingCalls {
 /// the only handle a call site names a wrapper method by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WebViewMethodId {
-    GoBack,
-    GoForward,
-    LoadUrl,
+    NavigateTo,
+    NavigateBack,
+    NavigateForward,
+    NavigateReload,
     StopLoading,
-    Reload,
     SetUserAgent,
     CanGoBack,
     CanGoForward,
     SetDocumentStartScripts,
     SetBridgeOrigins,
-    SetRedirectsEnabled,
     SetCookie,
     GetCookies,
     Evaluate,
@@ -450,18 +721,17 @@ pub enum WebViewMethodId {
 
 impl WebViewMethodId {
     /// Every id, in table order.
-    pub const ALL: [Self; 16] = [
-        Self::GoBack,
-        Self::GoForward,
-        Self::LoadUrl,
+    pub const ALL: [Self; 15] = [
+        Self::NavigateTo,
+        Self::NavigateBack,
+        Self::NavigateForward,
+        Self::NavigateReload,
         Self::StopLoading,
-        Self::Reload,
         Self::SetUserAgent,
         Self::CanGoBack,
         Self::CanGoForward,
         Self::SetDocumentStartScripts,
         Self::SetBridgeOrigins,
-        Self::SetRedirectsEnabled,
         Self::SetCookie,
         Self::GetCookies,
         Self::Evaluate,
@@ -480,23 +750,23 @@ pub struct WebViewMethod {
 /// The instance-method contract, in `WebViewMethodId` order.
 pub const WEBVIEW_METHODS: &[WebViewMethod] = &[
     WebViewMethod {
-        name: "goBack",
-        signature: "()V",
-    },
-    WebViewMethod {
-        name: "goForward",
-        signature: "()V",
-    },
-    WebViewMethod {
-        name: "loadUrl",
+        name: "navigateTo",
         signature: "(Ljava/lang/String;)V",
     },
     WebViewMethod {
-        name: "stopLoading",
+        name: "navigateBack",
         signature: "()V",
     },
     WebViewMethod {
-        name: "reload",
+        name: "navigateForward",
+        signature: "()V",
+    },
+    WebViewMethod {
+        name: "navigateReload",
+        signature: "()V",
+    },
+    WebViewMethod {
+        name: "stopLoading",
         signature: "()V",
     },
     WebViewMethod {
@@ -518,10 +788,6 @@ pub const WEBVIEW_METHODS: &[WebViewMethod] = &[
     WebViewMethod {
         name: "setBridgeOrigins",
         signature: "([Ljava/lang/String;)V",
-    },
-    WebViewMethod {
-        name: "setRedirectsEnabled",
-        signature: "(Z)V",
     },
     WebViewMethod {
         name: "setCookie",
@@ -968,20 +1234,381 @@ mod tests {
         assert_eq!(applied.borrow().as_slice(), &[false]);
     }
 
+    // ---- NavigationTracker: the callback orders the device delivers ----
+
+    fn url(text: &str) -> Url {
+        text.parse().expect("a valid test URL")
+    }
+
+    fn will_navigate(text: &str) -> WebViewEvent {
+        WebViewEvent::WillNavigate { url: url(text) }
+    }
+
+    fn loading(percent: u8) -> WebViewEvent {
+        WebViewEvent::Loading {
+            progress: f32::from(percent) / 100.0,
+        }
+    }
+
+    fn redirect(from: &str, to: &str) -> WebViewEvent {
+        WebViewEvent::Redirect {
+            from: url(from),
+            to: url(to),
+        }
+    }
+
+    const fn allowed(events: Vec<WebViewEvent>) -> RequestDecision {
+        RequestDecision {
+            events,
+            block: false,
+        }
+    }
+
+    /// Feeds one raw callback and appends what it reports, so a test reads
+    /// as the callback order with the whole event sequence asserted once.
+    struct Drive {
+        tracker: NavigationTracker,
+        events: Vec<WebViewEvent>,
+    }
+
+    impl Drive {
+        fn new() -> Self {
+            Self {
+                tracker: NavigationTracker::default(),
+                events: Vec::new(),
+            }
+        }
+
+        fn open(&mut self, target: &str) -> &mut Self {
+            let events = self.tracker.open(url(target));
+            self.events.extend(events);
+            self
+        }
+
+        fn request(&mut self, target: &str, is_redirect: bool) -> bool {
+            let decision = self.tracker.request(url(target), is_redirect);
+            self.events.extend(decision.events);
+            decision.block
+        }
+
+        fn started(&mut self, target: &str, percent: u8) -> &mut Self {
+            let events = self.tracker.page_started(url(target), percent);
+            self.events.extend(events);
+            self
+        }
+
+        fn progress(&mut self, percent: u8) -> &mut Self {
+            let events = self.tracker.progress(percent);
+            self.events.extend(events);
+            self
+        }
+
+        fn finished(&mut self) -> &mut Self {
+            let events = self.tracker.page_finished();
+            self.events.extend(events);
+            self
+        }
+
+        fn error(&mut self, target: &str, message: &str) -> &mut Self {
+            let events = self.tracker.received_error(
+                url(target),
+                WebViewError::Network(Str::from(message.to_owned())),
+            );
+            self.events.extend(events);
+            self
+        }
+
+        fn take(&mut self) -> Vec<WebViewEvent> {
+            std::mem::take(&mut self.events)
+        }
+    }
+
+    #[test]
+    fn navigation_a_plain_load_ends_with_loaded() {
+        let mut drive = Drive::new();
+        drive
+            .open("https://waterui.dev/")
+            .progress(10)
+            .started("https://waterui.dev/", 30)
+            .progress(70)
+            .progress(100)
+            .finished();
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://waterui.dev/"),
+                loading(0),
+                loading(10),
+                loading(30),
+                loading(70),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+        assert_eq!(
+            drive.tracker.current_url(),
+            Some(&url("https://waterui.dev/"))
+        );
+    }
+
+    #[test]
+    fn navigation_an_allowed_redirect_reports_redirect_then_will_navigate() {
+        let mut drive = Drive::new();
+        drive.open("https://google.com/").progress(10);
+        assert!(!drive.request("https://www.google.com/", true));
+        drive
+            .started("https://www.google.com/", 40)
+            .progress(100)
+            .finished();
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://google.com/"),
+                loading(0),
+                loading(10),
+                redirect("https://google.com/", "https://www.google.com/"),
+                will_navigate("https://www.google.com/"),
+                loading(40),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+        assert_eq!(
+            drive.tracker.current_url(),
+            Some(&url("https://www.google.com/"))
+        );
+    }
+
+    #[test]
+    fn navigation_a_blocked_redirect_is_the_last_event() {
+        let mut drive = Drive::new();
+        drive.tracker.set_redirects_enabled(false);
+        drive.open("https://google.com/").progress(10);
+        assert!(drive.request("https://www.google.com/", true));
+        // The cancelled load still reports: its 100%, its stop, and the
+        // abort as a main-frame error. None of it belongs to a navigation.
+        drive
+            .progress(100)
+            .progress(10)
+            .finished()
+            .error("https://www.google.com/", "net::ERR_ABORTED");
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://google.com/"),
+                loading(0),
+                loading(10),
+                redirect("https://google.com/", "https://www.google.com/"),
+            ]
+        );
+        // The blocked target never became the document.
+        assert_eq!(
+            drive.tracker.current_url(),
+            Some(&url("https://google.com/"))
+        );
+    }
+
+    #[test]
+    fn navigation_an_iframe_progress_cycle_after_the_finish_reports_nothing() {
+        let mut drive = Drive::new();
+        drive
+            .open("https://waterui.dev/")
+            .started("https://waterui.dev/", 50)
+            .finished();
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://waterui.dev/"),
+                loading(0),
+                loading(50),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+        // An iframe loads after the page finished. `onProgressChanged`
+        // covers the whole page, so its cycle arrives here, followed by the
+        // page-wide stop; none of it is a main-frame navigation.
+        drive.progress(10).progress(60).progress(100).finished();
+        assert_eq!(drive.take(), [] as [WebViewEvent; 0]);
+    }
+
+    #[test]
+    fn navigation_back_and_forward_open_their_history_targets() {
+        let mut drive = Drive::new();
+        drive
+            .open("https://a.dev/")
+            .started("https://a.dev/", 0)
+            .finished();
+        drive
+            .open("https://b.dev/")
+            .started("https://b.dev/", 0)
+            .finished();
+        drive.take();
+
+        // Back: the Kotlin wrapper reports the history target, then the
+        // restored document commits — already complete — and finishes.
+        drive
+            .open("https://a.dev/")
+            .started("https://a.dev/", 100)
+            .finished();
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://a.dev/"),
+                loading(0),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+
+        // Forward to a same-document entry: no `onPageStarted`, the history
+        // update commits it.
+        drive.open("https://a.dev/#section");
+        drive.tracker.history_updated(url("https://a.dev/#section"));
+        drive.finished();
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://a.dev/#section"),
+                loading(0),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+
+        // A `pushState` with nothing open moves only the current URL.
+        drive.tracker.history_updated(url("https://a.dev/pushed"));
+        drive.finished();
+        assert_eq!(drive.take(), [] as [WebViewEvent; 0]);
+        assert_eq!(
+            drive.tracker.current_url(),
+            Some(&url("https://a.dev/pushed"))
+        );
+    }
+
+    #[test]
+    fn navigation_a_main_frame_error_ends_the_navigation() {
+        let mut drive = Drive::new();
+        drive
+            .open("https://nowhere.invalid/")
+            .progress(10)
+            .error("https://nowhere.invalid/", "net::ERR_NAME_NOT_RESOLVED")
+            // The error page commits at the failed URL and finishes.
+            .started("https://nowhere.invalid/", 10)
+            .progress(100)
+            .finished();
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://nowhere.invalid/"),
+                loading(0),
+                loading(10),
+                WebViewEvent::Error(WebViewError::Network(Str::from_static(
+                    "net::ERR_NAME_NOT_RESOLVED"
+                ))),
+            ]
+        );
+
+        // The next navigation opens normally.
+        drive.open("https://waterui.dev/");
+        assert_eq!(
+            drive.take(),
+            [will_navigate("https://waterui.dev/"), loading(0)]
+        );
+    }
+
+    #[test]
+    fn navigation_page_initiated_loads_open_through_the_request_or_the_commit() {
+        let mut drive = Drive::new();
+        drive
+            .open("https://a.dev/")
+            .started("https://a.dev/", 0)
+            .finished();
+        drive.take();
+
+        // A link: `shouldOverrideUrlLoading` opens it.
+        assert_eq!(
+            drive.tracker.request(url("https://a.dev/next"), false),
+            allowed(vec![will_navigate("https://a.dev/next"), loading(0)])
+        );
+        drive.started("https://a.dev/next", 0).finished();
+        drive.take();
+
+        // A form `POST` skips `shouldOverrideUrlLoading`: its redirect
+        // comes from the committed document, and its commit opens it.
+        assert!(!drive.request("https://a.dev/done", true));
+        drive.started("https://a.dev/done", 20).finished();
+        assert_eq!(
+            drive.take(),
+            [
+                redirect("https://a.dev/next", "https://a.dev/done"),
+                will_navigate("https://a.dev/done"),
+                loading(20),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+
+        // A page's own `location.reload()` reaches only the commit.
+        drive.started("https://a.dev/done", 0).finished();
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://a.dev/done"),
+                loading(0),
+                loading(100),
+                WebViewEvent::Loaded,
+            ]
+        );
+    }
+
+    #[test]
+    fn navigation_stop_and_ssl_refusal_end_without_loaded() {
+        let mut drive = Drive::new();
+        drive.open("https://slow.dev/").progress(30);
+        drive.tracker.stopped();
+        drive.progress(100).finished();
+        assert_eq!(
+            drive.take(),
+            [will_navigate("https://slow.dev/"), loading(0), loading(30)]
+        );
+
+        drive.open("https://expired.dev/");
+        let ssl = drive.tracker.ssl_error(
+            Some(url("https://expired.dev/")),
+            Str::from_static("expired"),
+        );
+        drive.events.extend(ssl);
+        drive
+            .error("https://expired.dev/", "net::ERR_FAILED")
+            .finished();
+        assert_eq!(
+            drive.take(),
+            [
+                will_navigate("https://expired.dev/"),
+                loading(0),
+                WebViewEvent::Error(WebViewError::Ssl {
+                    url: url("https://expired.dev/"),
+                    message: Str::from_static("expired"),
+                }),
+            ]
+        );
+
+        // An SSL error with no URL still reports, as a network failure.
+        assert_eq!(
+            drive.tracker.ssl_error(None, Str::from_static("bad")),
+            [WebViewEvent::Error(WebViewError::Network(
+                Str::from_static("bad")
+            ))]
+        );
+    }
+
     // ---- the WEBVIEW_METHODS ↔ HydrolysisWebView.kt agreement ----
 
     /// The wrapper methods android.webkit.WebView already declares — JNI
     /// resolves them through inheritance and the framework keeps them, so
     /// they carry no `@CalledFromNative`.
-    const PLATFORM_INHERITED: &[&str] = &[
-        "goBack",
-        "goForward",
-        "loadUrl",
-        "stopLoading",
-        "reload",
-        "canGoBack",
-        "canGoForward",
-    ];
+    const PLATFORM_INHERITED: &[&str] = &["stopLoading", "canGoBack", "canGoForward"];
 
     /// `HydrolysisWebView.kt`, read at compile time — a moved file is a
     /// compile error, not a skipped test.
