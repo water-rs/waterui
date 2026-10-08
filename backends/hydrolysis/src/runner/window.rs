@@ -1264,10 +1264,7 @@ trait FrameDriver<P: GpuSurfaceWindow> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<P: GpuSurfaceWindow> FrameDriver<P> for LiveFrame
-where
-    P::Presentation: GpuSurfaceFrame,
-{
+impl<P: GpuSurfaceWindow> FrameDriver<P> for LiveFrame {
     type Reader = DisplayReader;
 
     fn render(
@@ -1384,10 +1381,7 @@ trait FrameDriver<P: GpuSurfaceWindow> {
 struct LiveFrame;
 
 #[cfg(target_arch = "wasm32")]
-impl<P: GpuSurfaceWindow> FrameDriver<P> for LiveFrame
-where
-    P::Presentation: GpuSurfaceFrame,
-{
+impl<P: GpuSurfaceWindow> FrameDriver<P> for LiveFrame {
     type Reader = DisplayReader;
 
     #[allow(

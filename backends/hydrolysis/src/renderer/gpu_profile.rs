@@ -198,12 +198,13 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        let profiler = self
-            .cherenkov_window
-            .as_ref()
-            .filter(|window| window.context_id() == gpu_context_id)
-            .and_then(|window| window.gpu_profiler.as_ref());
-        self.finish_gpu_frame_profile_with(profiler, device, queue);
+        let Some(window) = self.cherenkov_window.take() else {
+            return;
+        };
+        if window.context_id() == gpu_context_id {
+            self.finish_gpu_frame_profile_with(window.gpu_profiler.as_ref(), device, queue);
+        }
+        self.cherenkov_window = Some(window);
     }
 
     /// Resolves markers for a typed engine-window slot, whose profiler is

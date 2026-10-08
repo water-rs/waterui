@@ -2,7 +2,7 @@
 
 use super::*;
 #[cfg(feature = "frame-profile")]
-use crate::platform::{GpuSurface as _, SurfaceProvider as _};
+use crate::platform::GpuSurface as _;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -1275,7 +1275,7 @@ fn translate_input_event(event: InputEvent, dx: f32, dy: f32) -> InputEvent {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod generation_tests {
     use super::*;
-    use crate::platform::{GpuSurface as _, GpuSurfaceWindow};
+    use crate::platform::GpuSurfaceWindow;
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
     use core::time::Duration;
     use std::cell::{Cell, RefCell};

@@ -251,6 +251,7 @@ impl HydrolysisRenderer {
         drop(frame_scope);
         #[cfg(feature = "frame-profile")]
         if rendered.is_ok() {
+            self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 2);
             self.finish_gpu_frame_profile_with(
                 window.gpu_profiler.as_ref(),
                 target.device,
@@ -340,6 +341,13 @@ pub struct CherenkovWindow<S> {
     device_loss: crate::platform::DeviceLoss,
     #[cfg(feature = "frame-profile")]
     pub(crate) gpu_profiler: Option<GpuFrameProfiler>,
+}
+
+impl<S> CherenkovWindow<S> {
+    #[cfg(feature = "frame-profile")]
+    pub const fn context_id(&self) -> u64 {
+        self.context_id
+    }
 }
 
 impl<S: crate::engine::cherenkov::SurfaceCoreAccess> CherenkovWindow<S> {
