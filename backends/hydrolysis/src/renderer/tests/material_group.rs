@@ -12,13 +12,13 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "accessibility")]
 use accesskit::Role;
+use nami::collection::List as Membership;
 #[cfg(feature = "accessibility")]
 use nami::collection::SignalCollection;
-use nami::collection::List as Membership;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui::FilterViewExt as _;
-use waterui::animation::Animation;
 use waterui::ViewExt as _;
+use waterui::animation::Animation;
 use waterui::background::Material;
 #[cfg(feature = "accessibility")]
 use waterui::component::list::{List, ListItem};
@@ -551,10 +551,7 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
     });
     pump(&mut runtime);
     assert!(
-        runtime
-            .pump_at(true, Instant::now())
-            .snapshot
-            .is_some(),
+        runtime.pump_at(true, Instant::now()).snapshot.is_some(),
         "the lazy stack's grouped rows render a snapshot"
     );
     let layers = material_layers(&runtime);
@@ -1172,7 +1169,7 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
     // Once the transition retires the entry, nothing stands: no member,
     // no group, no registration.
     pump_until_settled(&mut runtime);
-    assert!(material_layers(&runtime).is_empty());
+    assert_eq!(material_layers(&runtime), [] as [cherenkov::LayerId; 0]);
     assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
     assert_eq!(mounts(&runtime).anchor_registration_count(), 0);
 }
@@ -1367,10 +1364,7 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
         )))
     });
     assert!(
-        runtime
-            .pump_at(true, Instant::now())
-            .snapshot
-            .is_some(),
+        runtime.pump_at(true, Instant::now()).snapshot.is_some(),
         "the scrolled member's frame renders a snapshot"
     );
     let layers = material_layers(&runtime);
@@ -1397,12 +1391,7 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
             scroll(member(Material::Regular).material_group()),
         )))
     });
-    let empty_shot = snap(|| {
-        AnyView::new(zstack((
-            Color::srgb(230, 38, 38),
-            scroll(spacer()),
-        )))
-    });
+    let empty_shot = snap(|| AnyView::new(zstack((Color::srgb(230, 38, 38), scroll(spacer())))));
     assert_ne!(
         px(&member_shot, 80, 60),
         px(&empty_shot, 80, 60),

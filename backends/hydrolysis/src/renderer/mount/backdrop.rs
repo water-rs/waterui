@@ -390,8 +390,7 @@ impl<G> BackdropGroups<G> {
     /// it renders, so the release and the mounts that replace it land
     /// together.
     pub(crate) fn sweep(&mut self) {
-        self.anchors
-            .retain(|_, (_, cell)| cell.upgrade().is_some());
+        self.anchors.retain(|_, (_, cell)| cell.upgrade().is_some());
         self.members
             .retain(|_, entry| entry.marker.upgrade().is_some());
         self.groups.retain(|_, group| {
