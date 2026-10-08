@@ -34,8 +34,8 @@ use crate::{
     device::{Artifact, Device, FailToRun, RunOptions, Running},
     framework::ResolvedFramework,
     hydrolysis::backend::HydrolysisBackend,
-    platform::PackageOptions,
-    project::Project,
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
+    project::{Project, ResolvedWebViewBackend},
     templates::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
         TemplateContext,
@@ -271,17 +271,33 @@ async fn require_painter_module(
     let host_root = materialize_android_host(project, host, &resolved).await?;
     let subdirectory = resolved.hydrolysis_android_host_subdirectory()?;
     let host_project_dir = host_root.join(subdirectory);
-    let module_dir = host_project_dir.join(painter.host_module());
+    require_host_module(
+        &host_project_dir,
+        painter.host_module(),
+        "painter selection is explicit and never falls back",
+    )?;
+    Ok(host_project_dir)
+}
+
+/// The pinned host checkout must ship the Gradle `module` the selection
+/// needs — a painter band (`gpu`) or the system-WebView bridge (`webview`) —
+/// or the scaffold is an error here, never at Gradle's dependency
+/// substitution.
+///
+/// # Errors
+///
+/// Returns an error when the checkout ships no `module/` directory.
+fn require_host_module(host_project_dir: &Path, module: &str, reason: &str) -> eyre::Result<()> {
+    let module_dir = host_project_dir.join(module);
     if !module_dir.is_dir() {
         bail!(
-            "the hydrolysis android host at {} ships no `{}` painter: {} does not exist; \
-             painter selection is explicit and never falls back",
-            host_root.display(),
-            painter,
+            "the hydrolysis android host at {} ships no `{module}` module: {} does not exist; \
+             {reason}",
+            host_project_dir.display(),
             module_dir.display()
         );
     }
-    Ok(host_project_dir)
+    Ok(())
 }
 
 /// The template entry the generated `android/` Gradle project renders with.
@@ -290,6 +306,24 @@ async fn template_entry(
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<HydrolysisAndroidTemplateEntry> {
+    // The application's own graph selects the engine: `System` mounts the
+    // host checkout's `webview/` module, and an engine this pair cannot host
+    // is an error here — propagated, never defaulted away. Checked on the
+    // real path, before it is relativized for the templates.
+    let system_webview = matches!(
+        project
+            .resolved_webview_backend(TargetPlatform::Android, TargetBackend::Hydrolysis)
+            .await?,
+        Some(ResolvedWebViewBackend::System)
+    );
+    if system_webview {
+        require_host_module(
+            host_project_dir,
+            "webview",
+            "the app's `webview` feature selection needs the system-WebView bridge",
+        )?;
+    }
+
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let android_dir = android_dir(&backend_path);
     let host_project_dir =
@@ -312,6 +346,7 @@ async fn template_entry(
         .resolved_framework()
         .await?
         .android_min_api_level()?;
+
     Ok(HydrolysisAndroidTemplateEntry {
         native_library_name: templates::hydrolysis::hydrolysis_library_target_name(
             &project.hydrolysis_backend_crate_name(),
@@ -323,6 +358,7 @@ async fn template_entry(
         min_api_level: framework_min.max(painter.min_api_level()),
         painter_band_import: painter.band_import(),
         painter_band_class: painter.band_class(),
+        system_webview,
     })
 }
 
@@ -366,6 +402,11 @@ pub async fn scaffold_android_project(
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<()> {
+    // Validate the engine plan for this pair before anything is scaffolded:
+    // an app linking an engine (Android, Hydrolysis) cannot host fails here.
+    project
+        .browser_runtime_plan(TargetPlatform::Android, TargetBackend::Hydrolysis)
+        .await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
     project.scaffold_ffi_companion(false).await?;
     let ctx = android_template_context(project, painter, host_project_dir).await?;
@@ -456,6 +497,12 @@ pub async fn build_with_features(
     options: BuildOptions,
     features: &[&str],
 ) -> eyre::Result<HydrolysisAndroidBuild> {
+    // Validate the engine plan for this pair before any work runs: the same
+    // bound the desktop `hydrolysis::backend` enforces on its own path.
+    project
+        .browser_runtime_plan(TargetPlatform::Android, TargetBackend::Hydrolysis)
+        .await?;
+
     // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
     // prebuilt `libstd.so`, so the launcher — which never `dlopen`s modules —
     // links the runtime in.
@@ -1079,7 +1126,7 @@ mod tests {
         crate::framework::test_fixtures::write_vendor_stub(
             &vendor_dir.join("waterui"),
             "waterui",
-            &["dynamic_linking", "media"],
+            &["dynamic_linking", "media", "webview"],
         );
         crate::framework::test_fixtures::write_vendor_stub(
             &vendor_dir.join("waterui-ffi"),
@@ -1379,6 +1426,123 @@ mod tests {
             // `require_aligned_shared_libraries` — the template level only
             // needs to not defeat it.
             assert!(files.contains_key("gradlew"), "gradle wrapper ships");
+        });
+    }
+
+    /// An app that enables the facade `webview` feature composites the pinned
+    /// host's `webview/` module the same way it composites the painter:
+    /// `dependencySubstitution` for the coordinate and the module on the app
+    /// classpath. An app without it renders neither line.
+    #[test]
+    fn the_scaffold_composites_the_webview_module_for_a_webview_app() {
+        smol::block_on(async {
+            // The application's own graph selects the engine — a `webview`
+            // feature edge on the vendored `waterui` stub is the signal.
+            fn stage_webview_feature(temporary: &tempfile::TempDir, project: &Project) {
+                let manifest_path = project.root().join("Cargo.toml");
+                let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
+                    .expect("project Cargo.toml exists")
+                    .parse()
+                    .expect("project Cargo.toml parses");
+                document["dependencies"]["waterui"]["path"] = toml_edit::value(
+                    temporary
+                        .path()
+                        .join("vendor/waterui")
+                        .to_string_lossy()
+                        .as_ref(),
+                );
+                document["dependencies"]["waterui"]["features"] =
+                    toml_edit::value(toml_edit::Array::from_iter(["webview"]));
+                std::fs::write(&manifest_path, document.to_string()).expect("write Cargo.toml");
+            }
+
+            let (temporary, project) = fixture_project("").await;
+            stage_webview_feature(&temporary, &project);
+
+            let (_machine, host) =
+                machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
+            let host_project_dir =
+                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("host project dir");
+
+            let files = rendered_files(
+                rendered_android_outputs(
+                    &project,
+                    HydrolysisAndroidPainter::Gpu,
+                    &host_project_dir,
+                )
+                .await
+                .expect("scaffold renders"),
+            );
+
+            let settings = files["settings.gradle.kts"].as_str();
+            assert!(
+                settings.contains(
+                    "substitute(module(\"dev.waterui.hydrolysis:webview\")).using(project(\":webview\"))"
+                ),
+                "webview module substitution: {settings}"
+            );
+            let gradle = files["app/build.gradle.kts"].as_str();
+            assert!(
+                gradle.contains("implementation(\"dev.waterui.hydrolysis:webview\")"),
+                "webview module on the classpath: {gradle}"
+            );
+
+            // A staged host without the module is a scaffold-time error, not
+            // a Gradle failure downstream. A fresh fixture keeps the pinned
+            // checkout from the first half out of the way — it is keyed by
+            // project and fake-git only overlays into it.
+            let (temporary2, project2) = fixture_project("").await;
+            stage_webview_feature(&temporary2, &project2);
+            let (_machine2, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let missing_dir =
+                require_painter_module(&host, &project2, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("host project dir");
+            let error =
+                rendered_android_outputs(&project2, HydrolysisAndroidPainter::Gpu, &missing_dir)
+                    .await
+                    .expect_err("a host without webview/ is an error");
+            assert!(
+                error.to_string().contains("webview"),
+                "the error names the missing module: {error}"
+            );
+        });
+    }
+
+    /// The same project without the `webview` feature renders neither the
+    /// substitution nor the dependency.
+    #[test]
+    fn a_non_webview_app_composites_no_webview_module() {
+        smol::block_on(async {
+            let (_temporary, project) = fixture_project("").await;
+            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let host_project_dir =
+                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("host project dir");
+
+            let files = rendered_files(
+                rendered_android_outputs(
+                    &project,
+                    HydrolysisAndroidPainter::Gpu,
+                    &host_project_dir,
+                )
+                .await
+                .expect("scaffold renders"),
+            );
+
+            let settings = files["settings.gradle.kts"].as_str();
+            assert!(
+                !settings.contains("hydrolysis:webview"),
+                "no webview substitution: {settings}"
+            );
+            let gradle = files["app/build.gradle.kts"].as_str();
+            assert!(
+                !gradle.contains("hydrolysis:webview"),
+                "no webview dependency: {gradle}"
+            );
         });
     }
 

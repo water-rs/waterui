@@ -181,6 +181,9 @@ dependencies {
     // `includeBuild`s; the substitutions are declared in settings.gradle.kts.
     implementation("dev.waterui.hydrolysis:host")
     implementation("{{ ctx.hydrolysis_android_painter_dependency() }}")
+{% if ctx.hydrolysis_android_has_system_webview() %}    // The system-WebView bridge, from the same pinned checkout.
+    implementation("dev.waterui.hydrolysis:webview")
+{% endif %}
 
     implementation("androidx.core:core-ktx:1.19.0")
     // The launch screen: the platform SplashScreen API on 31+, backported below.

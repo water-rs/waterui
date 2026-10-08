@@ -259,6 +259,9 @@ pub struct HydrolysisAndroidTemplateEntry {
     /// The band class [`painter_band_import`](Self::painter_band_import)
     /// supplies, when set.
     pub painter_band_class: Option<String>,
+    /// Whether the app bridges the system `WebView` — the pinned host's
+    /// `webview/` module substitutes and joins the classpath when set.
+    pub system_webview: bool,
 }
 
 /// The Hydrolysis Android preview host scaffold's parameters: the managed
@@ -806,6 +809,17 @@ impl TemplateContext {
             .painter_band_class
             .as_deref()
             .expect("Hydrolysis Android entry has no painter band")
+    }
+
+    /// Whether the app bridges the system `WebView` — the pinned host's
+    /// `webview/` module substitutes and joins the classpath.
+    #[must_use]
+    pub fn hydrolysis_android_has_system_webview(&self) -> bool {
+        // The Cargo.toml renderer asks for every project; a context that
+        // never scaffolds Android has no entry and no bridge.
+        self.hydrolysis_android
+            .as_ref()
+            .is_some_and(|entry| entry.system_webview)
     }
 
     #[must_use]
@@ -2568,6 +2582,7 @@ mod tests {
                 min_api_level: 31,
                 painter_band_import: None,
                 painter_band_class: None,
+                system_webview: false,
             });
         let unsigned = render(&ctx);
         assert!(!unsigned.contains("signingConfigs"));
@@ -2977,6 +2992,54 @@ mod tests {
             app_gradle.contains("implementation(\"dev.waterui.hydrolysis:preview\")"),
             "the app must depend on the substituted preview module: {app_gradle}"
         );
+    }
+
+    /// The Android launcher's `hydrolysis` carries `webview-system` exactly
+    /// when the app uses the standard `WebView` with no engine of its own —
+    /// the platform-view instance the system `WebView` mounts through is
+    /// compiled in, and every other build ships no bridge code at all.
+    #[test]
+    fn hydrolysis_android_manifest_carries_webview_system_only_for_the_bridge() {
+        for (webview_enabled, expected) in [
+            (true, vec!["accessibility", "webview-system"]),
+            (false, vec!["accessibility"]),
+        ] {
+            // `system_webview` is the one decision `template_entry` records
+            // from the resolved webview backend; the Cargo feature follows it.
+            let ctx = project_ctx()
+                .with_webview_enabled(webview_enabled)
+                .with_hydrolysis_android(super::HydrolysisAndroidTemplateEntry {
+                    native_library_name: "waterui_test_hydrolysis".to_string(),
+                    host_project_dir: "../android-host/rev/android".to_string(),
+                    project_root: "..".to_string(),
+                    painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
+                    painter_module: "gpu".to_string(),
+                    min_api_level: 31,
+                    painter_band_import: None,
+                    painter_band_class: None,
+                    system_webview: webview_enabled,
+                });
+            let cargo_toml =
+                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                    .expect("hydrolysis outputs should render")
+                    .into_iter()
+                    .find_map(|(path, content)| {
+                        (path == std::path::Path::new("Cargo.toml"))
+                            .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                    })
+                    .expect("hydrolysis Cargo.toml output should exist");
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("hydrolysis Cargo.toml should parse");
+            let features = manifest["target"]["cfg(target_os = \"android\")"]["dependencies"]
+                ["hydrolysis"]["features"]
+                .as_array()
+                .expect("hydrolysis dependency features should be an array")
+                .iter()
+                .map(|feature| feature.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>();
+            assert_eq!(features, expected, "webview_enabled={webview_enabled}");
+        }
     }
 
     #[test]
@@ -6136,6 +6199,15 @@ pub mod hydrolysis {
     fn android_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
+        let mut hydrolysis_features = vec!["accessibility"];
+        // The system-WebView bridge joins the feature set only when the app
+        // uses the standard WebView and links no engine of its own.
+        // One decision drives both surfaces: the Gradle `webview/` substitution
+        // and the Cargo `webview-system` feature read the entry flag the
+        // resolved webview backend already decided.
+        if ctx.hydrolysis_android_has_system_webview() {
+            hydrolysis_features.push("webview-system");
+        }
         Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),
@@ -6144,7 +6216,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["accessibility"],
+                            &hydrolysis_features,
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?

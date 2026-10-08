@@ -32,5 +32,7 @@ includeBuild("{{ ctx.hydrolysis_android_host_project_dir() }}") {
     dependencySubstitution {
         substitute(module("dev.waterui.hydrolysis:host")).using(project(":host"))
         substitute(module("{{ ctx.hydrolysis_android_painter_dependency() }}")).using(project(":{{ ctx.hydrolysis_android_painter_module() }}"))
+{% if ctx.hydrolysis_android_has_system_webview() %}        substitute(module("dev.waterui.hydrolysis:webview")).using(project(":webview"))
+{% endif %}
     }
 }

@@ -3043,8 +3043,10 @@ impl ResolvedWebViewBackend {
                         | TargetPlatform::VisionOS
                         | TargetPlatform::VisionOSSimulator,
                     TargetBackend::Apple
-                ) | (TargetPlatform::Android, TargetBackend::Android)
-                    | (TargetPlatform::Linux, TargetBackend::Gtk4)
+                ) | (
+                    TargetPlatform::Android,
+                    TargetBackend::Android | TargetBackend::Hydrolysis
+                ) | (TargetPlatform::Linux, TargetBackend::Gtk4)
                     | (TargetPlatform::Web, TargetBackend::Hydrolysis)
             ),
             Self::Wpe => {
@@ -3443,6 +3445,12 @@ mod webview_backend_tests {
                 .expect("GTK bridges WebKitGTK"),
             ResolvedWebViewBackend::System
         );
+        assert_eq!(
+            ResolvedWebViewBackend::System
+                .validate(TargetPlatform::Android, TargetBackend::Hydrolysis)
+                .expect("Hydrolysis on Android bridges the system WebView"),
+            ResolvedWebViewBackend::System
+        );
         assert!(
             ResolvedWebViewBackend::System
                 .validate(TargetPlatform::Linux, TargetBackend::Hydrolysis)
@@ -3451,6 +3459,20 @@ mod webview_backend_tests {
         assert!(
             ResolvedWebViewBackend::System
                 .validate(TargetPlatform::Windows, TargetBackend::Hydrolysis)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bundled_engines_do_not_stand_in_for_the_android_bridge() {
+        assert!(
+            ResolvedWebViewBackend::Cef
+                .validate(TargetPlatform::Android, TargetBackend::Hydrolysis)
+                .is_err()
+        );
+        assert!(
+            ResolvedWebViewBackend::Wpe
+                .validate(TargetPlatform::Android, TargetBackend::Hydrolysis)
                 .is_err()
         );
     }
