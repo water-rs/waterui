@@ -1043,6 +1043,15 @@ pub enum Presentation {
 /// frame with the whole stack; the realization makes the system tree match
 /// it, atomically where the platform allows, and presents the parts.
 pub trait SystemPlanes: Compositor {
+    /// The frame's commit for the platform compositor's own thread,
+    /// returned by [`SystemPlanes::compose`] instead of being run from
+    /// the render thread: on Apple the `CATransaction` of layer geometry
+    /// and per-part drawable presents, which the frame's awaiting caller
+    /// applies on the main thread so a part's drawable is never acquired
+    /// while its predecessor still waits to present. `Default` is the
+    /// empty commit a frame that commits nothing off-thread produces.
+    type Commit: cherenkov::RenderTransfer + Default + 'static;
+
     /// Native immutable capture allocations, excluding the engine's source.
     fn captured_bytes(&self) -> u64 {
         0
@@ -1061,11 +1070,16 @@ pub trait SystemPlanes: Compositor {
 
     /// Realizes `composition`, distinguishing display-paced acquisition
     /// from asynchronous work that supplies its own completion wake.
+    /// Returns the presentation outcome and the frame's
+    /// [`SystemPlanes::Commit`].
     ///
     /// # Errors
     /// A [`RenderError`] naming the cause when the system rejects a plane
     /// or a part cannot be presented.
-    fn compose(&mut self, composition: Composition<'_>) -> Result<Presentation, RenderError>;
+    fn compose(
+        &mut self,
+        composition: Composition<'_>,
+    ) -> Result<(Presentation, Self::Commit), RenderError>;
 
     /// Presents only the promoted planes' new frames: `frames` carries
     /// every promoted layer whose frame changed this frame, inside the
@@ -1179,7 +1193,9 @@ impl Compositor for NoPlanes {
 
 #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
 impl SystemPlanes for NoPlanes {
-    fn compose(&mut self, _: Composition<'_>) -> Result<Presentation, RenderError> {
+    type Commit = ();
+
+    fn compose(&mut self, _: Composition<'_>) -> Result<(Presentation, ()), RenderError> {
         unreachable!("no `NoPlanes` value exists")
     }
     fn refresh<'a>(&mut self, _: impl Iterator<Item = Plane<'a>>) -> Result<(), RenderError> {

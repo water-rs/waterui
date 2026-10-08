@@ -290,6 +290,7 @@ impl Backend for Null {
 impl Renderer for NullRenderer {
     type Target = NullTarget;
     type Font = FontData;
+    type FrameCommit = ();
 
     fn create_surface(
         &mut self,
@@ -448,7 +449,7 @@ impl Renderer for NullRenderer {
         &mut self,
         frame: &Frame<'_>,
         _stats: &mut crate::FrameStats,
-    ) -> Result<FrameRedraw, RenderError> {
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
         self.assert_frame_contract(frame);
         for surface in frame.surfaces {
             let layers = surface
@@ -476,7 +477,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        Ok(FrameRedraw::default())
+        Ok((FrameRedraw::default(), ()))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -484,7 +485,8 @@ impl Renderer for NullRenderer {
         &mut self,
         frame: &Frame<'_>,
         _stats: &mut crate::FrameStats,
-    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>> {
+    ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>
+    {
         self.assert_frame_contract(frame);
         for surface in frame.surfaces {
             let layers = surface
@@ -512,7 +514,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        core::future::ready(Ok(FrameRedraw::default()))
+        core::future::ready(Ok((FrameRedraw::default(), ())))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
