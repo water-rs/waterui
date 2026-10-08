@@ -31,7 +31,8 @@ teardown crashes when another instance layer sits in front of it.
 import argparse, collections, concurrent.futures, ctypes, hashlib, json, os, pathlib, re, selectors, struct, subprocess, sys
 
 SCENES = ['map', 'chart', 'text-page', 'ui-list', 'effects']
-ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad')}
+ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad'),
+         'run_transaction': ('15run_transaction', 'cherenkov_record')}
 PAUSE = 'cherenkov-bench: paused before frame {}'
 ALLOC = re.compile(r"(___rust_(alloc|dealloc|realloc|alloc_zeroed)|___rdl_(alloc|dealloc|realloc|alloc_zeroed)"
                    r"|___rust_no_alloc_shim_is_unstable\w*"

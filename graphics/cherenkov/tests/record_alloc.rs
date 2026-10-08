@@ -201,3 +201,46 @@ fn recording_and_rendering_reuse_ui_thread_allocations() {
         "observed {buffers} command buffers"
     );
 }
+
+/// A steady-state edit transaction — `run_transaction` with one opacity
+/// edit — holds a fixed allocation budget: after warmup every transaction
+/// allocates exactly the baseline, never more. The baseline is pinned at
+/// what dev measures for the same loop (2 allocations, 2 frees: the
+/// transaction's `Ops` batch and its edit record); an increase is a
+/// regression in the edit path, not noise.
+#[test]
+fn edit_transactions_reuse_their_allocations() {
+    let (events, _receiver) = mpsc::channel();
+    let engine = Engine::<Null>::new(NullConfig {
+        events,
+        reject: HashSet::new(),
+        image_limits: cherenkov::ImageLimits::UNLIMITED,
+    })
+    .expect("init");
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {})
+        .expect("surface");
+    let layer = surface.layer();
+    surface.update(|tx| {
+        tx[&layer].record(|recorder| {
+            recorder.fill(
+                Fixed(Rect::new(0.0, 0.0, 4.0, 4.0)),
+                Fixed(WorkingColor::WHITE),
+            );
+        });
+    });
+
+    for transaction in 0..12 {
+        start_tracking();
+        surface.update(|tx| {
+            tx[&layer].opacity(0.5_f32);
+        });
+        let counts = stop_tracking();
+        if transaction >= 3 {
+            assert_eq!(counts, (2, 0, 2), "transaction {}", transaction + 1);
+        }
+        // Rendering drains the transaction's staged ops so `pending` does
+        // not carry capacity growth into the next iteration's count.
+        engine.render(FrameTime::now()).expect("render");
+    }
+}
