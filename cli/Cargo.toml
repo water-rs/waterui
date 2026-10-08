@@ -66,7 +66,6 @@ semver = "1.0"
 # Reads DT_NEEDED out of staged Android native libraries so packaging only
 # ships libc++_shared.so when a library actually links it.
 object = { version = "0.37", features = ["wasm"] }
-serialport = { version = "4", optional = true }
 which = "8.0.6"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"], optional = true }
 
@@ -136,8 +135,6 @@ pathdiff = "0.2"
 plist = "1.10"
 url = "2.5"
 fs4 = "1.1.0"
-fontcull-klippa = { version = "0.1.2", optional = true }
-fontcull-write-fonts = { version = "0.44.3", optional = true }
 toml_edit = { version = "=0.25.13", features = ["serde"] }
 cargo-lock = { version = "=10.1.0", default-features = false }
 rustc-demangle = "0.1"
@@ -151,12 +148,7 @@ axoupdater = "0.10.2"
 tokio = { version = "1.48", default-features = false, features = ["rt", "net", "time"] }
 
 [features]
-default = ["esp32", "svg-icons", "preview"]
-# ESP32 board serial-port detection and `[esp32] font_ranges`
-# subsetting. Without it, `water devices` lists no serial ports, board
-# auto-detection is skipped (QEMU and `--device <port>` still work), and
-# font subsetting is unsupported.
-esp32 = ["dep:serialport", "dep:fontcull-klippa", "dep:fontcull-write-fonts"]
+default = ["svg-icons", "preview"]
 # SVG app-icon sources rasterized through usvg/resvg. Without it only raster
 # icon sources are accepted and the bundled default icon is a PNG.
 svg-icons = ["dep:resvg"]

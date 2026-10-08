@@ -135,13 +135,13 @@ def test_nightly_carries_git_pinned_packages_in_the_scaffold_table():
 
 def test_nami_pinned_backends_are_git_pinned_scaffold_packages():
     """A scaffolded graph carries this workspace's nami pin, which the
-    published `waterui-dew`/`waterui-gtk`/`waterui-winui` cannot satisfy —
+    published `waterui-gtk`/`waterui-winui` cannot satisfy —
     their releases still require the nami line that kept `Signal::get`
     (nami#26). Until each backend releases a migrated version, its
     `[workspace.dependencies]` requirement pins the nami-migration head, so
     `dev` and `nightly` scaffold that commit and `stable` withholds the
     package under `experimental-packages`. Drop this test with the pins."""
-    for name in ("waterui-dew", "waterui-gtk", "waterui-winui"):
+    for name in ("waterui-gtk", "waterui-winui"):
         assert git_pinned(name), (
             f"[workspace.dependencies].{name} must pin its nami-migration head"
         )

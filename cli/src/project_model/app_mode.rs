@@ -12,8 +12,8 @@ use std::fmt;
 const APP_MODE_KEYS: &[(&[&str], &str)] = &[
     (&["package"], "type"),
     // `Water.toml` carries no `[backends]` table at all: the local runtime
-    // checkout lives at `waterui_path/backends/apple`, the ESP32
-    // device configuration is `[esp32]`, and the Hydrolysis painter is
+    // checkout lives at `waterui_path/backends/apple`, and the Hydrolysis
+    // painter is
     // `[hydrolysis]` — the whole table is retired, keys and subtables alike.
     (&["backends"], ""),
 ];
@@ -93,9 +93,6 @@ mod tests {
                 name = "Demo"
                 bundle_identifier = "dev.waterui.demo"
 
-                [esp32]
-                chip = "esp32s3"
-
                 [hydrolysis]
                 painter = "gpu"
             "#,
@@ -112,7 +109,6 @@ mod tests {
             "[backends]",
             "[backends]\npath = \"backends\"",
             "[backends.apple]\nbackend_path = \"../apple-backend\"",
-            "[backends.esp32]\nchip = \"esp32c3\"",
             "[backends.hydrolysis]\npainter = \"gpu\"",
         ] {
             let manifest = parse(&format!(

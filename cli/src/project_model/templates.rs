@@ -104,7 +104,6 @@ pub mod embedded {
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_preview");
     pub static HYDROLYSIS_ANDROID_SHARED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_shared");
-    pub static ESP32: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/esp32");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
     pub static PREVIEW_FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview_ffi");
     pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
@@ -134,97 +133,6 @@ pub struct LaunchTemplateEntry {
     pub has_background: bool,
     /// A `LaunchImage` image set was staged (`Launch.*` exists).
     pub has_image: bool,
-}
-
-/// ESP32 harness parameters substituted into the generated firmware crate.
-///
-/// `chip` is the single source of truth; the firmware fields are derived from
-/// it via [`crate::esp32::chip::Esp32Chip::firmware_params`] when the entry is
-/// constructed, so the harness templates never special-case a chip by name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Esp32TemplateEntry {
-    /// Target chip (e.g. "esp32s3"); selects the target triple and every
-    /// chip-specific firmware parameter below.
-    pub chip: String,
-    /// Panel width in pixels.
-    pub panel_width: u32,
-    /// Panel height in pixels.
-    pub panel_height: u32,
-    /// Maximum rows per rasterization band (bounds scratch memory).
-    pub band_height: u32,
-    /// Absolute paths of TTF/OTF binaries the harness `include_bytes!`es
-    /// into flash for dew text shaping. Firmware has no font directory to
-    /// enumerate, so a text-rendering app must bundle at least one face.
-    pub fonts: Vec<String>,
-    /// Route the firmware console to UART0 (`true`) or USB-Serial-JTAG.
-    pub console_uart_default: bool,
-    /// Flash size in megabytes (`CONFIG_ESPTOOLPY_FLASHSIZE_*MB`).
-    pub flash_size_mb: u32,
-    /// Main-task stack size in bytes (`CONFIG_ESP_MAIN_TASK_STACK_SIZE`).
-    pub main_task_stack_bytes: u32,
-    /// Offset of the app (`factory`) partition.
-    pub app_partition_offset: String,
-    /// Size of the app (`factory`) partition.
-    pub app_partition_size: String,
-    /// Cargo codegen `opt-level` for the firmware profiles.
-    pub opt_level: String,
-}
-
-impl Esp32TemplateEntry {
-    /// Builds a harness entry for `chip` with the given panel geometry,
-    /// deriving every chip-specific firmware parameter from the chip's
-    /// architecture.
-    #[must_use]
-    pub fn new(
-        chip: crate::esp32::chip::Esp32Chip,
-        panel_width: u32,
-        panel_height: u32,
-        band_height: u32,
-    ) -> Self {
-        let params = chip.firmware_params();
-        Self {
-            chip: chip.id().to_string(),
-            panel_width,
-            panel_height,
-            band_height,
-            fonts: Vec::new(),
-            console_uart_default: params.console_uart_default,
-            flash_size_mb: params.flash_size_mb,
-            main_task_stack_bytes: params.main_task_stack_bytes,
-            app_partition_offset: params.app_partition_offset.to_string(),
-            app_partition_size: params.app_partition_size.to_string(),
-            opt_level: params.opt_level.to_string(),
-        }
-    }
-
-    /// Sets the flash-bundled font binaries (absolute paths).
-    #[must_use]
-    pub fn with_fonts(mut self, fonts: Vec<String>) -> Self {
-        self.fonts = fonts;
-        self
-    }
-
-    /// The Rust target triple for the configured chip (e.g.
-    /// `riscv32imc-esp-espidf`), used by the `.cargo/config.toml` template and
-    /// by regeneration checks.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `chip` is not a supported ESP32 chip; the entry is only ever
-    /// constructed from an already-validated [`crate::esp32::chip::Esp32Chip`].
-    #[must_use]
-    pub fn resolved_target_triple(&self) -> &'static str {
-        self.chip
-            .parse::<crate::esp32::chip::Esp32Chip>()
-            .unwrap_or_else(|error| panic!("Esp32TemplateEntry holds an invalid chip: {error}"))
-            .target_triple()
-    }
-}
-
-impl Default for Esp32TemplateEntry {
-    fn default() -> Self {
-        Self::new(crate::esp32::chip::Esp32Chip::Esp32S3, 410, 502, 16)
-    }
 }
 
 /// The Hydrolysis Android app scaffold's parameters: the managed host
@@ -431,8 +339,6 @@ pub struct TemplateContext {
     /// `crate::android::signing::PreparedSigning::resolve` unless the caller
     /// asked for unsigned output.
     pub android_signing: Option<AndroidSigningTemplateEntry>,
-    /// ESP32 harness parameters used by the esp32 templates.
-    pub esp32: Esp32TemplateEntry,
     /// The launch screen assets the Apple templates refer to.
     pub launch: LaunchTemplateEntry,
     /// Hydrolysis Android scaffold parameters — set only while the
@@ -484,7 +390,6 @@ impl TemplateContext {
             project_packages: None,
             web_frontend_arg: options.web.as_ref().map(|web| web.include_arg.clone()),
             android_signing: None,
-            esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
@@ -533,7 +438,6 @@ impl TemplateContext {
                 .android
                 .as_ref()
                 .map(AndroidSigningTemplateEntry::from),
-            esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
@@ -589,7 +493,6 @@ impl TemplateContext {
             project_packages: None,
             web_frontend_arg: None,
             android_signing: None,
-            esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
@@ -715,13 +618,6 @@ impl TemplateContext {
     #[must_use]
     pub const fn with_launch(mut self, launch: LaunchTemplateEntry) -> Self {
         self.launch = launch;
-        self
-    }
-
-    /// Set ESP32 harness parameters for template rendering.
-    #[must_use]
-    pub fn with_esp32(mut self, esp32: Esp32TemplateEntry) -> Self {
-        self.esp32 = esp32;
         self
     }
 
@@ -1094,7 +990,6 @@ enum TemplateNamespace {
     HydrolysisAndroid,
     HydrolysisAndroidPreview,
     HydrolysisAndroidShared,
-    Esp32,
     Inspector,
     Preview,
     PreviewFfi,
@@ -1116,7 +1011,6 @@ impl TemplateNamespace {
             Self::HydrolysisAndroid => "src/templates/hydrolysis_android",
             Self::HydrolysisAndroidPreview => "src/templates/hydrolysis_android_preview",
             Self::HydrolysisAndroidShared => "src/templates/hydrolysis_android_shared",
-            Self::Esp32 => "src/templates/esp32",
             Self::Inspector => "src/templates/inspector",
             Self::Preview => "src/templates/preview",
             Self::PreviewFfi => "src/templates/preview_ffi",
@@ -1316,34 +1210,6 @@ macro_rules! define_scaffold_templates {
             let display_path = relative_path.to_string_lossy();
             let dispatch_path = scaffold_template_dispatch_path(namespace, relative_path);
             match dispatch_path.as_str() {
-                "src/templates/esp32/Cargo.toml.tpl" => Esp32CargoTomlTemplate::from_ctx(ctx)
-                    .and_then(|template| {
-                        template.render().map_err(|error| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("Failed to render template {display_path}: {error}"),
-                            )
-                        })
-                    })
-                    .and_then(|rendered| {
-                        // The esp32 manifest renders through askama to carry
-                        // the Xtensa profile note, so it bypasses the
-                        // serialized-manifest path that assigns
-                        // `manifest.patch`; without the same tables the
-                        // generated workspace resolves `waterui-dew`'s
-                        // registry `waterui-*` requirements beside the path
-                        // copies and `View` splits across the two.
-                        let mut document = rendered
-                            .parse::<toml_edit::DocumentMut>()
-                            .map_err(io::Error::other)?;
-                        crate::framework::rewrite_patch_tables(
-                            &mut document,
-                            &cargo_toml::PatchSet::default(),
-                            &generated_crate_patches(ctx)?,
-                        )
-                        .map_err(|error| io::Error::other(error.to_string()))?;
-                        Ok(document.to_string())
-                    }),
                 $(
                     $path => $name { ctx }
                         .render()
@@ -1358,85 +1224,6 @@ macro_rules! define_scaffold_templates {
             }
         }
     };
-}
-
-/// Generated `Cargo.toml` for the ESP32 firmware harness crate.
-///
-/// Rendered through an askama template (instead of a serialized manifest)
-/// so the generated file can carry the Xtensa miscompilation profile note.
-#[derive(Template)]
-#[template(path = "src/templates/esp32/Cargo.toml.tpl", escape = "none")]
-struct Esp32CargoTomlTemplate {
-    package_name: String,
-    app_crate_name: String,
-    app_crate_path: String,
-    dew_dependency: String,
-    core_dependency: String,
-    locale_dependency: String,
-    /// The `opt-level` value as a TOML literal: numeric levels are bare
-    /// integers, while `"s"`/`"z"` must be quoted strings — cargo rejects a
-    /// quoted `"2"`.
-    opt_level_literal: String,
-}
-
-impl Esp32CargoTomlTemplate {
-    fn from_ctx(ctx: &TemplateContext) -> io::Result<Self> {
-        let dew_dependency = generated_dependency_from_spec(
-            ctx,
-            NativeBackendDependencySpec::new(
-                "waterui-dew",
-                &["espidf", "progress"],
-                NativeBackendDependencySource::WorkspaceDependency,
-            ),
-        )?
-        .with_default_features(false)
-        .inline_toml();
-        let core_dependency = generated_dependency_from_spec(
-            ctx,
-            NativeBackendDependencySpec::new(
-                "waterui-core",
-                &[],
-                NativeBackendDependencySource::WorkspaceSubdir("core"),
-            ),
-        )?
-        .inline_toml();
-        let locale_dependency = generated_dependency_from_spec(
-            ctx,
-            NativeBackendDependencySpec::new(
-                "waterui-locale",
-                &[],
-                NativeBackendDependencySource::WorkspaceSubdir("utils/locale"),
-            ),
-        )?
-        .inline_toml();
-
-        Ok(Self {
-            package_name: crate::project_model::project_types::generated_crate_name(
-                &ctx.crate_name,
-                "esp32",
-                ctx.project_root_path
-                    .as_deref()
-                    .expect("ESP32 manifests are rendered for a project"),
-            )
-            .to_string(),
-            app_crate_name: ctx.crate_name.to_string(),
-            app_crate_path: ctx.project_root_relative_path(),
-            dew_dependency,
-            core_dependency,
-            locale_dependency,
-            opt_level_literal: match ctx.esp32.opt_level.as_str() {
-                symbolic @ ("s" | "z") => format!("\"{symbolic}\""),
-                numeric => numeric
-                    .parse::<u8>()
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "ESP32 opt-level {numeric:?} is neither symbolic nor numeric: {error}"
-                        )
-                    })
-                    .to_string(),
-            },
-        })
-    }
 }
 
 define_scaffold_templates! {
@@ -1470,11 +1257,6 @@ define_scaffold_templates! {
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
     HydrolysisMcpRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/mcp_runtime.rs.tpl"),
-    Esp32BuildScriptTemplate => (Esp32, "src/templates/esp32/build.rs.tpl"),
-    Esp32MainTemplate => (Esp32, "src/templates/esp32/src/main.rs.tpl"),
-    Esp32CargoConfigTemplate => (Esp32, "src/templates/esp32/.cargo/config.toml.tpl"),
-    Esp32SdkconfigTemplate => (Esp32, "src/templates/esp32/sdkconfig.defaults.tpl"),
-    Esp32PartitionsTemplate => (Esp32, "src/templates/esp32/partitions.csv.tpl"),
     PreviewLibTemplate => (Preview, "src/templates/preview/src/lib.rs.tpl"),
     PreviewFfiLibTemplate => (PreviewFfi, "src/templates/preview_ffi/src/lib.rs.tpl"),
     TuiBuildScriptTemplate => (Tui, "src/templates/tui/build.rs.tpl"),
@@ -1486,9 +1268,9 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserTemplateContext, Esp32TemplateEntry, HydrolysisAndroidPreviewTemplateEntry,
-        LaunchTemplateEntry, LocalBackendSources, ResolvedFramework, ResolvedWebViewBackend,
-        SupportAppIdentity, TemplateContext, TemplateNamespace, embedded, generated_profiles, gtk4,
+        BrowserTemplateContext, HydrolysisAndroidPreviewTemplateEntry, LaunchTemplateEntry,
+        LocalBackendSources, ResolvedFramework, ResolvedWebViewBackend, SupportAppIdentity,
+        TemplateContext, TemplateNamespace, embedded, generated_profiles, gtk4,
         jitpack_dependency_coordinate, local_backend_sources, normalize_path_for_config,
         preview_ffi, render_scaffold_template,
     };
@@ -1539,7 +1321,7 @@ mod tests {
             project_packages: Some(BTreeSet::from(["waterui_test".to_string()])),
             web_frontend_arg: None,
             android_signing: None,
-            esp32: Esp32TemplateEntry::default(),
+
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             launch: LaunchTemplateEntry::default(),
@@ -1854,84 +1636,6 @@ mod tests {
         format!("={}", stable_framework().scaffold_value(key))
     }
 
-    fn render_esp32(relative: &str, ctx: &TemplateContext) -> String {
-        let template = embedded::ESP32
-            .get_file(relative)
-            .unwrap_or_else(|| panic!("esp32 template {relative} must exist"))
-            .contents_utf8()
-            .expect("esp32 template must be utf-8");
-        render_scaffold_template(
-            TemplateNamespace::Esp32,
-            std::path::Path::new(relative),
-            template,
-            ctx,
-        )
-        .unwrap_or_else(|error| panic!("esp32 template {relative} render: {error}"))
-    }
-
-    #[test]
-    fn esp32_templates_are_chip_architecture_aware() {
-        use crate::esp32::chip::Esp32Chip;
-
-        // `waterui-dew` is git-pinned — `stable` withholds it, so the
-        // firmware templates render against a `dev` resolution.
-        let mut s3 = project_ctx();
-        s3.framework = dev_framework();
-        s3.esp32 = Esp32TemplateEntry::new(Esp32Chip::Esp32S3, 410, 502, 16);
-        let mut c3 = project_ctx();
-        c3.framework = dev_framework();
-        c3.esp32 = Esp32TemplateEntry::new(Esp32Chip::Esp32C3, 200, 240, 16);
-
-        // .cargo/config.toml: Xtensa per-chip triple vs RISC-V architecture triple.
-        let s3_cargo = render_esp32(".cargo/config.toml.tpl", &s3);
-        assert!(s3_cargo.contains("target = \"xtensa-esp32s3-espidf\""));
-        assert!(s3_cargo.contains("MCU = \"esp32s3\""));
-        let c3_cargo = render_esp32(".cargo/config.toml.tpl", &c3);
-        assert!(c3_cargo.contains("target = \"riscv32imc-esp-espidf\""));
-        assert!(c3_cargo.contains("MCU = \"esp32c3\""));
-
-        // sdkconfig: USB-Serial-JTAG + 8 MB + bigger stack on S3; UART0 + 4 MB on C3.
-        let s3_sdk = render_esp32("sdkconfig.defaults.tpl", &s3);
-        assert!(s3_sdk.contains("CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y"));
-        assert!(s3_sdk.contains("CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y"));
-        assert!(s3_sdk.contains("CONFIG_ESP_MAIN_TASK_STACK_SIZE=163840"));
-        let c3_sdk = render_esp32("sdkconfig.defaults.tpl", &c3);
-        assert!(c3_sdk.contains("CONFIG_ESP_CONSOLE_UART_DEFAULT=y"));
-        assert!(c3_sdk.contains("CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y"));
-        assert!(c3_sdk.contains("CONFIG_ESP_MAIN_TASK_STACK_SIZE=49152"));
-
-        // partitions: 6 MB app on S3, 3 MB on C3.
-        assert!(render_esp32("partitions.csv.tpl", &s3).contains("0x10000, 0x600000,"));
-        assert!(render_esp32("partitions.csv.tpl", &c3).contains("0x10000, 0x300000,"));
-
-        // Cargo.toml profile: size-opt on Xtensa, full-opt on RISC-V; both enable
-        // the dew progress widget.
-        let s3_manifest = render_esp32("Cargo.toml.tpl", &s3);
-        assert!(s3_manifest.contains("opt-level = \"s\""));
-        assert!(s3_manifest.contains("features = [\"espidf\", \"progress\"]"));
-        let c3_manifest = render_esp32("Cargo.toml.tpl", &c3);
-        assert!(c3_manifest.contains("opt-level = 2"));
-        // Release firmware is flash-budgeted: whole-program LTO and symbol
-        // stripping are not optional niceties on a 4-16 MB part.
-        assert!(c3_manifest.contains("lto = \"fat\""));
-        assert!(c3_manifest.contains("codegen-units = 1"));
-        assert!(c3_manifest.contains("strip = \"symbols\""));
-        assert!(c3_manifest.contains("features = [\"espidf\", \"progress\"]"));
-
-        // main.rs panel geometry follows the entry.
-        assert!(render_esp32("src/main.rs.tpl", &c3).contains("PanelConfig::new(200, 240, 16)"));
-
-        // Configured fonts render as flash-embedded binaries; without any,
-        // the FONTS table is empty and dew fails fast at the first text.
-        let mut with_fonts = project_ctx();
-        with_fonts.esp32 = Esp32TemplateEntry::new(Esp32Chip::Esp32C3, 200, 240, 16)
-            .with_fonts(vec!["/tmp/fonts/Demo.ttf".to_string()]);
-        let main_rs = render_esp32("src/main.rs.tpl", &with_fonts);
-        assert!(main_rs.contains("include_bytes!(\"/tmp/fonts/Demo.ttf\")"));
-        assert!(main_rs.contains("FONTS"));
-        assert!(!render_esp32("src/main.rs.tpl", &c3).contains("include_bytes!"));
-    }
-
     fn render_embedded(
         namespace: TemplateNamespace,
         embedded_dir: &Dir<'_>,
@@ -1955,8 +1659,8 @@ mod tests {
         // firmware alike.
         let mut ctx =
             project_ctx().with_backend_project_path(PathBuf::from("managed_backends/hydrolysis"));
-        // The esp32 and gtk4 manifests resolve git-pinned scaffold packages
-        // `stable` withholds — the assertions below render them on `dev`.
+        // The gtk4 manifest resolves a git-pinned scaffold package `stable`
+        // withholds — the assertions below render it on `dev`.
         ctx.framework = dev_framework();
 
         for relative in [
@@ -2005,11 +1709,6 @@ mod tests {
              through `configure_environment!` and the application's `app(env)`"
         );
 
-        assert!(
-            render_esp32("src/main.rs.tpl", &ctx).contains("waterui_core::configure_environment!"),
-            "esp32 firmware must configure the environment through waterui-core, \
-             which it already depends on"
-        );
         for (namespace, embedded_dir, relative) in [
             (TemplateNamespace::Gtk4, &embedded::GTK4, "src/main.rs.tpl"),
             (TemplateNamespace::Tui, &embedded::TUI, "src/main.rs.tpl"),
@@ -2026,7 +1725,6 @@ mod tests {
         // script — `catalog!` then embeds the application's translations.
         for (namespace, embedded_dir) in [
             (TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS),
-            (TemplateNamespace::Esp32, &embedded::ESP32),
             (TemplateNamespace::Ffi, &embedded::FFI),
             (TemplateNamespace::Gtk4, &embedded::GTK4),
             (TemplateNamespace::Tui, &embedded::TUI),
@@ -2045,11 +1743,6 @@ mod tests {
                 "generated build.rs must watch i18n/ so locale changes rebuild the crate"
             );
         }
-
-        // The esp32 harness names `TranslationCatalog` through `waterui-locale`
-        // — it has no `waterui` facade dependency to reach it through.
-        let esp32_manifest = render_esp32("Cargo.toml.tpl", &ctx);
-        assert!(esp32_manifest.contains("waterui-locale"));
 
         // gtk4's entry point calls `waterui::configure_environment!`, so its
         // manifest must depend on the facade.
@@ -2130,44 +1823,6 @@ mod tests {
 
         let core_path = checkout.join("core");
         let manifest: toml::Value = toml::from_str(&manifest).expect("generated manifest parses");
-        let patched_path = |source: &str| {
-            manifest["patch"][source]["waterui-core"]["path"]
-                .as_str()
-                .map_or_else(
-                    || panic!("no waterui-core path patch under [patch.{source:?}]:\n{manifest}"),
-                    std::path::PathBuf::from,
-                )
-        };
-        assert_eq!(patched_path("crates-io"), core_path);
-        assert_eq!(
-            patched_path("https://github.com/water-rs/waterui"),
-            core_path
-        );
-    }
-
-    #[test]
-    fn esp32_manifest_carries_the_checkout_patch_tables() {
-        let tempdir = tempdir().expect("temporary checkout dir");
-        let checkout = tempdir.path().join("waterui");
-        std::fs::create_dir_all(&checkout).expect("checkout dir");
-        std::fs::write(
-            checkout.join("Cargo.toml"),
-            include_str!("../../tests/fixtures/local_checkout_patches.toml"),
-        )
-        .expect("checkout manifest");
-
-        let ctx = ctx(
-            Some(checkout.clone()),
-            None,
-            Some(tempdir.path().join("app")),
-        );
-        let manifest = render_esp32("Cargo.toml.tpl", &ctx);
-        let manifest: toml::Value = toml::from_str(&manifest).expect("esp32 manifest parses");
-
-        // The askama-rendered manifest must carry the same patch tables the
-        // serialized native manifests get — `waterui-dew`'s registry
-        // `waterui-*` requirements resolve to the checkout, not a second copy.
-        let core_path = checkout.join("core");
         let patched_path = |source: &str| {
             manifest["patch"][source]["waterui-core"]["path"]
                 .as_str()
@@ -4971,8 +4626,8 @@ enum NativeBackendDependencySource<'a> {
     /// `[patch.crates-io]` override when the declared `[workspace.dependencies]`
     /// requirement goes to the registry, the declared entry otherwise. For the
     /// crates released from their own repositories — `hydrolysis-m3`,
-    /// `waterui-dew`, `waterui-gtk` — which the checkout consumes as versioned
-    /// or git dependencies, not directories.
+    /// `waterui-gtk`, `waterui-winui` — which the checkout consumes as
+    /// versioned or git dependencies, not directories.
     WorkspaceDependency,
     /// An in-tree framework workspace member resolved through its
     /// `{name}-path` metadata — `hydrolysis` — the same member source on
@@ -5235,15 +4890,6 @@ impl GeneratedDependencyValue {
 }
 
 impl GeneratedDependencyDetail {
-    fn inline_toml(&self) -> String {
-        let mut table = toml_edit::ser::to_document(self)
-            .expect("generated dependency serializes")
-            .into_table()
-            .into_inline_table();
-        table.fmt();
-        table.to_string()
-    }
-
     fn into_cargo(self) -> cargo_toml::DependencyDetail {
         cargo_toml::DependencyDetail {
             version: self.version.map(|version| cargo_version_req(&version)),
@@ -6622,25 +6268,6 @@ async fn finish_hydrolysis_android_scaffold(
     Ok(())
 }
 
-/// ESP32 firmware harness templates.
-pub mod esp32 {
-    use super::{Path, TemplateContext, TemplateNamespace, embedded, io, scaffold_dir};
-
-    /// Write all ESP32 harness templates to the given directory.
-    ///
-    /// The generated `Cargo.toml` and `src/main.rs` are rendered from the
-    /// template context (including `ctx.esp32` harness parameters); the
-    /// remaining files (toolchain pin, cargo config, sdkconfig, partition
-    /// table, build script) are static.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        scaffold_dir(TemplateNamespace::Esp32, &embedded::ESP32, base_dir, ctx).await
-    }
-}
-
 /// Experimental terminal (TUI) backend templates.
 ///
 /// `water run --tui` generates a thin launcher crate into the project's managed
@@ -7280,8 +6907,8 @@ pub fn local_framework_patches(
 /// goes to the registry, the declared entry itself otherwise.
 ///
 /// Crates released from their own repositories — `hydrolysis-m3`,
-/// `waterui-dew`, `waterui-gtk` — are consumed by the checkout as versioned or
-/// git dependencies, so a generated backend manifest names that same source
+/// `waterui-gtk`, `waterui-winui` — are consumed by the checkout as versioned
+/// or git dependencies, so a generated backend manifest names that same source
 /// rather than a directory the tree does not carry. In-tree members like
 /// `hydrolysis` resolve through their `{name}-path` member source instead.
 fn local_checkout_dependency(
