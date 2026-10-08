@@ -404,7 +404,7 @@ impl<B: Backend> Engine<B> {
         self.recycle_commits(&mut reply.commits);
         reply.commits.clear();
         *self.commits.borrow_mut() = reply.commits;
-        let (next, surface_next, stats) = reply.result?;
+        let (next, surface_next, stats, _frame_commit) = reply.result?;
         super::publish_next(&self.surfaces.borrow(), &surface_next);
         *self.stats.borrow_mut() = stats;
         Ok(next)
