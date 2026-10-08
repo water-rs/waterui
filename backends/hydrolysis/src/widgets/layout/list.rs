@@ -11,7 +11,7 @@ use crate::renderer::{
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, VisibleSubviewCache, WidgetRenderContext,
     list_row_height_for_content, local_interaction_state, materialize_list_item,
-    measure_list_intrinsic, measure_transient_view_intrinsic, transformed_rect,
+    measure_list_intrinsic, measure_transient_view_intrinsic,
 };
 use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 #[cfg(feature = "accessibility")]
@@ -349,7 +349,7 @@ pub struct ListRenderState {
     /// bounds layout computed once (the scroll handle is rebound with
     /// them inside [`Self::bind_scroll`]), plus the focused-field state
     /// the flush drives.
-    pub(crate) surface: crate::renderer::ScrollSurfaceArea,
+    pub(crate) surface: std::rc::Rc<crate::renderer::ScrollSurfaceArea>,
     /// Collection membership watcher.
     _guard: BoxWatcherGuard,
 }
@@ -415,7 +415,14 @@ impl ListRenderState {
         let replaced_for_watch = Rc::clone(&replaced_row_ids);
         let rows_snapshot = Rc::new(RefCell::new(config.contents.snapshot()));
         let snapshot_for_watch = Rc::clone(&rows_snapshot);
-        let signals = renderer.frame_signals();
+        // Membership changes mark the owning widget's cell — the node whose
+        // read built this state, or the window root when built unowned.
+        let cell = Rc::downgrade(
+            &renderer
+                .reader_cell()
+                .unwrap_or_else(|| Rc::clone(renderer.root_cell())),
+        );
+
         let guard = config.contents.watch(.., move |ctx, change| {
             rows_dirty_for_watch.set(true);
             // Each event hands over an immutable snapshot of the exact row set
@@ -428,7 +435,9 @@ impl ListRenderState {
                 &mut replaced_for_watch.borrow_mut(),
             );
             *snapshot_for_watch.borrow_mut() = event_snapshot;
-            signals.request_refresh();
+            if let Some(cell) = cell.upgrade() {
+                cell.mark(crate::renderer::Dirty::STRUCTURE);
+            }
         });
         let row_selection = ListRowSelection::new(&config.selection, Rc::clone(&rows_snapshot));
         Self {
@@ -453,7 +462,7 @@ impl ListRenderState {
             sections: RefCell::new(Vec::new()),
             sections_resolved_for: Cell::new(None),
             rows_snapshot,
-            surface: crate::renderer::ScrollSurfaceArea::default(),
+            surface: std::rc::Rc::default(),
             _guard: guard,
         }
     }
@@ -897,10 +906,10 @@ fn register_section_chrome_node(
     );
     node.set_label(styled.to_string());
     match ctx {
-        Some(ctx) => renderer.register_accessibility_child_node_with_key(
+        Some(_ctx) => renderer.register_accessibility_child_node_with_key(
             semantic_key,
             node,
-            transformed_rect(ctx.hit_transform, bounds),
+            bounds,
             env,
             None,
         ),
@@ -1154,10 +1163,10 @@ pub fn list_accessibility(
                     selection: state.row_selection.clone(),
                 });
                 match ctx {
-                    Some(ctx) => renderer.register_accessibility_child_node_with_key(
+                    Some(_ctx) => renderer.register_accessibility_child_node_with_key(
                         key_base + A11Y_KEY_ROW,
                         row_node,
-                        transformed_rect(ctx.hit_transform, row_rect),
+                        row_rect,
                         &row_a11y_env,
                         row_target,
                     ),
@@ -1393,14 +1402,11 @@ fn register_edit_control_node(
     node.add_action(AccessibilityAction::Click);
     let target = Some(AccessibilityActionTarget::Activate { action });
     match ctx {
-        Some(ctx) => renderer.register_accessibility_child_node_with_key(
+        Some(_ctx) => renderer.register_accessibility_child_node_with_key(
             semantic_key,
             node,
-            transformed_rect(
-                ctx.hit_transform,
-                bounds.expect(
-                    "hydrolysis list edit-control node: the rendered walk always has list metrics",
-                ),
+            bounds.expect(
+                "hydrolysis list edit-control node: the rendered walk always has list metrics",
             ),
             env,
             target,
@@ -1524,7 +1530,7 @@ pub fn render_list_parts(
     // The keyboard-moving clearance runs before the rows paint: while the
     // host's keyboard animation is in flight the offset follows it frame by
     // frame, so this flush paints the field already clear.
-    let targets_start = state
+    state
         .borrow()
         .surface
         .begin_flush(ctx.renderer_mut(), &handle);
@@ -1533,15 +1539,20 @@ pub fn render_list_parts(
     // Register before the rows flush: scroll-target dispatch walks the frame's
     // targets newest-first, so a scroll region inside a row wins the delta
     // until it hits its own edge, where it falls through to the list.
-    let hit_transform = ctx.hit_transform;
     crate::widgets::scroll::register_scroll_wheel_target(
         ctx.renderer_mut(),
-        hit_transform,
         surface_viewport,
         &handle,
     );
     if needs_viewport_clip {
-        ctx.push_layer_rect(1.0, surface_viewport);
+        ctx.open_scope(
+            crate::renderer::mount::ScopeKey {
+                role: "viewport",
+                item: 0,
+            },
+            1.0,
+            surface_viewport,
+        );
     }
 
     let span = state
@@ -1563,7 +1574,7 @@ pub fn render_list_parts(
     // frames coming while it is still travelling.
     let now = ctx.renderer_mut().frame_instant();
     if state.borrow().advance_swipe_settle(now) {
-        ctx.renderer_mut().request_refresh();
+        ctx.renderer_mut().context_mark_layout();
     }
     // One hit-test group for every row gesture in this list, so a swipe on one
     // row and a reorder drag on another can never both claim the same pointer.
@@ -1647,7 +1658,7 @@ pub fn render_list_parts(
         // indicators — was resolved against the stale values, so pull one
         // more frame rather than leaving them stale until an unrelated
         // refresh happens to arrive.
-        ctx.renderer_mut().request_refresh();
+        ctx.renderer_mut().context_mark_layout();
     }
     let lifted_id = state.borrow().reorder.get().map(|reorder| reorder.id);
     if let Some(lifted_id) = lifted_id
@@ -1858,7 +1869,7 @@ pub fn render_list_parts(
         // (water-rs/hydrolysis#175).
         let mut content = Some(item.content);
         if let Some(selection) = state.borrow().row_selection.clone() {
-            let hit_bounds = transformed_rect(ctx.hit_transform, row_rect);
+            let hit_bounds = row_rect;
             let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 3);
             let (_, press_slot, _) = ctx
                 .renderer_mut()
@@ -1919,7 +1930,7 @@ pub fn render_list_parts(
                 &row_env,
             );
             let up_interaction = controls.reorder_up.map(|rect| {
-                let hit_bounds = transformed_rect(ctx.hit_transform, rect);
+                let hit_bounds = rect;
                 let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base);
                 let (interaction, slot, _) = ctx
                     .renderer_mut()
@@ -1927,7 +1938,7 @@ pub fn render_list_parts(
                 (rect, hit_bounds, interaction, slot)
             });
             let down_interaction = controls.reorder_down.map(|rect| {
-                let hit_bounds = transformed_rect(ctx.hit_transform, rect);
+                let hit_bounds = rect;
                 let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 1);
                 let (interaction, slot, _) = ctx
                     .renderer_mut()
@@ -1940,7 +1951,10 @@ pub fn render_list_parts(
                     .map(|(rect, _, interaction_state, _)| {
                         (
                             *rect,
-                            local_interaction_state(*interaction_state, ctx.hit_transform),
+                            local_interaction_state(
+                                *interaction_state,
+                                ctx.renderer_mut().current_hit_transform(),
+                            ),
                         )
                     });
                 let down_state =
@@ -1949,7 +1963,10 @@ pub fn render_list_parts(
                         .map(|(rect, _, interaction_state, _)| {
                             (
                                 *rect,
-                                local_interaction_state(*interaction_state, ctx.hit_transform),
+                                local_interaction_state(
+                                    *interaction_state,
+                                    ctx.renderer_mut().current_hit_transform(),
+                                ),
                             )
                         });
                 let theme = ctx.theme();
@@ -1988,15 +2005,17 @@ pub fn render_list_parts(
         }
 
         if let Some(delete_rect) = controls.delete {
-            let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
+            let delete_hit_bounds = delete_rect;
             let delete_key =
                 crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 2);
             let (delete_interaction, delete_press_slot, _) = ctx
                 .renderer_mut()
                 .bind_interaction_target(delete_key, delete_hit_bounds, &row_env);
             {
-                let delete_interaction =
-                    local_interaction_state(delete_interaction, ctx.hit_transform);
+                let delete_interaction = local_interaction_state(
+                    delete_interaction,
+                    ctx.renderer_mut().current_hit_transform(),
+                );
                 let theme = ctx.theme();
                 ctx.draw_context(|draw| {
                     theme.draw_list_delete_control(&mut *draw, delete_rect);
@@ -2057,7 +2076,7 @@ pub fn render_list_parts(
                 });
                 // A list row is scroll content: it lays out with no
                 // §7.1 context (its surface owns the edges).
-                subview.flush_in_rect(
+                subview.place(
                     ctx.renderer_mut(),
                     render_ctx,
                     &subtree_env,
@@ -2123,20 +2142,20 @@ pub fn render_list_parts(
             .borrow()
             .apply_scroll_request(ctx.renderer_mut(), &rebound, row_count, true);
         metrics = rebound.metrics();
-        ctx.renderer_mut().frame_signals().request_refresh();
+        ctx.renderer_mut().context_mark_layout();
     }
     state.borrow().record_viewport_anchor(metrics, row_count);
 
     if needs_viewport_clip {
-        ctx.pop_layer();
+        ctx.close_scope();
     }
 
-    // The focused-field clearance reads this frame's input targets — the
-    // rows' flush above just emitted them (§7.1).
+    // The focused-field clearance runs after recording, over the retained
+    // input targets (§7.1).
     state
         .borrow()
         .surface
-        .end_flush(ctx.renderer_mut(), &handle, targets_start);
+        .register_clearance(ctx.renderer_mut(), &handle);
 
     draw_scroll_indicators(
         ctx,
@@ -2183,7 +2202,7 @@ fn register_row_gesture(
     slot: RowGestureSlot,
     build: impl FnOnce() -> (Gesture, BoxedAction<()>),
 ) {
-    let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
+    let hit_bounds = bounds;
     let retained = {
         let state_ref = state.borrow();
         let gestures = state_ref.row_gestures.borrow();
@@ -2195,12 +2214,9 @@ fn register_row_gesture(
         return;
     }
     let (gesture, action) = build();
-    let Some(target) = ctx
+    let target = ctx
         .renderer_mut()
-        .register_gesture_target(hit_bounds, group, gesture, action)
-    else {
-        return;
-    };
+        .register_gesture_target(hit_bounds, group, gesture, action);
     let state_ref = state.borrow();
     let mut gestures = state_ref.row_gestures.borrow_mut();
     let row = gestures.entry(row_id).or_insert_with(RowGestures::empty);

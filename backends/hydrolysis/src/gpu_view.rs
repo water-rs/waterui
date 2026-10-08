@@ -19,10 +19,8 @@ use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContentView};
 /// The `GpuContentView` a [`crate::renderer::tree::GpuContentNode`] owns, and
 /// its engine producer once installed.
 ///
-/// `producer` is set when the first `GpuContentLayer` carrying this runtime
-/// reaches a persistent window's install pass — never on a transient target,
-/// which would spend the view's single install on a surface that dies with
-/// the call.
+/// `producer` is set when the node's install layer first commits through the
+/// window's mount (`LayerTarget::mount_gpu_content`).
 pub struct GpuContentRuntime {
     pub(crate) view: GpuContentView,
     /// The engine producer the content was registered as: `Some` once
@@ -49,11 +47,11 @@ impl GpuContentRuntime {
 /// Unlike `GpuContent`, an external-frame source is restartable: the view
 /// hands out a fresh [`ExternalFrameStream`] handle every call, and a lost
 /// device or a reborn mount starts the source again with the new output.
-/// `receiver` is `Some` once the first `ExternalFrameLayer` carrying this
-/// runtime has started the source on the window's device.
+/// `receiver` is `Some` once the node's install layer has started the source
+/// on the window's device (`LayerTarget::mount_external_frame`).
 pub struct ExternalFrameRuntime {
     pub(crate) view: ExternalFrameView,
-    /// The mailbox drain end, installed by the compositor's install pass.
+    /// The mailbox drain end, installed by the node's commit.
     pub(crate) receiver: Option<FrameReceiver>,
     /// The submitted-frame producer/sink pair the compositor created with
     /// the receiver: `sink` submits each new frame, `producer` re-issues the

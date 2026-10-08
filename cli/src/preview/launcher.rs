@@ -487,7 +487,7 @@ async fn prepare_preview_module_linkage(
     dynamic_runtime::retarget_module(&built.artifact, built.shared_runtime()?).await
 }
 
-async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()> {
+pub async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()> {
     let manifest_path = project.root().join("Cargo.toml");
     let manifest = smol::unblock(move || CargoManifest::from_path(&manifest_path)).await?;
     let Some(dev_features) = manifest.features.get("dev") else {

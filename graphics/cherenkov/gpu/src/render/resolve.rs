@@ -75,6 +75,16 @@ pub struct Bind {
     group: wgpu::BindGroup,
 }
 
+impl Bind {
+    /// The view the group samples. A cached bind keeps that view's
+    /// texture alive until the bind is dropped, so a texture its
+    /// source is replaced under is only freed once every bind on the
+    /// old view is.
+    pub const fn source(&self) -> &wgpu::TextureView {
+        &self.source
+    }
+}
+
 /// The resolve pipeline's layout and its pipelines by target format,
 /// built on the first frame that resolves a reduced capture.
 pub struct Pipelines {

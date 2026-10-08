@@ -53,6 +53,7 @@ mod material_group;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
+pub mod mirror;
 mod navigation_back;
 mod navigation_layers;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -63,6 +64,8 @@ mod perf_scroll;
 mod popup_frame;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod popup_windows;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod registrations;
 mod render_identity;
 mod retained_scene;
 mod scene_offer;
@@ -251,40 +254,62 @@ fn themed_test_environment() -> Environment {
     // The runners seed the chord table; a test that mounts menus resolves
     // shortcuts through the same path (water-rs/hydrolysis#247).
     env.insert(crate::renderer::MenuShortcutRegistry::default());
+    // `App::into_parts` installs the application's decided Close Window
+    // chord; the test environment installs the same value over an empty
+    // bar, so a Close Window item reads the free ⌘W / Ctrl+W.
+    env.insert(waterui_controls::menu::CloseWindowChord::new(
+        &nami::Computed::constant(Vec::new()),
+        &env,
+    ));
     env.insert(BadgeDrawLog(Rc::new(RefCell::new(Vec::new()))));
     env
 }
 
-/// Every `MaterialLayer` the frame presents, flush order — including the
-/// members inside filtered groups, which nest under `FilteredLayer`.
-pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<&MaterialLayer> {
-    fn collect<'a>(layers: &'a [RenderLayer], found: &mut Vec<&'a MaterialLayer>) {
-        for layer in layers {
-            match layer {
-                RenderLayer::Material(layer) => found.push(layer),
-                RenderLayer::Filtered(layer) => collect(&layer.children, found),
-                _ => {}
+/// The member layer ids of every backdrop membership the frame's nodes
+/// hold, flush order — including the members inside filtered groups, which
+/// the walk descends into.
+pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
+    struct Members(Vec<cherenkov::LayerId>);
+    impl mount::layers::LayerVisitor for Members {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if let Some(member) = layers.material_member() {
+                self.0.push(member);
             }
         }
     }
-    let mut layers = Vec::new();
-    collect(&runtime.renderer().compositor.render_layers, &mut layers);
-    layers
+    let mut members = Members(Vec::new());
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut members);
+    members.0
 }
 
-/// The window's mount table — the test renders one window.
-pub fn mounts(runtime: &crate::HeadlessRuntime) -> &Mounts {
-    let mut windows = runtime.renderer().cherenkov_windows.values();
-    let window = windows.next().expect("the frame installed into a window");
-    assert!(windows.next().is_none(), "the test renders one window");
-    &window.mounts
+/// The window's mount — the test renders one window.
+pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov_gpu::Gpu> {
+    &runtime
+        .renderer()
+        .cherenkov_window
+        .as_ref()
+        .expect("the frame installed into a window")
+        .mount
+}
+
+/// The window's backdrop-group table — the test renders one window.
+pub fn mounts(
+    runtime: &crate::HeadlessRuntime,
+) -> &mount::backdrop::BackdropGroups<cherenkov::BackdropGroup> {
+    window_mount(runtime).groups()
 }
 
 /// The engine's current backdrop-capture bytes.
 pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
-    let mut windows = runtime.renderer().cherenkov_windows.values();
-    windows
-        .next()
+    runtime
+        .renderer()
+        .cherenkov_window
+        .as_ref()
         .expect("the frame installed into a window")
         .state
         .engine
@@ -525,6 +550,7 @@ fn text_input_target(
 ) -> TextInputTarget {
     let interaction_key = InteractionKey::for_rc(&selection, 0);
     TextInputTarget {
+        owner: std::rc::Weak::new(),
         interaction_key,
         modal: false,
         bounds: Rect::ZERO,
@@ -920,7 +946,7 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
 
     approx::assert_relative_eq!(zoom.snapshot(), 0.5);
     assert!(
-        renderer.take_patch_request(),
+        renderer.root_is_dirty(),
         "a synchronous button action must schedule a retained-tree refresh"
     );
 }
@@ -2980,22 +3006,24 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
         focus: 0,
         initialized: true,
     }));
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("", None),
             Rc::clone(&selection),
-        ));
+        )],
+    );
 
     assert!(renderer.set_focused_text_input(Some(0)));
     assert!(
-        renderer.take_patch_request(),
+        renderer.root_is_dirty(),
         "text input focus changes must refresh the retained tree so focus animations start on click"
     );
     assert!(
-        !renderer.take_rebuild_request(),
-        "text input focus changes must not rebuild the view body"
+        !renderer
+            .root_marks()
+            .contains(crate::renderer::Dirty::STRUCTURE),
+        "text input focus changes must not mark structure — the view body is never re-dispatched"
     );
     assert!(renderer.handle_ime_preedit("拼音", Some(0)));
     assert_eq!(renderer.text_editing.ime_preedit.as_deref(), Some("拼音"));
@@ -3035,16 +3063,15 @@ fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
     let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let emit = |renderer: &mut HydrolysisRenderer,
                 targets: &[(&str, &Rc<RefCell<TextSelectionSlot>>)]| {
-        renderer.text_editing.text_input_targets.clear();
-        for (value, selection) in targets {
-            renderer
-                .text_editing
-                .text_input_targets
-                .push(text_input_target(
-                    text_field_model(value, None),
-                    Rc::clone(selection),
-                ));
-        }
+        seed_text_input_targets(
+            renderer,
+            targets
+                .iter()
+                .map(|(value, selection)| {
+                    text_input_target(text_field_model(value, None), Rc::clone(selection))
+                })
+                .collect(),
+        );
     };
 
     emit(&mut renderer, &[("first", &first), ("focused", &focused)]);
@@ -3095,25 +3122,24 @@ fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
     renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
     let survivor = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let removed = Rc::new(RefCell::new(TextSelectionSlot::default()));
-    for (value, selection) in [("survivor", &survivor), ("removed", &removed)] {
-        renderer
-            .text_editing
-            .text_input_targets
-            .push(text_input_target(
-                text_field_model(value, None),
-                Rc::clone(selection),
-            ));
-    }
+    seed_text_input_targets(
+        &mut renderer,
+        [("survivor", &survivor), ("removed", &removed)]
+            .iter()
+            .map(|(value, selection)| {
+                text_input_target(text_field_model(value, None), Rc::clone(selection))
+            })
+            .collect(),
+    );
     assert!(renderer.set_focused_text_input(Some(1)));
 
-    renderer.text_editing.text_input_targets.clear();
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("survivor", None),
             Rc::clone(&survivor),
-        ));
+        )],
+    );
     renderer.validate_focused_text_input_after_flush();
 
     assert!(
@@ -3127,24 +3153,54 @@ fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
 fn text_selection_pointer_update_uses_transient_redraw_path() {
     let mut renderer = test_renderer();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("selection", None),
             Rc::clone(&selection),
-        ));
+        )],
+    );
 
     assert!(renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
-    assert!(
-        !renderer.take_rebuild_request(),
-        "text selection changes are rendered by the transient overlay instead of a full scene rebuild"
+    assert_eq!(
+        renderer.root_marks(),
+        crate::renderer::Dirty::NONE,
+        "text selection changes are rendered by the transient overlay instead of a structural mark"
     );
     assert!(!renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
-    assert!(
-        !renderer.take_rebuild_request(),
-        "unchanged text selection must not schedule redundant rebuilds"
+    assert_eq!(
+        renderer.root_marks(),
+        crate::renderer::Dirty::NONE,
+        "unchanged text selection must not mark structure"
     );
+}
+
+/// Seeds `targets` as the frame's emitted text inputs through the retained
+/// registry — the path a real emit takes, owner bucket and all — then
+/// materializes, so staged and retained readers both see them exactly like
+/// a flush's. The owner is the root cell, the owner a window-level
+/// registration carries.
+fn seed_text_input_targets(renderer: &mut HydrolysisRenderer, targets: Vec<TextInputTarget>) {
+    let anchor = renderer.window_placement();
+    let owner = Rc::clone(renderer.root_cell());
+    renderer.purge_registrations(&owner);
+    renderer.retained.enlist(&owner);
+    for target in targets {
+        let bounds = target.bounds;
+        let entry = crate::renderer::mount::RetainedEntry::at(
+            target,
+            bounds,
+            &anchor,
+            &owner,
+            renderer.retained.next_seq(),
+        );
+        let mut slot = owner.registrations.borrow_mut();
+        slot.get_or_insert_with(|| Box::new(crate::renderer::mount::OwnerRegistrations::default()))
+            .text_input_targets
+            .push(entry);
+    }
+    renderer.retained.stale.set(true);
+    renderer.registries();
 }
 
 /// A text-input target with real bounds and a real shaped layout, so click
@@ -3199,7 +3255,7 @@ fn double_click_word_selection_survives_pointer_release() {
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);
     let point = caret_point_in_target(&target, 8);
-    renderer.text_editing.text_input_targets.push(target);
+    seed_text_input_targets(&mut renderer, vec![target]);
 
     renderer.handle_pointer_down(
         crate::num_cast::f64_as_f32(point.x),
@@ -3250,7 +3306,7 @@ fn double_click_drag_extends_selection_by_words() {
     let target = shaped_text_input_target("hello world", &selection, &env);
     let world_point = caret_point_in_target(&target, 8);
     let hello_point = caret_point_in_target(&target, 2);
-    renderer.text_editing.text_input_targets.push(target);
+    seed_text_input_targets(&mut renderer, vec![target]);
 
     renderer.handle_pointer_down(
         crate::num_cast::f64_as_f32(world_point.x),
@@ -3311,7 +3367,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 
     let mut env = test_environment();
     crate::localization::install(&mut env);
-    let nodes = SemanticCore::build_text_context_menu_nodes(&target, &env);
+    let nodes = SemanticCore::build_text_context_menu_nodes(&target, &env, true);
     let labels = nodes
         .iter()
         .filter_map(|node| match node {
@@ -3324,7 +3380,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 }
 
 #[test]
-fn bare_text_at_window_root_renders_into_scene() {
+fn bare_text_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3337,14 +3393,14 @@ fn bare_text_at_window_root_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare text view at the window root must draw glyphs"
     );
     renderer.finish_rebuild_frame();
 }
 
 #[test]
-fn bare_str_at_window_root_renders_into_scene() {
+fn bare_str_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3357,7 +3413,7 @@ fn bare_str_at_window_root_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare string view at the window root must draw glyphs"
     );
     renderer.finish_rebuild_frame();
@@ -3417,7 +3473,7 @@ fn resolved_text_fast_path_matches_the_recursive_measure() {
 }
 
 #[test]
-fn bare_str_renders_into_scene() {
+fn bare_str_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3431,7 +3487,7 @@ fn bare_str_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare string must build a text node and draw glyphs"
     );
     renderer.finish_rebuild_frame();

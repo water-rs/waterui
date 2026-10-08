@@ -548,6 +548,256 @@ fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
     );
 }
 
+/// A headless runtime whose app menu bar declares only
+/// `MenuItem::CloseWindow`.
+fn runtime_with_declared_close_window(env: Environment) -> HeadlessRuntime {
+    let menu_bar = nami::Computed::constant(vec![Menu::new("Window", MenuItem::CloseWindow)]);
+    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        AnyViewBuilder::<AnyView>::new(|| AnyView::new(button("plain").action(|| {}))),
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let _ = pump_until_settled(&mut runtime);
+    runtime
+}
+
+/// Where the runner installed its window-close primitive, a declared
+/// `MenuItem::CloseWindow` arms the platform close chord, and the chord asks
+/// the runner to close the window the chord dispatched for — and its popup
+/// row is the "Close" command carrying that chord.
+#[test]
+fn a_declared_close_window_chord_closes_the_dispatching_window() {
+    let mut env = test_environment();
+    let closed = Rc::new(Cell::new(None));
+    env.insert(crate::renderer::WindowCloser::new({
+        let closed = Rc::clone(&closed);
+        move |window| closed.set(Some(window))
+    }));
+    let mut runtime = runtime_with_declared_close_window(env.clone());
+
+    key_chord(&mut runtime, "w", command());
+    assert_eq!(
+        closed.get(),
+        Some(crate::renderer::WindowId::Runner(0)),
+        "the chord closes the window it dispatched for, the headless runner's first"
+    );
+
+    closed.set(None);
+    let registry = env
+        .get::<crate::renderer::MenuShortcutRegistry>()
+        .cloned()
+        .expect("the test environment seeds a menu shortcut registry");
+    assert!(registry.dispatch(
+        crate::renderer::WindowId::Runner(42),
+        &keyboard_types::Key::Character("w".to_owned()),
+        command(),
+        &env,
+    ));
+    assert_eq!(
+        closed.get(),
+        Some(crate::renderer::WindowId::Runner(42)),
+        "the dispatching window's own id is the close request's target"
+    );
+
+    let nodes = crate::renderer::popup_menu_nodes(
+        &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+        &env,
+        true,
+    );
+    let [
+        crate::renderer::PopupMenuNode::Command {
+            plain_label,
+            shortcut: Some(shortcut),
+            disabled,
+            ..
+        },
+    ] = nodes.as_slice()
+    else {
+        panic!(
+            "a declared Close Window is one command row carrying its chord, got {} nodes",
+            nodes.len()
+        );
+    };
+    assert_eq!(plain_label, "Close");
+    assert_eq!(*shortcut, Shortcut::new('w').command());
+    assert!(!disabled.snapshot(), "a closable owner's row is enabled");
+}
+
+/// A `CloseWindow` row built for a window declared without a close button
+/// reads disabled — `closable` is fixed at mount, so the row's enabled
+/// state is the owner window's `closable` read when the row is built.
+#[test]
+fn a_nonclosable_owner_renders_a_disabled_close_row() {
+    let mut env = test_environment();
+    env.insert(crate::renderer::WindowCloser::new(|_| {}));
+    let nodes = crate::renderer::popup_menu_nodes(
+        &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+        &env,
+        false,
+    );
+    let [crate::renderer::PopupMenuNode::Command { disabled, .. }] = nodes.as_slice() else {
+        panic!("a declared Close Window still builds its row");
+    };
+    assert!(
+        disabled.snapshot(),
+        "a non-closable owner's row is disabled"
+    );
+}
+
+/// A context menu's Close Window row targets the window that owns the
+/// menu, not the popup window the row is drawn in: the popup's rows carry
+/// their owner's identity.
+#[test]
+fn a_context_menu_close_row_targets_its_owner_window() {
+    let mut env = test_environment();
+    let closed = Rc::new(Cell::new(None));
+    env.insert(crate::renderer::WindowCloser::new({
+        let closed = Rc::clone(&closed);
+        move |window| closed.set(Some(window))
+    }));
+    let host = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(
+            Frame::new(
+                button("host")
+                    .action(|| {})
+                    .context_menu(ContextMenu::new(vec![MenuItem::CloseWindow])),
+            )
+            .width(160.0)
+            .height(80.0),
+        )
+    });
+    let mut runtime =
+        HeadlessRuntime::new_for_tests(env, host, WINDOW.0, WINDOW.1, MinimalTestTheme::default());
+    let bounds = bounds_of(&mut runtime, Role::Button, "host");
+    let (x, y) = (
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
+    );
+    for event in click(x, y, PointerButton::Secondary) {
+        runtime.push_input_event(event);
+    }
+    let update = pump_until_settled(&mut runtime).expect("the open frame publishes");
+    assert_eq!(runtime.popup_frames().len(), 1, "the context menu opens");
+    let (row, _) = find_by_label(&update, Role::Button, "Close")
+        .expect("the context menu shows its Close row");
+
+    assert!(
+        runtime.perform_accessibility_action(accesskit::ActionRequest {
+            action: accesskit::Action::Click,
+            target_node: row,
+            target_tree: accesskit::TreeId::ROOT,
+            data: None,
+        })
+    );
+    let _ = pump_until_settled(&mut runtime);
+    assert_eq!(
+        closed.get(),
+        Some(crate::renderer::WindowId::Runner(0)),
+        "the row closes the window the menu belongs to, the headless runner's first"
+    );
+}
+
+/// A host whose windows the application cannot close — the headless
+/// runtime installs no close primitive, like Android, iOS and the web —
+/// arms nothing for a declared `MenuItem::CloseWindow`: its chord passes
+/// through and its popup row is omitted.
+#[test]
+fn a_declared_close_window_is_omitted_where_windows_cannot_close() {
+    let env = test_environment();
+    let registry = env
+        .get::<crate::renderer::MenuShortcutRegistry>()
+        .cloned()
+        .expect("the test environment seeds a menu shortcut registry");
+    let mut runtime = runtime_with_declared_close_window(env.clone());
+
+    key_chord(&mut runtime, "w", command());
+    assert!(
+        !registry.dispatch(
+            crate::renderer::WindowId::Orphan,
+            &keyboard_types::Key::Character("w".to_owned()),
+            command(),
+            &env,
+        ),
+        "no menu claims the close chord where no window can be closed"
+    );
+    assert!(
+        crate::renderer::popup_menu_nodes(
+            &[waterui_controls::menu::ResolvedMenuItem::CloseWindow],
+            &env,
+            true,
+        )
+        .is_empty(),
+        "no popup row stands for Close Window where no window can be closed"
+    );
+}
+
+/// ⌘W is not reserved — the application's menu bar may bind it: its Close
+/// Tab owns the chord, and a `Menu` window-mounted beside it registers
+/// Close Window on ⇧⌘W, the one decision `App::into_parts` makes for the
+/// whole application, so ⌘W dispatches only the bar's command.
+#[test]
+fn a_mounted_close_window_follows_the_application_decided_chord() {
+    let mut env = test_environment();
+    let bar_fired = Binding::container(0_i32);
+    let menu_bar = {
+        let bar_fired = bar_fired.clone();
+        nami::Computed::constant(vec![Menu::new(
+            "File",
+            "Close Tab"
+                .action(move || bar_fired.set(bar_fired.snapshot() + 1))
+                .shortcut(Shortcut::new('w').command()),
+        )])
+    };
+    // What `App::into_parts` installs for this bar: tests reach the
+    // decision through the same environment value.
+    env.insert(waterui_controls::menu::CloseWindowChord::new(
+        &menu_bar, &env,
+    ));
+    let closed = Rc::new(Cell::new(None));
+    env.insert(crate::renderer::WindowCloser::new({
+        let closed = Rc::clone(&closed);
+        move |window| closed.set(Some(window))
+    }));
+    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        AnyViewBuilder::<AnyView>::new(|| AnyView::new(Menu::new("Window", MenuItem::CloseWindow))),
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let _ = pump_until_settled(&mut runtime);
+
+    key_chord(&mut runtime, "w", command());
+    assert_eq!(
+        bar_fired.snapshot(),
+        1,
+        "the bar's own ⌘W command keeps its chord"
+    );
+    assert_eq!(
+        closed.get(),
+        None,
+        "a mounted Close Window does not shadow it"
+    );
+
+    key_chord(
+        &mut runtime,
+        "w",
+        Modifiers {
+            shift: true,
+            ..command()
+        },
+    );
+    assert_eq!(
+        closed.get(),
+        Some(crate::renderer::WindowId::Runner(0)),
+        "the mounted Close Window registers the decided ⇧⌘W"
+    );
+}
+
 /// With the app bar and a mounted `Menu` claiming the same chord, the
 /// mounted menu — the newer registration — wins while it is up, and the
 /// app bar answers again once it unmounts (watergram DOGFOOD r43-1;

@@ -1,4 +1,4 @@
-//! Generated Hydrolysis preview binding for `{{ crate_name_ident }}`.
+//! Generated {{ backend_label }} preview target for `{{ crate_name_ident }}`.
 
 {% if expression_mode %}
 pub(crate) fn load_preview_view() -> waterui::AnyView {
@@ -6,7 +6,7 @@ pub(crate) fn load_preview_view() -> waterui::AnyView {
     use waterui::prelude::*;
     use waterui::prelude::picker::picker;
     use waterui as waterui;
-    use waterui_core::binding;
+    use waterui::binding;
 
     let view = { {{ preview_expression }} };
     waterui::AnyView::new(view)
@@ -18,21 +18,21 @@ fn ensure_preview_crate_is_linked() {
 
 unsafe extern "C" {
     #[link_name = "{{ preview_symbol }}"]
-    fn waterui_hydrolysis_preview_entry() -> *mut ();
+    fn {{ extern_fn_name }}() -> *mut ();
 }
 
 pub(crate) fn load_preview_view() -> waterui::AnyView {
     ensure_preview_crate_is_linked();
-    let ptr = unsafe { waterui_hydrolysis_preview_entry() };
+    let ptr = unsafe { {{ extern_fn_name }}() };
     let boxed: Box<waterui::AnyView> = unsafe { Box::from_raw(ptr.cast()) };
     *boxed
 }
 {% endif %}
-
+{% if let Some(style) = preview_theme_style %}
 /// The style the preview runtimes are constructed with — the value `main`
 /// hands to `hydrolysis::run(app, style)`.
 pub(crate) fn preview_style() -> impl hydrolysis::Style {
-    {{ preview_theme_style }}
+    {{ style }}
 }
 
 /// The environment previews resolve under.
@@ -45,12 +45,13 @@ pub(crate) fn app_environment() -> waterui::env::Environment {
     let env = waterui::configure_environment!(waterui::env::Environment::new());
     {{ crate_name_ident }}::app(env).env
 }
-{% if include_automation %}
+{% endif -%}
+{% if let Some(body) = semantic_automation_body %}
 
 pub(crate) fn run_semantic_automation(app: &mut waterui_testing::SemanticApp) {
     use waterui::prelude::*;
     use waterui_testing::*;
 
-    {{ semantic_automation_body }}
+    {{ body }}
 }
 {% endif %}

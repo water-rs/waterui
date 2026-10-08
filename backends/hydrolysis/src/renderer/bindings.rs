@@ -48,6 +48,7 @@ impl SemanticCore {
         &mut self,
         node_id: AccessibilityNodeId,
     ) -> bool {
+        self.materialize_registries();
         let focused = self
             .text_editing
             .text_input_targets
@@ -245,55 +246,54 @@ impl SemanticCore {
         group_id: usize,
         gesture: Gesture,
         action: BoxedAction<()>,
-    ) -> Option<crate::gesture::GestureTarget> {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return None;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
-        self.hit_test.gesture_regions.push(GestureRegion {
-            bounds,
-            order,
-            owners: self.owner_stack.clone(),
-        });
-        Some(self.gesture_engine.register_target(
+    ) -> crate::gesture::GestureTarget {
+        // `bounds` is node-local: the recognizer starts with it, and
+        // materialization re-registers every gesture at its resolved
+        // window rect and merged paint rank.
+        let target = self.gesture_engine.register_target(
             bounds,
             gesture,
             action,
             self.render_depth,
-            order,
+            0,
             group_id,
-        ))
+        );
+        self.register_retained(
+            mount::RegisteredGesture {
+                owner: std::rc::Weak::new(),
+                target: target.clone(),
+                owners: self.owner_stack.clone(),
+            },
+            bounds,
+            |regs| &mut regs.gesture_regions,
+        );
+        target
     }
 
     /// Re-registers a gesture target a widget retained from an earlier frame,
-    /// at that row's current bounds. The recognizer state machine is shared, so
-    /// a drag that began before this frame keeps running instead of being
-    /// forgotten when the engine's per-frame target list is rebuilt.
+    /// at that row's current node-local bounds. The recognizer state machine is
+    /// shared, so a drag that began before this frame keeps running.
     ///
-    /// The order minted on the target's birth frame is not reused: the hit-test
-    /// order counter resets every rebuild, so a stale order ranks the target
-    /// against siblings it was never painted with. Re-minting keeps the
-    /// recognizer while ranking the target by where it paints this frame.
+    /// The retained record resolves the target's window rect and merged paint
+    /// rank at materialization — its birth order is not reused, since a stale
+    /// rank would weigh it against siblings it was never painted with.
     pub(crate) fn register_retained_gesture_target(
         &mut self,
         target: &crate::gesture::GestureTarget,
         bounds: kurbo::Rect,
         group_id: usize,
     ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
-        self.hit_test.gesture_regions.push(GestureRegion {
-            bounds,
-            order,
-            owners: self.owner_stack.clone(),
-        });
         let mut target = target.with_bounds_depth_and_group(bounds, self.render_depth, group_id);
-        target.order = order;
-        self.gesture_engine.register_existing_target(target);
+        target.order = 0;
+        self.register_retained(
+            mount::RegisteredGesture {
+                owner: std::rc::Weak::new(),
+                target,
+                owners: self.owner_stack.clone(),
+            },
+            bounds,
+            |regs| &mut regs.gesture_regions,
+        );
     }
 
     pub(crate) const fn allocate_gesture_group_id(&mut self) -> usize {
@@ -330,33 +330,37 @@ impl SemanticCore {
         &mut self,
         data: text_editing::TextInputTargetData,
     ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let order = self.hit_test.next_hit_test_order();
+        // All four rects stay node-local; materialization resolves them and
+        // applies the clip intersect + alpha gate.
+        let local = data.target.bounds;
         let key_handlers = self.snapshot_key_handlers();
-        self.text_editing.text_input_targets.push(TextInputTarget {
-            interaction_key: data.target.interaction_key,
-            modal: data.target.modal,
-            bounds: self.hit_test.clip_hit_bounds(data.target.bounds),
-            frame: data.target.bounds,
-            cursor_area: data.target.cursor_area,
-            text_bounds: data.target.text_bounds,
-            text_clip_bounds: data.target.text_clip_bounds,
-            content_alpha: data.target.content_alpha,
-            layout: data.target.layout,
-            display_text: data.target.display_text,
-            display_layout: data.target.display_layout,
-            purpose: data.target.purpose,
-            depth: data.depth,
-            order,
-            model: data.target.model,
-            selection: data.target.selection,
-            env: data.target.env,
-            key_handlers,
-            focus_binding: data.focus_binding,
-            #[cfg(feature = "accessibility")]
-            accessibility_node_id: data.accessibility_node_id,
-        });
+        self.register_retained(
+            TextInputTarget {
+                owner: std::rc::Weak::new(),
+                interaction_key: data.target.interaction_key,
+                modal: data.target.modal,
+                bounds: data.target.bounds,
+                frame: data.target.bounds,
+                cursor_area: data.target.cursor_area,
+                text_bounds: data.target.text_bounds,
+                text_clip_bounds: data.target.text_clip_bounds,
+                content_alpha: data.target.content_alpha,
+                layout: data.target.layout,
+                display_text: data.target.display_text,
+                display_layout: data.target.display_layout,
+                purpose: data.target.purpose,
+                depth: data.depth,
+                order: 0,
+                model: data.target.model,
+                selection: data.target.selection,
+                env: data.target.env,
+                key_handlers,
+                focus_binding: data.focus_binding,
+                #[cfg(feature = "accessibility")]
+                accessibility_node_id: data.accessibility_node_id,
+            },
+            local,
+            |regs| &mut regs.text_input_targets,
+        );
     }
 }

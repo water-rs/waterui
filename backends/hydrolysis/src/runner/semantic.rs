@@ -13,6 +13,10 @@
 
 use super::executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
 use super::*;
+#[cfg(feature = "accessibility")]
+use crate::renderer::accessibility::{
+    AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
+};
 use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
@@ -31,6 +35,10 @@ pub struct SemanticPumpResult {
     #[cfg(feature = "accessibility")]
     /// The accessibility tree update the frame produced.
     pub tree_update: Option<AccessibilityTreeUpdate>,
+    #[cfg(feature = "accessibility")]
+    /// The content types the emitted tree's text fields declared — the map
+    /// the update publishes beside it.
+    pub content_types: AccessibilityContentTypes,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
     pub ui_focus: Option<accesskit::NodeId>,
@@ -75,6 +83,7 @@ impl SemanticWindow {
             SessionTextEngine::from_collection(fonts, family_resolution),
         );
         core.set_window_id(window_id);
+        core.set_window_closable(window.closable);
         #[cfg(feature = "accessibility")]
         {
             core.use_semantic_keyboard_activation();
@@ -279,10 +288,7 @@ impl SemanticRuntime {
     /// in which case the next pump re-emits.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
-        /// The same id range [`Self::take_merged_accessibility_tree_update`]
-        /// assigns each popup.
-        const WINDOW_ID_STRIDE: u64 = 1 << 32;
-
+        // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = request.target_node.0;
         let (window, request) = if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
@@ -391,8 +397,8 @@ impl SemanticRuntime {
             advance_semantic_window(popup, &self.env, at);
         }
         // A popup whose state flipped `Closed` — its menu group dismissed it
-        // or a close request arrived — leaves the tree. Flag the main window
-        // so the merged update re-emits without it.
+        // — leaves the tree. Flag the main window so the merged update
+        // re-emits without it.
         if self
             .popup_windows
             .iter()
@@ -411,6 +417,14 @@ impl SemanticRuntime {
         let drained_after = self.local_executor.drain();
         let executor_after = executor_after_started_at.elapsed();
 
+        #[cfg(feature = "accessibility")]
+        let merged = self.take_merged_accessibility_tree_update();
+        #[cfg(feature = "accessibility")]
+        let (tree_update, content_types) = merged
+            .map_or((None, AccessibilityContentTypes::new()), |merged| {
+                (Some(merged.tree_update), merged.content_types)
+            });
+
         SemanticPumpResult {
             rebuilt: rebuilt || drained_before || drained_after,
             profile: FrameProfile {
@@ -425,7 +439,9 @@ impl SemanticRuntime {
             }
             .with_total(frame_started_at.elapsed()),
             #[cfg(feature = "accessibility")]
-            tree_update: self.take_merged_accessibility_tree_update(),
+            tree_update,
+            #[cfg(feature = "accessibility")]
+            content_types,
             #[cfg(feature = "accessibility")]
             ui_focus: self.window.core.focused_ui_node(),
         }
@@ -459,7 +475,7 @@ impl SemanticRuntime {
     /// to the main root so the result is one tree — the same merge the
     /// rendered [`HeadlessRuntime`](crate::HeadlessRuntime) applies.
     #[cfg(feature = "accessibility")]
-    fn take_merged_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+    fn take_merged_accessibility_tree_update(&mut self) -> Option<MergedAccessibilityUpdate> {
         self.window.core.take_merged_accessibility_tree_update(
             self.popup_windows.iter_mut().map(|popup| &mut popup.core),
         )
@@ -474,6 +490,7 @@ impl SemanticRuntime {
         self.window
             .core
             .accessibility_tree(self.popup_windows.iter_mut().map(|popup| &mut popup.core))
+            .map(|merged| merged.tree_update)
     }
 }
 
@@ -509,11 +526,15 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
         suppress_key_text = false;
         let changed = match event {
             InputEvent::CloseRequested => {
-                window
-                    .window
-                    .state
-                    .set(waterui::window::WindowState::Closed);
-                should_close = true;
+                // The rendered runner's close gate (`handle_input_events`):
+                // a non-closable window ignores every close request.
+                if window.window.closable {
+                    window
+                        .window
+                        .state
+                        .set(waterui::window::WindowState::Closed);
+                    should_close = true;
+                }
                 true
             }
             InputEvent::Moved { x, y } => {
@@ -641,10 +662,11 @@ fn advance_semantic_window(window: &mut SemanticWindow, env: &Environment, now: 
         window.refresh_requested = true;
     }
     let _animations_active = window.core.advance_animations();
-    if window.core.take_patch_request() {
-        window.refresh_requested = true;
-    }
-    if window.core.take_rebuild_request() || window.core.take_next_frame_rebuild_request() {
+    window.core.drain_producer_wakes();
+    // Any mark — a reactive update, a structural patch, a rebuild-worthy
+    // change — lands on the root cell through the owner chain and arms the
+    // patch flag; structural marks persist until the emit clears them.
+    if window.core.take_patch_request() || window.core.has_structure_marks() {
         window.refresh_requested = true;
     }
 }
@@ -658,16 +680,15 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
     // `subscribe_window_declaration_signals` — the same shared
     // subscription the rendered `RuntimeWindow` installs — so a write while
     // the pump is parked arms `core`'s refresh flag and this pump re-emits.
-    // The guards never enter `signal_watches`: they drop with the window
-    // after `core` has released every frame-scoped subscription, so the
-    // teardown order the renderer releases watch guards in
-    // (water-rs/waterui#1213) is unchanged.
+    // The guards drop with the window after `core` has released every
+    // frame-scoped subscription, so the teardown order the renderer
+    // releases watch guards in (water-rs/waterui#1213) is unchanged.
     #[cfg(feature = "accessibility")]
     window
         .core
         .set_accessibility_root_label(window.window.title.snapshot().as_str());
 
-    if window.core.take_rebuild_request() {
+    if window.core.has_structure_marks() {
         window.refresh_requested = true;
     }
     let work_pending = window.refresh_requested
@@ -906,6 +927,38 @@ mod tests {
             store.hits.snapshot(),
             1,
             "the item action did not reach the injected store"
+        );
+    }
+
+    /// The semantic runner's close path is gated like the rendered one: a
+    /// close request leaves a non-closable window open and closes a
+    /// closable one.
+    #[test]
+    fn a_close_request_closes_only_a_closable_window() {
+        let builder = AnyViewBuilder::<AnyView>::new(|| AnyView::new(vstack(((),))));
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
+        runtime.window.window.closable = false;
+        runtime.push_input_event(InputEvent::CloseRequested);
+        runtime.pump();
+        assert_eq!(
+            runtime.window.window.state.snapshot(),
+            waterui::window::WindowState::Normal,
+            "a non-closable window must ignore a close request"
+        );
+
+        runtime.window.window.closable = true;
+        runtime.push_input_event(InputEvent::CloseRequested);
+        runtime.pump();
+        assert_eq!(
+            runtime.window.window.state.snapshot(),
+            waterui::window::WindowState::Closed,
+            "a closable window must close on a close request"
         );
     }
 

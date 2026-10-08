@@ -148,15 +148,60 @@ struct WaterUIMetadata {
     app_value: Vec<app_values::AppValueRequest>,
 }
 
-/// One crate's `[package.metadata.waterui.android]` table.
+/// One crate's `[package.metadata.waterui.android]` table: an unconditional
+/// base plus `feature.<cargo-feature>` subtables carrying the same keys.
+type AndroidMetadata = FeatureTables<AndroidTable>;
+
+/// A crate's `[package.metadata.waterui.<platform>]` table, split into its
+/// unconditional `base` keys and `feature.<cargo-feature>` subtables that
+/// carry the same keys but contribute only while the resolved dependency
+/// graph enables that feature on the declaring crate.
+#[derive(Debug, Default)]
+struct FeatureTables<T> {
+    /// The table's unconditional keys.
+    base: T,
+    /// `feature.<cargo-feature>` subtables, keyed by cargo feature name.
+    feature: BTreeMap<String, T>,
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for FeatureTables<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // `deny_unknown_fields` cannot see through `flatten`, so the keys
+        // neither `base` nor `feature` claims land in a catch-all that fails
+        // the parse itself.
+        #[derive(Deserialize)]
+        #[serde(bound(deserialize = "T: Deserialize<'de>"))]
+        struct Wire<T> {
+            #[serde(flatten)]
+            base: T,
+            #[serde(default)]
+            feature: BTreeMap<String, T>,
+            #[serde(flatten)]
+            unknown: BTreeMap<String, serde_json::Value>,
+        }
+        let wire = Wire::<T>::deserialize(deserializer)?;
+        if let Some(key) = wire.unknown.into_keys().next() {
+            return Err(<D::Error as serde::de::Error>::custom(format!(
+                "unknown field `{key}`"
+            )));
+        }
+        Ok(Self {
+            base: wire.base,
+            feature: wire.feature,
+        })
+    }
+}
+
+/// The keys of one crate's `[package.metadata.waterui.android]` table and of
+/// each `[package.metadata.waterui.android.feature.<cargo-feature>]` subtable.
 ///
 /// A crate whose Rust side resolves helper classes through the application
 /// class loader declares the `.kt` files that must be compiled into the app
 /// dex and the Maven coordinates the helpers need. The generated Gradle
 /// module performs the compile — the crate's build script does not. A crate
 /// whose platform code needs an entry inside the manifest's `<application>`
-/// declares it as a `[[provider]]`, `[[service]]`, `[[receiver]]` or
-/// `[[meta-data]]` table (see [`android_manifest`]). A crate whose platform
+/// declares it as an `[[activity]]`, `[[provider]]`, `[[service]]`,
+/// `[[receiver]]` or `[[meta-data]]` table (see [`android_manifest`]). A crate whose platform
 /// code needs a Gradle plugin applied to the application module declares it
 /// as a `[[gradle-plugin]]` table (see [`gradle_plugins`]).
 ///
@@ -165,7 +210,7 @@ struct WaterUIMetadata {
 /// left out of the app.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct AndroidMetadata {
+struct AndroidTable {
     /// Crate-relative `.kt` files to stage into the generated module.
     #[serde(default)]
     kotlin_sources: Vec<PathBuf>,
@@ -173,6 +218,9 @@ struct AndroidMetadata {
     /// run against.
     #[serde(default)]
     maven: Vec<String>,
+    /// `<activity>` entries for the generated manifest.
+    #[serde(default)]
+    activity: Vec<android_manifest::Activity>,
     /// `<provider>` entries for the generated manifest.
     #[serde(default)]
     provider: Vec<android_manifest::Provider>,
@@ -188,10 +236,20 @@ struct AndroidMetadata {
     /// Gradle plugins to apply to the generated application module.
     #[serde(default)]
     gradle_plugin: Vec<gradle_plugins::GradlePlugin>,
-    /// Only required when this cargo feature is enabled on the declaring
-    /// crate; gates every key of the table.
-    #[serde(default)]
-    required_feature: Option<String>,
+}
+
+impl AndroidTable {
+    /// Whether the table declares nothing.
+    const fn is_empty(&self) -> bool {
+        self.kotlin_sources.is_empty()
+            && self.maven.is_empty()
+            && self.activity.is_empty()
+            && self.provider.is_empty()
+            && self.service.is_empty()
+            && self.receiver.is_empty()
+            && self.meta_data.is_empty()
+            && self.gradle_plugin.is_empty()
+    }
 }
 
 /// One crate's declaration that it needs a permission to function.
@@ -349,7 +407,7 @@ pub async fn crate_metadata(
 }
 
 /// The features cargo resolved on each package of `metadata`'s graph — what
-/// a table's `required-feature` gate is checked against.
+/// every feature-gated declaration is checked against.
 fn resolved_features(metadata: &cargo_metadata::Metadata) -> HashMap<&PackageId, HashSet<&str>> {
     metadata
         .resolve
@@ -450,8 +508,8 @@ async fn scan_crate_font_declarations(
 }
 
 /// Everything the dependency graph's `[package.metadata.waterui.android]`
-/// tables contribute to a generated Gradle module, after `required-feature`
-/// gating.
+/// tables contribute to a generated Gradle module, after
+/// `feature.<cargo-feature>` gating.
 #[derive(Debug, Default)]
 pub struct AndroidDeclarations {
     /// Kotlin sources and Maven coordinates for the module's classpath.
@@ -465,7 +523,7 @@ pub struct AndroidDeclarations {
 }
 
 /// Kotlin sources and Maven coordinates the dependency graph asks to place on
-/// the Android application classpath, after `required-feature` gating.
+/// the Android application classpath, after `feature.<cargo-feature>` gating.
 #[derive(Debug, Default)]
 pub struct AndroidClasspath {
     /// Absolute paths of `.kt` files to stage into the generated module.
@@ -520,6 +578,24 @@ pub async fn scan_android_declarations(
     collect_android_declarations(&metadata)
 }
 
+/// A `feature.<name>` subtable must name a cargo feature the declaring crate
+/// actually has: a misspelt one would gate its declarations behind a switch
+/// nothing can turn on.
+fn check_feature_tables<'a>(
+    package: &cargo_metadata::Package,
+    table: &str,
+    features: impl Iterator<Item = &'a String>,
+) -> eyre::Result<()> {
+    for feature in features {
+        eyre::ensure!(
+            package.features.contains_key(feature.as_str()),
+            "{} declares `[package.metadata.waterui.{table}.feature.{feature}]` but has no cargo feature `{feature}`",
+            package.name
+        );
+    }
+    Ok(())
+}
+
 /// The graph walk of [`scan_android_declarations`], split from the
 /// `cargo metadata` call so collection runs against any resolved graph.
 fn collect_android_declarations(
@@ -539,26 +615,20 @@ fn collect_android_declarations(
             parsed.app_value,
         );
         let android = parsed.android;
-        let components = android_manifest::DeclaredComponents {
-            providers: android.provider,
-            services: android.service,
-            receivers: android.receiver,
-            meta_data: android.meta_data,
-        };
-        if android.kotlin_sources.is_empty()
-            && android.maven.is_empty()
-            && components.is_empty()
-            && android.gradle_plugin.is_empty()
-        {
-            continue;
+        check_feature_tables(package, "android", android.feature.keys())?;
+        let mut tables = Vec::with_capacity(android.feature.len() + 1);
+        tables.push(android.base);
+        for (feature, table) in android.feature {
+            if feature_enabled(&enabled_features, package, &feature) {
+                tables.push(table);
+            } else {
+                debug!(
+                    "Skipping `[package.metadata.waterui.android.feature.{feature}]` of {}: the feature is not enabled",
+                    package.name
+                );
+            }
         }
-        if let Some(gate) = &android.required_feature
-            && !feature_enabled(&enabled_features, package, gate)
-        {
-            debug!(
-                "Skipping android declarations of {}: feature `{gate}` is not enabled",
-                package.name
-            );
+        if tables.iter().all(AndroidTable::is_empty) {
             continue;
         }
         let crate_root = package
@@ -567,33 +637,42 @@ fn collect_android_declarations(
             .ok_or_eyre("Package has no parent directory")?
             .as_std_path()
             .to_path_buf();
-        for source in android.kotlin_sources {
-            let path = crate_root.join(&source);
-            if !path.is_file() {
-                eyre::bail!(
-                    "{} declares Kotlin source `{}`: no such file at {}",
-                    package.name,
-                    source.display(),
-                    path.display()
-                );
+        for table in tables {
+            let components = android_manifest::DeclaredComponents {
+                activities: table.activity,
+                providers: table.provider,
+                services: table.service,
+                receivers: table.receiver,
+                meta_data: table.meta_data,
+            };
+            for source in table.kotlin_sources {
+                let path = crate_root.join(&source);
+                if !path.is_file() {
+                    eyre::bail!(
+                        "{} declares Kotlin source `{}`: no such file at {}",
+                        package.name,
+                        source.display(),
+                        path.display()
+                    );
+                }
+                declarations.classpath.kotlin_sources.push(path);
             }
-            declarations.classpath.kotlin_sources.push(path);
+            for coordinate in table.maven {
+                let parts: Vec<&str> = coordinate.split(':').collect();
+                eyre::ensure!(
+                    parts.len() == 3 && parts.iter().all(|part| !part.is_empty()),
+                    "{} declares Maven coordinate `{coordinate}`: expected `group:artifact:version`",
+                    package.name
+                );
+                declarations.classpath.maven.insert(coordinate);
+            }
+            declarations
+                .manifest
+                .merge(package.name.as_str(), components)?;
+            declarations
+                .gradle_plugins
+                .merge(package.name.as_str(), table.gradle_plugin)?;
         }
-        for coordinate in android.maven {
-            let parts: Vec<&str> = coordinate.split(':').collect();
-            eyre::ensure!(
-                parts.len() == 3 && parts.iter().all(|part| !part.is_empty()),
-                "{} declares Maven coordinate `{coordinate}`: expected `group:artifact:version`",
-                package.name
-            );
-            declarations.classpath.maven.insert(coordinate);
-        }
-        declarations
-            .manifest
-            .merge(package.name.as_str(), components)?;
-        declarations
-            .gradle_plugins
-            .merge(package.name.as_str(), android.gradle_plugin)?;
     }
     Ok(declarations)
 }
@@ -641,19 +720,25 @@ fn collect_apple_declarations(
             parsed.app_value,
         );
         let apple = parsed.apple;
-        if apple.is_empty() {
-            continue;
+        check_feature_tables(package, "apple", apple.feature.keys())?;
+        let mut tables = Vec::with_capacity(apple.feature.len() + 1);
+        tables.push(apple.base);
+        for (feature, table) in apple.feature {
+            if feature_enabled(&enabled_features, package, &feature) {
+                tables.push(table);
+            } else {
+                debug!(
+                    "Skipping `[package.metadata.waterui.apple.feature.{feature}]` of {}: the feature is not enabled",
+                    package.name
+                );
+            }
         }
-        if let Some(gate) = &apple.required_feature
-            && !feature_enabled(&enabled_features, package, gate)
-        {
-            debug!(
-                "Skipping apple declarations of {}: feature `{gate}` is not enabled",
-                package.name
-            );
-            continue;
+        for table in tables {
+            if table.is_empty() {
+                continue;
+            }
+            declarations.merge(package.name.as_str(), table)?;
         }
-        declarations.merge(package.name.as_str(), apple)?;
     }
     Ok(declarations)
 }
@@ -3186,15 +3271,14 @@ mod permission_audit_tests {
     }
 
     /// Manifest components are collected across the resolved graph the way
-    /// Kotlin sources are: a table behind a disabled `required-feature`
-    /// contributes nothing, the same table with the feature on contributes
-    /// its components, and two crates declaring one component differently
-    /// fail the collection naming both.
+    /// Kotlin sources are: a `feature.<name>` table whose cargo feature is
+    /// disabled contributes nothing, the same table with the feature on
+    /// contributes its components, and two crates declaring one component
+    /// differently fail the collection naming both.
     #[test]
     fn manifest_components_are_collected_across_the_graph() {
         let project = tempdir().expect("temp project");
-        let provider = "[[package.metadata.waterui.android.provider]]\n\
-                        name = \"waterkit.clipboard.ClipboardFileProvider\"\n\
+        let provider = "name = \"waterkit.clipboard.ClipboardFileProvider\"\n\
                         authorities = [\"${applicationId}.waterkit.clipboard\"]\n\
                         exported = false\n\
                         grant-uri-permissions = true\n";
@@ -3203,7 +3287,7 @@ mod permission_audit_tests {
             "clipboard",
             &format!(
                 "[features]\nfiles = []\n\n\
-                 [package.metadata.waterui.android]\nrequired-feature = \"files\"\n\n{provider}"
+                 [[package.metadata.waterui.android.feature.files.provider]]\n{provider}"
             ),
         );
         let gated = write_crate(
@@ -3242,7 +3326,7 @@ mod permission_audit_tests {
             &project.path().join("other"),
             "other-clipboard",
             &format!(
-                "[package.metadata.waterui.android]\n\n{}",
+                "[[package.metadata.waterui.android.provider]]\n{}",
                 provider.replace("exported = false", "exported = true")
             ),
         );
@@ -3257,25 +3341,41 @@ mod permission_audit_tests {
         let message = error.to_string();
         assert!(message.contains("`clipboard`"), "{message}");
         assert!(message.contains("`other-clipboard`"), "{message}");
+
+        // A feature table naming a cargo feature the crate does not declare.
+        write_crate(
+            &project.path().join("typo"),
+            "typo",
+            "[package.metadata.waterui.android.feature.phantom]\nmaven = []\n",
+        );
+        let mistyped = write_crate(
+            &project.path().join("mistyped"),
+            "app-mistyped",
+            "[dependencies]\ntypo = { path = \"../typo\" }\n",
+        );
+        let message = collect(&mistyped)
+            .expect_err("a feature table the crate does not declare must fail")
+            .to_string();
+        assert!(message.contains("typo"), "{message}");
+        assert!(message.contains("phantom"), "{message}");
     }
 
     /// Gradle plugins are collected across the resolved graph like every
-    /// other Android declaration: a table behind a disabled
-    /// `required-feature` contributes nothing, the same table with the
+    /// other Android declaration: a `feature.<name>` table whose cargo
+    /// feature is disabled contributes nothing, the same table with the
     /// feature on contributes its plugin, and two crates pinning one plugin
     /// at different versions fail the collection naming both.
     #[test]
     fn gradle_plugins_are_collected_across_the_graph() {
         let project = tempdir().expect("temp project");
-        let plugin = "[[package.metadata.waterui.android.gradle-plugin]]\n\
-                      id = \"com.google.gms.google-services\"\n\
+        let plugin = "id = \"com.google.gms.google-services\"\n\
                       version = \"4.4.2\"\n";
         write_crate(
             &project.path().join("push"),
             "push",
             &format!(
                 "[features]\nremote = []\n\n\
-                 [package.metadata.waterui.android]\nrequired-feature = \"remote\"\n\n{plugin}"
+                 [[package.metadata.waterui.android.feature.remote.gradle-plugin]]\n{plugin}"
             ),
         );
         let gated = write_crate(
@@ -3308,7 +3408,7 @@ mod permission_audit_tests {
             &project.path().join("other"),
             "other-push",
             &format!(
-                "[package.metadata.waterui.android]\n\n{}",
+                "[[package.metadata.waterui.android.gradle-plugin]]\n{}",
                 plugin.replace("4.4.2", "4.3.0")
             ),
         );
@@ -3326,11 +3426,11 @@ mod permission_audit_tests {
         assert!(message.contains("`other-push`"), "{message}");
     }
 
-    /// Apple declarations are collected across the resolved graph: a table
-    /// behind a disabled `required-feature` contributes nothing, the same
-    /// table with the feature on reaches the entitlements and `Info.plist`,
-    /// and two crates giving one entitlement different values fail naming
-    /// both.
+    /// Apple declarations are collected across the resolved graph: a
+    /// `feature.<name>` table whose cargo feature is disabled contributes
+    /// nothing, the same table with the feature on reaches the entitlements
+    /// and `Info.plist`, and two crates giving one entitlement different
+    /// values fail naming both.
     #[test]
     fn apple_declarations_are_collected_across_the_graph() {
         let project = tempdir().expect("temp project");
@@ -3338,12 +3438,11 @@ mod permission_audit_tests {
             &project.path().join("push"),
             "push",
             "[features]\nremote = []\n\n\
-             [package.metadata.waterui.apple]\n\
-             required-feature = \"remote\"\n\
+             [package.metadata.waterui.apple.feature.remote]\n\
              environment-entitlements = [\"aps-environment\"]\n\n\
-             [package.metadata.waterui.apple.entitlements]\n\
+             [package.metadata.waterui.apple.feature.remote.entitlements]\n\
              \"com.apple.developer.usernotifications.time-sensitive\" = true\n\n\
-             [package.metadata.waterui.apple.info-plist]\n\
+             [package.metadata.waterui.apple.feature.remote.info-plist]\n\
              UIBackgroundModes = [\"remote-notification\"]\n",
         );
         let gated = write_crate(
@@ -3419,6 +3518,24 @@ mod permission_audit_tests {
             .to_string();
         assert!(message.contains("`push`"), "{message}");
         assert!(message.contains("`other-push`"), "{message}");
+
+        // A feature table naming a cargo feature the crate does not declare.
+        write_crate(
+            &project.path().join("typo"),
+            "typo",
+            "[package.metadata.waterui.apple.feature.phantom.entitlements]\n\
+             \"com.apple.developer.applesignin\" = [\"Default\"]\n",
+        );
+        let mistyped = write_crate(
+            &project.path().join("mistyped"),
+            "app-mistyped",
+            "[dependencies]\ntypo = { path = \"../typo\" }\n",
+        );
+        let message = collect(&mistyped)
+            .expect_err("a feature table the crate does not declare must fail")
+            .to_string();
+        assert!(message.contains("typo"), "{message}");
+        assert!(message.contains("phantom"), "{message}");
     }
 
     /// App-value requests are collected across the resolved graph and gated

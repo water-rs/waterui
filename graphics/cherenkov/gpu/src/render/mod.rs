@@ -806,6 +806,57 @@ fn retire_binds1(
     surf.binds1_stamp = (surf.bind_gen, images_gen, mask_gen);
 }
 
+impl SurfaceState {
+    /// Drops every cached bind group of the surface: all the views they
+    /// sample were just replaced or freed. The group-1 cache was counted
+    /// by the caller; the direct-resolve drops report their own count.
+    fn retire_binds(&mut self, device: &wgpu::Device) {
+        self.binds1.clear();
+        self.drop_resolve_binds(device, "backdrop resolve");
+    }
+
+    /// Drops every backdrop group's cached direct-resolve binds: the views
+    /// they read are all gone. Kept, a cached bind would retain its
+    /// source's retired texture past the accounting that says it is freed.
+    fn drop_resolve_binds(&mut self, device: &wgpu::Device, reason: &'static str) {
+        let dropped = self
+            .backdrop_groups
+            .values()
+            .flat_map(|group| group.resolves.iter())
+            .flatten()
+            .count() as u64;
+        for group in self.backdrop_groups.values_mut() {
+            group.resolves.clear();
+        }
+        if dropped > 0 {
+            diag::bind_groups_dropped(device, dropped, reason);
+        }
+    }
+
+    /// The `drop_resolve_binds` of one view: only the groups' entries
+    /// built on `view` are dropped — the source the regenerated texture
+    /// replaced.
+    fn drop_resolve_binds_on(
+        &mut self,
+        device: &wgpu::Device,
+        view: &wgpu::TextureView,
+        reason: &'static str,
+    ) {
+        let mut dropped = 0u64;
+        for group in self.backdrop_groups.values_mut() {
+            for bind in &mut group.resolves {
+                if bind.as_ref().is_some_and(|bind| bind.source() == view) {
+                    *bind = None;
+                    dropped += 1;
+                }
+            }
+        }
+        if dropped > 0 {
+            diag::bind_groups_dropped(device, dropped, reason);
+        }
+    }
+}
+
 /// All render-thread state.
 pub struct GpuRenderer {
     instance: wgpu::Instance,
@@ -2999,7 +3050,7 @@ impl Renderer for GpuRenderer {
         state.backdrop = [None, None];
         state.staging = [None, None];
         state.staging_bind = [None, None];
-        state.binds1.clear();
+        state.retire_binds(&self.device);
         state.painter_replays.clear();
         state.bind_gen += 1;
         diag::grow(
@@ -6661,7 +6712,11 @@ impl GpuRenderer {
                     reason: "plan",
                 },
             );
-            surf.parts.truncate(parts);
+            // A cached direct-resolve bind on a retired part would keep
+            // its texture alive past the retire above.
+            for (_, view) in surf.parts.split_off(parts) {
+                surf.drop_resolve_binds_on(&self.device, &view, "backdrop resolve");
+            }
         }
         #[cfg(target_vendor = "apple")]
         {
@@ -6784,6 +6839,7 @@ impl GpuRenderer {
                 0,
                 true,
             );
+            let replaced_view = surf.scratch.get(&i).map(|s| s.view.clone());
             surf.scratch.insert(i, target);
             surf.bind_gen += 1;
             // #169 A4: unsubmitted group-1 bind groups referencing the
@@ -6796,6 +6852,12 @@ impl GpuRenderer {
                 "scratch regen",
                 |key| key.0 == Some(Source::Scratch(i)),
             );
+            // A cached direct-resolve bind holds its source view the
+            // same way: drop every group's entry that reads the
+            // replaced scratch's view so its texture frees with it.
+            if let Some(replaced_view) = replaced_view {
+                surf.drop_resolve_binds_on(&self.device, &replaced_view, "backdrop resolve");
+            }
         }
         // Backdrop-group captures are exactly their pass's region, in the
         // format of the target the capture copies from, and sampled by

@@ -26,7 +26,7 @@ use objc2::runtime::Sel;
 use objc2::sel;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSControlTextEditingDelegate, NSSecureTextField, NSTextAlignment, NSTextField,
+    NSControlTextEditingDelegate, NSSecureTextField, NSTextAlignment, NSTextContent, NSTextField,
     NSTextFieldBezelStyle, NSTextFieldDelegate, NSTextView,
 };
 use objc2_core_foundation::CGRect;
@@ -174,6 +174,13 @@ impl TextField {
     /// The placeholder shown while the field is empty.
     pub fn set_placeholder(&self, placeholder: &NSAttributedString) {
         self.setPlaceholderAttributedString(Some(placeholder));
+    }
+
+    /// The declared content type — the `NSTextContentType` autofill and
+    /// one-time-code completion key on. `NSTextField` conforms to
+    /// `NSTextContent`, which carries the property.
+    pub fn set_content_type(&self, content_type: crate::ContentType) {
+        self.setContentType(Some(content_type.native()));
     }
 
     /// How the field aligns its text.

@@ -362,12 +362,19 @@ impl RenderNode {
     /// build contexts carry no theme — and builds the retained sub-views its
     /// measure path then reads. Called once at each layout or measure entry
     /// point (`RetainedSubview::{measure_intrinsic, patch_and_measure,
-    /// flush_in_rect, flush_in_ctx, render_built_scene}` and the window's
+    /// place, place_in_ctx}` and the window's
     /// layout pump), before any node is measured. A semantic runtime never
     /// runs this pass, so no theme reaches it.
     pub(in crate::renderer) fn prepare_for_measure(&mut self, renderer: &mut HydrolysisRenderer) {
         match self {
-            Self::Widget(node) => node.behavior.prepare(renderer, &node.env),
+            // Prepare builds subviews and reads bindings at measure time:
+            // run it under this widget's cell as the layout reader so its
+            // builds attach to the widget, not the window root.
+            Self::Widget(node) => {
+                renderer.with_reader(&node.core, ReaderPhase::Layout, |renderer| {
+                    node.behavior.prepare(renderer, &node.env);
+                });
+            }
             Self::Opacity(node) => node.child.prepare_for_measure(renderer),
             Self::Scale(node) => node.child.prepare_for_measure(renderer),
             Self::Rotation(node) => node.child.prepare_for_measure(renderer),
@@ -408,11 +415,25 @@ impl RenderNode {
     /// subtree's area ends at — or `None` where there is none: inside a
     /// scroll surface's content and inside widget-owned retained
     /// sub-views.
+    pub(crate) fn layout(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+        proposal: ProposalSize,
+        size: Size,
+    ) {
+        let core = self.core().clone();
+        renderer.with_reader(&core, ReaderPhase::Layout, |renderer| {
+            self.layout_inner(renderer, env, safe_area, proposal, size);
+        });
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
-    pub(crate) fn layout(
+    fn layout_inner(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         env: &Environment,

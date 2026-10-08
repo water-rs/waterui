@@ -41,9 +41,10 @@ use super::{
 use crate::HeadlessRuntime;
 use crate::engine::WidgetTheme;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
+use crate::renderer::mount::backdrop::BackdropScope;
 use crate::renderer::{
-    FontFamilyResolution, HydroState, MaterialLayer, ProposalSize,
-    measure_view_dimensions_with_proposal, normalize_layout_view, view_renders_nothing,
+    FontFamilyResolution, HydroState, ProposalSize, measure_view_dimensions_with_proposal,
+    normalize_layout_view, view_renders_nothing,
 };
 use crate::text::SessionTextEngine;
 
@@ -83,6 +84,15 @@ fn rendered_at_scale(view: impl Fn() -> AnyView + 'static, scale: f64) -> Headle
     .with_scale_factor(scale);
     let _ = runtime.pump_snapshot();
     runtime
+}
+
+/// The `.material_group()` scope `member` flushed under — the cell address
+/// its key's `Scoped` identity carries — `None` outside every group.
+fn member_scope(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> Option<usize> {
+    match mounts(runtime).backdrop_scope(member)? {
+        BackdropScope::Scoped(scope) => Some(scope),
+        BackdropScope::Solo(_) => None,
+    }
 }
 
 /// Two same-bounds `level` members under `red`, with `.material_group()`
@@ -139,31 +149,32 @@ fn members_of_different_schemes_share_no_group() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2, "the frame presents both members");
     assert!(
-        layers
-            .iter()
-            .all(|layer| layer.scope.is_some() && layer.scope == layers[0].scope),
+        layers.iter().all(|layer| {
+            member_scope(&runtime, *layer).is_some()
+                && member_scope(&runtime, *layer) == member_scope(&runtime, layers[0])
+        }),
         "both members flushed under the group's scope"
     );
     let mounts = mounts(&runtime);
     assert_eq!(mounts.backdrop_group_count(), 2);
     assert_ne!(
-        mounts.backdrop_group_id(layers[0].key),
-        mounts.backdrop_group_id(layers[1].key),
+        mounts.backdrop_group_id(layers[0]),
+        mounts.backdrop_group_id(layers[1]),
         "the two schemes key two groups"
     );
     assert_eq!(
-        mounts.backdrop_scheme(layers[0].key),
+        mounts.backdrop_scheme(layers[0]),
         Some(ColorScheme::Dark),
         "the first member's subtree installs Dark"
     );
     assert_eq!(
-        mounts.backdrop_scheme(layers[1].key),
+        mounts.backdrop_scheme(layers[1]),
         Some(ColorScheme::Light),
         "the second member resolves the window's Light"
     );
     assert_ne!(
-        mounts.backdrop_tone(layers[0].key),
-        mounts.backdrop_tone(layers[1].key),
+        mounts.backdrop_tone(layers[0]),
+        mounts.backdrop_tone(layers[1]),
         "each group's chain carries its own tone"
     );
 }
@@ -178,14 +189,15 @@ fn materials_in_one_group_share_one_backdrop_group() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2, "the frame presents both members");
     assert!(
-        layers
-            .iter()
-            .all(|layer| layer.scope.is_some() && layer.scope == layers[0].scope),
+        layers.iter().all(|layer| {
+            member_scope(&runtime, *layer).is_some()
+                && member_scope(&runtime, *layer) == member_scope(&runtime, layers[0])
+        }),
         "both members flushed under the group's scope"
     );
     let mounts = mounts(&runtime);
-    let first = mounts.backdrop_group_id(layers[0].key);
-    let second = mounts.backdrop_group_id(layers[1].key);
+    let first = mounts.backdrop_group_id(layers[0]);
+    let second = mounts.backdrop_group_id(layers[1]);
     assert!(first.is_some());
     assert_eq!(first, second, "the members sample one shared group");
     assert_eq!(mounts.backdrop_group_count(), 1);
@@ -203,13 +215,15 @@ fn ungrouped_materials_get_a_group_each() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2);
     assert!(
-        layers.iter().all(|layer| layer.scope.is_none()),
+        layers
+            .iter()
+            .all(|layer| member_scope(&runtime, *layer).is_none()),
         "no member flushed under a group scope"
     );
     let mounts = mounts(&runtime);
     assert_ne!(
-        mounts.backdrop_group_id(layers[0].key),
-        mounts.backdrop_group_id(layers[1].key),
+        mounts.backdrop_group_id(layers[0]),
+        mounts.backdrop_group_id(layers[1]),
         "ungrouped members never share a capture"
     );
     assert_eq!(mounts.backdrop_group_count(), 2);
@@ -228,13 +242,14 @@ fn different_levels_under_one_group_get_two_groups() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2);
     assert_eq!(
-        layers[0].scope, layers[1].scope,
+        member_scope(&runtime, layers[0]),
+        member_scope(&runtime, layers[1]),
         "both members flushed under the one group's scope"
     );
     let mounts = mounts(&runtime);
     assert_ne!(
-        mounts.backdrop_group_id(layers[0].key),
-        mounts.backdrop_group_id(layers[1].key),
+        mounts.backdrop_group_id(layers[0]),
+        mounts.backdrop_group_id(layers[1]),
         "the level is part of the group key"
     );
     assert_eq!(mounts.backdrop_group_count(), 2);
@@ -257,22 +272,24 @@ fn a_nested_group_starts_its_own_scope() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 3);
     assert_eq!(
-        layers[1].scope, layers[2].scope,
+        member_scope(&runtime, layers[1]),
+        member_scope(&runtime, layers[2]),
         "the inner members share the nested scope"
     );
     assert_ne!(
-        layers[0].scope, layers[1].scope,
+        member_scope(&runtime, layers[0]),
+        member_scope(&runtime, layers[1]),
         "the outer member flushed under the enclosing scope"
     );
     let mounts = mounts(&runtime);
     assert_eq!(
-        mounts.backdrop_group_id(layers[1].key),
-        mounts.backdrop_group_id(layers[2].key),
+        mounts.backdrop_group_id(layers[1]),
+        mounts.backdrop_group_id(layers[2]),
         "the inner members share one group"
     );
     assert_ne!(
-        mounts.backdrop_group_id(layers[0].key),
-        mounts.backdrop_group_id(layers[1].key),
+        mounts.backdrop_group_id(layers[0]),
+        mounts.backdrop_group_id(layers[1]),
         "the outer group's member does not join the inner group"
     );
     assert_eq!(mounts.backdrop_group_count(), 2);
@@ -296,13 +313,14 @@ fn a_member_in_a_filtered_view_gets_its_own_group() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2);
     assert_eq!(
-        layers[0].scope, layers[1].scope,
+        member_scope(&runtime, layers[0]),
+        member_scope(&runtime, layers[1]),
         "both members flushed under the one group's scope"
     );
     let mounts = mounts(&runtime);
     assert_ne!(
-        mounts.backdrop_group_id(layers[0].key),
-        mounts.backdrop_group_id(layers[1].key),
+        mounts.backdrop_group_id(layers[0]),
+        mounts.backdrop_group_id(layers[1]),
         "different install canvases never share a capture"
     );
     assert_eq!(mounts.backdrop_group_count(), 2);
@@ -341,7 +359,7 @@ fn the_group_survives_one_member_and_releases_with_the_last() {
 
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2);
-    let group = mounts(&runtime).backdrop_group_id(layers[0].key);
+    let group = mounts(&runtime).backdrop_group_id(layers[0]);
     assert!(group.is_some());
     assert_eq!(mounts(&runtime).backdrop_group_count(), 1);
 
@@ -350,7 +368,7 @@ fn the_group_survives_one_member_and_releases_with_the_last() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 1, "one member left the frame");
     assert_eq!(
-        mounts(&runtime).backdrop_group_id(layers[0].key),
+        mounts(&runtime).backdrop_group_id(layers[0]),
         group,
         "the remaining member keeps the shared group"
     );
@@ -358,7 +376,7 @@ fn the_group_survives_one_member_and_releases_with_the_last() {
 
     second.set(false);
     pump(&mut runtime);
-    assert!(material_layers(&runtime).is_empty());
+    assert_eq!(material_layers(&runtime), [] as [cherenkov::LayerId; 0]);
     assert_eq!(
         mounts(&runtime).backdrop_group_count(),
         0,
@@ -375,11 +393,11 @@ fn a_display_scale_change_rebuilds_the_shared_group() {
     assert_eq!(
         layers
             .iter()
-            .map(|layer| mounts(&runtime).backdrop_display_scale(layer.key))
+            .map(|layer| mounts(&runtime).backdrop_display_scale(*layer))
             .collect::<Vec<_>>(),
         vec![Some(DISPLAY_SCALE), Some(DISPLAY_SCALE)]
     );
-    let before = mounts(&runtime).backdrop_group_id(layers[0].key);
+    let before = mounts(&runtime).backdrop_group_id(layers[0]);
     assert!(before.is_some());
 
     runtime.set_scale_factor(1.0);
@@ -388,21 +406,21 @@ fn a_display_scale_change_rebuilds_the_shared_group() {
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 2);
     let mounts = mounts(&runtime);
-    let after = mounts.backdrop_group_id(layers[0].key);
+    let after = mounts.backdrop_group_id(layers[0]);
     assert_ne!(
         before, after,
         "the scale change rebuilt the group under a new id"
     );
     assert_eq!(
         after,
-        mounts.backdrop_group_id(layers[1].key),
+        mounts.backdrop_group_id(layers[1]),
         "the rebuilt group is still shared"
     );
     assert_eq!(mounts.backdrop_group_count(), 1);
     assert_eq!(
         layers
             .iter()
-            .map(|layer| mounts.backdrop_display_scale(layer.key))
+            .map(|layer| mounts.backdrop_display_scale(*layer))
             .collect::<Vec<_>>(),
         vec![Some(1.0), Some(1.0)],
         "both members follow the rebuilt group"
@@ -456,8 +474,10 @@ fn a_material_in_an_anchored_overlay_does_not_join_the_outer_group() {
         2,
         "the window member and the overlay member both presented"
     );
-    let (window_member, overlay_member): (Vec<&MaterialLayer>, Vec<&MaterialLayer>) =
-        layers.iter().partition(|layer| layer.scope.is_some());
+    let (window_member, overlay_member): (Vec<cherenkov::LayerId>, Vec<cherenkov::LayerId>) =
+        layers
+            .iter()
+            .partition(|&layer| member_scope(&runtime, *layer).is_some());
     assert_eq!(window_member.len(), 1, "the window member keeps its scope");
     assert_eq!(
         overlay_member.len(),
@@ -466,8 +486,8 @@ fn a_material_in_an_anchored_overlay_does_not_join_the_outer_group() {
     );
     let mounts = mounts(&runtime);
     assert_ne!(
-        mounts.backdrop_group_id(window_member[0].key),
-        mounts.backdrop_group_id(overlay_member[0].key),
+        mounts.backdrop_group_id(window_member[0]),
+        mounts.backdrop_group_id(overlay_member[0]),
         "the overlay's member is a group of its own"
     );
     assert_eq!(mounts.backdrop_group_count(), 2);
@@ -510,7 +530,9 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
     let layers = material_layers(&runtime);
     assert!(!layers.is_empty(), "the lazy stack built its rows");
     assert!(
-        layers.iter().all(|layer| layer.scope.is_some()),
+        layers
+            .iter()
+            .all(|layer| member_scope(&runtime, *layer).is_some()),
         "every row flushed under its own group's scope"
     );
     // Each row's `.material_group()` is its own modifier instance, so each
@@ -537,17 +559,18 @@ fn a_group_wrapping_a_lazy_stack_groups_every_flushed_row() {
     let layers = material_layers(&runtime);
     assert!(!layers.is_empty(), "the lazy stack flushed its first rows");
     assert!(
-        layers
-            .iter()
-            .all(|layer| layer.scope.is_some() && layer.scope == layers[0].scope),
+        layers.iter().all(|layer| {
+            member_scope(&runtime, *layer).is_some()
+                && member_scope(&runtime, *layer) == member_scope(&runtime, layers[0])
+        }),
         "every row flushed under the outer group's scope"
     );
-    let group = mounts(&runtime).backdrop_group_id(layers[0].key);
+    let group = mounts(&runtime).backdrop_group_id(layers[0]);
     assert!(group.is_some());
     assert!(
         layers
             .iter()
-            .all(|layer| mounts(&runtime).backdrop_group_id(layer.key) == group),
+            .all(|layer| mounts(&runtime).backdrop_group_id(*layer) == group),
         "every flushed row shares the one group"
     );
     assert_eq!(mounts(&runtime).backdrop_group_count(), 1);
@@ -567,15 +590,16 @@ fn a_group_wrapping_a_lazy_stack_groups_every_flushed_row() {
     assert!(!layers.is_empty(), "the panned stack flushed rows");
     let mounts = mounts(&runtime);
     assert!(
-        layers
-            .iter()
-            .all(|layer| layer.scope.is_some() && layer.scope == layers[0].scope),
+        layers.iter().all(|layer| {
+            member_scope(&runtime, *layer).is_some()
+                && member_scope(&runtime, *layer) == member_scope(&runtime, layers[0])
+        }),
         "rows entering after the pan flushed under the outer scope"
     );
     assert!(
         layers
             .iter()
-            .all(|layer| mounts.backdrop_group_id(layer.key) == group),
+            .all(|layer| mounts.backdrop_group_id(*layer) == group),
         "rows entering after the pan join the same group"
     );
     assert_eq!(mounts.backdrop_group_count(), 1);
@@ -641,7 +665,7 @@ fn an_appearance_flip_moves_the_member_to_a_new_group() {
         .with_scale_factor(DISPLAY_SCALE)
     };
     pump(&mut runtime);
-    let key = material_layers(&runtime)[0].key;
+    let key = material_layers(&runtime)[0];
     assert_eq!(
         mounts(&runtime).backdrop_scheme(key),
         Some(ColorScheme::Light)

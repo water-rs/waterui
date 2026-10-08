@@ -1,5 +1,6 @@
 //! Native tests for the Rust `AppKit`/`UIKit` backend — real platform
-//! objects, no visible windows, no application run loop.
+//! objects on their actual main thread. Metal presentation trials use a real
+//! `AppKit` application event loop and window on the test machine.
 //!
 //! These cases create `NSView`/`NSWindow`/`UIView` objects, which
 //! `MainThreadMarker`-protected APIs only allow on the process's actual
@@ -37,11 +38,72 @@ fn main() {
     // gpu-surface fixture mounts through it.
     #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
     waterui_apple::native_test_support::gpu_surface::initialize_process();
+    #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+    if !args.list {
+        use cocoa_ui::appkit::{ActivationPolicy, Application, ApplicationHandlers};
+        let app = Application::shared(mtm());
+        let _policy_accepted = app.set_activation_policy(ActivationPolicy::Regular);
+        app.run(ApplicationHandlers::new().did_finish_launching(move |mtm| {
+            // Run within the AppKit application lifecycle. Trials dispatch
+            // native application events; a GCD block around the whole suite
+            // would prevent reentrant main-queue completion delivery.
+            let _ = mtm;
+            libtest_mimic::run(&args, trials()).exit();
+        }));
+        unreachable!("the native trial runner exits the process");
+    }
     libtest_mimic::run(&args, trials()).exit();
 }
 
 fn trials() -> Vec<Trial> {
-    let tests = vec![
+    let mut tests = base_trials();
+    #[cfg(all(target_os = "macos", feature = "native-test"))]
+    {
+        tests.extend([
+            Trial::test("window::manager_installs_into_the_environment", || {
+                window::manager_installs_into_the_environment(mtm());
+                Ok(())
+            }),
+            Trial::test("window::bind_root_window_wires_a_live_window", || {
+                window::bind_root_window_wires_a_live_window(mtm());
+                Ok(())
+            }),
+            Trial::test(
+                "menus::the_window_menu_opens_with_the_standard_close_item",
+                || {
+                    menus::the_window_menu_opens_with_the_standard_close_item();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "menus::a_pull_down_validates_its_callback_rows_from_their_command",
+                || {
+                    menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                    Ok(())
+                },
+            ),
+        ]);
+        #[cfg(feature = "gpu_surface")]
+        {
+            tests.extend(gpu_surface::trials());
+            tests.extend(filtered::trials());
+        }
+    }
+    #[cfg(target_os = "ios")]
+    {
+        tests.extend(tabs::trials());
+        tests.extend(navigation::trials());
+        tests.extend(controller_bounds::trials());
+    }
+    tests.extend(migration::trials());
+    tests.extend(owner_lifetimes::trials());
+    tests.extend(scroll::trials());
+    tests.extend(list_scroll::trials());
+    tests
+}
+
+fn base_trials() -> Vec<Trial> {
+    vec![
         Trial::test("leaf::mount_attaches_and_unmount_detaches", || {
             leaf::mount_attaches_and_unmount_detaches();
             Ok(())
@@ -98,43 +160,20 @@ fn trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "resolve::control_leaves_answer_their_intrinsic_height",
+            || {
+                resolve::control_leaves_answer_their_intrinsic_height();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "picture::a_laid_out_picture_rasterizes_at_its_bounds",
             || {
                 picture::a_laid_out_picture_rasterizes_at_its_bounds();
                 Ok(())
             },
         ),
-    ];
-    #[cfg(all(target_os = "macos", feature = "native-test"))]
-    let tests = {
-        let mut tests = tests;
-        tests.extend([
-            Trial::test("window::manager_installs_into_the_environment", || {
-                window::manager_installs_into_the_environment(mtm());
-                Ok(())
-            }),
-            Trial::test("window::bind_root_window_wires_a_live_window", || {
-                window::bind_root_window_wires_a_live_window(mtm());
-                Ok(())
-            }),
-        ]);
-        #[cfg(feature = "gpu_surface")]
-        tests.extend(gpu_surface::trials());
-        tests
-    };
-    #[cfg(target_os = "ios")]
-    let tests = {
-        let mut tests = tests;
-        tests.extend(tabs::trials());
-        tests.extend(controller_bounds::trials());
-        tests
-    };
-    let mut tests = tests;
-    tests.extend(migration::trials());
-    tests.extend(owner_lifetimes::trials());
-    tests.extend(scroll::trials());
-    tests.extend(list_scroll::trials());
-    tests
+    ]
 }
 
 /// The marker the whole suite builds objects under — the real one, on the
@@ -668,8 +707,15 @@ mod leaf {
 /// to hand it back to), so a spurious empty render could not masquerade as
 /// a pass.
 mod resolve {
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::form::picker::{PickerItem, picker};
+    use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::slider::slider;
+    use waterui::component::text_field::TextField;
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
+    use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
@@ -805,6 +851,51 @@ mod resolve {
         render(());
         render(Spacer::new(8.0));
         render(IgnorableMetadata::new((), Unregistered));
+    }
+
+    /// §6's control contract: a finite height offer is advice, not an
+    /// allocation. The slider, the default-style picker and both text
+    /// fields answer their intrinsic height to it — a `VStack` above them
+    /// cannot starve a trailing `ScrollView` by handing out space that
+    /// only exists because the control claimed it.
+    pub fn control_leaves_answer_their_intrinsic_height() {
+        let volume = binding(0.5_f64);
+        let selection = binding("Alpha");
+        let text_value = binding(Str::from(""));
+        let secret = binding(Secure::new(String::new()));
+        let items: Vec<PickerItem<&'static str>> = vec![
+            waterui::text!("Alpha").tag("Alpha"),
+            waterui::text!("Beta").tag("Beta"),
+            waterui::text!("Gamma").tag("Gamma"),
+        ];
+        let leaves = [
+            ("slider", render(slider("Volume", &volume))),
+            ("picker", render(picker("Letter", items, &selection))),
+            ("text field", render(TextField::new("Name", &text_value))),
+            (
+                "secure field",
+                render(SecureField::new("Password", &secret)),
+            ),
+        ];
+        for (name, leaf) in leaves {
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), Some(500.0)))
+                .size;
+            let unspecified = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), None))
+                .size;
+            assert_eq!(
+                offered.height.to_bits(),
+                unspecified.height.to_bits(),
+                "{name} answers a finite height offer with its intrinsic height"
+            );
+            assert!(
+                offered.height < 500.0,
+                "{name} must not grow into the offered height"
+            );
+        }
     }
 }
 
@@ -1495,150 +1586,1077 @@ mod window {
     };
 }
 
+/// The standard menu bar's content, read back off the installed `NSMenu`s.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod menus {
+    use std::rc::Rc;
+
+    use cocoa_ui::appkit::{Command, Menu, MenuButton, MenuItem};
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+    use waterui_apple::native_test_support::menus::window_menu_rows;
+
+    use crate::mtm;
+
+    /// `build_default`'s Window menu starts with the standard Close item —
+    /// ⌘W, untargeted `performClose:`, disabled while no key window takes
+    /// it — unless a declared menu carries Close, when the Window menu has
+    /// none.
+    pub fn the_window_menu_opens_with_the_standard_close_item() {
+        let rows = window_menu_rows(
+            mtm(),
+            CloseWindowPlacement::WindowMenu,
+            Some(Shortcut::new('w').command()).as_ref(),
+        );
+        let first = rows.first().expect("the Window menu has rows");
+        assert_eq!(first.title, "Close");
+        assert_eq!(first.key_equivalent, "w");
+        assert_eq!(first.action.as_deref(), Some("performClose:"));
+        assert!(first.modifiers.contains(NSEventModifierFlags::Command));
+        assert!(!first.enabled, "no key window takes `performClose:`");
+
+        let declared = window_menu_rows(mtm(), CloseWindowPlacement::Declared, None);
+        assert!(!declared.is_empty(), "the Window menu keeps its other rows");
+        assert!(
+            declared
+                .iter()
+                .all(|row| row.title != "Close" && row.action.as_deref() != Some("performClose:")),
+            "a declared Close is never repeated in the Window menu: {declared:?}"
+        );
+    }
+
+    /// A mounted pull-down validates its rows each time it opens, and a
+    /// callback row answers from its command's enabled state — set on the
+    /// item before or after its action, or carried by the [`Command`].
+    pub fn a_pull_down_validates_its_callback_rows_from_their_command() {
+        let mtm = mtm();
+        // Validation asks the application for each row's target, as it
+        // does in a launched app.
+        let _app = NSApplication::sharedApplication(mtm);
+        let button = MenuButton::new(mtm);
+        let menu = Menu::new(mtm, "");
+        menu.add_item(MenuItem::new(mtm, "", None, ""));
+        menu.add_item(
+            MenuItem::new(mtm, "on", None, "")
+                .with_enabled(true)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off", None, "")
+                .with_enabled(false)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off after", None, "")
+                .with_action(|| {})
+                .with_enabled(false),
+        );
+        let off_command = Command {
+            label: "off command".to_owned(),
+            enabled: false,
+            ..Command::default()
+        };
+        menu.add_item(MenuItem::command(mtm, &off_command, Rc::new(|| {})));
+        button.set_menu(&menu);
+
+        let native = menu.menu();
+        assert!(
+            native.autoenablesItems(),
+            "the pull-down validates its rows"
+        );
+        native.update();
+        let enabled: Vec<bool> = (1..native.numberOfItems())
+            .map(|index| {
+                native
+                    .itemAtIndex(index)
+                    .expect("a row at every index")
+                    .isEnabled()
+            })
+            .collect();
+        assert_eq!(enabled, [true, false, false, false]);
+    }
+}
+
 /// GPU-surface ownership regression coverage (#1725): a real mounted
 /// `SceneView` — production `build_surface`, `SurfaceState`,
-/// `SceneRenderer`/`SceneEngine` — driven through the failure drain and
-/// the completion settlement seam. The ordering the GPU's own timing
-/// cannot pin down is delivered by a direct call of the actual
-/// `settle_frame_completion` body — reported as a deterministic seam
-/// call, not a physical cadence or real GPU submission claim.
+/// `SceneRenderer`/`SceneEngine` — driven through the capturable
+/// sequence, the publication wait and the readiness contract. Event
+/// orderings the GPU's own timing cannot pin down are delivered by
+/// calling the production settle bodies directly in the order under
+/// test — reported as deterministic seam calls, not physical cadence or
+/// real link deliveries.
 #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
 mod gpu_surface {
+    use std::rc::Rc;
+
     use libtest_mimic::Trial;
-    use waterui_apple::native_test_support::{gpu_surface::MountedSceneSurface, pump_main_until};
+    use waterui_apple::native_test_support::ErrorLog;
+    use waterui_apple::native_test_support::gpu_surface::MountedSceneSurface;
 
     use super::mtm;
 
-    /// The registered trials — the completion/failure seam coverage for
-    /// the mounted-surface ownership contract.
+    /// The registered trials — the settle-ordering and completion
+    /// coverage for the mounted-surface ownership contract.
     pub fn trials() -> Vec<Trial> {
         vec![
             Trial::test(
-                "gpu_surface::routed_failure_drains_idle_owner_once",
-                routed_failure_drains_idle_owner_once,
+                "gpu_surface::failed_render_settles_readiness_once",
+                failed_render_settles_readiness_once,
             ),
             Trial::test(
-                "gpu_surface::stale_completion_releases_only_its_lease",
-                stale_completion_releases_only_its_lease,
+                "gpu_surface::external_capture_submission_completes_ok",
+                external_capture_submission_completes_ok,
+            ),
+            Trial::test(
+                "gpu_surface::failure_inside_a_capture_scope_still_balances",
+                failure_inside_a_capture_scope_still_balances,
+            ),
+            Trial::test(
+                "gpu_surface::publication_park_inside_a_capture_scope_stays_balanced",
+                publication_park_inside_a_capture_scope_stays_balanced,
+            ),
+            Trial::test(
+                "gpu_surface::capture_opening_over_a_parked_wait_stays_balanced",
+                capture_opening_over_a_parked_wait_stays_balanced,
+            ),
+            Trial::test(
+                "gpu_surface::capture_opening_over_a_failed_hold_balances",
+                capture_opening_over_a_failed_hold_balances,
+            ),
+            Trial::test(
+                "gpu_surface::a_failed_child_answers_the_terminal_capture_outcome_once",
+                a_failed_child_answers_the_terminal_capture_outcome_once,
+            ),
+            Trial::test(
+                "gpu_surface::a_failed_batch_settles_its_requester_once",
+                a_failed_batch_settles_its_requester_once,
+            ),
+            Trial::test(
+                "gpu_surface::subpixel_extents_round_up_and_empty_bounds_detach",
+                subpixel_extents_round_up_and_empty_bounds_detach,
+            ),
+            Trial::test(
+                "gpu_surface::an_unwritten_production_drops_the_frame_unpresented",
+                an_unwritten_production_drops_the_frame_unpresented,
+            ),
+            Trial::test(
+                "gpu_surface::an_animating_scene_presents_its_frame",
+                an_animating_scene_presents_its_frame,
+            ),
+            Trial::test(
+                "gpu_surface::a_deferred_external_frame_requests_a_redraw",
+                a_deferred_external_frame_requests_a_redraw,
+            ),
+            Trial::test(
+                "gpu_surface::view_render_answers_gpu_failure_over_a_failed_child",
+                view_render_answers_gpu_failure_over_a_failed_child,
+            ),
+            Trial::test(
+                "gpu_surface::view_render_succeeds_over_a_healthy_gpu_child",
+                view_render_succeeds_over_a_healthy_gpu_child,
             ),
         ]
     }
 
-    /// A routed shared-generation failure reaches an owner that is idle
-    /// — never attached, never presented, with a readiness waiter
-    /// registered — through the production path: `ScenePart::note_failure`
-    /// stores it and `RedrawHandle::request_redraw` enqueues
-    /// `handle_redraw_request`, which drains it before the visibility,
-    /// in-flight and external gates and settles through `settle_failed`:
-    /// the owner is marked failed, the readiness waiter fires exactly
-    /// once, the frame is owed, and the recovery watch on the failed
-    /// generation arms. Re-producing the sealed generation answers the
-    /// retained failure unchanged.
-    pub fn routed_failure_drains_idle_owner_once() -> Result<(), libtest_mimic::Failed> {
+    /// A typed frame-path failure settling on the owner resolves its
+    /// readiness exactly once — the waiter registered through the real
+    /// `Capturable::register_waiter` fires, a waiter armed after the
+    /// settle never wakes — and the failed owner stops offering its
+    /// first frame. The settle is driven through `settle_failed` on the
+    /// live generation — the entry the render `Err` arm takes (no
+    /// renderable texture extent produces that `Err` itself: the
+    /// platform's maximum texture dimension equals the surface's
+    /// rejection bound).
+    pub fn failed_render_settles_readiness_once() -> Result<(), libtest_mimic::Failed> {
         let mtm = mtm();
         let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
             .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
-        mounted
-            .install_scene_renderer()
-            .map_err(|error| format!("the production renderer install: {error}"))?;
+        mounted.ensure_fixture_window();
         let probe = mounted.readiness_probe();
-        assert!(!mounted.owner_failed() && !mounted.frame_owed());
-
-        // Route the failure: the generation seals, the participant's
-        // owner wake lands on the main queue — the callback itself.
-        mounted.fail_scene_generation();
-        assert!(mounted.scene_generation_sealed());
-        assert!(
-            !mounted.owner_failed(),
-            "the routed failure sits queued until the owner drains it"
-        );
-
-        assert!(
-            pump_main_until(2.0, || mounted.owner_failed()),
-            "the enqueued handle_redraw_request never drained the routed failure"
-        );
-        assert!(mounted.frame_owed(), "the failed frame stays owed");
+        mounted.settle_failure(mounted.current_generation());
         assert_eq!(
             probe.wakes(),
             1,
             "the registered readiness waiter settles exactly once"
         );
         assert!(
-            mounted.context_watch_armed(),
-            "the recovery watch arms on the failed generation"
+            !mounted.frame_presented(),
+            "a failed frame presents no receipt"
         );
         assert!(
-            mounted.sealed_produce_is_cached_error(),
-            "the sealed generation never re-produces"
+            !mounted.first_paint_participation(),
+            "a failed surface stops offering its first frame"
+        );
+        let late = mounted.readiness_probe();
+        assert_eq!(
+            late.wakes(),
+            0,
+            "a settled owner never arms a later readiness waiter"
         );
         Ok(())
     }
 
-    /// A stale completion after a genuinely newer publication: the
-    /// retained old-generation submission releases only its own lease —
-    /// `frame_owed`, `frame_in_flight` — and neither presents nor touches
-    /// the newer epoch's readiness, failure flag or watch. The current
-    /// generation still settles a completion normally.
-    ///
-    /// The seam is called directly for deterministic ordering — the real
-    /// `settle_frame_completion` body, not a simulated path; no physical
-    /// GPU submission/cadence is claimed.
-    pub fn stale_completion_releases_only_its_lease() -> Result<(), libtest_mimic::Failed> {
+    /// The live submission completion contract on a runner where the
+    /// display link never paces: a real external capture renders and
+    /// submits through the production sequence —
+    /// `render_to_metal_texture` → `submit_with_completion` →
+    /// `on_submitted_work_done` → `submission_validity` — and answers
+    /// `Ok(())` on a healthy context, never a synthesized deferral.
+    /// Onscreen `PresentedFrame` readiness is verified on
+    /// physical-device runs, where the link delivers.
+    pub fn external_capture_submission_completes_ok() -> Result<(), libtest_mimic::Failed> {
         let mtm = mtm();
         let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
             .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
         mounted
             .install_scene_renderer()
             .map_err(|error| format!("the production renderer install: {error}"))?;
+        assert!(
+            mounted.capture_external_once().is_ok(),
+            "the live submission answers Ok through the shared validity contract"
+        );
+        assert!(
+            mounted.first_paint_participation(),
+            "the capture scope restored the presenting surface"
+        );
+        Ok(())
+    }
+
+    /// A batch failure routed to the owner inside an open capture scope
+    /// lands its `settle_failed` on the main queue without disturbing
+    /// the scope: `end_external_rendering` still matches its `begin`,
+    /// and the failed hold survives the scope's close — the surface
+    /// keeps refusing a first frame after it.
+    pub fn failure_inside_a_capture_scope_still_balances() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
         let probe = mounted.readiness_probe();
+        mounted.begin_capture(Rc::new(|| {}));
+        mounted.route_failure(mounted.current_generation());
         assert!(
-            mounted.begin_in_flight_frame(),
-            "the surface ring yields a real PendingFrame"
+            mounted.pump_main(5.0, || !mounted.first_paint_participation()),
+            "the routed settle lands inside the open scope"
         );
+        mounted.end_capture(true);
+        assert_eq!(
+            probe.wakes(),
+            1,
+            "the settle inside the scope resolved readiness once"
+        );
+        assert!(
+            !mounted.first_paint_participation(),
+            "the failed hold survives the scope's close"
+        );
+        Ok(())
+    }
 
+    /// A publication wait armed inside an open capture scope: the scope
+    /// still closes balanced, a render against the parked surface
+    /// answers `Err(CaptureError::Deferred)` — the park owes its next
+    /// frame to the publication wake, not to a retry on the same context
+    /// — and the surface keeps offering its first frame, since a park is
+    /// not a failure.
+    pub fn publication_park_inside_a_capture_scope_stays_balanced()
+    -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.begin_capture(Rc::new(|| {}));
+        mounted.park_on(mounted.current_generation());
+        mounted.end_capture(true);
         assert!(
-            pollster::block_on(mounted.publish_newer_context()),
-            "the runtime must publish a genuinely newer context generation"
+            matches!(
+                mounted.capture_external_once(),
+                Err(cocoa_ui::capture::CaptureError::Deferred)
+            ),
+            "a render against the parked hold answers Err(CaptureError::Deferred)"
         );
+        assert!(
+            mounted.first_paint_participation(),
+            "a parked surface still offers its first frame"
+        );
+        Ok(())
+    }
 
-        // The stale submission's completion runs the real seam: obsolete
-        // first — it releases its lease and owes the work, nothing more.
-        mounted.settle_submitted_completion();
+    /// A capture scope opening over an already-parked wait: the scope
+    /// balances, the render inside it answers `Err(CaptureError::Deferred)`
+    /// rather than retrying the parked frame, and the surface keeps
+    /// offering its first frame.
+    pub fn capture_opening_over_a_parked_wait_stays_balanced() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.park_on(mounted.current_generation());
+        mounted.begin_capture(Rc::new(|| {}));
         assert!(
-            !mounted.frame_in_flight(),
-            "the stale completion released its PendingFrame lease"
+            matches!(
+                mounted.render_capture_frame(64, 64),
+                Err(cocoa_ui::capture::CaptureError::Deferred)
+            ),
+            "a render over the parked hold answers Err(CaptureError::Deferred)"
         );
-        assert!(mounted.frame_owed(), "the work is owed on the live epoch");
+        mounted.end_capture(true);
         assert!(
-            !mounted.owner_failed(),
-            "a stale completion never marks the newer epoch failed"
+            mounted.first_paint_participation(),
+            "a parked surface still offers its first frame"
+        );
+        Ok(())
+    }
+
+    /// A capture scope opening over a settled failure: the scope
+    /// balances — `end_external_rendering` matches — the render inside
+    /// answers `Err(CaptureError::Failed)` carrying the settled typed
+    /// failure rather than retrying the failed frame, and the failed
+    /// hold is untouched by the scope's open and close.
+    pub fn capture_opening_over_a_failed_hold_balances() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_fixture_window();
+        mounted.settle_failure(mounted.current_generation());
+        mounted.begin_capture(Rc::new(|| {}));
+        assert!(
+            matches!(
+                mounted.render_capture_frame(64, 64),
+                Err(cocoa_ui::capture::CaptureError::Failed(_))
+            ),
+            "a render over the failed hold answers Err(CaptureError::Failed)"
+        );
+        mounted.end_capture(true);
+        assert!(
+            !mounted.first_paint_participation(),
+            "the failed hold survives the scope's open and close"
+        );
+        Ok(())
+    }
+
+    /// The terminal capture contract for a failed child: a settled
+    /// failure inside an open capture scope makes the render's
+    /// completion answer `Err(CaptureError::Failed)` — the typed surface
+    /// failure itself — once, without waiting on a redraw the failed
+    /// context generation can never issue.
+    pub fn a_failed_child_answers_the_terminal_capture_outcome_once()
+    -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.begin_capture(Rc::new(|| {}));
+        mounted.settle_failure(mounted.current_generation());
+        let Err(cocoa_ui::capture::CaptureError::Failed(error)) =
+            mounted.render_capture_frame(64, 64)
+        else {
+            return Err(
+                "the failed surface must answer the terminal outcome, not a deferral".into(),
+            );
+        };
+        assert!(
+            matches!(
+                error.downcast_ref::<waterui_graphics::gpu::runtime::HostedLayerError>(),
+                Some(waterui_graphics::gpu::runtime::HostedLayerError::Surface(
+                    waterui_graphics::cherenkov::SurfaceError::TooLarge { .. }
+                ))
+            ),
+            "the terminal outcome carries the settled typed failure: {error}"
+        );
+        mounted.end_capture(true);
+        Ok(())
+    }
+
+    /// The requesting owner of a failed batch settles exactly once:
+    /// the test drives the settle-then-routed-copy ordering directly —
+    /// `settle_failure` plays `produce`'s `Err` arm and `route_failure`
+    /// plays the copy `EngineGeneration::settle_failed` delivers through
+    /// the requester's sink; it never runs `produce`. The routed settle
+    /// is a no-op on the same generation — one failure log, one
+    /// readiness resolution, and the `Failed` hold stands.
+    pub fn a_failed_batch_settles_its_requester_once() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        let probe = mounted.readiness_probe();
+        let (log, errors) = ErrorLog::new("waterui_apple::components::gpu_surface");
+        let generation = mounted.current_generation();
+        let drained = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        tracing::subscriber::with_default(log, || {
+            // The requester's own `Err` arm — `produce`'s synchronous settle.
+            mounted.settle_failure(generation);
+            // The routed copy the batch delivered back through the
+            // requester's own sink — must land as a no-op. A marker block
+            // queued behind it proves the drain: the main queue is FIFO.
+            mounted.route_failure(generation);
+            {
+                let drained = drained.clone();
+                cocoa_ui::main_queue::enqueue(move |_| {
+                    drained.store(true, std::sync::atomic::Ordering::SeqCst);
+                });
+            }
+            assert!(
+                mounted.pump_main(5.0, || drained.load(std::sync::atomic::Ordering::SeqCst)),
+                "the routed settle drains off the main queue"
+            );
+        });
+        assert_eq!(
+            errors.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the requester of a failed batch logs its settle exactly once"
         );
         assert_eq!(
             probe.wakes(),
-            0,
-            "a stale completion never settles the newer epoch's readiness"
+            1,
+            "the requester of a failed batch resolves readiness exactly once"
         );
         assert!(
-            !mounted.context_watch_armed(),
-            "a stale completion never installs a watch"
+            !mounted.first_paint_participation(),
+            "the failed hold survives the routed copy"
         );
-        assert!(
-            !mounted.frame_presented(),
-            "a stale completion never presents"
+        Ok(())
+    }
+
+    /// The drawable extent is whole device pixels, never a truncated
+    /// zero: a positive sub-pixel bound rounds up through
+    /// `initialize_gpu` — the production door layout and backing changes
+    /// run — and a genuinely empty view stops presenting entirely
+    /// instead of carrying a zero size beside a live drawable
+    /// configuration; restored bounds re-enter through the same door.
+    pub fn subpixel_extents_round_up_and_empty_bounds_detach() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_fixture_window();
+        // 0.25 pt truncates to 0 device pixels at 1x, 2x and 3x alike —
+        // only ceil-rounding produces a nonzero drawable.
+        mounted.set_view_frame(0.25, 0.25);
+        mounted.initialize_gpu();
+        assert_eq!(
+            mounted.drawable_size(),
+            Some((1, 1)),
+            "0.25 pt of bounds still yields one device pixel of drawable"
         );
 
-        // The current epoch still completes through the same seam.
-        assert!(
-            mounted.begin_in_flight_frame(),
-            "the ring yields a fresh frame for the live epoch"
+        // Genuinely empty: the attach epoch drops — no zero-size drawable
+        // configuration survives beside it, so the surface stops
+        // offering a frame to capture or reveal.
+        mounted.set_view_frame(0.0, 0.0);
+        let bounds = mounted.view_bounds();
+        assert_eq!(
+            (bounds.width, bounds.height),
+            (0.0, 0.0),
+            "the zero bounds write lands"
         );
-        mounted.settle_current_completion();
-        assert!(
-            mounted.frame_presented(),
-            "the live epoch presents and reports readiness"
+        mounted.initialize_gpu();
+        assert_eq!(
+            mounted.drawable_size(),
+            None,
+            "a genuinely empty view carries no live drawable configuration"
         );
-        assert_eq!(probe.wakes(), 1, "readiness resolves once");
-        assert!(!mounted.owner_failed());
+
+        // Restored bounds re-enter through the same `attach` door.
+        mounted.set_view_frame(0.25, 0.25);
+        mounted.initialize_gpu();
+        assert_eq!(
+            mounted.drawable_size(),
+            Some((1, 1)),
+            "restored bounds re-attach through initialize_gpu"
+        );
+        Ok(())
+    }
+
+    /// An onscreen frame whose scene was invalidated after the batch —
+    /// `present` answers `Next::At` and the drawable target is never
+    /// written — is dropped unpresented and the frame re-owed, so the
+    /// recycled drawable never reaches the screen. The trial produces
+    /// the shared batch at the delivered timestamp from a sibling
+    /// surface on the same environment, invalidates the sibling's scene,
+    /// then issues a real drawable checked out of a standalone
+    /// `CAMetalLayer` (a link-bound layer forbids `nextDrawable`):
+    /// `render_drawable` itself runs the guard, and the bound
+    /// renderer's `wrote_target` report proves the guard saw the
+    /// unwritten frame.
+    ///
+    /// The invalidation is what makes the order deterministic: the
+    /// sibling's link may or may not deliver a first-paint frame during
+    /// the window spin, but between `invalidate_scene` and
+    /// `deliver_frame` there is no run-loop turn for any queued work —
+    /// link delivery or redraw — to re-prepare the scene before the
+    /// guard reads it.
+    pub fn an_unwritten_production_drops_the_frame_unpresented() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let (producer, surface) = pollster::block_on(MountedSceneSurface::mount_pair(mtm))
+            .map_err(|error| format!("two mounted SceneView surfaces: {error}"))?;
+        producer
+            .install_scene_renderer()
+            .map_err(|error| format!("the producing surface's renderer: {error}"))?;
+        surface.set_view_frame(64.0, 64.0);
+        surface.ensure_attached();
+        assert_eq!(
+            surface.presenter_pixel_format(),
+            Some(surface.capture_pixel_format()),
+            "the presenter's layer carries the surface's declared presentation format"
+        );
+        let media_time = cocoa_ui::objc2_quartz_core::CACurrentMediaTime();
+        let target_time = surface.map_frame_time(media_time);
+        producer
+            .render_scene_frame_at(target_time)
+            .map_err(|error| format!("the producing surface's frame: {error}"))?;
+        surface.invalidate_scene();
+        assert!(
+            surface.deliver_frame(media_time),
+            "the standalone layer issued a drawable frame"
+        );
+        assert_eq!(
+            surface.wrote_target(target_time),
+            Some(false),
+            "the bound renderer reported the target unwritten"
+        );
+        assert!(
+            surface.frame_owed(),
+            "the unwritten frame stays owed for the next production"
+        );
+        Ok(())
+    }
+
+    /// A scene whose `build_scene` always answers `true` —
+    /// self-animating content — still produces the delivered
+    /// timestamp: the batch's `again` only schedules the next frame, so
+    /// the bound renderer reports the target written and the frame takes
+    /// the submit path instead of dropping unwritten and owed. The
+    /// drawable checked out of the standalone layer can mint no
+    /// receipt — the bound renderer's `wrote_target` report and the
+    /// cleared owed flag prove the frame was submitted for presentation.
+    pub fn an_animating_scene_presents_its_frame() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let surface = pollster::block_on(MountedSceneSurface::mount_animating(mtm))
+            .map_err(|error| format!("a mounted animating SceneView surface: {error}"))?;
+        surface.set_view_frame(64.0, 64.0);
+        surface.ensure_attached();
+        let media_time = cocoa_ui::objc2_quartz_core::CACurrentMediaTime();
+        let target_time = surface.map_frame_time(media_time);
+        assert!(
+            surface.deliver_frame(media_time),
+            "the standalone layer issued a drawable frame"
+        );
+        assert_eq!(
+            surface.wrote_target(target_time),
+            Some(true),
+            "the animating scene's delivered frame wrote its target"
+        );
+        assert!(
+            !surface.frame_owed(),
+            "the produced frame was submitted, not re-owed"
+        );
+        Ok(())
+    }
+
+    /// `ViewRenderer::render` over a GPU child on a sealed-failure
+    /// generation resolves `Err(RenderError::Gpu(_))` — the Arc'd
+    /// `HostedLayerError` stays in `source()` — instead of hanging or
+    /// panicking: the central capture's terminal `Failed` arm answers
+    /// the typed outcome for a surface that can never produce a frame
+    /// on the failed context generation.
+    pub fn view_render_answers_gpu_failure_over_a_failed_child() -> Result<(), libtest_mimic::Failed>
+    {
+        use waterui_apple::dispatch;
+        use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
+        use waterui_apple::native_test_support::view_renderer::{
+            GpuRuntime, HostedLayerError, install_service, scene_engine,
+        };
+        use waterui_backend_core::AnyView;
+        use waterui_core::view_renderer::{RenderError, RenderSize, ViewRenderer};
+        use waterui_graphics::cherenkov::SurfaceError;
+
+        let (runtime, mut env) = pollster::block_on(async {
+            let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
+            let env = fixture_env(runtime.clone());
+            Ok::<_, String>((runtime, env))
+        })
+        .map_err(|error| format!("the fixture environment: {error}"))?;
+        dispatch::install(&mut env);
+        install_service(&mut env);
+
+        // Seal the shared generation the rendered leaf's `SceneView`
+        // mounts on — the same typed carrier a real surface rejection
+        // produces.
+        let generation = scene_engine(&env)
+            .generation(&runtime, &runtime.context())
+            .map_err(|error| format!("the shared engine generation: {error}"))?;
+        let max = runtime.context().device().limits().max_texture_dimension_2d;
+        generation.seal_failure_for_test(HostedLayerError::Surface(SurfaceError::TooLarge {
+            width: u32::MAX,
+            height: u32::MAX,
+            max,
+        }));
+
+        let renderer = env
+            .get::<ViewRenderer>()
+            .ok_or("the installed ViewRenderer service")?;
+        // `block_on_main`, not `pollster`: the capture's completions
+        // land on `DispatchQueue::main()`, which only a turning run
+        // loop services.
+        let Err(RenderError::Gpu(cause)) = waterui_apple::native_test_support::block_on_main(
+            30.0,
+            renderer.render(
+                AnyView::new(fixture_scene_view()),
+                RenderSize::new(64.0, 64.0),
+            ),
+        ) else {
+            return Err(
+                "a capture over the failed GPU child resolves Err(RenderError::Gpu)".into(),
+            );
+        };
+        // The Arc'd `HostedLayerError` must stay reachable down the
+        // `source()` chain through the `GpuSurfaceFailed` wrapper.
+        let mut link: &dyn std::error::Error = &*cause;
+        let reachable = loop {
+            if let Some(HostedLayerError::Surface(..)) = link.downcast_ref::<HostedLayerError>() {
+                break true;
+            }
+            let Some(next) = link.source() else {
+                break false;
+            };
+            link = next;
+        };
+        assert!(
+            reachable,
+            "the Gpu cause's chain reaches the settled HostedLayerError"
+        );
+        Ok(())
+    }
+
+    /// A windowless `ViewRenderer::render` over a healthy `SceneView`
+    /// resolves `Ok` with real pixels: the offscreen capture window
+    /// declares `DynamicRange::Standard` for the hosted subtree (the
+    /// render target is RGBA8), so the leaf's GPU surface resolves a
+    /// concrete range instead of panicking on the missing display.
+    pub fn view_render_succeeds_over_a_healthy_gpu_child() -> Result<(), libtest_mimic::Failed> {
+        use waterui_apple::dispatch;
+        use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
+        use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
+        use waterui_backend_core::AnyView;
+        use waterui_core::view_renderer::{RenderSize, ViewRenderer};
+
+        let (_runtime, mut env) = pollster::block_on(async {
+            let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
+            let env = fixture_env(runtime.clone());
+            Ok::<_, String>((runtime, env))
+        })
+        .map_err(|error| format!("the fixture environment: {error}"))?;
+        dispatch::install(&mut env);
+        install_service(&mut env);
+
+        let renderer = env
+            .get::<ViewRenderer>()
+            .ok_or("the installed ViewRenderer service")?;
+        let result = waterui_apple::native_test_support::block_on_main(
+            30.0,
+            renderer.render(
+                AnyView::new(fixture_scene_view()),
+                RenderSize::new(64.0, 64.0),
+            ),
+        )
+        .map_err(|error| format!("a render over the healthy GPU child resolves Ok: {error}"))?;
+        // The rendered leaf is measured detached, so the capture rasters
+        // at the backing scale a windowless view reports.
+        let scale =
+            cocoa_ui::view::backing_scale_factor(&cocoa_ui::PlatformView::new(super::mtm()));
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a 64-point extent at a backing scale is a small positive pixel count"
+        )]
+        let side = (64.0 * scale).ceil() as u32;
+        assert_eq!(
+            (result.width, result.height),
+            (side, side),
+            "the raster is the 64-point proposal at the backing scale"
+        );
+        let (texels, rest) = result.rgba_data.as_chunks::<4>();
+        assert!(rest.is_empty(), "the raster is whole RGBA8 texels");
+        assert_eq!(
+            texels.len(),
+            side as usize * side as usize,
+            "the raster holds one RGBA8 texel per pixel"
+        );
+        assert!(
+            texels.iter().all(|texel| *texel == [255, 255, 255, 255]),
+            "every texel is the fixture's opaque white fill"
+        );
+        Ok(())
+    }
+
+    /// A deferred external frame replays through the open capture
+    /// scope's own redraw notification: the production
+    /// `defer_unwritten_external_frame` owes the frame and requests the
+    /// redraw `handle_redraw_request` turns into the capture's `redraw`
+    /// callback — the deferred capture re-renders without relying on an
+    /// unrelated invalidation.
+    pub fn a_deferred_external_frame_requests_a_redraw() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        let redraws = Rc::new(std::cell::Cell::new(0_u32));
+        mounted.begin_capture({
+            let redraws = Rc::clone(&redraws);
+            Rc::new(move || {
+                redraws.set(redraws.get() + 1);
+            })
+        });
+        mounted.defer_external_frame();
+        assert!(
+            mounted.frame_owed(),
+            "the deferred frame stays owed for the replay"
+        );
+        assert!(
+            mounted.pump_main(5.0, || redraws.get() > 0),
+            "the deferred frame replays through the capture's redraw notification"
+        );
+        mounted.end_capture(false);
+        Ok(())
+    }
+}
+
+/// Filtered-view settlement over a failed GPU-surface child: a real
+/// filtered leaf mounted through the production `build_filtered_parts`
+/// over a real `SceneView` child — the same `FilteredState`, capturable
+/// registration and link wiring a mount installs. After the child
+/// settles a typed failure, the carrier its own capturable answers a
+/// parent capture with — `CaptureError::Failed` — is fed through the
+/// filtered leaf's captured-frame completion exactly as
+/// `finish_captured_frame` would deliver it, and the settle contract
+/// runs against it: one error log, readiness resolves so capture
+/// waiters never hang, and the link parks until a new context
+/// generation publishes instead of retrying the failed one forever.
+#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+mod filtered {
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use cocoa_ui::capture::CaptureError;
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::ErrorLog;
+    use waterui_apple::native_test_support::filtered::MountedFilteredSurface;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+    use waterui_graphics::gpu::runtime::HostedLayerError;
+
+    use super::mtm;
+
+    /// The registered trials — the failed-child settle contract and the
+    /// zero-bounds detach.
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "filtered::a_view_over_a_failed_child_settles_once",
+                a_view_over_a_failed_child_settles_once,
+            ),
+            Trial::test(
+                "filtered::a_collapsed_view_detaches_and_presents_again",
+                a_collapsed_view_detaches_and_presents_again,
+            ),
+            Trial::test(
+                "filtered::a_deferred_capture_pauses_the_link_until_the_child_redraws",
+                a_deferred_capture_pauses_the_link_until_the_child_redraws,
+            ),
+            Trial::test(
+                "filtered::a_lost_context_parks_the_link_until_the_publication",
+                a_lost_context_parks_the_link_until_the_publication,
+            ),
+            Trial::test(
+                "filtered::a_view_collapsed_mid_capture_renders_transparent",
+                a_view_collapsed_mid_capture_renders_transparent,
+            ),
+        ]
+    }
+
+    /// A parent capture that snapshots a filtered view while it has area,
+    /// then submits after a layout pass collapsed it, completes with the
+    /// view's region transparent — what the screen shows for a collapsed
+    /// view — instead of capturing zero-bounds content.
+    pub fn a_view_collapsed_mid_capture_renders_transparent() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let filtered = pollster::block_on(MountedFilteredSurface::mount_filling(mtm))
+            .map_err(|error| format!("a mounted filling filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "the filtered view presents its first frame"
+        );
+        let parent = filtered.parent_capture();
+
+        let control = parent.start();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || control.landed()),
+            "the control capture completes"
+        );
+        let outcome = control.take();
+        assert!(
+            matches!(outcome, Some(Ok(()))),
+            "the control capture lands, got {outcome:?}"
+        );
+        assert!(
+            parent.pixels().iter().all(|pixel| pixel[3] == u8::MAX),
+            "an uncollapsed filtered view fills its region of the parent's target"
+        );
+
+        let collapsed = parent.start();
+        filtered.set_host_frame(0.0, 0.0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || collapsed.landed()),
+            "the capture over the view collapsed after its prepare completes"
+        );
+        let outcome = collapsed.take();
+        assert!(
+            matches!(outcome, Some(Ok(()))),
+            "a capture over a view collapsed between prepare and submit lands, got {outcome:?}"
+        );
+        assert!(
+            parent.pixels().iter().all(|pixel| *pixel == [0; 4]),
+            "the collapsed view's region of the parent's target is transparent"
+        );
+        Ok(())
+    }
+
+    /// A frame whose capture defers on a live context — a nested filter
+    /// whose effect setup has not landed — leaves the display link paused
+    /// rather than recapturing every vsync, and the nested setup's redraw
+    /// re-arms it so the owed frame lands once the deferral clears.
+    pub fn a_deferred_capture_pauses_the_link_until_the_child_redraws()
+    -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let (filtered, gate) =
+            pollster::block_on(MountedFilteredSurface::mount_over_pending_filter(mtm))
+                .map_err(|error| format!("a mounted nested filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.nested_joined_capture()
+                && !filtered.render_in_flight()),
+            "the first frame's capture defers on the nested filter's pending setup"
+        );
+        assert!(
+            filtered.link_paused(),
+            "a live-context deferral leaves the link paused — no display-rate recapture"
+        );
+        assert!(
+            !filtered.frame_presented(),
+            "the deferred frame never presented"
+        );
+
+        gate.release();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "the nested setup's redraw re-arms the link and the owed frame lands"
+        );
+        Ok(())
+    }
+
+    /// A GPU device loss while the filtered view is attached: the
+    /// delivered frame parks the leaf — the link pauses, one publication
+    /// watch arms, and a delivery that still arrives while parked drops
+    /// without rendering — and the rebuilt context's publication wakes
+    /// the wait, re-arms the link and lands the owed frame.
+    pub fn a_lost_context_parks_the_link_until_the_publication() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let filtered = pollster::block_on(MountedFilteredSurface::mount_filling(mtm))
+            .map_err(|error| format!("a mounted filling filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "the attached filtered view presents its first frame"
+        );
+        let encoded = filtered.encoded_frames();
+        let lost = filtered.current_generation();
+
+        // The link has demand again when the loss lands, so the next
+        // delivered frame hits `render_frame`'s lost-context arm.
+        filtered.request_render();
+        filtered.lose_device("test device loss");
+        assert!(
+            filtered.deliver_frame(0.0),
+            "a drawable checks out for the frame"
+        );
+        assert!(
+            filtered.parked() && filtered.link_paused(),
+            "the lost context parks the leaf: the link pauses and the publication watch arms"
+        );
+
+        // A delivery still arriving while parked drops unpresented:
+        // nothing renders and the one outstanding watch stays
+        // outstanding — no per-vsync re-arm.
+        assert!(
+            filtered.deliver_frame(0.0),
+            "a drawable checks out for the parked leaf"
+        );
+        assert!(
+            filtered.parked() && filtered.link_paused() && filtered.encoded_frames() == encoded,
+            "a parked leaf renders nothing and keeps its one outstanding watch"
+        );
+
+        // The rebuild's publication wakes the parked wait: the hold
+        // clears, the link re-arms, and the owed frame renders on the
+        // new generation — the encode count is the render's own record.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.current_generation() > lost
+                && !filtered.parked()
+                && filtered.encoded_frames() > encoded),
+            "the publication wake re-arms the link and the owed frame renders"
+        );
+        Ok(())
+    }
+
+    /// A filtered view sizes its hidden content with its own bounds, and
+    /// a host collapsed to zero detaches — no presenter, so no link
+    /// remains to issue a frame over content with nothing to capture —
+    /// until restored bounds re-attach it and it presents again.
+    pub fn a_collapsed_view_detaches_and_presents_again() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let filtered = pollster::block_on(MountedFilteredSurface::mount(mtm))
+            .map_err(|error| format!("a mounted filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "the attached filtered view presents its first frame"
+        );
+        assert_eq!(
+            filtered.child.view_bounds(),
+            filtered.host_bounds(),
+            "the hidden content is framed with the host"
+        );
+
+        filtered.set_host_frame(0.0, 0.0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !filtered.attached()
+                && !filtered.has_presenter()),
+            "a zero-sized filtered view detaches and drops its presenter"
+        );
+
+        // 0.4 pt is positive but under one device pixel at 1x and 2x: it
+        // rounds up to whole pixels, attaches and presents a real frame.
+        filtered.set_host_frame(0.4, 0.4);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "a positive sub-pixel filtered view attaches and presents"
+        );
+        // `n` is the ceiling of `extent` exactly when `n - 1 < extent <= n`.
+        let extent = 0.4 * filtered.backing_scale();
+        let (width, height) = filtered.input_size();
+        for pixels in [width, height] {
+            assert!(
+                pixels > 0 && f64::from(pixels - 1) < extent && extent <= f64::from(pixels),
+                "{extent} device pixels of bounds round up to whole pixels, got {width}x{height}"
+            );
+        }
+
+        filtered.set_host_frame(0.0, 0.0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !filtered.attached()
+                && !filtered.has_presenter()),
+            "the sub-pixel view collapses and detaches again"
+        );
+
+        filtered.set_host_frame(64.0, 64.0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "restored bounds re-attach the filtered view and it presents again"
+        );
+        Ok(())
+    }
+
+    /// The carrier a parent capture receives from the settled child —
+    /// `Err(CaptureError::Failed)` carrying the child's typed failure,
+    /// read through the real `begin_capture` → `render_capture_frame` →
+    /// `end_capture` scope.
+    fn failed_child_carrier(
+        child: &waterui_apple::native_test_support::gpu_surface::MountedSceneSurface,
+    ) -> Arc<dyn std::error::Error + Send + Sync> {
+        child.begin_capture(Rc::new(|| {}));
+        let outcome = child.render_capture_frame(64, 64);
+        child.end_capture(false);
+        match outcome {
+            Err(CaptureError::Failed(error)) => error,
+            _ => panic!("a settled child answers Failed to a parent capture"),
+        }
+    }
+
+    /// A filtered view drawing on screen over a failed child settles the
+    /// terminal failure once: readiness resolves for the waiter a
+    /// first-paint collect queued, the link parks and no render remains
+    /// in flight, and a subsequent parent capture over the filtered
+    /// view answers `Err(Failed)` with the child's typed error rather
+    /// than deferring forever. A repeat settle for the same generation
+    /// logs no additional error.
+    pub fn a_view_over_a_failed_child_settles_once() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let filtered = pollster::block_on(MountedFilteredSurface::mount(mtm))
+            .map_err(|error| format!("a mounted filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        let probe = filtered.readiness_probe();
+        let generation = filtered.current_generation();
+
+        // The child genuinely failed — settle it, then read the carrier
+        // its own capturable answers a parent capture with.
+        filtered.child.settle_failure(generation);
+        let first = failed_child_carrier(&filtered.child);
+
+        let (log, errors) = ErrorLog::new("waterui_apple::components::filtered");
+        tracing::subscriber::with_default(log, || {
+            filtered.settle_failed_capture(generation, &first);
+            // A later redraw of the failed child lands the same
+            // terminal outcome on the same generation — logged once.
+            let repeat = failed_child_carrier(&filtered.child);
+            filtered.settle_failed_capture(generation, &repeat);
+        });
+        assert_eq!(
+            errors.load(Ordering::SeqCst),
+            1,
+            "the filtered leaf logs its failed settle exactly once"
+        );
+        assert_eq!(
+            probe.wakes(),
+            1,
+            "the filtered leaf resolves its readiness waiter exactly once"
+        );
+        assert!(
+            !filtered.first_paint_participation(),
+            "the filtered view leaves first-paint waiting until a new context rebinds"
+        );
+        assert!(
+            filtered.link_paused(),
+            "the display link parks until a new context generation publishes"
+        );
+        assert!(
+            !filtered.render_in_flight(),
+            "no further render is in flight after the settle"
+        );
+        filtered.request_render();
+        assert!(
+            filtered.link_paused() && !filtered.render_in_flight(),
+            "a scheduled frame can no longer take off on the failed generation"
+        );
+
+        // A parent capture over the filtered view reads the terminal
+        // outcome — the child's typed failure, not a deferral.
+        match filtered.capture_outcome() {
+            Err(CaptureError::Failed(error)) => assert!(
+                error.downcast_ref::<HostedLayerError>().is_some(),
+                "the forwarded outcome carries the child's typed failure: {error}"
+            ),
+            other => {
+                return Err(format!(
+                    "the filtered view must answer Failed to a parent capture, got {other:?}"
+                )
+                .into());
+            }
+        }
         Ok(())
     }
 }
@@ -3424,5 +4442,315 @@ mod list_scroll {
             Box::new(a_bare_request_takes_over_an_in_flight_animation),
         ));
         trial_each(named)
+    }
+}
+
+/// Navigation-chrome trials: the bar intents a page records in
+/// `set_page` apply through the stack's `UINavigationControllerDelegate`.
+#[cfg(target_os = "ios")]
+mod navigation {
+    use cocoa_ui::objc2_ui_kit::{UINavigationController, UIView, UIViewController};
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::{NavContentController, NavPage};
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::navigation::{
+        NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView,
+    };
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    use super::{mtm, resolve};
+
+    /// The `UINavigationController` owning a view in the subtree,
+    /// depth-first — either the view's own controller is the nav
+    /// controller, or the page controller answers one.
+    fn nav_controller_in(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "navigation::a_first_page_bottom_bar_unhides_the_toolbar",
+                || {
+                    a_first_page_bottom_bar_unhides_the_toolbar();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::the_top_page_drives_the_navigation_bar",
+                || {
+                    the_top_page_drives_the_navigation_bar();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_buried_pages_set_page_leaves_the_bar_alone",
+                || {
+                    a_buried_pages_set_page_leaves_the_bar_alone();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::the_top_pages_reactive_hidden_writes_and_rides_transitions",
+                || {
+                    the_top_pages_reactive_hidden_writes_and_rides_transitions();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_buried_pages_reactive_hidden_leaves_the_bar_alone",
+                || {
+                    a_buried_pages_reactive_hidden_leaves_the_bar_alone();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The root page's intent is recorded in `set_page` while
+    /// `navigationController()` is still nil — a first page declaring
+    /// bottom items must still unhide the stack's toolbar once the page
+    /// resolves. Without it the iOS 26 floating bottom bar never mounts.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_first_page_bottom_bar_unhides_the_toolbar() {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::BottomBar,
+                    text("Action"),
+                )],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isToolbarHidden(),
+            "the first page's bottom bar unhides the toolbar"
+        );
+    }
+
+    /// A stack whose root page hides the navigation bar — the fixture
+    /// the bar trials push onto. The leaf mounts in a key window:
+    /// `UINavigationController` only delivers its transition delegate
+    /// callbacks to an attached view hierarchy. The returned leaf and
+    /// window keep the driver and the hierarchy alive; the controller
+    /// is the stack's `UINavigationController`.
+    fn hidden_root_stack() -> (
+        waterui_apple::contract::NativeLeaf,
+        Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+        Retained<UINavigationController>,
+    ) {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(false),
+        ));
+        let window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        (leaf, window, nav)
+    }
+
+    /// A pushed page carrying its own `hidden` intent — chrome the
+    /// harness installs natively, the way the driver installs the
+    /// model's pushed pages.
+    fn pushed_page(hidden: bool) -> Retained<NavContentController> {
+        let page = NavContentController::new(mtm(), &UIView::new(mtm()));
+        page.set_page(&NavPage {
+            hidden,
+            ..NavPage::default()
+        });
+        page
+    }
+
+    /// Root hides the bar, a pushed page shows it: each transition
+    /// applies the incoming page's recorded intent — the bar is shown
+    /// after the push and hidden again after the pop. `willShow` lands
+    /// inside the transition's main-queue delivery, so the assertions
+    /// pump the run loop rather than read the flag mid-flush.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn the_top_page_drives_the_navigation_bar() {
+        let (_leaf, _window, nav) = hidden_root_stack();
+        assert!(
+            nav.isNavigationBarHidden(),
+            "the root page's hidden intent applies at mount"
+        );
+
+        nav.pushViewController_animated(&pushed_page(false), false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "the pushed page's shown intent rides the push"
+        );
+
+        nav.popViewControllerAnimated(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || nav.isNavigationBarHidden()),
+            "the pop applies the root page's hidden intent"
+        );
+    }
+
+    /// `set_page` on a page under the top records intent without
+    /// writing the bar — a re-rendered root page never touches the
+    /// chrome the pushed page shows.
+    fn a_buried_pages_set_page_leaves_the_bar_alone() {
+        let (_leaf, _window, nav) = hidden_root_stack();
+        nav.pushViewController_animated(&pushed_page(false), false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "precondition: the pushed page shows the bar"
+        );
+
+        let root = nav
+            .viewControllers()
+            .objectAtIndex(0)
+            .downcast::<NavContentController>()
+            .expect("the root page is a NavContentController");
+        root.set_page(&NavPage {
+            hidden: true,
+            ..NavPage::default()
+        });
+        assert!(
+            !pump_main_until(0.5, || nav.isNavigationBarHidden()),
+            "a buried page's set_page never reaches the bar"
+        );
+
+        // The re-run still recorded the intent: popping back applies it.
+        nav.popViewControllerAnimated(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || nav.isNavigationBarHidden()),
+            "the re-rendered root's intent applies when it becomes top"
+        );
+    }
+
+    /// Pumps the main queue until `page` is `nav`'s top, the bar reads
+    /// `hidden`, and the transition coordinator has torn down — the
+    /// three flushes arrive unordered: `topViewController` can re-point
+    /// either before or after `willShow` applies the incoming page's
+    /// intent, and a bar write issued while the coordinator is still
+    /// live is swallowed with it.
+    fn settles_with_bar(
+        nav: &UINavigationController,
+        page: &UIViewController,
+        hidden: bool,
+    ) -> bool {
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            nav.topViewController()
+                .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), page))
+                && nav.isNavigationBarHidden() == hidden
+                && nav.transitionCoordinator().is_none()
+        })
+    }
+
+    /// The top page's reactive `hidden` signal writes the bar at once
+    /// — and what it records is what a later round trip re-applies:
+    /// show reactively on top, hide by pushing, and the pop back shows
+    /// the bar — the record the reactive path kept, not the
+    /// mount-time flag.
+    ///
+    /// The reactive write goes first: a harness-driven pop reports a
+    /// model pop that drops the popped `Entry` — and the binding
+    /// watcher with it — so no reactive write can follow one.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn the_top_pages_reactive_hidden_writes_and_rides_transitions() {
+        let visible = binding(false);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(visible.clone()),
+        ));
+        let _window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            nav.isNavigationBarHidden(),
+            "precondition: the root page hides the bar"
+        );
+
+        // The top page's reactive change writes the bar at once.
+        visible.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "the top page's reactive show reaches the bar"
+        );
+
+        // Push a hiding page, then pop: the willShow intent the pop
+        // re-applies is the reactively-kept record — the bar shows.
+        let pushed = pushed_page(true);
+        nav.pushViewController_animated(&pushed, false);
+        assert!(
+            settles_with_bar(&nav, &pushed, true),
+            "precondition: the push settles on the pushed page hiding the bar"
+        );
+        nav.popViewControllerAnimated(false);
+        let root = nav.viewControllers().objectAtIndex(0);
+        assert!(
+            settles_with_bar(&nav, &root, false),
+            "the top page's reactive intent survives the push/pop round trip"
+        );
+    }
+
+    /// A buried page's reactive `hidden` change stays recorded-only
+    /// while another page is top — the bar keeps the pushed page's
+    /// shown intent — and the record applies when the pop shows the
+    /// page again.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_buried_pages_reactive_hidden_leaves_the_bar_alone() {
+        let visible = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(visible.clone()),
+        ));
+        let _window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isNavigationBarHidden(),
+            "precondition: the root page shows the bar"
+        );
+
+        let pushed = pushed_page(false);
+        nav.pushViewController_animated(&pushed, false);
+        assert!(
+            settles_with_bar(&nav, &pushed, false),
+            "precondition: the push settles on the pushed page showing the bar"
+        );
+
+        // The buried root asks for a hidden bar — intent only: the
+        // pushed page's chrome stays up.
+        visible.set(false);
+        assert!(
+            !pump_main_until(0.5, || nav.isNavigationBarHidden()),
+            "a buried page's reactive change leaves the bar alone"
+        );
+
+        nav.popViewControllerAnimated(false);
+        let root = nav.viewControllers().objectAtIndex(0);
+        assert!(
+            settles_with_bar(&nav, &root, true),
+            "the buried page's recorded intent applies when it shows again"
+        );
     }
 }

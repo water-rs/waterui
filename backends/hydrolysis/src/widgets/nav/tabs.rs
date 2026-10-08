@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
-use crate::renderer::{AccessibilityActionTarget, RenderContext};
+use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
     tabs_button_rect, tabs_content_proposal,
@@ -139,14 +139,13 @@ impl HydroNativeView for Native<TabsLayout> {
 /// Emits a tab list's accessibility tree from per-tab `(tag, interaction_key,
 /// default_label, is_selected)` tuples. Shared by the dispatch path and the
 /// retained `Widget`-node path (which extracts each default label from its
-/// tab's [`RetainedSubview`]). `ctx` carries the bar's bounds-space rect —
-/// the docked band [`WidgetRenderContext::chrome_splits`] carves out —
-/// beside the render context; the semantic walk has no bounds and passes
-/// `None`.
+/// tab's [`RetainedSubview`]). `bar_rect` carries the bar's bounds-space
+/// rect — the docked band [`WidgetRenderContext::chrome_splits`] carves out;
+/// the semantic walk has no bounds and passes `None`.
 #[cfg(feature = "accessibility")]
 pub fn tabs_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
-    ctx: Option<(RenderContext, kurbo::Rect)>,
+    bar_rect: Option<kurbo::Rect>,
     selection: &Binding<Id>,
     style: NativeTabStyle,
     labels: &[(Id, crate::renderer::InteractionKey, Option<String>, bool)],
@@ -187,14 +186,11 @@ pub fn tabs_accessibility(
             selection: selection.clone(),
             target: *tag,
         });
-        let tab_node_id = match ctx {
-            Some((ctx, bar_rect)) => renderer.register_accessibility_child_node_with_key(
+        let tab_node_id = match bar_rect {
+            Some(bar_rect) => renderer.register_accessibility_child_node_with_key(
                 key,
                 tab_node,
-                crate::renderer::transformed_rect(
-                    ctx.hit_transform,
-                    tabs_button_rect(bar_rect, labels.len(), index, style),
-                ),
+                tabs_button_rect(bar_rect, labels.len(), index, style),
                 env,
                 target,
             ),
@@ -206,14 +202,12 @@ pub fn tabs_accessibility(
             renderer.register_accessibility_focus_link(interaction_key, tab_node_id);
         }
     }
-    match ctx {
-        Some((ctx, bar_rect)) => {
-            let _ = renderer.register_accessibility_node(
-                tab_list,
-                crate::renderer::transformed_rect(ctx.hit_transform, bar_rect),
-                env,
-                None,
-            );
+    match bar_rect {
+        Some(bar_rect) => {
+            // The bounds-space band resolves through the current placement
+            // inside `register_accessibility_node`, the same anchor the
+            // `tabs_button_rect` locals above resolve through.
+            let _ = renderer.register_accessibility_node(tab_list, bar_rect, env, None);
         }
         None => {
             let _ = renderer.register_accessibility_node_semantic(tab_list, env, None);
@@ -342,10 +336,9 @@ pub fn render_tabs_node(
                     .collect();
                 (st.selection.clone(), labels)
             };
-            let render_ctx = ctx.render_context();
             tabs_accessibility(
                 ctx.renderer_mut(),
-                Some((render_ctx, bar.band)),
+                Some(bar.band),
                 &selection,
                 style,
                 &labels,
@@ -434,12 +427,12 @@ fn render_tabs_parts(
         let (icon_rect, label_rect) =
             tabs_item_content_rects(button_rect, icon_size, label_size, &theme_metrics, layout);
         {
-            let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
+            let hit_transform = ctx.renderer_mut().current_hit_transform();
+            let hit_bounds = button_rect;
             let (interaction, press_slot, _) =
                 ctx.renderer_mut()
                     .bind_interaction_target(interaction_key, hit_bounds, env);
-            let interaction =
-                crate::renderer::local_interaction_state(interaction, ctx.hit_transform);
+            let interaction = crate::renderer::local_interaction_state(interaction, hit_transform);
             let is_selected = index == selected_index;
             // A horizontal item's indicator and state layer hug the icon+label
             // content grown by the button inset, not the whole button share;
@@ -515,34 +508,42 @@ fn render_tabs_parts(
             // A tab gets an equal share of the bar and no more. Without this a
             // long label drew straight over its neighbour and off the edge of
             // the bar, since the label lays out at its natural width.
-            ctx.with_clip_rect_scope(1.0, button_rect, |ctx| {
-                let render_ctx = ctx.render_context();
-                let mut st = state.borrow_mut();
-                // The icon draws whether or not the label has text to show.
-                if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
-                    let icon_area = bar.area_for(icon_rect);
-                    icon.flush_in_rect(
-                        ctx.renderer_mut(),
-                        render_ctx,
-                        env,
-                        ProposalSize::UNSPECIFIED,
-                        icon_rect,
-                        icon_area,
-                    );
-                }
-                if has_label {
-                    let label_area = bar.area_for(label_rect);
-                    st.tabs[index].label.flush_in_rect(
-                        ctx.renderer_mut(),
-                        render_ctx,
-                        &label_env,
-                        ProposalSize::UNSPECIFIED,
-                        label_rect,
-                        label_area,
-                    );
-                }
-                drop(st);
-            });
+            ctx.with_scope(
+                crate::renderer::mount::ScopeKey {
+                    role: "tab",
+                    item: index as u64,
+                },
+                1.0,
+                button_rect,
+                |ctx| {
+                    let render_ctx = ctx.render_context();
+                    let mut st = state.borrow_mut();
+                    // The icon draws whether or not the label has text to show.
+                    if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
+                        let icon_area = bar.area_for(icon_rect);
+                        icon.place(
+                            ctx.renderer_mut(),
+                            render_ctx,
+                            env,
+                            ProposalSize::UNSPECIFIED,
+                            icon_rect,
+                            icon_area,
+                        );
+                    }
+                    if has_label {
+                        let label_area = bar.area_for(label_rect);
+                        st.tabs[index].label.place(
+                            ctx.renderer_mut(),
+                            render_ctx,
+                            &label_env,
+                            ProposalSize::UNSPECIFIED,
+                            label_rect,
+                            label_area,
+                        );
+                    }
+                    drop(st);
+                },
+            );
             #[cfg(feature = "accessibility")]
             ctx.renderer_mut().pop_accessibility_suppression();
         }
@@ -555,7 +556,7 @@ fn render_tabs_parts(
         // boundaries on the edges the tab bar leaves reachable, with the
         // bar's edge docked on the band's inner edge.
         let content_area = chrome.content_area;
-        st.tabs[selected_index].content.flush_in_rect(
+        st.tabs[selected_index].content.place(
             ctx.renderer_mut(),
             render_ctx,
             env,

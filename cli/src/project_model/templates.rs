@@ -1894,7 +1894,7 @@ mod tests {
                 "hydrolysis {relative} must take its environment from the generated `app_environment()` binding"
             );
         }
-        let preview_bindings = include_str!("../preview/hydrolysis_preview_bindings.rs.tpl");
+        let preview_bindings = include_str!("../templates/preview_target.rs.tpl");
         assert!(
             preview_bindings.contains("waterui::configure_environment!")
                 && preview_bindings.contains("::app(env)"),
@@ -2718,9 +2718,11 @@ mod tests {
             .expect("hydrolysis Cargo.toml should parse");
         let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"]
             ["dependencies"];
-        assert_eq!(
-            native_dependencies["waterui-preview"]["version"].as_str(),
-            Some(pinned("waterui-preview-version").as_str()),
+        // The generated crate must not carry `waterui-preview` — the
+        // preview runtime module no longer uses the support-app crate.
+        assert!(
+            native_dependencies.get("waterui-preview").is_none(),
+            "the generated crate must not depend on waterui-preview"
         );
         assert_eq!(
             native_dependencies["waterui-preview-protocol"]["version"].as_str(),
@@ -3177,6 +3179,33 @@ mod tests {
         );
         assert_eq!(
             super::ffi_feature_forwards("chromium", &manifest, &tables),
+            Vec::<String>::new()
+        );
+
+        // A companion manifest declares `waterui-ffi`: when the resolved
+        // package lacks the feature, the feature is not emitted — it must
+        // not fall back to the `waterui` facade, which routes only
+        // manifests that declare no `waterui-ffi` dependency at all.
+        let mut companion = cargo_toml::Manifest::<()>::default();
+        companion.dependencies.insert(
+            "waterui-ffi".to_string(),
+            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
+        );
+        companion.dependencies.insert(
+            "waterui".to_string(),
+            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
+        );
+        let mut companion_tables = super::FeatureTables::new();
+        companion_tables.insert(
+            "waterui-ffi".to_string(),
+            std::iter::once("c-api").map(str::to_string).collect(),
+        );
+        companion_tables.insert(
+            "waterui".to_string(),
+            std::iter::once("media").map(str::to_string).collect(),
+        );
+        assert_eq!(
+            super::ffi_feature_forwards("media", &companion, &companion_tables),
             Vec::<String>::new()
         );
     }
@@ -5013,6 +5042,138 @@ async fn write_generated_cargo_toml(base_dir: &Path, toml_string: String) -> io:
     write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await
 }
 
+/// Emit each selectable FFI feature's `dep/feat` forwards, filtered by the
+/// feature table of the package its destination actually resolves to.
+///
+/// `waterui-ffi` is a non-Apple target dependency in the crates that carry
+/// it, so the forwards are the plain `dep/feat` form; see
+/// `FORWARDED_FFI_FEATURES` for why they are manifest-declared at all. An
+/// older `waterui-ffi` without `inspector` gets no `inspector` forward,
+/// while a backend destination keeps its own entry (`map` still reaches
+/// `waterui-apple/map`). This runs last in each manifest's generation: the
+/// probe that learns the resolved tables runs on the manifest being
+/// written, so every dependency and patch must already be in place.
+async fn configure_capability_forwards(
+    manifest: &mut cargo_toml::Manifest<()>,
+    base_dir: &Path,
+) -> io::Result<()> {
+    let tables = Box::pin(resolved_forward_tables(
+        manifest,
+        base_dir,
+        &forward_targets(manifest),
+    ))
+    .await?;
+    for name in FORWARDED_FFI_FEATURES {
+        let forwards = ffi_feature_forwards(name, manifest, &tables);
+        if !forwards.is_empty() {
+            manifest.features.insert((*name).to_string(), forwards);
+        }
+    }
+    Ok(())
+}
+
+/// The dependency, patch and feature-forward tables the generated
+/// Apple-target crates share. The FFI companion and the Apple preview
+/// package read them through this one function, so the `waterui` facade and
+/// `libwaterui_dylib` resolve to the same Cargo units `water run
+/// --platform macos` compiles in the shared target directory: two
+/// functions listing them would drift, and Cargo folds the resolved
+/// feature set into every symbol's `-C metadata` hash.
+///
+/// `waterui_apple_features` carries the features one manifest's
+/// `waterui-apple` edge selects beyond the companion's — the preview
+/// package's `preview`, which `water run` deliberately never enables.
+///
+/// This runs last in each manifest's generation: the probe that learns the
+/// resolved feature tables runs on the manifest being written, so every
+/// dependency and patch must already be in place.
+async fn configure_apple_target_tables(
+    manifest: &mut cargo_toml::Manifest<()>,
+    ctx: &TemplateContext,
+    base_dir: &Path,
+    waterui_apple_features: &[&str],
+) -> io::Result<()> {
+    manifest.dependencies.insert(
+        ctx.crate_name.to_string(),
+        cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
+            path: Some(ctx.project_root_relative_path()),
+            ..Default::default()
+        })),
+    );
+
+    manifest
+        .features
+        .insert("dev".to_string(), vec![format!("{}/dev", ctx.crate_name)]);
+
+    let waterui = generated_dependency_from_spec(
+        ctx,
+        NativeBackendDependencySpec::new(
+            "waterui",
+            &[],
+            NativeBackendDependencySource::WateruiRoot,
+        ),
+    )?
+    .with_default_features(false)
+    .into_cargo();
+    manifest.dependencies.insert(
+        "waterui".to_string(),
+        cargo_toml::Dependency::Detailed(Box::new(waterui)),
+    );
+
+    // The Rust backend owns the app's whole startup through
+    // `waterui_apple::export_app!`. It does not live in the `WaterUI`
+    // workspace, so it resolves against the Apple backend checkout the
+    // project already uses — never the framework registry source the
+    // `waterui` edge above applies. Only a project that selected the Apple
+    // backend depends on it: an Android-only build never resolves,
+    // fetches, or compiles `waterui-apple`.
+    if ctx.apple_backend_selected {
+        let mut waterui_apple = ctx.waterui_apple_dependency()?;
+        waterui_apple.features.extend(
+            waterui_apple_features
+                .iter()
+                .map(|feature| (*feature).to_string()),
+        );
+        manifest
+            .target
+            .entry("cfg(target_vendor = \"apple\")".to_string())
+            .or_default()
+            .dependencies
+            .insert(
+                "waterui-apple".to_string(),
+                cargo_toml::Dependency::Detailed(Box::new(waterui_apple.into_cargo())),
+            );
+    }
+    if ctx.cef_runtime_enabled() {
+        let browser = generated_dependency_from_spec(
+            ctx,
+            NativeBackendDependencySpec::new(
+                "waterui-browser-cef",
+                &["cef-runtime"],
+                NativeBackendDependencySource::WorkspaceDependency,
+            ),
+        )?
+        .with_default_features(false)
+        .into_cargo();
+        manifest
+            .target
+            .entry("cfg(target_os = \"macos\")".to_string())
+            .or_default()
+            .dependencies
+            .insert(
+                "waterui-browser-cef".to_string(),
+                cargo_toml::Dependency::Detailed(Box::new(browser)),
+            );
+    }
+
+    manifest.patch = {
+        let ctx = TemplateContext::clone(ctx);
+        smol::unblock(move || generated_crate_patches(&ctx)).await?
+    };
+
+    configure_capability_forwards(manifest, base_dir).await
+}
+
 /// Apple backend templates.
 pub mod apple {
     use super::{
@@ -5552,10 +5713,10 @@ pub mod hydrolysis {
             bins,
             profile: super::generated_profiles(ctx.project_packages.as_ref())?,
             features: BTreeMap::from([
-                (
-                    "waterui-preview-mode".to_string(),
-                    vec!["dep:waterui-preview".to_string()],
-                ),
+                // The preview runtime module compiles under the feature
+                // alone — it no longer consumes the `waterui-preview`
+                // support-app crate.
+                ("waterui-preview-mode".to_string(), vec![]),
                 (
                     "waterui-preview-test-mode".to_string(),
                     vec!["dep:waterui-testing".to_string()],
@@ -5783,23 +5944,6 @@ pub mod hydrolysis {
                         ),
                     )?
                     .with_default_features(false),
-                ),
-            ),
-            (
-                "waterui-preview".to_string(),
-                GeneratedDependencyValue::detailed(
-                    super::generated_dependency_from_spec(
-                        ctx,
-                        NativeBackendDependencySpec::new(
-                            "waterui-preview",
-                            &[],
-                            NativeBackendDependencySource::WorkspaceSubdir(
-                                "components/devtools/preview/runtime",
-                            ),
-                        ),
-                    )?
-                    .with_default_features(false)
-                    .with_optional(),
                 ),
             ),
             (
@@ -6875,14 +7019,20 @@ fn ffi_feature_forwards(
     tables: &FeatureTables,
 ) -> Vec<String> {
     let mut forwards = Vec::new();
-    if declares(tables, "waterui-ffi", name) {
+    let ffi_declares = declares(tables, "waterui-ffi", name);
+    if ffi_declares {
         forwards.push(format!("waterui-ffi/{name}"));
     }
     // The `waterui` facade forwards ride with the native Apple runtime: the
     // manifest declares `waterui-apple` exactly when that backend was
-    // selected.
-    if APPLE_RUNTIME_FEATURE_FORWARDS.contains(&name)
-        && declared_dependency(manifest, "waterui-apple").is_some()
+    // selected. A manifest that declares no `waterui-ffi` dependency at all
+    // — the Apple preview package — routes to the facade instead, so the
+    // feature means the same thing whichever manifest carries it.
+    let facade_route = (APPLE_RUNTIME_FEATURE_FORWARDS.contains(&name)
+        && declared_dependency(manifest, "waterui-apple").is_some())
+        || declared_dependency(manifest, "waterui-ffi").is_none();
+    if facade_route
+        && declared_dependency(manifest, "waterui").is_some()
         && declares(tables, "waterui", name)
     {
         forwards.push(format!("waterui/{name}"));
@@ -6902,12 +7052,17 @@ fn ffi_feature_forwards(
 }
 
 /// The dependency names a generated manifest's forwards can target:
-/// `waterui-ffi` always, plus the `waterui` facade and each
+/// `waterui-ffi` and the `waterui` facade and each
 /// `BACKEND_FEATURE_FORWARDS` destination the manifest declares — a backend
 /// forward references the backend crate, so it only exists where that
-/// backend is a dependency.
+/// backend is a dependency. The Apple preview package carries no
+/// `waterui-ffi` edge, so the name is a target only where the manifest
+/// declares it.
 fn forward_targets(manifest: &cargo_toml::Manifest<()>) -> Vec<&'static str> {
-    let mut targets = vec!["waterui-ffi"];
+    let mut targets = Vec::new();
+    if declared_dependency(manifest, "waterui-ffi").is_some() {
+        targets.push("waterui-ffi");
+    }
     for dep in
         std::iter::once("waterui").chain(BACKEND_FEATURE_FORWARDS.iter().map(|(_, dep, _)| *dep))
     {
@@ -7191,7 +7346,7 @@ pub fn generated_ffi_manifest_declares(manifest_path: &Path, feature: &str) -> i
 }
 /// Native FFI companion crate templates.
 pub mod ffi {
-    use cargo_toml::{Dependency, DependencyDetail, Manifest, Package, Product, Workspace};
+    use cargo_toml::{Dependency, Manifest, Package, Product, Workspace};
 
     use super::{
         BTreeSet, NativeBackendDependencySource, NativeBackendDependencySpec, Path,
@@ -7278,24 +7433,12 @@ pub mod ffi {
             });
         }
 
-        manifest.dependencies.insert(
-            ctx.crate_name.to_string(),
-            Dependency::Detailed(Box::new(DependencyDetail {
-                path: Some(ctx.project_root_relative_path()),
-                ..Default::default()
-            })),
-        );
+        // `waterui-ffi` is this crate's own edge — the Apple preview
+        // package shares every other table through
+        // `configure_apple_target_tables`.
+        insert_waterui_ffi_dependency(&mut manifest, ctx)?;
 
-        manifest
-            .features
-            .insert("dev".to_string(), vec![format!("{}/dev", ctx.crate_name)]);
-
-        configure_native_dependencies(&mut manifest, ctx)?;
-
-        manifest.patch = {
-            let ctx = TemplateContext::clone(ctx);
-            smol::unblock(move || super::generated_crate_patches(&ctx)).await?
-        };
+        super::configure_apple_target_tables(&mut manifest, ctx, base_dir, &[]).await?;
 
         // This crate roots the workspace that also holds preview modules. A preview
         // module is loaded into the support application and resolves its `WaterUI`
@@ -7314,8 +7457,6 @@ pub mod ffi {
             ..Workspace::default()
         });
 
-        configure_capability_forwards(&mut manifest, base_dir).await?;
-
         let toml_string = toml::to_string_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         fs::create_dir_all(base_dir).await?;
@@ -7323,106 +7464,34 @@ pub mod ffi {
         Ok(())
     }
 
-    /// Emit each selectable FFI feature's `dep/feat` forwards, filtered by the
-    /// feature table of the package its destination actually resolves to.
-    ///
-    /// `waterui-ffi` is a non-Apple target dependency here, so the forwards are
-    /// the plain `dep/feat` form; see `FORWARDED_FFI_FEATURES` for why they are
-    /// manifest-declared at all. An older `waterui-ffi` without `inspector`
-    /// gets no `inspector` forward, while a backend destination keeps its own
-    /// entry (`map` still reaches `waterui-apple/map`). This runs last in
-    /// `generate_cargo_toml`: the probe that learns the resolved tables runs
-    /// on this very manifest, so every dependency and patch must already be
-    /// in place.
-    async fn configure_capability_forwards(
-        manifest: &mut Manifest<()>,
-        base_dir: &Path,
-    ) -> io::Result<()> {
-        let tables = Box::pin(super::resolved_forward_tables(
-            manifest,
-            base_dir,
-            &super::forward_targets(manifest),
-        ))
-        .await?;
-        for name in super::FORWARDED_FFI_FEATURES {
-            let forwards = super::ffi_feature_forwards(name, manifest, &tables);
-            if !forwards.is_empty() {
-                manifest.features.insert((*name).to_string(), forwards);
-            }
-        }
-        Ok(())
-    }
-
-    /// Resolve framework, Apple backend and CEF sources into their target tables.
-    fn configure_native_dependencies(
+    /// Declare the crate's own `waterui-ffi` edge behind the non-Apple
+    /// target cfg. `waterui` resolves it on Apple targets through
+    /// `waterui-apple` instead — the two destinations are mutually
+    /// exclusive so `#[cfg]` paths in generated code agree with Cargo's
+    /// graph.
+    fn insert_waterui_ffi_dependency(
         manifest: &mut Manifest<()>,
         ctx: &TemplateContext,
     ) -> io::Result<()> {
-        for (name, source) in [
-            ("waterui", NativeBackendDependencySource::WateruiRoot),
-            (
+        let dependency = generated_dependency_from_spec(
+            ctx,
+            NativeBackendDependencySpec::new(
                 "waterui-ffi",
+                &[],
                 NativeBackendDependencySource::WorkspaceSubdir("ffi"),
             ),
-        ] {
-            let dependency = generated_dependency_from_spec(
-                ctx,
-                NativeBackendDependencySpec::new(name, &[], source),
-            )?
-            .with_default_features(false)
-            .into_cargo();
-            let dependencies = if name == "waterui-ffi" {
-                &mut manifest
-                    .target
-                    .entry("cfg(not(target_vendor = \"apple\"))".to_string())
-                    .or_default()
-                    .dependencies
-            } else {
-                &mut manifest.dependencies
-            };
-            dependencies.insert(name.to_owned(), Dependency::Detailed(Box::new(dependency)));
-        }
-
-        // The Rust backend owns the app's whole startup through
-        // `waterui_apple::export_app!`. It does not live in the `WaterUI`
-        // workspace, so it resolves against the Apple backend checkout the
-        // project already uses — never the framework registry source the
-        // loop above applies. Only a project that selected the Apple
-        // backend depends on it: an Android-only build never resolves,
-        // fetches, or compiles `waterui-apple`.
-        if ctx.apple_backend_selected {
-            let waterui_apple = ctx.waterui_apple_dependency()?.into_cargo();
-            manifest
-                .target
-                .entry("cfg(target_vendor = \"apple\")".to_string())
-                .or_default()
-                .dependencies
-                .insert(
-                    "waterui-apple".to_string(),
-                    Dependency::Detailed(Box::new(waterui_apple)),
-                );
-        }
-        if ctx.cef_runtime_enabled() {
-            let browser = generated_dependency_from_spec(
-                ctx,
-                NativeBackendDependencySpec::new(
-                    "waterui-browser-cef",
-                    &["cef-runtime"],
-                    NativeBackendDependencySource::WorkspaceDependency,
-                ),
-            )?
-            .with_default_features(false)
-            .into_cargo();
-            manifest
-                .target
-                .entry("cfg(target_os = \"macos\")".to_string())
-                .or_default()
-                .dependencies
-                .insert(
-                    "waterui-browser-cef".to_string(),
-                    Dependency::Detailed(Box::new(browser)),
-                );
-        }
+        )?
+        .with_default_features(false)
+        .into_cargo();
+        manifest
+            .target
+            .entry("cfg(not(target_vendor = \"apple\"))".to_string())
+            .or_default()
+            .dependencies
+            .insert(
+                "waterui-ffi".to_owned(),
+                Dependency::Detailed(Box::new(dependency)),
+            );
         Ok(())
     }
 
@@ -7462,6 +7531,103 @@ pub mod ffi {
             }),
             ..Default::default()
         };
+        let toml_string = toml::to_string_pretty(&manifest)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        fs::create_dir_all(base_dir).await?;
+        write_file_if_changed(&base_dir.join("Cargo.toml"), toml_string.as_bytes()).await?;
+        Ok(())
+    }
+}
+
+/// The managed Apple in-process preview binary's templates.
+///
+/// `water preview --platform macos` builds and execs this package: its
+/// dependency, patch and feature-forward tables come from
+/// [`configure_apple_target_tables`], the same function the FFI companion
+/// uses, so the `waterui` facade and `libwaterui_dylib` resolve to the
+/// `water run --platform macos` build in the shared target directory. The
+/// package's only edges beyond the app crate are the framework members
+/// that function names — `waterui-ffi` is absent: this preview path is the
+/// facade and `waterui-apple`, nothing else.
+///
+/// `waterui-apple/preview` — the in-process preview entry — is the one
+/// deliberate feature addition on the `waterui-apple` edge; the companion
+/// build never enables it, so the two manifests describe deliberately
+/// different `waterui-apple` units while everything they share stays
+/// identical.
+pub mod apple_preview {
+    use askama::Template;
+    use cargo_toml::{Dependency, Manifest, Package};
+
+    use super::{
+        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
+        cargo_semver, fs, generated_dependency_from_spec, generated_profiles, io,
+        write_file_if_changed,
+    };
+
+    /// `main` for the generated preview binary, typed like every generated
+    /// entry point.
+    #[derive(Template)]
+    #[template(path = "src/templates/apple_preview_main.rs.tpl", escape = "none")]
+    struct ApplePreviewMainTemplate<'a> {
+        crate_name_ident: &'a str,
+    }
+
+    /// Write the preview package's manifest and entry source to `base_dir`.
+    ///
+    /// `main` is rendered from the askama template and the generated files
+    /// go through `write_file_if_changed`, so a re-scaffold that produced
+    /// nothing new dirties no unit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        generate_cargo_toml(base_dir, ctx, package_name).await?;
+        let crate_name_ident = ctx.crate_name.rust_ident();
+        let rendered = ApplePreviewMainTemplate {
+            crate_name_ident: crate_name_ident.as_str(),
+        }
+        .render()
+        .map_err(io::Error::other)?;
+        fs::create_dir_all(base_dir.join("src")).await?;
+        write_file_if_changed(&base_dir.join("src/main.rs"), rendered.as_bytes()).await
+    }
+
+    async fn generate_cargo_toml(
+        base_dir: &Path,
+        ctx: &TemplateContext,
+        package_name: &str,
+    ) -> io::Result<()> {
+        let mut manifest = Manifest::<()>::default();
+        let mut package = Package::new(package_name.to_string(), cargo_semver("0.1.0"));
+        package.edition = cargo_toml::Inheritable::Set(cargo_toml::Edition::E2024);
+        manifest.package = Some(package);
+        manifest.profile = generated_profiles(ctx.project_packages.as_ref())?;
+
+        let preview_protocol = generated_dependency_from_spec(
+            ctx,
+            NativeBackendDependencySpec::new(
+                "waterui-preview-protocol",
+                &[],
+                NativeBackendDependencySource::WorkspaceSubdir(
+                    "components/devtools/preview/protocol",
+                ),
+            ),
+        )?
+        .with_default_features(false)
+        .into_cargo();
+        manifest.dependencies.insert(
+            "waterui-preview-protocol".to_string(),
+            Dependency::Detailed(Box::new(preview_protocol)),
+        );
+
+        super::configure_apple_target_tables(&mut manifest, ctx, base_dir, &["preview"]).await?;
+
         let toml_string = toml::to_string_pretty(&manifest)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         fs::create_dir_all(base_dir).await?;

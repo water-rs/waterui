@@ -20,8 +20,8 @@ use crate::preview::request::{
     PreviewRequest, PreviewTarget, ResolvedPreviewBackend,
 };
 use crate::preview::{
-    HydrolysisPreviewRequest, PreviewPlatform, launch_preview_session,
-    render_preview_with_hydrolysis,
+    ApplePreviewRequest, HydrolysisPreviewRequest, PreviewPlatform, launch_preview_session,
+    render_preview_with_apple, render_preview_with_hydrolysis,
 };
 use crate::project::read_project_crate_name;
 
@@ -40,7 +40,8 @@ pub struct PreviewArgs {
     pub target: String,
 
     /// Treat `target` as a `WaterUI` expression returning `impl View`
-    /// (default `false`). Expression targets require the `hydrolysis` backend.
+    /// (default `false`). Expression targets require the `hydrolysis`
+    /// backend or, on macOS, the default `apple` backend.
     #[serde(default)]
     pub expr: bool,
 
@@ -162,7 +163,7 @@ impl PreviewTool {
                 render_preview_with_hydrolysis(
                     HydrolysisPreviewRequest {
                         project_path: &self.project_path,
-                        source: request.target.hydrolysis_source(),
+                        source: request.target.source(),
                         theme: request
                             .hydrolysis_theme
                             .expect("resolve guarantees a theme for hydrolysis"),
@@ -176,6 +177,22 @@ impl PreviewTool {
                     },
                     &output_path,
                     None,
+                )
+                .await?;
+            }
+            ResolvedPreviewBackend::Apple => {
+                render_preview_with_apple(
+                    ApplePreviewRequest {
+                        project_path: &self.project_path,
+                        source: request.target.source(),
+                        width: request.width,
+                        height: request.height,
+                        sccache_path: self.sccache_path.clone(),
+                        // MCP serves JSON-RPC over stdio — there is no
+                        // terminal sink to render compile progress into.
+                        progress: None,
+                    },
+                    &output_path,
                 )
                 .await?;
             }

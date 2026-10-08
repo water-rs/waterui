@@ -334,78 +334,45 @@ impl MaterialRuntime {
 }
 
 /// A window background's within-window material: the backdrop the window's
-/// root is mounted over, keyed like a material wrapper's mount.
+/// root is mounted over, sampled as a backdrop group of its own.
 pub struct WindowBackdrop {
     level: WithinWindowLevel,
-    key: crate::renderer::retained::RenderKey,
 }
 
 impl crate::renderer::HydrolysisRenderer {
-    /// Presents a material member at `bounds` under `transform`: everything
-    /// painted so far is its backdrop, so that segment closes, and the keyed
-    /// member mount `key` samples the backdrop group its `scope`, `scheme`
-    /// and `level` select. Content flushed afterwards draws above it.
-    pub(crate) fn present_material(
-        &mut self,
-        key: crate::renderer::retained::RenderKey,
-        scope: Option<crate::renderer::retained::RenderId>,
-        scheme: ColorScheme,
-        level: WithinWindowLevel,
-        transform: kurbo::Affine,
-        bounds: kurbo::Rect,
-    ) {
-        self.flush_scene_layer();
-        let active_layers = self.compositor.active_scene_layers.clone();
-        self.compositor
-            .render_layers
-            .push(crate::renderer::RenderLayer::Material(
-                crate::renderer::MaterialLayer {
-                    key,
-                    scope,
-                    scheme,
-                    level,
-                    transform,
-                    bounds,
-                    active_layers,
-                },
-            ));
-    }
-
     /// Sets the within-window material the window's background names, or
     /// `None` for any other background. The window's root is mounted over
     /// it, as a view is over its material background. A change of level
-    /// presents a fresh mount and asks for a refresh, so the frame
-    /// re-flushes over it.
+    /// asks for a refresh, so the frame re-flushes over it.
     pub(crate) fn set_window_backdrop(&mut self, level: Option<WithinWindowLevel>) {
         if self.window_backdrop.as_ref().map(|backdrop| backdrop.level) == level {
             return;
         }
-        self.window_backdrop = level.map(|level| WindowBackdrop {
-            level,
-            key: crate::renderer::retained::RenderKey {
-                render: crate::renderer::retained::RenderId::next(),
-                presentation: crate::renderer::retained::PresentationId::ORDINARY,
-            },
-        });
-        self.request_refresh();
+        self.window_backdrop = level.map(|level| WindowBackdrop { level });
+        // A window-level input written outside any node marks the root for
+        // re-layout (§B.1); the mark carries the pump wake.
+        self.core.root_cell().mark_layout();
     }
 
-    /// Presents the window's backdrop, if its background names one, over the
-    /// whole window at `bounds` under the root `transform`, as a backdrop
-    /// group of its own under the colour scheme `env` resolves. Called
-    /// before the root flushes, so the root mounts over it; reading the
-    /// scheme subscribes the flush, so an appearance flip re-keys the group.
-    pub(crate) fn present_window_backdrop(
-        &mut self,
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        env: &Environment,
-    ) {
-        if let Some(backdrop) = &self.window_backdrop {
-            let (key, level) = (backdrop.key, backdrop.level);
+    /// Presents the window's backdrop, if its background names one: the
+    /// window layer's material request for the next commit — a solo group
+    /// over the whole window at `bounds`, under the colour scheme `env`
+    /// resolves. Called before the root flushes; reading the scheme
+    /// subscribes the flush, so an appearance flip re-keys the group.
+    pub(crate) fn present_window_backdrop(&mut self, bounds: kurbo::Rect, env: &Environment) {
+        self.core.window_material = if let Some(backdrop) = &self.window_backdrop {
+            let level = backdrop.level;
             let scheme = self.read_signal(&waterui::theme::current_color_scheme(env));
-            self.present_material(key, None, scheme, level, transform, bounds);
-        }
+            Some(crate::renderer::mount::MaterialRequest {
+                scope: None,
+                level,
+                scheme,
+                bounds,
+                visible: true,
+            })
+        } else {
+            None
+        };
     }
 }
 

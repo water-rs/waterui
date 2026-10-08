@@ -749,31 +749,24 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
           cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
-      # The clippy below compiles waterui-cli's `#[cfg(test)]` modules,
-      # which `include_bytes!` the generated Roboto fixture — and the
-      # real-engine run resolves the installed test fonts by family name.
+      # The clippy in `macos-lint` compiles waterui-cli's `#[cfg(test)]`
+      # modules, which `include_bytes!` the generated Roboto fixture — and
+      # the real-engine run resolves the installed test fonts by family
+      # name.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
-      # Hydrolysis's own CI ran this clippy shape on macos-latest alongside
-      # Linux and Windows; the in-tree move kept it on Linux only, which
-      # silently dropped the backend's `cfg(target_os = "macos")` lint
-      # coverage (#1428 review). This leg restores it, on the same feature
-      # sweep the Linux lint step runs — `webview-system` is the macOS-only
-      # entry point no other leg sees.
-      - name: Clippy (hydrolysis, checked feature set)
-        run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # The macOS host lint legs for hydrolysis's `cfg(target_os =
+      # "macos")` code — `webview-system`'s WKWebView bridge is the entry
+      # point no other leg sees — and waterui-cli's Apple-side plumbing.
+      # The fast gate's `macos` job below calls the same composite, so the
+      # two legs can never drift on the commands.
+      - name: Clippy (macOS host crates)
+        uses: ./.github/actions/macos-lint
       # `cargo test` rather than nextest: CEF's browser process has to own the
       # main thread, libtest runs test bodies on spawned ones, so the target is
       # `harness = false` and nextest cannot enumerate it.
       - name: Run the CEF real-engine tests
         run: cargo test --locked -p waterui-browser-cef --features real-engine --test real_engine
-      # The cli's own CI linted on every OS because most of the crate is
-      # behind `cfg(target_os)`: the Apple backend, the Windows toolchain
-      # and process plumbing. A clippy finding in macOS-only code surfaces
-      # nowhere else — the fast gate lints on Linux alone — so this job,
-      # the macOS lint leg, owns waterui-cli too.
-      - name: Clippy (waterui-cli)
-        run: cargo clippy --locked --profile ci-check -p waterui-cli --all-targets -- -D warnings
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -946,6 +939,40 @@ jobs:
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
+
+  # The macOS host legs beside the cross-target ones above (#2143): the
+  # Linux lint compiles `cfg(target_os = "macos")` code away, so a
+  # macOS-only lint break in hydrolysis or waterui-cli used to surface
+  # only in the nightly's `cef` job. Same commands through the shared
+  # `macos-lint` composite; the nightly keeps them in `cef`, where they
+  # share the CEF leg's runner — running them here too under `full`
+  # would pay a second macOS slot for an identical pass.
+  macos:
+    name: aarch64-apple-darwin
+    if: inputs.full == false && (inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'waterui-cli'))
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+          cache: "false"
+      # Reads the shared `cargo-sources` archive written by the Apple
+      # gate's rust job (apple.yml); read-only lanes never save.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # `--all-targets` compiles waterui-cli's `#[cfg(test)]` modules,
+      # which `include_bytes!` the generated Roboto fixture — the
+      # repository stores it nowhere.
+      - name: Generate Hydrolysis test assets
+        if: inputs['test-assets']
+        uses: ./.github/actions/generate-test-assets
+      - name: Clippy (macOS host crates)
+        uses: ./.github/actions/macos-lint
+        with:
+          hydrolysis: ${{ inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') }}
+          waterui-cli: ${{ inputs.affected == 'workspace' || contains(inputs.affected, 'waterui-cli') }}
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,
