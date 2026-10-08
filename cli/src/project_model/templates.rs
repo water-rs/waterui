@@ -7798,7 +7798,7 @@ async fn probe_forward_tables(
     probe.example.clear();
     absolutize_probe_paths(&mut probe, manifest_dir, unresolved);
 
-    let probe_dir = tempfile::tempdir()?;
+    let probe_dir = tempfile::tempdir_in(host.temp_dir())?;
     let manifest_path = probe_dir.path().join("Cargo.toml");
     let toml_string = toml::to_string_pretty(&probe)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
