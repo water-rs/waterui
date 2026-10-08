@@ -142,12 +142,17 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_instance(VkInstance inst,
                                                   const VkAllocationCallbacks *alloc) {
     PFN_vkGetInstanceProcAddr gipa = inst_gipa(inst);
     if (!gipa) {
-        // An instance created outside the layer's vkCreateInstance hook
-        // (a second loader path, or a create the layer was not chained
-        // into) is torn down the same way it came up: skipping the
-        // destroy call leaks the handle, which is harmless — the process
-        // is already mid-teardown under Callgrind, and aborting here
-        // kills the run before it ever reaches the pause frame.
+        // Root cause: this layer exports vkGetInstanceProcAddr and
+        // vkGetDeviceProcAddr as GLOBAL symbols, so under Callgrind they
+        // interpose on the application's own loader lookups. A create
+        // resolved through the interposed symbol bypasses the
+        // VK_LAYER_LINK_INFO chain in layer_create_instance, the handle
+        // never reaches inst_links[], and its destroy lands here
+        // unregistered. Tearing it down the same way it came up is
+        // correct: skipping the destroy call leaks the handle, which is
+        // harmless — the process is already mid-teardown under Callgrind,
+        // and aborting here kills the run before it ever reaches the
+        // pause frame.
         fprintf(stderr, "%s: vkDestroyInstance on unregistered instance %p; skipping\n",
                 LAYER_NAME, (void *)inst);
         return;
@@ -167,6 +172,10 @@ VKAPI_ATTR void VKAPI_CALL layer_destroy_device(VkDevice dev,
                                                 const VkAllocationCallbacks *alloc) {
     PFN_vkGetDeviceProcAddr gdpa = dev_gdpa(dev);
     if (!gdpa) {
+        // Same interposed-lookup path as vkDestroyInstance above: a
+        // vkCreateDevice resolved through the layer's global
+        // vkGetDeviceProcAddr bypasses the VK_LAYER_LINK_INFO chain in
+        // layer_create_device, so dev_links[] never saw the handle.
         fprintf(stderr, "%s: vkDestroyDevice on unregistered device %p; skipping\n",
                 LAYER_NAME, (void *)dev);
         return;
