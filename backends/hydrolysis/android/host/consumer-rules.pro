@@ -9,3 +9,10 @@
 
 # The annotation itself must survive for the rule above to match.
 -keep class dev.waterui.hydrolysis.CalledFromNative
+
+# `AssetResponse.<init>` is the one member reached only by name — Rust's
+# `nativeAssetRespond` constructs it through `GetMethodID` — so it is kept
+# by exact signature as well as by annotation.
+-keep class dev.waterui.hydrolysis.webview.AssetResponse {
+    <init>(int, java.lang.String, byte[]);
+}

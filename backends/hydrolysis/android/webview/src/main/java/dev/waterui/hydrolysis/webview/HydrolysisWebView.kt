@@ -122,11 +122,12 @@ private constructor(
     private var nativeHandle: Long = 0
 
     /**
-     * The `Box<AssetServer>` `create` was handed; freed in `release` after
-     * `destroy`. Guarded by [assetServerLock]: `destroy()` does not join
-     * Chromium's IO threads, so a `shouldInterceptRequest` can still be
-     * inside `nativeAssetRespond` — the read lock covers check-and-call,
-     * the write lock zero-and-free.
+     * The `Arc<AssetServer>` `create` was handed; its last reference drops
+     * in `release` after `destroy`. Guarded by [assetServerLock]:
+     * `destroy()` does not join Chromium's IO threads, so a
+     * `shouldInterceptRequest` can still be mid-dispatch — the read lock
+     * covers only the check-and-acquire, the `Arc` clone carries the
+     * dispatch itself outside it, and the write lock takes zero-and-free.
      */
     private val assetServerLock = ReentrantReadWriteLock()
     private var assetServerPtr: Long = assetServer
@@ -398,9 +399,15 @@ private constructor(
 
     /**
      * A new host view bound: the `MutableContextWrapper` retargets the new
-     * context and the lifecycle belongs to the new Activity.
+     * context and the lifecycle belongs to the new Activity. A released
+     * view skips both — the registration stays for the leaf's geometry,
+     * but a destroyed WebView must not retarget its context wrapper or
+     * re-observe a lifecycle it can no longer navigate with.
      */
     override fun onHostRebound(context: Context) {
+        if (released) {
+            return
+        }
         (this.context as MutableContextWrapper).baseContext = context
         observeLifecycle(context)
     }
@@ -618,10 +625,9 @@ private constructor(
             if (uri.scheme != "https" || uri.host != assetHost) {
                 return null
             }
-            // Runs on a WebView worker thread — `nativeAssetRespond` is the
-            // The read lock covers only the acquire: `nativeAssetRespond`
-            // runs outside it on an `Arc` clone, so a slow request never
-            // stalls `release`'s write half.
+            // Runs on a WebView worker thread. The read lock covers only
+            // the acquire: `nativeAssetRespond` runs outside it on an `Arc`
+            // clone, so a slow request never stalls `release`'s write half.
             val server =
                 assetServerLock.read {
                     if (assetServerPtr == 0L) {
