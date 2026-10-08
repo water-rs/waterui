@@ -167,6 +167,7 @@ pub async fn stage(
 /// copied into the application bundle.
 #[cfg(target_os = "macos")]
 pub async fn stage_macos_app(
+    host: &crate::toolchain::Host,
     plan: BrowserRuntimePlan,
     profile_directory: &Path,
     contents_directory: &Path,

@@ -933,6 +933,7 @@ pub async fn package_apple(
     #[cfg(target_os = "macos")]
     if platform == TargetPlatform::MacOS && browser_runtime_plan.requires_cef() {
         browser_runtime::stage_macos_app(
+            project.host(),
             browser_runtime_plan,
             &built.profile_dir,
             &app_path.join("Contents"),

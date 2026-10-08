@@ -251,15 +251,15 @@ pub async fn sign_macos_app(
                 "-"
             };
             let plan = codesign_plan(app_path, identity, bundle_id.as_str(), None).await?;
-            run_sign_plan(&host, plan).await
+            run_sign_plan(host, plan).await
         }
         MacOsSigning::Distribution(distribution) => {
-            let identity = developer_id_identity(&host, &distribution.team_id).await?;
+            let identity = developer_id_identity(host, &distribution.team_id).await?;
             let plan =
                 codesign_plan(app_path, &identity, bundle_id.as_str(), Some(distribution)).await?;
-            run_sign_plan(&host, plan).await?;
-            notarize_app(&host, app_path, &distribution.notary_profile).await?;
-            staple_app(&host, app_path).await
+            run_sign_plan(host, plan).await?;
+            notarize_app(host, app_path, &distribution.notary_profile).await?;
+            staple_app(host, app_path).await
         }
     }
 }
@@ -279,11 +279,10 @@ pub async fn sign_macos_app(
 /// staged library.
 #[cfg(target_os = "macos")]
 pub async fn sign_staged_device_libraries(
+    host: &crate::toolchain::Host,
     app_path: &Path,
     frameworks_dir: &Path,
 ) -> eyre::Result<()> {
-    use crate::toolchain::Host;
-
     if !frameworks_dir.exists() {
         return Ok(());
     }

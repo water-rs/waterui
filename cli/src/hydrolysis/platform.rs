@@ -564,8 +564,13 @@ async fn package_hydrolysis_macos(
         &platform.triple(),
     )
     .await?;
-    browser_runtime::stage_macos_app(runtime_plan, profile_directory, &app_path.join("Contents"))
-        .await?;
+    browser_runtime::stage_macos_app(
+        project.host(),
+        runtime_plan,
+        profile_directory,
+        &app_path.join("Contents"),
+    )
+    .await?;
     if project.declares_cef_helper().await? {
         let helper_binary = cef_helper_binary(cef_helper)?;
         // The helper apps are named after the shipped executable, so they
@@ -587,7 +592,7 @@ async fn package_hydrolysis_macos(
             )?)
         }
     };
-    sign_app(&app_path, &bundle_id, &signing).await?;
+    sign_app(project.host(), &app_path, &bundle_id, &signing).await?;
     Ok(Artifact::new(project.bundle_identifier(), app_path))
 }
 
