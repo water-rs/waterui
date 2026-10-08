@@ -2109,7 +2109,7 @@ impl Project {
         backend_project_path: PathBuf,
         profile_targets: &[Triple],
     ) -> Result<(TemplateContext, ResolvedFramework), crate::backend::FailToInitBackend> {
-        let apple_selected = cfg!(target_os = "macos");
+        let apple_pieces = cfg!(target_os = "macos");
         let manifest = self.manifest();
         let app_name = manifest
             .package
@@ -2151,7 +2151,7 @@ impl Project {
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,
         )
-        .with_apple_backend_selected(apple_selected)
+        .with_apple_pieces(apple_pieces)
         .with_browser(crate::templates::BrowserTemplateContext::apple_managed(
             engine,
         ));
@@ -5511,19 +5511,20 @@ mod scaffold_tests {
     }
 
     /// The companion's Apple pieces exist only where an Apple build can
-    /// run: an apple-selected render on a host that cannot produce one
-    /// emits no `waterui-apple` — the manifest it writes must resolve on
-    /// the host that rendered it.
+    /// run: a render on a host that cannot produce one emits no
+    /// `waterui-apple`, even for a project whose checkout carries the Apple
+    /// backend — the manifest it writes must resolve on the host that
+    /// rendered it.
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn apple_selected_companion_carries_no_apple_pieces_off_macos() {
+    fn companion_carries_no_apple_pieces_off_macos() {
         let machine = crate::toolchain::testing::TestMachine::new();
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
         let project = create_project(&real_toolchain_host(&machine), &root, dir.path(), true);
 
         smol::block_on(project.scaffold_ffi_companion())
-            .expect("an apple-selected scaffold must succeed");
+            .expect("a scaffold off macOS must succeed");
 
         let rendered = std::fs::read_to_string(project.ffi_crate_path().join("Cargo.toml"))
             .expect("the rendered ffi manifest");

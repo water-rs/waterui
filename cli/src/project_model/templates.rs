@@ -548,12 +548,12 @@ pub struct TemplateContext {
     /// The author name
     pub author: String,
     /// Whether the Apple pieces render — the `waterui-apple` pin and the
-    /// entry-owning bin. This is a host fact, not a project selection:
-    /// every FFI render on a macOS host resolves the Apple pin whatever
-    /// the invocation asked for, because macOS is the only host an Apple
-    /// build can run from; a host that cannot produce an Apple build must
-    /// not resolve the backend crate.
-    pub apple_backend_selected: bool,
+    /// entry-owning bin. This is a host fact, not a backend selection:
+    /// every FFI render on a macOS host carries them whatever backend the
+    /// invocation selected, because macOS is the only host an Apple build
+    /// can run from; a host that cannot produce an Apple build must not
+    /// resolve the backend crate.
+    pub apple_pieces: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
     /// Local checkouts of the experimental backends the host points at.
@@ -646,7 +646,7 @@ impl TemplateContext {
             crate_version: String::new(),
             bundle_identifier: options.bundle_identifier.clone(),
             author: options.author.clone(),
-            apple_backend_selected: false,
+            apple_pieces: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -692,7 +692,7 @@ impl TemplateContext {
             bundle_identifier: manifest.package.bundle_identifier.clone(),
             author: String::new(),
             // Selected at invocation, never from declared config.
-            apple_backend_selected: false,
+            apple_pieces: false,
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -753,7 +753,7 @@ impl TemplateContext {
             crate_version: String::new(),
             bundle_identifier,
             author: String::new(),
-            apple_backend_selected: false,
+            apple_pieces: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -804,8 +804,8 @@ impl TemplateContext {
     /// its `waterui-apple` dependency and entry-owning bin when this is
     /// set.
     #[must_use]
-    pub const fn with_apple_backend_selected(mut self, selected: bool) -> Self {
-        self.apple_backend_selected = selected;
+    pub const fn with_apple_pieces(mut self, apple_pieces: bool) -> Self {
+        self.apple_pieces = apple_pieces;
         self
     }
 
@@ -1709,7 +1709,7 @@ mod tests {
             bundle_identifier: BundleIdentifier::try_from("com.example.test")
                 .expect("test bundle identifier must be valid"),
             author: String::new(),
-            apple_backend_selected: true,
+            apple_pieces: true,
             waterui_path,
             backend_checkouts: super::BackendDevCheckouts::default(),
             local_sources,
@@ -4141,7 +4141,7 @@ mod tests {
     }
 
     #[test]
-    fn ffi_scaffold_without_apple_backend_emits_no_apple_dependency() {
+    fn ffi_scaffold_without_apple_pieces_emits_no_apple_dependency() {
         let tempdir = tempdir().expect("temporary ffi scaffold dir");
         write_fake_framework_checkout(
             &tempdir.path().join("waterui"),
@@ -4153,7 +4153,7 @@ mod tests {
             Some(ffi_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
-        .with_apple_backend_selected(false);
+        .with_apple_pieces(false);
 
         smol::block_on(crate::templates::ffi::scaffold(
             &ffi_dir,
@@ -4842,10 +4842,10 @@ async fn scaffold_dir(
             let relative_path = file.path();
 
             // The entry-owning Apple binary names a `waterui-apple`
-            // dependency only an apple-selected scaffold declares; nothing
-            // else renders it.
+            // dependency only a render carrying the Apple pieces declares;
+            // nothing else renders it.
             if namespace == TemplateNamespace::Ffi
-                && !ctx.apple_backend_selected
+                && !ctx.apple_pieces
                 && relative_path == Path::new("src/bin/waterui-apple-main.rs.tpl")
             {
                 continue;
@@ -4913,7 +4913,7 @@ fn render_dir_outputs(
         for file in current_dir.files() {
             let relative_path = file.path();
             if namespace == TemplateNamespace::Ffi
-                && !ctx.apple_backend_selected
+                && !ctx.apple_pieces
                 && relative_path == Path::new("src/bin/waterui-apple-main.rs.tpl")
             {
                 continue;
@@ -5736,7 +5736,7 @@ async fn configure_apple_target_tables(
     // and macOS is the only host an Apple build can run from, so the
     // `waterui-apple` pin resolves there whether or not the build being
     // scaffolded is an Apple one.
-    if ctx.apple_backend_selected {
+    if ctx.apple_pieces {
         let mut waterui_apple = ctx.waterui_apple_dependency()?;
         waterui_apple.features.extend(
             waterui_apple_features
@@ -8192,10 +8192,10 @@ pub mod ffi {
     ) -> io::Result<()> {
         generate_cargo_toml(base_dir, ctx, package_name).await?;
         scaffold_dir(TemplateNamespace::Ffi, &embedded::FFI, base_dir, ctx).await?;
-        // A previous apple-selected render leaves the entry binary behind;
-        // a non-apple scaffold must not ship a file naming an undeclared
-        // dependency.
-        if !ctx.apple_backend_selected {
+        // A previous render carrying the Apple pieces leaves the entry
+        // binary behind; a render without them must not ship a file naming
+        // an undeclared dependency.
+        if !ctx.apple_pieces {
             let stale = base_dir.join("src/bin/waterui-apple-main.rs");
             match fs::remove_file(&stale).await {
                 Ok(()) => {}
@@ -8239,9 +8239,9 @@ pub mod ffi {
         // `waterui_apple::export_app!` placed in the companion library, so
         // every `waterui_*` symbol reaches the image from that one artifact
         // rather than from both the staticlib and the bin's own codegen.
-        // The companion is scaffolded for Android projects too, so the bin
-        // only exists when the Apple backend was actually selected.
-        if ctx.apple_backend_selected {
+        // The companion is rendered on hosts that cannot build for Apple
+        // too, so the bin only exists when the Apple pieces render.
+        if ctx.apple_pieces {
             manifest.bin.push(Product {
                 name: Some(crate::apple::platform::APPLE_ENTRY_BINARY_NAME.to_string()),
                 path: Some("src/bin/waterui-apple-main.rs".to_string()),
