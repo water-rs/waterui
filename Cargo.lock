@@ -13331,6 +13331,7 @@ version = "0.5.2"
 dependencies = [
  "async-channel",
  "futures-lite",
+ "hydrolysis-m3",
  "smol",
  "tracing",
  "waterui",
@@ -13338,6 +13339,7 @@ dependencies = [
  "waterui-controls",
  "waterui-icons-lucide",
  "waterui-inspector-protocol",
+ "waterui-testing",
 ]
 
 [[package]]
