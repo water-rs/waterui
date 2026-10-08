@@ -1,16 +1,18 @@
-//! Embedded-mode Android builds (water-rs/cli#223).
+//! Embedded-mode Android builds (water-rs/waterui#2218).
 //!
-//! On a `[package] embedded = true` project, `water build --platform android`
-//! produces the artifact a host application consumes: a `com.android.library`
-//! AAR carrying the crate's cdylib for every built ABI, the staged
-//! `waterui_assets`, and the runtime's Kotlin glue the host mounts a WaterUI
-//! root through (`WaterUiEmbedding` + `WaterUiRootView`). The generated Gradle library project
-//! under the managed backend directory assembles the AAR — copied to
+//! On a `[package] embedded = true` project, `water build --platform android
+//! --backend hydrolysis` produces the artifact a host application consumes: a
+//! `com.android.library` AAR carrying the Hydrolysis launcher cdylib for every
+//! built ABI, the staged `waterui_assets`, and the generated `WaterUi` entry
+//! point the host mounts a WaterUI root through. The generated Gradle library
+//! project under the managed backend directory assembles the AAR — copied to
 //! `target/package/<crate>-<version>-release.aar` inside the project — and
 //! publishes it to the local Maven repository as
-//! `<bundle_identifier>:<crate_name>:<crate_version>`, so the host's ordinary
-//! Gradle build picks up every `water build` rerun without the CLI ever
-//! editing the host project.
+//! `<bundle_identifier>:<crate_name>:<crate_version>`; the Hydrolysis `host`
+//! and painter modules the AAR's POM declares publish to the same repository
+//! under `dev.waterui.hydrolysis`, so the host's ordinary Gradle build picks
+//! up every `water build` rerun without the CLI ever editing the host
+//! project.
 
 use std::path::{Path, PathBuf};
 
@@ -20,19 +22,18 @@ use tracing::info;
 
 use crate::{
     android::{
-        backend::AndroidBackend,
-        platform::{
-            AndroidAbi, AndroidPlatform, android_ffi_dependency_features, run_gradle_tasks,
-        },
+        backend::manifest_permissions,
+        platform::{AndroidAbi, android_ffi_dependency_features, run_gradle_tasks},
     },
-    assets,
+    assets::{self, AndroidDependencyScope},
     build::{BuildOptions, BuiltTarget},
+    hydrolysis::backend::HydrolysisBackend,
     project::Project,
+    templates::{self, HydrolysisAndroidEmbeddedTemplateEntry},
+    toolchain::Host,
 };
 
-/// The Gradle library module inside the generated backend project whose AAR
-/// the host consumes.
-const EMBEDDED_MODULE: &str = "waterui";
+use super::{HydrolysisAndroidPainter, require_painter_module, template_entry};
 
 /// Every ABI the embedded AAR carries when `--arch` does not narrow the set.
 pub const ALL_ABIS: [AndroidAbi; 4] = [
@@ -51,24 +52,29 @@ pub struct EmbeddedArtifact {
     /// The Maven coordinate the host declares as a dependency:
     /// `group:artifact:version`.
     pub coordinate: String,
+    /// The `dev.waterui.hydrolysis` coordinates this build published the
+    /// `host` and painter modules under — the versions the AAR's POM names.
+    pub host_coordinates: Vec<String>,
 }
 
 /// Build the embedded AAR.
 ///
-/// Compiles the crate's cdylib for `abis` into the library module's
-/// `jniLibs`, stages assets and fonts into it, then has the generated
+/// Compiles the crate's Hydrolysis cdylib for `abis` into the library
+/// module's `jniLibs`, stages assets into it, publishes the host checkout's
+/// modules under this build's [`host_version`], then has the generated
 /// Gradle project assemble the AAR and publish it to `mavenLocal`.
 ///
 /// # Errors
-/// Fails when any ABI's Rust build, the asset staging, or the Gradle
-/// assemble/publish step fails, or when the generated backend project has
-/// not been scaffolded.
+/// Fails when the package name is not a valid Java package, the pinned host
+/// checkout cannot be resolved, any ABI's Rust build, the asset staging, or
+/// the Gradle assemble/publish step fails, or no ABI is selected.
 pub async fn build_aar(
     project: &Project,
+    host: &Host,
+    painter: HydrolysisAndroidPainter,
     options: &BuildOptions,
     abis: &[AndroidAbi],
 ) -> Result<EmbeddedArtifact> {
-    let backend_path = project.backend_path::<AndroidBackend>();
     // The identifier is the Maven `group` the AAR publishes under — a Java
     // package name — so it must satisfy the Android grammar before the build
     // and publish steps run.
@@ -76,16 +82,27 @@ pub async fn build_aar(
         .bundle_identifier()
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
-    let module_dir = backend_path.join(EMBEDDED_MODULE);
-    if !module_dir.join("build.gradle.kts").is_file() {
-        bail!(
-            "embedded backend project missing at {}; run `water build --platform android` to scaffold it",
-            module_dir.display()
-        );
-    }
-    let jni_libs = module_dir.join("src/main/jniLibs");
+    let host_project_dir = require_painter_module(host, project, painter).await?;
+    project.scaffold_ffi_companion(false).await?;
+
+    let backend_path = project.backend_path::<HydrolysisBackend>();
+    let dir = backend_path.join("android-embedded");
+    let version = host_version(&host_project_dir, painter)?;
+    let crate_version = read_crate_version(project.root()).await?;
+    let ctx = embedded_template_context(
+        project,
+        painter,
+        &host_project_dir,
+        &dir,
+        &version,
+        &crate_version,
+    )
+    .await?;
+    templates::hydrolysis_android_embedded::scaffold(&dir, &ctx).await?;
+
     // Drop libraries from earlier builds so an ABI no longer built does not
     // linger in the AAR.
+    let jni_libs = dir.join("waterui/src/main/jniLibs");
     if jni_libs.exists() {
         fs::remove_dir_all(&jni_libs).await?;
     }
@@ -93,18 +110,36 @@ pub async fn build_aar(
     let mut built: Option<BuiltTarget> = None;
     for abi in abis {
         let abi_options = options.clone().with_output_dir(jni_libs.join(abi.as_str()));
-        built = Some(
-            AndroidPlatform::new(*abi)
-                .build(project, abi_options)
-                .await?,
-        );
+        built = Some(super::build(project, host, *abi, abi_options).await?);
     }
     let Some(built) = built else {
         bail!("no Android ABIs selected for the embedded build");
     };
 
-    // Assets and fonts ship inside the AAR exactly as they ship inside an APK.
-    stage_embedded_assets(project, &module_dir, &built.app_symbols()?).await?;
+    // `waterui_assets` ships inside the AAR exactly as it ships inside an
+    // APK — `HydrolysisEnvironment.prepare` syncs the same tree at runtime.
+    // What the app scaffold stages beyond it (`res`, theme, icons) is the
+    // host application's own, never the library's.
+    let (manifest, staged) = assets::stage_project_assets_for_android_library(
+        project,
+        &dir.join("waterui"),
+        &built.app_symbols()?,
+        false,
+    )
+    .await?;
+
+    // The library ships the same runtime fonts the app path stages — a
+    // dependency's declared font resolves and lands under the module's
+    // assets with the table manifest the runtime reads at bootstrap.
+    let font_declarations =
+        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
+    if !resolved_fonts.is_empty() {
+        let fonts_dest = staged.root.join("fonts");
+        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
+        assets::write_font_manifest(&resolved_fonts, &fonts_dest, None).await?;
+    }
 
     // Kotlin helpers and Maven dependencies likewise belong on the classpath
     // the host app resolves classes from; `api` exports them through the
@@ -113,60 +148,153 @@ pub async fn build_aar(
     // into its own, `${applicationId}` resolving to the host's. The scan
     // mirrors the Rust build's feature selection so helpers behind optional
     // features are not missed.
-    crate::assets::stage_android_declarations(
+    assets::stage_android_declarations(
         project,
         &project.ffi_crate_path().join("Cargo.toml"),
-        &module_dir,
-        crate::assets::AndroidDependencyScope::Api,
+        &dir.join("waterui"),
+        AndroidDependencyScope::Api,
         &android_ffi_dependency_features(project).await?,
     )
     .await?;
 
+    let painter_publish = format!(
+        ":hydrolysis-host:{}:publishReleasePublicationToMavenLocal",
+        painter.host_module()
+    );
     run_gradle_tasks(
-        &backend_path,
+        &dir,
         &[
+            ":hydrolysis-host:host:publishReleasePublicationToMavenLocal",
+            &painter_publish,
             ":waterui:assembleRelease",
             ":waterui:publishReleasePublicationToMavenLocal",
         ],
-        &[],
+        &[("WATERUI_HYDROLYSIS_HOST_VERSION", version.clone())],
     )
     .await?;
 
-    let version = read_crate_version(project.root()).await?;
-    let aar_path = copy_aar_to_package(project, &module_dir, &version).await?;
-    let coordinate = format!("{package_name}:{}:{version}", project.crate_name());
+    let module_dir = dir.join("waterui");
+    let aar_path = copy_aar_to_package(project, &module_dir, &crate_version).await?;
+    let coordinate = format!("{package_name}:{}:{crate_version}", project.crate_name());
+    let host_coordinates = vec![
+        format!("dev.waterui.hydrolysis:host:{version}"),
+        format!("{}:{version}", painter.gradle_dependency()),
+    ];
 
     info!(aar = %aar_path.display(), coordinate, "embedded Android artifact built");
     Ok(EmbeddedArtifact {
         aar_path,
         coordinate,
+        host_coordinates,
     })
 }
 
-/// Stage `waterui_assets` and resolved fonts into the library module — the
-/// same content `copy_assets_and_fonts` writes into the app module, minus the
-/// app-level `res` files a library does not own.
-async fn stage_embedded_assets(
+/// The template context the generated `android-embedded/` Gradle project
+/// renders with: the shared launcher context plus the crate-version and
+/// permission entries and the embedded entry carrying the published host
+/// version.
+async fn embedded_template_context(
     project: &Project,
-    module_dir: &Path,
-    symbols: &crate::artifact_symbols::ArtifactSymbols,
-) -> Result<()> {
-    let (manifest, staged) =
-        assets::stage_project_assets_for_android_library(project, module_dir, symbols, false)
-            .await?;
+    painter: HydrolysisAndroidPainter,
+    host_project_dir: &Path,
+    dir: &Path,
+    version: &str,
+    crate_version: &str,
+) -> Result<crate::templates::TemplateContext> {
+    Ok(HydrolysisBackend::template_context(project, &project.resolved_framework().await?)
+        .await?
+        .with_crate_version(crate_version)
+        .with_android_permissions(manifest_permissions(project.manifest()))
+        .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
+            app: template_entry(project, painter, host_project_dir, dir).await?,
+            host_version: version.to_owned(),
+        }))
+}
 
-    let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
-    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
+/// Every file the `android-embedded/` scaffold would write, as
+/// android-embedded-dir-relative path and content — the regeneration check's
+/// comparison source.
+///
+/// # Errors
+///
+/// Returns an error when the template context or rendering fails.
+pub async fn rendered_embedded_outputs(
+    project: &Project,
+    painter: HydrolysisAndroidPainter,
+    host_project_dir: &Path,
+    version: &str,
+    crate_version: &str,
+) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+    let dir = project
+        .backend_path::<HydrolysisBackend>()
+        .join("android-embedded");
+    let ctx = embedded_template_context(
+        project,
+        painter,
+        host_project_dir,
+        &dir,
+        version,
+        crate_version,
+    )
+    .await?;
+    templates::hydrolysis_android_embedded::rendered_outputs(&ctx)
+        .map_err(|error| eyre::eyre!("{error}"))
+}
 
-    if !resolved_fonts.is_empty() {
-        let fonts_dest = staged.root.join("fonts");
-        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
-        assets::write_font_manifest(&resolved_fonts, &fonts_dest, None).await?;
-        info!("Copied {} fonts to embedded module", resolved_fonts.len());
+/// The version this build publishes the Hydrolysis `host` and painter modules
+/// under: `0.0.0-<first 16 hex of the sources' sha256>`, so a host that
+/// changed never collides with an earlier publish of the same coordinate.
+///
+/// The hash covers `<host>/settings.gradle.kts` and every file under the
+/// `host` and painter modules, sorted by relative path and skipping Gradle
+/// `build/` and `.gradle/` outputs.
+pub(crate) fn host_version(
+    host_project_dir: &Path,
+    painter: HydrolysisAndroidPainter,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let mut files = vec![host_project_dir.join("settings.gradle.kts")];
+    collect_host_files(&host_project_dir.join("host"), &mut files)?;
+    collect_host_files(&host_project_dir.join(painter.host_module()), &mut files)?;
+    files.sort();
+
+    let mut hasher = Sha256::new();
+    for file in &files {
+        let relative = file
+            .strip_prefix(host_project_dir)
+            .expect("hashed files live under the host project dir");
+        hasher.update(relative.to_string_lossy().replace('\\', "/").as_bytes());
+        hasher.update([0u8]);
+        hasher.update(
+            std::fs::read(file).map_err(|error| {
+                eyre::eyre!("cannot hash host file {}: {error}", file.display())
+            })?,
+        );
+        hasher.update([0u8]);
     }
+    let hex = hex::encode(hasher.finalize());
+    Ok(format!("0.0.0-{}", &hex[..16]))
+}
 
+/// Appends every regular file under `dir` to `out`, skipping Gradle `build/`
+/// and `.gradle/` directories.
+fn collect_host_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)
+        .map_err(|error| eyre::eyre!("cannot list {}: {error}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            if name == "build" || name == ".gradle" {
+                continue;
+            }
+            collect_host_files(&path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
     Ok(())
 }
 
@@ -224,6 +352,61 @@ pub async fn read_crate_version(project_root: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A minimal pinned-host checkout: `settings.gradle.kts` plus `host/` and
+    /// `gpu/` module sources, optionally with Gradle `build/` output a hash
+    /// must ignore.
+    fn stage_fake_host(dir: &Path) -> PathBuf {
+        let host = dir.join("hydrolysis-android");
+        let write = |path: PathBuf, content: &str| {
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdirs");
+            std::fs::write(path, content).expect("write");
+        };
+        write(
+            host.join("settings.gradle.kts"),
+            "include(\":host\", \":gpu\")",
+        );
+        write(
+            host.join("host/build.gradle.kts"),
+            "plugins { id(\"com.android.library\") }",
+        );
+        write(
+            host.join("host/src/main/AndroidManifest.xml"),
+            "<manifest />",
+        );
+        write(
+            host.join("gpu/build.gradle.kts"),
+            "plugins { id(\"com.android.library\") }",
+        );
+        host
+    }
+
+    #[test]
+    fn host_version_is_stable_and_ignores_build_output() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = stage_fake_host(dir.path());
+        // A `build/` output directory inside `host/` must not move the hash.
+        std::fs::create_dir_all(host.join("host/build/intermediates")).expect("build dir");
+        std::fs::write(host.join("host/build/intermediates/x"), "stale").expect("build file");
+        std::fs::create_dir_all(host.join(".gradle")).expect("gradle dir");
+        std::fs::write(host.join(".gradle/state"), "stale").expect("gradle file");
+
+        let first = host_version(&host, HydrolysisAndroidPainter::Gpu).expect("hash");
+        let second = host_version(&host, HydrolysisAndroidPainter::Gpu).expect("hash");
+        assert_eq!(first, second);
+        assert!(first.starts_with("0.0.0-"), "{first}");
+        assert_eq!(first.len(), "0.0.0-".len() + 16, "{first}");
+    }
+
+    #[test]
+    fn host_version_changes_with_host_sources() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = stage_fake_host(dir.path());
+        let before = host_version(&host, HydrolysisAndroidPainter::Gpu).expect("hash");
+        std::fs::write(host.join("host/src/main/new.kt"), "// changed").expect("edit");
+        let after = host_version(&host, HydrolysisAndroidPainter::Gpu).expect("hash");
+        assert_ne!(before, after);
+    }
 
     #[test]
     fn read_crate_version_reads_literal_version() {

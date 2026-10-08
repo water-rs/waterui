@@ -1,0 +1,37 @@
+import org.gradle.api.initialization.resolve.RepositoriesMode
+
+pluginManagement {
+    repositories {
+        google()
+        maven { url = uri("https://dl.google.com/dl/android/maven2/") }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    plugins {
+        // --- begin waterui gradle plugin versions ---
+        // --- end waterui gradle plugin versions ---
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        maven { url = uri("https://dl.google.com/dl/android/maven2/") }
+        mavenCentral()
+    }
+}
+
+rootProject.name = "{{ ctx.app_name }}-embedded"
+include(":waterui")
+
+// The Hydrolysis Android host is a pinned framework checkout the CLI fetches
+// and owns; its host and painter libraries substitute the coordinates the
+// library module declares at the version this build publishes them under.
+includeBuild("{{ ctx.hydrolysis_android_embedded().app.host_project_dir }}") {
+    name = "hydrolysis-host"
+    dependencySubstitution {
+        substitute(module("dev.waterui.hydrolysis:host")).using(project(":host"))
+        substitute(module("{{ ctx.hydrolysis_android_embedded().app.painter_dependency }}")).using(project(":{{ ctx.hydrolysis_android_embedded().app.painter_module }}"))
+    }
+}

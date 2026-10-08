@@ -558,6 +558,8 @@ async fn write_manifest_stamp(manifest: &BundleManifest, dest_root: &Path) -> ey
     }
     let stamp = hex::encode(hasher.finalize());
     super::super::templates::write_file_if_changed(
+        // No dot prefix: aapt2 excludes `.*` files, so only this name ever
+        // reaches the packaged assets `HydrolysisEnvironment` reads.
         &dest_root.join("waterui-sync-stamp"),
         stamp.as_bytes(),
     )
