@@ -35,7 +35,7 @@ use crate::{
     hydrolysis::backend::HydrolysisBackend,
     platform::PackageOptions,
     project::Project,
-    templates::{self, HydrolysisAndroidTemplateEntry},
+    templates::{self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry},
     toolchain::Host,
 };
 
@@ -409,14 +409,27 @@ pub async fn build(
     abi: AndroidAbi,
     options: BuildOptions,
 ) -> eyre::Result<BuiltTarget> {
+    build_with_features(project, host, abi, options, &[]).await
+}
+
+/// [`build`] with extra Cargo features — the preview entry compiles the
+/// launcher cdylib with `waterui-preview-mode`.
+///
+/// # Errors
+///
+/// Returns an error when the NDK or SDK cannot be resolved or the build or
+/// staging fails.
+pub async fn build_with_features(
+    project: &Project,
+    host: &Host,
+    abi: AndroidAbi,
+    options: BuildOptions,
+    features: &[&str],
+) -> eyre::Result<BuiltTarget> {
     // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
-    // prebuilt `libstd.so`, so anything that will not `dlopen` modules —
-    // every hydrolysis-android build — links the runtime in.
-    let options = if options.loads_dynamic_modules() {
-        options
-    } else {
-        options.with_static_runtime()
-    };
+    // prebuilt `libstd.so`, so the launcher — which never `dlopen`s modules —
+    // links the runtime in.
+    let options = options.with_static_runtime();
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
     if !backend_path.join("Cargo.toml").is_file() {
@@ -441,6 +454,7 @@ pub async fn build(
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
+        .with_features(features.iter().copied())
         .with_envs(options.cargo_envs().iter().cloned());
     let rust_build = rust_build
         .with_envs(android_cargo_envs(&context, &triple))
@@ -680,6 +694,180 @@ pub async fn clean_jni_libs(project: &Project) -> eyre::Result<()> {
     Ok(())
 }
 
+/// The preview host APK's application id — also the `run-as` package a
+/// preview render stages its payload under.
+pub const PREVIEW_HOST_PACKAGE: &str = "dev.waterui.hydrolysis.preview";
+
+/// The instrumentation `am instrument` runs for a preview render.
+pub const PREVIEW_HOST_INSTRUMENTATION: &str = "dev.waterui.hydrolysis.preview/dev.waterui.hydrolysis.preview.HydrolysisPreviewInstrumentation";
+
+/// The Gradle project the preview host renders into, inside the managed
+/// Hydrolysis backend.
+fn preview_host_dir(backend_path: &Path) -> PathBuf {
+    backend_path.join("android-preview-host")
+}
+
+/// The stamp recording the fingerprint a generated preview host was built
+/// for — a match plus a resolvable APK skips the Gradle build entirely.
+const PREVIEW_HOST_STAMP_FILE: &str = ".waterui-preview-host-fingerprint";
+
+/// The sha256 of everything a preview host APK bakes in: the embedded
+/// `hydrolysis_android_preview`/`hydrolysis_android_shared`/`android_shared`
+/// template trees, every source file of the pinned host's `preview` module
+/// (its `build/` and `.gradle/` outputs excluded), and the host's
+/// `settings.gradle.kts` — hashed sorted by relative path.
+///
+/// # Errors
+///
+/// Returns an error when a host file cannot be walked or read.
+fn preview_host_fingerprint(host_project_dir: &Path) -> eyre::Result<String> {
+    use sha2::Digest as _;
+
+    let mut fingerprint_inputs: Vec<(String, Vec<u8>)> = Vec::new();
+    for embedded_dir in [
+        &templates::embedded::HYDROLYSIS_ANDROID_PREVIEW,
+        &templates::embedded::HYDROLYSIS_ANDROID_SHARED,
+        &templates::embedded::ANDROID_SHARED,
+    ] {
+        let mut dirs = vec![embedded_dir];
+        while let Some(dir) = dirs.pop() {
+            for file in dir.files() {
+                fingerprint_inputs.push((
+                    file.path().to_string_lossy().into_owned(),
+                    file.contents().to_vec(),
+                ));
+            }
+            dirs.extend(dir.dirs());
+        }
+    }
+
+    let preview_module = host_project_dir.join("preview");
+    for entry in walkdir::WalkDir::new(&preview_module)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !matches!(entry.file_name().to_str(), Some("build" | ".gradle")))
+    {
+        let entry = entry.wrap_err_with(|| {
+            format!(
+                "failed to walk the preview host module {}",
+                preview_module.display()
+            )
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(host_project_dir)
+            .map_err(|error| eyre::eyre!("{error}"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        fingerprint_inputs.push((
+            relative,
+            std::fs::read(entry.path())
+                .wrap_err_with(|| format!("failed to read {}", entry.path().display()))?,
+        ));
+    }
+    let settings = host_project_dir.join("settings.gradle.kts");
+    fingerprint_inputs.push((
+        "settings.gradle.kts".to_string(),
+        std::fs::read(&settings).wrap_err_with(|| {
+            format!(
+                "failed to read the preview host settings {}",
+                settings.display()
+            )
+        })?,
+    ));
+
+    fingerprint_inputs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let mut hasher = sha2::Sha256::new();
+    for (path, contents) in &fingerprint_inputs {
+        hasher.update(path.as_bytes());
+        hasher.update(contents);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+/// The APK `versionCode` a fingerprint installs as: its first 4 bytes,
+/// big-endian, folded into `1..=2_000_000_000` so the code stays below the
+/// platform ceiling and never zero.
+#[must_use]
+pub(crate) fn preview_host_version_code(fingerprint: &str) -> u32 {
+    let high = u32::from_str_radix(
+        fingerprint
+            .get(..8)
+            .expect("a preview host fingerprint is a sha256 hex digest"),
+        16,
+    )
+    .expect("a sha256 hex digest's first word parses");
+    high % 2_000_000_000 + 1
+}
+
+/// Build — or reuse — the `water preview --platform android` host APK.
+///
+/// The host is a composite over the pinned Hydrolysis Android checkout
+/// (`hydrolysis-android-host-subdirectory`), rendered under
+/// `<backend>/android-preview-host/`; its `versionCode` is the
+/// [`preview_host_fingerprint`]'s projection, so a changed template or a
+/// changed host `preview` module produces a different code and the device
+/// receives a reinstall. Returns the APK path and that `versionCode`.
+///
+/// # Errors
+///
+/// Returns an error when the host checkout ships no `preview` module, the
+/// project cannot render, or the Gradle build fails.
+pub async fn ensure_preview_host_apk(
+    project: &Project,
+    host: &Host,
+) -> eyre::Result<(PathBuf, u32)> {
+    let host_root = ensure_android_host(project, host).await?;
+    let resolved = project.resolved_framework().await?;
+    let host_project_dir = host_root.join(resolved.hydrolysis_android_host_subdirectory()?);
+    let preview_module = host_project_dir.join("preview");
+    if !preview_module.is_dir() {
+        bail!(
+            "the hydrolysis android host at {} ships no `preview` module: {} does not exist",
+            host_root.display(),
+            preview_module.display()
+        );
+    }
+    let fingerprint = preview_host_fingerprint(&host_project_dir)?;
+    let version_code = preview_host_version_code(&fingerprint);
+
+    let backend_path = project.backend_path::<HydrolysisBackend>();
+    let host_dir = preview_host_dir(&backend_path);
+    let relative_host = pathdiff::diff_paths(&host_project_dir, &host_dir).ok_or_else(|| {
+        eyre::eyre!(
+            "cannot express the hydrolysis android host at {} relative to {}",
+            host_project_dir.display(),
+            host_dir.display()
+        )
+    })?;
+    let ctx = HydrolysisBackend::template_context(project)
+        .await?
+        .with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
+            host_project_dir: relative_host.to_string_lossy().replace('\\', "/"),
+            min_api_level: resolved.android_min_api_level()?,
+            version_code,
+        });
+    templates::hydrolysis_android_preview::scaffold(&host_dir, &ctx).await?;
+
+    let stamp = host_dir.join(PREVIEW_HOST_STAMP_FILE);
+    if fs::read_to_string(&stamp)
+        .await
+        .is_ok_and(|contents| contents.trim() == fingerprint)
+        && let Ok(apk) = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await
+    {
+        return Ok((apk, version_code));
+    }
+
+    info!("Building the hydrolysis preview host APK");
+    run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[]).await?;
+    fs::write(&stamp, &fingerprint).await?;
+    let apk = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await?;
+    Ok((apk, version_code))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, path::Path};
@@ -818,6 +1006,26 @@ mod tests {
             assert_eq!(
                 resolve_painter(&project, Some(HydrolysisAndroidPainter::Gpu)),
                 HydrolysisAndroidPainter::Gpu
+            );
+        });
+    }
+
+    /// A pinned host without a `preview` module is an explicit error naming
+    /// the missing module — never a substitution.
+    #[test]
+    fn ensure_preview_host_apk_fails_without_the_preview_module() {
+        smol::block_on(async {
+            let (_temporary, project) = fixture_project("").await;
+            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+
+            let error = ensure_preview_host_apk(&project, &host)
+                .await
+                .expect_err("a host without `preview` must fail");
+            let message = format!("{error:#}");
+            assert!(message.contains("preview"), "{message}");
+            assert!(
+                message.contains("backends/hydrolysis/android/preview"),
+                "the error must name the missing module path: {message}"
             );
         });
     }

@@ -20,8 +20,9 @@ use crate::preview::request::{
     PreviewRequest, PreviewTarget, ResolvedPreviewBackend,
 };
 use crate::preview::{
-    ApplePreviewRequest, HydrolysisPreviewRequest, PreviewPlatform, launch_preview_session,
-    render_preview_with_apple, render_preview_with_hydrolysis,
+    ApplePreviewRequest, HydrolysisAndroidPreviewRequest, HydrolysisPreviewRequest,
+    PreviewPlatform, launch_preview_session, render_preview_with_apple,
+    render_preview_with_hydrolysis, render_preview_with_hydrolysis_android,
 };
 use crate::project::read_project_crate_name;
 
@@ -49,9 +50,9 @@ pub struct PreviewArgs {
     #[serde(default)]
     pub frame: Option<String>,
 
-    /// Rendering backend: `apple`, `android`, or `hydrolysis`. Defaults to the
-    /// platform's native backend (`apple` on macOS/iOS, `android` on Android,
-    /// `hydrolysis` on Linux and Windows).
+    /// Rendering backend: `apple` or `hydrolysis`. Defaults to the
+    /// platform's native backend (`apple` on macOS/iOS, `hydrolysis` on
+    /// Linux, Windows, and Android).
     #[serde(default)]
     pub backend: Option<CliPreviewBackend>,
 
@@ -168,6 +169,26 @@ impl PreviewTool {
                             .hydrolysis_theme
                             .expect("resolve guarantees a theme for hydrolysis"),
                         platform,
+                        width: request.width,
+                        height: request.height,
+                        sccache_path: self.sccache_path.clone(),
+                        // MCP serves JSON-RPC over stdio — there is no
+                        // terminal sink to render compile progress into.
+                        progress: None,
+                    },
+                    &output_path,
+                    None,
+                )
+                .await?;
+            }
+            ResolvedPreviewBackend::HydrolysisAndroid => {
+                render_preview_with_hydrolysis_android(
+                    HydrolysisAndroidPreviewRequest {
+                        project_path: &self.project_path,
+                        source: request.target.source(),
+                        theme: request
+                            .hydrolysis_theme
+                            .expect("resolve guarantees a theme for hydrolysis"),
                         width: request.width,
                         height: request.height,
                         sccache_path: self.sccache_path.clone(),

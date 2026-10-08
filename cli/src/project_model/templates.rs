@@ -100,6 +100,10 @@ pub mod embedded {
     pub static HYDROLYSIS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis");
     pub static HYDROLYSIS_ANDROID: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android");
+    pub static HYDROLYSIS_ANDROID_PREVIEW: Dir<'_> =
+        include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_preview");
+    pub static HYDROLYSIS_ANDROID_SHARED: Dir<'_> =
+        include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_shared");
     pub static ESP32: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/esp32");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
     pub static PREVIEW_FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview_ffi");
@@ -257,6 +261,21 @@ pub struct HydrolysisAndroidTemplateEntry {
     pub painter_band_class: Option<String>,
 }
 
+/// The Hydrolysis Android preview host scaffold's parameters: the managed
+/// host checkout it `includeBuild`s and the `versionCode` the template's
+/// fingerprint derives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HydrolysisAndroidPreviewTemplateEntry {
+    /// The pinned host checkout's Gradle root, relative to the generated
+    /// `android-preview-host/` directory (e.g. `../android-host/<rev>/android`).
+    pub host_project_dir: String,
+    /// The generated host app's `minSdk`: the framework's Android API floor.
+    pub min_api_level: u32,
+    /// The `versionCode` stamped into the built APK — the host fingerprint's
+    /// projection, so a changed template or host module reinstalls the APK.
+    pub version_code: u32,
+}
+
 /// What the application's own dependency graph says about browser components.
 ///
 /// Nothing here is configuration: the engine that draws a `WebView` is a crate
@@ -395,6 +414,9 @@ pub struct TemplateContext {
     /// Hydrolysis Android scaffold parameters — set only while the
     /// `hydrolysis_android` templates render.
     pub hydrolysis_android: Option<HydrolysisAndroidTemplateEntry>,
+    /// Hydrolysis Android preview host parameters — set only while the
+    /// `hydrolysis_android_preview` templates render.
+    pub hydrolysis_android_preview: Option<HydrolysisAndroidPreviewTemplateEntry>,
 }
 
 impl TemplateContext {
@@ -439,6 +461,7 @@ impl TemplateContext {
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
+            hydrolysis_android_preview: None,
         }
     }
 
@@ -485,6 +508,7 @@ impl TemplateContext {
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
+            hydrolysis_android_preview: None,
         }
     }
 
@@ -538,6 +562,7 @@ impl TemplateContext {
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
+            hydrolysis_android_preview: None,
         }
     }
 
@@ -675,6 +700,42 @@ impl TemplateContext {
     pub fn with_hydrolysis_android(mut self, entry: HydrolysisAndroidTemplateEntry) -> Self {
         self.hydrolysis_android = Some(entry);
         self
+    }
+
+    /// Set the Hydrolysis Android preview host parameters.
+    #[must_use]
+    pub fn with_hydrolysis_android_preview(
+        mut self,
+        entry: HydrolysisAndroidPreviewTemplateEntry,
+    ) -> Self {
+        self.hydrolysis_android_preview = Some(entry);
+        self
+    }
+
+    const fn hydrolysis_android_preview_entry(&self) -> &HydrolysisAndroidPreviewTemplateEntry {
+        self.hydrolysis_android_preview
+            .as_ref()
+            .expect("TemplateContext missing the Hydrolysis Android preview host entry")
+    }
+
+    /// The pinned host checkout's Gradle root, relative to the generated
+    /// `android-preview-host/` directory, that `settings.gradle.kts`
+    /// `includeBuild`s.
+    #[must_use]
+    pub fn hydrolysis_android_preview_host_project_dir(&self) -> &str {
+        &self.hydrolysis_android_preview_entry().host_project_dir
+    }
+
+    /// The generated preview host's `minSdk`.
+    #[must_use]
+    pub const fn hydrolysis_android_preview_min_api_level(&self) -> u32 {
+        self.hydrolysis_android_preview_entry().min_api_level
+    }
+
+    /// The `versionCode` stamped into the generated preview host.
+    #[must_use]
+    pub const fn hydrolysis_android_preview_version_code(&self) -> u32 {
+        self.hydrolysis_android_preview_entry().version_code
     }
 
     const fn hydrolysis_android_entry(&self) -> &HydrolysisAndroidTemplateEntry {
@@ -1001,6 +1062,8 @@ enum TemplateNamespace {
     Gtk4,
     Hydrolysis,
     HydrolysisAndroid,
+    HydrolysisAndroidPreview,
+    HydrolysisAndroidShared,
     Esp32,
     Inspector,
     Preview,
@@ -1021,6 +1084,8 @@ impl TemplateNamespace {
             Self::Gtk4 => "src/templates/gtk4",
             Self::Hydrolysis => "src/templates/hydrolysis",
             Self::HydrolysisAndroid => "src/templates/hydrolysis_android",
+            Self::HydrolysisAndroidPreview => "src/templates/hydrolysis_android_preview",
+            Self::HydrolysisAndroidShared => "src/templates/hydrolysis_android_shared",
             Self::Esp32 => "src/templates/esp32",
             Self::Inspector => "src/templates/inspector",
             Self::Preview => "src/templates/preview",
@@ -1367,6 +1432,8 @@ define_scaffold_templates! {
     HydrolysisAndroidBuildGradleTemplate => (HydrolysisAndroid, "src/templates/hydrolysis_android/app/build.gradle.kts.tpl"),
     HydrolysisAndroidManifestTemplate => (HydrolysisAndroid, "src/templates/hydrolysis_android/app/src/main/AndroidManifest.xml.tpl"),
     HydrolysisAndroidMainActivityTemplate => (HydrolysisAndroid, "src/templates/hydrolysis_android/app/src/main/java/MainActivity.kt.tpl"),
+    HydrolysisAndroidPreviewSettingsTemplate => (HydrolysisAndroidPreview, "src/templates/hydrolysis_android_preview/settings.gradle.kts.tpl"),
+    HydrolysisAndroidPreviewBuildGradleTemplate => (HydrolysisAndroidPreview, "src/templates/hydrolysis_android_preview/app/build.gradle.kts.tpl"),
     RootWebLibTemplate => (Root, "src/templates/web_lib.rs.tpl"),
     HydrolysisLibTemplate => (Hydrolysis, "src/templates/hydrolysis/src/lib.rs.tpl"),
     HydrolysisMainTemplate => (Hydrolysis, "src/templates/hydrolysis/src/main.rs.tpl"),
@@ -1389,10 +1456,11 @@ define_scaffold_templates! {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserTemplateContext, Esp32TemplateEntry, LaunchTemplateEntry, LocalBackendSources,
-        ResolvedFramework, ResolvedWebViewBackend, SupportAppIdentity, TemplateContext,
-        TemplateNamespace, embedded, generated_profiles, gtk4, jitpack_dependency_coordinate,
-        local_backend_sources, normalize_path_for_config, preview_ffi, render_scaffold_template,
+        BrowserTemplateContext, Esp32TemplateEntry, HydrolysisAndroidPreviewTemplateEntry,
+        LaunchTemplateEntry, LocalBackendSources, ResolvedFramework, ResolvedWebViewBackend,
+        SupportAppIdentity, TemplateContext, TemplateNamespace, embedded, generated_profiles, gtk4,
+        jitpack_dependency_coordinate, local_backend_sources, normalize_path_for_config,
+        preview_ffi, render_scaffold_template,
     };
     use crate::framework::{
         framework_repository,
@@ -1442,6 +1510,7 @@ mod tests {
             android_signing: None,
             esp32: Esp32TemplateEntry::default(),
             hydrolysis_android: None,
+            hydrolysis_android_preview: None,
             launch: LaunchTemplateEntry::default(),
         }
     }
@@ -2724,10 +2793,33 @@ mod tests {
             native_dependencies.get("waterui-preview").is_none(),
             "the generated crate must not depend on waterui-preview"
         );
+        // `waterui-preview-protocol` is a top-level optional dependency:
+        // the preview-mode build runs on Android too, so the dep cannot
+        // live in the not-Android target table.
         assert_eq!(
-            native_dependencies["waterui-preview-protocol"]["version"].as_str(),
+            manifest["dependencies"]["waterui-preview-protocol"]["version"].as_str(),
             Some(pinned("waterui-preview-protocol-version").as_str()),
         );
+        assert_eq!(
+            manifest["dependencies"]["waterui-preview-protocol"]["optional"].as_bool(),
+            Some(true),
+        );
+        for mode in [
+            "waterui-preview-mode",
+            "waterui-preview-test-mode",
+            "waterui-mcp-mode",
+        ] {
+            let features = manifest["features"][mode]
+                .as_array()
+                .expect("mode feature should be an array")
+                .iter()
+                .map(|feature| feature.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>();
+            assert!(
+                features.contains(&"dep:waterui-preview-protocol"),
+                "{mode} must enable the optional protocol dep: {features:?}"
+            );
+        }
         // Each of these is a separately versioned package. Borrowing a sibling's
         // pin reads fine while the numbers happen to coincide and emits an
         // unresolvable requirement the moment one of them bumps on its own.
@@ -2799,6 +2891,87 @@ mod tests {
                 .iter()
                 .all(|bin| bin.replace('-', "_") != lib_name),
             "lib {lib_name} collides with a bin in {bin_names:?}"
+        );
+    }
+
+    /// The Android launcher's `JNI_OnLoad` switches on
+    /// `waterui-preview-mode`: the preview build registers
+    /// `preview_runtime::run` for the host instrumentation, and every other
+    /// build registers the app factory for `NativeBridge`.
+    #[test]
+    fn hydrolysis_lib_splits_the_android_entry_on_preview_mode() {
+        let lib_rs = crate::templates::hydrolysis::rendered_outputs(
+            &project_ctx(),
+            "waterui-test-hydrolysis",
+        )
+        .expect("hydrolysis outputs should render")
+        .into_iter()
+        .find_map(|(path, content)| {
+            (path == std::path::Path::new("src/lib.rs"))
+                .then(|| String::from_utf8(content).expect("lib.rs must be UTF-8"))
+        })
+        .expect("hydrolysis src/lib.rs output should exist");
+        assert!(
+            lib_rs.contains(
+                "#[cfg(feature = \"waterui-preview-mode\")]\n    hydrolysis::android::register_preview(preview_runtime::run);"
+            ),
+            "the preview-mode arm must register the preview entry: {lib_rs}"
+        );
+        assert!(
+            lib_rs.contains("#[cfg(not(feature = \"waterui-preview-mode\"))]")
+                && lib_rs.contains("register_app("),
+            "the default arm must register the app factory: {lib_rs}"
+        );
+    }
+
+    /// The preview host Gradle project composites the pinned host build and
+    /// resolves its `preview` library module through substitution.
+    #[test]
+    fn hydrolysis_android_preview_host_renders_the_host_composite() {
+        let ctx =
+            project_ctx().with_hydrolysis_android_preview(HydrolysisAndroidPreviewTemplateEntry {
+                host_project_dir: "../hydrolysis-android-host".to_string(),
+                min_api_level: 31,
+                version_code: 42,
+            });
+        let outputs = crate::templates::hydrolysis_android_preview::rendered_outputs(&ctx)
+            .expect("preview host outputs should render");
+        let text = |name: &str| {
+            outputs
+                .iter()
+                .find_map(|(path, content)| {
+                    (path == std::path::Path::new(name))
+                        .then(|| String::from_utf8(content.clone()).expect("output must be UTF-8"))
+                })
+                .unwrap_or_else(|| panic!("{name} output should exist"))
+        };
+        let settings = text("settings.gradle.kts");
+        assert!(
+            settings.contains("includeBuild(\"../hydrolysis-android-host\")"),
+            "the host composite must name the pinned checkout: {settings}"
+        );
+        assert!(
+            settings.contains("name = \"hydrolysis-host\""),
+            "the composite must be named hydrolysis-host for lint task paths: {settings}"
+        );
+        assert!(
+            settings.contains(
+                "substitute(module(\"dev.waterui.hydrolysis:preview\")).using(project(\":preview\"))"
+            ),
+            "the preview module must resolve through substitution: {settings}"
+        );
+        let app_gradle = text("app/build.gradle.kts");
+        assert!(
+            app_gradle.contains("applicationId = \"dev.waterui.hydrolysis.preview\""),
+            "the app id is the preview host's package: {app_gradle}"
+        );
+        assert!(
+            app_gradle.contains("versionCode = 42"),
+            "the fingerprint-projected version code must render: {app_gradle}"
+        );
+        assert!(
+            app_gradle.contains("implementation(\"dev.waterui.hydrolysis:preview\")"),
+            "the app must depend on the substituted preview module: {app_gradle}"
         );
     }
 
@@ -3803,21 +3976,16 @@ mod tests {
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("preview ffi Cargo.toml should parse");
-        for (feature, ffi_feature) in [
-            (preview_ffi::APPLE_ABI_FEATURE, "waterui-ffi/c-api"),
-            (preview_ffi::ANDROID_ABI_FEATURE, "waterui-ffi/android-jni"),
-        ] {
-            let features = manifest["features"][feature]
-                .as_array()
-                .expect("platform preview ABI feature should be an array")
-                .iter()
-                .map(|feature| feature.as_str().expect("feature should be a string"))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                features,
-                ["dep:waterui-ffi", ffi_feature, "dep:waterui-preview"]
-            );
-        }
+        let abi_features = manifest["features"][preview_ffi::APPLE_ABI_FEATURE]
+            .as_array()
+            .expect("platform preview ABI feature should be an array")
+            .iter()
+            .map(|feature| feature.as_str().expect("feature should be a string"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            abi_features,
+            ["dep:waterui-ffi", "waterui-ffi/c-api", "dep:waterui-preview"]
+        );
         assert_eq!(
             manifest["target"]["cfg(not(target_vendor = \"apple\"))"]["dependencies"]["waterui-ffi"]["optional"].as_bool(),
             Some(true)
@@ -5601,16 +5769,23 @@ pub mod hydrolysis {
                 // The preview runtime module compiles under the feature
                 // alone — it no longer consumes the `waterui-preview`
                 // support-app crate.
-                ("waterui-preview-mode".to_string(), vec![]),
+                (
+                    "waterui-preview-mode".to_string(),
+                    vec!["dep:waterui-preview-protocol".to_string()],
+                ),
                 (
                     "waterui-preview-test-mode".to_string(),
-                    vec!["dep:waterui-testing".to_string()],
+                    vec![
+                        "dep:waterui-testing".to_string(),
+                        "dep:waterui-preview-protocol".to_string(),
+                    ],
                 ),
                 (
                     "waterui-mcp-mode".to_string(),
                     vec![
                         "dep:waterui-mcp".to_string(),
                         "dep:waterui-testing".to_string(),
+                        "dep:waterui-preview-protocol".to_string(),
                     ],
                 ),
             ]),
@@ -5689,6 +5864,27 @@ pub mod hydrolysis {
                     .with_default_features(false),
                 ),
             ),
+            (
+                // Optional so a normal build on any target does not compile
+                // it; the preview and MCP mode features select it
+                // explicitly. Top-level rather than a target table: the
+                // preview-mode build runs on Android too.
+                "waterui-preview-protocol".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui-preview-protocol",
+                            &[],
+                            NativeBackendDependencySource::WorkspaceSubdir(
+                                "components/devtools/preview/protocol",
+                            ),
+                        ),
+                    )?
+                    .with_default_features(false)
+                    .with_optional(),
+                ),
+            ),
         ]))
     }
 
@@ -5720,8 +5916,10 @@ pub mod hydrolysis {
     /// The dependencies only the Android launcher compiles: the Hydrolysis
     /// runner's Android host, the JNI declarations `JNI_OnLoad` needs, and
     /// the GPU-capable `waterui` the registered app builds with. The
-    /// desktop-only stack (winit, pollster, preview and MCP runtimes) stays
-    /// out — the Android launcher never binaries or previews.
+    /// desktop-only stack (winit, pollster, the MCP runtime) stays out; the
+    /// preview pieces Android does need — `preview_runtime` and its
+    /// `waterui-preview-protocol` dep — are top-level and optional, selected
+    /// by `waterui-preview-mode`.
     fn android_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
@@ -5826,22 +6024,6 @@ pub mod hydrolysis {
                             "waterui-core",
                             &[],
                             NativeBackendDependencySource::WorkspaceSubdir("core"),
-                        ),
-                    )?
-                    .with_default_features(false),
-                ),
-            ),
-            (
-                "waterui-preview-protocol".to_string(),
-                GeneratedDependencyValue::detailed(
-                    super::generated_dependency_from_spec(
-                        ctx,
-                        NativeBackendDependencySpec::new(
-                            "waterui-preview-protocol",
-                            &[],
-                            NativeBackendDependencySource::WorkspaceSubdir(
-                                "components/devtools/preview/protocol",
-                            ),
                         ),
                     )?
                     .with_default_features(false),
@@ -5968,12 +6150,7 @@ pub mod hydrolysis {
 /// `<backend>/android` beside the launcher crate `templates::hydrolysis`
 /// scaffolds.
 pub mod hydrolysis_android {
-    use crate::android::toolchain::AndroidSdk;
-
-    use super::{
-        Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io, normalize_path_for_config,
-        scaffold_dir, write_file_if_changed,
-    };
+    use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io, scaffold_dir};
 
     /// Write all Hydrolysis Android app templates to the given directory.
     ///
@@ -5988,37 +6165,7 @@ pub mod hydrolysis_android {
             ctx,
         )
         .await?;
-        scaffold_dir(
-            TemplateNamespace::AndroidShared,
-            &embedded::ANDROID_SHARED,
-            base_dir,
-            ctx,
-        )
-        .await?;
-        // gradle-wrapper.jar materializes at first Gradle run — see the
-        // android scaffold note above.
-
-        // Make gradlew executable
-        #[cfg(unix)]
-        {
-            use super::fs;
-            use std::os::unix::fs::PermissionsExt;
-            let gradlew_path = base_dir.join("gradlew");
-            if gradlew_path.exists() {
-                let mut perms = fs::metadata(&gradlew_path).await?.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&gradlew_path, perms).await?;
-            }
-        }
-
-        // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path(&crate::toolchain::Host::current()) {
-            let local_props = base_dir.join("local.properties");
-            let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
-            write_file_if_changed(&local_props, content.as_bytes()).await?;
-        }
-
-        Ok(())
+        super::scaffold_hydrolysis_android_support(base_dir, ctx).await
     }
 
     /// Every file `scaffold` would write, as backend-relative path and
@@ -6033,13 +6180,124 @@ pub mod hydrolysis_android {
             &embedded::HYDROLYSIS_ANDROID,
             ctx,
         )?;
-        outputs.extend(super::render_dir_outputs(
-            TemplateNamespace::AndroidShared,
-            &embedded::ANDROID_SHARED,
-            ctx,
-        )?);
+        outputs.extend(super::hydrolysis_android_shared_outputs(ctx)?);
         Ok(outputs)
     }
+}
+
+/// The generated `water preview --platform android` host: a thin
+/// `dev.waterui.hydrolysis.preview` app module whose APK carries the pinned
+/// Hydrolysis host's `preview` library — the instrumentation and JNI bridge —
+/// rendered under `<backend>/android-preview-host/` beside the launcher crate
+/// `templates::hydrolysis` scaffolds.
+pub mod hydrolysis_android_preview {
+    use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, fs, io};
+
+    /// Write all preview host templates to the given directory.
+    ///
+    /// Renders through [`rendered_outputs`] and writes with
+    /// `write_file_if_changed`, so a re-scaffold that produced nothing new
+    /// dirties no Gradle input.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if template rendering or file writing fails.
+    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
+        for (relative, contents) in rendered_outputs(ctx)? {
+            let path = base_dir.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            super::write_file_if_changed(&path, &contents).await?;
+        }
+        super::finish_hydrolysis_android_scaffold(base_dir).await
+    }
+
+    /// Every file `scaffold` would write, as host-relative path and content,
+    /// without touching the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if template rendering fails.
+    pub fn rendered_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+        let mut outputs = super::render_dir_outputs(
+            TemplateNamespace::HydrolysisAndroidPreview,
+            &embedded::HYDROLYSIS_ANDROID_PREVIEW,
+            ctx,
+        )?;
+        outputs.extend(super::hydrolysis_android_shared_outputs(ctx)?);
+        Ok(outputs)
+    }
+}
+
+/// The Gradle project files every Hydrolysis Android composite shares — the
+/// root `build.gradle.kts`/`gradle.properties` and the wrapper — plus an
+/// executable `gradlew` and the `local.properties` pinning the detected SDK.
+async fn scaffold_hydrolysis_android_support(
+    base_dir: &Path,
+    ctx: &TemplateContext,
+) -> io::Result<()> {
+    scaffold_dir(
+        TemplateNamespace::HydrolysisAndroidShared,
+        &embedded::HYDROLYSIS_ANDROID_SHARED,
+        base_dir,
+        ctx,
+    )
+    .await?;
+    scaffold_dir(
+        TemplateNamespace::AndroidShared,
+        &embedded::ANDROID_SHARED,
+        base_dir,
+        ctx,
+    )
+    .await?;
+    finish_hydrolysis_android_scaffold(base_dir).await
+}
+
+/// The `gradlew` executable bit and `local.properties` that end a Hydrolysis
+/// Android scaffold — the shared trees carry only their files.
+///
+/// `gradle-wrapper.jar` materializes at first Gradle run, so no binary lands
+/// in the worktree.
+async fn finish_hydrolysis_android_scaffold(base_dir: &Path) -> io::Result<()> {
+    // Make gradlew executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let gradlew_path = base_dir.join("gradlew");
+        if gradlew_path.exists() {
+            let mut perms = fs::metadata(&gradlew_path).await?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&gradlew_path, perms).await?;
+        }
+    }
+
+    // Generate local.properties with Android SDK path
+    if let Some(sdk_path) =
+        crate::android::toolchain::AndroidSdk::detect_path(&crate::toolchain::Host::current())
+    {
+        let local_props = base_dir.join("local.properties");
+        let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
+        write_file_if_changed(&local_props, content.as_bytes()).await?;
+    }
+
+    Ok(())
+}
+
+/// The shared Gradle files [`scaffold_hydrolysis_android_support`] writes,
+/// as rendered output pairs.
+fn hydrolysis_android_shared_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+    let mut outputs = render_dir_outputs(
+        TemplateNamespace::HydrolysisAndroidShared,
+        &embedded::HYDROLYSIS_ANDROID_SHARED,
+        ctx,
+    )?;
+    outputs.extend(render_dir_outputs(
+        TemplateNamespace::AndroidShared,
+        &embedded::ANDROID_SHARED,
+        ctx,
+    )?);
+    Ok(outputs)
 }
 
 /// ESP32 firmware harness templates.
@@ -7949,10 +8207,10 @@ pub mod preview_ffi {
         write_file_if_changed,
     };
 
-    /// Preview ABI exported to Apple support applications.
+    /// Preview ABI exported to Apple support applications — the portable
+    /// loader selects it on non-Apple targets too (its `c-api` forward only
+    /// activates the non-Apple `waterui-ffi` dependency).
     pub const APPLE_ABI_FEATURE: &str = "apple-preview-abi";
-    /// Preview ABI exported to Android support applications.
-    pub const ANDROID_ABI_FEATURE: &str = "android-preview-abi";
 
     /// Write preview-only wrapper templates to the given directory.
     ///
@@ -8050,17 +8308,14 @@ pub mod preview_ffi {
         // The portable non-Apple preview loader also selects APPLE_ABI_FEATURE.
         // Its c-api forward only activates the non-Apple target dependency;
         // Apple targets compile no waterui-ffi dependency through this feature.
-        for (feature, ffi_feature) in [
-            (APPLE_ABI_FEATURE, "c-api"),
-            (ANDROID_ABI_FEATURE, "android-jni"),
-        ] {
-            let mut entries = vec!["dep:waterui-ffi".to_string()];
-            if ffi_declares(ffi_feature) {
-                entries.push(format!("waterui-ffi/{ffi_feature}"));
-            }
-            entries.push("dep:waterui-preview".to_string());
-            manifest.features.insert(feature.to_string(), entries);
+        let mut entries = vec!["dep:waterui-ffi".to_string()];
+        if ffi_declares("c-api") {
+            entries.push("waterui-ffi/c-api".to_string());
         }
+        entries.push("dep:waterui-preview".to_string());
+        manifest
+            .features
+            .insert(APPLE_ABI_FEATURE.to_string(), entries);
 
         // Same forwards as the workspace root's, weakened: this crate's
         // `waterui-ffi` dependency is optional and only an ABI feature enables

@@ -91,12 +91,6 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    // A `RUSTC_WRAPPER` build-std invocation enters the process before any CLI
-    // parsing: Cargo calls this binary as `water <rustc> <args…>`.
-    if let Some(code) = waterui_cli::rustc_wrapper::wrapper_main() {
-        std::process::exit(code);
-    }
-
     color_eyre::config::HookBuilder::default()
         .display_location_section(false)
         .display_env_section(false)

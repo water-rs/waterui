@@ -6,4 +6,3 @@ pub mod diff;
 pub mod elf;
 pub mod gesture;
 pub mod inspector;
-pub mod rustc_wrapper;

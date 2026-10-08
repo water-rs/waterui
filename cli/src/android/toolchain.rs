@@ -2128,6 +2128,25 @@ async fn verify_android_platform_tools_executable(
     ))
 }
 
+/// An LLVM binary tool (`llvm-strip`, `llvm-readelf`, …) from the NDK's
+/// prebuilt host toolchain — `toolchains/llvm/prebuilt/<host-tag>/bin/<tool>`
+/// from the first prebuilt directory that ships it, the same resolution
+/// [`ndk_host_clang_path`] uses.
+///
+/// Reads the filesystem directly: the tool path is a build input, not a
+/// host probe — the build envs it feeds are resolved under the same NDK.
+pub fn ndk_llvm_tool(ndk_path: &Path, tool: &str) -> Option<PathBuf> {
+    let prebuilt_dir = ndk_path.join("toolchains/llvm/prebuilt");
+    let mut candidates = std::fs::read_dir(&prebuilt_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("bin").join(tool))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
 /// An `aarch64-linux-android<api>-clang` wrapper from the first NDK prebuilt
 /// host toolchain that ships one (its lowest API level, so the probe is
 /// deterministic). Every API-level wrapper execs the same `clang`, so one

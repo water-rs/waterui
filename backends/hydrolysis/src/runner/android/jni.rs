@@ -87,7 +87,7 @@ static APPLICATION_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
 /// fails the session instead of replacing (and leaking) the published
 /// reference. Sessions are created only on the UI thread, so the check and
 /// the publish do not race.
-fn publish_application_context(
+pub(super) fn publish_application_context(
     env: &mut JNIEnv,
     vm: &JavaVM,
     context: &JObject,
@@ -142,7 +142,7 @@ fn session(ptr: jlong) -> &'static mut AndroidSession {
 
 /// Runs `f` on the session, mapping `JniError` → `IllegalStateException` and a
 /// panic → `IllegalStateException` (with the panic payload in the message).
-fn guard<F>(env: &mut JNIEnv, f: F)
+pub(super) fn guard<F>(env: &mut JNIEnv, f: F)
 where
     F: FnOnce(&mut JNIEnv) -> Result<(), JniError>,
 {
@@ -167,7 +167,7 @@ where
 
 /// `guard` for calls returning a value — the error path throws and returns
 /// `default`.
-fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
+pub(super) fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
 where
     F: FnOnce(&mut JNIEnv) -> Result<T, JniError>,
 {
@@ -214,26 +214,34 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit(
     log_level: JString,
 ) -> jint {
     guard_val(&mut env, 0, |env| {
-        let vm = env.get_java_vm()?;
-        let _ = JAVA_VM.set(vm);
-        let level = if log_level.as_raw().is_null() {
-            None
-        } else {
-            let level = get_string(env, &log_level)?;
-            Some(
-                level
-                    .parse::<tracing::level_filters::LevelFilter>()
-                    .map_err(|_| {
-                        JniError(format!(
-                            "hydrolysis android: unrecognized log level {level:?} \
-                             in the launch intent"
-                        ))
-                    })?,
-            )
-        };
-        super::init_logging(level);
+        init_process(env, &log_level)?;
         Ok(JNI_SCHEMA)
     })
+}
+
+/// The one-time process setup every Hydrolysis JNI entry runs first: capture
+/// the `JavaVM` for the host's later calls, parse the caller's optional
+/// `tracing` level name (`null` keeps [`super::init_logging`]'s default), and
+/// install logging.
+pub(super) fn init_process(env: &mut JNIEnv, log_level: &JString) -> Result<(), JniError> {
+    let vm = env.get_java_vm()?;
+    let _ = JAVA_VM.set(vm);
+    let level = if log_level.as_raw().is_null() {
+        None
+    } else {
+        let level = get_string(env, log_level)?;
+        Some(
+            level
+                .parse::<tracing::level_filters::LevelFilter>()
+                .map_err(|_| {
+                    JniError(format!(
+                        "hydrolysis android: unrecognized log level {level:?}"
+                    ))
+                })?,
+        )
+    };
+    super::init_logging(level);
+    Ok(())
 }
 
 #[unsafe(no_mangle)]

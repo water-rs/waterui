@@ -12,6 +12,7 @@
 mod app_client;
 pub(crate) mod apple;
 pub(crate) mod hydrolysis;
+pub(crate) mod hydrolysis_android;
 mod inputs;
 mod launcher;
 pub mod protocol;
@@ -27,6 +28,9 @@ pub use hydrolysis::{
     HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewTheme,
     discover_hydrolysis_preview_exports, render_preview_with_hydrolysis,
     test_preview_with_hydrolysis,
+};
+pub use hydrolysis_android::{
+    HydrolysisAndroidPreviewRequest, render_preview_with_hydrolysis_android,
 };
 pub use launcher::{PreviewSession, launch_preview_session};
 pub use protocol::{PreviewPlatform, Size};

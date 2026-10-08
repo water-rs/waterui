@@ -722,7 +722,7 @@ impl AndroidSession {
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
         ));
-        let fonts = crate::text::fonts::android_collection();
+        let fonts = crate::text::fonts::platform_collection(&env);
         fonts.clone().install(&mut env);
         let shortcuts = env
             .get::<MenuShortcutRegistry>()

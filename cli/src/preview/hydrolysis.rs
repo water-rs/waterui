@@ -221,7 +221,7 @@ pub async fn stage_hydrolysis_resources(
     Ok(())
 }
 
-async fn write_preview_bindings(
+pub async fn write_preview_bindings(
     project: &Project,
     source: PreviewSource<'_>,
     theme: HydrolysisPreviewTheme,
@@ -330,6 +330,6 @@ async fn run_preview_test_binary(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
+pub fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
     output_dir.join(format!("frame-{capture_ms:04}ms.png"))
 }
