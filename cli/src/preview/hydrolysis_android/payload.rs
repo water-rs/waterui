@@ -6,8 +6,11 @@
 //! directory, beside [`STAMP_FILE`], which records the content hash of the
 //! payload extracted there. A run whose hash matches the device's stamp
 //! ships nothing; any other run streams the payload as a tar archive whose
-//! last member is the new stamp, written as [`INCOMING_STAMP_FILE`] and
-//! renamed into place only after the whole archive extracted.
+//! last two members are [`MANIFEST_FILE`], the SHA-256 of every payload
+//! file, and the new stamp, written as [`INCOMING_STAMP_FILE`]. The stamp is
+//! renamed into place only after the whole archive extracted and the
+//! extracted files checked out against the manifest, so a stamp on the
+//! device vouches for the bytes beside it.
 //!
 //! Locally, `<backend>/android-preview/` holds exactly two directories:
 //! [`LIBRARY_DIR`], the stripped libraries — a cache keyed by the unstripped
@@ -47,6 +50,11 @@ pub(super) const STAMP_FILE: &str = "payload.stamp";
 /// The archive member carrying the new stamp. It is the archive's last
 /// member, so it exists only when every payload file before it extracted.
 pub(super) const INCOMING_STAMP_FILE: &str = "payload.stamp.new";
+
+/// The archive member listing every payload file's SHA-256 in `sha256sum`
+/// format, paths relative to the run directory. It lives in
+/// [`PAYLOAD_DIR`], so the payload's removal removes it.
+pub(super) const MANIFEST_FILE: &str = "payload/SHA256SUMS";
 
 /// The libraries' directory inside the payload, and the local directory
 /// under `<backend>/android-preview/` the stripped libraries are cached in.
@@ -224,7 +232,8 @@ impl DevicePayload {
 
     /// Write the payload as a tar archive into `sink`, chunk by chunk,
     /// base64-encoded in lines of [`BASE64_LINE`] ending in LF: the
-    /// directories, every file under [`PAYLOAD_DIR`], then the stamp as
+    /// directories, every file under [`PAYLOAD_DIR`], the
+    /// [`MANIFEST_FILE`] of their hashes, then the stamp as
     /// [`INCOMING_STAMP_FILE`]. The encoding is text that every host's
     /// `adb` stdin carries unaltered — no CR and no 0x1A byte — and the
     /// device decodes it with `base64 -d`. Archiving and encoding run on a
@@ -536,31 +545,69 @@ fn write_archive(entries: &[PayloadEntry], stamp: &str, sink: impl Write) -> io:
         builder.append_data(&mut header, &directory, io::empty())?;
     }
 
+    // Each file is hashed as the archive reads it, so the manifest costs no
+    // second read.
+    let mut manifest = String::new();
     for entry in entries {
+        let path = format!("{PAYLOAD_DIR}/{}", entry.path);
+        // `sha256sum -c` reads one file per line.
+        if path.contains('\n') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("the payload path {path:?} holds a line break"),
+            ));
+        }
         let file = std::fs::File::open(&entry.source).map_err(|error| {
             io::Error::new(error.kind(), format!("{}: {error}", entry.source.display()))
         })?;
         let size = file.metadata()?.len();
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_mode(0o644);
-        header.set_size(size);
-        header.set_mtime(0);
-        builder.append_data(
-            &mut header,
-            format!("{PAYLOAD_DIR}/{}", entry.path),
-            file.take(size),
-        )?;
+        let mut hashed = HashingReader {
+            inner: file.take(size),
+            hasher: Sha256::new(),
+        };
+        builder.append_data(&mut regular_header(size), &path, &mut hashed)?;
+        manifest.push_str(&hex::encode(hashed.hasher.finalize()));
+        manifest.push_str("  ");
+        manifest.push_str(&path);
+        manifest.push('\n');
     }
 
+    builder.append_data(
+        &mut regular_header(manifest.len() as u64),
+        MANIFEST_FILE,
+        manifest.as_bytes(),
+    )?;
+    builder.append_data(
+        &mut regular_header(stamp.len() as u64),
+        INCOMING_STAMP_FILE,
+        stamp.as_bytes(),
+    )?;
+
+    builder.into_inner()?.flush()
+}
+
+/// The header of a regular, `0644` archive member of `size` bytes.
+fn regular_header(size: u64) -> tar::Header {
     let mut header = tar::Header::new_gnu();
     header.set_entry_type(tar::EntryType::Regular);
     header.set_mode(0o644);
-    header.set_size(stamp.len() as u64);
+    header.set_size(size);
     header.set_mtime(0);
-    builder.append_data(&mut header, INCOMING_STAMP_FILE, stamp.as_bytes())?;
+    header
+}
 
-    builder.into_inner()?.flush()
+/// A [`std::io::Read`] that feeds every byte it reads into `hasher`.
+struct HashingReader<R> {
+    inner: R,
+    hasher: Sha256,
+}
+
+impl<R: std::io::Read> std::io::Read for HashingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.hasher.update(&buf[..read]);
+        Ok(read)
+    }
 }
 
 /// A [`Write`] that breaks the text written through it into lines of

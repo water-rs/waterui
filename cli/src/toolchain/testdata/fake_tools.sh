@@ -368,6 +368,9 @@ adb)
     # `WATERUI_FAKE_DEVICE_STDIN_LIMIT` cuts the streamed stdin off after
     # that many bytes; `WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT` corrupts it
     # past that many bytes with characters no base64 decoder accepts.
+    # `WATERUI_FAKE_DEVICE_STDIN_REPLACE` (`<from>:<to>`) swaps `<from>`
+    # for `<to>` once on each line holding it; with groups of equal length
+    # from the base64 alphabet the stream stays valid base64.
     if [ -n "${WATERUI_FAKE_DEVICE_DATA-}" ]; then
         case "$*" in
             *" run-as "*)
@@ -379,10 +382,18 @@ adb)
                     set -- bash "$@"
                 fi
                 cd "$WATERUI_FAKE_DEVICE_DATA" || exit 1
-                PATH="${WATERUI_FAKE_DEVICE_PATH:+$WATERUI_FAKE_DEVICE_PATH:}/usr/bin:/bin"
+                # `/sbin` carries macOS's `sha256sum`; Linux has it in
+                # `/usr/bin`.
+                PATH="${WATERUI_FAKE_DEVICE_PATH:+$WATERUI_FAKE_DEVICE_PATH:}/usr/bin:/bin:/sbin"
                 export PATH
                 if [ -n "${WATERUI_FAKE_DEVICE_STDIN_LIMIT-}" ]; then
                     head -c "$WATERUI_FAKE_DEVICE_STDIN_LIMIT" | "$@"
+                    exit $?
+                fi
+                if [ -n "${WATERUI_FAKE_DEVICE_STDIN_REPLACE-}" ]; then
+                    # `|` is outside the base64 alphabet, so it delimits.
+                    sed "s|${WATERUI_FAKE_DEVICE_STDIN_REPLACE%%:*}|${WATERUI_FAKE_DEVICE_STDIN_REPLACE#*:}|" |
+                        "$@"
                     exit $?
                 fi
                 if [ -n "${WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT-}" ]; then

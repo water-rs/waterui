@@ -37,7 +37,7 @@ use crate::preview::run::{RUN_CONFIG_FILE_NAME, run_config_json};
 use crate::project_model::water_dir;
 use crate::toolchain::Host;
 
-use payload::{DevicePayload, INCOMING_STAMP_FILE, PAYLOAD_DIR, STAMP_FILE};
+use payload::{DevicePayload, INCOMING_STAMP_FILE, MANIFEST_FILE, PAYLOAD_DIR, STAMP_FILE};
 
 /// `am instrument -w` is the completion signal; this bound is only the
 /// backstop for a wedged instrumentation run, not the render's expected
@@ -385,7 +385,9 @@ fn payload_stream_deadline(size: u64) -> Duration {
 /// host's private files. The stamps go first — so no interruption after
 /// that point can leave a stamp naming a payload that is partly deleted or
 /// partly extracted — then the previous payload; the archive is decoded and
-/// extracted in place, the libraries become read-only — `chmod a-w`
+/// extracted in place, every extracted file is checked against the
+/// archive's manifest — so the stamp vouches for the bytes, whatever a
+/// lenient decoder let through — the libraries become read-only — `chmod a-w`
 /// satisfies the linker's read-only `System.load` requirement without
 /// write-protecting `lib/` itself, since unlinking needs write on the
 /// directory, not the file — and the archive's trailing stamp is renamed
@@ -438,22 +440,28 @@ async fn stream_payload(
 }
 
 /// The `run-as` words [`stream_payload`] runs on the device: `$1` is the
-/// run directory, `$2` the payload directory, `$3` the stamp and `$4` the
-/// archive's incoming stamp.
+/// run directory, `$2` the payload directory, `$3` the stamp, `$4` the
+/// archive's incoming stamp and `$5` its manifest.
 ///
 /// The device's `/system/bin/sh` is mksh (AOSP `external/mksh`, the
 /// `cc_binary` named `sh`), whose `pipefail` option makes a failing
-/// `base64 -d` fail the pipeline even when `tar` succeeds.
-const STREAM_SCRIPT: [&str; 8] = [
+/// `base64 -d` fail the pipeline even when `tar` succeeds. Toybox's
+/// `base64 -d` skips characters it cannot decode instead of failing, so the
+/// manifest check is what catches a stream corrupted in transit: toybox
+/// `sha256sum -c` (`toys/lsb/md5sum.c`) exits 1 on any mismatched, missing
+/// or malformed line, and `--status` silences its per-file report.
+const STREAM_SCRIPT: [&str; 9] = [
     "sh",
     "-c",
     "set -o pipefail && cd \"$1\" && rm -f \"$3\" \"$4\" && rm -rf \"$2\" && \
-     base64 -d | tar -xf - && chmod a-w \"$2\"/lib/* && mv \"$4\" \"$3\" && cat \"$3\"",
+     base64 -d | tar -xf - && sha256sum --status -c \"$5\" && chmod a-w \"$2\"/lib/* && \
+     mv \"$4\" \"$3\" && cat \"$3\"",
     "sh",
     FILES_RUN_DIR,
     PAYLOAD_DIR,
     STAMP_FILE,
     INCOMING_STAMP_FILE,
+    MANIFEST_FILE,
 ];
 
 /// Run the preview instrumentation: `am instrument -w` returns when the run
@@ -877,13 +885,28 @@ mod tests {
                 "payload/lib/libx.so",
                 "payload/resources/waterui_assets/images/logo.png",
                 "payload/resources/waterui_assets/waterui-sync-stamp",
+                "payload/SHA256SUMS",
                 "payload.stamp.new",
             ],
-            "directories first, then the payload, the stamp last"
+            "directories first, then the payload, its manifest, the stamp last"
         );
         assert_eq!(members[5].1, b"\x7fELF-library");
+        let mut manifest = String::new();
+        for (path, bytes) in &members[5..8] {
+            use sha2::Digest as _;
+
+            manifest.push_str(&hex::encode(sha2::Sha256::digest(bytes)));
+            manifest.push_str("  ");
+            manifest.push_str(path);
+            manifest.push('\n');
+        }
         assert_eq!(
-            members[8].1,
+            String::from_utf8_lossy(&members[8].1),
+            manifest,
+            "the manifest is every payload file's `sha256sum` line"
+        );
+        assert_eq!(
+            members[9].1,
             device.payload.stamp().as_bytes(),
             "the archive's trailing member is the payload's stamp"
         );
@@ -1181,6 +1204,50 @@ mod tests {
         let error = device
             .stream(&host)
             .expect_err("a corrupted stream fails the stream");
+        assert!(format!("{error:#}").contains("status"), "{error:#}");
+        assert_eq!(device.stamp(), None);
+    }
+
+    /// A byte of file data changed in transit — the same length, the
+    /// base64 still valid, so neither the decoder nor `tar` can notice —
+    /// fails the manifest check, and the device holds no stamp.
+    #[test]
+    #[cfg(unix)]
+    fn a_substituted_data_byte_installs_no_stamp() {
+        use base64::Engine as _;
+
+        let device = ScriptedDevice::new();
+        device.install_whole_payload();
+
+        // A 3-byte group inside the library's data encodes to 4 characters
+        // at the same place in the stream; flipping one of its bytes gives
+        // 4 other valid characters.
+        let encoded = encoded_archive(&device.payload);
+        let archive = base64_decoded(&encoded);
+        let data = archive
+            .windows(b"ELF-library".len())
+            .position(|window| window == b"ELF-library")
+            .expect("the library's data is in the archive");
+        let group = data.div_ceil(3) * 3;
+        let original = &archive[group..group + 3];
+        let mut changed = original.to_vec();
+        changed[1] ^= 0x01;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let (from, to) = (engine.encode(original), engine.encode(&changed));
+        assert_eq!(
+            encoded
+                .windows(from.len())
+                .filter(|window| *window == from.as_bytes())
+                .count(),
+            1,
+            "`{from}` names exactly one place in the stream"
+        );
+
+        let replace = format!("{from}:{to}");
+        let host = device.host(&[("WATERUI_FAKE_DEVICE_STDIN_REPLACE", replace.as_ref())]);
+        let error = device
+            .stream(&host)
+            .expect_err("a substituted data byte fails the stream");
         assert!(format!("{error:#}").contains("status"), "{error:#}");
         assert_eq!(device.stamp(), None);
     }
