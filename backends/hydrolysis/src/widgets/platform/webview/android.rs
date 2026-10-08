@@ -1010,7 +1010,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     });
 }
 
-/// `onProgressChanged`.
+/// `onProgressChanged` — the navigation's progress, and its finish.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeProgressChanged(
     mut env: JNIEnv,
@@ -1025,23 +1025,6 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         };
         let progress = percent(progress)?;
         shared.navigate(|tracker| (tracker.progress(progress), ()));
-        Ok(())
-    });
-}
-
-/// `onPageFinished`.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativePageFinished(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-) {
-    guard(&mut env, |_env| {
-        let Some(shared) = shared_from_handle(handle) else {
-            tracing::debug!("android webview: an event on a released view dropped");
-            return Ok(());
-        };
-        shared.navigate(|tracker| (tracker.page_finished(), ()));
         Ok(())
     });
 }

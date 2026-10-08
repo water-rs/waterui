@@ -259,8 +259,6 @@ private constructor(
 
         @JvmStatic private external fun nativeProgressChanged(handle: Long, progress: Int)
 
-        @JvmStatic private external fun nativePageFinished(handle: Long)
-
         @JvmStatic
         private external fun nativeReceivedError(
             handle: Long,
@@ -712,10 +710,9 @@ private constructor(
         }
 
         override fun onPageFinished(view: WebView, url: String) {
-            val handle = nativeHandle
-            if (handle != 0L) {
-                nativePageFinished(handle)
-            }
+            // Not the navigation's finish: the system WebView also fires it
+            // for a same-document history update mid-load. The finish is the
+            // 100% progress report — see `NavigationTracker`.
             emitNavigationState()
         }
 

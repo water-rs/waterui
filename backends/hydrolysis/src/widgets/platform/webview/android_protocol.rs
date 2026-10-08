@@ -433,8 +433,8 @@ enum NavigationPhase {
     /// main-frame error, an SSL refusal, or `stop`. Its last event was
     /// already reported, so what the engine still says about it — the
     /// cancellation's error, the error page it commits at `url`, the
-    /// stopped load's progress and `onPageFinished` — is dropped until the
-    /// next navigation opens.
+    /// stopped load's progress — is dropped until the next navigation
+    /// opens.
     Ended { url: Url },
 }
 
@@ -463,6 +463,15 @@ pub struct RequestDecision {
 /// `onProgressChanged` covers the whole page — iframes, cancelled loads,
 /// loads that start after the finish — so it is forwarded only while a
 /// navigation is open, and never its 100% report, which is `Loaded`'s job.
+///
+/// The finish is the first 100% report after the commit, not
+/// `onPageFinished`. The system `WebView` also fires `onPageFinished` for a
+/// same-document history update, including one the page makes while its
+/// own load is still running: `www.google.com` replaces its history entry
+/// at 70% and gets an `onPageFinished` there, ahead of the real one. The
+/// 100% report comes only when the page's load stops, and it follows the
+/// commit of every navigation that finishes — cross-document, same-document
+/// and history steps alike.
 /// A load the application starts (`loadUrl`, `goBack`, `goForward`,
 /// `reload`) never reaches `shouldOverrideUrlLoading`, so the Kotlin
 /// wrapper reports its target through [`Self::open`] before issuing it.
@@ -619,37 +628,28 @@ impl NavigationTracker {
     }
 
     /// `onProgressChanged`, as a percentage. Forwarded only while a
-    /// navigation is open, and never the 100% report.
-    #[must_use]
-    pub fn progress(&self, progress: u8) -> Vec<WebViewEvent> {
+    /// navigation is open. The 100% report finishes the open navigation
+    /// once it committed; before the commit it is the previous document's
+    /// load stopping, and with nothing open it is a load that is not a
+    /// navigation — an iframe, a late report for one already over.
+    pub fn progress(&mut self, progress: u8) -> Vec<WebViewEvent> {
         match self.phase {
             NavigationPhase::Open { .. } if progress < 100 => vec![WebViewEvent::Loading {
                 progress: f32::from(progress) / 100.0,
             }],
+            NavigationPhase::Open {
+                committed: true, ..
+            } => {
+                self.phase = NavigationPhase::Idle;
+                vec![
+                    WebViewEvent::Loading { progress: 1.0 },
+                    WebViewEvent::Loaded,
+                ]
+            }
             NavigationPhase::Open { .. }
             | NavigationPhase::Idle
             | NavigationPhase::Ended { .. } => Vec::new(),
         }
-    }
-
-    /// `onPageFinished`. Finishes the open navigation once it committed;
-    /// before the commit it is the previous document's load stopping, and
-    /// with nothing open it is a late report for a navigation already over.
-    pub fn page_finished(&mut self) -> Vec<WebViewEvent> {
-        if !matches!(
-            self.phase,
-            NavigationPhase::Open {
-                committed: true,
-                ..
-            }
-        ) {
-            return Vec::new();
-        }
-        self.phase = NavigationPhase::Idle;
-        vec![
-            WebViewEvent::Loading { progress: 1.0 },
-            WebViewEvent::Loaded,
-        ]
     }
 
     /// A main-frame `onReceivedError` for the request at `url` — the native
@@ -1303,9 +1303,8 @@ mod tests {
             self
         }
 
-        fn finished(&mut self) -> &mut Self {
-            let events = self.tracker.page_finished();
-            self.events.extend(events);
+        fn history(&mut self, target: &str) -> &mut Self {
+            self.tracker.history_updated(url(target));
             self
         }
 
@@ -1325,22 +1324,26 @@ mod tests {
 
     #[test]
     fn navigation_a_plain_load_ends_with_loaded() {
+        // The order a Pixel 9 Pro (WebView 153) reports for `go_to`.
         let mut drive = Drive::new();
         drive
             .open("https://waterui.dev/")
             .progress(10)
-            .started("https://waterui.dev/", 30)
-            .progress(70)
+            .started("https://waterui.dev/", 20)
+            .history("https://waterui.dev/")
+            .progress(20)
+            .progress(80)
             .progress(100)
-            .finished();
+            .progress(100);
         assert_eq!(
             drive.take(),
             [
                 will_navigate("https://waterui.dev/"),
                 loading(0),
                 loading(10),
-                loading(30),
-                loading(70),
+                loading(20),
+                loading(20),
+                loading(80),
                 loading(100),
                 WebViewEvent::Loaded,
             ]
@@ -1353,45 +1356,55 @@ mod tests {
 
     #[test]
     fn navigation_an_allowed_redirect_reports_redirect_then_will_navigate() {
+        // The order the device reports for `google.com` with redirects
+        // allowed. The page replaces its history entry at 70% — the system
+        // WebView fires `onPageFinished` there, ahead of the real one — and
+        // again after the finish, with its own progress cycle.
         let mut drive = Drive::new();
-        drive.open("https://google.com/").progress(10);
+        drive.open("https://google.com/");
         assert!(!drive.request("https://www.google.com/", true));
         drive
-            .started("https://www.google.com/", 40)
-            .progress(100)
-            .finished();
+            .started("https://www.google.com/", 30)
+            .history("https://www.google.com/")
+            .progress(24)
+            .progress(70)
+            .history("https://www.google.com/");
         assert_eq!(
             drive.take(),
             [
                 will_navigate("https://google.com/"),
                 loading(0),
-                loading(10),
                 redirect("https://google.com/", "https://www.google.com/"),
                 will_navigate("https://www.google.com/"),
-                loading(40),
-                loading(100),
-                WebViewEvent::Loaded,
+                loading(30),
+                loading(24),
+                loading(70),
             ]
         );
+        drive.progress(100).progress(100);
+        assert_eq!(drive.take(), [loading(100), WebViewEvent::Loaded]);
+        drive
+            .progress(10)
+            .history("https://www.google.com/?zx=1")
+            .progress(100)
+            .progress(100);
+        assert_eq!(drive.take(), [] as [WebViewEvent; 0]);
         assert_eq!(
             drive.tracker.current_url(),
-            Some(&url("https://www.google.com/"))
+            Some(&url("https://www.google.com/?zx=1"))
         );
     }
 
     #[test]
     fn navigation_a_blocked_redirect_is_the_last_event() {
+        // The order the device reports for `google.com` with redirects
+        // blocked: the cancelled load never commits, and the 100% that
+        // follows is the previous document's.
         let mut drive = Drive::new();
         drive.tracker.set_redirects_enabled(false);
         drive.open("https://google.com/").progress(10);
         assert!(drive.request("https://www.google.com/", true));
-        // The cancelled load still reports: its 100%, its stop, and the
-        // abort as a main-frame error. None of it belongs to a navigation.
-        drive
-            .progress(100)
-            .progress(10)
-            .finished()
-            .error("https://www.google.com/", "net::ERR_ABORTED");
+        drive.progress(100);
         assert_eq!(
             drive.take(),
             [
@@ -1414,7 +1427,7 @@ mod tests {
         drive
             .open("https://waterui.dev/")
             .started("https://waterui.dev/", 50)
-            .finished();
+            .progress(100);
         assert_eq!(
             drive.take(),
             [
@@ -1426,9 +1439,9 @@ mod tests {
             ]
         );
         // An iframe loads after the page finished. `onProgressChanged`
-        // covers the whole page, so its cycle arrives here, followed by the
-        // page-wide stop; none of it is a main-frame navigation.
-        drive.progress(10).progress(60).progress(100).finished();
+        // covers the whole page, so its cycle arrives here; none of it is a
+        // main-frame navigation.
+        drive.progress(10).progress(60).progress(100);
         assert_eq!(drive.take(), [] as [WebViewEvent; 0]);
     }
 
@@ -1438,47 +1451,61 @@ mod tests {
         drive
             .open("https://a.dev/")
             .started("https://a.dev/", 0)
-            .finished();
+            .progress(100);
         drive
             .open("https://b.dev/")
             .started("https://b.dev/", 0)
-            .finished();
+            .progress(100);
         drive.take();
 
-        // Back: the Kotlin wrapper reports the history target, then the
-        // restored document commits — already complete — and finishes.
+        // Back across documents, in the device's order: the Kotlin wrapper
+        // reports the history target, the restored document commits and
+        // finishes.
         drive
             .open("https://a.dev/")
-            .started("https://a.dev/", 100)
-            .finished();
+            .progress(10)
+            .started("https://a.dev/", 20)
+            .history("https://a.dev/")
+            .progress(28)
+            .progress(100)
+            .progress(100);
         assert_eq!(
             drive.take(),
             [
                 will_navigate("https://a.dev/"),
                 loading(0),
+                loading(10),
+                loading(20),
+                loading(28),
                 loading(100),
                 WebViewEvent::Loaded,
             ]
         );
 
         // Forward to a same-document entry: no `onPageStarted`, the history
-        // update commits it.
-        drive.open("https://a.dev/#section");
-        drive.tracker.history_updated(url("https://a.dev/#section"));
-        drive.finished();
+        // update commits it and the 100% report follows.
+        drive
+            .open("https://a.dev/#section")
+            .progress(10)
+            .history("https://a.dev/#section")
+            .progress(100)
+            .progress(100);
         assert_eq!(
             drive.take(),
             [
                 will_navigate("https://a.dev/#section"),
                 loading(0),
+                loading(10),
                 loading(100),
                 WebViewEvent::Loaded,
             ]
         );
 
         // A `pushState` with nothing open moves only the current URL.
-        drive.tracker.history_updated(url("https://a.dev/pushed"));
-        drive.finished();
+        drive
+            .progress(10)
+            .history("https://a.dev/pushed")
+            .progress(100);
         assert_eq!(drive.take(), [] as [WebViewEvent; 0]);
         assert_eq!(
             drive.tracker.current_url(),
@@ -1495,8 +1522,7 @@ mod tests {
             .error("https://nowhere.invalid/", "net::ERR_NAME_NOT_RESOLVED")
             // The error page commits at the failed URL and finishes.
             .started("https://nowhere.invalid/", 10)
-            .progress(100)
-            .finished();
+            .progress(100);
         assert_eq!(
             drive.take(),
             [
@@ -1523,7 +1549,7 @@ mod tests {
         drive
             .open("https://a.dev/")
             .started("https://a.dev/", 0)
-            .finished();
+            .progress(100);
         drive.take();
 
         // A link: `shouldOverrideUrlLoading` opens it.
@@ -1531,13 +1557,13 @@ mod tests {
             drive.tracker.request(url("https://a.dev/next"), false),
             allowed(vec![will_navigate("https://a.dev/next"), loading(0)])
         );
-        drive.started("https://a.dev/next", 0).finished();
+        drive.started("https://a.dev/next", 0).progress(100);
         drive.take();
 
         // A form `POST` skips `shouldOverrideUrlLoading`: its redirect
         // comes from the committed document, and its commit opens it.
         assert!(!drive.request("https://a.dev/done", true));
-        drive.started("https://a.dev/done", 20).finished();
+        drive.started("https://a.dev/done", 20).progress(100);
         assert_eq!(
             drive.take(),
             [
@@ -1550,7 +1576,7 @@ mod tests {
         );
 
         // A page's own `location.reload()` reaches only the commit.
-        drive.started("https://a.dev/done", 0).finished();
+        drive.started("https://a.dev/done", 0).progress(100);
         assert_eq!(
             drive.take(),
             [
@@ -1567,7 +1593,7 @@ mod tests {
         let mut drive = Drive::new();
         drive.open("https://slow.dev/").progress(30);
         drive.tracker.stopped();
-        drive.progress(100).finished();
+        drive.progress(100);
         assert_eq!(
             drive.take(),
             [will_navigate("https://slow.dev/"), loading(0), loading(30)]
@@ -1581,7 +1607,7 @@ mod tests {
         drive.events.extend(ssl);
         drive
             .error("https://expired.dev/", "net::ERR_FAILED")
-            .finished();
+            .progress(100);
         assert_eq!(
             drive.take(),
             [
