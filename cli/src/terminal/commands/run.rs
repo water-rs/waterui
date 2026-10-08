@@ -48,6 +48,7 @@ use waterui_cli::debug;
 
 #[cfg(target_os = "macos")]
 struct CrashReportContext {
+    host: waterui_cli::toolchain::Host,
     started_at: Timestamp,
     device_identifier: String,
     bundle_id: String,
@@ -73,6 +74,7 @@ impl CrashReportContext {
         let process_name = waterui_cli::apple::backend::apple_product_name(project)?.to_string();
 
         Ok(Some(Self {
+            host: project.host().clone(),
             started_at: Timestamp::now(),
             device_identifier,
             bundle_id: project.bundle_identifier().to_string(),
@@ -86,12 +88,9 @@ impl CrashReportContext {
 }
 
 #[cfg(target_os = "macos")]
-async fn find_latest_ips_report(
-    host: &waterui_cli::toolchain::Host,
-    ctx: &CrashReportContext,
-) -> Option<debug::CrashReport> {
+async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::CrashReport> {
     debug::find_macos_ips_crash_report_since(
-        host,
+        &ctx.host,
         "macOS",
         &ctx.device_identifier,
         &ctx.bundle_id,
@@ -515,8 +514,6 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             running,
             dev_server,
             #[cfg(target_os = "macos")]
-            host: context.project.host().clone(),
-            #[cfg(target_os = "macos")]
             crash_ctx,
         }))
     });
@@ -525,8 +522,6 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         backend,
         running,
         dev_server: _dev_server,
-        #[cfg(target_os = "macos")]
-        host,
         #[cfg(target_os = "macos")]
         mut crash_ctx,
     })) = crate::until_interrupt(launch, &interrupts).await?
@@ -540,7 +535,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
 
     // Stream device events
     #[cfg(target_os = "macos")]
-    stream_running_events(shell, &host, running, interrupts, backend, &mut crash_ctx).await?;
+    stream_running_events(shell, running, interrupts, backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
     stream_running_events(shell, running, interrupts, backend).await?;
 
@@ -551,8 +546,6 @@ struct RunReady {
     backend: TargetBackend,
     running: Running,
     dev_server: Option<web::WebDevServer>,
-    #[cfg(target_os = "macos")]
-    host: waterui_cli::toolchain::Host,
     #[cfg(target_os = "macos")]
     crash_ctx: Option<CrashReportContext>,
 }
@@ -796,7 +789,6 @@ const fn run_profile(args: &Args, backend: TargetBackend) -> BuildProfile {
 #[cfg(target_os = "macos")]
 async fn stream_running_events(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     running: Running,
     interrupts: smol::channel::Receiver<()>,
     backend: TargetBackend,
@@ -815,7 +807,7 @@ async fn stream_running_events(
         }
 
         let event = if let Some(ctx) = crash_ctx.as_ref() {
-            augment_event_with_crash_report(host, event, ctx).await
+            augment_event_with_crash_report(event, ctx).await
         } else {
             event
         };
@@ -867,12 +859,11 @@ impl MonitorErrors {
 
 #[cfg(target_os = "macos")]
 async fn augment_event_with_crash_report(
-    host: &waterui_cli::toolchain::Host,
     event: DeviceEvent,
     ctx: &CrashReportContext,
 ) -> DeviceEvent {
     match event {
-        DeviceEvent::Exited(exit) => find_latest_ips_report(host, ctx)
+        DeviceEvent::Exited(exit) => find_latest_ips_report(ctx)
             .await
             .map_or(DeviceEvent::Exited(exit), |report| {
                 DeviceEvent::Crashed(Crash::new(CrashCause::Report(Box::new(report))))
@@ -880,7 +871,7 @@ async fn augment_event_with_crash_report(
         DeviceEvent::Crashed(crash)
             if crash.report.is_none() && !matches!(crash.cause, CrashCause::Report(_)) =>
         {
-            let Some(report) = find_latest_ips_report(host, ctx).await else {
+            let Some(report) = find_latest_ips_report(ctx).await else {
                 return DeviceEvent::Crashed(crash);
             };
             DeviceEvent::Crashed(Crash {
@@ -2164,18 +2155,9 @@ mod tests {
 
         let backend = TargetBackend::Hydrolysis;
         #[cfg(target_os = "macos")]
-        let result = {
-            let host = waterui_cli::toolchain::Host::current();
-            let mut crash_ctx = None;
-            smol::block_on(stream_running_events(
-                &shell,
-                &host,
-                running,
-                interrupts,
-                backend,
-                &mut crash_ctx,
-            ))
-        };
+        let result = smol::block_on(stream_running_events(
+            &shell, running, interrupts, backend, &mut None,
+        ));
         #[cfg(not(target_os = "macos"))]
         let result = smol::block_on(stream_running_events(&shell, running, interrupts, backend));
 
