@@ -533,6 +533,7 @@ const fn apple_deployment_target_for(platform: TargetPlatform) -> Option<&'stati
         TargetPlatform::MacOS
         | TargetPlatform::IOS
         | TargetPlatform::IOSSimulator
+        | TargetPlatform::MacCatalyst
         | TargetPlatform::TvOS
         | TargetPlatform::TvOSSimulator
         | TargetPlatform::WatchOS
@@ -566,14 +567,20 @@ pub async fn apple_deployment_target(
 /// Every cargo process the CLI starts whose compilation target is Apple gets
 /// this — including host builds, where the host triple *is* the Apple target.
 /// A simulator triple shares its device variant's setting name and floor, so
-/// `Environment::Sim` never reaches the pair.
+/// `Environment::Sim` reaches the same pair as `Environment::Unknown`.
+/// Mac Catalyst keys on the iOS variable: the build scripts a macabi
+/// compilation runs read `IPHONEOS_DEPLOYMENT_TARGET`, and no consumer in
+/// the graph reads `MACOSX_DEPLOYMENT_TARGET` for it.
 pub(crate) fn apple_deployment_target_env(
     triple: &target_lexicon::Triple,
 ) -> Option<(&'static str, &'static str)> {
-    use target_lexicon::OperatingSystem;
+    use target_lexicon::{Environment, OperatingSystem};
     let platform = match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
-        OperatingSystem::IOS(_) => TargetPlatform::IOS,
+        OperatingSystem::IOS(_) => match triple.environment {
+            Environment::Macabi => TargetPlatform::MacCatalyst,
+            _ => TargetPlatform::IOS,
+        },
         OperatingSystem::TvOS(_) => TargetPlatform::TvOS,
         OperatingSystem::WatchOS(_) => TargetPlatform::WatchOS,
         OperatingSystem::VisionOS(_) | OperatingSystem::XROS(_) => TargetPlatform::VisionOS,
