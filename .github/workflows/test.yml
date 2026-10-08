@@ -221,9 +221,8 @@ jobs:
       # `--workspace`: the root manifest carries both `[workspace]` and
       # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
       # backend's own non-default features were linted only where the root
-      # happened to enable them. Nothing in CI compiled dew's
-      # `embedded-simulator` / `espidf`, gtk's `webkitgtk`, or the browsers'
-      # engine features at all (#261).
+      # happened to enable them. Nothing in CI compiled gtk's
+      # `webkitgtk` or the browsers' engine features at all (#261).
       #
       # `--workspace --all-features` covers all of those — except
       # `waterui-apple` (ARM-Apple-only objc2 code plus a `native` suite that
@@ -296,7 +295,7 @@ jobs:
         if: inputs.full
         run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib
       # The cli's own CI ran a no-default-features check on every change
-      # (water-rs/cli ci.yml): `default` bundles esp32+svg-icons+preview,
+      # (water-rs/cli ci.yml): `default` bundles svg-icons+preview,
       # and nothing else in this workspace compiles the bare shape.
       - name: Check (waterui-cli, no default features)
         if: inputs.full || contains(inputs.affected, 'waterui-cli')
@@ -544,8 +543,8 @@ jobs:
   # `cargo nextest run --locked --all-features` inside the `test` job, with neither
   # `-p` nor `--workspace`: the root manifest carries both `[workspace]` and
   # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
-  # backend crate's tests behind its own optional features — dew's
-  # `embedded-simulator`, the browsers' engine features — ran nowhere
+  # backend crate's tests behind its own optional features — the
+  # browsers' engine features — ran nowhere
   # (#276, the test-side twin of
   # #261). It is its own job for the same reason the clippy sweep is a
   # separate step: a second feature variant of the dependency graph is a
@@ -936,8 +935,8 @@ jobs:
       # The project is generated, never hand-written: `examples/form` is on
       # this checkout's `waterui_path`, so the library resolves the in-tree
       # host and the app's `minSdk` and JDK level from it. The render
-      # reaches none of the CLI's optional features, and the default
-      # `esp32` one links libudev, which this runner does not carry.
+      # reaches none of the CLI's optional features, so it builds without
+      # the defaults.
       - name: Render the generated preview-host app
         working-directory: ${{ github.workspace }}
         run: cargo run --locked --profile ci-check -p waterui-cli --no-default-features --example render_preview_host -- examples/form backends/hydrolysis/android-preview-host

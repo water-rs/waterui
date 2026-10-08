@@ -321,17 +321,6 @@ jobs:
           # One writer per OS cache key: the schedule.
           save-if: ${{ github.event_name == 'schedule' }}
 
-      # Compile-time dependencies of the CLI itself — libudev for serialport
-      # (esp32). These belong to building the binary under the runner
-      # account, not to anything doctor manages for the fresh user.
-      - name: Install CLI build dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libudev-dev pkg-config
-
       - name: Install the CLI under test
         shell: bash
         run: cargo install --locked --path cli
