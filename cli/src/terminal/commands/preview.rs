@@ -54,7 +54,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
     for target in targets {
         header!(shell, "Preview test: {}", target.display_name());
         let spinner = shell.spinner("Building and testing with hydrolysis...");
-        let output = test_preview_with_hydrolysis(
+        let output = Box::pin(test_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
                 source: target.source(),
@@ -66,7 +66,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
                 progress: Some(shell.build_progress()),
             },
             &automation_body,
-        )
+        ))
         .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
@@ -199,7 +199,9 @@ struct PreviewTestArgs {
 )]
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     match args.command {
-        Some(PreviewCommand::Test(args)) => return run_preview_test(shell, args).await,
+        Some(PreviewCommand::Test(args)) => {
+            return Box::pin(run_preview_test(shell, args)).await;
+        }
         None => {}
     }
 
@@ -228,7 +230,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     if let ResolvedPreviewBackend::Hydrolysis(platform) = request.backend {
         let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
         let spinner = shell.spinner("Building and rendering with hydrolysis...");
-        render_preview_with_hydrolysis(
+        Box::pin(render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
                 project_path: &project_path,
                 source: request.target.source(),
@@ -243,7 +245,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             },
             &args.output,
             scenario.as_ref(),
-        )
+        ))
         .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();

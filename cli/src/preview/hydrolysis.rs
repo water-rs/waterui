@@ -101,7 +101,7 @@ pub async fn render_preview_with_hydrolysis(
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
         &project,
-        &built.artifact,
+        built.executable()?,
         width,
         height,
         output_path,
@@ -122,7 +122,7 @@ pub async fn test_preview_with_hydrolysis(
     let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
     stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
-    run_preview_test_binary(&project, &built.artifact, width, height).await
+    run_preview_test_binary(&project, built.executable()?, width, height).await
 }
 
 /// Build the managed hydrolysis binary for a preview request: write the
@@ -245,7 +245,7 @@ pub async fn write_preview_bindings(
     )
     .render()
     .wrap_err("Failed to render hydrolysis preview bindings template")?;
-    smol::fs::write(&module_path, rendered)
+    crate::templates::write_file_if_changed(&module_path, rendered.as_bytes())
         .await
         .wrap_err_with(|| format!("Failed to write {}", module_path.display()))?;
     Ok(())

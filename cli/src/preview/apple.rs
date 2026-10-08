@@ -157,14 +157,15 @@ pub async fn render_preview_with_apple(
     let profile_dir = built.profile_dir.clone();
     libraries.stage(&profile_dir).await?;
     let staged_runtime = libraries.stage_apple_canonical(&profile_dir).await?;
-    dynamic_runtime::retarget_module(&built.artifact, &staged_runtime).await?;
+    let executable = built.executable()?;
+    dynamic_runtime::retarget_module(executable, &staged_runtime).await?;
     dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
 
     let symbols = built.app_symbols()?;
     stage_apple_preview_resources(&project, &symbols).await?;
     run_preview_binary(
         &project,
-        &built.artifact,
+        executable,
         request.width,
         request.height,
         &output_path,

@@ -490,7 +490,7 @@ fn preview_run_options() -> RunOptions {
 
 async fn write_dylib_signature(path: &Path, signature: &str) -> Result<()> {
     let signature_path = dylib_signature_path(path);
-    smol::fs::write(signature_path, signature.as_bytes()).await?;
+    crate::templates::write_file_if_changed(&signature_path, signature.as_bytes()).await?;
     Ok(())
 }
 
@@ -563,7 +563,7 @@ pub async fn launch_preview_session(
     progress: Option<BuildProgress>,
 ) -> Result<PreviewSession> {
     let requirements_start = Instant::now();
-    let requirements = resolve_preview_requirements(project_path, platform).await?;
+    let requirements = Box::pin(resolve_preview_requirements(project_path, platform)).await?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = requirements_start.elapsed().as_millis(),

@@ -316,7 +316,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
     )
     .await?;
     stage_hydrolysis_shared_runtime(&project, &built, platform).await?;
-    let binary_path = &built.artifact;
+    let binary_path = built.executable()?;
 
     let run_config = McpRunConfig {
         width: config.width,

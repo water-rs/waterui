@@ -475,10 +475,10 @@ async fn copy_asset(asset: &PlannedAsset, dest: &Path) -> eyre::Result<()> {
         AssetKind::Image => {
             let bytes = fs::read(&asset.source_path).await?;
             let optimized = optimize_image(&bytes, &asset.source_path)?;
-            fs::write(dest, optimized).await?;
+            super::super::templates::write_file_if_changed(dest, &optimized).await?;
         }
         _ => {
-            fs::copy(&asset.source_path, dest).await?;
+            crate::utils::copy_file_if_changed(&asset.source_path, dest).await?;
         }
     }
     Ok(())
@@ -544,7 +544,11 @@ async fn write_manifest_stamp(manifest: &BundleManifest, dest_root: &Path) -> ey
         hasher.update(&bytes);
     }
     let stamp = hex::encode(hasher.finalize());
-    fs::write(dest_root.join("waterui-sync-stamp"), stamp).await?;
+    super::super::templates::write_file_if_changed(
+        &dest_root.join("waterui-sync-stamp"),
+        stamp.as_bytes(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -678,7 +682,7 @@ async fn write_apple_color_set(
             author: "water",
         },
     })?;
-    fs::write(set_dir.join("Contents.json"), json).await?;
+    super::super::templates::write_file_if_changed(&set_dir.join("Contents.json"), &json).await?;
     Ok(())
 }
 
@@ -727,7 +731,7 @@ async fn write_apple_launch_image(source: &IconSource, xcassets_dest: &Path) -> 
             author: "water",
         },
     })?;
-    fs::write(set_dir.join("Contents.json"), json).await?;
+    super::super::templates::write_file_if_changed(&set_dir.join("Contents.json"), &json).await?;
     Ok(())
 }
 
@@ -749,7 +753,8 @@ async fn write_apple_root_contents(xcassets_dest: &Path) -> eyre::Result<()> {
             author: "water",
         },
     })?;
-    fs::write(xcassets_dest.join("Contents.json"), json).await?;
+    super::super::templates::write_file_if_changed(&xcassets_dest.join("Contents.json"), &json)
+        .await?;
     Ok(())
 }
 
@@ -831,7 +836,8 @@ async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre
             author: "water",
         },
     })?;
-    fs::write(appicon_dir.join("Contents.json"), json).await?;
+    super::super::templates::write_file_if_changed(&appicon_dir.join("Contents.json"), &json)
+        .await?;
     Ok(())
 }
 
@@ -972,10 +978,18 @@ async fn write_android_theme_files(
     fs::create_dir_all(&values_night_dir).await?;
 
     let colors = android_colors(theme, icon_background, launch)?;
-    fs::write(values_dir.join("colors.xml"), render_android(&colors.day)?).await?;
+    super::super::templates::write_file_if_changed(
+        &values_dir.join("colors.xml"),
+        render_android(&colors.day)?.as_bytes(),
+    )
+    .await?;
     match colors.night {
         Some(night) => {
-            fs::write(values_night_dir.join("colors.xml"), render_android(&night)?).await?;
+            super::super::templates::write_file_if_changed(
+                &values_night_dir.join("colors.xml"),
+                render_android(&night)?.as_bytes(),
+            )
+            .await?;
         }
         None => remove_file_if_exists(values_night_dir.join("colors.xml")).await?,
     }
@@ -1002,7 +1016,11 @@ async fn write_android_theme_files(
         launch_background: plan.background(ColorScheme::Light).is_some(),
         launch_artwork: launch.has_artwork(),
     };
-    fs::write(values_dir.join("themes.xml"), render_android(&themes)?).await?;
+    super::super::templates::write_file_if_changed(
+        &values_dir.join("themes.xml"),
+        render_android(&themes)?.as_bytes(),
+    )
+    .await?;
     // The theme is appearance-neutral: every color it names resolves through
     // `values-night/colors.xml`, so a night copy of it would only be a
     // duplicate. Earlier CLIs wrote one; drop it.
@@ -1098,7 +1116,11 @@ async fn write_android_launch_artwork(
         &foreground_png,
     )
     .await?;
-    fs::write(icon_xml, render_android(&AndroidLaunchArtworkTemplate)?).await?;
+    super::super::templates::write_file_if_changed(
+        &icon_xml,
+        render_android(&AndroidLaunchArtworkTemplate)?.as_bytes(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1110,7 +1132,7 @@ async fn write_png(image: &image::RgbaImage, path: &Path) -> eyre::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    fs::write(path, encode_png(image)?).await?;
+    super::super::templates::write_file_if_changed(path, &encode_png(image)?).await?;
     Ok(())
 }
 

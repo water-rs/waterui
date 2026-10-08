@@ -27,7 +27,7 @@ use crate::{
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     toolchain::{Host, ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
-    utils::copy_file,
+    utils::copy_file_if_changed,
 };
 
 fn gradle_cmd(gradlew: &Path, backend_path: &Path, tasks: &[&str]) -> smol::process::Command {
@@ -190,7 +190,7 @@ async fn create_android_toolchain_wrapper(
         ndk_toolchain = ndk_toolchain.display(),
         asm_compiler = ndk_clang_path(ndk_path, abi, false, api_level).display(),
     );
-    fs::write(&wrapper_path, content).await?;
+    crate::templates::write_file_if_changed(&wrapper_path, content.as_bytes()).await?;
 
     Ok(wrapper_path)
 }
@@ -499,7 +499,8 @@ impl AndroidPlatform {
     /// `built` is the build's target result — its `app_symbols()` carry the
     /// `waterui_meta_bundle_*` statics that declare the asset mounts.
     ///
-    /// `prepared` is the release-signing decision [`PreparedSigning::resolve`]
+    /// `prepared` is the release-signing decision
+    /// [`PreparedSigning::resolve`](crate::android::signing::PreparedSigning::resolve)
     /// produced for this project and these options — before the Rust builds
     /// when the caller sequences them (`water package`, `water run`), or at
     /// the single in-package resolution otherwise. It is re-checked against
@@ -918,7 +919,7 @@ async fn copy_android_build_outputs(
         std::path::Path::to_path_buf,
     );
     fs::create_dir_all(&output_dir).await?;
-    copy_file(
+    copy_file_if_changed(
         &built_target.artifact,
         &output_dir.join("libwaterui_app.so"),
     )
@@ -935,7 +936,7 @@ async fn copy_android_build_outputs(
     if staged_libs_need_libcxx(&output_dir).await? {
         let libcxx_path = ndk_libcxx_path(ndk_path, abi);
         if libcxx_path.exists() {
-            copy_file(&libcxx_path, &libcxx_target).await?;
+            copy_file_if_changed(&libcxx_path, &libcxx_target).await?;
         }
     } else if libcxx_target.exists() {
         // Drop the copy an earlier build staged; nothing links it now.

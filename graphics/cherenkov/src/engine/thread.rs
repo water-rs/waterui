@@ -26,7 +26,7 @@ use crate::image::ImageUpload;
 use cherenkov_record::ResourceId;
 use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
 
-use crate::message::{Message, ResOp};
+use crate::message::{Message, RenderOutcome, ResOp};
 use crate::paint::ImageId;
 use crate::{BackdropEffect, WorkingColor};
 
@@ -919,12 +919,12 @@ fn render<B: Backend>(
     id: FrameId,
     time: crate::Instant,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
-) -> Result<(Next, FxHashMap<SurfaceId, Next>, FrameStats), RenderError> {
+) -> RenderOutcome<B> {
     sample_owned::<B>(renderer, surfaces, time);
     apply_commits(renderer, surfaces, resources, commits)?;
     let frames = sample_frames(surfaces, time);
     let mut stats = FrameStats::default();
-    let redraw = renderer.render(
+    let (redraw, frame_commit) = renderer.render(
         &Frame {
             id,
             time: crate::frame::FrameTime(time),
@@ -934,7 +934,7 @@ fn render<B: Backend>(
     )?;
     drop(frames);
     let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw);
-    Ok((next, surface_next, stats))
+    Ok((next, surface_next, stats, frame_commit))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -949,12 +949,12 @@ async fn render_local<B: Backend>(
     id: FrameId,
     time: crate::Instant,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
-) -> Result<(Next, FxHashMap<SurfaceId, Next>, FrameStats), RenderError> {
+) -> RenderOutcome<B> {
     sample_owned::<B>(renderer, surfaces, time);
     apply_commits(renderer, surfaces, resources, commits)?;
     let frames = sample_frames(surfaces, time);
     let mut stats = FrameStats::default();
-    let redraw = renderer
+    let (redraw, frame_commit) = renderer
         .render(
             &Frame {
                 id,
@@ -966,7 +966,7 @@ async fn render_local<B: Backend>(
         .await?;
     drop(frames);
     let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw);
-    Ok((next, surface_next, stats))
+    Ok((next, surface_next, stats, frame_commit))
 }
 
 #[cfg(all(test, feature = "testing", not(target_arch = "wasm32")))]

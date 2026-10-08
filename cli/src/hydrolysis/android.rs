@@ -496,12 +496,12 @@ async fn copy_build_outputs(
         )
     );
     let library = output_dir.join(library_name);
-    fs::copy(&built.artifact, &library).await?;
+    crate::utils::copy_file_if_changed(&built.artifact, &library).await?;
 
     // The NDK's shared STL follows the libraries that actually need it —
     // a Rust-only build never does.
     if staged_libs_need_libcxx(&output_dir).await? {
-        fs::copy(
+        crate::utils::copy_file_if_changed(
             ndk_libcxx_path(&context.ndk_path, abi),
             output_dir.join("libc++_shared.so"),
         )
@@ -1195,15 +1195,20 @@ mod tests {
             );
             assert!(activity.contains("HydrolysisHostView"), "{activity}");
 
-            // The narrow JNI keep: only the Rust→Kotlin entry points survive
-            // R8 — the class members HydrolysisSession calls back by name.
-            let proguard = files["app/proguard-rules.pro"].as_str();
+            // The environment reaches the app through `waterui.env.*` intent
+            // extras applied by `Os.setenv`; nothing reads system properties.
             assert!(
-                proguard
-                    .contains("-keepclassmembers class dev.waterui.hydrolysis.HydrolysisSession"),
-                "{proguard}"
+                activity.contains("setupEnvironmentFromIntent(intent)"),
+                "{activity}"
             );
-            assert!(proguard.contains("onNativeRequestRedraw"), "{proguard}");
+            assert!(!activity.contains("SystemProperties"), "{activity}");
+
+            // The JNI keep travels with the host library: its
+            // consumer-rules.pro keeps every @CalledFromNative member, so
+            // the app's own rules carry no per-method list.
+            let proguard = files["app/proguard-rules.pro"].as_str();
+            assert!(!proguard.contains("keepclassmembers"), "{proguard}");
+            assert!(proguard.contains("CalledFromNative"), "{proguard}");
 
             // The 16 KiB page alignment the plan requires of every staged
             // native library is asserted by build(), which reuses

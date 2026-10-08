@@ -30,7 +30,8 @@ use target_lexicon::Triple;
 use tempfile::{TempDir, tempdir};
 
 use waterui_cli::build::{
-    BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage, needed_shared_libraries,
+    BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage, SharedExecutable,
+    needed_shared_libraries,
 };
 use waterui_cli::project::{ManagedBackends, Project};
 
@@ -447,8 +448,11 @@ fn packaged_binary_finds_every_shared_library_it_records() {
         let built = BuiltTarget {
             profile_dir: profile_dir.clone(),
             artifact: executable.clone(),
+            executable: Some(SharedExecutable::unlocked(executable.clone())),
+            entry_binary: None,
             shared_runtime: Some(shared_runtime),
             app_library: None,
+            cef_helper: None,
         };
         let project = Project::open(&app_dir, ManagedBackends::NONE)
             .await
@@ -470,7 +474,8 @@ fn packaged_binary_finds_every_shared_library_it_records() {
 
 /// Run the binary a `water run` build produces — `RustBuild::build_binary`
 /// under [`RustLinkage::SharedRuntime`], the `cargo rustc` invocation whose
-/// `-Cextra-filename` marker lands the artifact in `deps/` — through the
+/// `water_build_marker_*` `--cfg` lands the artifact at
+/// `deps/<name>-<marker>` — through the
 /// packaging resolve + stage, and assert the dist directory satisfies every
 /// shared library the binary's own dynamic section records, then run the
 /// staged binary (water-rs/cli#161).
@@ -532,6 +537,59 @@ fn a_second_shared_runtime_build_finds_the_dylib_dep_info() {
             .build_binary("backend", false)
             .await
             .expect("rebuild the fixture backend binary on the warm cache");
+    });
+}
+
+/// `cargo rustc --bin` on unchanged inputs reports the unit `fresh` and
+/// emits nothing: the second build's artifact is the first's — the same
+/// inode, the same mtime — proving neither the compile nor the marked
+/// relink touched the file a `rerun-if-changed` consumer would notice
+/// (#2073).
+#[test]
+fn an_unchanged_build_leaves_the_binary_artifact_untouched() {
+    let temporary: TempDir = tempdir().expect("tempdir");
+    hermetic_cargo_home(temporary.path());
+    smol::block_on(async {
+        let root = temporary.path();
+        let (_app_dir, backend_dir) = scaffold_run_fixture(root);
+        let build = RustBuild::new(&backend_dir, Triple::host())
+            .with_target_dir(root.join("target"))
+            .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"]);
+
+        let first = build
+            .build_binary("backend", false)
+            .await
+            .expect("first fixture build");
+        let first_metadata = std::fs::metadata(&first.artifact).expect("first artifact metadata");
+        // `first` still holds the artifact lock the next `build_binary`
+        // waits on; the assertions only need its captured metadata.
+        let first_artifact = first.artifact.clone();
+        drop(first);
+        let second = build
+            .build_binary("backend", false)
+            .await
+            .expect("second fixture build on the warm cache");
+        let second_metadata =
+            std::fs::metadata(&second.artifact).expect("second artifact metadata");
+
+        assert_eq!(
+            first_artifact, second.artifact,
+            "an unchanged build reports the same marked artifact path"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(
+                first_metadata.ino(),
+                second_metadata.ino(),
+                "a fresh unit must not re-emit the artifact: the inode changed"
+            );
+        }
+        assert_eq!(
+            first_metadata.modified().expect("first mtime"),
+            second_metadata.modified().expect("second mtime"),
+            "a fresh unit must not re-emit the artifact: the mtime changed"
+        );
     });
 }
 
@@ -599,11 +657,12 @@ fn staged_waterui_names(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Stage into the binary's own profile directory twice across a dylib `-C
+/// Stage into the Cargo profile directory twice across a dylib `-C
 /// metadata` change — the arrangement `water mcp` uses, where the staged
-/// runtime lives beside the binary it serves — and assert the second stage
-/// lands the newly needed `libwaterui_dylib-<hash>.so` and removes the stale
-/// hash the first stage left (water-rs/cli#176).
+/// runtime lives beside the `<profile>/<name>` uplift the launch path
+/// executes — and assert the second stage lands the newly needed
+/// `libwaterui_dylib-<hash>.so` and removes the stale hash the first stage
+/// left, then run the uplift itself (water-rs/cli#176).
 #[test]
 fn restaging_replaces_a_stale_hashed_shared_runtime() {
     let temporary: TempDir = tempdir().expect("tempdir");
@@ -623,11 +682,7 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             .build_binary("backend", false)
             .await
             .expect("first fixture build");
-        let runtime_dir = built
-            .artifact
-            .parent()
-            .expect("binary profile dir")
-            .to_path_buf();
+        let runtime_dir = built.profile_dir.clone();
         RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
             .expect("resolve first shared libraries")
@@ -651,6 +706,8 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
 
         bump_vendored_dylib(root, &backend_dir);
 
+        // `built`'s artifact lock must close before the rebuild waits on it.
+        drop(built);
         let rebuilt = RustBuild::new(&backend_dir, triple.clone())
             .with_target_dir(target_dir)
             .with_linkage(RustLinkage::SharedRuntime, "app/dev", &["$ORIGIN"])
@@ -682,6 +739,11 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
                 .as_slice(),
             "restaging must replace the stale hashed runtime with the recorded one"
         );
-        assert_binary_runs_in_place(&rebuilt.artifact, &runtime_dir);
+        assert_binary_runs_in_place(
+            rebuilt
+                .executable()
+                .expect("the rebuilt unit reports an executable"),
+            &runtime_dir,
+        );
     });
 }
