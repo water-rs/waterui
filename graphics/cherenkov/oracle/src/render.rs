@@ -564,9 +564,7 @@ impl Renderer {
                     .into(),
                 ));
             }
-            if anchor_canvas.is_some()
-                && canvas_first.get(&anchor_canvas) == Some(&anchor_order)
-            {
+            if anchor_canvas.is_some() && canvas_first.get(&anchor_canvas) == Some(&anchor_order) {
                 canvas_first_anchors.insert(*anchor);
             }
         }

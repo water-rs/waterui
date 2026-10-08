@@ -1220,5 +1220,3 @@ fn members_inside_a_filtered_view_capture_beneath_the_filter() {
         );
     }
 }
-
-

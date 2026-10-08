@@ -1222,7 +1222,7 @@ fn a_member_inside_the_anchors_projective_child_is_unsupported() {
     b.root().layer(|a| {
         a.id(std::num::NonZeroU32::MIN);
         a.layer(|p| {
-            p.clip(Shape::Rect(Rect::new(0.0, 0.0, W, H)));
+            p.clip(Shape::Rect(Rect::new(0.0, 0.0, f64::from(W), f64::from(H))));
             p.projection(Projection {
                 matrix: Projection::perspective(100.0),
                 ..Projection::default()

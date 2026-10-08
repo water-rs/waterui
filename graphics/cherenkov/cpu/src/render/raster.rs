@@ -1310,6 +1310,11 @@ const fn slice_len(w: usize, bh: usize) -> usize {
     clippy::too_many_lines,
     reason = "keeps ordered item processing and recursive filter scopes together"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one band pass's items, window, coverage, isolation stack,
+    scratch and enclosing-scope underlay, beside the frame's own state"
+)]
 fn run(
     items: &[Item],
     range: Range<usize>,
@@ -1507,7 +1512,10 @@ fn apply_filter(
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "device spans of texels inside the surface are small and non-negative"
+    clippy::too_many_lines,
+    reason = "device spans of texels inside the surface are small and
+    non-negative; one capture pass plans its window, resolves the grid
+    and runs the group's chain in one walk"
 )]
 fn capture_band(
     band: &Band<'_>,

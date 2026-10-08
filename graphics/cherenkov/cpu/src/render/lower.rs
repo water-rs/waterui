@@ -1809,17 +1809,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
         // enclosing level's own canvas is still empty at its start —
         // captures the canvas the level composites into instead: what
         // lies beneath the level (water-rs/waterui#2097).
-        let beneath = self
-            .anchor_pos
-            .get(&id)
-            .is_some_and(|&(canvas, order, _)| {
-                canvas.is_some()
-                    && self.canvas_first_order.get(&canvas) == Some(&order)
-                    && matches!(
-                        self.items.last(),
-                        Some(Item::PushFilter { end: 0, .. }) | Some(Item::PushIsolate { .. })
-                    )
-            });
+        let beneath = self.anchor_pos.get(&id).is_some_and(|&(canvas, order, _)| {
+            canvas.is_some()
+                && self.canvas_first_order.get(&canvas) == Some(&order)
+                && matches!(
+                    self.items.last(),
+                    Some(Item::PushFilter { end: 0, .. } | Item::PushIsolate { .. })
+                )
+        });
         let gids = gids.clone();
         for gid in gids {
             self.push_capture(gid, beneath);
@@ -1854,9 +1851,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             // `beneath` over a filter scope reads the underlay rows; over
             // an in-stack semantic isolate it flattens the level itself.
             let underlay = beneath && matches!(self.items.last(), Some(Item::PushFilter { .. }));
-            let extra = beneath
-                && !underlay
-                && self.iso_kinds.last() == Some(&false);
+            let extra = beneath && !underlay && self.iso_kinds.last() == Some(&false);
             let flatten =
                 self.iso_kinds.iter().rev().take_while(|&&k| k).count() + usize::from(extra);
             self.items.push(Item::Capture(Box::new(CaptureItem {

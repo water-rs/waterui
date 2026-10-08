@@ -2067,11 +2067,22 @@ impl<'a> Lowering<'a> {
 
     /// [`isolate`](Self::isolate) without the pass-through speculation:
     /// for a body that can never fold into the parent pass — the member
+    /// Records the semantic target a semantic isolation's scratch
+    /// replaced — the canvas it composites into (see
+    /// [`Lowering::scratch_parent`]).
+    fn mark_scratch_parent(&mut self, scratch: usize, parent: Target) {
+        if self.scratch_parent.len() <= scratch {
+            self.scratch_parent.resize(scratch + 1, parent);
+        }
+        self.scratch_parent[scratch] = parent;
+    }
+
     /// scope of a filtered member always opens its nested filter scope.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "surface size is a small positive float; an isolate carries the
         clip, style and pixel-space state of one scope"
     )]
@@ -2094,8 +2105,6 @@ impl<'a> Lowering<'a> {
         self.set_clip(inner_clip);
         // A member's union sample inside this scratch carries no
         // ancestor clip — the composite applies them itself.
-        // Nested isolations split this scratch's open pass into segments;
-        // every segment at this depth needs the region.
         let passes_start = self.frame.passes.len();
         // Backdrop captures inside the body sample the nearest *semantic*
         // isolation's target; the scratches opened since it — pass-through
@@ -2107,8 +2116,7 @@ impl<'a> Lowering<'a> {
             || blend != cherenkov::BlendMode::Normal
             || space != cherenkov::BlendSpace::Linear;
         // Members composite in the declared space when the level
-        // composites onto it in isolation — isolated or translucent;
-        // a pass-through level shares the space it merges back into.
+        // composites onto it in isolation — isolated or translucent.
         let storage = if semantic || opacity < 1.0 {
             space
         } else {
@@ -2120,16 +2128,13 @@ impl<'a> Lowering<'a> {
         }
         self.scratch_space[scratch] = storage;
         self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
-        let inst_start = self.frame.instances.len();
         let (saved_capture, saved_target) = (self.capture_isolation, self.semantic_target);
         let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
+        let inst_start = self.frame.instances.len();
         self.capture_isolation = false;
         if semantic {
             self.semantic_target = Target::Scratch(scratch);
-            if self.scratch_parent.len() <= scratch {
-                self.scratch_parent.resize(scratch + 1, saved_target);
-            }
-            self.scratch_parent[scratch] = saved_target;
+            self.mark_scratch_parent(scratch, saved_target);
         } else {
             self.looked_through_scratches.clone_from(&saved_scratches);
             self.looked_through_scratches.push((scratch, passes_start));

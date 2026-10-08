@@ -1786,16 +1786,6 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
 }
 }
 
-fn anchor_grows(events: &[cherenkov_gpu::diag::AllocEvent], label: &'static str) -> Vec<u64> {
-    events
-        .iter()
-        .filter_map(|event| match event.kind {
-            cherenkov_gpu::diag::EventKind::Grow { label: l, new, .. } if l == label => Some(new),
-            _ => None,
-        })
-        .collect()
-}
-
 split_test! {
 /// Two groups anchored at the same layer sample one frozen copy taken at
 /// the anchor's paint position: neither group sees what the other paints,
@@ -2888,7 +2878,6 @@ fn member_render(
     Ok(wait!(surface.readback())?)
 }
 }
-
 
 split_test! {
 /// A union member compositing through a layer-level isolation — a
