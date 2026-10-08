@@ -494,6 +494,11 @@ impl GpuSurfaceWindow for AndroidHostWindow {
     }
 }
 
+/// The local-reference capacity one task poll's frame guarantees — the
+/// `PushLocalFrame` contract is "at least this many", never a hard bound, so
+/// the usual JNI default is what a poll's few bridge calls reserve.
+const TASK_POLL_LOCALS: i32 = 32;
+
 /// The UI-local executor adapted to the main `ALooper`: the same channel
 /// queue the headless runner drains, but a waker's send also writes a
 /// coalescing `eventfd` the looper's fd callback watches — work scheduled
@@ -519,14 +524,30 @@ impl AndroidMainThreadExecutor {
     }
 
     /// Runs every runnable currently queued, returning whether any ran.
+    ///
+    /// Each poll runs inside its own JNI local frame. This drain runs in
+    /// the main `ALooper`'s fd callback — `MessageQueue.nativePollOnce` is
+    /// a `@CriticalNative`, which pushes no local frame of its own — so
+    /// locals a task's `HostBridge` calls create (`new_string` results,
+    /// returned objects) would otherwise sit on the table for the life of
+    /// the process until the table overflows. A poll never returns a local
+    /// (`Runnable::run` yields `()`) and a local may not be held past the
+    /// call that made it, so popping the frame frees every one it created.
     pub(crate) fn drain(&self) -> bool {
+        let mut env = super::jni::java_vm()
+            .get_env()
+            .expect("hydrolysis android: executor drains run on the UI thread, which is attached");
         let mut ran = false;
         loop {
             let Ok(runnable) = self.runnable_rx.try_recv() else {
                 return ran;
             };
             ran = true;
-            runnable.run();
+            env.with_local_frame(TASK_POLL_LOCALS, |_env| {
+                runnable.run();
+                Ok::<(), JniError>(())
+            })
+            .expect("hydrolysis android: PushLocalFrame around a task poll failed");
             self.pending.fetch_sub(1, Ordering::SeqCst);
         }
     }

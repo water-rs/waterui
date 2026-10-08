@@ -66,6 +66,16 @@ impl From<super::gpu::GpuError> for JniError {
 /// attach envs through it.
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
 
+/// The process's `JavaVM`, captured at `nativeInit`. Entry points receive a
+/// `JNIEnv` from their caller, but code that runs outside a Java-to-native
+/// entry point — the executor's `ALooper` fd callback — resolves the env
+/// through this.
+pub(super) fn java_vm() -> &'static JavaVM {
+    JAVA_VM
+        .get()
+        .expect("hydrolysis android: nativeInit sets JAVA_VM before any session exists")
+}
+
 /// The `Application` published to `ndk_context`, held as a JNI global
 /// reference for the life of the process.
 ///
