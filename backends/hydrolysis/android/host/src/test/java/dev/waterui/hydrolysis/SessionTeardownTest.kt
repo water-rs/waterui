@@ -5,6 +5,9 @@ import android.content.Context
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -47,7 +50,7 @@ class SessionTeardownTest {
 
     @Test
     fun aFrameRequestedDuringTeardownNeverReachesNative() {
-        val session = HydrolysisSession(context)
+        val session = HydrolysisSession(context, onCloseRequested = {})
         HydrolysisHostView(context, session)
         val looper = shadowOf(Looper.getMainLooper())
 
@@ -73,7 +76,7 @@ class SessionTeardownTest {
     @Test
     fun teardownWaitsForTheAttachedHostViewToDetach() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
-        val session = HydrolysisSession(activity)
+        val session = HydrolysisSession(activity, onCloseRequested = { activity.finish() })
         val host = HydrolysisHostView(activity, session)
         activity.setContentView(host)
         assertTrue(host.isAttachedToWindow)
@@ -82,17 +85,20 @@ class SessionTeardownTest {
         // still reaches a live session.
         session.destroy()
         assertFalse(ShadowNativeBridge.destroyed)
+        val visibilityCalls = ShadowNativeBridge.visibilities.size
         session.setVisible(false)
+        assertEquals(visibilityCalls, ShadowNativeBridge.visibilities.size)
 
         (host.parent as ViewGroup).removeView(host)
         assertTrue(ShadowNativeBridge.destroyed)
-        assertThrows(IllegalStateException::class.java) { session.setVisible(false) }
+        session.setVisible(false)
+        assertEquals(visibilityCalls, ShadowNativeBridge.visibilities.size)
     }
 
     @Test
     fun aCloseThatTearsTheSessionDownRunsAfterTheFrame() {
         val activity = Robolectric.buildActivity(ClosingActivity::class.java).setup().get()
-        val session = HydrolysisSession(activity)
+        val session = HydrolysisSession(activity, onCloseRequested = { activity.finish() })
         val host = HydrolysisHostView(activity, session)
         activity.setContentView(host)
         activity.onFinish = {
@@ -122,7 +128,7 @@ class SessionTeardownTest {
     @Test
     fun aTeardownRequestedInsideANativeCallWaitsForItToReturn() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
-        val session = HydrolysisSession(activity)
+        val session = HydrolysisSession(activity, onCloseRequested = { activity.finish() })
         val host = HydrolysisHostView(activity, session)
         activity.setContentView(host)
         ShadowNativeBridge.onFrame = {
@@ -144,7 +150,7 @@ class SessionTeardownTest {
     @Test
     fun childrenDetachBeforeTheDeferredTeardown() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
-        val session = HydrolysisSession(activity)
+        val session = HydrolysisSession(activity, onCloseRequested = { activity.finish() })
         val host = HydrolysisHostView(activity, session)
         var childReachedSession = false
         host.addView(
@@ -224,12 +230,81 @@ class SessionTeardownTest {
     }
 
     @Test
-    fun aCallAfterDestroyIsANamedError() {
-        val session = HydrolysisSession(context)
+    fun aCreatedViewLifecycleParksBeforeAttachAndCannotRestartAClearedSession() {
+        val activity = Robolectric.buildActivity(ClosingActivity::class.java).setup().get()
+        val owner = object : LifecycleOwner {
+            val registry = LifecycleRegistry(this)
+            override val lifecycle: Lifecycle get() = registry
+        }
+        owner.registry.currentState = Lifecycle.State.CREATED
+        lateinit var session: HydrolysisSession
+        val host = HydrolysisEmbedding.createView(
+            activity, owner, activity, activity.onBackPressedDispatcher, "waterui_app",
+            onCloseRequested = {},
+            createContentView = {
+                session = it
+                HydrolysisHostView(activity, it)
+            },
+        )
+        activity.setContentView(host)
+        assertFalse(ShadowNativeBridge.visibilities.contains(true))
+        owner.registry.currentState = Lifecycle.State.STARTED
+        assertEquals(true, ShadowNativeBridge.visibilities.last())
+        activity.viewModelStore.clear()
+        val parkedCalls = ShadowNativeBridge.visibilities.size
+        owner.registry.currentState = Lifecycle.State.CREATED
+        owner.registry.currentState = Lifecycle.State.STARTED
+        assertEquals(parkedCalls, ShadowNativeBridge.visibilities.size)
+        assertEquals(false, ShadowNativeBridge.visibilities.last())
+        val error = assertThrows(IllegalStateException::class.java) {
+            session.bind(HydrolysisHostView(activity, session))
+        }
+        assertTrue(error.message!!.contains("bind reached a closing HydrolysisSession"))
+        (host.parent as ViewGroup).removeView(host)
+        assertTrue(ShadowNativeBridge.destroyed)
+        assertThrows(IllegalStateException::class.java) { session.bind(host as HydrolysisHostView) }
+    }
+
+    @Test
+    fun aCloseBetweenMountsKeepsItsHandlerAndTheNextMountReplacesIt() {
+        val activity = Robolectric.buildActivity(ClosingActivity::class.java).setup().get()
+        lateinit var session: HydrolysisSession
+        var firstCloses = 0
+        var nextCloses = 0
+        fun mount(onClose: () -> Unit): View = HydrolysisEmbedding.createView(
+            activity, activity, activity, activity.onBackPressedDispatcher, "waterui_app",
+            onCloseRequested = onClose,
+            createContentView = {
+                session = it
+                HydrolysisHostView(activity, it)
+            },
+        )
+        val first = mount { firstCloses++ }
+        activity.setContentView(first)
+        (first.parent as ViewGroup).removeView(first)
+        session.onNativeCloseRequested()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, firstCloses)
+        val retained = session
+        val next = mount { nextCloses++ }
+        assertTrue(retained === session)
+        session.onNativeCloseRequested()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, firstCloses)
+        assertEquals(1, nextCloses)
+        activity.setContentView(next)
+        activity.viewModelStore.clear()
+        (next.parent as ViewGroup).removeView(next)
+    }
+
+    @Test
+    fun aVisibilityCallAfterDestroyIsIgnored() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
         session.destroy()
 
-        val error = assertThrows(IllegalStateException::class.java) { session.setVisible(true) }
-        assertTrue(error.message.orEmpty().contains("nativeSetVisible"))
+        val visibilityCalls = ShadowNativeBridge.visibilities.size
+        session.setVisible(true)
+        assertEquals(visibilityCalls, ShadowNativeBridge.visibilities.size)
     }
 
     private companion object {
@@ -295,15 +370,12 @@ class ShadowNativeBridge {
             assertFalse("a native call reached a destroyed session", destroyed)
         }
 
-        /** `NativeBridge.SCHEMA` — kept in lock-step with the bridge. */
-        private const val SCHEMA = 11
-
         @JvmStatic
         @Implementation
         fun nativeInit(
-            @Suppress("UNUSED_PARAMETER") schema: Int,
+            schema: Int,
             @Suppress("UNUSED_PARAMETER") logLevel: String?,
-        ): Int = SCHEMA
+        ): Int = schema
 
         @JvmStatic
         @Implementation
@@ -357,9 +429,9 @@ class ShadowNativeBridge {
 }
 
 /**
- * Asset sync and `Os.setenv` have no file system they can reach under
- * Robolectric — `prepare` does nothing; the mount paths are what these
- * tests exercise.
+ * Isolates the session tests from process environment preparation. Real
+ * asset synchronization is covered by HydrolysisEnvironmentTest without
+ * this shadow.
  */
 @Implements(HydrolysisEnvironment::class, isInAndroidSdk = false)
 @DoNotInstrument

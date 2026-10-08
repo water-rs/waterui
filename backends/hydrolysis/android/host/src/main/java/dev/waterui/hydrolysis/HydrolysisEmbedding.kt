@@ -10,6 +10,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
 
 /** Retains the mounted session across configuration recreation. */
 internal class HydrolysisSessionHolder : ViewModel() {
@@ -17,18 +18,18 @@ internal class HydrolysisSessionHolder : ViewModel() {
     private var session: HydrolysisSession? = null
 
     /** The session for this owner, created on first mount. */
-    fun session(context: Context): HydrolysisSession =
-        session ?: HydrolysisSession(context.applicationContext).also { session = it }
+    fun session(context: Context, onCloseRequested: () -> Unit): HydrolysisSession =
+        (session ?: HydrolysisSession(context.applicationContext, onCloseRequested)
+            .also { session = it }).also { it.onCloseRequested = onCloseRequested }
 
     override fun onCleared() {
         // The store can clear while the view stays attached — a custom
         // owner, a Compose navigation entry — and `destroy` then only
-        // defers until the view detaches. Park the session first so it
-        // stops pumping and taking input meanwhile, commit the pending
-        // autofill save, then end it; a configuration recreation never
-        // reaches here.
+        // defers until the view detaches. Commit the pending autofill save,
+        // then destroy parks the session permanently. Window events and
+        // input still reach the live native state until detach; a
+        // configuration recreation never reaches here.
         session?.let {
-            it.setVisible(false)
             it.hostView?.autofillCommit()
             it.destroy()
         }
@@ -46,7 +47,9 @@ object HydrolysisEmbedding {
      * Mounts the app in [nativeLibraryName] as a View: prepares the process
      * environment, loads the library, retains the session in a ViewModel of
      * [viewModelStoreOwner] under [key], and wires lifecycle visibility, system
-     * back and close requests while the returned view is attached.
+     * back while the returned view is attached. Close requests belong to the
+     * session, including between detach and the next mount; a new mount
+     * replaces the callback with its host's handler.
      * One mount per key per owner; a second simultaneous mount under the same
      * key fails the session's single-binding check.
      */
@@ -67,8 +70,9 @@ object HydrolysisEmbedding {
             "dev.waterui.hydrolysis.session:$key",
             HydrolysisSessionHolder::class.java,
         ]
-        val session = holder.session(context)
+        val session = holder.session(context, onCloseRequested)
         val contentView = createContentView(session)
+        contentView.setViewTreeLifecycleOwner(lifecycleOwner)
         val observer = object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 session.setVisible(true)
@@ -106,11 +110,9 @@ object HydrolysisEmbedding {
         contentView.addOnAttachStateChangeListener(
             object : View.OnAttachStateChangeListener {
                 override fun onViewAttachedToWindow(view: View) {
-                    session.lifecycleOwner = lifecycleOwner
                     onBackPressedDispatcher.addCallback(lifecycleOwner, backCallback)
                     session.onBackAvailable = { available -> backCallback.isEnabled = available }
                     backCallback.isEnabled = session.backAvailable
-                    session.onCloseRequested = onCloseRequested
                     lifecycleOwner.lifecycle.addObserver(observer)
                     // The attach listener fires after the content view's own
                     // `onAttachedToWindow`, so `bind` has already applied the
@@ -121,8 +123,6 @@ object HydrolysisEmbedding {
                     backCallback.remove()
                     lifecycleOwner.lifecycle.removeObserver(observer)
                     session.onBackAvailable = null
-                    session.onCloseRequested = null
-                    session.lifecycleOwner = null
                     // Visibility parks in `HydrolysisSession.unbind`, which
                     // the host view's own `onDetachedFromWindow` runs before
                     // this listener — a session destroyed in between must

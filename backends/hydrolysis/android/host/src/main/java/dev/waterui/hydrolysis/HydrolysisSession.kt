@@ -5,7 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
-
+import androidx.lifecycle.findViewTreeLifecycleOwner
 
 /**
  * The mounted WaterUI app: the native session pointer plus the stable object
@@ -14,11 +14,13 @@ import androidx.lifecycle.LifecycleOwner
  * The session object — not the view — is what JNI hands to the native side, so
  * a configuration change that recreates the [HydrolysisHostView] keeps the
  * same live native session; the new view binds to it through [bind]. The
- * activity that owns the session retains it across recreation and calls
- * [destroy] exactly once, when the process-side lifecycle truly ends; the
- * native teardown follows the host view's detach.
+ * owning ViewModel retains it across recreation and calls [destroy] when
+ * its store is cleared; native teardown follows the host view's detach.
  */
-class HydrolysisSession internal constructor(context: Context) {
+class HydrolysisSession internal constructor(
+    context: Context,
+    internal var onCloseRequested: () -> Unit,
+) {
     /**
      * The opaque native pointer, owned on the UI thread only. It is never
      * read directly: every Kotlin→native call takes it through
@@ -108,20 +110,8 @@ class HydrolysisSession internal constructor(context: Context) {
     internal var hostView: HydrolysisHostView? = null
         private set
 
-    /**
-     * The lifecycle the mounted content follows — [HydrolysisEmbedding]
-     * sets it to the caller's `lifecycleOwner` (a fragment passes its
-     * `viewLifecycleOwner`) while the content view is attached. Platform
-     * views rebind to it for context-sensitive work instead of reading
-     * the view's own `context` lifecycle.
-     */
-    internal var lifecycleOwner: LifecycleOwner? = null
-
     internal fun bind(view: HydrolysisHostView) {
-        // A session whose owner was already cleared is doomed — its store
-        // only waits for the view to detach; a re-attaching view of such a
-        // session never takes over `hostView` or wakes the pump.
-        if (destroyRequested || destroyed) return
+        check(!destroyRequested) { "hydrolysis: bind reached a closing HydrolysisSession" }
         check(hostView == null || hostView === view) {
             "a HydrolysisSession is bound to exactly one host view at a time"
         }
@@ -131,7 +121,7 @@ class HydrolysisSession internal constructor(context: Context) {
         // recover a false parked state. The mounted lifecycle's current
         // state is the truth; `onStart`/`onStop` keep updating it.
         setVisible(
-            (lifecycleOwner ?: view.context as? LifecycleOwner)?.lifecycle?.currentState
+            (view.findViewTreeLifecycleOwner() ?: view.context as? LifecycleOwner)?.lifecycle?.currentState
                 ?.isAtLeast(Lifecycle.State.STARTED) == true,
         )
     }
@@ -139,9 +129,8 @@ class HydrolysisSession internal constructor(context: Context) {
     internal fun unbind(view: HydrolysisHostView) {
         if (hostView !== view) return
         hostView = null
-        // A detached view is invisible, and a deferred teardown runs
-        // right below: park the pump now, while the session still lives —
-        // a call after teardown is a named error.
+        // A detached view is invisible, so park the pump before a pending
+        // teardown runs below.
         if (!destroyed) setVisible(false)
         if (destroyRequested) requestTearDown()
     }
@@ -153,6 +142,7 @@ class HydrolysisSession internal constructor(context: Context) {
      * the one current frame.
      */
     internal fun setVisible(visible: Boolean) {
+        if (destroyRequested) return
         withNativePtr(NativeBridge::nativeSetVisible.name) { ptr ->
             NativeBridge.nativeSetVisible(ptr, visible)
         }
@@ -172,6 +162,7 @@ class HydrolysisSession internal constructor(context: Context) {
      */
     internal fun destroy() {
         check(!destroyRequested) { "hydrolysis: HydrolysisSession.destroy() called twice" }
+        setVisible(false)
         destroyRequested = true
         if (hostView?.isAttachedToWindow != true) requestTearDown()
     }
@@ -221,10 +212,6 @@ class HydrolysisSession internal constructor(context: Context) {
 
     /** The activity's back callback, or none between bindings. */
     internal var onBackAvailable: ((Boolean) -> Unit)? = null
-
-    /** The embedding's close handler — the activity finishes, a host app
-     * decides for itself. Set while the content view is attached. */
-    internal var onCloseRequested: (() -> Unit)? = null
 
     /** Forwards one system-back phase to the native session. */
     internal fun dispatchBack(phase: Int, edge: Int, progress: Double) {
@@ -280,7 +267,7 @@ class HydrolysisSession internal constructor(context: Context) {
      */
     @CalledFromNative
     fun onNativeCloseRequested() {
-        mainHandler.post { onCloseRequested?.invoke() }
+        mainHandler.post { onCloseRequested() }
     }
 
     /** Native pushes the authoritative editing state for the IME mirror. */

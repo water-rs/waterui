@@ -194,13 +194,17 @@ pub async fn build_aar(
         ":waterui:assembleRelease".to_owned(),
         ":waterui:publishReleasePublicationToMavenLocal".to_owned(),
     ]);
-    run_gradle_tasks(
-        &dir,
-        &tasks.iter().map(String::as_str).collect::<Vec<_>>(),
-        &[("WATERUI_HYDROLYSIS_HOST_VERSION", version.clone())],
-        host,
-    )
-    .await?;
+    {
+        let _host_build =
+            crate::water_dir::android_host_build_lock(host, &host_project_dir).await?;
+        run_gradle_tasks(
+            &dir,
+            &tasks.iter().map(String::as_str).collect::<Vec<_>>(),
+            &[("WATERUI_HYDROLYSIS_HOST_VERSION", version.clone())],
+            host,
+        )
+        .await?;
+    }
 
     let module_dir = dir.join("waterui");
     let aar_path = copy_aar_to_package(project, &module_dir, &crate_version).await?;
@@ -246,13 +250,13 @@ async fn embedded_template_context(
 }
 
 /// Every file the `android-embedded/` scaffold would write, as
-/// android-embedded-dir-relative path and content — the regeneration check's
-/// comparison source.
+/// android-embedded-dir-relative path and content, for scaffold tests.
 ///
 /// # Errors
 ///
 /// Returns an error when the template context or rendering fails.
-pub async fn rendered_embedded_outputs(
+#[cfg(test)]
+pub(super) async fn rendered_embedded_outputs(
     project: &Project,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
@@ -280,14 +284,14 @@ pub async fn rendered_embedded_outputs(
 /// `0.0.0-<first 16 hex of the sources' sha256>`, so a host that changed
 /// never collides with an earlier publish of the same coordinate.
 ///
-/// The hash covers the checkout's `settings.gradle.kts`, `gradle.properties`,
+/// The hash covers the checkout's root build script, `settings.gradle.kts`, `gradle.properties`,
 /// the Gradle wrapper files, and every file under `modules`, sorted by
 /// relative path and skipping Gradle `build/` and `.gradle/` outputs.
 async fn host_version(host_project_dir: &Path, modules: &[&str]) -> Result<String> {
     use sha2::{Digest, Sha256};
 
     let mut files = vec![host_project_dir.join("settings.gradle.kts")];
-    for top_level in ["gradle.properties", "gradle"] {
+    for top_level in ["build.gradle.kts", "gradle.properties", "gradle"] {
         let path = host_project_dir.join(top_level);
         if fs::metadata(&path).await.is_ok_and(|meta| meta.is_file()) {
             files.push(path);
@@ -490,6 +494,13 @@ mod tests {
             .expect("edit");
             let after_wrapper = host_version(&host, &GPU_MODULES).await.expect("hash");
             assert_ne!(after_properties, after_wrapper);
+
+            std::fs::write(host.join("build.gradle.kts"), "plugins { base }").expect("edit");
+            let after_root_script = host_version(&host, &GPU_MODULES).await.expect("hash");
+            assert_ne!(after_wrapper, after_root_script);
+            std::fs::write(host.join("build.gradle.kts"), "plugins { java }").expect("edit");
+            let after_root_edit = host_version(&host, &GPU_MODULES).await.expect("hash");
+            assert_ne!(after_root_script, after_root_edit);
         });
     }
 

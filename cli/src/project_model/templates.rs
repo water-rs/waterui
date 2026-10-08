@@ -6332,7 +6332,10 @@ pub mod hydrolysis_android {
 
 /// Hydrolysis Android embedded-library (`waterui` AAR) templates.
 pub mod hydrolysis_android_embedded {
-    use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io};
+    use super::{Path, TemplateContext, TemplateNamespace, embedded, io};
+
+    #[cfg(test)]
+    use super::PathBuf;
 
     /// Write the embedded-library Gradle project (the shared root files plus
     /// the `waterui` AAR module) to the given directory.
@@ -6361,6 +6364,7 @@ pub mod hydrolysis_android_embedded {
     /// # Errors
     ///
     /// Returns an error if template rendering fails.
+    #[cfg(test)]
     pub fn rendered_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
         super::hydrolysis_android_rendered_outputs(
             TemplateNamespace::HydrolysisAndroidEmbedded,

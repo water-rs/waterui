@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.ViewStructure
+import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeProvider
 import android.view.autofill.AutofillValue
@@ -54,6 +55,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         AutofillBridge(this, accessibilityProvider)
 
     private var lastMetricsWidth = -1
+    private val metricsLayoutListener = ViewTreeObserver.OnGlobalLayoutListener { pushMetrics() }
     private var lastMetricsHeight = -1
     private var lastDensity = Float.NaN
     private var lastFontScale = Float.NaN
@@ -180,10 +182,12 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         session?.bind(this)
+        viewTreeObserver.addOnGlobalLayoutListener(metricsLayoutListener)
         pushMetrics()
     }
 
     override fun onDetachedFromWindow() {
+        viewTreeObserver.removeOnGlobalLayoutListener(metricsLayoutListener)
         // Nothing this view queued may reach the session after the detach:
         // a destroyed session tears down inside `unbind` below. The IMM
         // closes its connections only later, from its own queue — they
@@ -215,9 +219,9 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     /**
      * The edges of [insets] that actually touch this view in the window —
      * the per-side intersection of the window-root inset band with the
-     * view's own rect. A view below a toolbar avoids the status bar a
-     * second time, and a view ending above the keyboard avoids the full
-     * IME height; §7.1 wants the region the view truly overlaps.
+     * view's own rect. A view below a toolbar must not avoid the status bar
+     * a second time, nor one above the keyboard the full IME height;
+     * §7.1 wants the region the view truly overlaps.
      */
     private fun windowLocalEdges(insets: androidx.core.graphics.Insets): IntArray {
         val (x, y) = IntArray(2).also { getLocationInWindow(it) }.let { it[0] to it[1] }
