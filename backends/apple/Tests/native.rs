@@ -6529,20 +6529,23 @@ mod list_scroll {
     }
 }
 
-/// Navigation-chrome trials: the toolbar intent a page records in
-/// `set_page` applies through the stack's `UINavigationControllerDelegate`.
+/// Navigation-chrome trials: the bar intents a page records in
+/// `set_page` apply through the stack's `UINavigationControllerDelegate`.
 #[cfg(target_os = "ios")]
 mod navigation {
-    use cocoa_ui::objc2_ui_kit::UINavigationController;
+    use cocoa_ui::objc2_ui_kit::{UINavigationController, UIView, UIViewController};
     use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
         NavigationView,
     };
     use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
-    use super::resolve;
+    use super::{mtm, resolve};
 
     /// The `UINavigationController` owning a view in the subtree,
     /// depth-first — either the view's own controller is the nav
@@ -6565,13 +6568,43 @@ mod navigation {
     }
 
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        vec![libtest_mimic::Trial::test(
-            "navigation::a_first_page_bottom_bar_unhides_the_toolbar",
-            || {
-                a_first_page_bottom_bar_unhides_the_toolbar();
-                Ok(())
-            },
-        )]
+        vec![
+            libtest_mimic::Trial::test(
+                "navigation::a_first_page_bottom_bar_unhides_the_toolbar",
+                || {
+                    a_first_page_bottom_bar_unhides_the_toolbar();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::the_top_page_drives_the_navigation_bar",
+                || {
+                    the_top_page_drives_the_navigation_bar();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_buried_pages_set_page_leaves_the_bar_alone",
+                || {
+                    a_buried_pages_set_page_leaves_the_bar_alone();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::the_top_pages_reactive_hidden_writes_and_rides_transitions",
+                || {
+                    the_top_pages_reactive_hidden_writes_and_rides_transitions();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_buried_pages_reactive_hidden_leaves_the_bar_alone",
+                || {
+                    a_buried_pages_reactive_hidden_leaves_the_bar_alone();
+                    Ok(())
+                },
+            ),
+        ]
     }
 
     /// The root page's intent is recorded in `set_page` while
@@ -6596,6 +6629,212 @@ mod navigation {
         assert!(
             !nav.isToolbarHidden(),
             "the first page's bottom bar unhides the toolbar"
+        );
+    }
+
+    /// A stack whose root page hides the navigation bar — the fixture
+    /// the bar trials push onto. The leaf mounts in a key window:
+    /// `UINavigationController` only delivers its transition delegate
+    /// callbacks to an attached view hierarchy. The returned leaf and
+    /// window keep the driver and the hierarchy alive; the controller
+    /// is the stack's `UINavigationController`.
+    fn hidden_root_stack() -> (
+        waterui_apple::contract::NativeLeaf,
+        Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+        Retained<UINavigationController>,
+    ) {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(false),
+        ));
+        let window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        (leaf, window, nav)
+    }
+
+    /// A pushed page carrying its own `hidden` intent — chrome the
+    /// harness installs natively, the way the driver installs the
+    /// model's pushed pages.
+    fn pushed_page(hidden: bool) -> Retained<NavContentController> {
+        let page = NavContentController::new(mtm(), &UIView::new(mtm()));
+        page.set_page(&NavPage {
+            hidden,
+            ..NavPage::default()
+        });
+        page
+    }
+
+    /// Root hides the bar, a pushed page shows it: each transition
+    /// applies the incoming page's recorded intent — the bar is shown
+    /// after the push and hidden again after the pop. `willShow` lands
+    /// inside the transition's main-queue delivery, so the assertions
+    /// pump the run loop rather than read the flag mid-flush.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn the_top_page_drives_the_navigation_bar() {
+        let (_leaf, _window, nav) = hidden_root_stack();
+        assert!(
+            nav.isNavigationBarHidden(),
+            "the root page's hidden intent applies at mount"
+        );
+
+        nav.pushViewController_animated(&pushed_page(false), false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "the pushed page's shown intent rides the push"
+        );
+
+        nav.popViewControllerAnimated(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || nav.isNavigationBarHidden()),
+            "the pop applies the root page's hidden intent"
+        );
+    }
+
+    /// `set_page` on a page under the top records intent without
+    /// writing the bar — a re-rendered root page never touches the
+    /// chrome the pushed page shows.
+    fn a_buried_pages_set_page_leaves_the_bar_alone() {
+        let (_leaf, _window, nav) = hidden_root_stack();
+        nav.pushViewController_animated(&pushed_page(false), false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "precondition: the pushed page shows the bar"
+        );
+
+        let root = nav
+            .viewControllers()
+            .objectAtIndex(0)
+            .downcast::<NavContentController>()
+            .expect("the root page is a NavContentController");
+        root.set_page(&NavPage {
+            hidden: true,
+            ..NavPage::default()
+        });
+        assert!(
+            !pump_main_until(0.5, || nav.isNavigationBarHidden()),
+            "a buried page's set_page never reaches the bar"
+        );
+
+        // The re-run still recorded the intent: popping back applies it.
+        nav.popViewControllerAnimated(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || nav.isNavigationBarHidden()),
+            "the re-rendered root's intent applies when it becomes top"
+        );
+    }
+
+    /// Pumps the main queue until `page` is `nav`'s top, the bar reads
+    /// `hidden`, and the transition coordinator has torn down — the
+    /// three flushes arrive unordered: `topViewController` can re-point
+    /// either before or after `willShow` applies the incoming page's
+    /// intent, and a bar write issued while the coordinator is still
+    /// live is swallowed with it.
+    fn settles_with_bar(
+        nav: &UINavigationController,
+        page: &UIViewController,
+        hidden: bool,
+    ) -> bool {
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            nav.topViewController()
+                .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), page))
+                && nav.isNavigationBarHidden() == hidden
+                && nav.transitionCoordinator().is_none()
+        })
+    }
+
+    /// The top page's reactive `hidden` signal writes the bar at once
+    /// — and what it records is what a later round trip re-applies:
+    /// show reactively on top, hide by pushing, and the pop back shows
+    /// the bar — the record the reactive path kept, not the
+    /// mount-time flag.
+    ///
+    /// The reactive write goes first: a harness-driven pop reports a
+    /// model pop that drops the popped `Entry` — and the binding
+    /// watcher with it — so no reactive write can follow one.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn the_top_pages_reactive_hidden_writes_and_rides_transitions() {
+        let visible = binding(false);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(visible.clone()),
+        ));
+        let _window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            nav.isNavigationBarHidden(),
+            "precondition: the root page hides the bar"
+        );
+
+        // The top page's reactive change writes the bar at once.
+        visible.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "the top page's reactive show reaches the bar"
+        );
+
+        // Push a hiding page, then pop: the willShow intent the pop
+        // re-applies is the reactively-kept record — the bar shows.
+        let pushed = pushed_page(true);
+        nav.pushViewController_animated(&pushed, false);
+        assert!(
+            settles_with_bar(&nav, &pushed, true),
+            "precondition: the push settles on the pushed page hiding the bar"
+        );
+        nav.popViewControllerAnimated(false);
+        let root = nav.viewControllers().objectAtIndex(0);
+        assert!(
+            settles_with_bar(&nav, &root, false),
+            "the top page's reactive intent survives the push/pop round trip"
+        );
+    }
+
+    /// A buried page's reactive `hidden` change stays recorded-only
+    /// while another page is top — the bar keeps the pushed page's
+    /// shown intent — and the record applies when the pop shows the
+    /// page again.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_buried_pages_reactive_hidden_leaves_the_bar_alone() {
+        let visible = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(visible.clone()),
+        ));
+        let _window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isNavigationBarHidden(),
+            "precondition: the root page shows the bar"
+        );
+
+        let pushed = pushed_page(false);
+        nav.pushViewController_animated(&pushed, false);
+        assert!(
+            settles_with_bar(&nav, &pushed, false),
+            "precondition: the push settles on the pushed page showing the bar"
+        );
+
+        // The buried root asks for a hidden bar — intent only: the
+        // pushed page's chrome stays up.
+        visible.set(false);
+        assert!(
+            !pump_main_until(0.5, || nav.isNavigationBarHidden()),
+            "a buried page's reactive change leaves the bar alone"
+        );
+
+        nav.popViewControllerAnimated(false);
+        let root = nav.viewControllers().objectAtIndex(0);
+        assert!(
+            settles_with_bar(&nav, &root, true),
+            "the buried page's recorded intent applies when it shows again"
         );
     }
 }

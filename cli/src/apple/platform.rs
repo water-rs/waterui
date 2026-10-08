@@ -186,7 +186,7 @@ pub(crate) async fn apple_dependency_features(
     Ok(features)
 }
 
-async fn apple_build_features(
+pub(crate) async fn apple_build_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
     linkage: RustLinkage,
