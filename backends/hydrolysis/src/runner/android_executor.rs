@@ -144,9 +144,9 @@ mod tests {
             revents: 0,
         };
         // SAFETY: `pollfd` points at a live pollfd entry for the call.
+        let ready = unsafe { libc::poll(&raw mut pollfd, 1, 0) };
         assert_eq!(
-            unsafe { libc::poll(&raw mut pollfd, 1, 0) },
-            1,
+            ready, 1,
             "the wake the executor wrote is not observed on the fd the looper watches"
         );
         let mut count: u64 = 0;
