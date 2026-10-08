@@ -2185,12 +2185,13 @@ async fn verify_ndk_host_toolchain_executable(
 
     // Unique scratch source for the compile probe; the `NamedTempFile`
     // deletes itself on drop, including on the early-error paths below.
-    let probe_file = smol::unblock(|| -> std::io::Result<tempfile::NamedTempFile> {
+    let temp_root = host.temp_dir();
+    let probe_file = smol::unblock(move || -> std::io::Result<tempfile::NamedTempFile> {
         use std::io::Write as _;
         let mut file = tempfile::Builder::new()
             .prefix("waterui-android-ndk-probe-")
             .suffix(".c")
-            .tempfile()?;
+            .tempfile_in(temp_root)?;
         file.write_all(b"int main(void) { return 0; }\n")?;
         file.flush()?;
         Ok(file)
