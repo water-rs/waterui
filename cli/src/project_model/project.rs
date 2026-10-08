@@ -1179,12 +1179,6 @@ impl Project {
         .await
     }
 
-    /// The host this project resolves and builds on — the `PATH`,
-    /// environment and working directory every probe goes through.
-    pub(crate) const fn host(&self) -> &Host {
-        &self.host
-    }
-
     /// Every package's enabled features in `build_manifest`'s resolved
     /// graph for `target` — `cargo metadata --filter-platform <triple>`,
     /// cached per manifest and triple so a build's ABI-by-ABI feature
@@ -2314,7 +2308,7 @@ impl Project {
         Self::create_on(host, path, options).await
     }
 
-    pub(crate) async fn create_on(
+    async fn create_on(
         host: &Host,
         path: impl AsRef<Path>,
         options: CreateOptions,
@@ -2581,20 +2575,6 @@ impl Project {
         Self::open_with_mode(host, path, OpenMode::Full, backends).await
     }
 
-    /// Open a project on `host`, the [`Self::open`] path under a supplied
-    /// `Host` — the seam tests open through the fake-tool machine with.
-    ///
-    /// # Errors
-    /// Same as [`Self::open`].
-    #[cfg(test)]
-    pub(crate) async fn open_on(
-        host: &Host,
-        path: impl AsRef<Path>,
-        backends: ManagedBackends,
-    ) -> Result<Self, FailToOpenProject> {
-        Self::open_with_mode_on(host, path, OpenMode::Full, backends).await
-    }
-
     /// Open a project for preview dylib builds without initializing native app backends.
     ///
     /// Preview dylib builds only need the managed preview wrapper crate. Native
@@ -2702,14 +2682,6 @@ impl Project {
             Ok(())
         })
         .await
-    }
-
-    async fn open_with_mode(
-        path: impl AsRef<Path>,
-        open_mode: OpenMode,
-        backends: ManagedBackends,
-    ) -> Result<Self, FailToOpenProject> {
-        Self::open_with_mode_on(&Host::current(), path, open_mode, backends).await
     }
 
     #[expect(
@@ -4122,47 +4094,6 @@ fn same_directory(left: &Path, right: &Path) -> std::io::Result<bool> {
     Ok(std::fs::canonicalize(left)? == std::fs::canonicalize(right)?)
 }
 
-/// The `Water.toml` `create` writes: package identity from the creation
-/// options, the resolved framework when a channel recorded one, and the
-/// defaults every created project shares.
-fn created_manifest(
-    options: &CreateOptions,
-    framework: &ResolvedFramework,
-    assets_path: String,
-) -> Manifest {
-    Manifest {
-        package: Package {
-            name: options.name.clone(),
-            bundle_identifier: options.bundle_identifier.clone(),
-            assets_path,
-            accessory: false,
-            embedded: false,
-        },
-        esp32: None,
-        hydrolysis: None,
-        waterui_path: options
-            .waterui_path
-            .as_ref()
-            .map(|p| p.display().to_string()),
-        // The scaffold's copy of the checkout's tables is identical to the
-        // checkout's, which the first open adopts and records.
-        waterui_patches: cargo_toml::PatchSet::new(),
-        // A local checkout's framework is a filesystem source — never
-        // persisted; `waterui_path` above is the record.
-        framework: framework.channel().is_some().then_some(framework.clone()),
-        permissions: BTreeMap::default(),
-        app: None,
-        theme: None,
-        launch: None,
-        web: options.web.as_ref().map(|scaffold| web::WebConfig {
-            package_manager: scaffold.package_manager,
-        }),
-        signing: SigningConfig::default(),
-        assets: None,
-        app_values: crate::assets::AppValuesConfig::default(),
-    }
-}
-
 fn default_assets_path() -> String {
     "assets".to_string()
 }
@@ -4801,7 +4732,7 @@ mod target_graph_tests {
     /// linked browser engine — the one-call resolve the persisted-layer
     /// test counts `cargo tree` invocations through.
     async fn resolve_graph_answer(host: &crate::toolchain::Host, app_root: &Path, linux: &Triple) {
-        Project::open_on(host, app_root, ManagedBackends::NONE)
+        Project::open(host, app_root, ManagedBackends::NONE)
             .await
             .expect("the project opens on the fixture machine")
             .linked_browser_engine(linux)
@@ -4841,7 +4772,7 @@ mod target_graph_tests {
 
             let log = machine.file("invocations.log", "");
             let host = machine.host([("WATERUI_FAKE_LOG", log.as_os_str())]);
-            let project = Project::open_on(&host, &root, ManagedBackends::NONE)
+            let project = Project::open(&host, &root, ManagedBackends::NONE)
                 .await
                 .expect("the project opens on the fixture machine");
 
@@ -4918,7 +4849,7 @@ mod target_graph_tests {
             );
 
             let host = machine.host::<&'static str, &'static str>([]);
-            let project = Project::open_on(&host, &root, ManagedBackends::NONE)
+            let project = Project::open(&host, &root, ManagedBackends::NONE)
                 .await
                 .expect("the project opens on the fixture machine");
 
@@ -4980,7 +4911,7 @@ mod target_graph_tests {
             );
 
             let host = machine.host::<&'static str, &'static str>([]);
-            let project = Project::open_on(&host, &root, ManagedBackends::NONE)
+            let project = Project::open(&host, &root, ManagedBackends::NONE)
                 .await
                 .expect("the project opens on the fixture machine");
 
@@ -5028,7 +4959,7 @@ mod target_graph_tests {
             let host = machine.host([("WATERUI_FAKE_LOG", log.as_os_str())]);
 
             // `water clean --backend apple` opens exactly this way.
-            Project::open_on(
+            Project::open(
                 &host,
                 &root,
                 ManagedBackends::for_backend(TargetBackend::Apple),

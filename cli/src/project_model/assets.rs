@@ -3242,7 +3242,7 @@ mod permission_audit_tests {
         .expect("Cargo.toml");
         std::fs::create_dir_all(directory.path().join("src")).expect("src dir");
         std::fs::write(directory.path().join("src/lib.rs"), "").expect("src lib");
-        let project = smol::block_on(crate::project::Project::open_on(
+        let project = smol::block_on(crate::project::Project::open(
             &crate::toolchain::testing::real_toolchain_host(directory.path()),
             directory.path(),
             crate::project::ManagedBackends::NONE,

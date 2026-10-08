@@ -2862,7 +2862,8 @@ pub(crate) mod test_fixtures {
     /// shares. `root` must already be a worktree.
     pub fn git_commit_all(root: &Path, message: &str) -> String {
         let git = |args: &[&str]| -> String {
-            let output = StdCommand::new("git")
+            let output = crate::toolchain::Host::current()
+                .std_command("git")
                 .arg("-C")
                 .arg(root)
                 .args(args)
