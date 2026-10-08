@@ -223,7 +223,13 @@ impl NavContentController {
             self.setToolbarItems(Some(&NSArray::from_retained_slice(&page.bottom)));
         }
         self.ivars().toolbar_hidden.set(page.bottom.is_empty());
-        if let Some(nav) = self.navigationController() {
+        // Only the topmost page owns the stack's toolbar: a page further
+        // down records its intent and applies it when it shows again.
+        if let Some(nav) = self.navigationController()
+            && nav
+                .topViewController()
+                .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), &raw const **self))
+        {
             nav.setToolbarHidden_animated(page.bottom.is_empty(), false);
         }
         self.ivars().search_updater.replace(None);
