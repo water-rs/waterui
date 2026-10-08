@@ -17,11 +17,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
-use executor_core::LocalExecutor;
-use executor_core::async_task::{AsyncTask, Runnable};
 use jni::objects::{GlobalRef, JMethodID, JValue};
 use jni::signature::{Primitive, ReturnType};
 use jni::{JNIEnv, JavaVM};
@@ -43,6 +40,7 @@ use crate::platform::{
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
 };
+use crate::runner::android_executor::AndroidMainThreadExecutor;
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::window::{
     RuntimeWindow, advance_runtime, handle_input_events, render_window, reports_ui_idle,
@@ -494,116 +492,36 @@ impl GpuSurfaceWindow for AndroidHostWindow {
     }
 }
 
-/// The UI-local executor adapted to the main `ALooper`: the same channel
-/// queue the headless runner drains, but a waker's send also writes a
-/// coalescing `eventfd` the looper's fd callback watches — work scheduled
-/// from any thread lands on the UI thread without a JNI call per wake.
-#[derive(Clone, Debug)]
-pub struct AndroidMainThreadExecutor {
-    runnable_tx: mpsc::Sender<Runnable>,
-    runnable_rx: Rc<mpsc::Receiver<Runnable>>,
-    pending: Arc<AtomicUsize>,
-    /// The `eventfd` every schedule edge writes; the main `ALooper` reads it.
-    wake_fd: Arc<OwnedFd>,
-}
-
-impl AndroidMainThreadExecutor {
-    fn new(wake_fd: OwnedFd) -> Self {
-        let (runnable_tx, runnable_rx) = mpsc::channel();
-        Self {
-            runnable_tx,
-            runnable_rx: Rc::new(runnable_rx),
-            pending: Arc::new(AtomicUsize::new(0)),
-            wake_fd: Arc::new(wake_fd),
-        }
-    }
-
-    /// Runs every runnable currently queued, returning whether any ran.
-    pub(crate) fn drain(&self) -> bool {
-        let mut ran = false;
-        loop {
-            let Ok(runnable) = self.runnable_rx.try_recv() else {
-                return ran;
-            };
-            ran = true;
-            runnable.run();
-            self.pending.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-}
-
-impl LocalExecutor for AndroidMainThreadExecutor {
-    type Task<T: 'static> = AsyncTask<T>;
-
-    fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
-    where
-        Fut: std::future::Future + 'static,
-    {
-        let runnable_tx = self.runnable_tx.clone();
-        let pending = Arc::clone(&self.pending);
-        let wake_fd = self.wake_fd.as_raw_fd();
-        let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
-            pending.fetch_add(1, Ordering::SeqCst);
-            match runnable_tx.send(runnable) {
-                Ok(()) => {
-                    // Coalesced wake: one counter increment regardless of how
-                    // many runnables are already queued.
-                    // SAFETY: `wake_fd` is the executor's live eventfd.
-                    unsafe {
-                        libc::eventfd_write(wake_fd, 1);
-                    }
-                }
-                Err(unsent) => {
-                    pending.fetch_sub(1, Ordering::SeqCst);
-                    // Same teardown race as the headless executor: dropping a
-                    // spawn_local runnable off-thread panics — leak it.
-                    std::mem::forget(unsent);
-                }
-            }
-        });
-        runnable.schedule();
-        task
-    }
-}
-
-/// Owns the `eventfd` an `AndroidMainThreadExecutor` wakes on, and the
-/// `ALooper` registration that drains it. Dropping unregisters the fd before
-/// it is closed, so the looper can never fire into a dead session.
+/// Owns the `ALooper` registration that drains an
+/// [`AndroidMainThreadExecutor`]'s wake fd. Dropping unregisters the fd, so
+/// the looper can never fire into a dead executor.
 struct ExecutorWake {
     looper: ForeignLooper,
-    fd: OwnedFd,
+    /// A share of the executor's wake fd, keeping it open for the looper for
+    /// exactly as long as the registration lives.
+    fd: Arc<OwnedFd>,
 }
 
 impl ExecutorWake {
-    /// Creates the eventfd and registers its drain callback on this thread's
-    /// looper — must be the UI thread (its main looper exists already).
-    fn register(executor: AndroidMainThreadExecutor) -> Result<Self, JniError> {
-        // SAFETY: zero flags would let a saturated counter block the looper —
-        // NONBLOCK + CLOEXEC it is.
-        // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
-        // the looper and the fd out of child processes.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-        if fd < 0 {
-            return Err(JniError(format!(
-                "hydrolysis android: eventfd failed: {}",
-                std::io::Error::last_os_error()
-            )));
-        }
-        // SAFETY: fd >= 0 checked above.
-        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-        let wake_fd = fd.as_fd();
+    /// Registers the executor's own wake fd's drain callback on this thread's
+    /// looper — must be the UI thread (its main looper exists already). The
+    /// executor has no other wake fd, so a wake written while the looper
+    /// idles is always observed on the registered fd.
+    fn register(executor: &AndroidMainThreadExecutor) -> Result<Self, JniError> {
+        let fd = Arc::clone(executor.wake_fd());
         let looper = ThreadLooper::for_thread().ok_or_else(|| {
             JniError("hydrolysis android: no ALooper on the UI thread".to_owned())
         })?;
+        let drain = executor.clone();
         looper
-            .add_fd_with_callback(wake_fd, FdEvent::INPUT, move |fd, _events| {
+            .add_fd_with_callback(fd.as_fd(), FdEvent::INPUT, move |fd, _events| {
                 let mut count: u64 = 0;
                 // SAFETY: fd is the registered eventfd; eventfd_read consumes
                 // every coalesced wake at once.
                 unsafe {
                     libc::eventfd_read(fd.as_raw_fd(), &raw mut count);
                 }
-                let drained = executor.drain();
+                let drained = drain.drain();
                 tracing::debug!(
                     target: "waterui::hydrolysis::android",
                     count,
@@ -650,13 +568,6 @@ pub struct AndroidSession {
     pub(crate) env: Environment,
     pub(crate) runtime: RuntimeWindow<AndroidHostWindow>,
     executor: AndroidMainThreadExecutor,
-    /// Keeps the eventfd registered with the main looper for the session's
-    /// life; drop order unregisters it before the fd closes.
-    #[expect(
-        dead_code,
-        reason = "held for its Drop side effect — unregister + close"
-    )]
-    wake: ExecutorWake,
     /// The GPU context outlives the surface and renderer inside `runtime`
     /// (they drop first — field order is teardown order).
     #[expect(
@@ -705,36 +616,72 @@ pub struct AndroidSession {
     _not_send: std::marker::PhantomData<*const ()>,
 }
 
-/// Creates the main-`ALooper` executor, registers its wake fd with the
-/// looper, and installs it as the local executor.
-fn install_main_looper_executor(
-    inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>>,
-) -> Result<(AndroidMainThreadExecutor, ExecutorWake), JniError> {
-    // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
-    // the looper and the fd out of child processes.
-    let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-    if fd < 0 {
-        return Err(JniError(format!(
-            "hydrolysis android: eventfd failed: {}",
-            std::io::Error::last_os_error()
-        )));
+/// What the load hook creates once per UI thread: the executor every
+/// session shares, its looper registration, and the process environment
+/// carrying the inspector's recorders. The `Kotlin` side holds the pointer
+/// for the life of the process and hands it to each new session, so a
+/// second session never strands its tasks on a dead executor and the
+/// inspector is started once per process.
+pub struct UiThreadServices {
+    /// The one executor per UI thread — sessions drain clones of it; the
+    /// queue itself is shared.
+    executor: AndroidMainThreadExecutor,
+    /// Keeps the wake fd registered with the main looper for the process's
+    /// life; the looper owns no session state.
+    #[expect(
+        dead_code,
+        reason = "held for its Drop side effect — unregister the wake fd"
+    )]
+    wake: ExecutorWake,
+    /// An environment that carries the inspector's runtime and recorders.
+    /// Each session layers its own environment on it, so the one inspector
+    /// the process started is visible from every session's `env` without a
+    /// second runtime.
+    env: Environment,
+}
+
+impl UiThreadServices {
+    /// Runs at `nativeUiThreadServices` — the load hook, once per process on
+    /// the UI thread (its main looper must already exist).
+    pub(crate) fn init() -> Result<Self, JniError> {
+        let inspector = init_main_thread_executors();
+        let inspector_probe = inspector
+            .as_ref()
+            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+        // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
+        // the looper and the fd out of child processes.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(JniError(format!(
+                "hydrolysis android: eventfd failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        // SAFETY: fd >= 0 checked above.
+        let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
+        let wake = ExecutorWake::register(&executor)?;
+        let _ = executor_core::try_init_local_executor(
+            waterui::task::monitored_local_executor_with_probes(
+                executor.clone(),
+                waterui::task::RefreshRate::HEADLESS,
+                inspector_probe,
+            ),
+        );
+        let mut env = Environment::new();
+        waterui::inspector::install(&mut env, inspector);
+        Ok(Self {
+            executor,
+            wake,
+            env,
+        })
     }
-    // SAFETY: fd >= 0 checked above.
-    let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
-    let wake = ExecutorWake::register(executor.clone())?;
-    let _ = executor_core::try_init_local_executor(
-        waterui::task::monitored_local_executor_with_probes(
-            executor.clone(),
-            waterui::task::RefreshRate::HEADLESS,
-            inspector_probe,
-        ),
-    );
-    Ok((executor, wake))
 }
 
 impl AndroidSession {
     /// Mounts the registered app on the host view: builds the environment,
-    /// executor wake bridge, GPU context and the runtime window.
+    /// GPU context and the runtime window. `services` is the UI-thread
+    /// bundle the load hook created — the session clones its executor and
+    /// layers its environment over the process's.
     ///
     /// `metrics` is the host's snapshot at creation time — content size and
     /// scale exist from the start, before the surface band attaches.
@@ -743,14 +690,10 @@ impl AndroidSession {
         vm: JavaVM,
         host_view: GlobalRef,
         metrics: MetricsSnapshot,
+        services: &'static UiThreadServices,
     ) -> Result<Box<Self>, JniError> {
-        let inspector = init_main_thread_executors();
-        let inspector_probe = inspector
-            .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
-
         let bridge = HostBridge::new(env, vm, host_view)?;
-        let (executor, wake) = install_main_looper_executor(inspector_probe)?;
+        let executor = services.executor.clone();
 
         waterui_locale::start_system_locale_listener();
 
@@ -767,8 +710,9 @@ impl AndroidSession {
             // hooks are never called and the machine is never started.
             termination: _,
         } = app.into_parts();
-        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
-        waterui::inspector::install(&mut env, inspector);
+        let mut env = env
+            .extending(waterui_graphics::SceneViewMergeToParent)
+            .layered_on(&services.env);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
         install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
@@ -835,7 +779,6 @@ impl AndroidSession {
             env,
             runtime,
             executor,
-            wake,
             gpu,
             pending_window_queue,
             a11y: AccessibilitySnapshot::default(),
