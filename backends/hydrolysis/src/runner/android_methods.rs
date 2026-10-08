@@ -166,14 +166,12 @@ mod tests {
                     acc.push_str(ty);
                     acc
                 });
-            let return_sig = tail
-                .split_once(':')
-                .map_or("V", |(_, ty)| {
-                    // The type ends where an expression body (`= ...`) or
-                    // block (`{`) starts.
-                    let ty = ty.split(['=', '{']).next().expect("a split's first piece");
-                    kotlin_type_to_jni(ty.trim(), &name)
-                });
+            let return_sig = tail.split_once(':').map_or("V", |(_, ty)| {
+                // The type ends where an expression body (`= ...`) or
+                // block (`{`) starts.
+                let ty = ty.split(['=', '{']).next().expect("a split's first piece");
+                kotlin_type_to_jni(ty.trim(), &name)
+            });
             methods.insert(name, format!("{params_sig}){return_sig}"));
         }
         methods

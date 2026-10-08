@@ -627,7 +627,7 @@ impl TemplateContext {
     /// instead, and the bridge would take the component by type before the
     /// application's realization was ever consulted — so the backend compiles
     /// no web engine at all.
-    const fn webview_backend_feature(&self) -> Option<&'static str> {
+    pub(crate) const fn webview_backend_feature(&self) -> Option<&'static str> {
         if self.browser.webview_enabled && self.browser.engine.is_none() {
             Some("webview-system")
         } else {
@@ -3004,8 +3004,8 @@ mod tests {
             (true, vec!["accessibility", "webview-system"]),
             (false, vec!["accessibility"]),
         ] {
-            // `system_webview` is the one decision `template_entry` records
-            // from the resolved webview backend; the Cargo feature follows it.
+            // `webview_backend_feature` is the one decision: the Gradle entry's
+            // `system_webview` flag and the Cargo feature both read it.
             let ctx = project_ctx()
                 .with_webview_enabled(webview_enabled)
                 .with_hydrolysis_android(super::HydrolysisAndroidTemplateEntry {
@@ -6200,14 +6200,10 @@ pub mod hydrolysis {
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
         let mut hydrolysis_features = vec!["accessibility"];
-        // The system-WebView bridge joins the feature set only when the app
-        // uses the standard WebView and links no engine of its own.
-        // One decision drives both surfaces: the Gradle `webview/` substitution
-        // and the Cargo `webview-system` feature read the entry flag the
-        // resolved webview backend already decided.
-        if ctx.hydrolysis_android_has_system_webview() {
-            hydrolysis_features.push("webview-system");
-        }
+        // One predicate drives both surfaces: the Gradle `webview/`
+        // substitution records this same `webview_backend_feature` answer in
+        // the Android entry's `system_webview` flag.
+        hydrolysis_features.extend(ctx.webview_backend_feature());
         Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),

@@ -35,7 +35,7 @@ use crate::{
     framework::ResolvedFramework,
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
-    project::{Project, ResolvedWebViewBackend},
+    project::Project,
     templates::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
         TemplateContext,
@@ -305,17 +305,13 @@ async fn template_entry(
     project: &Project,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
+    system_webview: bool,
 ) -> eyre::Result<HydrolysisAndroidTemplateEntry> {
-    // The application's own graph selects the engine: `System` mounts the
-    // host checkout's `webview/` module, and an engine this pair cannot host
-    // is an error here — propagated, never defaulted away. Checked on the
-    // real path, before it is relativized for the templates.
-    let system_webview = matches!(
-        project
-            .resolved_webview_backend(TargetPlatform::Android, TargetBackend::Hydrolysis)
-            .await?,
-        Some(ResolvedWebViewBackend::System)
-    );
+    // `system_webview` arrives already decided: the context's
+    // `webview_backend_feature` is the one predicate the Gradle module flag
+    // and the Cargo `webview-system` feature both read. An engine this pair
+    // cannot host is an error upstream in `browser_runtime_plan`, before the
+    // scaffold ever runs.
     if system_webview {
         require_host_module(
             host_project_dir,
@@ -376,12 +372,14 @@ async fn android_template_context(
         .bundle_identifier()
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
-    Ok(
-        HydrolysisBackend::template_context(project, &project.resolved_framework().await?)
-            .await?
-            .with_hydrolysis_android(template_entry(project, painter, host_project_dir).await?)
-            .with_android_permissions(manifest_permissions(project.manifest())),
-    )
+    let ctx =
+        HydrolysisBackend::template_context(project, &project.resolved_framework().await?).await?;
+    let system_webview = ctx.webview_backend_feature().is_some();
+    Ok(ctx
+        .with_hydrolysis_android(
+            template_entry(project, painter, host_project_dir, system_webview).await?,
+        )
+        .with_android_permissions(manifest_permissions(project.manifest())))
 }
 
 /// Render the generated Gradle app into `<backend>/android` for `painter`.
@@ -1089,6 +1087,15 @@ mod tests {
     /// A minimal project whose `Water.toml` records the stable framework
     /// resolution so `resolved_framework` answers offline.
     async fn fixture_project(extra_manifest: &str) -> (tempfile::TempDir, Project) {
+        fixture_project_with_deps(extra_manifest, "").await
+    }
+
+    /// [`fixture_project`] with extra `[dependencies]` entries on the
+    /// fixture's `Cargo.toml`.
+    async fn fixture_project_with_deps(
+        extra_manifest: &str,
+        cargo_dependencies: &str,
+    ) -> (tempfile::TempDir, Project) {
         let temporary = tempfile::tempdir().expect("tempdir");
         let root = temporary.path().join("fixture");
         std::fs::create_dir_all(root.join("src")).expect("crate src");
@@ -1104,7 +1111,9 @@ mod tests {
         .expect("Water.toml");
         std::fs::write(
             root.join("Cargo.toml"),
-            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            format!(
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{cargo_dependencies}"
+            ),
         )
         .expect("Cargo.toml");
         // `cargo metadata --locked` reads the lockfile; a dependency-free
@@ -1429,6 +1438,77 @@ mod tests {
         });
     }
 
+    /// The application's own graph selects the engine: a `webview` feature
+    /// edge on the vendored `waterui` stub is the signal `uses_standard_webview`
+    /// resolves through `cargo tree`.
+    fn stage_webview_feature(temporary: &tempfile::TempDir, project: &Project) {
+        let manifest_path = project.root().join("Cargo.toml");
+        let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
+            .expect("project Cargo.toml exists")
+            .parse()
+            .expect("project Cargo.toml parses");
+        document["dependencies"]["waterui"]["path"] = toml_edit::value(
+            temporary
+                .path()
+                .join("vendor/waterui")
+                .to_string_lossy()
+                .as_ref(),
+        );
+        document["dependencies"]["waterui"]["features"] =
+            toml_edit::value(toml_edit::Array::from_iter(["webview"]));
+        std::fs::write(&manifest_path, document.to_string()).expect("write Cargo.toml");
+    }
+
+    /// The Cargo feature and the Gradle module flag are one decision,
+    /// `webview_backend_feature`: a project using the standard `WebView`
+    /// compiles `webview-system` into the launcher's `hydrolysis` and marks
+    /// the Gradle context so the scaffold substitutes the `:webview` module.
+    /// Both assertions run through `HydrolysisBackend::template_context` —
+    /// the context the launcher `Cargo.toml` actually renders from.
+    #[test]
+    fn the_launcher_manifest_enables_webview_system_for_a_webview_app() {
+        smol::block_on(async {
+            let (temporary, project) = fixture_project("").await;
+            stage_webview_feature(&temporary, &project);
+
+            let resolved = project
+                .resolved_framework()
+                .await
+                .expect("the fixture's framework resolves");
+            let ctx = HydrolysisBackend::template_context(&project, &resolved)
+                .await
+                .expect("template context builds");
+            assert_eq!(ctx.webview_backend_feature(), Some("webview-system"));
+            let outputs =
+                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                    .expect("hydrolysis outputs render");
+            let cargo_toml = outputs
+                .iter()
+                .find(|(path, _)| path == Path::new("Cargo.toml"))
+                .map(|(_, content)| String::from_utf8_lossy(content))
+                .expect("a Cargo.toml output");
+            assert!(
+                cargo_toml.contains("\"webview-system\""),
+                "launcher hydrolysis features: {cargo_toml}"
+            );
+
+            let (_machine, host) =
+                machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
+            let host_project_dir =
+                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("host project dir");
+            let ctx = android_template_context(
+                &project,
+                HydrolysisAndroidPainter::Gpu,
+                &host_project_dir,
+            )
+            .await
+            .expect("android template context builds");
+            assert!(ctx.hydrolysis_android_has_system_webview());
+        });
+    }
+
     /// An app that enables the facade `webview` feature composites the pinned
     /// host's `webview/` module the same way it composites the painter:
     /// `dependencySubstitution` for the coordinate and the module on the app
@@ -1436,26 +1516,6 @@ mod tests {
     #[test]
     fn the_scaffold_composites_the_webview_module_for_a_webview_app() {
         smol::block_on(async {
-            // The application's own graph selects the engine — a `webview`
-            // feature edge on the vendored `waterui` stub is the signal.
-            fn stage_webview_feature(temporary: &tempfile::TempDir, project: &Project) {
-                let manifest_path = project.root().join("Cargo.toml");
-                let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
-                    .expect("project Cargo.toml exists")
-                    .parse()
-                    .expect("project Cargo.toml parses");
-                document["dependencies"]["waterui"]["path"] = toml_edit::value(
-                    temporary
-                        .path()
-                        .join("vendor/waterui")
-                        .to_string_lossy()
-                        .as_ref(),
-                );
-                document["dependencies"]["waterui"]["features"] =
-                    toml_edit::value(toml_edit::Array::from_iter(["webview"]));
-                std::fs::write(&manifest_path, document.to_string()).expect("write Cargo.toml");
-            }
-
             let (temporary, project) = fixture_project("").await;
             stage_webview_feature(&temporary, &project);
 
@@ -1596,9 +1656,14 @@ mod tests {
             std::fs::create_dir_all(&android_dir).expect("android dir");
             let host_project_dir = project.root().join("android-host");
 
-            let entry = template_entry(&project, HydrolysisAndroidPainter::Gpu, &host_project_dir)
-                .await
-                .expect("template entry");
+            let entry = template_entry(
+                &project,
+                HydrolysisAndroidPainter::Gpu,
+                &host_project_dir,
+                false,
+            )
+            .await
+            .expect("template entry");
             let resolved = android_dir
                 .join(&entry.project_root)
                 .canonicalize()
