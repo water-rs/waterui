@@ -1361,7 +1361,7 @@ async fn winui_check(host: &Host) -> DoctorItem {
 /// independent probes run concurrently; the report is returned once all of
 /// them have answered.
 ///
-/// Which groups are in scope is [`ProjectContext::scope`]'s decision:
+/// Which groups are in scope is `ProjectContext::scope`'s decision:
 /// inside a project every backend is selected, outside it the host's
 /// capabilities decide — and a platform-keyed group follows whichever
 /// backend serves it. Items of an out-of-scope group are marked

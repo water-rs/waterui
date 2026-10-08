@@ -231,7 +231,7 @@ impl RunOptions {
 
     /// Set the minimum log level to stream, and have the application log at it.
     ///
-    /// The level reaches the process through [`LOG_LEVEL_ENV`] on every launch
+    /// The level reaches the process through the `WATERUI_LOG` variable on every launch
     /// path, since each of them forwards [`Self::env_vars`].
     pub fn set_log_level(&mut self, level: LogLevel) {
         self.log_level = Some(level);
