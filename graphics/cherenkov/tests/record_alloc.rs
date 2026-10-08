@@ -244,3 +244,37 @@ fn edit_transactions_reuse_their_allocations() {
         engine.render(FrameTime::now()).expect("render");
     }
 }
+
+/// Dropping a layer whose only edit was a constant holds dev's budget:
+/// nothing. A constant's watch drops its watcher, so the edit keeps no
+/// binding entry, and the removal reaches the layer's own bindings
+/// through the surface's per-layer index — it neither collects dead
+/// entries nor scans the surface's other bindings.
+#[test]
+fn removing_a_constant_edited_layer_allocates_nothing() {
+    let (events, _receiver) = mpsc::channel();
+    let engine = Engine::<Null>::new(NullConfig {
+        events,
+        reject: HashSet::new(),
+        image_limits: cherenkov::ImageLimits::UNLIMITED,
+    })
+    .expect("init");
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {})
+        .expect("surface");
+
+    for removal in 0..12 {
+        let layer = surface.layer();
+        surface.update(|tx| {
+            tx[&layer].opacity(0.5_f32);
+        });
+        engine.render(FrameTime::now()).expect("render");
+        start_tracking();
+        drop(layer);
+        let counts = stop_tracking();
+        if removal >= 3 {
+            assert_eq!(counts, (0, 0, 0), "removal {}", removal + 1);
+        }
+        engine.render(FrameTime::now()).expect("render");
+    }
+}

@@ -35,9 +35,25 @@ use crate::style::{BlendMode, FilterId};
 use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
 use crate::{BackdropSample, ContentChange, Picture, WorkingColor};
 
-/// Which bound property a subscription updates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum PropKind {
+/// Declares [`PropKind`] and its `ALL` list from one variant list, so
+/// the list a layer removal walks can never miss a kind.
+macro_rules! prop_kinds {
+    ($($kind:ident),+ $(,)?) => {
+        /// Which bound property a subscription updates.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        enum PropKind {
+            $($kind),+
+        }
+
+        impl PropKind {
+            /// Every kind, in declaration order — its bit order in a
+            /// [`KindSet`].
+            const ALL: [Self; [$(stringify!($kind)),+].len()] = [$(Self::$kind),+];
+        }
+    };
+}
+
+prop_kinds![
     Transform,
     Translation,
     Rotation,
@@ -47,12 +63,82 @@ enum PropKind {
     Projection,
     Tilt,
     Depth,
-
     Opacity,
     ScrollOffset,
     Clip,
     Backdrop,
     LayoutSize,
+];
+
+const _: () = assert!(
+    PropKind::ALL.len() <= KindSet::BITS as usize,
+    "every PropKind needs a bit in a KindSet"
+);
+
+impl PropKind {
+    /// The kind's bit in a [`KindSet`].
+    const fn bit(self) -> KindSet {
+        1 << self as u16
+    }
+}
+
+/// A set of [`PropKind`]s, one bit per kind.
+type KindSet = u16;
+
+/// A surface's kept property subscriptions, indexed by layer.
+///
+/// `kept` holds each binding under its `(layer, kind)` key; `kinds` holds,
+/// for every layer with at least one kept binding, the set of its bound
+/// kinds — so dropping a layer reaches only that layer's entries instead
+/// of scanning every binding on the surface.
+#[derive(Default)]
+struct Bindings {
+    kept: FxHashMap<(u64, PropKind), KeptBinding>,
+    kinds: FxHashMap<u64, KindSet>,
+}
+
+impl Bindings {
+    /// The binding kept for `layer`'s `kind`.
+    fn get(&self, layer: u64, kind: PropKind) -> Option<&KeptBinding> {
+        self.kept.get(&(layer, kind))
+    }
+
+    /// Keeps `binding` for `layer`'s `kind`, returning the one it
+    /// replaces.
+    fn insert(&mut self, layer: u64, kind: PropKind, binding: KeptBinding) -> Option<KeptBinding> {
+        *self.kinds.entry(layer).or_default() |= kind.bit();
+        self.kept.insert((layer, kind), binding)
+    }
+
+    /// Removes the binding kept for `layer`'s `kind`, if any. A layer
+    /// with nothing bound costs one index probe.
+    fn remove(&mut self, layer: u64, kind: PropKind) -> Option<KeptBinding> {
+        let std::collections::hash_map::Entry::Occupied(mut kinds) = self.kinds.entry(layer) else {
+            return None;
+        };
+        if *kinds.get() & kind.bit() == 0 {
+            return None;
+        }
+        *kinds.get_mut() &= !kind.bit();
+        if *kinds.get() == 0 {
+            kinds.remove();
+        }
+        self.kept.remove(&(layer, kind))
+    }
+
+    /// Removes every binding kept for `layer`, in a fixed array so the
+    /// caller can drop them outside its borrow without allocating.
+    fn remove_layer(&mut self, layer: u64) -> [Option<KeptBinding>; PropKind::ALL.len()] {
+        let mut removed = [const { None }; PropKind::ALL.len()];
+        if let Some(kinds) = self.kinds.remove(&layer) {
+            for (slot, kind) in removed.iter_mut().zip(PropKind::ALL) {
+                if kinds & kind.bit() != 0 {
+                    *slot = self.kept.remove(&(layer, kind));
+                }
+            }
+        }
+        removed
+    }
 }
 
 /// State shared between a target's surface handle, its [`Layer`] handles
@@ -128,7 +214,7 @@ pub struct Shared<T: Target> {
     /// carrying the generation [`bind`](Self::bind) drew for it. Binding a
     /// property replaces its previous subscription — ending that
     /// generation — and dropping a layer drops them all.
-    bindings: FxHashMap<(u64, PropKind), KeptBinding>,
+    bindings: Bindings,
     /// The generation counter a kept binding draws from.
     next_generation: u64,
     /// A transaction is open: [`run_transaction`](Self::run_transaction)
@@ -190,7 +276,7 @@ impl<T: Target> Shared<T> {
             spare_removed: Vec::new(),
             next_layer: Cell::new(1),
             next_backdrop: Cell::new(1),
-            bindings: FxHashMap::default(),
+            bindings: Bindings::default(),
             next_generation: 1,
             transaction_open: false,
             deferred: Vec::new(),
@@ -651,18 +737,29 @@ impl<T: Target> Shared<T> {
         // The watcher carries the generation the binding will be kept
         // under, taken before the watch starts: it fires only while the
         // property's current binding is still the one that registered it.
-        // A constant binds no watcher, so it does no generation work.
-        let signal = live.has_signal();
-        let generation = if signal {
-            let mut shared = shared.borrow_mut();
-            shared.next_generation += 1;
-            shared.next_generation
-        } else {
-            0
-        };
+        let generation = shared.borrow_mut().draw_generation();
+        let watchers = Rc::weak_count(shared);
         let (target, guard) = live.watch(Self::watcher(shared, layer, kind, generation, op));
-        Self::keep(shared, layer, kind, generation, signal, guard);
+        let watching = Self::kept_watcher(shared, watchers);
+        Self::keep(shared, layer, kind, generation, watching, guard);
         target
+    }
+
+    /// Draws the generation a new binding is kept under.
+    const fn draw_generation(&mut self) -> u64 {
+        self.next_generation += 1;
+        self.next_generation
+    }
+
+    /// Whether the signal kept the watcher a bind just handed it. The
+    /// watcher holds the one `Weak` of `shared` the bind made, so the
+    /// signal kept it exactly when the weak count stays above `before`,
+    /// the count read before the watcher was made. A signal that drops
+    /// its watcher — a constant, `Fixed` or a nami constant alike — can
+    /// never fire: its binding keeps no entry. This asks what the signal
+    /// did with the watcher, not what its guard's type says.
+    fn kept_watcher(shared: &Rc<RefCell<Self>>, before: usize) -> bool {
+        Rc::weak_count(shared) != before
     }
 
     /// The watcher a binding of `layer` subscribes to its source: each
@@ -697,7 +794,7 @@ impl<T: Target> Shared<T> {
                 let mut shared = shared.borrow_mut();
                 if shared
                     .bindings
-                    .get(&(layer.raw(), kind))
+                    .get(layer.raw(), kind)
                     .is_none_or(|kept| kept.generation != generation)
                 {
                     return;
@@ -716,28 +813,29 @@ impl<T: Target> Shared<T> {
     }
 
     /// Keeps `layer`'s `kind` binding's `guard` and `generation`,
-    /// replacing the property's previous one. A constant — `signal`
-    /// `false` — removes the binding with no generation work; a signal
-    /// inserts its [`KeptBinding`] under `generation` even when its watch
-    /// guard is zero-sized: the guardless watch still notifies, and the
-    /// entry is what lets the watcher see its change. A replaced
-    /// binding's guard drops after the borrow ends: dropping it may run
-    /// a `Live::map` closure that owns a layer of this surface and
-    /// re-enters it.
+    /// replacing the property's previous one. A binding whose signal
+    /// dropped its watcher — `watching` `false` — keeps no entry and only
+    /// removes the previous one; a kept watcher inserts its
+    /// [`KeptBinding`] under `generation` even when its watch guard is
+    /// zero-sized: the guardless watch still notifies, and the entry is
+    /// what lets the watcher see its change. A replaced binding's guard
+    /// drops after the borrow ends: dropping it may run a `Live::map`
+    /// closure that owns a layer of this surface and re-enters it.
     #[inline]
     fn keep(
         shared: &Rc<RefCell<Self>>,
         layer: LayerId,
         kind: PropKind,
         generation: u64,
-        signal: bool,
+        watching: bool,
         guard: Option<Binding>,
     ) {
         let replaced = {
             let mut shared_mut = shared.borrow_mut();
-            if signal {
+            if watching {
                 shared_mut.bindings.insert(
-                    (layer.raw(), kind),
+                    layer.raw(),
+                    kind,
                     KeptBinding {
                         _guard: guard,
                         generation,
@@ -746,7 +844,7 @@ impl<T: Target> Shared<T> {
             } else {
                 // Nothing to keep alive, but a previous binding is still
                 // replaced by this subscription.
-                shared_mut.bindings.remove(&(layer.raw(), kind))
+                shared_mut.bindings.remove(layer.raw(), kind)
             }
         };
         drop(replaced);
@@ -755,7 +853,7 @@ impl<T: Target> Shared<T> {
     /// Drops the subscription bound to `layer`'s `kind`, if any. Its
     /// guard drops after the borrow ends.
     fn unbind(shared: &Rc<RefCell<Self>>, layer: LayerId, kind: PropKind) {
-        let removed = shared.borrow_mut().bindings.remove(&(layer.raw(), kind));
+        let removed = shared.borrow_mut().bindings.remove(layer.raw(), kind);
         drop(removed);
     }
 
@@ -768,7 +866,7 @@ impl<T: Target> Shared<T> {
     /// the next transaction.
     fn resolve_deferred(&mut self) {
         for entry in self.deferred.drain(..) {
-            if let Some(kept) = self.bindings.get(&entry.key)
+            if let Some(kept) = self.bindings.get(entry.key.0, entry.key.1)
                 && kept.generation == entry.generation
             {
                 // The op lands past `stream_start`, so it carries a
@@ -902,11 +1000,7 @@ impl<T: Target> LayerOwner for RefCell<Shared<T>> {
                 // outermost commit; its `Remove` queues now.
                 shared.removed_layers.insert(id);
             }
-            let removed: Vec<KeptBinding> = shared
-                .bindings
-                .extract_if(|(layer, _), _| *layer == id.raw())
-                .map(|(_, kept)| kept)
-                .collect();
+            let removed = shared.bindings.remove_layer(id.raw());
             let slot = shared.contents.remove(&id);
             let size = shared.sizes.remove(&id);
             shared.push_direct(Op::Layer(LayerOp::Remove(id)));
@@ -1554,19 +1648,14 @@ impl<T: Target> LayerEdit<T> {
     /// apply to it.
     pub fn layout_size(&mut self, size: impl Into<Live<Size>>) -> &mut Self {
         let live = size.into();
-        // The same rule `Shared::bind` applies: only a binding whose
-        // signal can fire draws a generation; a constant does no
-        // generation work.
-        let signal = live.has_signal();
-        let generation = if signal {
+        // The same rule `Shared::bind` applies: the binding keeps an
+        // entry only when its signal kept the watcher.
+        let (generation, target) = {
             let mut shared = self.shared.borrow_mut();
-            shared.next_generation += 1;
-            shared.next_generation
-        } else {
-            0
+            (shared.draw_generation(), shared.layout_size(self.layer))
         };
-        let target = self.shared.borrow_mut().layout_size(self.layer);
         let bound = target.clone();
+        let watchers = Rc::weak_count(&self.shared);
         let weak = Rc::downgrade(&self.shared);
         let layer = self.layer;
         let (value, guard) = live.watch(move |change| {
@@ -1579,19 +1668,20 @@ impl<T: Target> LayerEdit<T> {
             let current = shared
                 .borrow()
                 .bindings
-                .get(&(layer.raw(), PropKind::LayoutSize))
+                .get(layer.raw(), PropKind::LayoutSize)
                 .is_some_and(|kept| kept.generation == generation);
             if current {
                 bound.set(&change);
             }
         });
+        let watching = Shared::kept_watcher(&self.shared, watchers);
         target.set(&LayoutSize::change(value, self.default_animation));
         Shared::keep(
             &self.shared,
             self.layer,
             PropKind::LayoutSize,
             generation,
-            signal,
+            watching,
             guard,
         );
         self

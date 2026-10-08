@@ -454,13 +454,6 @@ impl<T> Live<T> {
         }
     }
 
-    /// Whether this `Live` carries a signal's subscription: `false` only
-    /// for a constant. Any subscription's watch starts — a guard's type
-    /// says nothing about whether the signal can notify.
-    pub(crate) fn has_signal(&self) -> bool {
-        self.subscription.0.is_some()
-    }
-
     /// Binds `watcher` to the source signal's later changes — the one
     /// subscription API a target uses to bind a layer property to a
     /// signal. The watcher runs on the recording thread with the change's
