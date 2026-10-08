@@ -10,6 +10,7 @@
 //!   the `water mcp` `preview` tool
 
 mod app_client;
+pub(crate) mod apple;
 pub(crate) mod hydrolysis;
 mod inputs;
 mod launcher;
@@ -17,6 +18,7 @@ pub mod protocol;
 pub mod request;
 
 pub use app_client::{PreviewAppClient, PreviewProbe};
+pub use apple::{ApplePreviewRequest, render_preview_with_apple};
 pub use hydrolysis::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
     HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewSource,

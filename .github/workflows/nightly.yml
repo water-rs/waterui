@@ -524,6 +524,16 @@ jobs:
               --output ../e2e-logs/preview.png 2>&1 | tee ../e2e-logs/preview.log) \
               || fail "water preview failed"
             [ -s e2e-logs/preview.png ] || fail "water preview wrote no PNG"
+
+            phase "water preview e2eapp (apple)"
+            # The default Apple preview renders in-process through the
+            # generated preview package — its templates drift the same way
+            # the Hydrolysis renderer's do.
+            (cd e2eapp && water preview main --platform macos \
+              --output ../e2e-logs/preview-apple.png 2>&1 \
+              | tee ../e2e-logs/preview-apple.log) \
+              || fail "water preview failed"
+            [ -s e2e-logs/preview-apple.png ] || fail "water preview wrote no PNG"
           fi
           SCRIPT
 

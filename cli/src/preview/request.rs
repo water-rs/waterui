@@ -75,6 +75,10 @@ pub enum CliPreviewBackend {
 pub enum ResolvedPreviewBackend {
     /// Hydrolysis render for the given desktop target.
     Hydrolysis(TargetPlatform),
+    /// The in-process Apple preview binary `water preview --platform macos`
+    /// builds and execs — the native Apple render needs no protocol
+    /// platform, it runs on the host.
+    Apple,
     /// Preview support-app render for the given protocol platform.
     SupportApp(PreviewPlatform),
 }
@@ -242,9 +246,7 @@ pub fn resolve_preview_backend(
             (CliPreviewPlatform::Ios, CliPreviewBackend::Apple) => {
                 ResolvedPreviewBackend::SupportApp(PreviewPlatform::IosSimulator)
             }
-            (CliPreviewPlatform::Macos, CliPreviewBackend::Apple) => {
-                ResolvedPreviewBackend::SupportApp(PreviewPlatform::Macos)
-            }
+            (CliPreviewPlatform::Macos, CliPreviewBackend::Apple) => ResolvedPreviewBackend::Apple,
             (CliPreviewPlatform::Macos, CliPreviewBackend::Hydrolysis) => {
                 ResolvedPreviewBackend::Hydrolysis(TargetPlatform::MacOS)
             }
@@ -308,7 +310,7 @@ fn native_preview_platform_for_os(os: &str) -> Option<CliPreviewPlatform> {
 pub fn resolve_hydrolysis_test_platform(platform: CliPreviewPlatform) -> Result<TargetPlatform> {
     match resolve_preview_backend(platform, Some(CliPreviewBackend::Hydrolysis))? {
         ResolvedPreviewBackend::Hydrolysis(target) => Ok(target),
-        ResolvedPreviewBackend::SupportApp(_) => {
+        ResolvedPreviewBackend::Apple | ResolvedPreviewBackend::SupportApp(_) => {
             unreachable!("a forced Hydrolysis backend resolves to Hydrolysis")
         }
     }
@@ -345,6 +347,11 @@ pub fn resolve_hydrolysis_preview_theme(
 pub async fn check_toolchain_for_backend(backend: ResolvedPreviewBackend) -> Result<()> {
     let host = crate::toolchain::Host::current();
     match backend {
+        ResolvedPreviewBackend::Apple => {
+            // The generated preview binary is a host Apple executable —
+            // the same toolchain `water run` needs.
+            toolchain_checks::check_apple(&host, AppleSdk::Macos).await?;
+        }
         ResolvedPreviewBackend::SupportApp(platform) => match platform {
             PreviewPlatform::Ios => {
                 toolchain_checks::check_apple(&host, AppleSdk::Ios).await?;
@@ -467,7 +474,6 @@ mod tests {
     fn support_app_platforms_resolve_to_their_protocol_platform() {
         for (platform, preview_platform) in [
             (CliPreviewPlatform::Ios, PreviewPlatform::IosSimulator),
-            (CliPreviewPlatform::Macos, PreviewPlatform::Macos),
             (CliPreviewPlatform::Android, PreviewPlatform::Android),
         ] {
             assert_eq!(
@@ -475,6 +481,10 @@ mod tests {
                 ResolvedPreviewBackend::SupportApp(preview_platform)
             );
         }
+        assert_eq!(
+            resolve_preview_backend(CliPreviewPlatform::Macos, None).unwrap(),
+            ResolvedPreviewBackend::Apple
+        );
     }
 
     #[test]

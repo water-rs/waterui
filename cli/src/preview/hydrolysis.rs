@@ -299,12 +299,10 @@ async fn write_preview_bindings(
 
 /// Writes the run config JSON next to the backend sources and returns its
 /// path; the file is overwritten per invocation.
-async fn write_run_config(project: &Project, config: &PreviewRunConfig) -> Result<PathBuf> {
-    let path = project
-        .backend_path::<HydrolysisBackend>()
-        .join("preview-run.json");
-    let json = serde_json::to_vec_pretty(config)
-        .wrap_err("Failed to serialize hydrolysis preview run config")?;
+pub async fn write_run_config(dir: &Path, config: &PreviewRunConfig) -> Result<PathBuf> {
+    let path = dir.join("preview-run.json");
+    let json =
+        serde_json::to_vec_pretty(config).wrap_err("Failed to serialize preview run config")?;
     smol::fs::write(&path, json)
         .await
         .wrap_err_with(|| format!("Failed to write {}", path.display()))?;
@@ -334,8 +332,8 @@ async fn run_preview_binary(
         height,
         mode,
     };
-    let config_path = write_run_config(project, &config).await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
+    let config_path = write_run_config(&backend_path, &config).await?;
 
     let mut child = smol::process::Command::new(binary_path);
     let child = command(&mut child);
@@ -395,8 +393,8 @@ async fn run_preview_test_binary(
         height,
         mode: PreviewRunMode::Semantic,
     };
-    let config_path = write_run_config(project, &config).await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
+    let config_path = write_run_config(&backend_path, &config).await?;
 
     let mut child = smol::process::Command::new(binary_path);
     let child = command(&mut child);
@@ -426,18 +424,12 @@ async fn run_preview_test_binary(
     Ok(stdout)
 }
 
-async fn expect_nonempty_output(path: &Path, what: &str) -> Result<()> {
-    let metadata = smol::fs::metadata(path).await.wrap_err_with(|| {
-        format!(
-            "Hydrolysis preview did not produce {what} {}",
-            path.display()
-        )
-    })?;
+pub async fn expect_nonempty_output(path: &Path, what: &str) -> Result<()> {
+    let metadata = smol::fs::metadata(path)
+        .await
+        .wrap_err_with(|| format!("preview did not produce {what} {}", path.display()))?;
     if metadata.len() == 0 {
-        bail!(
-            "Hydrolysis preview wrote empty {what} to {}",
-            path.display()
-        );
+        bail!("preview wrote empty {what} to {}", path.display());
     }
     Ok(())
 }
@@ -446,7 +438,7 @@ fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
     output_dir.join(format!("frame-{capture_ms:04}ms.png"))
 }
 
-fn absolute_output_path(path: &Path) -> Result<PathBuf> {
+pub fn absolute_output_path(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
