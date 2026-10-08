@@ -309,6 +309,10 @@ impl HydrolysisRenderer {
         if nodes.is_empty() {
             return false;
         }
+        // The menu's rows carry this window's identity — the menu belongs
+        // to it however it presents — so a Close Window row they fire
+        // targets the owner, not whichever window dispatches.
+        let env = &env.extending(self.window_id);
         // Reopening while a menu is up returns the previous presentation's
         // borrowed sub-views to their nodes first, so the new presentation
         // takes them as before.

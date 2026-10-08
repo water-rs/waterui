@@ -34,6 +34,7 @@ use waterui_graphics::wgpu;
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::dispatch::{Dispatcher, is_native_boundary};
+use crate::publication_park::PublicationPark;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -202,13 +203,15 @@ pub struct FilteredState {
     /// `outputRevealed`/`filteredOutputRevealed` — set only by a returned
     /// `PresentedFrame`: actual screen presentation, nothing else.
     output_revealed: Cell<bool>,
-    /// The terminal capture failure this leaf settled, keyed to the context
-    /// generation it happened under: one log and one settle per generation,
-    /// the typed carrier `render_prepared_external_texture` hands parent
-    /// captures, and the gate `update_link_demand`/
-    /// `participates_in_first_paint_ready` hold scheduling dead on until a
-    /// new context publication rebinds the view.
-    render_failed: RefCell<Option<(u64, Arc<dyn std::error::Error + Send + Sync>)>>,
+    /// The parked wait on the next context publication — armed when a
+    /// frame finds its context lost, or by the terminal capture failure
+    /// this leaf settled (keyed to its generation: one log and one
+    /// settle per generation, the typed carrier
+    /// `render_prepared_external_texture` hands parent captures). While
+    /// it stands, `update_link_demand` holds the link paused and
+    /// `render_frame` drops deliveries; the publication's wake rebinds
+    /// the view and re-arms the link.
+    park: Rc<PublicationPark>,
     /// `currentScaleFactor`.
     current_scale: Cell<f64>,
     /// `laidOutGeometry`: a layout pass only requests a frame when the
@@ -249,10 +252,6 @@ pub struct FilteredState {
     /// were built under — all are recreated when the runtime publishes a
     /// new context. The presenter's device swaps onto the same event.
     gpu_generation: Cell<Option<u64>>,
-    /// The parked wait on the next context publication, armed when a frame
-    /// finds the current context lost. Stored so replacing the wait or
-    /// dropping the state cancels it.
-    context_watch: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
     /// The in-flight effect setup. Stored so dropping the state cancels a
     /// setup parked on `context_after` instead of leaking the future.
     setup_task: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
@@ -385,25 +384,43 @@ fn effects_ready(state: &FilteredState) -> bool {
     state.setup_generation.get() == state.gpu_generation.get()
 }
 
-/// Parks the filter until the runtime publishes a context newer than the
-/// lost one, then requests a frame. Stored on the state so replacing the
-/// wait or dropping the state cancels it.
-fn arm_filtered_context_watch(state: &Rc<FilteredState>, generation: u64) {
-    let runtime = state.runtime.clone();
+/// The publication wake's replay — the parked `context_after` wait runs
+/// it once it clears the hold: the GPU initialization re-runs so a park
+/// or failure taken before attach lets `attach_if_needed` retake on the
+/// published context — and a settled failure only ever rebinds on a
+/// newer generation, so its gate cleared with the hold — then the owed
+/// frame goes back to the link's demand.
+fn publication_replay(state: &Rc<FilteredState>) -> impl FnOnce() + 'static {
     let weak = Rc::downgrade(state);
-    *state.context_watch.borrow_mut() = Some(spawn_local(async move {
-        let _published = runtime.context_after(generation).await;
+    move || {
         if let Some(state) = weak.upgrade() {
-            // A park or failure taken before attach re-runs the GPU
-            // initialization so `attach_if_needed` retakes on the
-            // published context — and a settled failure only ever
-            // rebinds on a newer generation, so its gate clears here.
-            state.render_failed.borrow_mut().take();
             initialize_gpu(&state);
             state.needs_render.set(true);
             update_link_demand(&state);
         }
-    }));
+    }
+}
+
+/// Pauses the leaf's link, if a presenter is attached — the park's entry
+/// into its publication wait.
+fn pause_presenter(state: &FilteredState) {
+    if let Some(presenter) = state.presenter.borrow().as_ref() {
+        presenter.set_paused(true);
+    }
+}
+
+/// Parks the filter until the runtime publishes a live context newer
+/// than `generation`: the link pauses once on the transition into the
+/// wait — a delivery still arriving while parked drops unpresented in
+/// `render_frame` — exactly one `context_after` watch stays outstanding,
+/// and its wake replays the owed work through [`publication_replay`].
+fn park_for_publication(state: &Rc<FilteredState>, generation: u64) {
+    state.park.park(
+        &state.runtime,
+        generation,
+        || pause_presenter(state),
+        publication_replay(state),
+    );
 }
 
 /// `waterui_applied_filter_attach_host_textures` — the capture texture and
@@ -581,7 +598,7 @@ fn initialize_gpu(state: &Rc<FilteredState>) {
 fn attach(state: &Rc<FilteredState>) {
     let context = state.runtime.context();
     if context.device_lost_reason().is_some() {
-        arm_filtered_context_watch(state, context.generation());
+        park_for_publication(state, context.generation());
         return;
     }
     // Device-bound state always binds to this exact generation — including
@@ -633,16 +650,14 @@ fn update_output_frame(state: &FilteredState) {
 
 /// Whether the link may deliver frames — attached, effectively visible, in
 /// an active scene and with demand (an animating, owed or dirty frame). An
-/// in-flight frame, native-pass suppression or external rendering suspends
-/// it; no display-interval retry loop, no timer, no polling — a paused
-/// link simply delivers nothing until demand returns. A capture-driven
-/// filter's never-ordered window gets no updates at all, so its demand is
-/// answered by a queued on-demand issue instead — the same drawable
-/// lease a link update delivers.
+/// in-flight frame, native-pass suppression, external rendering or a
+/// parked publication wait suspends it; no display-interval retry loop,
+/// no timer, no polling — a paused link simply delivers nothing until
+/// demand returns.
 fn update_link_demand(state: &Rc<FilteredState>) {
     let demand = state.attached.get()
         && effects_ready(state)
-        && state.render_failed.borrow().is_none()
+        && !state.park.is_held()
         && cocoa_ui::view::window(&state.view).is_some()
         && (state.needs_render.get() || state.first_paint_owed.get())
         && !state.render_in_flight.get()
@@ -698,13 +713,20 @@ fn request_render_if_geometry_changed(state: &Rc<FilteredState>) {
 /// and its completion. Dropping it at any gate releases the lease without
 /// presenting and the next delivery answers the still-owed demand.
 fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
+    if state.park.is_held() {
+        // A stale delivery — the link kept a queued update across the
+        // park: nothing renders while the leaf waits out the
+        // publication, and the drawable's lease releases unpresented.
+        drop(frame);
+        return;
+    }
     let context = state.runtime.context();
     if context.device_lost_reason().is_some() {
         // Nothing prepares, captures, or submits on a dead device — the
         // frame drops unpresented and the leaf parks until the rebuilt
         // context is published.
         drop(frame);
-        arm_filtered_context_watch(state, context.generation());
+        park_for_publication(state, context.generation());
         return;
     }
     // A new context generation rebuilds the device-bound resources and
@@ -768,7 +790,7 @@ fn finish_captured_frame(
         let generation = work.context.generation();
         drop(work);
         if let Err(CaptureError::Failed(error)) = outcome {
-            settle_capture_failure(state, generation, error.clone());
+            settle_capture_failure(state, generation, error);
         } else {
             complete_ready(state);
         }
@@ -783,7 +805,7 @@ fn finish_captured_frame(
             // reschedules: `settle_capture_failure` resolves the ready
             // waiters this arm would otherwise leave hanging, and
             // `update_link_demand` sees the gate while the watch arms.
-            settle_capture_failure(state, generation, error.clone());
+            settle_capture_failure(state, generation, error);
         }
         detach_if_needed(state);
         initialize_gpu(state);
@@ -798,7 +820,7 @@ fn finish_captured_frame(
             state.render_in_flight.set(false);
             let generation = work.context.generation();
             drop(work);
-            settle_capture_failure(state, generation, error.clone());
+            settle_capture_failure(state, generation, error);
             return;
         }
         Err(CaptureError::Deferred) => {
@@ -817,7 +839,7 @@ fn finish_captured_frame(
             let lost = work.context.device_lost_reason().is_some();
             drop(work);
             if lost {
-                arm_filtered_context_watch(state, generation);
+                park_for_publication(state, generation);
             } else if redraw_requested {
                 update_link_demand(state);
             }
@@ -837,7 +859,7 @@ fn finish_captured_frame(
 fn settle_capture_failure(
     state: &Rc<FilteredState>,
     generation: u64,
-    error: Arc<dyn std::error::Error + Send + Sync>,
+    error: &Arc<dyn std::error::Error + Send + Sync>,
 ) {
     note_render_failure(state, generation, error);
     complete_ready(state);
@@ -846,7 +868,7 @@ fn settle_capture_failure(
 
 /// Settles a terminal [`CaptureError::Failed`] the content capture
 /// answered, with the GPU surface's failure contract: the typed error
-/// logs once per context generation, the `render_failed` gate stops
+/// logs once per context generation, the `Failed` hold stops
 /// scheduling — `update_link_demand`, `participates_in_first_paint_ready`
 /// and the external render answers all consult it — and the context
 /// watch arms so the next published generation rebinds the view. There
@@ -855,14 +877,16 @@ fn settle_capture_failure(
 fn note_render_failure(
     state: &Rc<FilteredState>,
     generation: u64,
-    error: Arc<dyn std::error::Error + Send + Sync>,
+    error: &Arc<dyn std::error::Error + Send + Sync>,
 ) {
-    if state
-        .render_failed
-        .borrow()
-        .as_ref()
-        .is_some_and(|(settled, _)| *settled == generation)
-    {
+    let settled = state.park.fail(
+        &state.runtime,
+        generation,
+        error.clone(),
+        || pause_presenter(state),
+        publication_replay(state),
+    );
+    if !settled {
         // One failure record and one log per generation — a second Failed
         // completion on the same generation settles nothing further.
         return;
@@ -870,11 +894,9 @@ fn note_render_failure(
     tracing::error!(
         "filtered rendering failed; the view stops scheduling until a new context generation rebinds it: {error}"
     );
-    *state.render_failed.borrow_mut() = Some((generation, error));
     // The failed frame's pixels never landed — the view owes its first
     // paint to the rebind, not to this generation.
     state.first_paint_owed.set(false);
-    arm_filtered_context_watch(state, generation);
 }
 
 /// Submits an external render's `encoder` and answers `completion` once
@@ -908,7 +930,7 @@ fn submit_external(
                         // and the publication watch re-arms the
                         // redraw.
                         if let Some(state) = weak.get().upgrade() {
-                            arm_filtered_context_watch(&state, submitted_context.generation());
+                            park_for_publication(&state, submitted_context.generation());
                         }
                         completion(Err(CaptureError::Deferred));
                     }
@@ -1095,7 +1117,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
         // texture must not mix into another generation's resources. Drop
         // it before any reset/import/encode and park for publication.
         state.render_in_flight.set(false);
-        arm_filtered_context_watch(state, context.generation());
+        park_for_publication(state, context.generation());
         return;
     }
     if state.runtime.context().generation() != context.generation() {
@@ -1193,7 +1215,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
                         // holds no ready pixels. Park until the rebuilt
                         // context publishes instead of revealing it.
                         state.needs_render.set(true);
-                        arm_filtered_context_watch(&state, submitted_context.generation());
+                        park_for_publication(&state, submitted_context.generation());
                     }
                     Ok(()) => {
                         finish_presented_frame(&state, work, needs_redraw, &submitted_context);
@@ -1228,9 +1250,10 @@ fn finish_presented_frame(
     }
     // The live GPU context already checked above; the remaining gates are
     // the presenter's own — generation and drawable size — plus the
-    // visibility contract: attached, windowed, unsuppressed and not
-    // externally captured.
+    // visibility contract: attached, windowed, unsuppressed, not
+    // externally captured and not parked on a publication.
     let presentable = state.attached.get()
+        && !state.park.is_held()
         && cocoa_ui::view::window(&state.view).is_some()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
@@ -1517,7 +1540,7 @@ impl SubView for FilteredSubView {
 fn participates_in_first_paint_ready(state: &FilteredState) -> bool {
     let bounds = cocoa_ui::view::bounds(&state.view);
     cocoa_ui::view::window(&state.view).is_some()
-        && state.render_failed.borrow().is_none()
+        && !state.park.is_failed()
         && !cocoa_ui::view::is_hidden(&state.view)
         && cocoa_ui::view::alpha(&state.view) > 0.01
         && bounds.size.width > 0.5
@@ -1669,7 +1692,7 @@ impl CapturableSurface for FilteredCapturable {
             output_pixel_format(),
             "FilteredView external target must be in the presentation format"
         );
-        if state.render_failed.borrow().is_some() {
+        if state.park.is_failed() {
             // Prepared without a target: `render_prepared_external_texture`
             // answers the settled terminal failure itself, matching the
             // GPU surface's hold contract — a failed view never defers a
@@ -1742,17 +1765,20 @@ impl CapturableSurface for FilteredCapturable {
             completion(Err(CaptureError::Deferred));
             return;
         };
-        if let Some((_, error)) = &*state.render_failed.borrow() {
-            // A settled terminal failure answers the capture with its own
-            // typed carrier — deferred would wait on a redraw the failed
-            // generation never issues.
-            completion(Err(CaptureError::Failed(error.clone())));
+        if state.park.is_held() {
+            // A held leaf owes its next frame to the publication wake,
+            // not to a render on this context — the hold's own outcome
+            // answers the capture: a settled failure's typed carrier,
+            // terminal on this generation (deferred would wait on a
+            // redraw the failed context never issues), `Deferred` for a
+            // transient park.
+            completion(Err(state.park.capture_error()));
             return;
         }
         let context = state.runtime.context();
         if context.device_lost_reason().is_some() {
             completion(Err(CaptureError::Deferred));
-            arm_filtered_context_watch(&state, context.generation());
+            park_for_publication(&state, context.generation());
             return;
         }
         // The generation check runs before any slot is read: `ensure` can
@@ -1828,7 +1854,7 @@ impl CapturableSurface for FilteredCapturable {
                         // external scheduling alike gate on it, and the
                         // shared settle resolves readiness so a first-paint
                         // waiter on this path is woken too.
-                        settle_capture_failure(&state, context.generation(), error.clone());
+                        settle_capture_failure(&state, context.generation(), &error);
                         completion(Err(CaptureError::Failed(error)));
                         return;
                     }
@@ -1838,7 +1864,7 @@ impl CapturableSurface for FilteredCapturable {
                         // the redraw contract, not a retry.
                         completion(Err(CaptureError::Deferred));
                         if context.device_lost_reason().is_some() {
-                            arm_filtered_context_watch(&state, context.generation());
+                            park_for_publication(&state, context.generation());
                         }
                         return;
                     }
@@ -1852,7 +1878,7 @@ impl CapturableSurface for FilteredCapturable {
                     // generation this target was never prepared for.
                     completion(Err(CaptureError::Deferred));
                     if context.device_lost_reason().is_some() {
-                        arm_filtered_context_watch(&state, context.generation());
+                        park_for_publication(&state, context.generation());
                     }
                     return;
                 }
@@ -1907,7 +1933,7 @@ impl CapturableSurface for FilteredCapturable {
     fn presentation_failed(&self) -> bool {
         self.state
             .upgrade()
-            .is_none_or(|state| state.render_failed.borrow().is_some())
+            .is_none_or(|state| state.park.is_failed())
     }
 }
 
@@ -1929,6 +1955,7 @@ impl Drop for FilteredGuard {
         crate::invalidation::unregister_sink(&self.view);
         self.view.capturable_slot().clear();
         self.state.capture.shutdown();
+        self.state.park.clear();
         detach_if_needed(&self.state);
     }
 }
@@ -2135,7 +2162,7 @@ fn build_filtered_parts(
             needs_render: Cell::new(false),
             first_paint_owed: Cell::new(false),
             output_revealed: Cell::new(false),
-            render_failed: RefCell::new(None),
+            park: Rc::new(PublicationPark::new()),
             current_scale: Cell::new(1.0),
             laid_out_geometry: RefCell::new(None),
             content_changed_since_capture: Cell::new(false),
@@ -2151,7 +2178,6 @@ fn build_filtered_parts(
             collapsed: Cell::new(true),
             observers: RefCell::new(Vec::new()),
             gpu_generation: Cell::new(Some(gpu_context.generation())),
-            context_watch: RefCell::new(None),
             setup_task: RefCell::new(None),
         }
     });
@@ -2299,9 +2325,10 @@ pub mod native_test {
     };
 
     use super::{
-        CapturableSurface, CaptureError, ErasedEffect, FilteredParts, FilteredState, GpuRuntime,
-        HostView, MetalTexture, NativeLeaf, PlatformView, Rc, RefCell, Retained,
-        build_filtered_parts, fmt, settle_capture_failure, wgpu,
+        CAMetalLayer, CapturableSurface, CaptureError, DrawableFrame, ErasedEffect, FilteredParts,
+        FilteredState, GpuRuntime, HostView, MetalPresenter, MetalTexture, NativeLeaf,
+        PlatformView, Rc, RefCell, Retained, build_filtered_parts, fmt, output_pixel_format,
+        render_frame, settle_capture_failure, wgpu,
     };
     use crate::components::gpu_surface::native_test::{MountedSceneSurface, fixture_env};
     use cocoa_ui::MainThreadMarker;
@@ -2334,6 +2361,9 @@ pub mod native_test {
         pub child: MountedSceneSurface,
         /// The shared GPU runtime.
         pub runtime: GpuRuntime,
+        /// The filling effect's encoded-frame count — `Some` on a
+        /// `mount_filling` mount.
+        fill_encodes: Option<Arc<AtomicU32>>,
         /// The real window that makes the leaf presentable.
         fixture_window: RefCell<Option<cocoa_ui::appkit::Window>>,
     }
@@ -2384,10 +2414,13 @@ pub mod native_test {
         a: 1.0,
     };
 
-    /// A fixture effect: every frame clears its output to [`FILL`]. A
-    /// gated setup lands only once the trial releases its [`SetupGate`].
+    /// A fixture effect: every frame clears its output to [`FILL`] and
+    /// counts the encode, so a trial can tell a rendered frame from a
+    /// dropped one. A gated setup lands only once the trial releases its
+    /// [`SetupGate`].
     struct FillEffect {
         gate: Option<oneshot::Receiver<()>>,
+        encodes: Arc<AtomicU32>,
     }
 
     impl ErasedEffect for FillEffect {
@@ -2414,6 +2447,7 @@ pub mod native_test {
             output: &EffectOutput<'_>,
             encoder: &mut wgpu::CommandEncoder,
         ) -> EffectRenderResult {
+            self.encodes.fetch_add(1, Ordering::SeqCst);
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("filtered fixture fill"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2600,7 +2634,17 @@ pub mod native_test {
         )]
         pub async fn mount_filling(mtm: MainThreadMarker) -> Result<Self, String> {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
-            Self::mount_on(mtm, runtime, vec![Box::new(FillEffect { gate: None })])
+            let encodes = Arc::new(AtomicU32::new(0));
+            let mut mounted = Self::mount_on(
+                mtm,
+                runtime,
+                vec![Box::new(FillEffect {
+                    gate: None,
+                    encodes: encodes.clone(),
+                })],
+            )?;
+            mounted.fill_encodes = Some(encodes);
+            Ok(mounted)
         }
 
         /// An empty-chain filtered leaf whose hidden content is a nested
@@ -2625,7 +2669,10 @@ pub mod native_test {
                 mtm,
                 &runtime,
                 &child.platform_view(),
-                vec![Box::new(FillEffect { gate: Some(gate) })],
+                vec![Box::new(FillEffect {
+                    gate: Some(gate),
+                    encodes: Arc::new(AtomicU32::new(0)),
+                })],
             );
             let outer = filtered_parts(
                 mtm,
@@ -2669,6 +2716,7 @@ pub mod native_test {
                 container,
                 child,
                 runtime,
+                fill_encodes: None,
                 fixture_window: RefCell::new(None),
             }
         }
@@ -2855,7 +2903,62 @@ pub mod native_test {
                 .presenter
                 .borrow()
                 .as_ref()
-                .is_some_and(cocoa_ui::metal_presenter::MetalPresenter::is_paused)
+                .is_some_and(MetalPresenter::is_paused)
+        }
+
+        /// Whether a publication wait holds the leaf — parked after a
+        /// lost context or failed after a settle: `update_link_demand`'s
+        /// hold gate and `render_frame`'s drop.
+        pub fn parked(&self) -> bool {
+            self.state.park.is_held()
+        }
+
+        /// How many frames the `FillEffect` chain has encoded — one per
+        /// rendered frame, so a parked wait can be told apart from a
+        /// render that ran.
+        ///
+        /// # Panics
+        ///
+        /// On a mount that is not `mount_filling` — its effects do not
+        /// count encodes.
+        pub fn encoded_frames(&self) -> u32 {
+            self.fill_encodes
+                .as_ref()
+                .expect("the encode counter exists on a filling mount")
+                .load(Ordering::SeqCst)
+        }
+
+        /// Records a device loss on the runtime's current context — the
+        /// observation the driver's device-lost callback produces — so
+        /// the next `render_frame` sees the lost generation and the
+        /// runtime's rebuild publishes its replacement.
+        pub fn lose_device(&self, reason: &str) {
+            self.runtime.context().mark_device_lost_for_testing(reason);
+        }
+
+        /// Issues one real drawable frame through `render_frame` itself
+        /// at the given media timestamp — the delivery the link's sink
+        /// runs on a vsync. The drawable checks out of a standalone
+        /// `CAMetalLayer` on the current context's device — a link-bound
+        /// layer forbids `nextDrawable` — so the frame carries an empty
+        /// owner: `present` can never mint a receipt on it and its drop
+        /// settles nothing on the leaf's presenter. Answers whether a
+        /// drawable was delivered.
+        pub fn deliver_frame(&self, media_time: f64) -> bool {
+            use cocoa_ui::objc2_core_foundation::CGSize;
+
+            let device = crate::gpu_runtime::raw_metal_device(&self.runtime.context());
+            let layer = CAMetalLayer::new();
+            layer.setDevice(Some(&device));
+            layer.setPixelFormat(output_pixel_format());
+            let (width, height) = self.state.input_size.get();
+            layer.setDrawableSize(CGSize::new(f64::from(width), f64::from(height)));
+            let Some(drawable) = layer.nextDrawable() else {
+                return false;
+            };
+            let frame = DrawableFrame::unowned_for_test(drawable, media_time);
+            render_frame(&self.state, frame);
+            true
         }
 
         /// Whether a render is in flight — after a settle, `false` and
@@ -2878,7 +2981,7 @@ pub mod native_test {
         pub fn settle_failed_capture(
             &self,
             generation: u64,
-            error: Arc<dyn std::error::Error + Send + Sync>,
+            error: &Arc<dyn std::error::Error + Send + Sync>,
         ) {
             self.state.render_in_flight.set(false);
             settle_capture_failure(&self.state, generation, error);

@@ -49,18 +49,25 @@ use waterui::Environment;
 #[cfg(not(target_os = "macos"))]
 use waterui::app::Quit;
 #[cfg(target_os = "macos")]
-use waterui_controls::menu::ResolvedNestedMenu;
+use waterui_controls::menu::{CloseWindowPlacement, ResolvedNestedMenu};
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::{NamedKey, ShortcutKey};
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui_core::handler::SharedAction;
 
-use crate::renderer::call_action_discarding_result;
+#[cfg(target_os = "macos")]
+use crate::renderer::close_window_command;
+use crate::renderer::{WindowId, call_action_discarding_result};
 
 /// One built native menu bar: the muda `Menu` tree, the `MenuId → action`
 /// table the event pump dispatches through, and the live watches.
 struct Bar {
     menu: NativeMenu,
+    /// The standard Window submenu — registered as `NSApp`'s windows menu
+    /// each time the bar is installed, which is what gives it the live
+    /// window list.
+    #[cfg(target_os = "macos")]
+    window_menu: Submenu,
     actions: HashMap<MenuId, SharedAction<()>>,
     /// Windows HWNDs this bar is attached to — a rebuild detaches the old
     /// tree from each and attaches the new one; a window's `detach_hwnd`
@@ -232,6 +239,24 @@ fn append_items(
                     ));
                 }
             }
+            ResolvedMenuItem::CloseWindow => {
+                // macOS: an ordinary item carrying the application's
+                // decided chord — `PredefinedMenuItem::close_window`'s ⌘W
+                // is fixed, so it could never cede the chord to a declared
+                // command; its activation posts a `MenuEvent`, which the
+                // event pump turns into a `WindowCloser` request on the
+                // focused window — the one close path the registry's
+                // chords share. On Windows the bar shows the platform's
+                // own Close item: it sends the window `WM_CLOSE`, which
+                // winit reports as the same close request, so the clicked
+                // window closes through the one shared path; its row shows
+                // Alt+F4, the system close chord, and the decided Ctrl+W
+                // still answers through the chord registry.
+                #[cfg(target_os = "macos")]
+                parent(&close_window_item(env, actions));
+                #[cfg(target_os = "windows")]
+                parent(&PredefinedMenuItem::close_window(Some("&Close")));
+            }
             ResolvedMenuItem::Divider => {
                 parent(&PredefinedMenuItem::separator());
             }
@@ -260,6 +285,28 @@ fn append_items(
             }
         }
     }
+}
+
+/// The standard Close Window item as an ordinary muda `MenuItem`: muda's
+/// `PredefinedMenuItem::close_window` hardcodes ⌘W, so it cannot carry the
+/// application's decided chord — and `performClose:` would be a second
+/// close path beside the runner's. Choosing the item, or pressing its
+/// accelerator, posts a `MenuEvent`; [`NativeMenuBar::pump_menu_events`]
+/// runs the action, which asks the focused window to close through
+/// [`WindowCloser`](crate::renderer::WindowCloser) — the one close path the
+/// registry's chords share.
+#[cfg(target_os = "macos")]
+fn close_window_item(
+    env: &Environment,
+    actions: &mut HashMap<MenuId, SharedAction<()>>,
+) -> muda::MenuItem {
+    let command = close_window_command(env, true)
+        .expect("the winit runner installs a WindowCloser before the menu bar builds");
+    let item = muda::MenuItem::new(command_title(&command), !command.disabled.snapshot(), None);
+    item.set_key_accelerator(command.shortcut.as_ref().map(accelerator_for))
+        .expect("the decided close chord is one a muda accelerator expresses");
+    actions.insert(item.id().clone(), command.action);
+    item
 }
 
 /// The product name the macOS application menu and its named items are
@@ -388,7 +435,7 @@ fn build_bar(
             .expect("appending a top-level item to the menu bar failed");
     };
     #[cfg(target_os = "macos")]
-    {
+    let window_menu = {
         let product_name = product_name();
         let app_index = declared_app_menu_index(items, &product_name);
         let declared = app_index.map(|index| {
@@ -436,7 +483,27 @@ fn build_bar(
                 top_items,
             );
         }
-    }
+        // The standard Window menu: Close — armed with the application's
+        // decided chord — only when no declared menu carries it (the
+        // `CloseWindowPlacement` rule every backend shares), then Minimize
+        // and Zoom; registering it as the windows menu below is what puts
+        // the window list on it.
+        let window_menu = Submenu::new("Window", true);
+        let window_parent = |entry: &dyn muda::IsMenuItem| {
+            window_menu
+                .append(entry)
+                .expect("appending to the Window menu failed");
+        };
+        if CloseWindowPlacement::for_declared(items) == CloseWindowPlacement::WindowMenu {
+            window_parent(&close_window_item(env, &mut actions));
+        }
+        window_parent(&PredefinedMenuItem::minimize(None));
+        window_parent(&PredefinedMenuItem::zoom(None));
+        window_parent(&PredefinedMenuItem::separator());
+        window_parent(&PredefinedMenuItem::bring_all_to_front(None));
+        parent(&window_menu);
+        window_menu
+    };
     #[cfg(not(target_os = "macos"))]
     append_items(
         &parent,
@@ -449,6 +516,8 @@ fn build_bar(
     );
     Bar {
         menu,
+        #[cfg(target_os = "macos")]
+        window_menu,
         actions,
         hwnds: Vec::new(),
         _state_watches: state_watches,
@@ -462,6 +531,9 @@ impl Bar {
         #[cfg(target_os = "macos")]
         {
             self.menu.init_for_nsapp();
+            // Registration resolves through the installed main menu, so it
+            // runs only after `init_for_nsapp`.
+            self.window_menu.set_as_windows_menu_for_nsapp();
         }
         #[cfg(target_os = "windows")]
         {
@@ -612,8 +684,13 @@ impl NativeMenuBar {
 
     /// Drains muda's `MenuEvent` channel and dispatches each item's action
     /// through `call_action_discarding_result` — the same entry the
-    /// `MenuShortcutRegistry` uses. Called once per event-loop pass.
-    pub(crate) fn pump_menu_events(&self) {
+    /// `MenuShortcutRegistry` uses. Called once per event-loop pass. The
+    /// `WindowId` an action extracts is `focused` — a menu-bar command acts
+    /// on the focused window, as an app-bar chord's action acts on the
+    /// window it dispatched for; `WindowId::Orphan` while none is focused,
+    /// which the shared close path resolves to no window.
+    pub(crate) fn pump_menu_events(&self, focused: Option<WindowId>) {
+        let env = self.env.extending(focused.unwrap_or(WindowId::Orphan));
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             let action = self
                 .bar
@@ -623,7 +700,7 @@ impl NativeMenuBar {
             // The action may mutate menu state (which rebuilds the bar and
             // borrows this cell again) — dispatch after releasing the borrow.
             if let Some(action) = action {
-                call_action_discarding_result(&action, &self.env);
+                call_action_discarding_result(&action, &env);
             }
         }
     }

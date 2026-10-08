@@ -4723,6 +4723,8 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-webview",
+ "wayland-client",
+ "wayland-protocols",
  "web-sys",
  "wgpu 30.0.1",
  "windows-sys 0.52.0",
@@ -13081,6 +13083,7 @@ version = "0.5.1"
 dependencies = [
  "executor-core",
  "nami",
+ "serde",
  "thiserror 2.0.21",
  "waterui",
  "waterui-core",
@@ -13551,6 +13554,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "waterui",
+ "waterui-controls",
  "waterui-mcp-protocol",
  "waterui-testing",
 ]

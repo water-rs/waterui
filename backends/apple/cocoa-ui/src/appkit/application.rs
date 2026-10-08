@@ -7,6 +7,9 @@
 //! declares, `AppKit` sends them on the main thread, and the delegate stays
 //! alive for as long as the application runs with it, because
 //! [`Application::run`] owns it for that long.
+//!
+//! The menu module's standard items send their selectors with no target,
+//! so `AppKit` delivers them only to a responder that implements them.
 
 use std::cell::Cell;
 use std::fmt;

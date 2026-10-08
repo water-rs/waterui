@@ -763,6 +763,7 @@ impl AndroidSession {
             SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
         renderer.set_window_id(shortcuts.mint_window_id());
+        renderer.set_window_closable(window.closable);
         let mut runtime = RuntimeWindow::new(
             window,
             platform,

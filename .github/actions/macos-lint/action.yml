@@ -1,0 +1,34 @@
+name: macOS clippy (hydrolysis, waterui-cli)
+
+description: >
+  The macOS-host clippy legs, shared so the fast gate's `macos` job and
+  the nightly's `cef` job run the identical commands and cannot drift.
+  The Linux lint compiles `cfg(target_os = "macos")` code away, so these
+  legs are the only lint coverage of it: hydrolysis under the feature
+  combination its own CI swept (#1428) — `webview-system`'s WKWebView
+  bridge is the entry point no other leg sees — and waterui-cli, whose
+  Apple backend and platform plumbing are likewise `cfg`-gated. Each leg
+  is gated by its input; the nightly leaves both on, the gate enables
+  only the crates the affected scope reaches.
+
+inputs:
+  hydrolysis:
+    description: '"true" runs the hydrolysis checked-feature-set clippy.'
+    required: false
+    default: "true"
+  waterui-cli:
+    description: '"true" runs the waterui-cli clippy.'
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Clippy (hydrolysis, checked feature set)
+      if: inputs.hydrolysis == 'true'
+      shell: bash
+      run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+    - name: Clippy (waterui-cli)
+      if: inputs['waterui-cli'] == 'true'
+      shell: bash
+      run: cargo clippy --locked --profile ci-check -p waterui-cli --all-targets -- -D warnings

@@ -1335,6 +1335,9 @@ impl SemanticCore {
         if nodes.is_empty() {
             return false;
         }
+        // The menu's rows carry this window's identity, so a Close Window
+        // row they fire targets its owner window, not the popup.
+        let env = &env.extending(self.window_id);
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let popup_origin = popup_window_origin(origin, env);
@@ -1363,6 +1366,9 @@ impl SemanticCore {
         if nodes.is_empty() {
             return false;
         }
+        // The menu's rows carry this window's identity, so a Close Window
+        // row they fire targets its owner window, not the popup.
+        let env = &env.extending(self.window_id);
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let (window, state) = semantic_popup_menu_window(nodes, group.clone(), 0);

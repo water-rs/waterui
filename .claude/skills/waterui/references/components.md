@@ -271,6 +271,11 @@ stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32
 field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
+// .content_type declares what the field means, for autofill — it is what
+// makes Apple offer the received SMS code; pair it with .keyboard(..)
+TextField::new("Verification code", &code)
+    .keyboard(KeyboardType::Number)
+    .content_type(ContentType::OneTimeCode)
 progress(fraction)                          // impl IntoComputed<f64>
 progress(fraction).label("Downloading")     // its label is a modifier — the one exception
 loading()                                   // indeterminate progress
@@ -322,6 +327,17 @@ button. `Command` has its own builder chain: `.state(&value)`, `.disabled(signal
 `Shortcut::new('s').command()`, `Shortcut::new(NamedKey::Delete)`. A `Button` also
 converts into `MenuItem` and
 `Command`, so one definition can serve a toolbar, a menu, and a keyboard shortcut.
+
+Two items stand for platform commands instead of carrying an action: `MenuItem::Quit`
+and `MenuItem::CloseWindow`. Declare them in `App::menu_bar` (or any menu) and each
+renders with the platform's own label and chord — ⌘Q and the close chord on macOS —
+acting through the termination machine or the window's own close path. A platform that
+cannot quit or close a window omits them, so a portable menu declares them
+unconditionally. The close chord is decided once for the whole application from its
+declared menu bar, and every Close Window item carries it. ⌘W is not reserved — an
+application may bind it on its own commands (a tabbed app's Close Tab): the chord is
+then ⇧⌘W when no declared command binds ⇧⌘W, and no chord at all when the application
+binds both.
 
 `.context_menu(items)` attaches a long-press / right-click menu to ANY view and takes the
 same `MenuView` content. Attach `.state(..)` to each command, not to the menu:

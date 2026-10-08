@@ -122,6 +122,7 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSResponder",
     "NSScreen",
     "NSView",
+    "NSVisualEffectView",
     "NSWindow",
     "objc2-quartz-core",
 ] }
@@ -192,19 +193,35 @@ muda = { version = "0.20", optional = true, default-features = false }
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
 x11-dl = { version = "2.21", optional = true }
 x11rb = { version = "0.13", optional = true }
+# `ext-background-effect-v1` blur behind a Wayland window, bound on the
+# `wl_display` winit already owns — borrowed through the raw display handle,
+# never a second connection. `staging` carries the ext-* protocols, and
+# wayland-client's `system` feature turns on wayland-backend's
+# `client_system`, which `Backend::from_foreign_display` and
+# `ObjectId::from_ptr` need — winit happens to enable it, but the borrow
+# must not rely on that. Both crates track the versions winit 0.30 already
+# pulls in.
+wayland-client = { version = "0.31", features = ["system"], optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 
 # `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
 # `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
-# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion. The
-# version tracks the `windows-sys` release winit 0.30 already builds against.
+# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion,
+# `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)` and
+# `DwmExtendFrameIntoClientArea` for the behind-window material's acrylic
+# backdrop, `RtlGetVersion` for the build floor that gates it. The version
+# tracks the `windows-sys` release winit 0.30 already builds against.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", optional = true, features = [
+    "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_System_Console",
     "Win32_System_Shutdown",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_Controls",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -228,6 +245,9 @@ tracing-log = "0.2"
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# The published payload's `contentTypes` map serializes `ContentType`
+# (camelCase names) — the provider maps each onto `HintConstants`.
+waterui-controls = { workspace = true, features = ["serde"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The web runner fetches its fonts while the GPU device comes up; `join!` and
@@ -359,6 +379,8 @@ winit = [
     "dep:muda",
     "dep:x11-dl",
     "dep:x11rb",
+    "dep:wayland-client",
+    "dep:wayland-protocols",
     "dep:windows-sys",
 ]
 web = [
