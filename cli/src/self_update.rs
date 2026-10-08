@@ -474,10 +474,7 @@ fn homebrew_prefixes(host: &Host) -> Vec<PathBuf> {
     if let Some(prefix) = host.env_string("HOMEBREW_PREFIX") {
         prefixes.push(PathBuf::from(prefix));
     }
-    let paths = host.path_entries();
-    if !paths.is_empty()
-        && let Ok(path) = std::env::join_paths(&paths)
-        && let Ok(brew) = which::which_in("brew", Some(path), host.cwd())
+    if let Ok(brew) = host.which_blocking("brew")
         && let Some(prefix) = canonicalize_or_self(&brew).parent().and_then(Path::parent)
     {
         prefixes.push(prefix.to_path_buf());

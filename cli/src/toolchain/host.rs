@@ -266,6 +266,17 @@ impl Host {
         unblock(move || which::which_in(name, paths, cwd)).await
     }
 
+    /// [`Host::which`] on the calling thread, for code that is synchronous
+    /// end to end (such as classifying the running executable's install).
+    /// Async code calls [`Host::which`], which moves the filesystem probes
+    /// off the executor.
+    ///
+    /// # Errors
+    /// - [`which::Error`] when no executable named `name` exists on this host.
+    pub fn which_blocking(&self, name: impl AsRef<OsStr>) -> Result<PathBuf, which::Error> {
+        which::which_in(name, self.joined_path(), &self.cwd)
+    }
+
     /// A host whose environment additionally binds `key` to `value`.
     ///
     /// Use for variables that must reach a single child tree (for example
