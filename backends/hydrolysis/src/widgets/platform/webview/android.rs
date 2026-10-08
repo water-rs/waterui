@@ -415,14 +415,14 @@ impl HandleInner {
     /// `ALooper` fd callback, which supplies no JNI frame, so locals would
     /// otherwise leak.
     ///
-    /// Every Rust-called command funnels through here: `nativeReleased`
-    /// already marked the registry dead, and forwarding would dispatch a
-    /// setter or an evaluation onto a `WebView` whose `destroy()` ran —
-    /// Chromium keeps answering `setDocumentStartScripts`/`loadUrl` on a
-    /// destroyed view and `onHostRebound` would re-observe a dead page's
-    /// lifecycle. A dead view answers `dead_value` without dispatching;
-    /// the Kotlin `release` call itself bypasses `call` (it flips `dead`),
-    /// so teardown still reaches Kotlin.
+    /// Every Rust-called command funnels through here: after the render
+    /// process died, `nativeReleased` already marked the registry dead, and
+    /// forwarding would dispatch a setter or an evaluation onto a `WebView`
+    /// whose `destroy()` ran — Chromium keeps answering
+    /// `setDocumentStartScripts`/`loadUrl` on a destroyed view and
+    /// `onHostRebound` would re-observe a dead page's lifecycle. A dead view
+    /// answers `dead_value` without dispatching; the handle's drop calls
+    /// `release` itself, bypassing `call`, so teardown still reaches Kotlin.
     fn jni<T>(
         &self,
         locals: i32,
@@ -613,11 +613,13 @@ impl HandleInner {
 
 impl Drop for HandleInner {
     fn drop(&mut self) {
-        // `release()` zeroes Kotlin's `nativeHandle` copy, unregisters the
-        // instance and settles the calls Kotlin still tracks; the remaining
-        // pending — the async calls Kotlin forgot after the sentinel — settle
-        // here, then the Weak box can be freed: no native call can arrive
-        // afterwards.
+        // This drop runs wherever the view tree lets go of the handle: in a
+        // frame that removed the leaf, or inside `nativeDestroySession`, with
+        // the session's `drop_in_place` half done on the stack. `release()`
+        // therefore makes no native call — it zeroes Kotlin's `nativeHandle`
+        // copy, destroys the view, unregisters the instance and hands back
+        // the asset server — and the rest of the teardown happens here, in
+        // Rust, with nothing re-entering it.
         let mut env = self
             .shared
             .vm
@@ -625,21 +627,33 @@ impl Drop for HandleInner {
             .expect("webview calls run on the UI thread, which is attached");
         let release = self.methods.id(WebViewMethodId::Release);
         // SAFETY: `release` was resolved for the wrapper class at create
-        // and its table signature takes no arguments.
-        env.with_local_frame::<_, _, jni::errors::Error>(4, |env| unsafe {
-            env.call_method_unchecked(
-                self.wrapper.as_obj(),
-                release,
-                ReturnType::Primitive(Primitive::Void),
-                &[],
-            )
-            .map(|_| ())
-        })
-        .unwrap_or_else(|error| panic_with_java_detail(&mut env, "release", &error));
-        // `release` also marks the registry dead: a call begun after this
-        // settles at once rather than waiting on a reply that cannot come.
+        // and its table signature is `()J`.
+        let asset_server = env
+            .with_local_frame::<_, _, jni::errors::Error>(4, |env| unsafe {
+                env.call_method_unchecked(
+                    self.wrapper.as_obj(),
+                    release,
+                    ReturnType::Primitive(Primitive::Long),
+                    &[],
+                )?
+                .j()
+            })
+            .unwrap_or_else(|error| panic_with_java_detail(&mut env, "release", &error));
+        // Marking the registry dead settles every call still in flight —
+        // the async ids Kotlin forgot after the started sentinel included —
+        // and a call begun after this settles at once rather than waiting on
+        // a reply that cannot come. Already dead after a render-process-gone
+        // teardown, which drained it through `nativeReleased`.
         let calls = self.shared.pending.borrow_mut().release();
         PendingCalls::settle_many(calls, "the web view was closed");
+        if asset_server != 0 {
+            // SAFETY: `asset_server` was `Box::into_raw`'d in `open`, and
+            // `release()` took it under the write lock every interception's
+            // acquire holds the read half of: no acquire can reach it any
+            // more, and an interception still dispatching owns its own `Arc`
+            // clone. Kotlin zeroed its copy, so this is the one free.
+            unsafe { drop(Box::from_raw(asset_server as *mut AssetServer)) };
+        }
         // SAFETY: `native_handle` was `Box::into_raw`'d in `open` and
         // survives exactly one drop: this one, after `release()` has zeroed
         // Kotlin's copy so no native call can dereference it again.
@@ -1184,9 +1198,11 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     });
 }
 
-/// Kotlin's `release` — either path — reports itself before the handle
-/// zeroes: every call Kotlin never tracked (an async call past the started
-/// sentinel) settles here, so a receiver is never left unsettled.
+/// The render process died and Kotlin tore the view down: every call still
+/// in flight — an async call past the started sentinel included — settles
+/// here, so a receiver is never left unsettled, and the registry is dead
+/// until the handle drops. The handle's own drop never comes through here:
+/// it runs inside the session's teardown and drains the registry itself.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeReleased(
     mut env: JNIEnv,
@@ -1256,13 +1272,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
 /// Kotlin. `shouldInterceptRequest` takes the asset lock's read half only
 /// around this call, then dispatches `nativeAssetRespond` outside the lock
 /// and hands the clone back through `nativeAssetServerRelease` — a slow
-/// request can never stall `release`'s zero-and-free. The clone is the
+/// request can never stall the teardown taking the pointer. The clone is the
 /// `AssetServer`'s own `Arc`, boxed into a fresh handle: the share lives on
 /// the server itself, not on the handle.
 ///
 /// SAFETY: `assetServerPtr` is a live `Box::into_raw` pointer while the
-/// read lock is held, so the clone here can never race the drop
-/// `nativeFreeAssetServer` runs under the write half.
+/// read lock is held: the teardown takes it under the write half and only
+/// then frees it, so the clone here can never race the drop.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeAssetServerAcquire(
     mut env: JNIEnv,
@@ -1276,9 +1292,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
             ));
         }
         // SAFETY: the read lock guarantees the `Box` this pointer names is
-        // still alive — `nativeFreeAssetServer` needs the write lock to
-        // drop it — so the `AssetServer` clone inside publishes a new owner
-        // the caller releases through `nativeAssetServerRelease`.
+        // still alive — the teardown takes the pointer under the write lock
+        // before anything frees it — so the `AssetServer` clone inside
+        // publishes a new owner the caller releases through
+        // `nativeAssetServerRelease`.
         let clone = unsafe { &*(asset_server as *const AssetServer) }.clone();
         Ok(Box::into_raw(Box::new(clone)) as jlong)
     })
@@ -1324,8 +1341,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         // SAFETY: `asset_server` is a boxed `AssetServer` clone
         // `nativeAssetServerAcquire` produced under the read lock; the
         // caller's `finally` drops it only after this call returns, so the
-        // dereference can never race `nativeFreeAssetServer` — even on a
-        // `destroy()` that does not join the IO threads.
+        // dereference can never race the free of the `create`-time box —
+        // even on a `destroy()` that does not join the IO threads.
         let server = unsafe { &*(asset_server as *const AssetServer) };
         let method = get_string(env, &method)?;
         let path = get_string(env, &path)?;
@@ -1361,9 +1378,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     })
 }
 
-/// Drop the `create`-time `Box<AssetServer>` — called by `release` under
-/// the asset lock's write half. Interceptions holding clones keep the
-/// server alive until their `nativeAssetServerRelease`.
+/// Drop the `create`-time `Box<AssetServer>` after a render-process-gone
+/// teardown took it under the asset lock's write half — the handle's drop
+/// frees the pointer `release` returns itself. Interceptions holding clones
+/// keep the server alive until their `nativeAssetServerRelease`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeFreeAssetServer(
     mut env: JNIEnv,

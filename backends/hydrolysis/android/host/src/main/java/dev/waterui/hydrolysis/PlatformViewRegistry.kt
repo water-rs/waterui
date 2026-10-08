@@ -44,6 +44,13 @@ class PlatformViewRegistry internal constructor(
      * [focusInside]: `requestFrame` only posts a Choreographer callback,
      * so the hook can never re-enter the session the way a pushed native
      * report did.
+     *
+     * The registry keeps its host view past the session's unbind, and the
+     * unbind itself requests a frame here: freeing a focused instance from
+     * its slot clears child focus. Those requests go to the session's
+     * scheduler, which the teardown stops, so a frame posted on the live
+     * session is removed with it and a later one posts nothing. That stop
+     * is what makes this reference safe; nothing here checks the session.
      */
     internal val container: FrameLayout =
         object : FrameLayout(context) {

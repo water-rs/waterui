@@ -123,12 +123,12 @@ private constructor(
     private var nativeHandle: Long = 0
 
     /**
-     * The `Box<AssetServer>` `create` was handed; its last reference drops
-     * in `release` after `destroy`. Guarded by [assetServerLock]:
-     * `destroy()` does not join Chromium's IO threads, so a
-     * `shouldInterceptRequest` can still be mid-dispatch — the read lock
-     * covers only the check-and-acquire, the `Arc` clone carries the
-     * dispatch itself outside it, and the write lock takes zero-and-free.
+     * The `Box<AssetServer>` `create` was handed; the teardown takes it
+     * after `destroy` and whoever ran the teardown frees it. Guarded by
+     * [assetServerLock]: `destroy()` does not join Chromium's IO threads,
+     * so a `shouldInterceptRequest` can still be mid-dispatch — the read
+     * lock covers only the check-and-acquire, the `Arc` clone carries the
+     * dispatch itself outside it, and the write lock takes the pointer.
      */
     private val assetServerLock = ReentrantReadWriteLock()
     private var assetServerPtr: Long = assetServer
@@ -475,7 +475,7 @@ private constructor(
     fun evaluate(script: String, callId: Long) {
         evaluateJavascript(script) { value ->
             // A dead handle drops the reply in Rust; the call was already
-            // settled by `nativeReleased`/`nativeDocumentReplaced` anyway.
+            // settled by the release or `nativeDocumentReplaced` anyway.
             val handle = nativeHandle
             if (handle != 0L) {
                 nativeJsResult(handle, callId, true, value ?: "null")
@@ -616,32 +616,61 @@ private constructor(
     // Teardown — the Kotlin runtime's `release()` order.
     // ------------------------------------------------------------------
 
+    /**
+     * Rust dropped its handle — in a frame that removed the leaf, or inside
+     * `nativeDestroySession`, which drops the view tree that owns the
+     * handle while the session itself is half dropped. Nothing here calls
+     * back into Rust: the drop drains its call registry itself once this
+     * returns, and frees the asset server this hands back.
+     *
+     * @return the `Box<AssetServer>` pointer, now the caller's to free, or
+     *   zero when there is none or the render-process-gone teardown already
+     *   freed it.
+     */
     @CalledFromNative
-    fun release() {
-        releaseInternal()
+    fun release(): Long {
+        nativeHandle = 0L
+        val server = tearDown()
         // Only the Rust-driven release unregisters: a render-process-gone
         // teardown keeps the instance so the still-published placement does
         // not crash `createSlot` — the leaf shows nothing until the Rust
         // handle drops.
         session.unregisterPlatformViewInstance(instanceId)
+        return server
     }
 
-    private fun releaseInternal() {
-        // A dead render process tears this view down where it is reported,
-        // and the Rust handle that owns the view is dropped afterwards all
-        // the same.
+    /**
+     * The render process died: a `WebViewClient` callback the looper
+     * delivers, so no Rust frame is under it and the native side is told
+     * here — the death first, then `nativeReleased`, which drains the call
+     * registry (including the async ids Kotlin forgot after the started
+     * sentinel) and marks it dead so a later call answers at once. The Rust
+     * handle that owns the view is dropped afterwards all the same.
+     */
+    private fun releaseAfterRenderProcessGone(message: String) {
+        val handle = nativeHandle
+        nativeHandle = 0L
+        if (handle != 0L) {
+            nativeRenderProcessGone(handle, message)
+            nativeReleased(handle)
+        }
+        val server = tearDown()
+        if (server != 0L) {
+            nativeFreeAssetServer(server)
+        }
+    }
+
+    /**
+     * Destroys the `WebView`, once, without calling into native code, and
+     * returns the asset server pointer it took — zero on a second call.
+     */
+    private fun tearDown(): Long {
         if (released) {
-            return
+            return 0L
         }
         released = true
         observedLifecycle?.removeObserver(lifecycleObserver)
         observedLifecycle = null
-        // Every call still in flight settles here: `nativeReleased` drains
-        // the Rust registry — including the async ids Kotlin forgot after
-        // the started sentinel — and marks it dead so a later call
-        // answers at once rather than hanging.
-        nativeReleased(nativeHandle)
-        nativeHandle = 0L
         originRules = emptyList()
         documentStartSources = emptyList()
         // Nothing is admitted and nothing is left to inject, so this removes
@@ -654,15 +683,14 @@ private constructor(
         (parent as? android.view.ViewGroup)?.removeView(this)
         destroy()
         // `destroy()` does not join Chromium's IO threads: an interception
-        // can still be inside `nativeAssetRespond`, which is why the
-        // zero-and-free runs under the write lock the interception holds
-        // the read half of.
-        assetServerLock.write {
+        // can still be about to acquire the server, which is why the pointer
+        // is taken under the write lock whose read half the acquire holds.
+        // Once it is zero no interception can reach the `Box`, and one
+        // already dispatching holds its own `Arc` clone.
+        return assetServerLock.write {
             val server = assetServerPtr
             assetServerPtr = 0L
-            if (server != 0L) {
-                nativeFreeAssetServer(server)
-            }
+            server
         }
     }
 
@@ -782,18 +810,13 @@ private constructor(
             view: WebView,
             detail: RenderProcessGoneDetail,
         ): Boolean {
-            val handle = nativeHandle
-            if (handle != 0L) {
-                nativeRenderProcessGone(
-                    handle,
-                    if (detail.didCrash()) {
-                        "the web content process crashed"
-                    } else {
-                        "the system reclaimed the web content process"
-                    },
-                )
-            }
-            releaseInternal()
+            releaseAfterRenderProcessGone(
+                if (detail.didCrash()) {
+                    "the web content process crashed"
+                } else {
+                    "the system reclaimed the web content process"
+                },
+            )
             return true
         }
     }

@@ -271,8 +271,9 @@ pub struct PendingCalls {
 }
 
 impl PendingCalls {
-    /// Whether `release` ran — the Kotlin view's `nativeReleased` landed
-    /// and every further call must settle without a dispatch. The Android
+    /// Whether `release` ran — the handle dropped, or `nativeReleased`
+    /// reported a dead render process — and every further call must settle
+    /// without a dispatch. The Android
     /// handle gates every Kotlin-bound command on it (`begin` itself
     /// covers the call registry).
     #[cfg(hydrolysis_android_system_webview)]
@@ -813,7 +814,7 @@ pub const WEBVIEW_METHODS: &[WebViewMethod] = &[
     },
     WebViewMethod {
         name: "release",
-        signature: "()V",
+        signature: "()J",
     },
 ];
 
