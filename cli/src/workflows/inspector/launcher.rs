@@ -347,10 +347,11 @@ async fn resolve_inspector_requirements(
     project_path: &Path,
 ) -> Result<InspectorRequirements> {
     let current_dir = project_path.to_path_buf();
+    let metadata_host = host.clone();
     let metadata = smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .current_dir(current_dir)
-            .exec()
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command.current_dir(current_dir);
+        crate::project::metadata_on(&metadata_host, &command)
     })
     .await
     .wrap_err("Failed to resolve user project Cargo metadata for inspector compatibility")?;

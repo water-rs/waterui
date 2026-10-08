@@ -1453,9 +1453,14 @@ impl Project {
             .apple_managed_crate_context(apple_selected, self.ffi_crate_path())
             .await?;
 
-        templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
-            .await
-            .map_err(crate::backend::FailToInitBackend::Io)?;
+        templates::ffi::scaffold(
+            self.host(),
+            &self.ffi_crate_path(),
+            &ctx,
+            &self.ffi_crate_name(),
+        )
+        .await
+        .map_err(crate::backend::FailToInitBackend::Io)?;
 
         self.seed_managed_crate_lock(&self.ffi_crate_path(), &framework)
             .await
@@ -1481,6 +1486,7 @@ impl Project {
             .await?;
 
         templates::apple_preview::scaffold(
+            self.host(),
             &self.apple_preview_crate_path(),
             &ctx,
             &self.apple_preview_crate_name(),
@@ -1524,9 +1530,14 @@ impl Project {
         .with_project_root_path(self.root.clone());
 
         let crate_path = self.preview_ffi_crate_path(workspace_root);
-        templates::preview_ffi::scaffold(&crate_path, &ctx, &self.preview_ffi_crate_name())
-            .await
-            .map_err(crate::backend::FailToInitBackend::Io)?;
+        templates::preview_ffi::scaffold(
+            self.host(),
+            &crate_path,
+            &ctx,
+            &self.preview_ffi_crate_name(),
+        )
+        .await
+        .map_err(crate::backend::FailToInitBackend::Io)?;
         Ok(crate_path)
     }
 
@@ -2191,7 +2202,7 @@ async fn resolve_cargo_layout(
 /// environment and working directory, the command's own `current_dir`
 /// taking precedence — with [`cargo_metadata::MetadataCommand::exec`]'s
 /// error semantics.
-fn metadata_on(
+pub(crate) fn metadata_on(
     host: &Host,
     command: &cargo_metadata::MetadataCommand,
 ) -> Result<cargo_metadata::Metadata, cargo_metadata::Error> {
@@ -3890,8 +3901,9 @@ mod scaffold_tests {
     /// `apple_backend` stages that checkout and names it in `Water.toml` for
     /// the opens that select the Apple backend.
     fn create_project(root: &Path, vendor_dir: &Path, apple_backend: bool) -> Project {
+        let host = crate::toolchain::Host::current();
         let project = smol::block_on(Project::create(
-            &crate::toolchain::Host::current(),
+            &host,
             root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -3947,10 +3959,11 @@ mod scaffold_tests {
         // `Project::open` resolves the project's layout with `cargo metadata
         // --locked`; a plain offline resolve records the patched sources in
         // the lock first.
-        cargo_metadata::MetadataCommand::new()
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
             .manifest_path(&manifest_path)
-            .other_options(vec!["--offline".to_string()])
-            .exec()
+            .other_options(vec!["--offline".to_string()]);
+        crate::project::metadata_on(&host, &command)
             .expect("offline metadata resolves the patched project");
 
         project

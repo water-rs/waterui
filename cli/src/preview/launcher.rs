@@ -1537,7 +1537,7 @@ async fn scaffold_preview_app(
     )
     .with_project_packages(requirements.project_packages.clone());
 
-    crate::templates::preview::scaffold(project.root(), &ctx)
+    crate::templates::preview::scaffold(host, project.root(), &ctx)
         .await
         .wrap_err("Failed to scaffold embedded preview app template")?;
 
@@ -1562,11 +1562,11 @@ async fn scaffold_preview_app(
     // packages need — `generate-lockfile` would re-resolve every crate at
     // its newest and drift the support app off the project's lock.
     let support_manifest = project.root().join("Cargo.toml");
+    let metadata_host = host.clone();
     smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .manifest_path(&support_manifest)
-            .exec()
-            .map(|_| ())
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command.manifest_path(&support_manifest);
+        crate::project::metadata_on(&metadata_host, &command).map(|_| ())
     })
     .await
     .wrap_err("Failed to refresh the preview support app's Cargo.lock")?;
@@ -1773,6 +1773,7 @@ async fn resolve_preview_metadata(
     let project_packages = project.project_packages(&framework).await?;
     let metadata_start = Instant::now();
     let metadata_manifest_path = manifest_path.clone();
+    let metadata_host = host.clone();
     let abi_feature = PreviewLinkMode::for_platform(platform)
         .abi_feature
         .to_string();
@@ -1781,7 +1782,7 @@ async fn resolve_preview_metadata(
         command
             .manifest_path(metadata_manifest_path)
             .features(cargo_metadata::CargoOpt::SomeFeatures(vec![abi_feature]));
-        command.exec()
+        crate::project::metadata_on(&metadata_host, &command)
     })
     .await
     .wrap_err("Failed to resolve user project Cargo metadata with its dev feature")?;

@@ -1119,11 +1119,11 @@ impl ResolvedFramework {
         // is never read (#197).
         let workspace_root = {
             let manifest_dir = directory.to_path_buf();
+            let metadata_host = project.host().clone();
             smol::unblock(move || {
-                cargo_metadata::MetadataCommand::new()
-                    .current_dir(manifest_dir)
-                    .no_deps()
-                    .exec()
+                let mut command = cargo_metadata::MetadataCommand::new();
+                command.current_dir(manifest_dir).no_deps();
+                crate::project::metadata_on(&metadata_host, &command)
             })
             .await?
             .workspace_root
@@ -1242,7 +1242,7 @@ impl ResolvedFramework {
         // wanting an `accesskit` newer than the pin the channel certifies
         // (#203). That is the project's state, not something to resolve
         // past: name it and say how the seed is regenerated.
-        let metadata = managed_crate_metadata(root, features)
+        let metadata = managed_crate_metadata(host, root, features)
             .await
             .map_err(|error| {
                 eyre!(
@@ -1650,16 +1650,19 @@ impl ResolvedFramework {
 /// Resolve a managed crate's dependency metadata for the feature selection
 /// the build was invoked with.
 async fn managed_crate_metadata(
+    host: &crate::toolchain::Host,
     root: &std::path::Path,
     features: &[String],
 ) -> std::result::Result<cargo_metadata::Metadata, cargo_metadata::Error> {
+    let host = host.clone();
     let root = root.to_path_buf();
     let features = features.to_vec();
     smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
             .current_dir(root)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(features))
-            .exec()
+            .features(cargo_metadata::CargoOpt::SomeFeatures(features));
+        crate::project::metadata_on(&host, &command)
     })
     .await
 }

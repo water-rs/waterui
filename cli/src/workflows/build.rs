@@ -2430,17 +2430,16 @@ Automatic meson installation failed: {install_err}\n\n{}",
         }
 
         let build_path = self.path.clone();
+        let metadata_host = self.host.clone();
         let metadata = unblock(move || {
-            cargo_metadata::MetadataCommand::new()
-                .no_deps()
-                .current_dir(build_path)
-                .exec()
-                .map_err(|e| {
-                    RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    ))
-                })
+            let mut command = cargo_metadata::MetadataCommand::new();
+            command.no_deps().current_dir(build_path);
+            crate::project::metadata_on(&metadata_host, &command).map_err(|e| {
+                RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e,
+                ))
+            })
         })
         .await?;
         Ok(metadata.target_directory.as_std_path().to_path_buf())
