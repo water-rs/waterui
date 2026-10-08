@@ -2,7 +2,7 @@
 
 use super::*;
 #[cfg(feature = "frame-profile")]
-use crate::platform::SurfaceProvider as _;
+use crate::platform::{GpuSurface as _, SurfaceProvider as _};
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -146,7 +146,8 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
-    fn surface(&mut self) -> crate::platform::PresentationTarget<'_> {
+    type Presentation = crate::platform::OffscreenSurface;
+    fn surface(&mut self) -> &mut crate::platform::OffscreenSurface {
         crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
     }
 
@@ -1271,7 +1272,7 @@ fn translate_input_event(event: InputEvent, dx: f32, dy: f32) -> InputEvent {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod generation_tests {
     use super::*;
-    use crate::platform::GpuSurfaceWindow;
+    use crate::platform::{GpuSurface as _, GpuSurfaceWindow};
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
     use core::time::Duration;
     use std::cell::{Cell, RefCell};

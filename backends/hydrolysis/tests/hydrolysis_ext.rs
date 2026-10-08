@@ -385,7 +385,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
 /// the logical layout, so previews are sharp on `HiDPI` displays.
 #[test]
 fn offscreen_window_scale_factor_scales_the_surface_only() {
-    use hydrolysis::{PlatformWindow as _, SurfaceProvider as _};
+    use hydrolysis::{GpuSurface as _, PlatformWindow as _};
 
     let window =
         hydrolysis::OffscreenWindow::new_for_tests(320, 200, wgpu::TextureFormat::Rgba8Unorm);

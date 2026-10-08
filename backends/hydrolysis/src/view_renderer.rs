@@ -5,7 +5,7 @@ use waterui_core::view_renderer::{CustomViewRenderer, RenderError, RenderResult,
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::scene_view::SceneViewMergeToParent;
 
-use crate::platform::{OffscreenSurface, SurfaceProvider};
+use crate::platform::{GpuSurface, OffscreenSurface, SurfaceProvider};
 use crate::readback::readback_texture_rgba8;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 

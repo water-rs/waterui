@@ -406,7 +406,7 @@ impl Drop for AndroidSurface {
     }
 }
 
-impl SurfaceProvider for AndroidSurface {
+impl crate::platform::GpuSurface for AndroidSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         &self.gpu.inner.adapter
     }
@@ -423,6 +423,39 @@ impl SurfaceProvider for AndroidSurface {
         &self.gpu.inner.device_loss
     }
 
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+        if width == 0 || height == 0 {
+            return;
+        }
+        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
+            config.width = width;
+            config.height = height;
+            surface.configure(&self.gpu.inner.device, config);
+        }
+    }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.gpu.inner.context_id
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        let inner = &*self.gpu.inner;
+        cherenkov_gpu::interop::SharedDevice {
+            instance: inner.instance.clone(),
+            adapter: inner.adapter.clone(),
+            device: inner.device.clone(),
+            queue: inner.queue.clone(),
+        }
+    }
+}
+
+impl SurfaceProvider for AndroidSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         if self.gpu.inner.device_loss.is_lost() {
             // Device loss is unrecoverable for this attachment — report it as
@@ -450,41 +483,10 @@ impl SurfaceProvider for AndroidSurface {
         self.queue().present(output);
     }
 
-    fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
     fn format(&self) -> wgpu::TextureFormat {
         self.config
             .as_ref()
             .map_or(wgpu::TextureFormat::Rgba8Unorm, |config| config.format)
-    }
-
-    fn gpu_context_id(&self) -> u64 {
-        self.gpu.inner.context_id
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        let inner = &*self.gpu.inner;
-        cherenkov_gpu::interop::SharedDevice {
-            instance: inner.instance.clone(),
-            adapter: inner.adapter.clone(),
-            device: inner.device.clone(),
-            queue: inner.queue.clone(),
-        }
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.width = width;
-        self.height = height;
-        if width == 0 || height == 0 {
-            return;
-        }
-        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
-            config.width = width;
-            config.height = height;
-            surface.configure(&self.gpu.inner.device, config);
-        }
     }
 
     fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
@@ -493,5 +495,23 @@ impl SurfaceProvider for AndroidSurface {
             .map_or(cherenkov_gpu::interop::OutputAlpha::Straight, |config| {
                 cherenkov_gpu::interop::surface_output_alpha(config.alpha_mode)
             })
+    }
+}
+
+/// The Android surface's frame function is [`render_host_acquired_frame`].
+impl crate::runner::window::GpuSurfaceFrame for AndroidSurface {
+    fn render_frame(
+        &mut self,
+        renderer: &mut crate::renderer::HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<crate::runner::window::SurfaceRenderResult, crate::platform::SurfaceError> {
+        crate::runner::window::render_host_acquired_frame(
+            renderer,
+            self,
+            clear_color,
+            display_scale,
+            false,
+        )
     }
 }

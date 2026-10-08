@@ -6,8 +6,8 @@ use super::{
     schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
-    GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
-    SurfaceFrame, SurfaceProvider,
+    GpuSurface as _, GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _,
+    SurfaceError, SurfaceFrame, SurfaceProvider,
 };
 use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
@@ -1239,7 +1239,7 @@ impl RecoveringSurface {
     }
 }
 
-impl SurfaceProvider for RecoveringSurface {
+impl crate::platform::GpuSurface for RecoveringSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         self.inner.adapter()
     }
@@ -1256,23 +1256,8 @@ impl SurfaceProvider for RecoveringSurface {
         self.inner.device_loss()
     }
 
-    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        self.acquire_count += 1;
-        self.first_error
-            .take()
-            .map_or_else(|| self.inner.acquire(), Err)
-    }
-
-    fn present(&mut self, frame: SurfaceFrame) {
-        self.inner.present(frame);
-    }
-
     fn size(&self) -> (u32, u32) {
         self.inner.size()
-    }
-
-    fn format(&self) -> wgpu::TextureFormat {
-        self.inner.format()
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -1286,6 +1271,23 @@ impl SurfaceProvider for RecoveringSurface {
 
     fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
         self.inner.shared_device()
+    }
+}
+
+impl SurfaceProvider for RecoveringSurface {
+    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
+        self.acquire_count += 1;
+        self.first_error
+            .take()
+            .map_or_else(|| self.inner.acquire(), Err)
+    }
+
+    fn present(&mut self, frame: SurfaceFrame) {
+        self.inner.present(frame);
+    }
+
+    fn format(&self) -> wgpu::TextureFormat {
+        self.inner.format()
     }
 }
 

@@ -69,12 +69,14 @@ pub use platform::BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
 pub use platform::{
-    BackEdge, BackNavigation, FlingDeceleration, GpuSurfaceWindow, InputEvent, KeyCode, KeyState,
-    Modifiers, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow,
-    PlatformWindow, PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider,
-    TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, WindowKeyboardArea,
-    WindowSafeArea,
+    BackEdge, BackNavigation, DeviceLoss, FlingDeceleration, GpuSurface, GpuSurfaceWindow,
+    InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext, OffscreenSceneSurface,
+    OffscreenSurface, OffscreenWindow, PlatformWindow, PointerButton, PointerKind, SurfaceError,
+    SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig,
+    WindowKeyboardArea, WindowSafeArea,
 };
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+pub use platform::{EnginePresentedSurface, EngineWindowTarget};
 pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
 pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(feature = "accessibility")]

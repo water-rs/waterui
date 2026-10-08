@@ -86,8 +86,10 @@ mod web_accessibility;
 mod web_runner;
 // Bare wasm compiles the module for its profile types (the semantic runtime
 // uses them everywhere) but has no window pump to call the rest.
+// `pub(crate)`: the platform surfaces implement `GpuSurfaceFrame` from outside
+// `runner`.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-mod window;
+pub mod window;
 #[cfg(hydrolysis_winit)]
 mod winit_runner;
 #[cfg(hydrolysis_wayland_platform)]

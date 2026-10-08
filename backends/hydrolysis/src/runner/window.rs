@@ -2,7 +2,7 @@
 //! scene rebuild/refresh/render phases, and input-event dispatch.
 
 use super::*;
-use crate::platform::GpuSurfaceWindow;
+use crate::platform::{GpuSurface as _, GpuSurfaceWindow};
 use crate::renderer::material::{Blending, WithinWindowLevel};
 use waterui::theme::color::Background;
 use waterui::window::ResolvedWindowBackground;
@@ -604,30 +604,87 @@ pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool 
     SurfaceBackground::of(window, env).transparent()
 }
 
-crate::engine::cfg_async_fn! {
-    /// Runs one frame and reports whether it was presented to the surface — an
-    /// idle frame, or one whose surface had to be reconfigured, is not.
-    ///
-    /// Async on wasm32, where the engine render inside awaits the browser device.
-    pub(super) fn render_window<P: GpuSurfaceWindow>(
-        runtime: &mut RuntimeWindow<P>,
-        env: &Environment,
-        drain_local_tasks: &mut dyn FnMut() -> bool,
-    ) -> bool {
-
-    // A hidden window produces no frame: nothing is encoded, submitted or
-    // presented, and a redraw already in flight when it hid is stale —
-    // dropped here rather than rendered.
+/// Runs one frame and reports whether it was presented to the surface — an
+/// idle frame, or one whose surface had to be reconfigured, is not.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn render_window<P>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    drain_local_tasks: &mut dyn FnMut() -> bool,
+) -> bool
+where
+    P: GpuSurfaceWindow,
+    P::Presentation: GpuSurfaceFrame,
+{
     if runtime.hidden {
         return false;
     }
-
-    let result = crate::engine::engine_await!(render_window_with_capture(
+    let result = render_window_pumped(
         runtime,
         env,
         FrameReader::Display,
-        drain_local_tasks
-    ));
+        drain_local_tasks,
+        &mut |renderer, surface, clear_color, display_scale| {
+            surface.render_frame(renderer, clear_color, display_scale)
+        },
+    );
+    finish_render_window(runtime, result)
+}
+
+/// A fn item for the wasm32 pump frame — closures cannot express the
+/// `for<'r>` signature [`PumpFrame`] needs, a function can.
+#[cfg(target_arch = "wasm32")]
+fn pump_frame<'r, S: GpuSurfaceFrame>(
+    renderer: &'r mut HydrolysisRenderer,
+    surface: &'r mut S,
+    clear_color: peniko::Color,
+    display_scale: f64,
+) -> core::pin::Pin<
+    Box<
+        dyn core::future::Future<
+                Output = Result<SurfaceRenderResult, crate::platform::SurfaceError>,
+            > + 'r,
+    >,
+> {
+    Box::pin(surface.render_frame(renderer, clear_color, display_scale))
+}
+
+/// [`render_window`], async on wasm32 where the engine render inside awaits
+/// the browser device.
+#[cfg(target_arch = "wasm32")]
+#[allow(
+    clippy::future_not_send,
+    reason = "wasm32 is single-threaded; the pump's Rc handles never cross a thread"
+)]
+pub(super) async fn render_window<P>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    drain_local_tasks: &mut dyn FnMut() -> bool,
+) -> bool
+where
+    P: GpuSurfaceWindow,
+    P::Presentation: GpuSurfaceFrame,
+{
+    if runtime.hidden {
+        return false;
+    }
+    let result = render_window_pumped(
+        runtime,
+        env,
+        FrameReader::Display,
+        drain_local_tasks,
+        &mut pump_frame::<P::Presentation>,
+    )
+    .await;
+    finish_render_window(runtime, result)
+}
+
+/// What both [`render_window`] variants do with the pump's result: a frame
+/// that reached its surface counts toward `presented_frames`.
+fn finish_render_window<P: GpuSurfaceWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    result: RenderWindowResult,
+) -> bool {
     // The rebuild flag and the snapshot belong to the headless harness; a live
     // window only asks whether the frame reached its surface.
     let _ = (result.rebuilt, result.snapshot);
@@ -637,7 +694,6 @@ crate::engine::cfg_async_fn! {
         tracing::debug!(frames = runtime.presented_frames, "frame presented");
     }
     rendered
-    }
 }
 
 pub(super) const fn surface_error_requires_reconfigure(
@@ -897,60 +953,72 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     rebuilt
 }
 
-struct SurfaceRenderResult {
+pub struct SurfaceRenderResult {
     acquire: Duration,
     render: Duration,
     present: Duration,
+    /// Whether the frame reached the display: a surface that could not
+    /// present this frame (no drawable, pending presentation) reports
+    /// `false`.
+    rendered: bool,
     snapshot: Option<HeadlessSnapshot>,
 }
 
-crate::engine::cfg_async_fn! {
-    fn render_to_surface {
+/// A presentation surface's frame function — the per-kind call the pump
+/// makes: acquire/copy/present on a host-acquired [`SurfaceProvider`],
+/// `Engine::render` alone on an [`EnginePresentedSurface`]. Each
+/// implementation calls the matching free function below; the trait exists
+/// so `render_window`'s pump compiles against whichever kind the window's
+/// `GpuSurfaceWindow::Presentation` is.
+///
+/// [`SurfaceProvider`]: crate::platform::SurfaceProvider
+/// [`EnginePresentedSurface`]: crate::platform::EnginePresentedSurface
+pub trait GpuSurfaceFrame {
+    /// Renders and presents one frame into the surface, reporting the
+    /// stage durations and whether the frame reached the display.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_frame(
+        &mut self,
         renderer: &mut HydrolysisRenderer,
-        surface: crate::platform::PresentationTarget<'_>,
         clear_color: peniko::Color,
         display_scale: f64,
-        capture_snapshot: bool,
-        render: impl FnOnce(
-            &mut HydrolysisRenderer,
-            crate::renderer::FrameRenderTarget<'_>,
-        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
-    } {
-        renderer: &mut HydrolysisRenderer,
-        surface: crate::platform::PresentationTarget<'_>,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>;
+
+    /// [`GpuSurfaceFrame::render_frame`], async on wasm32 where the browser
+    /// device renders inside an await.
+    #[cfg(target_arch = "wasm32")]
+    fn render_frame<'a>(
+        &'a mut self,
+        renderer: &'a mut HydrolysisRenderer,
         clear_color: peniko::Color,
         display_scale: f64,
-        capture_snapshot: bool,
-        render: impl AsyncFnOnce(
-            &mut HydrolysisRenderer,
-            crate::renderer::FrameRenderTarget<'_>,
-        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
-    } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
-    #[cfg(all(target_os = "macos", hydrolysis_winit))]
-    if let crate::platform::PresentationTarget::EnginePresented(surface) = surface {
-        return Ok(crate::engine::engine_await!(render_engine_presented_frame(
-            renderer,
-            surface,
-            clear_color,
-            display_scale,
-            capture_snapshot,
-            render,
-        )));
+    ) -> impl Future<Output = Result<SurfaceRenderResult, crate::platform::SurfaceError>>;
+}
+
+/// Every host-acquired surface renders through [`render_host_acquired_frame`].
+impl GpuSurfaceFrame for crate::platform::OffscreenSurface {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+        render_host_acquired_frame(renderer, self, clear_color, display_scale, false)
     }
-    #[cfg(all(target_os = "macos", hydrolysis_winit))]
-    let crate::platform::PresentationTarget::HostAcquired(surface) = surface else {
-        unreachable!("engine-presented handled above")
-    };
-    #[cfg(not(all(target_os = "macos", hydrolysis_winit)))]
-    let crate::platform::PresentationTarget::HostAcquired(surface) = surface;
-    crate::engine::engine_await!(render_host_acquired_frame(
-        renderer,
-        surface,
-        clear_color,
-        display_scale,
-        capture_snapshot,
-        render,
-    ))
+
+    #[cfg(target_arch = "wasm32")]
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    async fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+        render_host_acquired_frame(renderer, self, clear_color, display_scale, false).await
     }
 }
 
@@ -958,26 +1026,21 @@ crate::engine::cfg_async_fn! {
     /// The host-acquired frame: `render` draws the scene into the engine's
     /// retained target, then the frame is acquired, the engine output
     /// copied in, and the frame presented.
-    fn render_host_acquired_frame {
+    /// The frame's `capture_snapshot` asks for a GPU readback of the
+    /// acquired frame — offscreen targets only; a live window passes
+    /// `false`.
+    pub fn render_host_acquired_frame {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
         clear_color: peniko::Color,
         display_scale: f64,
         capture_snapshot: bool,
-        render: impl FnOnce(
-            &mut HydrolysisRenderer,
-            crate::renderer::FrameRenderTarget<'_>,
-        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
         clear_color: peniko::Color,
         display_scale: f64,
         capture_snapshot: bool,
-        render: impl AsyncFnOnce(
-            &mut HydrolysisRenderer,
-            crate::renderer::FrameRenderTarget<'_>,
-        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
     let (width, height) = surface.size();
     let format = surface.format();
@@ -989,8 +1052,7 @@ crate::engine::cfg_async_fn! {
     // so the image must be acquired, filled and presented without an await
     // in between.
     let render_started_at = Instant::now();
-    let engine_frame = crate::engine::engine_await!(render(
-        renderer,
+    let engine_frame = crate::engine::engine_await!(renderer.render_engine_frame(
         crate::renderer::FrameRenderTarget {
             adapter: surface.adapter(),
             device: surface.device(),
@@ -999,18 +1061,19 @@ crate::engine::cfg_async_fn! {
             gpu_context_id: context.context_id,
             shared_device: context.shared_device,
             display_scale,
-            headroom: surface.display_headroom(),
-            format,
+            presentation: crate::renderer::FramePresentation::Texture {
+                format,
+                headroom: surface.display_headroom(),
+            },
             width,
             height,
             base_color: crate::renderer::working_color(clear_color),
-            #[cfg(all(target_os = "macos", hydrolysis_winit))]
-            engine_window: None,
         },
     ))
     .unwrap_or_else(|error| {
         panic!("hydrolysis renderer: engine render failed: {error:#}")
-    });
+    })
+    .expect("a texture-backed target always yields an engine frame");
     let engine_render = render_started_at.elapsed();
     let acquire_started_at = Instant::now();
     let frame = acquire_surface_frame(&mut *surface)?;
@@ -1072,6 +1135,7 @@ crate::engine::cfg_async_fn! {
         acquire,
         render,
         present,
+        rendered: true,
         snapshot,
     })
     }
@@ -1079,42 +1143,31 @@ crate::engine::cfg_async_fn! {
 
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
 crate::engine::cfg_async_fn! {
-    /// The engine-presented frame: `render` is the whole presentation —
-    /// there is no host frame to acquire, copy into or present. The
-    /// profile stages that do not run here stay measured durations: the
-    /// skipped calls take no time.
-    fn render_engine_presented_frame {
+    /// The engine-presented frame: `render_engine_frame` is the whole
+    /// presentation — `Engine::render` acquires the drawable and presents
+    /// inside itself, so there is no host acquire/copy/present at all.
+    /// `acquire` and `present` are reported as zero because no such calls
+    /// run here; the drawable wait and the layer presents they would have
+    /// measured are inside `render`. Snapshots cannot exist on this kind:
+    /// the capture path is bound on [`SurfaceProvider`], so asking for one
+    /// does not compile.
+    ///
+    /// [`SurfaceProvider`]: crate::platform::SurfaceProvider
+    pub fn render_engine_presented_frame {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::EnginePresentedSurface,
         clear_color: peniko::Color,
         display_scale: f64,
-        capture_snapshot: bool,
-        render: impl FnOnce(
-            &mut HydrolysisRenderer,
-            crate::renderer::FrameRenderTarget<'_>,
-        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::EnginePresentedSurface,
         clear_color: peniko::Color,
         display_scale: f64,
-        capture_snapshot: bool,
-        render: impl AsyncFnOnce(
-            &mut HydrolysisRenderer,
-            crate::renderer::FrameRenderTarget<'_>,
-        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
     } -> SurfaceRenderResult {
-    assert!(
-        !capture_snapshot,
-        "hydrolysis snapshot: an engine-presented window surface is not \
-         readable — the engine documents an Apple window surface as \
-         non-readable, so a Snapshot reader is a programming error"
-    );
     let (width, height) = surface.size();
     let context = surface.device_loss().gpu_context();
     let render_started_at = Instant::now();
-    let engine_frame = crate::engine::engine_await!(render(
-        renderer,
+    crate::engine::engine_await!(renderer.render_engine_frame(
         crate::renderer::FrameRenderTarget {
             adapter: surface.adapter(),
             device: surface.device(),
@@ -1123,29 +1176,35 @@ crate::engine::cfg_async_fn! {
             gpu_context_id: context.context_id,
             shared_device: context.shared_device,
             display_scale,
-            headroom: surface.display_headroom(),
-            // The engine presents through its own Metal layers; their
-            // attachments are the working float format.
-            format: wgpu::TextureFormat::Rgba16Float,
+            presentation: crate::renderer::FramePresentation::Window(
+                surface.engine_window()
+            ),
             width,
             height,
             base_color: crate::renderer::working_color(clear_color),
-            engine_window: Some(surface.engine_window()),
         },
     ))
     .unwrap_or_else(|error| {
         panic!("hydrolysis renderer: engine render failed: {error:#}")
     });
-    drop(engine_frame);
+    // A move to another display re-runs the engine's output negotiation —
+    // colour space, headroom and the plane system's displays — announced
+    // through the platform's screen-change observer.
+    if surface.take_display_move() {
+        renderer.display_moved();
+    }
     let render = render_started_at.elapsed();
     #[cfg(feature = "frame-profile")]
     {
         renderer.finish_gpu_frame_profile(context.context_id, surface.device(), surface.queue());
     }
     SurfaceRenderResult {
-        acquire: render_started_at.elapsed().saturating_sub(render),
+        acquire: Duration::ZERO,
         render,
-        present: render_started_at.elapsed().saturating_sub(render),
+        present: Duration::ZERO,
+        // The engine's drawable may still be pending: a retry or a queued
+        // presentation means this frame did not reach the display.
+        rendered: !renderer.presentation_pending(),
         snapshot: None,
     }
     }
@@ -1189,17 +1248,88 @@ impl FrameReader {
     }
 }
 
+/// Bound on [`crate::platform::SurfaceProvider`]: a snapshot reads the
+/// acquired frame back, which an engine-presented surface has no call for
+/// — capturing it is a compile-time impossibility, not a runtime error.
+/// Native-only: the browser surface presents directly and never reads back.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_lines)]
+pub(super) fn render_window_with_capture<P>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    reader: FrameReader,
+    drain_local_tasks: &mut dyn FnMut() -> bool,
+) -> RenderWindowResult
+where
+    P: GpuSurfaceWindow,
+    P::Presentation: crate::platform::SurfaceProvider,
+{
+    render_window_pumped(
+        runtime,
+        env,
+        reader,
+        drain_local_tasks,
+        &mut |renderer, surface, clear_color, display_scale| {
+            render_host_acquired_frame(
+                renderer,
+                surface,
+                clear_color,
+                display_scale,
+                reader.captures(),
+            )
+        },
+    )
+}
+
+/// The pump's per-kind frame call, as a mutable closure — the sync form
+/// native targets run.
+#[cfg(not(target_arch = "wasm32"))]
+type PumpFrame<'a, P> = dyn FnMut(
+        &mut HydrolysisRenderer,
+        &mut <P as GpuSurfaceWindow>::Presentation,
+        peniko::Color,
+        f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>
+    + 'a;
+
+/// The pump's per-kind frame call on wasm32, where the browser device
+/// renders inside an await. The returned future borrows the renderer and
+/// surface for their call lifetime `'r`.
+#[cfg(target_arch = "wasm32")]
+type PumpFrame<'a, P> = dyn for<'r> FnMut(
+        &'r mut HydrolysisRenderer,
+        &'r mut <P as GpuSurfaceWindow>::Presentation,
+        peniko::Color,
+        f64,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<
+                    Output = Result<SurfaceRenderResult, crate::platform::SurfaceError>,
+                > + 'r,
+        >,
+    > + 'a;
+
 crate::engine::cfg_async_fn! {
-    // the capture variant renders, encodes and delivers in one pass; the sequence is the feature
-    #[allow(clippy::too_many_lines)]
+    /// The pump `render_window` and `render_window_with_capture` share;
+    /// `frame` is the presentation kind's own frame function, so the pump
+    /// holds no acquire/present runtime dispatch.
+    ///
     /// Async on wasm32, where the surface render inside awaits the browser
     /// device.
-    pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn render_window_pumped<P: GpuSurfaceWindow> {
         runtime: &mut RuntimeWindow<P>,
         env: &Environment,
         reader: FrameReader,
         drain_local_tasks: &mut dyn FnMut() -> bool,
-    ) -> RenderWindowResult {
+        frame: &mut PumpFrame<'_, P>,
+    } {
+        runtime: &mut RuntimeWindow<P>,
+        env: &Environment,
+        reader: FrameReader,
+        drain_local_tasks: &mut dyn FnMut() -> bool,
+        frame: &mut PumpFrame<'_, P>,
+    } -> RenderWindowResult {
     let capture_snapshot = reader.captures();
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
@@ -1232,24 +1362,15 @@ crate::engine::cfg_async_fn! {
 
         let render_result = {
             let scale_factor = runtime.platform.scale_factor();
-            crate::engine::engine_await!(render_to_surface(
+            crate::engine::engine_await!(frame(
                 &mut runtime.renderer,
                 runtime.platform.surface(),
                 clear_color,
                 scale_factor,
-                capture_snapshot,
-                #[cfg(not(target_arch = "wasm32"))]
-                HydrolysisRenderer::render_engine_frame,
-                #[cfg(target_arch = "wasm32")]
-                async |renderer, target| {
-                    renderer
-                        .render_engine_frame(target)
-                        .await
-                },
             ))
         };
 
-        let rendered = match render_result {
+        let render_result = match render_result {
             Ok(rendered) => rendered,
             Err(
                 crate::platform::SurfaceError::Lost
@@ -1303,10 +1424,11 @@ crate::engine::cfg_async_fn! {
                 panic!("hydrolysis surface acquisition failed validation")
             }
         };
-        let acquire_duration = rendered.acquire;
-        let render_duration = rendered.render;
-        let present_duration = rendered.present;
-        snapshot = rendered.snapshot;
+        let acquire_duration = render_result.acquire;
+        let render_duration = render_result.render;
+        let present_duration = render_result.present;
+        let frame_rendered = render_result.rendered;
+        snapshot = render_result.snapshot;
         #[cfg(feature = "frame-profile")]
         {
             stages = runtime.renderer.take_frame_stage_times();
@@ -1340,7 +1462,7 @@ crate::engine::cfg_async_fn! {
                 applied_filter_count,
                 applied_filter_capture_us,
                 applied_filter_effect_us,
-                rendered: true,
+                rendered: frame_rendered,
                 captured_snapshot: capture_snapshot,
                 frame_work: runtime.renderer.frame_work_counters(),
             },

@@ -487,8 +487,9 @@ impl PlatformWindow for AndroidHostWindow {
 }
 
 impl GpuSurfaceWindow for AndroidHostWindow {
-    fn surface(&mut self) -> crate::platform::PresentationTarget<'_> {
-        crate::platform::PresentationTarget::HostAcquired(&mut self.surface)
+    type Presentation = AndroidSurface;
+    fn surface(&mut self) -> &mut AndroidSurface {
+        &mut self.surface
     }
 }
 
