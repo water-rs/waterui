@@ -870,6 +870,7 @@ jobs:
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,webview-system -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
 
   # The Android host library's own lint (`warningsAsErrors`): the Kotlin
@@ -903,7 +904,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ steps.gradle-version.outputs.version }}
-      - run: gradle :host:lintDebug
+      - run: gradle :host:lintDebug :webview:lintDebug
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,
