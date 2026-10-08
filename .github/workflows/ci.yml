@@ -121,11 +121,14 @@ jobs:
               - "Cargo.toml"
             android:
               - "cli/src/android/**"
+              - "cli/src/hydrolysis/android.rs"
               - "cli/src/templates/*android*/**"
               - "cli/src/toolchain/**"
               - "cli/src/toolchain_checks.rs"
               - "cli/Cargo.toml"
               - "backends/hydrolysis/android/**"
+              # `[package.metadata.waterui]`'s Android keys drive the scaffold.
+              - "Cargo.toml"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
@@ -370,21 +373,8 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: ./.github/actions/setup-android-ndk
-      # `sdkmanager` is the tool doctor's own remedy text names; the
-      # platform package is the one the scaffolded app's `compileSdk`
-      # requires, so the version is read from the template rather than
-      # pinned a second time here. Platform packages now carry a minor
-      # suffix (`android-37.0`), so the newest package matching the
-      # compileSdk major is installed.
-      - name: Install the scaffolded compileSdk platform
-        run: |
-          set -euo pipefail
-          compile_sdk="$(grep -oP 'compileSdk = \K[0-9]+' cli/src/templates/hydrolysis_android/app/build.gradle.kts.tpl)"
-          sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | sudo "$sdkm" --licenses >/dev/null || true
-          platform_pkg="$("$sdkm" --list 2>/dev/null | grep -oE "platforms;android-$compile_sdk(\.[0-9]+)?" | sort -uV | tail -1)"
-          [ -n "$platform_pkg" ] || { echo "::error::no SDK platform package matching compileSdk $compile_sdk"; exit 1; }
-          sudo "$sdkm" "$platform_pkg"
+      # `sdkmanager` is the tool doctor's own remedy text names.
+      - uses: ./.github/actions/install-android-platform
       # The toolchain check wants the CLI-managed Kotlin install at
       # `~/.water/toolchains/kotlin/<android-kotlin-version>` — the same
       # layout `water doctor --fix` produces on a developer machine — so the

@@ -478,17 +478,7 @@ jobs:
 
       - name: Install the scaffolded compileSdk platform (Android)
         if: matrix.platform == 'android'
-        shell: bash
-        run: |
-          set -euo pipefail
-          compile_sdk="$(grep -oP 'compileSdk = \K[0-9]+' cli/src/templates/hydrolysis_android/app/build.gradle.kts.tpl)"
-          sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          yes | sudo "$sdkm" --licenses >/dev/null || true
-          # Platform packages carry a minor suffix (`android-37.0`), so the
-          # newest package matching the compileSdk major is installed.
-          platform_pkg="$("$sdkm" --list 2>/dev/null | grep -oE "platforms;android-$compile_sdk(\.[0-9]+)?" | sort -uV | tail -1)"
-          [ -n "$platform_pkg" ] || { echo "::error::no SDK platform package matching compileSdk $compile_sdk"; exit 1; }
-          sudo "$sdkm" "$platform_pkg"
+        uses: ./.github/actions/install-android-platform
 
       - name: Doctor, scaffold, build and package as the fresh user (Unix)
         if: runner.os != 'Windows'

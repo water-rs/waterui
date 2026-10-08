@@ -1,0 +1,20 @@
+name: Install the scaffolded Android SDK platform
+description: >-
+  Installs, through the image's sdkmanager, the SDK platform the scaffolded
+  Hydrolysis Android app's compileSdk requires. The version is read from the
+  template rather than pinned a second time; platform packages carry a minor
+  suffix (`android-37.0`), so the newest package matching the compileSdk
+  major is installed.
+runs:
+  using: composite
+  steps:
+    - name: Install the scaffolded compileSdk platform
+      shell: bash
+      run: |
+        set -euo pipefail
+        compile_sdk="$(grep -oP 'compileSdk = \K[0-9]+' cli/src/templates/hydrolysis_android/app/build.gradle.kts.tpl)"
+        sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+        yes | sudo "$sdkm" --licenses >/dev/null || true
+        platform_pkg="$("$sdkm" --list 2>/dev/null | grep -oE "platforms;android-$compile_sdk(\.[0-9]+)?" | sort -uV | tail -1)"
+        [ -n "$platform_pkg" ] || { echo "::error::no SDK platform package matching compileSdk $compile_sdk"; exit 1; }
+        sudo "$sdkm" "$platform_pkg"
