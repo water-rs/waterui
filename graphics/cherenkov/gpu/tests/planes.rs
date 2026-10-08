@@ -181,12 +181,24 @@ mod macos {
                 a_part_over_the_hosted_view_claims_the_overlap,
             ),
             case(
+                "unclipped_paint_bounds_route_hits_over_a_hosted_view",
+                unclipped_paint_bounds_route_hits_over_a_hosted_view,
+            ),
+            case(
                 "a_part_between_two_hosted_views_claims_only_where_it_paints",
                 a_part_between_two_hosted_views_claims_only_where_it_paints,
             ),
             case(
                 "a_steady_frame_mutates_no_views_and_keeps_the_first_responder",
                 a_steady_frame_mutates_no_views_and_keeps_the_first_responder,
+            ),
+            case(
+                "contents_orientation_updates_engine_layer_geometry_in_place",
+                contents_orientation_updates_engine_layer_geometry_in_place,
+            ),
+            case(
+                "engine_ordering_preserves_foreign_siblings_for_all_plane_shapes",
+                engine_ordering_preserves_foreign_siblings_for_all_plane_shapes,
             ),
             case(
                 "a_layer_switching_between_frame_and_hosted_rebuilds_its_nodes",
@@ -452,6 +464,28 @@ mod macos {
     }
 
     objc2::define_class!(
+        // SAFETY: the subclass adds a main-thread-only orientation flag.
+        #[unsafe(super(CALayer))]
+        #[name = "OrientationBackingLayer"]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = std::cell::Cell<bool>]
+        struct OrientationBackingLayer;
+
+        impl OrientationBackingLayer {
+            #[unsafe(method(contentsAreFlipped))]
+            fn contents_are_flipped(&self) -> bool {
+                self.ivars().get()
+            }
+        }
+    );
+
+    impl OrientationBackingLayer {
+        fn set_contents_flipped(&self, flipped: bool) {
+            self.ivars().set(flipped);
+        }
+    }
+
+    objc2::define_class!(
         // SAFETY: `NSObject` has no subclassing requirements; the class
         // implements no Drop.
         #[unsafe(super(objc2::runtime::NSObject))]
@@ -564,23 +598,48 @@ mod macos {
         #[unsafe(super(NSView))]
         #[name = "CountingHostView"]
         #[thread_kind = MainThreadOnly]
-        #[ivars = (std::cell::Cell<usize>, std::cell::Cell<usize>)]
+        #[ivars = (
+            std::cell::Cell<usize>,
+            std::cell::Cell<usize>,
+            std::cell::RefCell<Vec<(bool, usize)>>,
+            std::cell::RefCell<Option<Retained<OrientationBackingLayer>>>
+        )]
         /// The fixture's host view: a plain `NSView` counting the
         /// hierarchy writes `addSubview:` and removals issue against it,
         /// so a steady frame can be proved to mutate nothing.
         struct CountingHostView;
 
         impl CountingHostView {
+            #[unsafe(method_id(makeBackingLayer))]
+            fn make_backing_layer(&self) -> Retained<CALayer> {
+                let mtm = MainThreadMarker::new().expect("main thread");
+                let layer =
+                    OrientationBackingLayer::alloc(mtm).set_ivars(std::cell::Cell::new(false));
+                // SAFETY: `CALayer`'s designated initializer is `init`.
+                let layer: Retained<OrientationBackingLayer> =
+                    unsafe { objc2::msg_send![super(layer), init] };
+                *self.ivars().3.borrow_mut() = Some(layer.clone());
+                Retained::into_super(layer)
+            }
+
             /// `AppKit` reports a view added below this one.
             #[unsafe(method(didAddSubview:))]
-            fn did_add_subview(&self, _view: Option<&NSView>) {
+            fn did_add_subview(&self, view: Option<&NSView>) {
                 self.ivars().0.set(self.ivars().0.get() + 1);
+                self.ivars().2.borrow_mut().push((
+                    true,
+                    view.map_or(0, |view| std::ptr::from_ref(view).addr()),
+                ));
             }
 
             /// `AppKit` reports a view about to leave this one.
             #[unsafe(method(willRemoveSubview:))]
-            fn will_remove_subview(&self, _view: Option<&NSView>) {
+            fn will_remove_subview(&self, view: Option<&NSView>) {
                 self.ivars().1.set(self.ivars().1.get() + 1);
+                self.ivars().2.borrow_mut().push((
+                    false,
+                    view.map_or(0, |view| std::ptr::from_ref(view).addr()),
+                ));
             }
         }
     );
@@ -592,9 +651,23 @@ mod macos {
             (ivars.0.get(), ivars.1.get())
         }
 
+        fn hierarchy_changes(&self) -> Vec<(bool, usize)> {
+            self.ivars().2.borrow().clone()
+        }
+
         fn reset_writes(&self) {
             self.ivars().0.set(0);
             self.ivars().1.set(0);
+            self.ivars().2.borrow_mut().clear();
+        }
+
+        fn orientation_layer(&self) -> Retained<OrientationBackingLayer> {
+            self.ivars()
+                .3
+                .borrow()
+                .as_ref()
+                .expect("the view made its backing layer")
+                .clone()
         }
     }
 
@@ -828,8 +901,12 @@ mod macos {
             })
             .expect("an engine");
             let counting: Retained<CountingHostView> = {
-                let this = CountingHostView::alloc(mtm)
-                    .set_ivars((std::cell::Cell::new(0), std::cell::Cell::new(0)));
+                let this = CountingHostView::alloc(mtm).set_ivars((
+                    std::cell::Cell::new(0),
+                    std::cell::Cell::new(0),
+                    std::cell::RefCell::new(Vec::new()),
+                    std::cell::RefCell::new(None),
+                ));
                 // SAFETY: `msg_send!` to `super.initWithFrame:` is the
                 // designated initializer.
                 unsafe {
@@ -2036,6 +2113,28 @@ mod macos {
         unsafe { view.superview() }.map(|v| Retained::as_ptr(&v))
     }
 
+    /// The engine-owned view immediately below the host in the hosted
+    /// view's ancestor chain.
+    fn top_ancestor(view: &NSView, host: &NSView) -> *const NSView {
+        // SAFETY: Cocoa's view hierarchy is read on the main thread.
+        let mut current = unsafe { view.superview() }.expect("a hosted leaf parent");
+        loop {
+            // SAFETY: Cocoa's view hierarchy is read on the main thread.
+            let parent = unsafe { current.superview() }.expect("the host is an ancestor");
+            if Retained::as_ptr(&parent) == std::ptr::from_ref(host) {
+                return Retained::as_ptr(&current);
+            }
+            current = parent;
+        }
+    }
+
+    fn direct_subviews(host: &NSView) -> Vec<*const NSView> {
+        host.subviews()
+            .iter()
+            .map(|view| Retained::as_ptr(&view))
+            .collect()
+    }
+
     /// The view at `ptr`, read on the main thread while the engine's
     /// scene owns it.
     const fn as_view<'a>(ptr: *const NSView) -> &'a NSView {
@@ -2235,6 +2334,157 @@ mod macos {
         );
     }
 
+    fn engine_ordering_preserves_foreign_siblings_for_all_plane_shapes() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        for (plane_count, trailing_part) in
+            [(0, false), (1, false), (1, true), (2, false), (2, true)]
+        {
+            assert_engine_ordering_case(mtm, plane_count, trailing_part);
+        }
+    }
+
+    fn assert_engine_ordering_case(mtm: MainThreadMarker, plane_count: usize, trailing_part: bool) {
+        const VIEW_COLORS: [(f64, f64, f64); 2] = [(0.2, 0.7, 0.3), (0.3, 0.7, 0.3)];
+        const PART_COLORS: [[f32; 4]; 3] = [
+            [0.1, 0.3, 0.6, 1.0],
+            [0.2, 0.3, 0.6, 1.0],
+            [0.3, 0.3, 0.6, 1.0],
+        ];
+        let fixture = Fixture::new();
+        fixture.render();
+        let foreign = NSView::new(mtm);
+        fixture.view.addSubview(&foreign);
+
+        let part_count = if plane_count == 0 {
+            1
+        } else {
+            plane_count + usize::from(trailing_part)
+        };
+        let parts: Vec<_> = (0..part_count).map(|_| fixture.window.layer()).collect();
+        let holders: Vec<_> = (0..plane_count).map(|_| fixture.window.layer()).collect();
+        let planes: Vec<_> = (0..plane_count).map(|_| fixture.window.layer()).collect();
+        let views: Vec<_> = VIEW_COLORS
+            .into_iter()
+            .take(plane_count)
+            .map(|color| hosted_view(mtm, color))
+            .collect();
+        let hosted: Vec<_> = views
+            .iter()
+            .map(|view| Hosted::<Gpu>::new(HostedView::new(view.clone(), mtm)))
+            .collect();
+
+        fixture.window.update(|tx| {
+            let root = fixture.window.root();
+            tx[root].push(&parts[0]);
+            let part_content = |index: usize| {
+                fixture.window.record(|c| {
+                    c.fill(
+                        Rect::new(0.0, 0.0, 96.0, 64.0),
+                        WorkingColor::new(PART_COLORS[index]),
+                    );
+                })
+            };
+            tx[&parts[0]].content(part_content(0));
+            for index in 0..plane_count {
+                tx[root].push(&holders[index]);
+                tx[&holders[index]].push(&planes[index]);
+                tx[&planes[index]].content(hosted[index].at(EXTENT));
+                if index + 1 < part_count {
+                    tx[root].push(&parts[index + 1]);
+                    tx[&parts[index + 1]].content(part_content(index + 1));
+                }
+            }
+        });
+        render_until(
+            &fixture,
+            &|| views.iter().all(|view| view_superview(view).is_some()),
+            "the hosted planes",
+        );
+        assert_engine_sequence(&fixture, &foreign, plane_count, trailing_part);
+        recompose_without_hierarchy_writes(&fixture, &parts[0], &foreign);
+    }
+
+    fn assert_engine_sequence(
+        fixture: &Fixture,
+        foreign: &NSView,
+        plane_count: usize,
+        trailing_part: bool,
+    ) {
+        let direct = fixture.view.subviews();
+        let engine_stack: Vec<_> = direct
+            .iter()
+            .filter(|view| Retained::as_ptr(view) != std::ptr::from_ref(foreign))
+            .filter_map(|view| view.layer())
+            .filter(|layer| {
+                layer
+                    .name()
+                    .is_none_or(|name| *name != *objc2_foundation::ns_string!("cherenkov-probes"))
+            })
+            .collect();
+        let mut expected = Vec::new();
+        for _ in 0..plane_count {
+            expected.extend([true, false]);
+        }
+        if plane_count == 0 || trailing_part {
+            expected.push(true);
+        }
+        assert_eq!(
+            engine_stack
+                .iter()
+                .map(|layer| is_part(layer))
+                .collect::<Vec<_>>(),
+            expected,
+            "engine sequence for {plane_count} planes, trailing={trailing_part}"
+        );
+
+        let probes_index = direct
+            .iter()
+            .position(|view| {
+                view.layer().is_some_and(|layer| {
+                    layer.name().is_some_and(|name| {
+                        *name == *objc2_foundation::ns_string!("cherenkov-probes")
+                    })
+                })
+            })
+            .expect("the probes view");
+        let first_part = engine_stack.first().expect("part zero");
+        let first_part_index = direct
+            .iter()
+            .position(|view| {
+                view.layer()
+                    .is_some_and(|layer| same_layer(&layer, first_part))
+            })
+            .expect("part zero is an installed view");
+        assert_eq!(first_part_index, probes_index + 1);
+        let foreign_index = direct
+            .iter()
+            .position(|view| Retained::as_ptr(&view) == std::ptr::from_ref(foreign))
+            .expect("the foreign sibling remains in the host");
+        assert!(first_part_index < foreign_index);
+    }
+
+    fn recompose_without_hierarchy_writes(fixture: &Fixture, part: &Layer, foreign: &NSView) {
+        let changed_content = fixture.window.record(|c| {
+            c.fill(
+                Rect::new(0.0, 0.0, 96.0, 64.0),
+                WorkingColor::new([0.9, 0.2, 0.1, 1.0]),
+            );
+        });
+        fixture.counting.reset_writes();
+        fixture.window.update(|tx| {
+            tx[part].content(changed_content);
+        });
+        fixture.render();
+        assert_eq!(fixture.counting.hierarchy_writes(), (0, 0));
+        assert!(
+            fixture
+                .view
+                .subviews()
+                .iter()
+                .any(|view| Retained::as_ptr(&view) == std::ptr::from_ref(foreign))
+        );
+    }
+
     /// A part painted above the hosted view claims a hit only where its
     /// layers paint: inside a bar's clip the host view answers — the
     /// engine's pixels, not the hosted view beneath them — while the
@@ -2306,6 +2556,45 @@ mod macos {
         );
     }
 
+    /// An unclipped small mark claims only its painted bounds; elsewhere
+    /// inside the hosted view, the hit reaches the hosted leaf.
+    fn unclipped_paint_bounds_route_hits_over_a_hosted_view() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let surface = &fixture.window;
+        let hosted = surface.layer();
+        let label = surface.layer();
+        let mark = surface.record(|c| {
+            c.fill(
+                Rect::new(4.0, 4.0, 10.0, 8.0),
+                WorkingColor::new([0.7, 0.1, 0.1, 1.0]),
+            );
+        });
+        let object = Hosted::<Gpu>::new(HostedView::new(web.clone(), mtm));
+        surface.update(|tx| {
+            tx[surface.root()].push(&hosted).push(&label);
+            tx[&hosted].content(object.at(EXTENT));
+            tx[&label].content(mark);
+        });
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view",
+        );
+        let hit = |x, y| fixture.view.hitTest(CGPoint::new(x, y));
+        assert_eq!(
+            hit(3.5, 29.0).as_ref().map(Retained::as_ptr),
+            Some(Retained::as_ptr(&fixture.view)),
+            "painted content answers for the host"
+        );
+        assert_eq!(
+            hit(15.0, 26.0).as_ref().map(Retained::as_ptr),
+            Some(Retained::as_ptr(&web)),
+            "an unclipped transparent point reaches the hosted view"
+        );
+    }
+
     /// A part bounded below and above by hosted planes claims hits the
     /// same way: inside its painted bar for the host view, nowhere else.
     fn a_part_between_two_hosted_views_claims_only_where_it_paints() {
@@ -2373,6 +2662,106 @@ mod macos {
         );
     }
 
+    fn contents_orientation_updates_engine_layer_geometry_in_place() {
+        let fixture = Fixture::new();
+        let buffer = bgra_buffer();
+        let offscreen = fixture
+            .engine
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
+            .expect("offscreen");
+        let _engine_scene = scene_bar(
+            &fixture.engine,
+            &offscreen,
+            bgra(&fixture.metal, &buffer, FrameColor::SRGB),
+            1.0,
+        );
+        let window_scene = scene_bar(
+            &fixture.engine,
+            &fixture.window,
+            bgra(&fixture.metal, &buffer, FrameColor::SRGB),
+            1.0,
+        );
+        assert!(fixture.promote(), "the frame never became ready");
+        fixture.render();
+
+        let engine_layers = stack(&fixture);
+        assert_eq!(engine_layers.len(), 3, "two parts surround the frame");
+        assert_eq!(
+            engine_layers.iter().filter(|layer| is_part(layer)).count(),
+            2
+        );
+        let engine_pointers: Vec<_> = engine_layers.iter().map(Retained::as_ptr).collect();
+        let initial_geometry: Vec<_> = engine_layers
+            .iter()
+            .map(|layer| layer.isGeometryFlipped())
+            .collect();
+        let probe_layer = fixture
+            .view
+            .subviews()
+            .iter()
+            .find_map(|view| {
+                let layer = view.layer()?;
+                layer
+                    .name()
+                    .is_some_and(|name| *name == *objc2_foundation::ns_string!("cherenkov-probes"))
+                    .then_some(layer)
+            })
+            .expect("the engine probes view");
+        let probe_pointer = Retained::as_ptr(&probe_layer);
+        let initial_probe_geometry = probe_layer.isGeometryFlipped();
+
+        fixture
+            .counting
+            .orientation_layer()
+            .set_contents_flipped(true);
+        let changed = fixture.window.record(|c| {
+            c.fill(
+                Rect::new(30.0, 10.0, 40.0, 26.0),
+                WorkingColor::new([0.8, 0.2, 0.1, 1.0]),
+            );
+        });
+        fixture.window.update(|tx| {
+            tx[&window_scene[3]].content(changed);
+        });
+        fixture.render();
+
+        let updated_layers = stack(&fixture);
+        assert_eq!(
+            updated_layers
+                .iter()
+                .map(Retained::as_ptr)
+                .collect::<Vec<_>>(),
+            engine_pointers
+        );
+        assert_eq!(
+            updated_layers
+                .iter()
+                .map(|layer| layer.isGeometryFlipped())
+                .collect::<Vec<_>>(),
+            initial_geometry
+                .iter()
+                .map(|flipped| !flipped)
+                .collect::<Vec<_>>()
+        );
+        let updated_probe_layer = fixture
+            .view
+            .subviews()
+            .iter()
+            .find_map(|view| {
+                let layer = view.layer()?;
+                layer
+                    .name()
+                    .is_some_and(|name| *name == *objc2_foundation::ns_string!("cherenkov-probes"))
+                    .then_some(layer)
+            })
+            .expect("the engine probes view remains installed");
+        assert_eq!(Retained::as_ptr(&updated_probe_layer), probe_pointer);
+        assert_eq!(
+            updated_probe_layer.isGeometryFlipped(),
+            !initial_probe_geometry
+        );
+    }
+
     /// A steady frame writes nothing to the view hierarchy: `order`
     /// moves only the views out of place, and a hosted view that is the
     /// window's first responder keeps the status across renders and a
@@ -2381,39 +2770,145 @@ mod macos {
         let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let fixture = Fixture::new();
         let web = hosted_view(mtm, (0.1, 0.9, 0.2));
-        let [below, _holder, _hosted, _above, _above2] = hosted_scene(&fixture, &web);
+        let [_below, _holder, _hosted, above, _above2] = hosted_scene(&fixture, &web);
         render_until(
             &fixture,
             &|| view_superview(&web).is_some(),
             "the hosted view",
         );
+        let responder: &objc2_app_kit::NSResponder = &web;
+        assert!(fixture.app_window.makeFirstResponder(Some(responder)));
         fixture.counting.reset_writes();
-        fixture.render();
+        let changed_content = fixture.window.record(|c| {
+            c.fill(
+                Rect::new(30.0, 10.0, 40.0, 26.0),
+                WorkingColor::new([0.1, 0.2, 0.8, 1.0]),
+            );
+        });
+        fixture.window.update(|tx| {
+            tx[&above].content(changed_content);
+        });
         fixture.render();
         assert_eq!(
             fixture.counting.hierarchy_writes(),
             (0, 0),
-            "a steady frame made no hierarchy writes"
+            "a real content compose made no hierarchy writes"
         );
-        let responder: &objc2_app_kit::NSResponder = &web;
-        assert!(
-            fixture.app_window.makeFirstResponder(Some(responder)),
-            "the hosted view takes first responder"
-        );
-        fixture.render();
-        fixture.render();
-        // One reorder: the backdrop's subtree moves last, swapping two
-        // views' places — a mutation, but none of the responder's
-        // ancestors move.
-        fixture.window.update(|tx| {
-            tx[fixture.window.root()].push(&below);
-        });
-        fixture.render();
         assert!(
             fixture
                 .app_window
                 .firstResponder()
                 .is_some_and(|r| r.isEqual(Some(&*web))),
+            "a real content compose kept first responder"
+        );
+        let second_web = hosted_view(mtm, (0.2, 0.2, 0.9));
+        let second_plane = fixture.window.layer();
+        let trailing_part = fixture.window.layer();
+        let second_content = Hosted::<Gpu>::new(HostedView::new(second_web.clone(), mtm));
+        let trailing_content = fixture.window.record(|c| {
+            c.fill(
+                Rect::new(70.0, 40.0, 80.0, 50.0),
+                WorkingColor::new([0.1, 0.8, 0.2, 1.0]),
+            );
+        });
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()]
+                .push(&second_plane)
+                .push(&trailing_part);
+            tx[&second_plane].content(second_content.at(EXTENT));
+            tx[&trailing_part].content(trailing_content);
+        });
+        render_until(
+            &fixture,
+            &|| view_superview(&second_web).is_some(),
+            "the trailing hosted plane",
+        );
+        reorder_trailing_part_around_responder(&fixture, mtm, &web, &second_web, &trailing_part);
+    }
+
+    fn reorder_trailing_part_around_responder(
+        fixture: &Fixture,
+        mtm: MainThreadMarker,
+        web: &Retained<NSView>,
+        second_web: &Retained<NSView>,
+        trailing_part: &Layer,
+    ) {
+        let foreign = NSView::new(mtm);
+        fixture.view.addSubview(&foreign);
+        let responder: &objc2_app_kit::NSResponder = web;
+        assert!(
+            fixture.app_window.makeFirstResponder(Some(responder)),
+            "the hosted view takes first responder"
+        );
+        let stable_host = top_ancestor(web, &fixture.view);
+        let second_host = top_ancestor(second_web, &fixture.view);
+        let before = direct_subviews(&fixture.view);
+        let stable_index = before
+            .iter()
+            .position(|view| std::ptr::eq(*view, stable_host))
+            .expect("the first responder's ancestor is installed");
+        let second_index = before
+            .iter()
+            .position(|view| std::ptr::eq(*view, second_host))
+            .expect("the trailing plane is installed");
+        assert!(before.contains(&Retained::as_ptr(&foreign)));
+        let trailing_view = before[second_index + 1];
+        fixture.counting.reset_writes();
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()]
+                .remove(trailing_part)
+                .insert(4, trailing_part);
+        });
+        fixture.render();
+        let hierarchy_writes = fixture.counting.hierarchy_changes();
+        assert!(
+            hierarchy_writes
+                .iter()
+                .all(|(_, identity)| *identity != stable_host.addr()),
+            "the reorder never moved the first-responder view's ancestor"
+        );
+        let after = direct_subviews(&fixture.view);
+        assert_ne!(before, after, "the engine view order changed");
+        assert_eq!(
+            after[stable_index], stable_host,
+            "the first responder's ancestor stayed in place"
+        );
+        assert!(
+            before.contains(&trailing_view) && !after.contains(&trailing_view),
+            "moving content across the trailing plane detached its engine suffix"
+        );
+        assert!(
+            hierarchy_writes
+                .iter()
+                .any(|(added, identity)| !added && *identity == trailing_view.addr()),
+            "the detached engine part identity was recorded"
+        );
+        assert!(after.contains(&Retained::as_ptr(&foreign)));
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()]
+                .remove(trailing_part)
+                .push(trailing_part);
+        });
+        fixture.render();
+        let restored = direct_subviews(&fixture.view);
+        assert!(
+            restored.contains(&trailing_view),
+            "the trailing part reuses its previous view"
+        );
+        assert!(
+            fixture
+                .counting
+                .hierarchy_changes()
+                .iter()
+                .any(|(added, identity)| *added && *identity == trailing_view.addr()),
+            "the reinserted engine part identity was recorded"
+        );
+        assert_eq!(restored[stable_index], stable_host);
+        assert!(
+            fixture
+                .app_window
+                .firstResponder()
+                .is_some_and(|r| r.isEqual(Some(&**web))),
             "the hosted view kept first responder"
         );
     }

@@ -278,6 +278,8 @@ struct SurfaceState {
     promotes: bool,
     /// This frame's promotion decision; empty unless `promotes`.
     plan: planes::Plan,
+    /// Per-surface planner workspace, including refreshed hit regions.
+    plan_scratch: planes::PlanScratch,
     /// A discarded plan must be lowered again before any presentation.
     plan_dirty: bool,
     /// Tree version of the retained engine parts, excluding plane poses.
@@ -444,6 +446,14 @@ impl BackdropGroupState {
 }
 
 impl SurfaceState {
+    fn update_plane_stamp(&mut self, frame: &SurfaceFrame<'_>) {
+        self.plane_stamp = frame
+            .tree
+            .composition_stamp(|layer| self.plan.planes.iter().any(|plane| plane.layer == layer));
+        self.plane_clear = frame.clear;
+        self.plane_size = frame.size;
+    }
+
     /// Engine part `n`'s texture: `target` for part 0.
     fn part(&self, n: u32) -> (&wgpu::TextureView, &wgpu::Texture) {
         match n {
@@ -2946,6 +2956,7 @@ impl Renderer for GpuRenderer {
                 window,
                 promotes,
                 plan: planes::Plan::default(),
+                plan_scratch: planes::PlanScratch::default(),
                 plane_stamp: 0,
                 plane_resources: (0, 0, 0),
                 plane_clear: cherenkov::WorkingColor::TRANSPARENT,
@@ -6070,6 +6081,18 @@ impl GpuRenderer {
             &mut self.plan_scratch,
             &mut self.next_plan,
         );
+        planes::refresh_regions(
+            sf.tree,
+            &self.candidates,
+            &mut self.plan_scratch,
+            &mut self.next_plan,
+            |layer| {
+                surface
+                    .layers
+                    .get(&layer)
+                    .and_then(|content| content.paint_bounds)
+            },
+        );
         let next = &self.next_plan;
         if next.trailing != surface.plan.trailing
             || next.planes.len() != surface.plan.planes.len()
@@ -6198,12 +6221,18 @@ impl GpuRenderer {
         surf.frame.reset();
         surf.plan_dirty = false;
         let mut candidates = FxHashMap::default();
-        surf.plan = if surf.promotes {
-            plane_candidates(surf, resources.producers, &mut candidates);
-            planes::plan::<planes::Platform>(frame.tree, &candidates, ready)
+        if surf.promotes {
+            let candidates = plane_candidates(surf, resources.producers, &mut candidates);
+            planes::plan_with::<planes::Platform>(
+                frame.tree,
+                candidates,
+                ready,
+                &mut surf.plan_scratch,
+                &mut surf.plan,
+            );
         } else {
-            planes::Plan::default()
-        };
+            surf.plan = planes::Plan::default();
+        }
         if let Some((layer, reason)) = Self::unplaced(surf, frame.tree) {
             surf.plan_dirty = true;
             return Err(RenderError::Unplaceable { layer, reason });
@@ -6216,11 +6245,7 @@ impl GpuRenderer {
                 tracing::debug!(target: "cherenkov::planes", layer = ?layer, decision = ?why, "plane decision");
             }
         }
-        surf.plane_stamp = frame
-            .tree
-            .composition_stamp(|layer| surf.plan.planes.iter().any(|plane| plane.layer == layer));
-        surf.plane_clear = frame.clear;
-        surf.plane_size = frame.size;
+        surf.update_plane_stamp(frame);
         // Lowering borrows `layers` immutably while mutating `frame`;
         // taking the map out keeps the two borrows disjoint.
         let mut layers = std::mem::take(&mut surf.layers);
@@ -6236,6 +6261,9 @@ impl GpuRenderer {
             };
             let mut lowering = Lowering::new(&mut surf.frame, surf.size);
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
+                if surf.promotes {
+                    lower::refresh_paint_bounds(&mut layers, glyphs.fonts)?;
+                }
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
                         && entry.capture.as_ref().is_none_or(|capture| capture.dirty)
@@ -6279,6 +6307,13 @@ impl GpuRenderer {
             result
         };
         surf.layers = layers;
+        if result.is_ok() && surf.promotes {
+            let (layers, plan_scratch, plan) =
+                (&surf.layers, &mut surf.plan_scratch, &mut surf.plan);
+            planes::refresh_regions(frame.tree, &candidates, plan_scratch, plan, |layer| {
+                layers.get(&layer).and_then(|content| content.paint_bounds)
+            });
+        }
         surf.frame.content.sort_unstable_by_key(|(id, _)| id.raw());
         surf.frame.external.sort_unstable_by_key(|id| id.raw());
         surf.frame.external.dedup();

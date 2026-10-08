@@ -126,15 +126,22 @@ fn every_finite_affine_is_expressible() {
 
 #[cfg(not(target_os = "macos"))]
 mod hosted {
+    use std::sync::Weak;
+
     use kurbo::{Affine, Rect, Size, Vec2};
+    use objc2::AnyThread;
     use objc2::rc::Retained;
+    use objc2_av_foundation::AVSampleBufferDisplayLayer;
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use objc2_quartz_core::{CALayer, CAMetalLayer};
     use rustc_hash::FxHashMap;
 
     use cherenkov::{LayerId, ShapeData};
 
-    use super::super::{HostedNode, LayerScene, Transaction, anchored, host};
+    use super::super::{
+        DisplayLayer, HostedNode, LayerScene, ReadinessIvars, ReadinessObserver, Transaction,
+        anchored, host,
+    };
     use crate::render::planes::{Level, Placement, Source};
 
     const ROOT: LayerId = LayerId::new(0);
@@ -166,6 +173,8 @@ mod hosted {
             root: anchored(),
             parts: (0..parts).map(|_| CAMetalLayer::new()).collect(),
             planes: Vec::new(),
+            #[cfg(target_os = "macos")]
+            spare_planes: Vec::new(),
             displays: FxHashMap::default(),
             retired: Vec::new(),
             motions: FxHashMap::default(),
@@ -330,5 +339,155 @@ mod hosted {
         let moved = node.affineTransform();
         assert_eq!((moved.tx, moved.ty), (64.0, 8.0));
         assert_eq!(superlayer(&web), Some(holder(&scene.hosted, WEB)));
+    }
+
+    /// The iOS frame/hosted/frame transition keeps the host layer owned by
+    /// the caller and removes its engine holder when the binding is gone.
+    #[test]
+    fn a_layer_switching_between_frame_and_hosted_rebuilds_its_nodes() {
+        let _tx = Transaction::begin();
+        let web = CALayer::new();
+        let display = unsafe { AVSampleBufferDisplayLayer::new() };
+        let mut state_ref = scene(1);
+        let this = ReadinessObserver::alloc().set_ivars(ReadinessIvars {
+            scene: Weak::new(),
+            layer: WEB,
+            ready: Weak::new(),
+            waker: None,
+        });
+        // SAFETY: the inactive observer is an NSObject subclass initialized
+        // without a scene; this headless test never receives notifications.
+        let observer = unsafe { objc2::msg_send![super(this), init] };
+        let display_layer = DisplayLayer {
+            display: display.clone(),
+            generation: None,
+            observer,
+        };
+        state_ref.displays.insert(WEB, display_layer);
+        let mut frame = placement(Vec2::ZERO);
+        frame.source = Source::Frame;
+        state_ref.place(&[frame.clone()], (800, 600), 2.0, 1);
+        let frame_top = Retained::as_ptr(&state_ref.planes[0].top);
+        let frame_level = Retained::as_ptr(&state_ref.planes[0].levels[0].node);
+        let frame_parent = ptr(state_ref.planes[0].levels.last().unwrap().inner());
+        assert_eq!(superlayer(&display), Some(frame_parent));
+
+        host(&mut state_ref.hosted, vec![(WEB, web.clone(), EXTENT)]);
+        let mut hosted = placement(Vec2::ZERO);
+        hosted.source = Source::Hosted;
+        state_ref.place(&[hosted], (800, 600), 2.0, 2);
+        let hosted_top = Retained::as_ptr(&state_ref.planes[0].top);
+        let hosted_level = Retained::as_ptr(&state_ref.planes[0].levels[0].node);
+        assert_ne!(hosted_top, frame_top);
+        assert_ne!(hosted_level, frame_level);
+        let holder = holder(&state_ref.hosted, WEB);
+        assert_eq!(superlayer(&web), Some(holder));
+
+        host(&mut state_ref.hosted, Vec::new());
+        state_ref.place(&[frame], (800, 600), 2.0, 1);
+        assert_ne!(Retained::as_ptr(&state_ref.planes[0].top), hosted_top);
+        assert_ne!(
+            Retained::as_ptr(&state_ref.planes[0].levels[0].node),
+            hosted_level
+        );
+        assert_eq!(superlayer(&web), None);
+        let frame_parent = ptr(state_ref.planes[0].levels.last().unwrap().inner());
+        assert_eq!(superlayer(&display), Some(frame_parent));
+        drop(state_ref);
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod ordering {
+    use kurbo::Rect;
+
+    use super::super::{RegionPacket, append_view_stack, reconcile_view_order};
+
+    #[test]
+    fn a_reused_region_packet_keeps_nested_storage() {
+        let regions = vec![
+            vec![Some(Rect::new(1.0, 2.0, 3.0, 4.0)), None],
+            vec![Some(Rect::new(5.0, 6.0, 7.0, 8.0))],
+        ];
+        let planes = vec![None, Some(Rect::new(9.0, 10.0, 11.0, 12.0))];
+        let mut packet = RegionPacket::default();
+        packet.copy_from(&regions, &planes);
+        let outer = packet.regions.as_ptr();
+        let inners: Vec<_> = packet.regions.iter().map(Vec::as_ptr).collect();
+        let planes_ptr = packet.plane_regions.as_ptr();
+        crate::render::planes::tests::start_tracking();
+        packet.copy_from(&regions, &planes);
+        let allocations = crate::render::planes::tests::stop_tracking();
+        assert_eq!(allocations, (0, 0));
+        assert_eq!(packet.regions.as_ptr(), outer);
+        assert_eq!(
+            packet.regions.iter().map(Vec::as_ptr).collect::<Vec<_>>(),
+            inners
+        );
+        assert_eq!(packet.plane_regions.as_ptr(), planes_ptr);
+    }
+
+    #[test]
+    fn a_warmed_view_order_reconciliation_allocates_nothing() {
+        let mut previous = vec![0, 1, 2, 3];
+        let desired = [0, 1, 2, 3];
+        let reconcile = |previous: &mut Vec<usize>| {
+            reconcile_view_order(previous, &desired, |a, b| a == b, |_, _| {});
+        };
+        reconcile(&mut previous);
+        crate::render::planes::tests::start_tracking();
+        reconcile(&mut previous);
+        let allocations = crate::render::planes::tests::stop_tracking();
+        assert_eq!(allocations, (0, 0));
+    }
+
+    #[test]
+    fn every_two_plane_stack_shape_is_ordered() {
+        for (part_count, plane_count, expected) in [
+            (1, 0, vec![0]),
+            (1, 1, vec![0, 10]),
+            (2, 1, vec![0, 10, 1]),
+            (2, 2, vec![0, 10, 1, 11]),
+            (3, 2, vec![0, 10, 1, 11, 2]),
+        ] {
+            let mut desired = Vec::new();
+            append_view_stack(
+                &mut desired,
+                part_count,
+                plane_count,
+                |index| index,
+                |index| index + 10,
+            );
+            assert_eq!(desired, expected);
+        }
+    }
+
+    #[test]
+    fn an_installed_arbitrary_engine_permutation_is_reordered() {
+        let mut previous = vec![2, 3, 0, 1];
+        let mut installed = vec![98, 99, 2, 3, 0, 1];
+        let desired = [0, 1, 2, 3];
+        reconcile_view_order(
+            &mut previous,
+            &desired,
+            |left, right| left == right,
+            |view, above| {
+                let current = installed.iter().position(|value| value == view).unwrap();
+                let view = installed.remove(current);
+                let anchor = above.copied().unwrap_or(98);
+                let index = installed.iter().position(|value| *value == anchor).unwrap() + 1;
+                installed.insert(index, view);
+            },
+        );
+        assert_eq!(previous, desired);
+        assert!(installed.contains(&99), "foreign views are retained");
+        assert_eq!(
+            installed
+                .iter()
+                .copied()
+                .filter(|identity| (0..4).contains(identity))
+                .collect::<Vec<_>>(),
+            desired
+        );
     }
 }

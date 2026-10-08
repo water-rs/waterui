@@ -256,13 +256,12 @@ pub struct Plan {
     /// Whether any layer is painted after the last promoted one, so an
     /// engine part exists above it.
     pub trailing: bool,
-    /// Per engine part, the device-space rects of the layers that paint
-    /// content into it — each layer's clip intersected with its ancestors',
-    /// `None` when no clip bounds it, so the part's whole frame answers
-    /// hits. A layer that paints nothing contributes nothing.
+    /// Per engine part, the device-space paint bounds of its content,
+    /// intersected with the layer's clip bounds. `None` is an empty region.
+    /// Pure containers contribute no region.
     pub regions: Vec<Vec<Option<Rect>>>,
-    /// Per promoted plane in [`Plan::planes`] order, the layer's clip
-    /// intersected with its ancestors', `None` when unclipped.
+    /// Per promoted plane in [`Plan::planes`] order, its content rectangle,
+    /// intersected with the layer's clip bounds. `None` is an empty region.
     pub plane_regions: Vec<Option<Rect>>,
 }
 
@@ -509,6 +508,7 @@ fn verdicts<'a, C: Compositor>(
 /// frames, then recorded captures; ties within each class use paint order.
 /// Output remains in paint order.
 #[must_use]
+#[cfg(any(test, target_os = "android"))]
 pub fn plan<C: Compositor>(
     tree: &SurfaceTree,
     candidates: &FxHashMap<LayerId, Candidate>,
@@ -535,11 +535,11 @@ pub fn plan_with<C: Compositor>(
 ) {
     plan.rejected.clear();
     plan.unplaced.clear();
-    plan.regions.clear();
     plan.plane_regions.clear();
     if candidates.is_empty() {
         plan.planes.clear();
         plan.trailing = false;
+        resize_regions(&mut plan.regions, 1);
         return;
     }
     let PlanScratch {
@@ -596,22 +596,97 @@ pub fn plan_with<C: Compositor>(
     // Part boundaries are the promoted indices: a plane's own visit
     // contributes nothing to an engine part; every other layer that has
     // content contributes its clip to the region of the part it lands in.
-    plan.regions.clear();
-    plan.regions.resize_with(plan.parts(), Vec::new);
-    plan.plane_regions.clear();
+    let parts = plan.parts();
+    resize_regions(&mut plan.regions, parts);
     let mut part = 0;
     let mut boundary = promoted_at.iter().copied().peekable();
     for (i, visit) in order.iter().enumerate() {
         if boundary.next_if_eq(&i).is_some() {
-            plan.plane_regions.push(device[i].bounds);
+            let candidate = candidates[&visit.id];
+            plan.plane_regions
+                .push(candidate_rect(device[i].space, device[i].bounds, candidate));
             // The plane opens the next part — the last part already
             // exists even with nothing painted after the last plane.
-            part = (part + 1).min(plan.regions.len().saturating_sub(1));
+            part += 1;
             continue;
         }
         if tree.layer(visit.id).has_content() {
             plan.regions[part].push(device[i].bounds);
         }
+    }
+}
+
+/// Refresh hit regions from the prepared content bounds without changing
+/// the plan's promotion decisions.
+pub fn refresh_regions(
+    tree: &SurfaceTree,
+    candidates: &FxHashMap<LayerId, Candidate>,
+    scratch: &mut PlanScratch,
+    plan: &mut Plan,
+    mut paint_bounds: impl FnMut(LayerId) -> Option<Rect>,
+) {
+    let PlanScratch {
+        order,
+        pool,
+        stack,
+        device,
+        ..
+    } = scratch;
+    let order = paint_order(tree, order, pool, stack);
+    devices(tree, order, device);
+    let parts = plan.parts();
+    resize_regions(&mut plan.regions, parts);
+    plan.plane_regions.clear();
+    plan.plane_regions.resize(plan.planes.len(), None);
+    let mut part = 0;
+    let mut plane = 0;
+    for (i, visit) in order.iter().enumerate() {
+        if plan
+            .planes
+            .get(plane)
+            .is_some_and(|placement| placement.layer == visit.id)
+        {
+            let candidate = candidates[&visit.id];
+            let rect = candidate_rect(device[i].space, device[i].bounds, candidate);
+            plan.plane_regions[plane] = rect;
+            plane += 1;
+            part += 1;
+        } else if tree.layer(visit.id).has_content() {
+            let rect = match candidates.get(&visit.id).copied() {
+                Some(candidate) if candidate.source == Source::Frame => {
+                    candidate_rect(device[i].space, device[i].bounds, candidate)
+                }
+                _ => paint_bounds(visit.id).and_then(|rect| {
+                    clipped_bounds(device[i].space.transform_rect_bbox(rect), device[i].bounds)
+                }),
+            };
+            plan.regions[part].push(rect);
+        }
+    }
+}
+
+fn candidate_rect(space: Affine, clip: Option<Rect>, candidate: Candidate) -> Option<Rect> {
+    clipped_bounds(
+        (space * candidate.raster).transform_rect_bbox(Rect::new(
+            0.0,
+            0.0,
+            f64::from(candidate.size.0),
+            f64::from(candidate.size.1),
+        )),
+        clip,
+    )
+}
+
+fn clipped_bounds(rect: Rect, clip: Option<Rect>) -> Option<Rect> {
+    let rect = clip.map_or(rect, |clip| rect.intersect(clip));
+    (!rect.is_zero_area()).then_some(rect)
+}
+
+fn resize_regions(regions: &mut Vec<Vec<Option<Rect>>>, len: usize) {
+    regions.truncate(len);
+    regions.resize_with(len, Vec::new);
+    for region in regions {
+        region.clear();
     }
 }
 
@@ -655,7 +730,13 @@ fn same_plan<C: Compositor>(
     scratch: &mut PlanScratch,
 ) -> bool {
     if candidates.is_empty() {
-        return *committed == Plan::default();
+        return committed.planes.is_empty()
+            && committed.rejected.is_empty()
+            && committed.unplaced.is_empty()
+            && !committed.trailing
+            && committed.regions.len() == 1
+            && committed.regions[0].is_empty()
+            && committed.plane_regions.is_empty();
     }
     if !committed.unplaced.is_empty() {
         return false;

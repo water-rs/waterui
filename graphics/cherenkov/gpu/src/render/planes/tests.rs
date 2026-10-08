@@ -4,8 +4,10 @@ use std::cell::Cell;
 use kurbo::{Affine, Rect, RoundedRect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::render::glyph::Atlas;
+use crate::render::lower::{ContentData, Frame, GlyphContext, Lowering};
 use cherenkov::testing::LayerOp;
-use cherenkov::{BlendMode, FilterId, LayerId, Prop, ShapeData, SurfaceTree};
+use cherenkov::{BlendMode, Draw as _, FilterId, LayerId, Picture, Prop, ShapeData, SurfaceTree};
 
 mod alloc_counter {
     use std::cell::Cell;
@@ -77,13 +79,13 @@ unsafe impl GlobalAlloc for ThreadAllocator {
     }
 }
 
-fn start_tracking() {
+pub(super) fn start_tracking() {
     ALLOCATIONS.with(|count| count.set(0));
     REALLOCATIONS.with(|count| count.set(0));
     TRACKING.with(|tracking| tracking.set(true));
 }
 
-fn stop_tracking() -> (usize, usize) {
+pub(super) fn stop_tracking() -> (usize, usize) {
     TRACKING.with(|tracking| tracking.set(false));
     (ALLOCATIONS.with(Cell::get), REALLOCATIONS.with(Cell::get))
 }
@@ -156,13 +158,72 @@ fn pose_plans_reuse_workspace_and_placement_paths() {
 #[test]
 fn steady_pose_plan_allocates_nothing() {
     let mut tree = scene();
+    tree.note_installed(BELOW, true);
+    tree.note_installed(PARENT, true);
+    tree.note_installed(ABOVE, true);
     let candidates = video();
     let ready = candidates.keys().copied().collect();
+    let instance = crate::interop::wgpu::Instance::new(crate::interop::wgpu::InstanceDescriptor {
+        backends: crate::interop::wgpu::Backends::all(),
+        ..crate::interop::wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let Some(adapter) =
+        pollster::block_on(instance.enumerate_adapters(crate::interop::wgpu::Backends::all()))
+            .into_iter()
+            .next()
+    else {
+        return;
+    };
+    let Ok((device, _queue)) = pollster::block_on(
+        adapter.request_device(&crate::interop::wgpu::DeviceDescriptor::default()),
+    ) else {
+        return;
+    };
+    let atlas = Atlas::new(&device, u64::MAX);
+    let mut content = FxHashMap::default();
+    content.insert(
+        BELOW,
+        ContentData::new(Picture::record(|c| {
+            c.fill(
+                Rect::new(-2.0, 0.0, 30.0, 20.0),
+                cherenkov::WorkingColor::WHITE,
+            );
+        })),
+    );
+    content.insert(
+        ABOVE,
+        ContentData::new(Picture::record(|c| {
+            c.fill(
+                Rect::new(2.0, 3.0, 8.0, 9.0),
+                cherenkov::WorkingColor::WHITE,
+            );
+        })),
+    );
+    let fonts = FxHashMap::default();
+    let images = FxHashMap::default();
+    let bitmaps = FxHashMap::default();
+    let content_bindings = FxHashMap::default();
+    let glyphs = GlyphContext {
+        atlas: &atlas,
+        live_stamp: atlas.live_stamp(),
+        fonts: &fonts,
+        images: &images,
+        bitmaps: &bitmaps,
+        content: &content_bindings,
+    };
+    let mut frame = Frame::default();
+    let mut lowering = Lowering::new(&mut frame, SIZE);
+    lowering.prepare(&mut content, &glyphs).expect("prepared");
+    crate::render::lower::refresh_paint_bounds(&mut content, &fonts).expect("paint bounds");
     let mut scratch = PlanScratch::default();
     let mut output = Plan::default();
     for _ in 0..4 {
         super::plan_with::<Test>(&tree, &candidates, &ready, &mut scratch, &mut output);
+        super::refresh_regions(&tree, &candidates, &mut scratch, &mut output, |layer| {
+            content.get(&layer).and_then(|content| content.paint_bounds)
+        });
     }
+    let region_buffers: Vec<_> = output.regions.iter().map(Vec::as_ptr).collect();
     for x in 0..8 {
         tree.apply(LayerOp::Transform(
             VIDEO,
@@ -170,10 +231,71 @@ fn steady_pose_plan_allocates_nothing() {
         ));
         start_tracking();
         super::plan_with::<Test>(&tree, &candidates, &ready, &mut scratch, &mut output);
+        super::refresh_regions(&tree, &candidates, &mut scratch, &mut output, |layer| {
+            content.get(&layer).and_then(|content| content.paint_bounds)
+        });
         let counts = stop_tracking();
         assert_eq!(counts, (0, 0), "pose {x}");
+        assert_eq!(
+            output.regions.iter().map(Vec::as_ptr).collect::<Vec<_>>(),
+            region_buffers,
+            "region buffers were retained at pose {x}"
+        );
     }
-    assert_eq!(output, plan::<Test>(&tree, &candidates, &ready));
+    assert_eq!(
+        output.planes,
+        plan::<Test>(&tree, &candidates, &ready).planes
+    );
+}
+
+#[test]
+fn hit_regions_use_transformed_paint_and_plane_bounds_intersected_with_clips() {
+    let mut tree = scene();
+    tree.note_installed(BELOW, true);
+    tree.note_installed(PARENT, true);
+    tree.note_installed(ABOVE, true);
+    tree.apply(LayerOp::Transform(
+        BELOW,
+        prop(Affine::translate((10.0, 20.0))),
+    ));
+    tree.apply(LayerOp::Clip(
+        BELOW,
+        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 20.0, 10.0))),
+    ));
+    tree.apply(LayerOp::Transform(
+        VIDEO,
+        prop(Affine::translate((40.0, 50.0))),
+    ));
+    tree.apply(LayerOp::Clip(
+        VIDEO,
+        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 100.0))),
+    ));
+    let candidates = video();
+    let ready = all_ready(&candidates);
+    let mut scratch = PlanScratch::default();
+    let mut output = Plan::default();
+    super::plan_with::<Test>(&tree, &candidates, &ready, &mut scratch, &mut output);
+    super::refresh_regions(
+        &tree,
+        &candidates,
+        &mut scratch,
+        &mut output,
+        |layer| match layer {
+            BELOW => Some(Rect::new(-2.0, 0.0, 30.0, 20.0)),
+            ABOVE => Some(Rect::new(2.0, 3.0, 8.0, 9.0)),
+            _ => None,
+        },
+    );
+
+    assert_eq!(
+        output.regions[0],
+        [Some(Rect::new(10.0, 20.0, 30.0, 30.0)), None]
+    );
+    assert_eq!(output.regions[1], [Some(Rect::new(2.0, 3.0, 8.0, 9.0))]);
+    assert_eq!(
+        output.plane_regions,
+        [Some(Rect::new(40.0, 50.0, 140.0, 150.0))]
+    );
 }
 
 const fn prop<T>(target: T) -> Prop<T> {
