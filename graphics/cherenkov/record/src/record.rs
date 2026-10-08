@@ -289,31 +289,12 @@ impl<T> std::fmt::Debug for Subscribe<T> {
 }
 
 trait Subscription<T> {
-    /// The source's value now.
-    fn current(&self) -> T;
-
-    /// Whether the subscription can notify: a signal whose guard is
-    /// zero-sized with no drop glue never notifies, per nami's guard
-    /// contract ("when dropped, will unregister the watcher" — nothing
-    /// to unregister, so nothing to register). [`Live::watch`] skips the
-    /// watch of a subscription that cannot fire.
-    fn fires(&self) -> bool;
-
     fn start(&self, watch: Watch<T>) -> Option<Box<dyn Any>>;
 }
 
 struct SignalSubscription<S>(S);
 
 impl<S: Signal> Subscription<S::Output> for SignalSubscription<S> {
-    fn current(&self) -> S::Output {
-        self.0.snapshot()
-    }
-
-    fn fires(&self) -> bool {
-        // The same rule `start` applies to the guard it returns.
-        size_of::<S::Guard>() != 0 || needs_drop::<S::Guard>()
-    }
-
     #[expect(
         clippy::inline_always,
         reason = "erase constant watches after devirtualizing the subscription"
@@ -410,22 +391,20 @@ impl std::fmt::Debug for Binding {
 
 impl<T> Live<T> {
     /// The value when the `Live` was made: the constant, or the signal's
-    /// value at that point. A binding ([`watch`](Self::watch)) of a signal
-    /// starts from the signal's value when it binds instead — unless the
-    /// signal cannot fire, which keeps this stored value.
+    /// value at that point. A binding ([`watch`](Self::watch)) starts
+    /// from the same value — the binding snapshots once, when the `Live`
+    /// is made, and a change between then and the watch starting lands
+    /// through the watch like any change.
     #[must_use]
     pub const fn value(&self) -> &T {
         &self.value
     }
 
-    /// Whether binding this `Live` watches a signal's changes: `false`
-    /// for a constant and for a signal whose subscription cannot fire,
-    /// per [`Subscription::fires`].
-    pub(crate) fn is_signal(&self) -> bool {
-        self.subscription
-            .0
-            .as_ref()
-            .is_some_and(|subscription| subscription.fires())
+    /// Whether this `Live` carries a signal's subscription: `false` only
+    /// for a constant. Any subscription's watch starts — a guard's type
+    /// says nothing about whether the signal can notify.
+    pub(crate) fn has_signal(&self) -> bool {
+        self.subscription.0.is_some()
     }
 
     /// Binds `watcher` to the source signal's later changes — the one
@@ -436,14 +415,10 @@ impl<T> Live<T> {
     /// the change was made under.
     ///
     /// Returns the value the binding starts from — the constant, or the
-    /// signal's value read immediately before the watch starts, so a
-    /// change made since the `Live` was made is not lost — and the guard
-    /// keeping the subscription alive: `None` for a constant and for a
-    /// signal whose subscription cannot fire. The non-firing case starts
-    /// from the value the `Live` was made with, which differs from
-    /// [`Subscription::current`] only when an impure map ran over a
-    /// constant. Either way the binding replaces the property's previous
-    /// one.
+    /// signal's value when the `Live` was made — and the guard keeping
+    /// the subscription alive: `None` for a constant, and for a signal
+    /// whose guard is zero-sized with no drop glue. Either way the
+    /// binding replaces the property's previous one.
     #[expect(
         clippy::inline_always,
         reason = "expose the concrete subscription to the binding's call site"
@@ -457,16 +432,6 @@ impl<T> Live<T> {
             value,
             subscription,
         } = self;
-        let Some(subscription) = subscription.0 else {
-            return (value, None);
-        };
-        if !subscription.fires() {
-            return (value, None);
-        }
-        // A signal binding snapshots twice per edit: once when the `Live`
-        // was made, once here before the watch starts. A registration-time
-        // emit is not applied.
-        let value = subscription.current();
         let guard = subscription
             .start(Watch::binding(watcher))
             .map(|guard| Binding { _guard: guard });
@@ -507,14 +472,6 @@ struct MappedSubscription<T, F> {
 }
 
 impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for MappedSubscription<T, F> {
-    fn current(&self) -> U {
-        (self.f)(self.inner.current())
-    }
-
-    fn fires(&self) -> bool {
-        self.inner.fires()
-    }
-
     fn start(&self, watch: Watch<U>) -> Option<Box<dyn Any>> {
         let f = Rc::clone(&self.f);
         self.inner.start(Watch::binding(
@@ -1516,11 +1473,10 @@ mod tests {
         assert_eq!(run.coords.as_ptr(), coords);
     }
 
-    /// The recorder subscribes unconditionally — the `fires` skip is a
-    /// property-binding optimization, so a slot's `watch` runs even when
-    /// the signal's guard is zero-sized.
+    /// The recorder subscribes unconditionally, so a slot's `watch` runs
+    /// even when the signal's guard is zero-sized.
     #[test]
-    fn a_recording_watches_a_signal_with_a_zero_sized_guard() {
+    fn a_zero_sized_guard_does_not_skip_the_watch() {
         #[derive(Clone)]
         struct Observed(Rc<std::cell::Cell<usize>>);
 
