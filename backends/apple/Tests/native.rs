@@ -92,6 +92,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(target_os = "ios")]
     {
         tests.extend(tabs::trials());
+        tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
     }
     tests.extend(migration::trials());
@@ -4382,5 +4383,76 @@ mod list_scroll {
             Box::new(a_bare_request_takes_over_an_in_flight_animation),
         ));
         trial_each(named)
+    }
+}
+
+/// Navigation-chrome trials: the toolbar intent a page records in
+/// `set_page` applies through the stack's `UINavigationControllerDelegate`.
+#[cfg(target_os = "ios")]
+mod navigation {
+    use cocoa_ui::objc2_ui_kit::UINavigationController;
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::navigation::{
+        NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView,
+    };
+    use waterui::prelude::text;
+
+    use super::resolve;
+
+    /// The `UINavigationController` owning a view in the subtree,
+    /// depth-first — either the view's own controller is the nav
+    /// controller, or the page controller answers one.
+    fn nav_controller_in(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![libtest_mimic::Trial::test(
+            "navigation::a_first_page_bottom_bar_unhides_the_toolbar",
+            || {
+                a_first_page_bottom_bar_unhides_the_toolbar();
+                Ok(())
+            },
+        )]
+    }
+
+    /// The root page's intent is recorded in `set_page` while
+    /// `navigationController()` is still nil — a first page declaring
+    /// bottom items must still unhide the stack's toolbar once the page
+    /// resolves. Without it the iOS 26 floating bottom bar never mounts.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_first_page_bottom_bar_unhides_the_toolbar() {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::BottomBar,
+                    text("Action"),
+                )],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isToolbarHidden(),
+            "the first page's bottom bar unhides the toolbar"
+        );
     }
 }
