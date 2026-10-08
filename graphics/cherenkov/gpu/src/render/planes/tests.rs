@@ -179,6 +179,7 @@ const fn prop<T>(target: T) -> Prop<T> {
     Prop {
         target,
         animation: None,
+        start: None,
     }
 }
 

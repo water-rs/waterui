@@ -195,6 +195,7 @@ mod tests {
             Prop {
                 target: Affine::translate((40., -70.)),
                 animation: Some(Spring::bouncy().into()),
+                start: None,
             },
         ));
         tree.sample(start, Display::default().scale);
@@ -207,6 +208,7 @@ mod tests {
             Prop {
                 target: Affine::rotate(1.),
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
         tree.sample(start, Display::default().scale);
@@ -230,6 +232,7 @@ mod tests {
             Prop {
                 target: 0.5,
                 animation: None,
+                start: None,
             },
         ));
         assert!(!safe_path(&tree, plane, [plane].into_iter()));
@@ -253,6 +256,7 @@ mod tests {
             Prop {
                 target: 0.5,
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
         tree.sample(Instant::now(), Display::default().scale);
