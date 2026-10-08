@@ -161,9 +161,14 @@ impl Signal {
 /// needs window-bound control rendering; restores the original parent on
 /// drop. `None` while the view already has a window.
 struct WindowHost {
-    /// The temporary window — kept alive for the capture's duration; the
-    /// struct's drop hides it and restores the view before the window dies.
+    /// The temporary window — kept alive for the capture's duration and
+    /// never ordered in; the struct's drop restores the view before the
+    /// window dies. Never read directly: its only job is to live.
     #[cfg(target_os = "macos")]
+    #[expect(
+        dead_code,
+        reason = "the never-ordered capture window's role is to stay alive for the capture's duration"
+    )]
     window: Retained<cocoa_ui::objc2_app_kit::NSWindow>,
     /// See the macOS field.
     #[cfg(target_os = "ios")]
@@ -229,10 +234,12 @@ impl WindowHost {
             .unwrap_or(0);
         #[cfg(target_os = "macos")]
         let window = {
-            let window = cocoa_ui::bitmap::make_offscreen_window(mtm, size);
+            // The windowless capture contract: the host is never ordered
+            // in — a view attached to it still drives AppKit's
+            // window-dependent rendering paths for `renderInContext`.
+            let window = cocoa_ui::bitmap::capture_window(mtm, size);
             let content = window.contentView().expect("offscreen window content");
             cocoa_ui::view::add_subview(&content, view);
-            cocoa_ui::bitmap::show_capture_window(&window);
             // Text fields stay out of a capture unless marked dirty — the
             // existing bitmap path's preparation.
             cocoa_ui::bitmap::force_text_fields_display(view);
@@ -267,10 +274,9 @@ impl Drop for WindowHost {
     /// frame — appending would silently reorder the host's z-order, and a
     /// resized frame would linger.
     fn drop(&mut self) {
-        // The capture window hides first — a re-hosted view must never be
-        // left visible inside it — then the view returns to its parent.
-        #[cfg(target_os = "macos")]
-        cocoa_ui::bitmap::close_capture_window(&self.window);
+        // The macOS capture window was never ordered in — nothing to hide;
+        // the iOS one hides first — a re-hosted view must never be left
+        // visible inside it — then the view returns to its parent.
         #[cfg(target_os = "ios")]
         cocoa_ui::bitmap::close_capture_window(&self.window);
         cocoa_ui::view::remove_from_superview(&self.view);

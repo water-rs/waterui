@@ -2718,9 +2718,11 @@ mod tests {
             .expect("hydrolysis Cargo.toml should parse");
         let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"]
             ["dependencies"];
-        assert_eq!(
-            native_dependencies["waterui-preview"]["version"].as_str(),
-            Some(pinned("waterui-preview-version").as_str()),
+        // The generated crate must not carry `waterui-preview` — the
+        // preview runtime module no longer uses the support-app crate.
+        assert!(
+            native_dependencies.get("waterui-preview").is_none(),
+            "the generated crate must not depend on waterui-preview"
         );
         assert_eq!(
             native_dependencies["waterui-preview-protocol"]["version"].as_str(),
@@ -5450,10 +5452,10 @@ pub mod hydrolysis {
             bins,
             profile: super::generated_profiles(ctx.project_packages.as_ref())?,
             features: BTreeMap::from([
-                (
-                    "waterui-preview-mode".to_string(),
-                    vec!["dep:waterui-preview".to_string()],
-                ),
+                // The preview runtime module compiles under the feature
+                // alone — it no longer consumes the `waterui-preview`
+                // support-app crate.
+                ("waterui-preview-mode".to_string(), vec![]),
                 (
                     "waterui-preview-test-mode".to_string(),
                     vec!["dep:waterui-testing".to_string()],
@@ -5681,23 +5683,6 @@ pub mod hydrolysis {
                         ),
                     )?
                     .with_default_features(false),
-                ),
-            ),
-            (
-                "waterui-preview".to_string(),
-                GeneratedDependencyValue::detailed(
-                    super::generated_dependency_from_spec(
-                        ctx,
-                        NativeBackendDependencySpec::new(
-                            "waterui-preview",
-                            &[],
-                            NativeBackendDependencySource::WorkspaceSubdir(
-                                "components/devtools/preview/runtime",
-                            ),
-                        ),
-                    )?
-                    .with_default_features(false)
-                    .with_optional(),
                 ),
             ),
             (
