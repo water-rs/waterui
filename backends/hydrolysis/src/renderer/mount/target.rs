@@ -298,7 +298,10 @@ impl LayerTarget for cherenkov_gpu::Gpu {
                         crate::renderer::material::capture_scale(),
                     )
                 },
-                |tx: &mut Transaction<'_, Self>, layer, group: &cherenkov::BackdropGroup| {
+                |tx: &mut Transaction<'_, Self>,
+                 layer,
+                 group: &cherenkov::BackdropGroup,
+                 _scale| {
                     tx[layer].backdrop(group.sample());
                 },
             ),
@@ -351,19 +354,20 @@ impl LayerTarget for cherenkov_gpu::Gpu {
                 resolve: super::layers::NodeLayers::member_layer,
             },
             (
-                |params, _scale| {
-                    surface.backdrop_group_unfiltered(cherenkov::BackdropSpec::new(
-                        params.scale,
-                        params.levels,
-                    ))
+                move |params, scale| {
+                    let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels);
+                    if let Some(union) = union_of(params, scale, chrome.material.capture()) {
+                        spec = spec.union(union);
+                    }
+                    surface.backdrop_group_unfiltered(spec)
                 },
-                |tx, layer, group| {
+                move |tx, layer, group, scale| {
                     let id = group.id();
                     let shader = shader.clone();
                     tx[layer].backdrop(
                         effect
                             .clone()
-                            .map(move |effect| group_sample_with(id, &shader, &effect)),
+                            .map(move |effect| group_sample_with(id, &shader, &effect, scale)),
                     );
                 },
             ),
@@ -375,14 +379,60 @@ impl LayerTarget for cherenkov_gpu::Gpu {
     }
 }
 
+/// The union field `params` declares for a group built at `scale`:
+/// `None` for `Solo` and `Shared` classes; for `Union`, the class's
+/// logical smoothing converted to device pixels — [`BackdropUnion`]'s
+/// input — with its error surfaced, never clamped.
+///
+/// # Panics
+/// Panics, naming the class, smoothing and scale, when the converted
+/// smoothing is not a valid [`BackdropUnion`].
+pub fn union_of(
+    params: &cherenkov_record::MaterialCapture,
+    scale: f64,
+    class: cherenkov_record::CaptureClass,
+) -> Option<cherenkov::BackdropUnion> {
+    let cherenkov_record::MaterialGrouping::Union { smoothing } = params.grouping else {
+        return None;
+    };
+    let device = f64::from(smoothing) * scale;
+    Some(
+        cherenkov::BackdropUnion::new(crate::num_cast::f64_as_f32(device)).unwrap_or_else(|error| {
+            panic!(
+                "hydrolysis materials: capture class {class:?} union smoothing {smoothing} is invalid at display scale {scale}: {error}"
+            )
+        }),
+    )
+}
+
+/// The member's logical outer `extent` as device pixels at `scale` — the
+/// display scale the group was built for.
+///
+/// # Panics
+/// Panics when `extent` converted to device pixels is not a valid
+/// [`BackdropOuter`]: its error is surfaced, never clamped.
+pub fn outer_of(extent: f32, scale: f64) -> cherenkov::BackdropOuter {
+    let device = f64::from(extent) * scale;
+    cherenkov::BackdropOuter::new(crate::num_cast::f64_as_f32(device)).unwrap_or_else(|error| {
+        panic!(
+            "hydrolysis materials: outer extent {extent} is invalid at display scale {scale}: {error}"
+        )
+    })
+}
+
 /// The live backdrop sample a `ChromeMaterial` member binds: the group's
-/// id and the member's effect mapped through its shader.
-fn group_sample_with(
+/// id and the member's effect mapped through its shader, the effect's
+/// logical outer extent converted to device pixels at `scale` — the
+/// display scale the group was built for.
+pub fn group_sample_with(
     id: cherenkov::BackdropId,
     shader: &cherenkov::BackdropShader,
     effect: &cherenkov_record::MaterialEffect,
+    scale: f64,
 ) -> cherenkov::BackdropSample {
+    let outer = outer_of(effect.outer_extent(), scale);
     cherenkov::BackdropSample::with_effect(id, shader.effect(effect.uniforms().to_vec()))
+        .outer(outer)
 }
 
 fn external_frame_plane_size(frame: &cherenkov_gpu::interop::ExternalFrame) -> (u32, u32) {

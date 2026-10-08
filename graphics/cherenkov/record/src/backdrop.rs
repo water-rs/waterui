@@ -664,7 +664,10 @@ impl BackdropShaderSource {
 
 #[cfg(test)]
 mod tests {
-    use super::{BackdropSpec, CaptureLevels, CaptureLevelsError, CaptureScale, CaptureScaleError};
+    use super::{
+        BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError,
+        CaptureScale, CaptureScaleError,
+    };
 
     #[test]
     fn backdrop_union_is_finite_and_positive() {

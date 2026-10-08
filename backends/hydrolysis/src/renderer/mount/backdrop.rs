@@ -118,7 +118,8 @@ pub struct ChromeGroupKey {
 impl ChromeGroupKey {
     /// Keys the group the `member` layer joins under `canvas`: a `Solo`
     /// class or a `SOLO` scope keys the member by its own layer, so it
-    /// never shares; a `Shared` class under a scope shares it.
+    /// never shares; a `Shared` or `Union` class under a scope shares
+    /// it.
     pub(crate) fn new(
         member: LayerId,
         scope: cherenkov_record::MaterialScope,
@@ -128,7 +129,7 @@ impl ChromeGroupKey {
     ) -> Self {
         Self {
             scope: match scope.id() {
-                Some(scope) if grouping == MaterialGrouping::Shared => ChromeScope::Scoped(scope),
+                Some(scope) if grouping != MaterialGrouping::Solo => ChromeScope::Scoped(scope),
                 _ => ChromeScope::Solo(member),
             },
             class,
@@ -261,7 +262,10 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
     ///
     /// `hooks` packs the target's two callbacks: `create` builds the
     /// target's group object from the parameters the key resolves to and
-    /// the display scale; `apply` installs a member layer on a group.
+    /// the display scale; `apply` installs a member layer on a group,
+    /// handed the display scale the group was built for — a member's
+    /// device-pixel terms convert at that scale, and a scale rebuild
+    /// re-runs it for every member.
     pub(crate) fn join<T: cherenkov::Target>(
         &mut self,
         tx: &mut Transaction<'_, T>,
@@ -274,7 +278,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
         >,
         hooks: (
             impl Fn(&P, f64) -> G,
-            impl Fn(&mut Transaction<'_, T>, &Layer, &G),
+            impl Fn(&mut Transaction<'_, T>, &Layer, &G, f64),
         ),
     ) {
         let (create, apply) = hooks;
@@ -330,7 +334,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
                         if let Some(layers) = &*retained.layers.borrow()
                             && let Some(member) = resolve(layers, *other)
                         {
-                            apply(tx, member, &rebuilt.group);
+                            apply(tx, member, &rebuilt.group, display_scale);
                         }
                     }
                     *entry.get_mut() = rebuilt;
@@ -348,7 +352,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
                 members: FxHashSet::default(),
             }),
         };
-        apply(tx, member, &group.group);
+        apply(tx, member, &group.group, display_scale);
         group.members.insert(member.id());
         self.members.insert(
             member.id(),

@@ -109,7 +109,7 @@ pub struct MaterialCapture {
 /// How a capture class's members form groups inside a
 /// [`MaterialScope`]: the scope a view subtree declares to say that its
 /// materials belong together.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MaterialGrouping {
     /// The class ignores scopes: every member is a group of its own, with
     /// its own capture.
@@ -119,6 +119,23 @@ pub enum MaterialGrouping {
     /// them in paint order, and one filter chain. Members of one group do
     /// not see each other.
     Shared,
+    /// The class's members group like [`Shared`](Self::Shared) and
+    /// additionally sample one union field: the smooth minimum of the
+    /// members' signed distances with `smoothing` as the field's width
+    /// ([`BackdropUnion`]). `smoothing` is in the group's local logical
+    /// pixels; the realizing host converts it to device pixels at the
+    /// display scale the group is built for, surfacing
+    /// [`BackdropUnionError`] for a non-finite or non-positive value.
+    ///
+    /// [`BackdropUnion`]: crate::BackdropUnion
+    /// [`BackdropUnionError`]: crate::BackdropUnionError
+    Union {
+        /// The union field's width in the group's local logical pixels
+        /// ([`BackdropUnion`]'s smoothing): finite and positive.
+        ///
+        /// [`BackdropUnion`]: crate::BackdropUnion
+        smoothing: f32,
+    },
 }
 
 /// A material's live per-member parameters, applied in the member's
@@ -129,6 +146,13 @@ pub enum MaterialGrouping {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MaterialEffect {
     uniforms: Vec<f32>,
+    /// The member composite's outer extent in the group's local logical
+    /// pixels; the realizing host converts it to device pixels at the
+    /// display scale the group is built for and binds it as the member's
+    /// [`BackdropOuter`]. Zero keeps the clip's coverage.
+    ///
+    /// [`BackdropOuter`]: crate::BackdropOuter
+    outer: f32,
 }
 
 impl MaterialEffect {
@@ -155,7 +179,34 @@ impl MaterialEffect {
                 uniforms[index]
             );
         }
-        Self { uniforms }
+        Self {
+            uniforms,
+            outer: 0.0,
+        }
+    }
+
+    /// The member composite's outer extent: `px` logical pixels beyond
+    /// the field's edge, converted to device pixels at the group's build
+    /// display scale by the realizing host and bound as the member's
+    /// [`BackdropOuter`]. Zero — the default — keeps the clip's
+    /// coverage.
+    ///
+    /// [`BackdropOuter`]: crate::BackdropOuter
+    ///
+    /// # Panics
+    /// Panics, naming the violated rule, on a non-finite or negative
+    /// extent: the logical extent converts to a device-pixel
+    /// [`BackdropOuter`](crate::BackdropOuter), which enforces the same
+    /// rule.
+    #[must_use]
+    pub fn outer(self, px: f32) -> Self {
+        if let Err(error) = crate::BackdropOuter::new(px) {
+            panic!("backdrop material outer extent {px} is invalid: {error}");
+        }
+        Self {
+            uniforms: self.uniforms,
+            outer: px,
+        }
     }
 
     /// The uniforms the effect was made with, in the shader's declared
@@ -163,6 +214,14 @@ impl MaterialEffect {
     #[must_use]
     pub fn uniforms(&self) -> &[f32] {
         &self.uniforms
+    }
+
+    /// The outer extent the effect was made with, in the group's local
+    /// logical pixels: finite and non-negative, zero unless
+    /// [`outer`](Self::outer) set it.
+    #[must_use]
+    pub const fn outer_extent(&self) -> f32 {
+        self.outer
     }
 }
 
@@ -349,12 +408,22 @@ impl MaterialRegistry {
     /// Registers the capture class `capture` under `key`.
     ///
     /// # Panics
-    /// Panics when `key` is already registered.
+    /// Panics when `key` is already registered, or when a
+    /// [`MaterialGrouping::Union`] smoothing is not finite or not
+    /// positive — the scale-independent part of what the union field
+    /// requires, checked at the earliest point it is seen.
     pub fn register_capture_class(
         &mut self,
         key: CaptureClass,
         capture: MaterialCapture,
     ) -> &mut Self {
+        if let MaterialGrouping::Union { smoothing } = capture.grouping
+            && let Err(error) = crate::BackdropUnion::new(smoothing)
+        {
+            panic!(
+                "backdrop material capture class {key:?} union smoothing {smoothing} is invalid: {error}"
+            );
+        }
         let previous = self.captures.insert(key, capture);
         assert!(
             previous.is_none(),

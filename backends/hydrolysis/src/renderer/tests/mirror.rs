@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use cherenkov::{
-    BackdropId, BackdropSample, FilterId, Layer, LayerContent, LayerId, LayerNode, Realize, Shared,
-    SurfaceId, SurfaceTree, Transaction,
+    BackdropId, FilterId, Layer, LayerContent, LayerId, LayerNode, Realize, Shared, SurfaceId,
+    SurfaceTree, Transaction,
 };
 use cherenkov_record::{ChangeSet, MaterialRegistry};
 use rustc_hash::FxHashMap;
@@ -108,6 +108,10 @@ pub struct MirrorHost {
     engine: Rc<GpuEngine>,
     metrics: Arc<AppliedFilterMetrics>,
     materials: MaterialTerms<MirrorTarget>,
+    /// Each chrome group's union field at creation — what
+    /// [`mount::target::union_of`] resolved for the key's class at the
+    /// group's display scale. `None` for a `Solo`/`Shared` class.
+    union_log: RefCell<Vec<Option<cherenkov::BackdropUnion>>>,
 }
 
 impl std::fmt::Debug for MirrorHost {
@@ -184,7 +188,10 @@ impl LayerTarget for MirrorTarget {
                 membership,
                 resolve: NodeLayers::frame_layer,
             },
-            (|_runtime, _scale| key_id(&key), |_tx, _member, _group| {}),
+            (
+                |_runtime, _scale| key_id(&key),
+                |_tx, _member, _group, _scale| {},
+            ),
         );
     }
 
@@ -224,12 +231,28 @@ impl LayerTarget for MirrorTarget {
                 resolve: NodeLayers::member_layer,
             },
             (
-                |_params, _scale| key_id(&key),
-                move |tx: &mut Transaction<'_, Self>, member: &Layer, id: &BackdropId| {
+                |params: &cherenkov_record::MaterialCapture, scale| {
+                    // The same union conversion the GPU target runs; a
+                    // test reads the device-pixel result off the log.
+                    host.union_log
+                        .borrow_mut()
+                        .push(crate::renderer::mount::target::union_of(
+                            params,
+                            scale,
+                            chrome.material.capture(),
+                        ));
+                    key_id(&key)
+                },
+                move |tx: &mut Transaction<'_, Self>,
+                      member: &Layer,
+                      id: &BackdropId,
+                      scale: f64| {
                     let id = *id;
                     let shader = shader.clone();
                     tx[member].backdrop(effect.clone().map(move |effect| {
-                        BackdropSample::with_effect(id, shader.effect(effect.uniforms().to_vec()))
+                        crate::renderer::mount::target::group_sample_with(
+                            id, &shader, &effect, scale,
+                        )
                     }));
                 },
             ),
@@ -292,6 +315,7 @@ impl MirrorWindow {
                 registry: Rc::clone(registry),
                 shaders: attach_material_shaders(&engine, registry),
             },
+            union_log: RefCell::new(Vec::new()),
         };
         Self {
             mount: Mount::new(shared, registry),
@@ -370,6 +394,19 @@ impl MirrorWindow {
     /// The theme's material terms on the mirror's engine.
     pub fn materials(&self) -> &MaterialTerms<MirrorTarget> {
         &self.host.materials
+    }
+
+    /// The union field each chrome group was created with, in creation
+    /// order — `None` for `Solo`/`Shared` classes.
+    pub fn union_log(&self) -> Vec<Option<cherenkov::BackdropUnion>> {
+        self.host.union_log.borrow().clone()
+    }
+
+    /// The mirror's chrome group table.
+    pub fn chrome_groups(
+        &self,
+    ) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<BackdropId> {
+        self.mount.chrome_groups()
     }
 
     /// The member's parent layer's committed children, in paint order.
@@ -514,6 +551,12 @@ impl HydrolysisRenderer {
     /// Commits the window's host frames into the renderer's mirror mount
     /// and returns that commit's stats with the mounted layers' census.
     pub fn commit_mirror(&mut self) -> MountStats {
+        self.commit_mirror_at(1.0)
+    }
+
+    /// [`commit_mirror`](Self::commit_mirror) at `scale` device pixels per
+    /// point: the display scale the mount builds its backdrop terms for.
+    pub fn commit_mirror_at(&mut self, scale: f64) -> MountStats {
         let roots = self.mount_roots();
         let registry = Rc::clone(&self.material_registry);
         let window = self
@@ -528,7 +571,7 @@ impl HydrolysisRenderer {
         window.mount.commit(
             &window.host,
             kurbo::Affine::IDENTITY,
-            1.0,
+            scale,
             &roots,
             &mut wakes,
             window_material.as_ref(),

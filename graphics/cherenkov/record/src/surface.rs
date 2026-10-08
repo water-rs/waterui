@@ -1945,7 +1945,7 @@ mod tests {
         let layer = layer(&shared);
         let (group, other) = (BackdropId::new(1), BackdropId::new(2));
         let sample = binding(BackdropSample::with_effect(group, rim(1.0)));
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].backdrop(sample.clone());
         });
         let ops = drain_layer_ops(&shared, &mut tree);
@@ -1978,7 +1978,7 @@ mod tests {
         }
 
         // Clearing the membership drops the subscription.
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].clear_backdrop();
         });
         let ops = drain_layer_ops(&shared, &mut tree);
@@ -1998,7 +1998,7 @@ mod tests {
         let newest = BackdropSample::with_effect(BackdropId::new(2), rim(2.0));
         let sample = binding(first.clone());
         let opacity = binding(1.0_f32);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].backdrop(sample.clone()).opacity(opacity.clone());
             sample.set(newest.clone());
             opacity.set(0.25);
@@ -2089,7 +2089,7 @@ mod tests {
         let sample = binding(first.clone());
         let opacity = binding(1.0_f32);
         applied.borrow_mut().clear();
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].backdrop(sample.clone()).opacity(opacity.clone());
             sample.set(newest.clone());
             opacity.set(0.25);
@@ -2133,7 +2133,7 @@ mod tests {
         let mut tree = crate::SurfaceTree::new();
         let layer = layer(&shared);
         let clip = binding(Rect::new(0.0, 0.0, 10.0, 10.0));
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].clip(clip.clone());
         });
         let ops = drain_layer_ops(&shared, &mut tree);
@@ -2146,7 +2146,7 @@ mod tests {
             "the bound clip starts from its shape: {ops:?}"
         );
 
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].clear_clip();
         });
         let ops = drain_layer_ops(&shared, &mut tree);
@@ -2178,7 +2178,7 @@ mod tests {
             }
             opacity
         });
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(opacity.clone());
             source.set(0.25);
         });
@@ -2214,7 +2214,7 @@ mod tests {
         let mut tree = crate::SurfaceTree::new();
         let layer = layer(&shared);
         let opacity = binding(1.0_f32);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(opacity.clone());
         });
         drain_layer_ops(&shared, &mut tree);
@@ -2222,7 +2222,7 @@ mod tests {
         // The set fires before the constant in program order, but the
         // constant's edit replaces the binding: the deferred change is
         // stale and must not land.
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             opacity.set(0.5);
             tx[&layer].opacity(0.25_f32);
         });
@@ -2252,12 +2252,12 @@ mod tests {
         let mut tree = crate::SurfaceTree::new();
         let layer = layer(&shared);
         let opacity = binding(1.0_f32);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(opacity.clone());
         });
         drain_layer_ops(&shared, &mut tree);
 
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(0.25_f32);
             opacity.set(0.5);
         });
@@ -2278,7 +2278,7 @@ mod tests {
         let shared = shared();
         let mut tree = crate::SurfaceTree::new();
         let mut handle = None;
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             let layer = Shared::layer(&shared);
             tx[&layer].opacity(0.5_f32);
             handle = Some(layer);
@@ -2305,14 +2305,14 @@ mod tests {
         let layer = layer(&shared);
         let id = layer.id();
         let opacity = binding(1.0_f32);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(opacity.clone());
         });
         drain_layer_ops(&shared, &mut tree);
 
         // Dropping the layer ends its binding's generation: the change
         // the signal made earlier in the body is discarded with it.
-        Shared::run_transaction(&shared, None, |_| {
+        Shared::run_transaction(&shared, None, None, |_| {
             opacity.set(0.5);
             drop(layer);
         });
@@ -2336,13 +2336,13 @@ mod tests {
         let mut tree = crate::SurfaceTree::new();
         let layer = layer(&shared);
         let opacity = binding(1.0_f32);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(opacity.clone());
         });
         drain_layer_ops(&shared, &mut tree);
 
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Shared::run_transaction(&shared, None, |tx| {
+            Shared::run_transaction(&shared, None, None, |tx| {
                 opacity.set(0.5);
                 tx[&layer].transform(Affine::scale(2.0));
                 panic!("the body is lost");
@@ -2373,7 +2373,7 @@ mod tests {
 
         // A write since ends the binding: a change deferred under it
         // would have lost, and the signal now queues nothing.
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(0.2_f32);
         });
         drain_layer_ops(&shared, &mut tree);
@@ -2392,9 +2392,9 @@ mod tests {
         drain_layer_ops(&shared, &mut tree);
         let outer_animation: Animation = Curve::linear(Duration::from_millis(400)).into();
         let inner_animation: Animation = Curve::linear(Duration::from_millis(800)).into();
-        Shared::run_transaction(&shared, Some(outer_animation), |tx| {
+        Shared::run_transaction(&shared, Some(outer_animation), None, |tx| {
             tx[&layer].opacity(0.2_f32);
-            Shared::run_transaction(&shared, Some(inner_animation), |inner| {
+            Shared::run_transaction(&shared, Some(inner_animation), None, |inner| {
                 inner[&layer].opacity(0.5_f32);
             });
             tx[&layer].transform(Affine::translate(Vec2::new(1.0, 2.0)));
@@ -2407,10 +2407,12 @@ mod tests {
                     LayerOp::Opacity(id, Prop {
                         target: first,
                         animation: first_animation,
+                        ..
                     }),
                     LayerOp::Opacity(_, Prop {
                         target: second,
                         animation: second_animation,
+                        ..
                     }),
                     LayerOp::Transform(_, Prop {
                         animation: third_animation,
@@ -2435,8 +2437,8 @@ mod tests {
         drain_layer_ops(&shared, &mut tree);
         let outer_animation: Animation = Curve::linear(Duration::from_millis(400)).into();
         let inner_animation: Animation = Curve::linear(Duration::from_millis(800)).into();
-        Shared::run_transaction(&shared, Some(outer_animation), |tx| {
-            Shared::run_transaction(&shared, Some(inner_animation), |inner| {
+        Shared::run_transaction(&shared, Some(outer_animation), None, |tx| {
+            Shared::run_transaction(&shared, Some(inner_animation), None, |inner| {
                 inner[&layer].opacity(0.5_f32);
             });
             tx[&layer].opacity(0.2_f32);
@@ -2449,10 +2451,12 @@ mod tests {
                     LayerOp::Opacity(_, Prop {
                         target: first,
                         animation: first_animation,
+                        ..
                     }),
                     LayerOp::Opacity(id, Prop {
                         target: second,
                         animation: second_animation,
+                        ..
                     }),
                 ] if *id == layer.id()
                     && first.to_bits() == 0.5_f32.to_bits()
@@ -2471,8 +2475,8 @@ mod tests {
         let outer_layer = layer(&shared);
         drain_layer_ops(&shared, &mut tree);
         let mut created = None;
-        Shared::run_transaction(&shared, None, |tx| {
-            Shared::run_transaction(&shared, None, |inner| {
+        Shared::run_transaction(&shared, None, None, |tx| {
+            Shared::run_transaction(&shared, None, None, |inner| {
                 let layer = Shared::layer(&shared);
                 inner[&layer].opacity(0.5_f32);
                 created = Some(layer);
@@ -2515,9 +2519,9 @@ mod tests {
         let mut tree = crate::SurfaceTree::new();
         let layer = layer(&shared);
         drain_layer_ops(&shared, &mut tree);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(0.2_f32);
-            Shared::run_transaction(&shared, None, |inner| {
+            Shared::run_transaction(&shared, None, None, |inner| {
                 inner[&layer].opacity(0.5_f32);
             });
             let state = shared.borrow();
@@ -2539,15 +2543,15 @@ mod tests {
         let mut tree = crate::SurfaceTree::new();
         let layer = layer(&shared);
         let opacity = binding(1.0_f32);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(opacity.clone());
         });
         drain_layer_ops(&shared, &mut tree);
 
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Shared::run_transaction(&shared, None, |tx| {
+            Shared::run_transaction(&shared, None, None, |tx| {
                 tx[&layer].opacity(0.2_f32);
-                Shared::run_transaction(&shared, None, |inner| {
+                Shared::run_transaction(&shared, None, None, |inner| {
                     opacity.set(0.5);
                     inner[&layer].transform(Affine::IDENTITY);
                     panic!("the inner body is lost");
@@ -2569,7 +2573,7 @@ mod tests {
         assert_eq!(tree.layer(layer.id()).opacity.to_bits(), 1.0_f32.to_bits());
 
         // The surface still works: the next transaction applies normally.
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(0.9_f32);
         });
         let ops = drain_layer_ops(&shared, &mut tree);
@@ -2590,14 +2594,14 @@ mod tests {
         let layer = layer(&shared);
         let a = binding(1.0_f32);
         let b = binding(0.3_f32);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(a.clone());
         });
         drain_layer_ops(&shared, &mut tree);
 
         // `a`'s change fires before the rebind in program order; the
         // rebind ends its generation, so the deferred change is stale.
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             a.set(0.5);
             tx[&layer].opacity(b.clone());
         });
@@ -2634,18 +2638,18 @@ mod tests {
             let owner: Rc<dyn LayerOwner> = Rc::clone(&shared) as Rc<dyn LayerOwner>;
             let handle = Layer::new(id, owner, false);
             sig.watch(move |_: Context<f32>| {
-                Shared::run_transaction(&shared, None, |tx| {
+                Shared::run_transaction(&shared, None, None, |tx| {
                     tx[&handle].opacity(sig2.clone());
                 });
             })
         };
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(sig.clone());
         });
         drain_layer_ops(&shared, &mut tree);
 
         if inside_transaction {
-            Shared::run_transaction(&shared, None, |_| {
+            Shared::run_transaction(&shared, None, None, |_| {
                 sig.set(0.9);
             });
         } else {
@@ -2685,7 +2689,7 @@ mod tests {
             let _ = &owned;
             value
         });
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(opacity);
             tx[&layer].opacity(0.25_f32);
         });
@@ -2730,7 +2734,7 @@ mod tests {
         let shared = shared();
         let mut tree = crate::SurfaceTree::new();
         let layer = layer(&shared);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].record(|c| c.fill(PanicGuardSignal, WorkingColor::WHITE));
         });
         drain_layer_ops(&shared, &mut tree);
@@ -2739,7 +2743,7 @@ mod tests {
         // unwinds `run_transaction` after `transaction_open` was
         // restored, so the surface is not frozen open.
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Shared::run_transaction(&shared, None, |tx| {
+            Shared::run_transaction(&shared, None, None, |tx| {
                 tx[&layer].clear_content();
             });
         }));
@@ -2753,7 +2757,7 @@ mod tests {
                 "the commit left no open state behind"
             );
         }
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].opacity(0.4_f32);
         });
         let ops = drain_layer_ops(&shared, &mut tree);
@@ -2775,16 +2779,16 @@ mod tests {
         let rebound = layer(&shared);
         let kept_sig = binding(1.0_f32);
         let rebound_sig = binding(1.0_f32);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&kept].opacity(kept_sig.clone());
             tx[&rebound].opacity(rebound_sig.clone());
         });
         drain_layer_ops(&shared, &mut tree);
 
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&kept].transform(Affine::IDENTITY);
             let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Shared::run_transaction(&shared, None, |inner| {
+                Shared::run_transaction(&shared, None, None, |inner| {
                     // Deferred under both bindings, then the inner body is
                     // lost: its unwind truncates only its own recorded
                     // edits — the deferred changes stay for the
@@ -2844,12 +2848,12 @@ mod tests {
             let owner: Rc<dyn LayerOwner> = Rc::clone(&shared) as Rc<dyn LayerOwner>;
             let handle = Layer::new(id, owner, false);
             sig.watch(move |_: Context<Size>| {
-                Shared::run_transaction(&shared, None, |tx| {
+                Shared::run_transaction(&shared, None, None, |tx| {
                     tx[&handle].layout_size(sig2.clone());
                 });
             })
         };
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].layout_size(sig.clone());
         });
 
@@ -2877,7 +2881,7 @@ mod tests {
             let _ = &owned;
             rect
         });
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].record(|c| c.fill(shape, WorkingColor::WHITE));
         });
 
@@ -2906,9 +2910,9 @@ mod tests {
         let outer_animation: Animation = Curve::linear(Duration::from_millis(400)).into();
         let inner_animation: Animation = Curve::linear(Duration::from_millis(800)).into();
         let retargeted: Animation = Curve::linear(Duration::from_millis(100)).into();
-        Shared::run_transaction(&shared, Some(outer_animation), |tx| {
+        Shared::run_transaction(&shared, Some(outer_animation), None, |tx| {
             tx[&a].opacity(0.5_f32);
-            Shared::run_transaction(&shared, Some(inner_animation), |inner| {
+            Shared::run_transaction(&shared, Some(inner_animation), None, |inner| {
                 inner[&b].transform(Affine::IDENTITY);
             });
             tx[&a].animation(retargeted);
@@ -2921,6 +2925,7 @@ mod tests {
                     LayerOp::Opacity(id, Prop {
                         target,
                         animation: Some(anim),
+                        ..
                     }),
                     LayerOp::Transform(other, Prop {
                         animation: Some(anim2),
@@ -2942,7 +2947,7 @@ mod tests {
         let shared = shared();
         let a = layer(&shared);
         let b = layer(&shared);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&a].opacity(0.5_f32);
             // Repointing the handle clears its recorded op: the
             // animation must not silently land on `a`'s edit.
@@ -2955,7 +2960,7 @@ mod tests {
     fn animation_does_not_retarget_an_edit_truncated_under_the_handle() {
         let shared = shared();
         let a = layer(&shared);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&a].opacity(0.5_f32);
             {
                 // What an inner unwind leaves: the recorded entry is
@@ -2972,6 +2977,7 @@ mod tests {
                     Prop {
                         target: Affine::IDENTITY,
                         animation: None,
+                        start: None,
                     },
                 )));
                 shared.edit_seqs.push(seq);
@@ -2986,8 +2992,8 @@ mod tests {
         let mut tree = crate::SurfaceTree::new();
         let layer = layer(&shared);
         let id = layer.id();
-        Shared::run_transaction(&shared, None, |_| {
-            Shared::run_transaction(&shared, None, |inner| {
+        Shared::run_transaction(&shared, None, None, |_| {
+            Shared::run_transaction(&shared, None, None, |inner| {
                 inner[&layer].opacity(0.5_f32);
                 inner[&layer]
                     .record(|c| c.fill(Rect::new(0.0, 0.0, 1.0, 1.0), WorkingColor::WHITE));
