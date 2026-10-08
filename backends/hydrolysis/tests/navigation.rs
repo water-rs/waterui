@@ -25,8 +25,9 @@ use waterui::component::list::{List, ListItem};
 use waterui::component::{button, hstack, text, vstack};
 use waterui::id::SelfId;
 use waterui::navigation::{
-    NavigationLink, NavigationSplitView, NavigationStack, NavigationToolbar, NavigationToolbarItem,
-    NavigationToolbarPlacement, NavigationView, Tab, Tabs,
+    NavigationLink, NavigationSplitColumnVisibility, NavigationSplitView, NavigationStack,
+    NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement, NavigationView, Tab,
+    Tabs,
 };
 use waterui::{Binding, Str, View, ViewExt};
 use waterui_testing::{NodeBounds, OffscreenApp, Role, ui};
@@ -597,5 +598,39 @@ fn expanded_split_emits_every_column_on_semantic_mount() {
     assert!(
         !app.query().role(Role::BUTTON).label("Back").exists(),
         "an expanded split has no back affordance"
+    );
+}
+
+/// An expanded three-column split that prefers its two trailing columns
+/// leaves the sidebar unplaced, so the semantic walk must not emit it either —
+/// both presentation paths share one column decision.
+#[test]
+fn double_column_split_omits_its_sidebar_on_semantic_mount() {
+    let sidebar_selection = Binding::container(Some(1i32));
+    let content_selection = Binding::container(Some(7i32));
+    let mut app = ui().viewport(WINDOW_WIDTH, WINDOW_HEIGHT).mount(move || {
+        NavigationSplitView::three_column(
+            &sidebar_selection,
+            &content_selection,
+            move || rows(20, "folder").a11y_label("folders"),
+            move |id| {
+                NavigationView::new(format!("Folder {id}"), rows(20, "chat").a11y_label("chats"))
+            },
+            move |id| NavigationView::new(format!("Chat {id}"), detail_content()),
+        )
+        .column_visibility(NavigationSplitColumnVisibility::DoubleColumn)
+    });
+    app.settle();
+    assert!(
+        !app.query().role(Role::LIST).label("folders").exists(),
+        "a double-column split hides its sidebar"
+    );
+    assert!(
+        app.query().role(Role::LIST).label("chats").exists(),
+        "the content column emits"
+    );
+    assert!(
+        app.query().role(Role::LIST).label("messages").exists(),
+        "the detail column emits"
     );
 }
