@@ -256,6 +256,14 @@ pub struct Plan {
     /// Whether any layer is painted after the last promoted one, so an
     /// engine part exists above it.
     pub trailing: bool,
+    /// Per engine part, the device-space rects of the layers that paint
+    /// content into it — each layer's clip intersected with its ancestors',
+    /// `None` when no clip bounds it, so the part's whole frame answers
+    /// hits. A layer that paints nothing contributes nothing.
+    pub regions: Vec<Vec<Option<Rect>>>,
+    /// Per promoted plane in [`Plan::planes`] order, the layer's clip
+    /// intersected with its ancestors', `None` when unclipped.
+    pub plane_regions: Vec<Option<Rect>>,
 }
 
 impl Plan {
@@ -324,6 +332,8 @@ pub struct PlanScratch {
     blend_above: Vec<Option<LayerId>>,
     device: Vec<VisitDevice>,
     decisions: Vec<(usize, Result<(), Ineligible>)>,
+    /// The order indices the last plan promoted — the part boundaries.
+    promoted_at: Vec<usize>,
 }
 
 /// Every layer in paint order: a layer's content, then its children —
@@ -525,6 +535,8 @@ pub fn plan_with<C: Compositor>(
 ) {
     plan.rejected.clear();
     plan.unplaced.clear();
+    plan.regions.clear();
+    plan.plane_regions.clear();
     if candidates.is_empty() {
         plan.planes.clear();
         plan.trailing = false;
@@ -538,12 +550,14 @@ pub fn plan_with<C: Compositor>(
         blend_above,
         device,
         decisions,
+        promoted_at,
     } = scratch;
     let order = paint_order(tree, order, pool, stack);
     suffixes(tree, order, backdrop_above, blend_above);
     devices(tree, order, device);
     let mut promoted = 0;
     let mut last = None;
+    promoted_at.clear();
     for (i, verdict) in verdicts::<C>(
         tree,
         order,
@@ -556,6 +570,7 @@ pub fn plan_with<C: Compositor>(
         match verdict {
             Ok(()) => {
                 last = Some(i);
+                promoted_at.push(i);
                 let size = candidates[&order[i].id];
                 if promoted == plan.planes.len() {
                     plan.planes.push(Placement {
@@ -578,6 +593,25 @@ pub fn plan_with<C: Compositor>(
     }
     plan.planes.truncate(promoted);
     plan.trailing = last.is_some_and(|i| i + 1 < order.len());
+    // Part boundaries are the promoted indices: a plane's own visit
+    // contributes nothing to an engine part; every other layer that has
+    // content contributes its clip to the region of the part it lands in.
+    plan.regions.resize_with(plan.parts(), Vec::new);
+    plan.plane_regions.clear();
+    let mut part = 0;
+    let mut boundary = promoted_at.iter().copied().peekable();
+    for (i, visit) in order.iter().enumerate() {
+        if boundary.next_if_eq(&i).is_some() {
+            plan.plane_regions.push(device[i].bounds);
+            continue;
+        }
+        while boundary.next_if(|&p| p < i).is_some() {
+            part += 1;
+        }
+        if tree.layer(visit.id).has_content() {
+            plan.regions[part].push(device[i].bounds);
+        }
+    }
 }
 
 /// Whether `order[i]`'s placement for content `size` is `placed` — the
@@ -633,6 +667,7 @@ fn same_plan<C: Compositor>(
         blend_above,
         device,
         decisions,
+        promoted_at: _,
     } = scratch;
     let order = paint_order(tree, order, pool, stack);
     suffixes(tree, order, backdrop_above, blend_above);
@@ -1027,6 +1062,19 @@ pub struct Composition<'a> {
     pub parts: &'a [Part<'a>],
     /// The promoted planes, bottom first.
     pub planes: &'a [Plane<'a>],
+    /// Per engine part, the device-space rects its painted layers cover
+    /// ([`Plan::regions`]).
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "hit regions are consumed only on macOS")
+    )]
+    pub regions: &'a [Vec<Option<Rect>>],
+    /// Per promoted plane, its clip in device space ([`Plan::plane_regions`]).
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "hit regions are consumed only on macOS")
+    )]
+    pub plane_regions: &'a [Option<Rect>],
 }
 
 /// Whether presentation finished or which event must resume it.

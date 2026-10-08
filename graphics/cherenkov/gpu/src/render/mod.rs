@@ -5698,6 +5698,8 @@ impl GpuRenderer {
                             display: sf.display,
                             parts: &parts,
                             planes: &stack,
+                            regions: &surface.plan.regions,
+                            plane_regions: &surface.plan.plane_regions,
                         },
                     )
                 }

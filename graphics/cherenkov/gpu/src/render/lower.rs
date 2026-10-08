@@ -5661,6 +5661,8 @@ mod tests {
             unplaced: Vec::new(),
             rejected: Vec::new(),
             trailing,
+            regions: Vec::new(),
+            plane_regions: Vec::new(),
         }
     }
 
