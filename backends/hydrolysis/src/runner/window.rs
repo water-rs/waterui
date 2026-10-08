@@ -196,41 +196,68 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
-/// Whether an installed frame-signals host wake may post its frame
-/// request right now — the two suppressions every waker host applies:
-///
-/// - inside the host's frame transaction (`transaction_open`), where a
-///   request raised mid-transaction is instead counted into
-///   [`wants_next_frame`], so posting would double-schedule the frame it
-///   already owed;
-/// - while the window is occluded, where the request stays armed for the
-///   frame that restores visibility (the #2183 contract).
-///
-/// Hosts with live access to both inputs read them at call time; the
-/// Android host folds them into the gate cell its shared wake closure
-/// reads (`AndroidHostWindow::sync_frame_wake_gate`).
-#[allow(dead_code)] // see is_hidden
-pub(super) const fn frame_wake_may_post(transaction_open: bool, occluded: bool) -> bool {
-    !transaction_open && !occluded
+/// Android's frame transaction and the gate shared with its installed wake.
+/// Requests made during a transaction join its continuation; occluded requests
+/// wait for the restore frame. Winit and web retain their own scheduling rules.
+#[cfg(any(target_os = "android", test))]
+#[derive(Debug, Default)]
+pub(super) struct FrameTransaction {
+    open: Cell<bool>,
+    wake_gate: Rc<Cell<bool>>,
 }
 
-/// Whether a frame transaction's outcome must schedule another frame. The
-/// pump's armed `mode` and a redraw the window asked for that never
-/// reached the scheduler (`redraw_pending`) are the standing inputs;
-/// `signals_pending` counts a `FrameSignals` request still pending at the
-/// transaction's end — one raised inside it fired no wake (the wake is
-/// suppressed while the transaction runs), and without this count it
-/// would be lost. A hidden window schedules nothing: the armed work
-/// survives for the frame visibility restores.
-#[allow(dead_code)] // see is_hidden
-#[allow(clippy::fn_params_excessive_bools)] // the pending kinds are named, not interchangeable
-pub(super) const fn wants_next_frame(
-    hidden: bool,
-    mode_pending: bool,
-    redraw_pending: bool,
-    signals_pending: bool,
-) -> bool {
-    !hidden && (mode_pending || redraw_pending || signals_pending)
+#[cfg(any(target_os = "android", test))]
+impl FrameTransaction {
+    pub(super) fn frame_wake(&self, post: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
+        let gate = Rc::clone(&self.wake_gate);
+        Rc::new(move || {
+            if gate.get() {
+                post();
+            }
+        })
+    }
+
+    pub(super) fn sync_occlusion(&self, occluded: bool) {
+        self.wake_gate.set(!self.open.get() && !occluded);
+    }
+
+    pub(super) fn begin(&self) {
+        self.open.set(true);
+        self.wake_gate.set(false);
+    }
+
+    pub(super) fn take_render_request<P: PlatformWindow>(
+        runtime: &mut RuntimeWindow<P>,
+        surface_attached: bool,
+    ) -> bool {
+        (runtime.mode.is_pending() || runtime.renderer.take_redraw_request())
+            && surface_attached
+            && !runtime.is_hidden()
+    }
+
+    pub(super) fn finish(&self, occluded: bool, demand: FrameDemand) -> bool {
+        let next = wants_next_frame(occluded, demand);
+        self.open.set(false);
+        self.sync_occlusion(occluded);
+        next
+    }
+}
+
+/// Work still pending when Android closes its frame transaction.
+#[cfg(any(target_os = "android", test))]
+#[derive(Clone, Copy)]
+pub(super) struct FrameDemand {
+    pub(super) mode: FrameMode,
+    pub(super) redraw_pending: bool,
+    pub(super) signals_pending: bool,
+}
+
+/// A request raised after the pump drained the flags fired no wake while the
+/// transaction was open, so it must count toward continuation. Hidden work waits
+/// for the restore frame instead.
+#[cfg(any(target_os = "android", test))]
+const fn wants_next_frame(hidden: bool, demand: FrameDemand) -> bool {
+    !hidden && (demand.mode.is_pending() || demand.redraw_pending || demand.signals_pending)
 }
 
 /// Whether a frame transaction may report the pump's "first frame presented;

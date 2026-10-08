@@ -104,8 +104,16 @@ impl FrameSignals {
     /// idle handle fires it, and the pump draining the state back to empty
     /// re-arms it. A request already pending when the wake is installed
     /// fires it now — the edge it never saw still owes the host a frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a host wake has already been installed.
     pub fn install_host_wake(&self, wake: Rc<dyn Fn()>) {
-        *self.inner.host_wake.borrow_mut() = Some(HostWake(wake));
+        {
+            let mut host_wake = self.inner.host_wake.borrow_mut();
+            assert!(host_wake.is_none(), "host wake already installed");
+            *host_wake = Some(HostWake(wake));
+        }
         if self.has_pending_request() {
             self.fire_host_wake();
         }
@@ -386,6 +394,14 @@ mod tests {
         let (wake, fires) = counting_wake();
         signals.install_host_wake(wake);
         assert_eq!(fires.get(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "host wake already installed")]
+    fn host_wake_rejects_a_second_install() {
+        let signals = signals();
+        signals.install_host_wake(Rc::new(|| {}));
+        signals.install_host_wake(Rc::new(|| {}));
     }
 
     #[test]

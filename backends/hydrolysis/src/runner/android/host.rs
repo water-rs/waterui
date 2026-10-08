@@ -43,8 +43,8 @@ use crate::renderer::{
 use crate::runner::android_executor::AndroidMainThreadExecutor;
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::window::{
-    RuntimeWindow, advance_runtime, frame_wake_may_post, handle_input_events, render_window,
-    reports_ui_idle, wants_next_frame,
+    FrameDemand, FrameTransaction, RuntimeWindow, advance_runtime, handle_input_events,
+    render_window, reports_ui_idle,
 };
 use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
@@ -321,16 +321,7 @@ pub struct AndroidHostWindow {
     /// for; `None` while no field holds focus. The runner syncs text-input
     /// state on every frame, and only a change here reaches the IME.
     soft_input: Option<u64>,
-    /// Shared with the installed frame wake: `true` while a wake may post.
-    /// Closed inside the frame transaction — a request raised there is
-    /// counted into `wants_next_frame` instead — and while occluded, where
-    /// it stays armed for the frame visibility restores. Re-derived by
-    /// [`Self::sync_frame_wake_gate`]; never written anywhere else, so
-    /// [`Self::is_occluded`] stays the one visibility report.
-    frame_wake_gate: Rc<Cell<bool>>,
-    /// `on_frame` holds this while its frame transaction runs — the gate's
-    /// other input is the occlusion report.
-    frame_transaction_open: Cell<bool>,
+    frame_transaction: FrameTransaction,
 }
 
 impl AndroidHostWindow {
@@ -393,10 +384,7 @@ impl AndroidHostWindow {
     /// occlusion sync — so the wake never carries a second visibility
     /// report of its own.
     pub(crate) fn sync_frame_wake_gate(&self) {
-        self.frame_wake_gate.set(frame_wake_may_post(
-            self.frame_transaction_open.get(),
-            self.is_occluded(),
-        ));
+        self.frame_transaction.sync_occlusion(self.is_occluded());
     }
 }
 
@@ -461,17 +449,14 @@ impl PlatformWindow for AndroidHostWindow {
     /// occluded; Kotlin's `posted` flag coalesces repeated posts, so the
     /// wake itself posts unconditionally while the gate is open.
     fn frame_wake(&self) -> Rc<dyn Fn()> {
-        let gate = Rc::clone(&self.frame_wake_gate);
         let bridge = Rc::clone(&self.bridge);
-        Rc::new(move || {
-            if gate.get() {
-                tracing::debug!(
-                    target: "waterui::hydrolysis::android",
-                    "wake posted: frame request pending"
-                );
-                bridge.request_frame();
-            }
-        })
+        self.frame_transaction.frame_wake(Rc::new(move || {
+            tracing::debug!(
+                target: "waterui::hydrolysis::android",
+                "wake posted: frame request pending"
+            );
+            bridge.request_frame();
+        }))
     }
 
     fn scale_factor(&self) -> f64 {
@@ -824,8 +809,7 @@ impl AndroidSession {
             // The session mounts parked — hidden until `onStart` and the
             // surface attach report it visible — so the wake's gate opens
             // on the first occlusion sync, not at construction.
-            frame_wake_gate: Rc::new(Cell::new(false)),
-            frame_transaction_open: Cell::new(false),
+            frame_transaction: FrameTransaction::default(),
         };
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
@@ -920,7 +904,7 @@ impl AndroidSession {
                 density = metrics.density,
                 container_insets_px = ?container_insets_px,
                 keyboard_insets_px = ?keyboard_insets_px,
-                "wake posted: metrics changed"
+                "metrics changed"
             );
         }
         // The insets' binding writes above mark their subscribers' nodes —
@@ -967,17 +951,14 @@ impl AndroidSession {
         // The transaction is open: a frame request recorded from now on
         // fires no wake — its scheduling is counted into `wants_next_frame`
         // below instead of posting into a frame already running.
-        self.runtime.platform.frame_transaction_open.set(true);
-        self.runtime.platform.sync_frame_wake_gate();
+        self.runtime.platform.frame_transaction.begin();
         self.executor.drain();
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
         let now = Instant::now();
         let deadline = advance_runtime(&mut self.runtime, &self.env, now);
         let mut flushed = false;
-        if self.runtime.mode.is_pending()
-            && self.runtime.platform.surface.is_attached()
-            && !self.runtime.is_hidden()
-        {
+        let surface_attached = self.runtime.platform.surface.is_attached();
+        if FrameTransaction::take_render_request(&mut self.runtime, surface_attached) {
             let executor = self.executor.clone();
             let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
             flushed = true;
@@ -1017,11 +998,13 @@ impl AndroidSession {
         // this transaction after the pump drained the flags: its wake was
         // suppressed by the gate, so this is its only path to the frame it
         // needs. One raised while hidden stays armed for the restore frame.
-        let wants_next_frame = wants_next_frame(
-            self.runtime.is_hidden(),
-            self.runtime.mode.is_pending(),
-            redraw_pending,
-            self.runtime.renderer.has_pending_frame_request(),
+        let wants_next_frame = self.runtime.platform.frame_transaction.finish(
+            self.runtime.platform.is_occluded(),
+            FrameDemand {
+                mode: self.runtime.mode,
+                redraw_pending,
+                signals_pending: self.runtime.renderer.has_pending_frame_request(),
+            },
         );
         if reports_ui_idle(
             self.presented_once.get(),
@@ -1047,10 +1030,6 @@ impl AndroidSession {
             .unwrap_or_default()
         });
         self.frame_deadline_in_nanos = deadline_in_nanos;
-        // The transaction closes: the wake's gate reopens for the requests
-        // the next arrival records.
-        self.runtime.platform.frame_transaction_open.set(false);
-        self.runtime.platform.sync_frame_wake_gate();
         tracing::debug!(
             target: "waterui::hydrolysis::android",
             wants_next_frame,
@@ -1083,18 +1062,19 @@ impl AndroidSession {
             height,
             "wake posted: surface attached"
         );
-        self.runtime
-            .platform
-            .surface
-            .attach(native_window, width, height, generation)
-            .map_err(|error| error.to_string())?;
+        let attached =
+            self.runtime
+                .platform
+                .surface
+                .attach(native_window, width, height, generation);
+        self.runtime.platform.sync_frame_wake_gate();
+        attached.map_err(|error| error.to_string())?;
         // A new surface never inherits the old one's presented frame — the
         // next transaction must re-encode and present. Attaching while
         // `started` can un-hide a session parked on a missing surface; a
         // stale `surfaceCreated` delivered after `onStop` attaches nothing
         // the user sees, and `started` stays the lifecycle's report.
         self.runtime.request_refresh();
-        self.runtime.platform.sync_frame_wake_gate();
         self.runtime.sync_occlusion_and_post_restore();
         Ok(())
     }
@@ -1113,15 +1093,16 @@ impl AndroidSession {
             height,
             "wake posted: surface resized"
         );
-        self.runtime
+        let resized = self
+            .runtime
             .platform
             .surface
-            .resize_for(width, height, generation)
-            .map_err(|error| error.to_string())?;
+            .resize_for(width, height, generation);
+        self.runtime.platform.sync_frame_wake_gate();
+        resized.map_err(|error| error.to_string())?;
         // A surface parked on a zero-size attach configures here — the
         // resize that gave the band a real extent can be its un-hide, and
         // the Choreographer post is the only wake the restore frame gets.
-        self.runtime.platform.sync_frame_wake_gate();
         self.runtime.sync_occlusion_and_post_restore();
         Ok(())
     }
