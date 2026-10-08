@@ -692,7 +692,7 @@ fn resolve_backend(platform: TargetPlatform, backend: TargetBackend) -> Result<T
             "Backend {:?} does not support platform {:?}.\n\
              Valid combinations:\n  \
              - iOS/iOS Simulator: apple\n  \
-             - Android: android, hydrolysis\n  \
+             - Android: hydrolysis, android\n  \
              - macOS: apple, hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis, winui\n  \

@@ -92,12 +92,12 @@ The same surface drives `water preview test` for semantic interaction tests and 
 The same project you iterate on is the one that ships: the CLI generates and manages the platform projects, and builds, signs and packages the app from the declarations in `Water.toml`:
 
 ```bash
-water create my-app --backends apple,android
+water create my-app
 cd my-app
 water run --platform ios
 ```
 
-`Water.toml` holds package metadata, enabled backends, permissions, and theming. Add or remove a backend later with `water backend`.
+`Water.toml` holds package metadata, permissions, and theming. The backend is chosen per command — `water run --platform android` builds with Hydrolysis, and `--backend android` selects the Kotlin runtime.
 
 To give the app an icon, drop a square `Icon.svg` or `Icon.png` into `assets/`. The CLI renders every platform format from that one file: full-bleed squares for iOS, the rounded-rect shape for macOS, and adaptive icon layers for Android, so the artwork survives each platform's mask. New projects start with the `WaterUI` logo there until you replace it.
 
@@ -181,7 +181,7 @@ water run --platform macos
 
 - [`core/`](core/) — `View`, `Environment`, layout contracts, reactive integration
 - [`components/`](components/) — layouts, text, controls, forms, navigation, media, charts, and friends
-- [`backends/`](backends/) — Apple, Android, GTK4, Hydrolysis, Dew
+- [`backends/`](backends/) — the mainline backends: Apple (`UIKit`/`AppKit`) and Hydrolysis (self-drawn, and the Android backend)
 - [`cli/`](cli/) — `waterui-cli`, the `water` command and project generators (a workspace member)
 - [`ffi/`](ffi/) — the C ABI backends talk through
 - [`testing/`](testing/) — semantic UI testing over the accessibility tree

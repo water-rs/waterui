@@ -288,7 +288,7 @@ impl TargetPlatform {
             | Self::WatchOSSimulator
             | Self::VisionOS
             | Self::VisionOSSimulator => &[TargetBackend::Apple],
-            Self::Android => &[TargetBackend::Android, TargetBackend::Hydrolysis],
+            Self::Android => &[TargetBackend::Hydrolysis, TargetBackend::Android],
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
             Self::Windows => &[TargetBackend::Hydrolysis, TargetBackend::WinUi],
             Self::Web => &[TargetBackend::Hydrolysis],
@@ -310,9 +310,8 @@ impl TargetPlatform {
             | Self::WatchOSSimulator
             | Self::VisionOS
             | Self::VisionOSSimulator => TargetBackend::Apple,
-            Self::Android => TargetBackend::Android,
+            Self::Android | Self::Windows | Self::Web => TargetBackend::Hydrolysis,
             Self::Linux => TargetBackend::Gtk4,
-            Self::Windows | Self::Web => TargetBackend::Hydrolysis,
             Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => TargetBackend::Dew,
         }
     }
