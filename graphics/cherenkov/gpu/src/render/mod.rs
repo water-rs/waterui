@@ -9880,7 +9880,7 @@ impl Drop for GpuRenderer {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

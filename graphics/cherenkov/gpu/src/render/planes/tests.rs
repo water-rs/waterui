@@ -659,7 +659,6 @@ fn a_pending_candidate_does_not_block_a_plane_only_frame() {
 
 /// A backdrop sampled by the frame itself, or anywhere above it, needs the
 /// frame's pixels in the engine; one sampled below it does not.
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_backdrop_on_or_above_the_layer_keeps_it_in_the_engine() {
     use cherenkov::{Engine, Offscreen, OffscreenFormat};
@@ -1032,7 +1031,6 @@ fn an_unplaceable_hosted_layer_never_refreshes_through_the_planes() {
 
 /// A hosted layer under or above a backdrop sample needs pixels the
 /// engine never has; a backdrop sampled below it does not.
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_backdrop_on_or_above_a_hosted_layer_unplaces_it() {
     use cherenkov::{Engine, Offscreen, OffscreenFormat};

@@ -2057,7 +2057,6 @@ impl<'a> Lowering<'a> {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::too_many_arguments,
-        clippy::too_many_lines,
         reason = "surface size is a small positive float; an isolate carries the
         clip, style and pixel-space state of one scope"
     )]

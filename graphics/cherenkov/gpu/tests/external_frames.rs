@@ -8,8 +8,6 @@
 //! Each render is written as a PNG under `CHERENKOV_EXTERNAL_PNG_DIR`
 //! (default `target/external-frames/`) for visual review.
 
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::path::PathBuf;
 
 use cherenkov::{Engine, EngineError, FrameTime, Offscreen, OffscreenFormat};
