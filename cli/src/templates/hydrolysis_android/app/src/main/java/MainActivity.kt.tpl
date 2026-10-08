@@ -9,7 +9,6 @@ import android.view.View
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import dev.waterui.hydrolysis.HydrolysisEnvironment
 import dev.waterui.hydrolysis.HydrolysisActivity
-import dev.waterui.hydrolysis.HydrolysisEnvironment
 import dev.waterui.hydrolysis.HydrolysisHostView
 import dev.waterui.hydrolysis.HydrolysisSession
 {%- if ctx.hydrolysis_android_has_painter_band() %}
