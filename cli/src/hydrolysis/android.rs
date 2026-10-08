@@ -482,12 +482,12 @@ async fn copy_build_outputs(
         )
     );
     let library = output_dir.join(library_name);
-    fs::copy(&built.artifact, &library).await?;
+    crate::utils::copy_file_if_changed(&built.artifact, &library).await?;
 
     // The NDK's shared STL follows the libraries that actually need it —
     // a Rust-only build never does.
     if staged_libs_need_libcxx(&output_dir).await? {
-        fs::copy(
+        crate::utils::copy_file_if_changed(
             ndk_libcxx_path(&context.ndk_path, abi),
             output_dir.join("libc++_shared.so"),
         )

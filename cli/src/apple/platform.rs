@@ -21,7 +21,10 @@ use crate::{
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
     assets,
-    build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage},
+    build::{
+        ArtifactLockScope, BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage,
+        SharedExecutable,
+    },
     device::Artifact,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::{BrowserRuntimePlan, Project, ResolvedWebViewBackend},
@@ -124,6 +127,55 @@ async fn remove_superseded_host_library(
             )
         }),
     }
+}
+
+/// Whether `dest` still carries `source`'s last-processed bytes — `false`
+/// when `dest` is missing: the record asserts provenance, not presence.
+///
+/// `dest` is rewritten in place after each copy — the runtime retarget and
+/// install-name canonicalisation a shared-runtime build applies — so its
+/// bytes can never match `source`'s again and a plain
+/// [`crate::utils::copy_file_if_changed`] would recopy and re-rewrite on
+/// every build. A `.<file>.preimage` file beside `dest` records the source
+/// artifact the last completed staging processed instead; while it still
+/// names the same output — same size and mtime, the identity a Cargo
+/// artifact carries — `dest` already holds that artifact's post-processed
+/// form and the caller skips the copy.
+///
+/// # Errors
+/// - If `source` or `dest` cannot be statted.
+async fn staged_source_current(source: &Path, dest: &Path) -> eyre::Result<bool> {
+    let record = staged_source_record(dest);
+    let source = source.to_path_buf();
+    let dest = dest.to_path_buf();
+    smol::unblock(move || -> std::io::Result<bool> {
+        Ok(dest.try_exists()? && crate::utils::cargo_output_unmodified(&source, &record)?)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+/// Record `source` as `dest`'s preimage — the artifact `dest`'s
+/// post-processed bytes were made from. Call only once the rewrite the
+/// [`staged_source_current`] gate assumes done has completed: a failure
+/// before this point leaves the stale record, so the next build recopies.
+///
+/// # Errors
+/// - If `source` cannot be copied or the record cannot be written.
+async fn record_staged_source(source: &Path, dest: &Path) -> eyre::Result<()> {
+    copy_file(source, &staged_source_record(dest)).await?;
+    Ok(())
+}
+
+/// The `.<file>.preimage` path beside `dest` whose bytes record the source
+/// artifact its last completed staging processed.
+fn staged_source_record(dest: &Path) -> PathBuf {
+    dest.with_file_name(format!(
+        ".{}.preimage",
+        dest.file_name()
+            .expect("a staged library path names a file")
+            .to_string_lossy()
+    ))
 }
 
 /// Stage the packaged app's static host library beside the `.app` `water
@@ -290,7 +342,7 @@ pub(crate) async fn build_rust_lib_with_links(
 
     let target_dir = project.water_target_dir(options.linkage()).await?;
     let build = build.with_target_dir(target_dir.clone());
-    let built_target = match host_library {
+    let mut built_target = match host_library {
         // The shared runtime's lib build emits every crate type the
         // manifest declares — not a `--crate-type` selection, which
         // writes only the chosen artifact — because this build feeds
@@ -342,7 +394,21 @@ pub(crate) async fn build_rust_lib_with_links(
     if let Some(output_dir) = options.output_dir() {
         fs::create_dir_all(output_dir).await?;
         let dest_lib = output_dir.join(host_library.linked_file_name());
-        copy_file(&built_target.artifact, &dest_lib).await?;
+        // The `Dynamic` shape's copy is rewritten in place below — the
+        // runtime retarget and install-name canonicalisation — so its
+        // bytes never match the artifact's again: the recorded preimage,
+        // not the copy's contents, gates the copy (#2073).
+        let rewrites_dest_lib = options.linkage() == RustLinkage::SharedRuntime
+            && host_library == AppleHostLibrary::Dynamic;
+        let mut restaged_dest_lib = false;
+        if rewrites_dest_lib {
+            restaged_dest_lib = !staged_source_current(&built_target.artifact, &dest_lib).await?;
+            if restaged_dest_lib {
+                copy_file(&built_target.artifact, &dest_lib).await?;
+            }
+        } else {
+            crate::utils::copy_file_if_changed(&built_target.artifact, &dest_lib).await?;
+        }
         remove_superseded_host_library(output_dir, host_library).await?;
         if options.linkage() == RustLinkage::SharedRuntime {
             let libraries = RustDynamicLibraries::resolve(&built_target, &triple, project).await?;
@@ -351,12 +417,20 @@ pub(crate) async fn build_rust_lib_with_links(
             );
             libraries.stage(output_dir).await?;
             let staged_runtime = libraries.stage_apple_canonical(output_dir).await?;
-            if host_library == AppleHostLibrary::Dynamic {
-                // The app library records the runtime's cargo-written install
-                // name; retarget while the canonical copy still carries it.
+            if rewrites_dest_lib {
+                // The app library records the runtime's cargo-written
+                // install name; retarget while the canonical copy still
+                // carries it. Both rewrites read the recorded names first
+                // and leave an already-canonical dylib untouched.
                 dynamic_runtime::retarget_module(&dest_lib, &staged_runtime).await?;
                 // The executable binds the app dylib by its install name.
                 dynamic_runtime::canonicalize_install_name(&dest_lib).await?;
+                // Only once the copy's rewrites completed may the preimage
+                // name the artifact again — a failure before this leaves
+                // it stale and the next build recopies.
+                if restaged_dest_lib {
+                    record_staged_source(&built_target.artifact, &dest_lib).await?;
+                }
             }
             dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
         }
@@ -424,17 +498,30 @@ pub(crate) async fn build_rust_lib_with_links(
             .with_final_rustc_arg(link_search_flag(runtime_dir.as_os_str()))
             .with_final_rustc_arg(format!("-Clink-arg=-l{runtime_link_name}"));
     }
-    executable
-        .build_binary(APPLE_ENTRY_BINARY_NAME, options.is_release())
-        .await?;
+    // The entry `[[bin]]`'s own `BuiltTarget` rides on this build's result
+    // so packaging reads its marked `deps/` artifact, never a name
+    // reconstructed under the profile directory. Nothing execs the shared
+    // `<profile>/waterui-apple-main` uplift — its lock file sits in the
+    // shared profile directory for every Apple project — so the lock is
+    // released once the marked link exists instead of riding a `BuiltTarget`
+    // a `water run` holds through packaging and launch.
+    built_target.entry_binary = Some(Box::new(
+        executable
+            .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
+            .build_binary(APPLE_ENTRY_BINARY_NAME, options.is_release())
+            .await?,
+    ));
 
     // The helper `[[bin]]` exists only when the manifest declared it — the
     // application's linked engine, not chromium alone — so the build gates
-    // on the manifest's own predicate or Cargo reports `no bin target`.
+    // on the manifest's own predicate or Cargo reports `no bin target`. Its
+    // `BuiltTarget` rides on this build's result so packaging reads the
+    // helper's own artifact, never a name reconstructed in a directory.
     if project.declares_cef_helper().await? {
-        build
+        let helper = build
             .clone()
             .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@executable_path/../Frameworks")
+            .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
             .build_binary(
                 &crate::project_model::project_types::cef_helper_binary_name(
                     project.ffi_crate_name().as_str(),
@@ -442,6 +529,7 @@ pub(crate) async fn build_rust_lib_with_links(
                 options.is_release(),
             )
             .await?;
+        built_target.cef_helper = Some(Box::new(helper));
     }
 
     Ok((built_target, Vec::new()))
@@ -762,7 +850,19 @@ pub async fn package_apple(
     let ctx = AppleBackend::template_context(project).await?;
     let layout = app_bundle::AppleAppLayout::for_app(&app_path, sdk_name);
 
-    let executable = built.profile_dir.join(APPLE_ENTRY_BINARY_NAME);
+    // Packaging reads the variant-stable `deps/<name>-<marker>` link, not
+    // the reported `executable`: the `<profile>/<name>` uplift is shared
+    // between variants and a same-named build can re-uplift it once the
+    // binary artifact lock is gone.
+    let executable = &built
+        .entry_binary
+        .as_deref()
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "the build produced no `{APPLE_ENTRY_BINARY_NAME}` entry binary; package the result of `build_rust_lib`"
+            )
+        })?
+        .artifact;
     let mut info_plist = app_bundle::apple_info_plist(
         &ctx,
         project,
@@ -775,7 +875,7 @@ pub async fn package_apple(
 
     app_bundle::assemble_app_bundle(
         &layout,
-        &executable,
+        executable,
         &product_name,
         &staging_dir,
         &info_plist,
@@ -791,8 +891,13 @@ pub async fn package_apple(
         let bin_built = BuiltTarget {
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),
+            executable: Some(SharedExecutable::unlocked(
+                layout.executable_file(&product_name),
+            )),
+            entry_binary: None,
             shared_runtime: built.shared_runtime.clone(),
             app_library: None,
+            cef_helper: None,
         };
         let libraries = RustDynamicLibraries::resolve(&bin_built, &triple, project).await?;
         libraries.stage(&layout.frameworks_dir).await?;
@@ -824,12 +929,14 @@ pub async fn package_apple(
         // chromium alone stages the runtime but builds no helper.
         if project.declares_cef_helper().await? {
             let main_binary = layout.executable_file(&product_name);
-            let helper_binary = built.profile_dir.join(
-                crate::project_model::project_types::cef_helper_binary_name(
-                    project.ffi_crate_name().as_str(),
-                ),
-            );
-            package_cef_helper_app(&app_path, &main_binary, &helper_binary, &bundle_id).await?;
+            let helper_binary = built
+                .cef_helper
+                .as_ref()
+                .map(|helper| helper.artifact.as_path())
+                .ok_or_else(|| {
+                    eyre::eyre!("the project declares a CEF helper but the build produced none")
+                })?;
+            package_cef_helper_app(&app_path, &main_binary, helper_binary, &bundle_id).await?;
         }
     }
 
@@ -902,4 +1009,58 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
             | TargetPlatform::VisionOS
             | TargetPlatform::VisionOSSimulator
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A second build over an unchanged artifact rewrites nothing: the
+    /// staged dylib is rewritten in place — retargeted and canonicalised —
+    /// so its bytes never match the source's again, and only the recorded
+    /// preimage keeps the copy from recopying on every build (#2073).
+    #[test]
+    fn staged_source_record_gates_rewritten_dylib_staging() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let output = temporary.path();
+        let source = output.join("libffi-cargo.dylib");
+        let dest = output.join("libffi.dylib");
+        std::fs::write(&source, b"cargo artifact").expect("write the artifact");
+
+        // Build 1: nothing recorded, so the caller copies, rewrites the
+        // copy in place — a byte append standing in for install_name_tool —
+        // and records the artifact the copy was made from.
+        assert!(
+            !smol::block_on(staged_source_current(&source, &dest)).expect("nothing is staged yet")
+        );
+        smol::block_on(copy_file(&source, &dest)).expect("copy the artifact");
+        let mut bytes = std::fs::read(&dest).expect("read the copy");
+        bytes.extend_from_slice(b" retargeted");
+        std::fs::write(&dest, bytes).expect("rewrite the copy");
+        smol::block_on(record_staged_source(&source, &dest)).expect("record the processed source");
+        let staged = std::fs::read(&dest).expect("read the staged dylib");
+        assert_eq!(staged, b"cargo artifact retargeted");
+
+        // Build 2: the copy's bytes no longer match the artifact's, but the
+        // record still names it — the dylib is already this artifact's
+        // post-processed form, so the caller skips the copy.
+        assert!(
+            smol::block_on(staged_source_current(&source, &dest))
+                .expect("the record gates the second build")
+        );
+        assert_eq!(std::fs::read(&dest).expect("read the staged dylib"), staged);
+
+        // A rebuilt artifact — every Cargo write carries a new mtime —
+        // restages, byte length aside.
+        std::fs::write(&source, b"cargo artifact").expect("rewrite the artifact");
+        filetime::set_file_mtime(
+            &source,
+            filetime::FileTime::from_unix_time(1_800_000_000, 0),
+        )
+        .expect("stamp the rebuilt artifact's mtime");
+        assert!(
+            !smol::block_on(staged_source_current(&source, &dest))
+                .expect("a rebuilt source restages")
+        );
+    }
 }
