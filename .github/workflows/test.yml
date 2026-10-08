@@ -918,9 +918,17 @@ jobs:
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
         with:
           gradle-version: ${{ steps.host-gradle-version.outputs.version }}
-      - name: Lint the host and preview modules
+      - name: Lint the host, gpu and preview modules
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
-        run: gradle :host:lintDebug :preview:lintDebug
+        run: gradle :host:lintDebug :gpu:lintDebug :preview:lintDebug
+      # The modules publish as dev.waterui.hydrolysis artifacts for the
+      # embedded-library build; prove their POM generation — the version the
+      # CLI stamps — without publishing anywhere.
+      - name: POM generation
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+        env:
+          WATERUI_HYDROLYSIS_HOST_VERSION: 0.0.0-ci
+        run: gradle :host:generatePomFileForReleasePublication :gpu:generatePomFileForReleasePublication
       - name: Host unit tests
         if: inputs.full
         run: gradle :host:testDebugUnitTest
