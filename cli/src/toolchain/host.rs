@@ -220,26 +220,37 @@ impl Host {
     ///
     /// The child sees exactly this host's variables and starts in
     /// [`Host::cwd`]; `program` is resolved against this host's `PATH`.
-    /// stdio configuration is left to the caller — see `crate::utils::command`
-    /// for the CLI's capture/inherit policy.
+    /// stdin is `null`: a child never holds this process's own stdin, which
+    /// under `water mcp` is the agent host's JSON-RPC pipe — a caller that
+    /// feeds or forwards input sets `.stdin(...)` on the returned command
+    /// explicitly. Other stdio is left to the caller — see
+    /// `crate::utils::command` for the CLI's capture/inherit policy.
     #[must_use]
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
         withhold_std_handles_from_children();
         let mut command = Command::new(self.resolve_program(program.as_ref()));
-        command.env_clear().envs(&self.env).current_dir(&self.cwd);
+        command
+            .env_clear()
+            .envs(&self.env)
+            .current_dir(&self.cwd)
+            .stdin(Stdio::null());
         command
     }
 
     /// A [`std::process::Command`] that runs `program` under this host.
     ///
-    /// Same environment and working directory as [`Host::command`], for the
-    /// places that need synchronous or `std`-only command features (process
-    /// groups, spawning from a non-async thread).
+    /// Same environment, working directory and null-stdin default as
+    /// [`Host::command`], for the places that need synchronous or `std`-only
+    /// command features (process groups, spawning from a non-async thread).
     #[must_use]
     pub fn std_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
         withhold_std_handles_from_children();
         let mut command = std::process::Command::new(self.resolve_program(program.as_ref()));
-        command.env_clear().envs(&self.env).current_dir(&self.cwd);
+        command
+            .env_clear()
+            .envs(&self.env)
+            .current_dir(&self.cwd)
+            .stdin(Stdio::null());
         command
     }
 
@@ -266,10 +277,10 @@ impl Host {
 
     /// Spawn `program` with `args` under this host, capturing output.
     ///
-    /// stdout and stderr are piped and always collected for the returned
-    /// [`Output`]; when the CLI's `--logs` passthrough is active each chunk is
-    /// additionally mirrored to the terminal as it arrives, matching the
-    /// historical `run_command_output_os` behavior.
+    /// stdin is null (see [`Host::command`]); stdout and stderr are piped and
+    /// always collected for the returned [`Output`]; when the CLI's `--logs` passthrough is
+    /// active each chunk is additionally mirrored to the terminal as it
+    /// arrives, matching the historical `run_command_output_os` behavior.
     ///
     /// # Errors
     /// - [`CommandError::Spawn`] when the program cannot be spawned or awaited.

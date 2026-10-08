@@ -9,6 +9,7 @@ use crate::{
     backend::{Backend, reinit_backend},
     build::BuildOptions,
     device::Artifact,
+    framework::ResolvedFramework,
     hydrolysis::platform::{
         build_hydrolysis, clean_hydrolysis, is_hydrolysis_platform, package_hydrolysis,
     },
@@ -69,7 +70,7 @@ impl HydrolysisBackend {
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
     pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
         let backend_dir = project.backend_path::<Self>();
-        let ctx = Self::template_context(project).await?;
+        let ctx = Self::template_context(project, &project.resolved_framework().await?).await?;
         let outputs = templates::hydrolysis::rendered_outputs(
             &ctx,
             &project.hydrolysis_backend_crate_name(),
@@ -92,7 +93,10 @@ impl HydrolysisBackend {
     /// The template context the CLI manages this backend with; regeneration
     /// compares the backend on disk against exactly this rendering, and the
     /// Android app scaffold layers its parameters on top of it.
-    pub(crate) async fn template_context(project: &Project) -> eyre::Result<TemplateContext> {
+    pub(crate) async fn template_context(
+        project: &Project,
+        framework: &ResolvedFramework,
+    ) -> eyre::Result<TemplateContext> {
         let manifest = project.manifest();
         let app_name = manifest
             .package
@@ -100,7 +104,6 @@ impl HydrolysisBackend {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        let framework = project.resolved_framework().await?;
         let section = |os: crate::platform::NativeOs| crate::project::GraphSection {
             manifest: "the generated Hydrolysis launcher manifest",
             table: os.cfg(),
@@ -114,7 +117,7 @@ impl HydrolysisBackend {
         // engine-independent profile set resolves once for them all.
         let targets = hydrolysis_targets();
         let (project_packages, macos, linux, windows) = futures_util::future::try_join4(
-            project.project_packages_for(&framework, &targets),
+            project.project_packages_for(framework, &targets),
             project.native_browser_answers(
                 crate::platform::NativeOs::MacOs,
                 section(crate::platform::NativeOs::MacOs),
@@ -133,7 +136,7 @@ impl HydrolysisBackend {
             manifest,
             project.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())
@@ -176,7 +179,11 @@ impl Backend for HydrolysisBackend {
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let project_path = default_hydrolysis_project_path();
-        let ctx = Self::template_context(project)
+        let framework = project
+            .resolved_framework()
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let ctx = Self::template_context(project, &framework)
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
 

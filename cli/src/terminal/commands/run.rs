@@ -259,6 +259,13 @@ pub struct Args {
     yes: bool,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// Parses one `--env KEY=VALUE` argument into its key and value.
 ///
 /// The key may not be empty or contain `=`; everything after the first `=` is

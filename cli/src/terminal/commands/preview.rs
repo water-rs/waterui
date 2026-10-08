@@ -130,6 +130,15 @@ pub struct Args {
 }
 
 impl Args {
+    /// The project directory this command works on — the `test`
+    /// subcommand's own `--path` when it runs.
+    pub(crate) fn project_dir(&self) -> &Path {
+        match &self.command {
+            Some(PreviewCommand::Test(test)) => &test.path,
+            None => &self.path,
+        }
+    }
+
     /// The shared preview arguments — the same shape the MCP `preview` tool
     /// accepts, so `water preview` and `tools/call preview` resolve identically.
     fn preview_args(&self, target: &str) -> PreviewArgs {

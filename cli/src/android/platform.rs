@@ -22,7 +22,7 @@ use crate::{
         toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
     },
     assets,
-    build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage},
+    build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries},
     device::Artifact,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
@@ -151,6 +151,27 @@ fn ndk_bin_dir(ndk_path: &Path) -> PathBuf {
         .join("bin")
 }
 
+/// An LLVM binary tool (`llvm-strip`, `llvm-readelf`, …) from the NDK's
+/// prebuilt host toolchain — the same `prebuilt/<host-tag>/bin` directory
+/// the linker and `ar` resolve from, with the host's executable suffix
+/// (`llvm-strip.exe` on Windows).
+///
+/// # Errors
+/// Returns an error when the NDK's bin directory does not ship `tool` —
+/// naming the tool and where it was looked for.
+pub(crate) fn ndk_llvm_tool(ndk_path: &Path, tool: &str) -> eyre::Result<PathBuf> {
+    let path = ndk_bin_dir(ndk_path).join(format!("{tool}{}", std::env::consts::EXE_SUFFIX));
+    if path.is_file() {
+        Ok(path)
+    } else {
+        eyre::bail!(
+            "the NDK at {} ships no {tool} — expected {}",
+            ndk_path.display(),
+            path.display()
+        )
+    }
+}
+
 /// Get the NDK ar path.
 fn ndk_ar_path(ndk_path: &Path) -> PathBuf {
     ndk_bin_dir(ndk_path).join("llvm-ar")
@@ -164,55 +185,6 @@ fn ndk_clang_path(ndk_path: &Path, abi: AndroidAbi, cxx: bool, api_level: u32) -
 /// Get the NDK clang linker path for the given ABI.
 fn ndk_linker_path(ndk_path: &Path, abi: AndroidAbi, api_level: u32) -> PathBuf {
     ndk_clang_path(ndk_path, abi, false, api_level)
-}
-
-/// The NDK's prebuilt `libclang_rt.builtins-<arch>-android.a` for `abi`.
-///
-/// `-Zbuild-std` builds `compiler_builtins` with `compiler-builtins-c`, whose
-/// build script links the archive named by `LLVM_COMPILER_RT_LIB` instead of
-/// rebuilding compiler-rt from source (rust-src ships no compiler-rt C
-/// sources). On aarch64 that archive is what provides the LSE outline-atomics
-/// helpers (`__aarch64_ldadd4_acq_rel` & friends) NDK-compiled C objects
-/// reference — rustc links with `-nodefaultlibs`, so the clang driver's own
-/// copy never reaches the link.
-fn ndk_builtins_lib(ndk_path: &Path, abi: AndroidAbi) -> eyre::Result<PathBuf> {
-    let arch = match abi {
-        AndroidAbi::Arm64V8a => "aarch64",
-        AndroidAbi::X86_64 => "x86_64",
-        AndroidAbi::ArmeabiV7a => "arm",
-        AndroidAbi::X86 => "i686",
-    };
-    let clang_libs = ndk_path
-        .join("toolchains/llvm/prebuilt")
-        .join(ndk_host_tag(ndk_path))
-        .join("lib/clang");
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(&clang_libs)
-        .map_err(|error| {
-            eyre::eyre!(
-                "Failed to read NDK clang libraries at {}: {error}",
-                clang_libs.display()
-            )
-        })?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .map(|version_dir| {
-            version_dir.join(format!("lib/linux/libclang_rt.builtins-{arch}-android.a"))
-        })
-        .filter(|path| path.is_file())
-        .collect();
-    candidates.sort_unstable();
-    match candidates.as_slice() {
-        [path] => Ok(path.clone()),
-        [] => Err(eyre::eyre!(
-            "The NDK at {} ships no libclang_rt.builtins-{arch}-android.a; \
-             a `-Zbuild-std` build needs it for the compiler-rt builtins",
-            ndk_path.display()
-        )),
-        _ => Err(eyre::eyre!(
-            "The NDK at {} ships multiple libclang_rt.builtins-{arch}-android.a \
-             copies: {candidates:?}",
-            ndk_path.display()
-        )),
-    }
 }
 
 /// Create a wrapper `CMake` toolchain file that sets `ANDROID_ABI` before including
@@ -400,6 +372,7 @@ pub struct AndroidPlatform {
     abi: AndroidAbi,
 }
 
+#[derive(Debug)]
 pub(crate) struct AndroidBuildContext {
     pub(crate) abi: AndroidAbi,
     pub(crate) ndk_path: PathBuf,
@@ -550,18 +523,11 @@ impl AndroidPlatform {
         project: &Project,
         options: BuildOptions,
     ) -> eyre::Result<BuiltTarget> {
-        // Only an app that will `dlopen` WaterUI modules — the preview support
-        // app — ships the shared Rust runtime. `-Cprefer-dynamic` on Android
-        // cannot resolve `std` to rustup's prebuilt `libstd.so` (its LOAD
-        // segments are 4 KB-aligned and 16 KB-page devices reject the whole
-        // package), so the shared-runtime path below builds `std` from source
-        // under the page-size link flag instead. Every other build links the
-        // runtime in, which is what a packaged build already does.
-        let options = if options.loads_dynamic_modules() {
-            options
-        } else {
-            options.with_static_runtime()
-        };
+        // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
+        // prebuilt `libstd.so` (its LOAD segments are 4 KB-aligned and
+        // 16 KB-page devices reject the whole package), so every Android
+        // build links the runtime in — what a packaged build already does.
+        let options = options.with_static_runtime();
 
         let abi = self.abi();
         let triple = self.triple();
@@ -927,34 +893,6 @@ async fn configure_android_rust_build(
         )
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG);
-    if options.linkage() == RustLinkage::SharedRuntime {
-        // The preview support app dlopens the pushed module, so the runtime is
-        // shared: the `dev` feature resolves `waterui-dylib`, `-Cprefer-dynamic`
-        // links `std` dynamically, and `-Zbuild-std` compiles that `libstd` from
-        // source — rustup's prebuilt one is 4 KB-aligned and a 16 KB-page device
-        // would reject the package for it. The `water` rustc wrapper Cargo runs
-        // under supplies the `dylib` crate type Cargo strips from `std`.
-        let nightly = crate::toolchain::rust::nightly_toolchain_with_rust_src(host).await?;
-        build = build
-            .with_feature("dev")
-            .with_preferred_dynamic_linking()
-            .with_build_std(nightly)
-            .with_env(
-                "LLVM_COMPILER_RT_LIB",
-                ndk_builtins_lib(&context.ndk_path, context.abi)?,
-            );
-        // The inspector is devtooling: development sessions get it through
-        // the shared-runtime linkage while a packaged build leaves its
-        // server stack out. The generated manifest forwards `inspector` only
-        // when the resolved `waterui-ffi` declares it, so the build can only
-        // name it when the scaffold declared it.
-        if crate::templates::generated_ffi_manifest_declares(
-            &project.ffi_crate_path().join("Cargo.toml"),
-            "inspector",
-        )? {
-            build = build.with_feature("inspector");
-        }
-    }
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -1086,33 +1024,6 @@ pub(crate) fn android_cargo_envs(
     .collect()
 }
 
-/// The NDK/SDK toolchain environment a Rust build for `triple` on `abi`
-/// needs — shared between the app build and the preview module it `dlopen`s.
-///
-/// # Errors
-/// Returns an error when the NDK or the SDK-side tooling cannot be resolved.
-pub(crate) async fn android_rust_build_envs(
-    host: &Host,
-    project: &Project,
-    abi: AndroidAbi,
-    triple: &Triple,
-    build_std: bool,
-) -> eyre::Result<Vec<(String, std::ffi::OsString)>> {
-    let min_api_level = project
-        .resolved_framework()
-        .await?
-        .android_min_api_level()?;
-    let context = resolve_android_build_context(host, abi, triple, min_api_level).await?;
-    let mut envs = android_cargo_envs(&context, triple);
-    if build_std {
-        envs.push((
-            "LLVM_COMPILER_RT_LIB".to_string(),
-            ndk_builtins_lib(&context.ndk_path, abi)?.into_os_string(),
-        ));
-    }
-    Ok(envs)
-}
-
 async fn copy_android_build_outputs(
     project: &Project,
     options: &BuildOptions,
@@ -1136,14 +1047,9 @@ async fn copy_android_build_outputs(
     )
     .await?;
 
-    if options.linkage() == RustLinkage::SharedRuntime {
-        let triple = AndroidPlatform::new(abi).triple();
-        let libraries = RustDynamicLibraries::resolve(built_target, &triple, project).await?;
-        libraries.stage(&output_dir).await?;
-    } else {
-        RustDynamicLibraries::remove_staged(&output_dir, &AndroidPlatform::new(abi).triple())
-            .await?;
-    }
+    // The Android build always links the runtime statically, so a stale
+    // shared runtime staged by an older build must not ship in the package.
+    RustDynamicLibraries::remove_staged(&output_dir, &AndroidPlatform::new(abi).triple()).await?;
 
     // `libc++_shared.so` only belongs in the package when a staged native
     // library actually links the C++ STL — Rust-only builds never reference it,

@@ -453,51 +453,25 @@ impl RustDynamicLibraries {
             None => StagedDynamicLibrary::reported(reported)?,
         };
 
-        // A `-Zbuild-std` build publishes its freshly compiled `libstd` into
-        // the profile's `deps/` directory via the rustc wrapper; that copy —
-        // not the toolchain's prebuilt one — is what the build linked against,
-        // so it is the one that has to ship. The needed-name lookups below
-        // search the same two directories in that order; the prefix scan is
-        // the fallback for an artifact that records no `libstd` at all (a
-        // Mach-O binary, whose `libstd` dependency is the runtime dylib's own).
+        // The toolchain's prebuilt libdir is the `libstd` a normal build
+        // links against; the prefix scan is the fallback for an artifact
+        // that records no `libstd` at all (a Mach-O binary, whose `libstd`
+        // dependency is the runtime dylib's own).
         let needed_std = needed.iter().find(|name| is_rust_standard_library(name));
-        let standard_library = match needed_std {
-            Some(name) if deps_dir.join(needed_file_name(name)).is_file() => {
-                StagedDynamicLibrary::needed(name, deps_dir.join(needed_file_name(name)))
-            }
-            Some(name) => {
-                let toolchain = project_toolchain(project).await?;
-                let target_libdir = rust_target_libdir(triple, &toolchain).await?;
-                StagedDynamicLibrary::needed(
-                    name,
-                    needed_library_source(
-                        name,
-                        &[deps_dir.clone(), target_libdir],
-                        &built.artifact,
-                    )?,
-                )
-            }
-            None => {
-                let resolution_triple = triple.clone();
-                let staged = unblock(move || {
-                    resolve_rust_standard_library_in(&deps_dir, &resolution_triple)
-                })
-                .await;
-                match staged {
-                    Ok(path) => StagedDynamicLibrary::reported(path)?,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        let toolchain = project_toolchain(project).await?;
-                        let target_libdir = rust_target_libdir(triple, &toolchain).await?;
-                        let resolution_triple = triple.clone();
-                        let path = unblock(move || {
-                            resolve_rust_standard_library_in(&target_libdir, &resolution_triple)
-                        })
-                        .await?;
-                        StagedDynamicLibrary::reported(path)?
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-            }
+        let toolchain = project_toolchain(project).await?;
+        let target_libdir = rust_target_libdir(triple, &toolchain).await?;
+        let standard_library = if let Some(name) = needed_std {
+            StagedDynamicLibrary::needed(
+                name,
+                needed_library_source(name, std::slice::from_ref(&target_libdir), &built.artifact)?,
+            )
+        } else {
+            let resolution_triple = triple.clone();
+            let path = unblock(move || {
+                resolve_rust_standard_library_in(&target_libdir, &resolution_triple)
+            })
+            .await?;
+            StagedDynamicLibrary::reported(path)?
         };
 
         Ok(Self {
@@ -1048,15 +1022,6 @@ pub struct RustBuild {
     /// dependency graph. Trailing `cargo rustc` arguments reach only the selected
     /// target's own compilation and leave dependency fingerprints alone.
     final_rustc_args: Vec<String>,
-    /// rustup toolchain name (a nightly) when this build compiles the standard
-    /// library from source via `-Zbuild-std`.
-    ///
-    /// Cargo only ever emits the `rlib` half of a source-built `std`, so a
-    /// shared-runtime build on a target whose prebuilt `libstd` is unusable —
-    /// Android's is 4 KB-aligned, which 16 KB-page devices reject — runs Cargo
-    /// under the `water` rustc wrapper, which adds the `dylib` crate type to
-    /// the `std` unit and hands the produced `.so` to every dependent.
-    build_std_toolchain: Option<String>,
     /// Extra environment variables to set for the cargo build process.
     envs: Vec<(String, OsString)>,
     /// Sink compile progress is reported to while cargo runs.
@@ -1159,11 +1124,6 @@ pub struct BuildOptions {
     target_triple: Option<Triple>,
     /// Rust runtime linkage used by the final native application.
     linkage: RustLinkage,
-    /// Whether the built app will `dlopen` `WaterUI` modules — a preview
-    /// support app — and therefore must package the shared Rust runtime
-    /// instead of linking it in, even on a platform that otherwise forces
-    /// static linkage.
-    dynamic_module_loading: bool,
     /// Whether `include_web!` mounts are dev-server-served and skipped when
     /// the build stages assets (Hydrolysis stages at build time).
     dev_server: bool,
@@ -1188,7 +1148,6 @@ impl BuildOptions {
             sccache_path: None,
             target_triple: None,
             linkage: RustLinkage::SharedRuntime,
-            dynamic_module_loading: false,
             dev_server: false,
             cargo_envs: profile.development_envs(),
             progress: None,
@@ -1224,7 +1183,6 @@ impl BuildOptions {
             sccache_path: None,
             target_triple: None,
             linkage: RustLinkage::Static,
-            dynamic_module_loading: false,
             dev_server: false,
             cargo_envs: Vec::new(),
             progress: None,
@@ -1308,23 +1266,6 @@ impl BuildOptions {
     #[must_use]
     pub const fn linkage(&self) -> RustLinkage {
         self.linkage
-    }
-
-    /// Mark the built app as a host for `dlopen`'d `WaterUI` modules.
-    ///
-    /// A preview support app resolves a pushed module's framework symbols
-    /// against the runtime it already has open, so the shared runtime has to
-    /// ship in the package rather than be linked into the app alone.
-    #[must_use]
-    pub const fn with_dynamic_module_loading(mut self) -> Self {
-        self.dynamic_module_loading = true;
-        self
-    }
-
-    /// Whether the built app hosts dynamically loaded `WaterUI` modules.
-    #[must_use]
-    pub const fn loads_dynamic_modules(&self) -> bool {
-        self.dynamic_module_loading
     }
 
     /// Attach a compile-progress sink every cargo invocation this build
@@ -1589,7 +1530,6 @@ impl RustBuild {
             crate_type_override: None,
             rustc_flags: Vec::new(),
             final_rustc_args: Vec::new(),
-            build_std_toolchain: None,
             envs: Vec::new(),
             progress: None,
             artifact_lock_scope: ArtifactLockScope::default(),
@@ -1662,24 +1602,6 @@ impl RustBuild {
     #[must_use]
     pub fn with_final_rustc_arg(mut self, flag: impl Into<String>) -> Self {
         self.final_rustc_args.push(flag.into());
-        self
-    }
-
-    /// Build the Rust standard library from source with `-Zbuild-std` on the
-    /// named toolchain (a nightly with `rust-src`), sharing one `libstd`
-    /// dylib across the graph.
-    ///
-    /// The build runs Cargo under the `water` rustc wrapper
-    /// ([`crate::rustc_wrapper`]): Cargo strips `dylib` from `std`'s crate
-    /// types under `-Zbuild-std`, and the wrapper restores it so the produced
-    /// `libstd-*.so` carries the same strict version hash as the rlib every
-    /// dependent is compiled against. The wrapper also publishes the dylib
-    /// into the profile's `deps/` directory, where
-    /// [`RustDynamicLibraries::resolve`] finds it before the toolchain's
-    /// prebuilt copy.
-    #[must_use]
-    pub fn with_build_std(mut self, toolchain: impl Into<String>) -> Self {
-        self.build_std_toolchain = Some(toolchain.into());
         self
     }
 
@@ -2197,13 +2119,10 @@ Automatic meson installation failed: {install_err}\n\n{}",
     }
 
     /// `rustc` resolving to the toolchain the cargo invocation runs under:
-    /// `rustup run` for the `-Zbuild-std` nightly or the project's toolchain,
-    /// else the bare `rustc` shim — the same resolution cargo's own `rustc`
-    /// applies in this directory.
+    /// `rustup run` for the project's toolchain, else the bare `rustc` shim —
+    /// the same resolution cargo's own `rustc` applies in this directory.
     async fn toolchain_rustc(&self) -> Result<cargo_config2::PathAndArgs, RustBuildError> {
-        let toolchain = if let Some(toolchain) = &self.build_std_toolchain {
-            Some(toolchain.clone())
-        } else if let Some(project) = &self.project {
+        let toolchain = if let Some(project) = &self.project {
             Some(
                 project_toolchain(project)
                     .await
@@ -2313,21 +2232,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         } else {
             "build"
         };
-        let mut cmd = cmd.arg(cargo_subcommand);
-        if self.build_std_toolchain.is_some() {
-            // `-Zbuild-std-features` replaces Cargo's default std feature set
-            // — `panic-unwind,backtrace,default` (cargo's `standard_lib.rs`)
-            // — so all three are listed back explicitly; `default` keeps each
-            // std-workspace crate's own defaults, notably `compiler_builtins`'s
-            // `arch` routines. `compiler-builtins-c` then links the NDK's
-            // prebuilt compiler-rt archive — on aarch64 that provides the LSE
-            // outline-atomics helpers (`__aarch64_ldadd4_acq_rel` & friends)
-            // that NDK-compiled C objects reference, which otherwise stay
-            // undefined and make `dlopen` reject the libraries.
-            cmd = cmd.arg("-Zbuild-std=std,panic_abort");
-            cmd =
-                cmd.arg("-Zbuild-std-features=panic-unwind,backtrace,default,compiler-builtins-c");
-        }
+        let cmd = cmd.arg(cargo_subcommand);
         let mut cmd = cmd
             .arg("--message-format=json-render-diagnostics")
             .args(cargo_target.cargo_args(crate_type_override))
@@ -2369,15 +2274,6 @@ Automatic meson installation failed: {install_err}\n\n{}",
                 .map_err(|error| {
                     RustBuildError::FailToBuildRustLibrary(std::io::Error::other(error.to_string()))
                 })?;
-        }
-
-        // A `-Zbuild-std` build runs the `water` binary itself as
-        // `RUSTC_WRAPPER`, chained in front of sccache when one is configured,
-        // so the wrapper can add the `dylib` crate type Cargo strips from the
-        // `std` unit and publish the produced `libstd-*.so` into `deps/`.
-        // This must come after the sccache block above to win `RUSTC_WRAPPER`.
-        if self.build_std_toolchain.is_some() {
-            cmd = self.with_build_std_envs(cmd, release).await?;
         }
 
         // Set target-scoped bindgen clang args for simulator builds.
@@ -2487,15 +2383,11 @@ Automatic meson installation failed: {install_err}\n\n{}",
     /// Run cargo under the rustup toolchain the project's own directory
     /// selects, so a crate generated outside the project tree (the build
     /// cache) compiles with the same toolchain as the project instead of
-    /// rustup's default for that directory. A `-Zbuild-std` build names its
-    /// own nightly through [`Self::with_build_std_envs`] instead.
+    /// rustup's default for that directory.
     async fn with_project_toolchain_env<'a>(
         &self,
         cmd: &'a mut Command,
     ) -> Result<&'a mut Command, RustBuildError> {
-        if self.build_std_toolchain.is_some() {
-            return Ok(cmd);
-        }
         let Some(project) = &self.project else {
             return Ok(cmd);
         };
@@ -2503,50 +2395,6 @@ Automatic meson installation failed: {install_err}\n\n{}",
             RustBuildError::FailToBuildRustLibrary(std::io::Error::other(error.to_string()))
         })?;
         Ok(cmd.env("RUSTUP_TOOLCHAIN", toolchain))
-    }
-
-    /// Point a `-Zbuild-std` cargo invocation at the nightly toolchain and at
-    /// this binary as `RUSTC_WRAPPER`, chained in front of sccache when one is
-    /// configured.
-    async fn with_build_std_envs<'a>(
-        &self,
-        cmd: &'a mut Command,
-        release: bool,
-    ) -> Result<&'a mut Command, RustBuildError> {
-        let Some(toolchain) = &self.build_std_toolchain else {
-            return Ok(cmd);
-        };
-        let publish_dir = self.lib_output_dir(release).await?.join("deps");
-        let cmd = cmd
-            .env("RUSTUP_TOOLCHAIN", toolchain)
-            .env(
-                "RUSTC_WRAPPER",
-                crate::toolchain::Host::current_exe()
-                    .map_err(RustBuildError::FailToExecuteCargoBuild)?,
-            )
-            .env(crate::workflows::rustc_wrapper::WRAPPER_MODE_ENV, "1")
-            .env(
-                crate::workflows::rustc_wrapper::BUILD_STD_TARGET_ENV,
-                self.triple.to_string(),
-            )
-            .env(
-                crate::workflows::rustc_wrapper::BUILD_STD_DYLIB_DIR_ENV,
-                publish_dir,
-            );
-        if let Some(sccache_path) = &self.sccache_path {
-            cmd.env(
-                crate::workflows::rustc_wrapper::WRAPPER_CHAIN_ENV,
-                sccache_path,
-            );
-        }
-        // A workspace wrapper replaces `RUSTC_WRAPPER` on workspace-member
-        // units — the support app's ffi crate and the generated module crate
-        // are exactly the link-emitting members that need the `std` dylib
-        // extern. Without it they would link `std` statically while the deps
-        // link dynamically: two panic runtimes in one process.
-        cmd.env_remove("RUSTC_WORKSPACE_WRAPPER");
-        cmd.env_remove("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER");
-        Ok(cmd)
     }
 
     /// Resolve the Cargo library artifact directory for this build target and profile.
@@ -3743,10 +3591,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BuildOptions, BuildProfile, BuiltTarget, CargoTarget, CompileEvent, RustBuild,
-        RustDynamicLibraries, RustLinkage, classify_compile_line, combined_build_output,
-        dynamic_library_file_name, executable_suffix, lib_extension_for_triple,
-        reported_shared_runtime, resolve_dxc_runtime_in, resolve_rust_standard_library_in,
+        BuildOptions, BuildProfile, BuiltTarget, CargoTarget, CompileEvent, RustDynamicLibraries,
+        RustLinkage, classify_compile_line, combined_build_output, dynamic_library_file_name,
+        executable_suffix, lib_extension_for_triple, reported_shared_runtime,
+        resolve_dxc_runtime_in, resolve_rust_standard_library_in,
     };
 
     fn shared_runtime_artifact_json(
@@ -3877,65 +3725,6 @@ mod tests {
             CargoTarget::Binary("waterui-cef-helper").cargo_args(None),
             ["--bin", "waterui-cef-helper"]
         );
-    }
-
-    #[test]
-    fn build_std_envs_wire_the_wrapper_and_clear_workspace_wrappers() {
-        use std::ffi::OsStr;
-
-        let dir = tempdir().expect("target dir");
-        let toolchain = "nightly-2026-09-09-aarch64-apple-darwin";
-        let target_dir = dir.path().join("target");
-        let build = RustBuild::new(dir.path(), triple("aarch64-linux-android"))
-            .with_build_std(toolchain)
-            .with_target_dir(target_dir.clone())
-            .with_sccache(std::path::PathBuf::from("/fake/sccache"));
-        let mut cmd = smol::process::Command::new("cargo");
-        smol::block_on(build.with_build_std_envs(&mut cmd, false)).expect("build-std envs apply");
-
-        let env = |key: &str| -> Option<Option<OsString>> {
-            cmd.get_envs()
-                .find(|(name, _)| *name == OsStr::new(key))
-                .map(|(_, value)| value.map(ToOwned::to_owned))
-        };
-        assert_eq!(
-            env("RUSTUP_TOOLCHAIN"),
-            Some(Some(OsString::from(toolchain)))
-        );
-        assert_eq!(
-            env("RUSTC_WRAPPER"),
-            Some(Some(
-                crate::toolchain::Host::current_exe()
-                    .expect("the test binary path")
-                    .into_os_string()
-            )),
-            "the wrapper must name this binary"
-        );
-        assert_eq!(
-            env(crate::workflows::rustc_wrapper::WRAPPER_MODE_ENV),
-            Some(Some(OsString::from("1")))
-        );
-        assert_eq!(
-            env(crate::workflows::rustc_wrapper::BUILD_STD_TARGET_ENV),
-            Some(Some(OsString::from("aarch64-linux-android")))
-        );
-        let expected_dylib_dir = target_dir
-            .join("aarch64-linux-android")
-            .join("debug")
-            .join("deps");
-        assert_eq!(
-            env(crate::workflows::rustc_wrapper::BUILD_STD_DYLIB_DIR_ENV),
-            Some(Some(expected_dylib_dir.into_os_string()))
-        );
-        assert_eq!(
-            env(crate::workflows::rustc_wrapper::WRAPPER_CHAIN_ENV),
-            Some(Some(OsString::from("/fake/sccache"))),
-            "a configured sccache chains behind the shim"
-        );
-        // A workspace wrapper would replace RUSTC_WRAPPER on exactly the
-        // link-emitting member units, so both spellings must be removed.
-        assert_eq!(env("RUSTC_WORKSPACE_WRAPPER"), Some(None));
-        assert_eq!(env("CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"), Some(None));
     }
 
     #[test]
