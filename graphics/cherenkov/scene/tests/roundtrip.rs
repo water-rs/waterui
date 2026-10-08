@@ -744,10 +744,7 @@ fn a_duplicate_anchor_layer_id_is_rejected() {
 /// `None`: the field is a `NonZeroU32`.
 #[test]
 fn a_zero_layer_id_is_a_parse_error() {
-    let dir = std::env::temp_dir().join(format!(
-        "cherenkov-scene-zero-id-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-zero-id-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     Scene::builder(8, 8).build().save(&dir).unwrap();
     let path = dir.join("scene.json");

@@ -345,13 +345,7 @@ fn walk_anchor_positions(
             canvas
         };
         walk_anchor_positions(
-            child,
-            canvas,
-            anchor_of,
-            anchor_pos,
-            projective,
-            member_pos,
-            order,
+            child, canvas, anchor_of, anchor_pos, projective, member_pos, order,
         );
     }
 }
@@ -544,9 +538,7 @@ impl Renderer {
                 return Err(RenderError::Backdrop("backdrop-anchor-at-root".into()));
             }
             if projective.contains(anchor) {
-                return Err(RenderError::Backdrop(
-                    "backdrop-anchor-projective".into(),
-                ));
+                return Err(RenderError::Backdrop("backdrop-anchor-projective".into()));
             }
             let Some(&(anchor_canvas, anchor_order)) = anchor_pos.get(anchor) else {
                 return Err(RenderError::Backdrop("backdrop-unknown-anchor".into()));

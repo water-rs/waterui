@@ -2406,7 +2406,9 @@ fn an_anchor_at_an_unknown_layer_is_unsupported() {
     assert!(
         matches!(
             result,
-            Err(cherenkov::RenderError::Unsupported("backdrop-unknown-anchor"))
+            Err(cherenkov::RenderError::Unsupported(
+                "backdrop-unknown-anchor"
+            ))
         ),
         "unexpected result {result:?}"
     );
