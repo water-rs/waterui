@@ -125,7 +125,15 @@ fn ext_hlg(rgb: vec3<f32>) -> vec3<f32> {
         return rgb;
     }
     let ys = dot(params.luma.xyz, rgb);
-    return rgb * pow(max(ys, 0.0), params.site.z - 1.0);
+    // BT.2100-2 §3 OOTF: F_D = alpha * Ys^(gamma - 1) * E. Below a
+    // ~334-nit display peak gamma - 1 is negative, where pow(0, gamma - 1)
+    // is +inf and black's zero channels make 0 * inf NaN; the OOTF's limit
+    // at Ys = 0 is black for every gamma — the branch present.wgsl's
+    // `hlg_inverse_ootf` and cherenkov-oracle take as well.
+    if ys <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    return rgb * pow(ys, params.site.z - 1.0);
 }
 
 // The YUV plane decode at frame pixel `px` (pixel centres are at

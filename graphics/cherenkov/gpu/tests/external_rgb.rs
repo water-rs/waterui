@@ -196,3 +196,40 @@ fn an_hlg_signal_below_black_decodes_to_black() -> Result<(), Box<dyn std::error
     );
     Ok(())
 }
+
+#[test]
+fn hlg_black_at_a_low_display_peak_decodes_to_black() -> Result<(), Box<dyn std::error::Error>> {
+    let (instance, adapter, device, queue) = shared_device()?;
+    let engine = match Engine::<Gpu>::new(GpuConfig {
+        device: Some(SharedDevice {
+            instance,
+            adapter,
+            device: device.clone(),
+            queue: queue.clone(),
+        }),
+        ..GpuConfig::default()
+    }) {
+        Ok(engine) => engine,
+        Err(EngineError::Backend(_)) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let surface = engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})?;
+    // A 300-nit display peak gives OOTF gamma - 1 < 0, where
+    // pow(0, gamma - 1) is +inf and rgb(0) * inf is NaN; the OOTF's
+    // limit at scene black is black (#2108).
+    let mut texel = Vec::with_capacity(8);
+    for channel in [0.0_f32, 0.0, 0.0, 1.0] {
+        texel.extend_from_slice(&half::f16::from_f32(channel).to_le_bytes());
+    }
+    let black = plane(&device, &queue, wgpu::TextureFormat::Rgba16Float, &texel);
+    let px = sample(
+        &engine,
+        &surface,
+        ExternalFrame::rgb(black, RgbAlpha::Opaque, FrameColor::bt2020_hlg(300.0))?,
+    )?;
+    assert!(
+        px[0..3].iter().all(|&c| c.abs() < 1e-3) && (px[3] - 1.0).abs() < 1e-3,
+        "hlg black at a 300-nit peak decodes to black, not NaN: {px:?}"
+    );
+    Ok(())
+}
