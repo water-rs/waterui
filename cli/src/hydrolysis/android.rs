@@ -39,10 +39,7 @@ use crate::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
         TemplateContext,
     },
-    toolchain::{
-        Host, ToolchainError,
-        windows_arm64_llvm::WindowsArm64LlvmToolchain,
-    },
+    toolchain::{Host, ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
 };
 
 /// The painter the Hydrolysis Android host draws with.
