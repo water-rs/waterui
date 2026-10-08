@@ -61,6 +61,28 @@ impl SceneBuilder {
             filters,
             scale,
             levels,
+            union: None,
+        });
+        self
+    }
+
+    /// Declare a backdrop group whose members composite against the
+    /// shared union field smoothed over `union` device pixels
+    /// ([`BackdropGroup::union`]).
+    pub fn backdrop_union_group(
+        &mut self,
+        id: u32,
+        filters: Vec<BackdropFilter>,
+        scale: f64,
+        levels: u32,
+        union: f64,
+    ) -> &mut Self {
+        self.scene.backdrop_groups.push(BackdropGroup {
+            id,
+            filters,
+            scale,
+            levels,
+            union: Some(union),
         });
         self
     }
@@ -102,6 +124,7 @@ impl SceneBuilder {
         fn blend(blend: BlendMode);
         fn backdrop(group: u32);
         fn backdrop_effect(effect: crate::BackdropEffectSpec);
+        fn backdrop_outer(px: f64);
         fn fill(shape: Shape, paint: Paint);
         fn fill_rule(shape: Shape, rule: FillRule, paint: Paint);
         fn stroke(shape: Shape, stroke: StrokeStyle, paint: Paint);
@@ -161,6 +184,13 @@ impl LayerBuilder<'_> {
     /// backdrop composite.
     pub const fn backdrop_effect(&mut self, effect: crate::BackdropEffectSpec) -> &mut Self {
         self.layer.backdrop_effect = Some(effect);
+        self
+    }
+
+    /// Set the member's outer extent in device pixels
+    /// ([`crate::Layer::backdrop_outer`]).
+    pub const fn backdrop_outer(&mut self, px: f64) -> &mut Self {
+        self.layer.backdrop_outer = px;
         self
     }
 

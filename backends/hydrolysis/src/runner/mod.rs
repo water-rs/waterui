@@ -53,6 +53,11 @@ pub mod android_accessibility;
 pub mod android_methods;
 // Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
+/// The Android UI-thread executor and its `eventfd` wake — compiled on
+/// Android for the JNI bridge and, because `eventfd` is Linux-only, on a
+/// Linux host for the fd tests; dead elsewhere.
+#[cfg(any(target_os = "android", all(test, target_os = "linux")))]
+pub mod android_executor;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the

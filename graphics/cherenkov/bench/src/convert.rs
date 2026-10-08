@@ -1006,18 +1006,62 @@ mod front {
     }
 
     /// A scene backdrop group's capture spec at the engine boundary: the
-    /// scale exactly as [`capture_scale`], plus its pyramid level count.
+    /// scale exactly as [`capture_scale`], plus its pyramid level count and
+    /// union smoothing distance — both narrowed only when the `f32` holds
+    /// the scene's `f64` exactly.
     ///
     /// # Errors
-    /// `BenchError::Engine` when the scale is not exactly representable in
-    /// `f32` or the level count is not a valid [`cherenkov::CaptureLevels`].
+    /// `BenchError::Engine` when the scale or union distance is not exactly
+    /// representable in `f32`, the level count is not a valid
+    /// [`cherenkov::CaptureLevels`], or the union distance is not a valid
+    /// [`cherenkov::BackdropUnion`].
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the union narrowing is checked to be exact"
+    )]
     pub fn backdrop_spec(
         group: &cherenkov_scene::BackdropGroup,
     ) -> Result<cherenkov::BackdropSpec, BenchError> {
         let scale = capture_scale(group)?;
         let levels = cherenkov::CaptureLevels::new(group.levels)
             .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
-        Ok(cherenkov::BackdropSpec::new(scale, levels))
+        let mut spec = cherenkov::BackdropSpec::new(scale, levels);
+        if let Some(k) = group.union {
+            let narrowed = k as f32;
+            if f64::from(narrowed).to_bits() != k.to_bits() {
+                return Err(BenchError::Engine(format!(
+                    "backdrop group {}: union smoothing {} is not exactly representable in f32",
+                    group.id, k
+                )));
+            }
+            spec = spec.union(cherenkov::BackdropUnion::new(narrowed).map_err(|error| {
+                BenchError::Engine(format!("backdrop group {}: {error}", group.id))
+            })?);
+        }
+        Ok(spec)
+    }
+
+    /// A scene member layer's `backdrop_outer` at the engine boundary:
+    /// `outer` narrowed to `f32` only when the narrow is exact, then
+    /// validated as a [`cherenkov::BackdropOuter`] — the same treatment
+    /// the union smoothing gets in [`backdrop_spec`].
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when the extent is not exactly representable
+    /// in `f32` or is not a valid `BackdropOuter`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the outer narrowing is checked to be exact"
+    )]
+    pub fn backdrop_outer(outer: f64, group: u32) -> Result<cherenkov::BackdropOuter, BenchError> {
+        let narrowed = outer as f32;
+        if f64::from(narrowed).to_bits() != outer.to_bits() {
+            return Err(BenchError::Engine(format!(
+                "backdrop group {group}: outer extent {outer} is not exactly representable in f32"
+            )));
+        }
+        cherenkov::BackdropOuter::new(narrowed)
+            .map_err(|error| BenchError::Engine(format!("backdrop group {group}: {error}")))
     }
 
     /// A scene `backdrop_effect` at the engine's `f32` boundary.
@@ -1566,6 +1610,7 @@ mod tests {
             filters: Vec::new(),
             scale,
             levels: 1,
+            union: None,
         };
         let quarter = capture_scale(&group(0.25)).expect("0.25 is exact in f32");
         assert_eq!(quarter.get().to_bits(), 0.25f32.to_bits());

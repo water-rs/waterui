@@ -93,6 +93,12 @@ pub const FLAG_TEX_SRGB: u32 = 0x10;
 /// the destination converts into it, the result converts back. Set when
 /// the isolated plane's storage space differs from the pass's.
 pub const FLAG_BLEND_SRC: u32 = 0x20;
+/// A `PAINT_BACKDROP` member draws against its group's union field: the
+/// instance's clip carries the ancestors only, `uv.xy` bitcast holds the
+/// record run's base `vec4` index and the member's index, and `params.x`
+/// its `outer` extent. The ownership-weighted field replaces the
+/// member's clip coverage for the composite.
+pub const FLAG_UNION: u32 = 0x40;
 
 /// The shader's blend-mode code for a [`cherenkov::BlendMode`]; `0` keeps the
 /// fixed-function source-over composite. Matches `blend_mode` in the WGSL.

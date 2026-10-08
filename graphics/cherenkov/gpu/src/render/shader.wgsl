@@ -18,6 +18,7 @@
 const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
+const VARIANT_UNION: u32 = 3u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -477,9 +478,22 @@ fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
     return mix(lo, hi, lc - floor(lc));
 }
 
+// The effect entry's pixel input: the device-space sample point, the
+// signed distance of the field the member draws against — the group's
+// union field when it has one, the member's own clip distance
+// otherwise — the unit outward normal of that field, the member's own
+// signed distance, and the member's device size.
+struct BackdropPixel {
+    p: vec2<f32>,
+    sdf: f32,
+    normal: vec2<f32>,
+    own_sdf: f32,
+    size: vec2<f32>,
+}
+
 // backdrop-effect-stub
-fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-    return backdrop_sample(p);
+fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+    return backdrop_sample(px.p);
 }
 // backdrop-effect-stub
 
@@ -512,15 +526,29 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     }
     // Refraction and effect shaders need the member clip's SDF: signed
     // distance and unit outward normal in device space, the same
-    // J^-T math the clip coverage block uses.
-    let pc = apply(inst.clip_inv, pixel);
-    let sample = sdf_sample(inst.clip, pc, false);
-    let g = sample.gradient;
-    let ci = inst.clip_inv;
-    let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
-    let len = max(length(dg), 1e-6);
-    let d = sample.distance / len;
-    let n = dg / len;
+    // J^-T math the clip coverage block uses. A union member's own clip
+    // lives in its union record — the instance clip then carries the
+    // ancestors only — and the shared field replaces both `sdf` and
+    // `normal` for every effect kind.
+    var px: BackdropPixel;
+    px.p = pixel;
+    px.size = inst.grad2.zw;
+    // union-stub
+    if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
+        let field = backdrop_field;
+        px.own_sdf = field.own;
+        px.sdf = field.d;
+        px.normal = field.n;
+    } else
+    // union-stub
+    {
+        let own = device_sdf(inst.clip_inv, inst.clip, pixel);
+        px.own_sdf = own.x;
+        px.sdf = own.x;
+        px.normal = own.yz;
+    }
+    let d = px.sdf;
+    let n = px.normal;
     if kind == EFFECT_REFRACTION {
         // stops[first].color.xy = (depth, strength).
         let p0 = stops[first].color;
@@ -551,7 +579,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     for (var j = 0u; j < count; j = j + 1u) {
         params[j] = stops[first + j].color;
     }
-    return backdrop_effect(pixel, d, n, inst.grad2.zw, params);
+    return backdrop_effect(px, params);
 }
 
 @fragment
@@ -798,6 +826,20 @@ fn fs_full(in: VsOut) -> vec4<f32> {
         }
     }
     cov *= clip_mask_coverage(in);
+    // union-stub
+    if in.meta_.y == PAINT_BACKDROP && (flags & FLAG_UNION) != 0u {
+        // A union member's instance clip carries the ancestors only; the
+        // member's own coverage term is the ownership-weighted union
+        // field `w_own · AA(field < outer)`, `outer` in params.x. The
+        // record base and member index arrive bitcast in `uv.xy` — read
+        // from `instances` storage, not a varying: the small u32s are
+        // subnormals as f32 and could flush to zero.
+        let base = bitcast<u32>(instances[i].uv.x);
+        let ord = bitcast<u32>(instances[i].uv.y);
+        backdrop_field = union_field(base, ord, in.device);
+        cov *= union_coverage(backdrop_field, instances[i].params.x);
+    }
+    // union-stub
     // Coverage before the opacity multiply is the composite's clip coverage:
     // the destructive Porter-Duff branch antialiases the clip edge between
     // the backdrop and the blended result.
