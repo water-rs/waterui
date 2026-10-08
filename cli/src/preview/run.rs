@@ -45,7 +45,7 @@ pub async fn run_preview_binary(
     label: &str,
 ) -> Result<Output> {
     let mut child = host.command(binary_path);
-    let child = command(&mut child);
+    let child = command(&mut child, host.std_output());
     child.current_dir(working_dir);
     child.env(PREVIEW_RUN_CONFIG_ENV, run_config_path);
 
