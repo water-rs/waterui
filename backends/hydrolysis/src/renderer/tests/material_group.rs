@@ -61,6 +61,12 @@ fn member(level: Material) -> AnyView {
     AnyView::new(().size(MEMBER.0, MEMBER.1).background(level))
 }
 
+/// An empty `MEMBER`-sized view — keeps a solo-member reference's stack
+/// layout identical to the pair's.
+fn spacer() -> AnyView {
+    AnyView::new(().size(MEMBER.0, MEMBER.1))
+}
+
 /// A member and a label side by side — the lazy stack's row.
 fn row() -> impl waterui::View {
     hstack((member(Material::Regular), text("row")))
@@ -541,6 +547,13 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
         )))
     });
     pump(&mut runtime);
+    assert!(
+        runtime
+            .pump_at(true, Instant::now())
+            .snapshot
+            .is_some(),
+        "the lazy stack's grouped rows render a snapshot"
+    );
     let layers = material_layers(&runtime);
     assert!(!layers.is_empty(), "the lazy stack built its rows");
     assert!(
@@ -1128,23 +1141,34 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
     pump_until_settled(&mut runtime);
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 1);
-    // The exited `when` branch keeps its scope mounted for transitions, so
-    // two live registrations is correct — each has exactly one owner. The
-    // moved member's group re-anchored under the live branch's anchor.
+    // `when` rebuilds its child wholesale, so the exited branch's scope
+    // unmounted with it: exactly one live registration remains — the
+    // moved member's own, under the live branch's list — and it is not
+    // the anchor the exited list registered.
     let registrations = mounts(&runtime).anchor_registrations();
-    assert_eq!(registrations.len(), 2);
-    let new_anchor = registrations
-        .iter()
-        .map(|(_, _, layer)| *layer)
-        .find(|layer| Some(*layer) != before);
+    assert_eq!(
+        registrations.len(),
+        1,
+        "one live registration: the exited list's compare-removed by layer"
+    );
     assert_eq!(
         mounts(&runtime).backdrop_anchor(layers[0]),
-        new_anchor,
-        "the group re-anchored under its new list's anchor"
+        Some(registrations[0].2),
+        "the member anchors at its new list's anchor layer"
     );
-    assert!(
-        mounts(&runtime).backdrop_anchor(layers[0]).is_some(),
-        "the member still anchors at its scope's anchor layer"
+    assert_ne!(
+        mounts(&runtime).backdrop_anchor(layers[0]),
+        before,
+        "the exited list's anchor is not the member's anchor"
+    );
+    // The engine's window child list is structurally the mirror's own
+    // commit: a stale anchor layer would show as an extra child skewing
+    // `reconcile`'s insert indices.
+    runtime.renderer_mut().commit_mirror();
+    assert_eq!(
+        window_mount(&runtime).window_children().len(),
+        runtime.renderer().mirror().window_children().len(),
+        "the engine's window child list matches the mirror's"
     );
 }
 
@@ -1188,35 +1212,195 @@ fn a_scope_returning_after_unmount_reanchors() {
         second.is_some(),
         "the remounted scope's group anchors at its new anchor layer"
     );
+    assert_ne!(
+        second,
+        Some(first),
+        "the group re-keyed onto the remounted scope's fresh anchor layer"
+    );
     assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
-    let _ = first;
 }
 
 /// Members of a scope that mount inside a filtered node's canvas anchor
-/// at the item the filtered program pushes at its start — so neither
-/// member's capture shows the other, verified in pixels through the
-/// mirror (water-rs/waterui#2097).
+/// at the item the filtered program pushes at its start: the capture
+/// reads that canvas as it stands at the anchor's paint position —
+/// empty — so no member's material shows another member. Each member's
+/// pixels are byte-equal to the same member rendered solo in the same
+/// filtered, grouped shape (water-rs/waterui#2097).
 #[test]
 fn members_inside_a_filtered_view_capture_beneath_the_filter() {
     let grouped = snap(|| {
         AnyView::new(zstack((
             Color::srgb(230, 38, 38),
-            vstack((member(Material::Regular), thick_full()))
+            vstack((member(Material::Regular), member(Material::Thick)))
                 .material_group()
                 .blur(2.0f32),
         )))
     });
-    let ungrouped = snap(|| {
+    let solo_regular = snap(|| {
         AnyView::new(zstack((
             Color::srgb(230, 38, 38),
-            zstack((member(Material::Regular), thick_full())).blur(2.0f32),
+            vstack((member(Material::Regular), spacer()))
+                .material_group()
+                .blur(2.0f32),
         )))
     });
-    for point in [(160, 122), (160, 126)] {
-        assert_ne!(
+    let solo_thick = snap(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((spacer(), member(Material::Thick)))
+                .material_group()
+                .blur(2.0f32),
+        )))
+    });
+    // The `Regular` member occupies y∈[0,60]pt and the `Thick`
+    // y∈[60,120]pt of the window (device pixels double); these points
+    // sit inside each member's own region, far from the blur's bleed
+    // over the other's edge.
+    for point in [(160, 60), (160, 100)] {
+        assert_eq!(
             px(&grouped, point.0, point.1),
-            px(&ungrouped, point.0, point.1),
-            "pixel {point:?}: the `Thick` member shows the `Regular` panel"
+            px(&solo_regular, point.0, point.1),
+            "pixel {point:?}: the `Regular` member renders as though alone"
         );
     }
+    for point in [(160, 140), (160, 200)] {
+        assert_eq!(
+            px(&grouped, point.0, point.1),
+            px(&solo_thick, point.0, point.1),
+            "pixel {point:?}: the `Thick` member renders as though alone"
+        );
+    }
+}
+
+/// The decided shape: a two-level pair inside `.blur()` with the scope
+/// enclosing the filtered node. The filtered program pushes the scope's
+/// anchor item at its start, so the members' spec anchor is that
+/// F-start anchor — and its capture reads the filtered canvas as it
+/// stands there: empty. No member shows another, verified in pixels
+/// against solo-member references (water-rs/waterui#2097).
+#[test]
+fn a_scope_enclosing_a_filtered_view_anchors_at_the_filter_start() {
+    let runtime = rendered(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((member(Material::Regular), member(Material::Thick)))
+                .blur(2.0f32)
+                .material_group(),
+        )))
+    });
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 2);
+    let anchor = mounts(&runtime)
+        .backdrop_anchor(layers[0])
+        .expect("the members' group anchors");
+    // The anchor item the filtered program pushes at its start registers
+    // under the filtered canvas — the one registration naming a canvas.
+    let f_start = mounts(&runtime)
+        .anchor_registrations()
+        .into_iter()
+        .find(|(_, canvas, _)| canvas.is_some())
+        .map(|(_, _, layer)| layer);
+    assert_eq!(
+        Some(anchor),
+        f_start,
+        "the spec anchor is the F-start anchor"
+    );
+    for layer in &layers {
+        assert_eq!(mounts(&runtime).backdrop_anchor(*layer), Some(anchor));
+    }
+
+    let grouped = snap(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((member(Material::Regular), member(Material::Thick)))
+                .blur(2.0f32)
+                .material_group(),
+        )))
+    });
+    let solo_regular = snap(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((member(Material::Regular), spacer()))
+                .blur(2.0f32)
+                .material_group(),
+        )))
+    });
+    let solo_thick = snap(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((spacer(), member(Material::Thick)))
+                .blur(2.0f32)
+                .material_group(),
+        )))
+    });
+    for point in [(160, 60), (160, 100)] {
+        assert_eq!(
+            px(&grouped, point.0, point.1),
+            px(&solo_regular, point.0, point.1),
+            "pixel {point:?}: the `Regular` member renders as though alone"
+        );
+    }
+    for point in [(160, 140), (160, 200)] {
+        assert_eq!(
+            px(&grouped, point.0, point.1),
+            px(&solo_thick, point.0, point.1),
+            "pixel {point:?}: the `Thick` member renders as though alone"
+        );
+    }
+}
+
+/// A `.material_group()` inside a scroll view's content mounts its
+/// anchor layer under the scrolled inner layer — the inner list owns
+/// its own anchor table, so the outer list's lowering never retires the
+/// anchor the inner pass just created (water-rs/waterui#2097).
+#[test]
+fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
+    let mut runtime = rendered(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            scroll(member(Material::Regular).material_group()),
+        )))
+    });
+    assert!(
+        runtime
+            .pump_at(true, Instant::now())
+            .snapshot
+            .is_some(),
+        "the scrolled member's frame renders a snapshot"
+    );
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 1);
+    let anchor = mounts(&runtime)
+        .backdrop_anchor(layers[0])
+        .expect("the scrolled member's group anchors");
+    // The spec anchor is a child of the inner layer: it and the member's
+    // frame are siblings under the same parent.
+    runtime.renderer_mut().commit_mirror();
+    let mirror = runtime.renderer().mirror();
+    let chain = mirror.ancestry(anchor);
+    let parent = &chain[chain.len() - 2];
+    assert!(
+        parent.children.contains(&anchor) && parent.children.contains(&layers[0]),
+        "the anchor and the member mount as siblings under the scrolled inner layer"
+    );
+
+    // Pixels: the scrolled member paints its material over the backdrop —
+    // the member's pixel differs from the same scene with no member.
+    let member_shot = snap(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            scroll(member(Material::Regular).material_group()),
+        )))
+    });
+    let empty_shot = snap(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            scroll(spacer()),
+        )))
+    });
+    assert_ne!(
+        px(&member_shot, 80, 60),
+        px(&empty_shot, 80, 60),
+        "the scrolled member paints its material over the backdrop"
+    );
 }

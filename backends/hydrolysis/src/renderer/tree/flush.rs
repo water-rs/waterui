@@ -649,12 +649,13 @@ impl RenderNode {
                 // unwind the paint stack for the child flush and re-open the
                 // scopes for what flushes after.
                 renderer.program().program_mut().filter = Some(Rc::clone(&node.runtime));
-                // Members of an enclosing `.material_group()` scope that
+                // Members of the innermost `.material_group()` scope that
                 // mount inside this node's filtered canvas anchor on it:
                 // an anchor item at the start of the filtered program for
-                // each enclosing scope, so their `(scope, canvas)` groups
-                // capture beneath the filtered content (water-rs/waterui#2097).
-                for cell in renderer.material_group_scopes.clone() {
+                // that scope, so its `(scope, canvas)` groups capture the
+                // canvas at the anchor's paint position
+                // (water-rs/waterui#2097).
+                if let Some(cell) = renderer.material_group_scopes.last().cloned() {
                     renderer.program().push_anchor(cell);
                 }
                 node.child

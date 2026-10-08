@@ -56,10 +56,10 @@ pub struct BackdropGroupKey {
     /// frame layer.
     pub(crate) canvas: Option<LayerId>,
     /// The layer the scope's members capture beneath, resolved at join:
-    /// `None` for a solo group and for a scoped group whose anchor item
-    /// sits on another canvas — the engine rule (`canvas ==
-    /// anchor_canvas`) leaves such a group unanchored. It is part of the
-    /// key so an anchor change re-keys the member into a new group.
+    /// `None` for a solo group; a scoped group's `(scope, canvas)`
+    /// registration always stands when its members commit. It is part of
+    /// the key so an anchor change re-keys the member into a new group
+    /// rather than silently sampling the stale anchor.
     pub(crate) anchor: Option<LayerId>,
 }
 
@@ -146,11 +146,15 @@ pub struct BackdropGroups<G> {
     members: FxHashMap<LayerId, MemberEntry>,
     /// The layer id each `(scope, install canvas)` pair's groups
     /// capture beneath: one plain, empty layer per `Item::Anchor` — the
-    /// scope item the `.material_group()` flush pushes into the
-    /// enclosing program, and the item a filtered node pushes at its
-    /// program's start for each enclosing scope, so members mounting
-    /// inside the filter anchor there (water-rs/waterui#2097).
-    anchors: FxHashMap<(usize, Option<LayerId>), LayerId>,
+    /// item the `.material_group()` flush pushes into the enclosing
+    /// program, and the item a filtered node pushes at its program's
+    /// start for the innermost enclosing scope, so members mounting
+    /// inside the filter anchor there (water-rs/waterui#2097). The weak
+    /// side of the scope's cell rides along: while the entry stands the
+    /// anchor item pins the `Rc`, so the address cannot be reused and
+    /// the weak stays live; a scope whose tree dropped releases here at
+    /// the next sweep.
+    anchors: FxHashMap<(usize, Option<LayerId>), (LayerId, Weak<NodeCell>)>,
 }
 
 /// The spec a group object was created with — the GPU target's
@@ -185,18 +189,40 @@ impl<G> BackdropGroups<G> {
         }
     }
 
-    /// Registers `layer` — the plain, empty layer the `.material_group()`
-    /// scope's anchor item mounts — as the anchor of `scope`'s groups in
-    /// `canvas` (water-rs/waterui#2097). While the entry stands, the
-    /// anchor item holds the scope's cell, so the `scope` address it
-    /// keys can never name a different cell.
+    /// Registers `layer` — the plain, empty layer `cell`'s anchor item
+    /// mounts — as the anchor of that scope's groups in `canvas`
+    /// (water-rs/waterui#2097). While the entry stands, the anchor item
+    /// holds the scope's cell, so the address it keys can never name a
+    /// different cell. One owner per key: a second live registration
+    /// under the same `(scope, canvas)` names the same layer or it is a
+    /// bug; a dead owner's stale entry is replaced outright.
     pub(crate) fn set_scope_anchor(
         &mut self,
-        scope: usize,
+        cell: &Rc<NodeCell>,
         canvas: Option<LayerId>,
         layer: LayerId,
     ) {
-        self.anchors.insert((scope, canvas), layer);
+        let scope = Rc::as_ptr(cell) as usize;
+        match self.anchors.entry((scope, canvas)) {
+            Entry::Occupied(mut entry) => {
+                if entry.get().1.upgrade().is_none() {
+                    entry.insert((layer, Rc::downgrade(cell)));
+                } else {
+                    assert_eq!(
+                        entry.get().0,
+                        layer,
+                        "hydrolysis mounts: a live anchor registration under \
+                         ({scope:p}, {canvas:?}) names {layer:?} — a second \
+                         owner registered {other:?}",
+                        scope = scope as *const NodeCell,
+                        other = entry.get().0,
+                    );
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert((layer, Rc::downgrade(cell)));
+            }
+        }
     }
 
     /// Drops the registration `(scope, canvas, layer)` installed — a
@@ -204,7 +230,7 @@ impl<G> BackdropGroups<G> {
     /// lowering removes only the registration it made, never another
     /// list's.
     pub(crate) fn remove_anchor(&mut self, scope: usize, canvas: Option<LayerId>, layer: LayerId) {
-        if self.anchors.get(&(scope, canvas)) == Some(&layer) {
+        if self.anchors.get(&(scope, canvas)).map(|entry| entry.0) == Some(layer) {
             self.anchors.remove(&(scope, canvas));
         }
     }
@@ -243,7 +269,16 @@ impl<G> BackdropGroups<G> {
         // into a new group rather than silently changing the live one.
         let mut key = key;
         key.anchor = match key.scope {
-            BackdropScope::Scoped(scope) => self.anchors.get(&(scope, key.canvas)).copied(),
+            BackdropScope::Scoped(scope) => Some(
+                self.anchors
+                    .get(&(scope, key.canvas))
+                    .expect(
+                        "hydrolysis mounts: a scoped member's (scope, canvas) \
+                         registration stands before the member commits — the \
+                         scope's anchor item lowers before its members",
+                    )
+                    .0,
+            ),
             BackdropScope::Solo(_) => None,
         };
         let anchor = key.anchor;
@@ -348,11 +383,15 @@ impl<G> BackdropGroups<G> {
 
     /// Ends the memberships whose marker died since the last commit — a
     /// member's marker lives in its `NodeLayers`, so a member whose
-    /// layers unmounted leaves here — and releases the groups left empty.
-    /// Runs inside the mount's commit, before the transaction applies:
-    /// the engine applies a frame's commits before it renders, so the
-    /// release and the mounts that replace it land together.
+    /// layers unmounted leaves here — releases the anchor registrations
+    /// whose scope cell dropped the same way, and releases the groups
+    /// left empty. Runs inside the mount's commit, before the
+    /// transaction applies: the engine applies a frame's commits before
+    /// it renders, so the release and the mounts that replace it land
+    /// together.
     pub(crate) fn sweep(&mut self) {
+        self.anchors
+            .retain(|_, (_, cell)| cell.upgrade().is_some());
         self.members
             .retain(|_, entry| entry.marker.upgrade().is_some());
         self.groups.retain(|_, group| {
@@ -410,7 +449,10 @@ impl<G> BackdropGroups<G> {
     /// test-facing answer.
     #[cfg(test)]
     pub(crate) fn anchor_registrations(&self) -> Vec<(usize, Option<LayerId>, LayerId)> {
-        self.anchors.iter().map(|(&(s, c), &l)| (s, c, l)).collect()
+        self.anchors
+            .iter()
+            .map(|(&(s, c), &(l, _))| (s, c, l))
+            .collect()
     }
 
     /// The colour scheme `member`'s backdrop group is keyed by — `None`

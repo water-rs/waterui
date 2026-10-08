@@ -183,6 +183,15 @@ pub struct NodeLayers {
     /// compare-removes on the layer it installed — dropped when the
     /// layers retire.
     anchor_keys: Vec<(usize, Option<LayerId>, LayerId)>,
+    /// The anchor layers the inner list's items lower — the same
+    /// retention and registration contract as `anchors`, owned by the
+    /// inner list alone: sharing the outer list's tables would let the
+    /// outer pass retire anchors the inner pass just created
+    /// (water-rs/waterui#2097).
+    inner_anchors: Vec<(Rc<NodeCell>, Layer)>,
+    /// The `(scope, canvas, layer)` keys the inner list's items'
+    /// anchors registered.
+    inner_anchor_keys: Vec<(usize, Option<LayerId>, LayerId)>,
     /// The layer the frame is attached under.
     attached: Cell<Option<LayerId>>,
 }
@@ -309,14 +318,16 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             scopes,
             anchors,
             anchor_keys,
+            inner_anchors,
+            inner_anchor_keys,
             content_held,
             material,
             ..
         } = layers;
-        for (scope, canvas, layer) in anchor_keys {
+        for (scope, canvas, layer) in anchor_keys.into_iter().chain(inner_anchor_keys) {
             self.groups.remove_anchor(scope, canvas, layer);
         }
-        for (_, layer) in anchors {
+        for (_, layer) in anchors.into_iter().chain(inner_anchors) {
             self.retire_layer(layer);
         }
         for run in runs.into_iter().chain(inner_runs) {
@@ -652,6 +663,8 @@ pub fn commit_cell<T: LayerTarget>(
                 material: None,
                 anchors: Vec::new(),
                 anchor_keys: Vec::new(),
+                inner_anchors: Vec::new(),
+                inner_anchor_keys: Vec::new(),
                 attached: Cell::new(None),
             }
         }
@@ -869,8 +882,8 @@ fn lower_inner<T: LayerTarget>(
             inner_layer,
             &[],
             &inner.items,
-            &mut layers.anchors,
-            &mut layers.anchor_keys,
+            &mut layers.inner_anchors,
+            &mut layers.inner_anchor_keys,
             &mut layers.inner_runs,
             scopes_old,
             scopes_new,
@@ -880,6 +893,12 @@ fn lower_inner<T: LayerTarget>(
         );
     } else {
         if let Some((layer, _)) = layers.inner.take() {
+            cx.retire_layer(layer);
+        }
+        for (scope, canvas, layer) in std::mem::take(&mut layers.inner_anchor_keys) {
+            cx.groups.remove_anchor(scope, canvas, layer);
+        }
+        for (_, layer) in std::mem::take(&mut layers.inner_anchors) {
             cx.retire_layer(layer);
         }
         for run in std::mem::take(&mut layers.inner_runs) {
@@ -1139,8 +1158,7 @@ fn lower_list<T: LayerTarget>(
                 // after it commit (water-rs/waterui#2097).
                 let at = anchor_slot(cx, cell, &mut old_anchors, anchors);
                 let layer = anchors[at].1.id();
-                cx.groups
-                    .set_scope_anchor(Rc::as_ptr(cell) as usize, canvas, layer);
+                cx.groups.set_scope_anchor(cell, canvas, layer);
                 anchor_keys.push((Rc::as_ptr(cell) as usize, canvas, layer));
                 slots.push(Slot::Anchor(at));
             }
