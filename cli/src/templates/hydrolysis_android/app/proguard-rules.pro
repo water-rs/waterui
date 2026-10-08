@@ -3,13 +3,6 @@
 
 # The app reaches the Hydrolysis host through `System.loadLibrary` and JNI
 # symbol names; the default proguard-android-optimize.txt keeps cover that
-# direction. The only reachability R8 cannot see is the reverse direction:
-# the Rust session calls these HydrolysisSession methods by name.
--keepclassmembers class dev.waterui.hydrolysis.HydrolysisSession {
-    void onNativeRequestRedraw();
-    void onNativeTextInputState(float, float, float, float, int);
-    void onNativeAccessibilityTreeChanged();
-    void onNativeFatalError(java.lang.String);
-    void onNativeCloseRequested();
-    void onNativeBackAvailable(boolean);
-}
+# direction. The reverse direction — native code calling host methods by
+# name — is covered by the host library's own consumer keep rule: every
+# such member carries @dev.waterui.hydrolysis.CalledFromNative.

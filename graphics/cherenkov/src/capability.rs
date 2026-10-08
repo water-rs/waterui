@@ -282,6 +282,36 @@ pub trait HdrOutput: Backend {}
 /// The backend presents on multiple hardware planes.
 pub trait Planes: Backend {}
 
+/// The backend shows system layers the host supplies — a system web view,
+/// an embedded platform view — in the layer tree, through
+/// [`Hosted::at`](crate::Hosted::at).
+///
+/// A hosted layer is always realized on a system-compositor plane of its
+/// own and never composited by the engine. [`Object`](Self::Object) is the
+/// platform object itself, not pixels: no engine path samples, filters,
+/// caches or reads it back, because none can reach it. Its eligibility is
+/// the mandatory-plane rule — a hosted layer that cannot be placed on a
+/// plane fails the render with
+/// [`RenderError::Unplaceable`](crate::RenderError::Unplaceable), never
+/// falls back to composition.
+pub trait HostedLayers: Planes + GpuInstalls {
+    /// The platform object the host hands over: a `CALayer` on Apple, a
+    /// `SurfaceControl` on Android.
+    type Object: Clone + crate::RenderTransfer + 'static;
+    /// Binds `object` as the content of `layer` on `surface`, its own
+    /// coordinate space mapped onto the layer's content space with
+    /// `(0, 0)..size` as its extent. Replaces the layer's other content; a
+    /// rebinding of the same object on the same layer keeps its plane and
+    /// moves only its geometry.
+    fn bind_hosted(
+        r: &mut Self::Renderer,
+        surface: SurfaceId,
+        layer: LayerId,
+        object: Self::Object,
+        size: kurbo::Size,
+    );
+}
+
 /// A user shader's WGSL fragment source.
 #[derive(Clone, Debug)]
 pub struct ShaderSource {

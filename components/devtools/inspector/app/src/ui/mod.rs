@@ -60,19 +60,18 @@ fn detail_builder(
 /// The section list, with a live connection indicator pinned above it.
 ///
 /// A split view may rebuild its sidebar, so this is a closure — which is a view,
-/// and unlike the scroll view it produces, is `Clone`.
+/// and unlike the layout it produces, is `Clone`.
 fn sidebar(model: Model) -> impl View + Clone {
     move || {
         let model = model.clone();
-        let rows = Section::ALL
-            .iter()
-            .map(|section| sidebar_row(*section, &model).anyview())
-            .collect::<VStack<_>>();
-
         vstack((
             connection_badge(&model).background(Background),
             Divider,
-            scroll(rows),
+            List::for_each(Section::ALL, {
+                let model = model.clone();
+                move |section| ListItem::new(sidebar_row(section, &model))
+            })
+            .selection(&model.section),
         ))
     }
 }

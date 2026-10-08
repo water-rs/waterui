@@ -220,7 +220,7 @@ impl Host {
     ///
     /// The child sees exactly this host's variables and starts in
     /// [`Host::cwd`]; `program` is resolved against this host's `PATH`.
-    /// stdio configuration is left to the caller — see [`crate::utils::command`]
+    /// stdio configuration is left to the caller — see `crate::utils::command`
     /// for the CLI's capture/inherit policy.
     #[must_use]
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {

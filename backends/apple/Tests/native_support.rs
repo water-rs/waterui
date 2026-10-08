@@ -190,28 +190,54 @@ impl Drop for UIKitMount {
     }
 }
 
-/// Hosts real content through embedding's shared mount/primary-content/layout path.
+/// The scene-less `UIWindow` the spawned test process mounts into.
+///
+/// `initWithFrame:` is the only construction outside a window scene —
+/// the spawned test binary owns no scene — so this is the one site the
+/// deprecation is expected at. The window takes the screen's bounds, so
+/// its ambient `safeAreaInsets` — the notch band above, the
+/// home-indicator band below — are the real ones a `WaterUI` app sees.
 #[cfg(target_os = "ios")]
 #[expect(
     deprecated,
     reason = "the native test process supplies its own window without a scene"
 )]
 #[must_use]
-pub fn mount_uikit(
+pub fn spawned_window(
+    mtm: MainThreadMarker,
+) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
+    use objc2::MainThreadOnly;
+    let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithFrame(
+        cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
+        cocoa_ui::objc2_core_foundation::CGRect::ZERO,
+    );
+    window.setFrame(window.screen().bounds());
+    window
+}
+
+/// Hosts real content through embedding's shared mount/primary-content/layout path.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit(mtm: MainThreadMarker, view: waterui::AnyView, env: &Environment) -> UIKitMount {
+    mount_uikit_window(mtm, view, env, spawned_window(mtm))
+}
+
+/// `mount_uikit` into a window the caller already owns — a trial that
+/// must reach the window before the first mount (the keyboard can be
+/// up first) uses this.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit_window(
     mtm: MainThreadMarker,
     view: waterui::AnyView,
     env: &Environment,
-    frame: cocoa_ui::Rect,
+    window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> UIKitMount {
-    use objc2::{MainThreadOnly, Message};
+    use objc2::Message;
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     let host = controller.host_view().retain();
-    let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithFrame(
-        cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
-        frame.into(),
-    );
     window.setRootViewController(Some(&controller));
-    cocoa_ui::view::set_frame(&host, frame);
+    cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&window));
     let mut keepalive = crate::contract::KeepAlive::default();
     let mut env = env.clone();
     crate::theme::install_controller(&mut env, &controller, &mut keepalive);
@@ -223,6 +249,102 @@ pub fn mount_uikit(
         content,
         window,
         _controller: controller,
+        _keepalive: keepalive,
+    }
+}
+
+/// `mount_uikit` at a fixed window frame — trials that assert geometry
+/// inside a window sized for the case rather than the screen's.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit_in(
+    mtm: MainThreadMarker,
+    view: waterui::AnyView,
+    env: &Environment,
+    frame: cocoa_ui::Rect,
+) -> UIKitMount {
+    let mount = mount_uikit(mtm, view, env);
+    mount.window.setFrame(frame.into());
+    cocoa_ui::view::set_frame(&mount.host, frame);
+    mount.window.layoutIfNeeded();
+    mount
+}
+
+/// A kit subtree embedded under a foreign window root.
+///
+/// The window's root view controller is a plain `UIViewController` and
+/// the `HostView` sits inside a plain `UIView` container — every host
+/// in the window shares the window's own keyboard region regardless.
+#[cfg(target_os = "ios")]
+#[derive(Debug)]
+pub struct EmbeddedMount {
+    /// The embedded host.
+    pub host: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
+    /// The foreign-rooted window holding the subtree.
+    pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+    /// The mounted content inside `host`.
+    pub content: alloc::rc::Rc<crate::contract::Mounted>,
+    _keepalive: crate::contract::KeepAlive,
+}
+
+#[cfg(target_os = "ios")]
+impl Drop for EmbeddedMount {
+    fn drop(&mut self) {
+        self.window.setHidden(true);
+        self.window.setRootViewController(None);
+    }
+}
+
+/// Mounts `view` into an embedded `HostView` under a foreign window
+/// root in either content-mount order.
+///
+/// `content_first` mounts the content while the host is still detached
+/// and only then reaches the window; otherwise the host joins the
+/// already-windowed container first and mounts after — proving the
+/// window's keyboard region answers the same either way.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit_embedded(
+    mtm: MainThreadMarker,
+    view: waterui::AnyView,
+    env: &Environment,
+    content_first: bool,
+) -> EmbeddedMount {
+    use cocoa_ui::objc2_ui_kit::{UIView, UIViewController};
+    use cocoa_ui::uikit::HostView;
+    use objc2::{MainThreadOnly, msg_send};
+
+    // SAFETY: `init` is `UIViewController`'s plain designated initializer.
+    let foreign: cocoa_ui::Retained<UIViewController> =
+        unsafe { msg_send![UIViewController::alloc(mtm), init] };
+    let window = spawned_window(mtm);
+    let container = UIView::initWithFrame(UIView::alloc(mtm), window.screen().bounds());
+    let host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    let mut view = Some(view);
+    let mut keepalive = crate::contract::KeepAlive::default();
+    let mut mount = |host: &_, env: &_, keepalive: &mut _| {
+        crate::embedding::mount_content(
+            host,
+            view.take().expect("the view mounts once"),
+            env,
+            keepalive,
+        )
+    };
+    let content = content_first.then(|| mount(&host, env, &mut keepalive));
+    window.setRootViewController(Some(&foreign));
+    foreign
+        .view()
+        .expect("a root view controller creates its view")
+        .addSubview(&container);
+    container.addSubview(&host);
+    cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&container));
+    let content = content.unwrap_or_else(|| mount(&host, env, &mut keepalive));
+    window.makeKeyAndVisible();
+    window.layoutIfNeeded();
+    EmbeddedMount {
+        host,
+        window,
+        content,
         _keepalive: keepalive,
     }
 }

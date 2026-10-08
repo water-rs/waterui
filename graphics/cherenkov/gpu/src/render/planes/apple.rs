@@ -153,6 +153,140 @@ impl<T> Drop for MainOwned<T> {
     }
 }
 
+/// A `CALayer` the host supplies, shown on a plane of its own
+/// (`cherenkov::HostedLayers`).
+///
+/// Captured on main, where the layer stays: the render thread holds only
+/// this handle, and its last release goes back to main. The view that owns
+/// the layer stays in the host's view hierarchy, so it keeps receiving
+/// events and first-responder status; while the layer is bound, the engine
+/// sets its superlayer, anchor point, position and bounds size, and the
+/// host sets everything else — its contents, sublayers, bounds origin and
+/// transform.
+#[derive(Clone)]
+pub struct HostedLayer {
+    layer: MainOwned<Retained<CALayer>>,
+    /// The layer's address: its identity, readable off main.
+    address: usize,
+}
+
+impl HostedLayer {
+    /// Captures `layer` on main.
+    #[must_use]
+    pub fn new(layer: Retained<CALayer>, mtm: MainThreadMarker) -> Self {
+        let address = Retained::as_ptr(&layer).addr();
+        Self {
+            layer: MainOwned::new(layer, mtm),
+            address,
+        }
+    }
+
+    /// Whether `self` and `other` hold the same `CALayer`.
+    #[must_use]
+    pub const fn is(&self, other: &Self) -> bool {
+        self.address == other.address
+    }
+
+    /// The layer, on main.
+    fn layer(&self, mtm: MainThreadMarker) -> Retained<CALayer> {
+        self.layer
+            .0
+            .as_ref()
+            .expect("live main owner")
+            .get(mtm)
+            .borrow()
+            .clone()
+    }
+}
+
+impl std::fmt::Debug for HostedLayer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HostedLayer")
+            .field(&format_args!("{:#x}", self.address))
+            .finish()
+    }
+}
+
+/// A hosted layer inside the engine's holder: the holder is the plane's
+/// leaf, carrying its extent, opacity and opacity animation, so the
+/// host's layer keeps its own.
+struct HostedNode {
+    holder: Retained<CALayer>,
+    layer: Retained<CALayer>,
+    extent: kurbo::Size,
+}
+
+impl HostedNode {
+    /// Places the host's layer at the holder's origin at its extent.
+    fn place(&self) {
+        if self.layer.superlayer().as_deref() != Some(&*self.holder) {
+            self.holder.addSublayer(&self.layer);
+        }
+        let origin = self.layer.bounds().origin;
+        self.layer.setAnchorPoint(CGPoint::new(0.0, 0.0));
+        self.layer.setPosition(CGPoint::new(0.0, 0.0));
+        self.layer.setBounds(CGRect::new(
+            origin,
+            CGSize::new(self.extent.width, self.extent.height),
+        ));
+    }
+
+    /// Takes the host's layer out of the engine's tree — unless it already
+    /// moved to another holder, which then owns its placement.
+    fn release(&self) {
+        if self.layer.superlayer().as_deref() == Some(&*self.holder) {
+            self.layer.removeFromSuperlayer();
+        }
+        self.holder.removeFromSuperlayer();
+    }
+}
+
+/// Makes `nodes` host exactly `hosted`: a tree layer no longer hosted lets
+/// its object go, a new one gets a holder, a layer rebound to another
+/// object swaps it inside the same holder, and every object is placed at
+/// its extent — the holder, which is the plane's leaf, is never rebuilt
+/// for a geometry change.
+fn host(
+    nodes: &mut FxHashMap<LayerId, HostedNode>,
+    hosted: Vec<(LayerId, Retained<CALayer>, kurbo::Size)>,
+) {
+    nodes.retain(|id, node| {
+        let keep = hosted.iter().any(|(layer, ..)| layer == id);
+        if !keep {
+            node.release();
+        }
+        keep
+    });
+    for (id, layer, extent) in hosted {
+        let node = nodes.entry(id).or_insert_with(|| HostedNode {
+            holder: anchored(),
+            layer: layer.clone(),
+            extent,
+        });
+        if Retained::as_ptr(&node.layer) != Retained::as_ptr(&layer) {
+            if node.layer.superlayer().as_deref() == Some(&*node.holder) {
+                node.layer.removeFromSuperlayer();
+            }
+            node.layer = layer;
+        }
+        node.extent = extent;
+        node.place();
+    }
+}
+
+/// The hosted planes of a composition, owned for the main queue.
+fn hosted_planes(planes: &[Plane<'_>]) -> Vec<(LayerId, HostedLayer, kurbo::Size)> {
+    planes
+        .iter()
+        .filter_map(|plane| match &plane.content {
+            PlaneContent::Hosted { object, extent } => {
+                Some((plane.placement.layer, (*object).clone(), *extent))
+            }
+            PlaneContent::Raster { .. } | PlaneContent::Frame { .. } => None,
+        })
+        .collect()
+}
+
 /// Captured on main. The window and all Objective-C objects remain there.
 pub struct Parent {
     scene: MainOwned<LayerScene>,
@@ -201,6 +335,7 @@ impl Parent {
                     motions: FxHashMap::default(),
                     rasters: FxHashMap::default(),
                     retired_rasters: Vec::new(),
+                    hosted: FxHashMap::default(),
                 },
                 mtm,
             ),
@@ -290,6 +425,8 @@ struct LayerScene {
     motions: FxHashMap<LayerId, super::animation::Motion>,
     rasters: FxHashMap<LayerId, Retained<CALayer>>,
     retired_rasters: Vec<Retained<CALayer>>,
+    /// The hosted layers the last composition placed, by tree layer.
+    hosted: FxHashMap<LayerId, HostedNode>,
 }
 
 impl Drop for LayerScene {
@@ -298,6 +435,10 @@ impl Drop for LayerScene {
         // Pending and retired displays are `host` sublayers of their own.
         for display in self.displays.values().chain(&self.retired) {
             display.display.removeFromSuperlayer();
+        }
+        // The host's layers leave the engine's tree with it.
+        for node in self.hosted.values() {
+            node.release();
         }
         self.root.removeFromSuperlayer();
     }
@@ -1013,10 +1154,11 @@ impl LayerScene {
                 );
             }
             let display = self.display(placement.layer);
-            display.setBounds(CGRect::new(
-                CGPoint::new(0.0, 0.0),
-                CGSize::new(f64::from(placement.size.0), f64::from(placement.size.1)),
-            ));
+            let extent = self.hosted.get(&placement.layer).map_or_else(
+                || CGSize::new(f64::from(placement.size.0), f64::from(placement.size.1)),
+                |node| CGSize::new(node.extent.width, node.extent.height),
+            );
+            display.setBounds(CGRect::new(CGPoint::new(0.0, 0.0), extent));
             display.setAffineTransform(cg_affine(placement.raster));
             if self
                 .motions
@@ -1064,10 +1206,25 @@ impl LayerScene {
     }
 
     fn display(&self, layer: LayerId) -> &CALayer {
+        if let Some(node) = self.hosted.get(&layer) {
+            return &node.holder;
+        }
         match self.rasters.get(&layer) {
             Some(raster) => raster,
             None => &self.displays[&layer].display,
         }
+    }
+
+    /// Makes the hosted layers exactly `hosted`, resolving each object on
+    /// main ([`host`]).
+    fn host(&mut self, hosted: Vec<(LayerId, HostedLayer, kurbo::Size)>, mtm: MainThreadMarker) {
+        host(
+            &mut self.hosted,
+            hosted
+                .into_iter()
+                .map(|(id, object, extent)| (id, object.layer(mtm), extent))
+                .collect(),
+        );
     }
 
     /// Hands `frame` to `layer`'s display layer.
@@ -1273,6 +1430,8 @@ impl LayerPlanes {
 
 impl Compositor for LayerPlanes {
     const BUDGET: usize = 2;
+    // A hosted layer's holder carries the plane's opacity.
+    const HOSTS_OPACITY: bool = true;
 
     fn expresses_transform(transform: Affine) -> bool {
         transform.as_coeffs().iter().all(|c| c.is_finite())
@@ -1456,6 +1615,7 @@ impl SystemPlanes for LayerPlanes {
             .iter()
             .map(|plane| plane.placement.clone())
             .collect();
+        let hosted = hosted_planes(c.planes);
         let size = c.size;
         let scale = c.display.scale;
         let tree_changed = placements.iter().any(|placement| {
@@ -1468,11 +1628,12 @@ impl SystemPlanes for LayerPlanes {
         self.placements.clone_from(&placements);
         self.motion.placed(tree_changed);
         let queue = c.queue.clone();
-        self.scene.run(move |scene, _| {
+        self.scene.run(move |scene, mtm| {
             let _tx = Transaction::begin();
             for (layer, contents) in contents {
                 contents.set(scene.display(layer));
             }
+            scene.host(hosted, mtm);
             scene.place(&placements, size, scale, frames.len());
             for frame in frames {
                 queue.present(frame);
@@ -1512,7 +1673,11 @@ impl SystemPlanes for LayerPlanes {
         let removed: Vec<_> = self
             .static_candidates
             .iter()
-            .filter(|id| !candidates.contains_key(id) || frames.contains_key(id))
+            .filter(|id| {
+                candidates
+                    .get(id)
+                    .is_none_or(|candidate| candidate.source != Source::Recorded)
+            })
             .copied()
             .collect();
         for id in removed {
@@ -1524,7 +1689,10 @@ impl SystemPlanes for LayerPlanes {
                 }
             });
         }
-        for &id in candidates.keys().filter(|id| !frames.contains_key(id)) {
+        for (&id, _) in candidates
+            .iter()
+            .filter(|(_, candidate)| candidate.source == Source::Recorded)
+        {
             if self.static_candidates.insert(id) {
                 self.scene.run(move |scene, _| {
                     scene.rasters.insert(id, anchored());

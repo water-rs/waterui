@@ -684,15 +684,21 @@ impl ListRenderState {
     /// between the rendered animation and the semantic jump: nothing ticks the
     /// list's smooth scroll on the semantic runtime, so a request there lands
     /// in place instead.
+    ///
+    /// Returns whether this application moved the offset — a jump, an
+    /// approach jump, or a landing correction. Arming or refining a run moves
+    /// nothing: the run's own ticks carry the offset from here, as
+    /// continuation work rather than a change still to be applied.
+    #[must_use]
     fn apply_scroll_request(
         &self,
         renderer: &mut crate::renderer::SemanticCore,
         handle: &ScrollHandle,
         row_count: usize,
         animate: bool,
-    ) {
+    ) -> bool {
         let Some(controller) = &self.config.scroll_controller else {
-            return;
+            return false;
         };
         let generation = renderer.read_signal(&controller.generation());
         if generation != self.applied_scroll_generation.get()
@@ -711,7 +717,7 @@ impl ListRenderState {
             });
         }
         let Some(pending) = self.pending_scroll.borrow().clone() else {
-            return;
+            return false;
         };
         if pending.index >= row_count {
             // A scroll request names a row the contents may not have yet: a
@@ -719,14 +725,14 @@ impl ListRenderState {
             // target, and a signal-driven collection can shrink below it. The
             // request stays pending until the collection reaches the index;
             // a newer generation supersedes it.
-            return;
+            return false;
         }
         // Re-issuing the target every frame is what keeps a virtualized
         // request accurate: rows measured while the list moves past them move
         // `offset_of(index)`, so the destination is refined until it actually
         // lands.
         let offset = self.extent_index.borrow().offset_of(pending.index);
-        match pending.animation.clone() {
+        let moved = match pending.animation.clone() {
             Some(animation) if animate => match pending.state {
                 PendingScrollState::Armed { run } => match handle.scroll_run_outcome(&run) {
                     ScrollRunOutcome::Running => {
@@ -735,12 +741,13 @@ impl ListRenderState {
                         // request armed answers — a different owner's
                         // animation on the same surface is never steered.
                         let _ = handle.retarget_animated_scroll(&run, 0.0, offset);
+                        false
                     }
                     ScrollRunOutcome::Landed => {
                         // The motion is over; settling the final position
                         // as rows re-measure is a correction, so it jumps
                         // rather than arming a second full-duration run.
-                        let _ = handle.scroll_to(0.0, offset);
+                        handle.scroll_to(0.0, offset)
                     }
                     ScrollRunOutcome::Interrupted => {
                         // Something else claimed the offset — user input,
@@ -749,7 +756,7 @@ impl ListRenderState {
                         // generation keeps the supersede rule uniform.
                         self.applied_scroll_generation.set(pending.generation);
                         self.pending_scroll.take();
-                        return;
+                        return false;
                     }
                 },
                 PendingScrollState::Unarmed => {
@@ -767,12 +774,11 @@ impl ListRenderState {
                     // there, and read as a blur regardless: jump to within
                     // the approach bound of the target and animate only that
                     // final stretch.
-                    if let Some(approach_index) =
-                        animated_row_scroll_approach(current, pending.index)
-                    {
-                        let approach = self.extent_index.borrow().offset_of(approach_index);
-                        let _ = handle.scroll_to(0.0, approach);
-                    }
+                    let approached = animated_row_scroll_approach(current, pending.index)
+                        .is_some_and(|approach_index| {
+                            let approach = self.extent_index.borrow().offset_of(approach_index);
+                            handle.scroll_to(0.0, approach)
+                        });
                     // Arming starts the run's clock at the frame instant —
                     // the very next tick already shows motion, and keeps
                     // requesting frames until the run lands. The handle is
@@ -788,6 +794,7 @@ impl ListRenderState {
                         .as_mut()
                         .expect("the pending request being applied is still stored")
                         .state = PendingScrollState::Armed { run };
+                    approached
                 }
             },
             _ => {
@@ -795,12 +802,12 @@ impl ListRenderState {
                 // registers the list's handle in its scroll targets — either
                 // way the request lands in place. Re-issuing while pending
                 // keeps it self-correcting as rows measure.
-                let _ = handle.scroll_to(0.0, offset);
+                handle.scroll_to(0.0, offset)
             }
-        }
+        };
         let extent_index = self.extent_index.borrow();
         let Some(extent) = extent_index.measured(pending.index) else {
-            return;
+            return moved;
         };
         let metrics = handle.metrics();
         let row_start = extent_index.offset_of(pending.index);
@@ -815,6 +822,7 @@ impl ListRenderState {
             self.applied_scroll_generation.set(pending.generation);
             self.pending_scroll.take();
         }
+        moved
     }
 
     fn record_viewport_anchor(&self, metrics: crate::scroll::ScrollMetrics, row_count: usize) {
@@ -991,7 +999,9 @@ pub fn list_accessibility(
         .total_extent()
         .max(viewport.height());
     let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
+    // Applied ahead of the emit below, so a move it makes is in this frame's
+    // tree already.
+    let _ = state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
     #[cfg(feature = "accessibility")]
     {
         let metrics = handle.metrics();
@@ -1524,7 +1534,9 @@ pub fn render_list_parts(
     let handle = state
         .borrow()
         .bind_scroll(viewport.width(), viewport.height(), content_height);
-    state
+    // Applied ahead of the rows' recording, so a move it makes is in this
+    // frame's recording already.
+    let _ = state
         .borrow()
         .apply_scroll_request(ctx.renderer_mut(), &handle, row_count, true);
     // The keyboard-moving clearance runs before the rows paint: while the
@@ -1535,7 +1547,6 @@ pub fn render_list_parts(
         .surface
         .begin_flush(ctx.renderer_mut(), &handle);
     let mut metrics = handle.metrics();
-    let needs_viewport_clip = metrics.max_y > 0.0;
     // Register before the rows flush: scroll-target dispatch walks the frame's
     // targets newest-first, so a scroll region inside a row wins the delta
     // until it hits its own edge, where it falls through to the list.
@@ -1544,21 +1555,55 @@ pub fn render_list_parts(
         surface_viewport,
         &handle,
     );
-    if needs_viewport_clip {
-        ctx.open_scope(
-            crate::renderer::mount::ScopeKey {
-                role: "viewport",
-                item: 0,
-            },
-            1.0,
-            surface_viewport,
-        );
-    }
 
     let span = state
         .borrow()
         .surface
         .visible_span(&metrics, ScrollAxis::Vertical);
+    let span_horizontal = state
+        .borrow()
+        .surface
+        .visible_span(&metrics, ScrollAxis::Horizontal);
+    // The rows scroll as the widget's inner layer `ScrollOffset`, exactly as a
+    // `scroll` node's content does (decision 1): they paint and place at their
+    // resting positions in content space and the inner layer shifts them, so a
+    // scroll frame writes the one scroll-offset property instead of re-placing
+    // every visible row. The viewport placement carries the same offset so the
+    // rows' hit regions and emitted bounds follow it without a re-record.
+    let offset = kurbo::Vec2::new(metrics.offset_x, metrics.offset_y);
+    {
+        let renderer = ctx.renderer_mut();
+        renderer.push_placement_scope(
+            crate::renderer::mount::ScopeDelta::RECORD_SPACE,
+            Some(surface_viewport),
+        );
+        let viewport_placement = renderer.current_placement();
+        viewport_placement.set_content_offset(-offset);
+        renderer.program().begin_inner(
+            surface_viewport,
+            offset,
+            std::rc::Rc::clone(&viewport_placement),
+        );
+        // The visible window resolves in content space while the rows record
+        // at `viewport.origin + content`: the content's local transform is the
+        // frame's origin — the relation `ScrollNode` publishes through
+        // `content_ctx.local` — so the lazy window maps content coordinates
+        // through it before the scroll shift.
+        let world = renderer.record_world(kurbo::Affine::translate(kurbo::Vec2::new(
+            viewport.x0,
+            viewport.y0,
+        )));
+        renderer.push_lazy_viewport(crate::renderer::LazyViewport {
+            bounds: kurbo::Rect::new(
+                span_horizontal.start,
+                span.start,
+                span_horizontal.end,
+                span.end,
+            ),
+            transform: world * kurbo::Affine::translate(-offset),
+        });
+    }
+
     let window = state
         .borrow()
         .extent_index
@@ -1587,7 +1632,10 @@ pub fn render_list_parts(
     // it travels past, so draw order can no longer be the order the vertical
     // cursor advances in.
     let mut rows = Vec::with_capacity(window.end.saturating_sub(window.start));
-    let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
+    // Rows live in content space: `leading_offset` is the window's resting
+    // position under the viewport's top edge, and the inner layer's scroll
+    // offset shifts the whole band on screen.
+    let mut y = viewport.y0 + window.leading_offset;
     // A row's extent is derived from its content's measured size every frame —
     // the same transient measure `list_content_rect` consumes below — so a row
     // whose content re-measures differently is re-measured here and only here:
@@ -1742,7 +1790,9 @@ pub fn render_list_parts(
             viewport.x1,
             resting_y + reorder_dy + row_height,
         );
-        if slot_rect.y1 <= surface_viewport.y0 || slot_rect.y0 >= surface_viewport.y1 {
+        // `slot_rect` rides in the frame's space (`viewport.origin + content`);
+        // shift the content-space span into the same space for the cull.
+        if slot_rect.y1 <= span.start + viewport.y0 || slot_rect.y0 >= span.end + viewport.y0 {
             continue;
         }
         let header_height = chrome.header_height(&list_metrics);
@@ -2138,16 +2188,28 @@ pub fn render_list_parts(
             state
                 .borrow()
                 .bind_scroll(viewport.width(), viewport.height(), content_height);
-        state
-            .borrow()
-            .apply_scroll_request(ctx.renderer_mut(), &rebound, row_count, true);
+        let moved =
+            state
+                .borrow()
+                .apply_scroll_request(ctx.renderer_mut(), &rebound, row_count, true);
         metrics = rebound.metrics();
-        ctx.renderer_mut().context_mark_layout();
+        // The rows above recorded, and the semantic pass emitted, the offset
+        // this application started from: a request that moved it leaves both
+        // stale, so it pulls one more frame. A run it merely refined moves
+        // nothing here — its ticks carry the offset as continuation work, and
+        // marking every frame of the glide would read the whole flight as an
+        // unapplied change.
+        if moved {
+            ctx.renderer_mut().context_mark_layout();
+        }
     }
     state.borrow().record_viewport_anchor(metrics, row_count);
 
-    if needs_viewport_clip {
-        ctx.close_scope();
+    {
+        let renderer = ctx.renderer_mut();
+        renderer.pop_lazy_viewport("hydrolysis list");
+        renderer.program().end_inner();
+        renderer.pop_placement_scope();
     }
 
     // The focused-field clearance runs after recording, over the retained

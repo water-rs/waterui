@@ -490,7 +490,7 @@ mod uikit_surface {
     /// intersecting frame, including the nested inbox stacks.
     pub fn list_cells_give_nested_text_real_frames() {
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(inbox()),
             &env,
@@ -534,7 +534,7 @@ mod uikit_surface {
     pub fn text_field_renders_plain_with_a_real_height() {
         let value = binding(Str::from("x"));
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(TextField::new("", &value)),
             &env,
@@ -572,7 +572,7 @@ mod uikit_surface {
     pub fn list_row_height_pitches_and_respects_the_floor() {
         for (height, metric) in [(24.0_f32, "row24Height"), (4.0, "row4Height")] {
             let env = crate::resolve::env();
-            let mount = waterui_apple::native_test_support::mount_uikit(
+            let mount = waterui_apple::native_test_support::mount_uikit_in(
                 mtm(),
                 AnyView::new(List::content((move || {
                     ListItem::new(Color::srgb(255, 0, 0).height(height))
@@ -614,7 +614,7 @@ mod uikit_surface {
             NavigationView::new(format!("Detail {id}"), text("detail"))
         });
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(split),
             &env,
@@ -669,7 +669,7 @@ mod uikit_surface {
             ListItem::new(content)
         });
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
@@ -822,7 +822,7 @@ mod uikit_surface {
                 }
             },
         ));
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
@@ -917,7 +917,7 @@ mod uikit_surface {
                 ListItem::new(content)
             }
         });
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
@@ -1036,7 +1036,7 @@ mod uikit_surface {
                 ListItem::new(content)
             }
         });
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
@@ -1170,7 +1170,7 @@ mod uikit_surface {
                 text(format!("row {}", row.id))
             }
         }));
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(container),
             &env,
@@ -1232,7 +1232,7 @@ mod uikit_surface {
             }
         });
         let view = table(vec![col("c", rows)]);
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(view),
             &env,
@@ -1334,7 +1334,7 @@ mod uikit_surface {
         let _ = first_column.set(column.clone());
         columns.set(vec![column]);
         let view = table(columns);
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(view),
             &env,

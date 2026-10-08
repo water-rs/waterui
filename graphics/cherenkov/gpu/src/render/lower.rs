@@ -5656,6 +5656,7 @@ mod tests {
                     path: Vec::new(),
                 })
                 .collect(),
+            unplaced: Vec::new(),
             rejected: Vec::new(),
             trailing,
         }

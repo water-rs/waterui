@@ -7,6 +7,7 @@ use std::pin::Pin;
 use eyre::{Context as _, Result, bail};
 use tracing::info;
 
+use crate::android::device::AndroidTarget;
 use crate::build::{BuildOptions, BuildProfile, BuildProgress};
 use crate::device::{Device, Local, RunOptions, Running, StopRequest};
 use crate::platform::TargetPlatform;
@@ -18,6 +19,10 @@ use crate::templates::TemplateContext;
 
 const INSPECTOR_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const INSPECTOR_METADATA_FILE: &str = ".waterui-inspector-signature";
+/// Bumped whenever `scaffold_inspector_app` changes what it generates beyond
+/// the templated files (manifest edits, permissions), which the template
+/// fingerprint does not cover.
+const INSPECTOR_SCAFFOLD_GENERATION: u32 = 1;
 
 #[derive(Debug, Clone)]
 struct InspectorRequirements {
@@ -92,12 +97,19 @@ async fn open_inspector_project(
     inspector_app_path: &Path,
     platform: InspectorPlatform,
 ) -> Result<Project> {
-    Project::open(
-        inspector_app_path,
-        ManagedBackends::for_platform(inspector_target_platform(platform)),
-    )
-    .await
-    .wrap_err("Failed to open inspector support app project")
+    match platform {
+        // Android runs the support app through Hydrolysis, whose managed
+        // launcher crate is generated on demand rather than by `Project::open`.
+        InspectorPlatform::Android => crate::hydrolysis::backend::open_ready(inspector_app_path)
+            .await
+            .wrap_err("Failed to open inspector support app project"),
+        InspectorPlatform::Macos | InspectorPlatform::IosSimulator => Project::open(
+            inspector_app_path,
+            ManagedBackends::for_platform(inspector_target_platform(platform)),
+        )
+        .await
+        .wrap_err("Failed to open inspector support app project"),
+    }
 }
 
 /// Launch (or relaunch) an inspector support app.
@@ -165,45 +177,20 @@ pub async fn launch_inspector_session(
                 .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
         }
         InspectorPlatform::Android => {
-            let backend = project
-                .android_backend()
-                .ok_or_else(|| eyre::eyre!("Android backend not configured"))?;
-
-            let devices = crate::android::device::AndroidDevice::scan(&host).await?;
-            if let Some(device) = devices.into_iter().next() {
-                device.launch(&host).await?;
-                info!("Building and running inspector app on Android device...");
-                project
-                    .run_android_with_options(
-                        backend,
-                        device,
-                        run_options,
-                        BuildOptions::development(BuildProfile::Debug),
-                        progress.clone(),
-                    )
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
-            } else {
-                let avds = crate::android::platform::AndroidPlatform::list_avds(&host).await?;
-                let avd_name = avds
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| eyre::eyre!("No Android devices or emulators available."))?;
-                let emulator =
-                    crate::android::device::AndroidEmulator::open(&host, avd_name).await?;
-                emulator.launch(&host).await?;
-                info!("Building and running inspector app on Android emulator...");
-                project
-                    .run_android_with_options(
-                        backend,
-                        emulator,
-                        run_options,
-                        BuildOptions::development(BuildProfile::Debug),
-                        progress.clone(),
-                    )
-                    .await
-                    .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
-            }
+            let target = AndroidTarget::first_available(&host).await?;
+            target.launch(&host).await?;
+            info!("Building and running inspector app on Android...");
+            crate::hydrolysis::android::run_on_device(
+                &project,
+                &host,
+                crate::hydrolysis::android::resolve_painter(&project, None),
+                target,
+                run_options,
+                BuildOptions::development(BuildProfile::Debug),
+                progress.clone(),
+            )
+            .await
+            .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
         }
     };
 
@@ -248,7 +235,7 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
         .map_err(|e| eyre::eyre!("Failed to create inspector app: {e}"))?;
 
     let mut manifest = WaterManifest::open(project.root().join("Water.toml")).await?;
-    manifest.package.accessory = false;
+    configure_inspector_manifest(&mut manifest);
     manifest.save(project.root()).await?;
 
     let framework = project.resolved_framework().await?;
@@ -286,6 +273,22 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
     Ok(())
 }
 
+/// The support app's `Water.toml` edits over what `water create` writes.
+///
+/// A change here changes the scaffold without changing a template, so it
+/// bumps [`INSPECTOR_SCAFFOLD_GENERATION`].
+fn configure_inspector_manifest(manifest: &mut crate::project::Manifest) {
+    manifest.package.accessory = false;
+    // The inspector dials the inspected application's endpoint; on Android a
+    // socket needs INTERNET regardless of what the inspected app declares.
+    manifest.permissions.insert(
+        crate::project_types::PermissionKey::Internet,
+        crate::project::PermissionEntry::enabled(
+            "Connects to the inspected application's endpoint",
+        ),
+    );
+}
+
 /// The `water create` options the inspector support app is scaffolded from.
 fn inspector_create_options(waterui_path: Option<PathBuf>) -> crate::project::CreateOptions {
     crate::project::CreateOptions {
@@ -316,7 +319,7 @@ fn inspector_project_packages(options: &crate::project::CreateOptions) -> BTreeS
 
 fn inspector_signature(requirements: &InspectorRequirements) -> String {
     format!(
-        "template_commit={INSPECTOR_TEMPLATE_COMMIT}\nwaterui_dependency={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
+        "template_commit={INSPECTOR_TEMPLATE_COMMIT}\nscaffold_generation={INSPECTOR_SCAFFOLD_GENERATION}\nwaterui_dependency={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
         requirements.waterui_path.as_ref().map_or_else(
             || String::from("registry"),
             |path| path.display().to_string()
@@ -386,4 +389,53 @@ fn select_unique_package<'a>(
         );
     }
     Ok(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{InspectorRequirements, configure_inspector_manifest, inspector_signature};
+    use crate::project::Manifest;
+    use crate::project_types::PermissionKey;
+
+    /// The support app dials the inspected endpoint, so the `Water.toml` it is
+    /// scaffolded with enables `internet` whatever the inspected app declares.
+    #[test]
+    fn the_support_manifest_enables_internet() {
+        let mut manifest = Manifest::parse(
+            "[package]\nname = \"WaterUI Inspector\"\nbundle_identifier = \"dev.waterui.inspector\"\n",
+        )
+        .expect("Water.toml parses");
+        configure_inspector_manifest(&mut manifest);
+
+        let written = toml::to_string(&manifest).expect("manifest serializes");
+        let reread = Manifest::parse(&written).expect("the written manifest parses");
+        assert!(
+            reread
+                .permissions
+                .get(&PermissionKey::Internet)
+                .is_some_and(crate::project::PermissionEntry::is_enabled),
+            "{written}"
+        );
+        assert!(!reread.package.accessory, "{written}");
+    }
+
+    /// The manifest edit lies outside the template fingerprint, so the
+    /// signature carries the scaffold generation that invalidates cached
+    /// support apps when the edit changes.
+    #[test]
+    fn the_signature_carries_the_scaffold_generation() {
+        let signature = inspector_signature(&InspectorRequirements {
+            waterui_path: Some(PathBuf::from("/waterui")),
+            runtime_fingerprint: "fingerprint".to_string(),
+        });
+        assert!(
+            signature.contains(&format!(
+                "scaffold_generation={}",
+                super::INSPECTOR_SCAFFOLD_GENERATION
+            )),
+            "{signature}"
+        );
+    }
 }
