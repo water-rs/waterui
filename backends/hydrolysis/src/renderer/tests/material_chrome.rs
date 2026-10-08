@@ -194,6 +194,41 @@ fn mirror_chrome_layers(renderer: &crate::renderer::HydrolysisRenderer) -> Vec<c
     members.0
 }
 
+/// The mount's cells whose staged program records chrome members, in
+/// mount order — the cells a partial commit can stage independently.
+fn chrome_cells(
+    renderer: &crate::renderer::HydrolysisRenderer,
+) -> Vec<Rc<crate::renderer::NodeCell>> {
+    fn has_chrome(items: &[crate::renderer::mount::program::Item]) -> bool {
+        items.iter().any(|item| match item {
+            crate::renderer::mount::program::Item::Chrome(_) => true,
+            crate::renderer::mount::program::Item::Scope { items, .. } => has_chrome(items),
+            _ => false,
+        })
+    }
+    fn walk(cell: &Rc<crate::renderer::NodeCell>, out: &mut Vec<Rc<crate::renderer::NodeCell>>) {
+        let retained = cell.retained();
+        if retained
+            .pending
+            .borrow()
+            .as_ref()
+            .is_some_and(|program| has_chrome(&program.items))
+        {
+            out.push(Rc::clone(cell));
+        }
+        let mut children = Vec::new();
+        cell.children(&mut children);
+        for child in children {
+            walk(&child, out);
+        }
+    }
+    let mut cells = Vec::new();
+    for root in renderer.mount_roots() {
+        walk(&root, &mut cells);
+    }
+    cells
+}
+
 /// The window's chrome group table on the GPU mount.
 fn chrome_mount(
     runtime: &HeadlessRuntime,
@@ -1027,10 +1062,34 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
     let members = mirror_chrome_layers(&renderer);
     assert_eq!(members.len(), 4, "the pair mounts both draws per member");
 
-    // A commit at the new scale with no new program: neither member
-    // re-lowers, so the rebuild itself is what binds each member's own
-    // stored payload.
+    // Re-capture stages a fresh program on every cell; unstaging the
+    // chrome cell's leaves it COMMIT-marked with no program, so the
+    // new-scale commit joins the members without re-lowering any — the
+    // rebuild itself is what rebinds each member.
+    let env = chrome_env();
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.capture_window_tree(
+        grouped_pair()(),
+        &env,
+        Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+    let cells = chrome_cells(&renderer);
+    assert_eq!(cells.len(), 1, "the group's members share one program cell");
+    *cells[0].retained().pending.borrow_mut() = None;
+    // The mirror's group id is stable across rebuilds, so the union log
+    // — one entry per group `create` — is what proves the rebuild ran:
+    // the install's one entry, plus one from the scale-change rebuild.
+    assert_eq!(renderer.mirror().union_log().len(), 1);
     renderer.commit_mirror_at(DISPLAY_SCALE * 2.0);
+    assert_eq!(
+        renderer.mirror().union_log().len(),
+        2,
+        "the scale change rebuilt the shared group",
+    );
 
     let rebuilt = mirror_chrome_layers(&renderer);
     let uniforms: Vec<Vec<f32>> = rebuilt

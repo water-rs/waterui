@@ -165,6 +165,11 @@ struct MemberEntry<K, M> {
     /// effect — kept so a group rebuild rebinds each member's own
     /// sample, never the joining member's.
     payload: M,
+    /// Set when a group rebuild could not reach the member's live layer
+    /// to re-bind it (its cell was mid-commit): the member's next join
+    /// must re-bind its own payload instead of reporting `Unchanged`
+    /// over a bind that still samples the released group.
+    stale: bool,
     marker: Weak<MemberMarker>,
     owner: Weak<NodeCell>,
 }
@@ -323,7 +328,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
         if self
             .members
             .get(&member.id())
-            .is_some_and(|entry| entry.key == key)
+            .is_some_and(|entry| entry.key == key && !entry.stale)
             && self
                 .groups
                 .get(&key)
@@ -375,7 +380,10 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
                         // its `apply` below covers it. Each member keeps
                         // its own payload: the rebuild rebinds the
                         // member's own sample, never the joiner's.
-                        let payload = &self
+                        // its `apply` below covers it. Each member keeps
+                        // its own payload: the rebuild rebinds the
+                        // member's own sample, never the joiner's.
+                        let entry_payload = &self
                             .members
                             .get(other)
                             .expect("a member's entry outlives its membership")
@@ -383,7 +391,17 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
                         if let Some(layers) = &*retained.layers.borrow()
                             && let Some(member) = resolve(layers, *other)
                         {
-                            apply(tx, member, payload, &rebuilt.group, display_scale);
+                            apply(tx, member, entry_payload, &rebuilt.group, display_scale);
+                        } else {
+                            // The member's own cell is mid-commit or its
+                            // layers are elsewhere: mark it stale so its
+                            // next join re-binds its own payload rather
+                            // than reporting Unchanged over a bind that
+                            // still samples the released group.
+                            self.members
+                                .get_mut(other)
+                                .expect("a member's entry outlives its membership")
+                                .stale = true;
                         }
                     }
                     *entry.get_mut() = rebuilt;
@@ -407,6 +425,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
             MemberEntry {
                 key,
                 payload,
+                stale: false,
                 marker: Rc::downgrade(&membership.marker),
                 owner: membership.owner.clone(),
             },
