@@ -138,8 +138,7 @@ pub async fn build_xcframework(
         source.join("Embedding.swift"),
     )
     .await?;
-    let (links, manifests) =
-        assemble_slices(project, options, host, &selected, temporary.path()).await?;
+    let (links, manifests) = assemble_slices(project, options, &selected, temporary.path()).await?;
     stage_resources(project, &source.join("Resources"), manifests).await?;
     write_package(project, &package, &links).await?;
     let destination = package_parent.join(format!("{}-apple", project.crate_name()));
@@ -168,13 +167,13 @@ async fn check_toolchain(host: &Host, selected: &[Slice]) -> Result<()> {
 async fn assemble_slices(
     project: &Project,
     options: &BuildOptions,
-    host: &Host,
     selected: &[Slice],
     staging: &Path,
 ) -> Result<(
     Vec<PlatformLinks>,
     Vec<waterui_assets_planner::BundleManifest>,
 )> {
+    let host = project.host();
     let mut arguments = vec![OsString::from("-create-xcframework")];
     let mut links: Vec<PlatformLinks> = Vec::new();
     let mut manifests = Vec::new();
@@ -215,7 +214,6 @@ async fn assemble_slices(
             .await?;
         let archive = closure
             .compose(
-                host,
                 slice.platform,
                 project,
                 &archive,

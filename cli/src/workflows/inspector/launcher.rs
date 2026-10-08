@@ -165,7 +165,7 @@ pub async fn launch_inspector_session(
                 .apple_backend()
                 .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
             let simulator =
-                crate::apple::device::AppleSimulator::select_ios(host, &project, None).await?;
+                crate::apple::device::AppleSimulator::select_ios(&project, None).await?;
 
             simulator.launch(host).await?;
             info!("Building and running inspector app on iOS Simulator...");
@@ -186,7 +186,6 @@ pub async fn launch_inspector_session(
             info!("Building and running inspector app on Android...");
             crate::hydrolysis::android::run_on_device(
                 &project,
-                host,
                 crate::hydrolysis::android::resolve_painter(&project, None),
                 target,
                 run_options,

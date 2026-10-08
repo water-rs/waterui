@@ -443,7 +443,6 @@ async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Re
                         let abi = android_abi(args.arch.unwrap_or(TargetArch::Arm64));
                         waterui_cli::hydrolysis::android::build(
                             &context.project,
-                            &waterui_cli::toolchain::Host::current(),
                             abi,
                             context.build_options.clone(),
                         )

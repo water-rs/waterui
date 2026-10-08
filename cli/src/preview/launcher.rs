@@ -827,7 +827,7 @@ async fn launch_preview_on_ios_simulator(
     let backend = project
         .apple_backend()
         .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
-    let simulator = crate::apple::device::AppleSimulator::select_ios(host, project, None).await?;
+    let simulator = crate::apple::device::AppleSimulator::select_ios(project, None).await?;
     simulator.launch(host).await?;
     info!("Building and running preview app on iOS Simulator...");
     project

@@ -488,7 +488,7 @@ impl AndroidPlatform {
         let host = project.host();
         let build_context =
             resolve_android_build_context(host, abi, &triple, min_api_level).await?;
-        let build = configure_android_rust_build(host, project, &triple, &build_context, &options)
+        let build = configure_android_rust_build(project, &triple, &build_context, &options)
             .await?
             .with_envs(options.cargo_envs().iter().cloned())
             .with_target_dir(project.water_target_dir(options.linkage()).await?);
@@ -788,16 +788,15 @@ pub(crate) async fn android_ffi_dependency_features(
 }
 
 async fn configure_android_rust_build(
-    host: &Host,
     project: &Project,
     triple: &Triple,
     context: &AndroidBuildContext,
     options: &BuildOptions,
 ) -> eyre::Result<RustBuild> {
+    let host = project.host();
     // Android loads the JNI shared object and nothing else, so build only that crate
     // type instead of also archiving the whole dependency graph into a staticlib.
-    let mut build = RustBuild::new(host, project.ffi_crate_path(), triple.clone())
-        .with_project(project)
+    let mut build = RustBuild::for_project(project, project.ffi_crate_path(), triple.clone())
         .with_features(android_ffi_dependency_features(project).await?)
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG);

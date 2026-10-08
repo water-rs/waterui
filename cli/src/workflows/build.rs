@@ -1542,26 +1542,25 @@ impl RustBuild {
         }
     }
 
-    /// Create a build on behalf of `project` — [`Self::new`] with the
-    /// project's host — in one call, so the host is named once.
+    /// Create a build on behalf of `project`, spawning cargo on the
+    /// project's host: its framework prepares the crate, and cargo runs under
+    /// the rustup toolchain the project's own directory selects — the
+    /// generated crate sits in the build cache, outside the project tree,
+    /// where rustup would fall back to its default toolchain and link the
+    /// runtime against a `libstd` the project's toolchain does not have.
+    ///
+    /// The host comes from `project`, so a build can never run under one
+    /// host on behalf of a project opened with another.
     pub(crate) fn for_project(project: &Project, path: impl AsRef<Path>, triple: Triple) -> Self {
-        Self::new(project.host(), path, triple).with_project(project)
+        Self {
+            project: Some(project.clone()),
+            ..Self::new(project.host(), path, triple)
+        }
     }
 
     /// The host this build's spawned tools run under.
     pub(crate) const fn host(&self) -> &crate::toolchain::Host {
         &self.host
-    }
-
-    /// Build on behalf of `project`: its framework prepares the crate, and
-    /// cargo runs under the rustup toolchain the project's own directory
-    /// selects — the generated crate sits in the build cache, outside the
-    /// project tree, where rustup would fall back to its default toolchain and
-    /// link the runtime against a `libstd` the project's toolchain does not
-    /// have.
-    pub(crate) fn with_project(mut self, project: &Project) -> Self {
-        self.project = Some(project.clone());
-        self
     }
 
     /// Use an explicit Cargo target directory.

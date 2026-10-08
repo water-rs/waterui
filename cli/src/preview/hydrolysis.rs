@@ -118,7 +118,6 @@ pub async fn render_preview_with_hydrolysis(
     stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
-        request.host,
         &project,
         built.executable()?,
         width,
@@ -274,7 +273,6 @@ pub async fn write_preview_bindings(
 }
 
 async fn run_preview_binary(
-    host: &crate::toolchain::Host,
     project: &Project,
     binary_path: &Path,
     width: f32,
@@ -282,6 +280,7 @@ async fn run_preview_binary(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
+    let host = project.host();
     let mode = scenario.map_or_else(
         || PreviewRunMode::Image {
             output: absolute_output_path(host, output_path),
@@ -300,7 +299,7 @@ async fn run_preview_binary(
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     run::run_preview_binary(
-        project.host(),
+        host,
         &backend_path,
         binary_path,
         &config_path,

@@ -58,6 +58,6 @@ fn main() -> eyre::Result<()> {
                     })
             },
         )?;
-        render_preview_host(&project, &host, &out, VERSION_CODE).await
+        render_preview_host(&project, &out, VERSION_CODE).await
     })
 }

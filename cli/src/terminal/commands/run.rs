@@ -1133,13 +1133,7 @@ async fn build_for_backend(
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                Box::pin(hydrolysis_android::build(
-                    project,
-                    &waterui_cli::toolchain::Host::current(),
-                    abi,
-                    build_options,
-                ))
-                .await
+                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
             } else {
                 Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
@@ -1200,7 +1194,6 @@ async fn package_for_backend(
                 })?;
                 Box::pin(hydrolysis_android::package_with_abis(
                     project,
-                    &waterui_cli::toolchain::Host::current(),
                     painter,
                     &package_options,
                     &[abi],
@@ -1477,7 +1470,7 @@ async fn select_ios_device(
             .await;
             return Ok(SelectedDevice::ApplePhysical(device));
         }
-        let sim = AppleSimulator::select_ios(host, project, Some(query)).await?;
+        let sim = AppleSimulator::select_ios(project, Some(query)).await?;
         persist_device_choice(
             device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
             &sim.udid,
@@ -1491,7 +1484,7 @@ async fn select_ios_device(
         // Reuse the simulator path's diagnosis — it lists every simulator and
         // the required runtime.
         return Ok(SelectedDevice::AppleSimulator(
-            AppleSimulator::select_ios(host, project, None).await?,
+            AppleSimulator::select_ios(project, None).await?,
         ));
     }
     choose_device_candidate(

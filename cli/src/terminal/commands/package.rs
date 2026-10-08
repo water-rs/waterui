@@ -520,7 +520,6 @@ async fn build_hydrolysis_packaging_artifacts(
             let target = shell
                 .display_output(hydrolysis_android::build(
                     project,
-                    &waterui_cli::toolchain::Host::current(),
                     abi,
                     build_options.clone(),
                 ))
@@ -651,7 +650,6 @@ async fn package_artifact_inner(
                 let painter = hydrolysis_android::resolve_painter(&context.project, args.painter);
                 hydrolysis_android::package_with_abis(
                     &context.project,
-                    &waterui_cli::toolchain::Host::current(),
                     painter,
                     &package_options,
                     &abis,

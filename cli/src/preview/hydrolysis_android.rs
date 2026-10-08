@@ -110,8 +110,8 @@ pub async fn render_preview_with_hydrolysis_android(
         .join("android-preview")
         .join("device");
     let ((host_apk, version_code), libraries, device_key) = futures_util::try_join!(
-        hydrolysis_android::ensure_preview_host_apk(&project, host),
-        stage_device_payload(&project, host, request, abi, &device_dir),
+        hydrolysis_android::ensure_preview_host_apk(&project),
+        stage_device_payload(&project, request, abi, &device_dir),
         device_lock_key(host, &adb, &serial),
     )?;
 
@@ -315,11 +315,11 @@ async fn device_time_stamp(host: &Host, adb: &Adb, serial: &str) -> Result<Strin
 /// names in `System.load` order.
 async fn stage_device_payload(
     project: &Project,
-    host: &Host,
     request: &HydrolysisPreviewRequest<'_>,
     abi: AndroidAbi,
     device_dir: &Path,
 ) -> Result<Vec<String>> {
+    let host = project.host();
     match fs::remove_dir_all(device_dir).await {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -336,14 +336,9 @@ async fn stage_device_payload(
     if let Some(progress) = request.progress.clone() {
         options = options.with_progress(progress);
     }
-    let build = hydrolysis_android::build_with_features(
-        project,
-        host,
-        abi,
-        options,
-        &["waterui-preview-mode"],
-    )
-    .await?;
+    let build =
+        hydrolysis_android::build_with_features(project, abi, options, &["waterui-preview-mode"])
+            .await?;
 
     // Strip debug info in place: the cdylib carries a full desktop-sized
     // symbol set that only bloats the push. The build hands back the

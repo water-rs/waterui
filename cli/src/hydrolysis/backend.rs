@@ -174,13 +174,7 @@ impl Backend for HydrolysisBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         if platform == TargetPlatform::Android {
-            return crate::hydrolysis::android::build(
-                project,
-                project.host(),
-                AndroidAbi::Arm64V8a,
-                options,
-            )
-            .await;
+            return crate::hydrolysis::android::build(project, AndroidAbi::Arm64V8a, options).await;
         }
         project
             .browser_runtime_plan(platform, TargetBackend::Hydrolysis)
@@ -199,7 +193,6 @@ impl Backend for HydrolysisBackend {
             let prepared = crate::android::signing::PreparedSigning::resolve(project, &options)?;
             return crate::hydrolysis::android::package_with_abis(
                 project,
-                project.host(),
                 crate::hydrolysis::android::resolve_painter(project, None),
                 &options,
                 &[AndroidAbi::Arm64V8a],

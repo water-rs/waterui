@@ -1423,7 +1423,7 @@ pub enum SeedFontCacheError {
 /// [`FetchOutcome::Unsatisfiable`] instead, carrying the same report the
 /// build gives them.
 pub async fn seed_font_cache(project: &Project) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
-    seed_font_cache_scoped(project.host(), project, None).await
+    seed_font_cache_scoped(project, None).await
 }
 
 /// [`seed_font_cache`] restricted to the crates a `backend` build scans.
@@ -1440,14 +1440,14 @@ pub async fn seed_font_cache_for_backend(
     project: &Project,
     backend: crate::platform::TargetBackend,
 ) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
-    seed_font_cache_scoped(project.host(), project, Some(backend)).await
+    seed_font_cache_scoped(project, Some(backend)).await
 }
 
 async fn seed_font_cache_scoped(
-    host: &crate::toolchain::Host,
     project: &Project,
     scope: Option<crate::platform::TargetBackend>,
 ) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
+    let host = project.host();
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())
         .map_err(SeedFontCacheError::Fonts)?;
     let manifests = ensure_font_scan_manifests(project, scope)
