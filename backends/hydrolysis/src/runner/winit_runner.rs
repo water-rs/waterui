@@ -1164,7 +1164,10 @@ impl WinitRunner {
             if let Ok(handle) = native_window.window_handle()
                 && let RawWindowHandle::Win32(win) = handle.as_raw()
             {
-                self.native_menu_bar.attach_hwnd(win.hwnd.get());
+                self.native_menu_bar.attach_hwnd(
+                    win.hwnd.get(),
+                    crate::renderer::WindowId::Winit(native_window.id()),
+                );
                 install_termination_subclass(
                     win.hwnd.get(),
                     TerminationSubclass {
@@ -1317,10 +1320,10 @@ impl WinitRunner {
         })
     }
 
-    /// Lets the native menu bar forget a closing window's HWND — and
+    /// Lets the native menu bar drop a closing window's attached bar — and
     /// removes the session-end subclass — before the winit window (and
-    /// its HWND) is destroyed, so `init_for_hwnd`/`remove_for_hwnd` and
-    /// the subclass proc only ever run on live handles.
+    /// its HWND) is destroyed, so detaching the menu and both subclass
+    /// procs only ever run on live handles.
     #[cfg(target_os = "windows")]
     fn detach_menu_bar_hwnd(&self, runtime: &RuntimeWindow<WinitWindow>) {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1585,13 +1588,16 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let _ = self.drain_local_executor_queue();
-        // Native menu-bar clicks: muda posts them on its channel from the
-        // main thread — drain here so each dispatches on the event loop.
-        // A bar item's action acts on the focused window — Close Window's
-        // request names it through the shared `WindowCloser` path.
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        // Native menu-bar activations: each bar reports them as `CommandId`s
+        // on its `events()` stream — drain here so each dispatches on the
+        // event loop. On macOS a bar item's action acts on the focused
+        // window; on Windows it acts on the bar's own window — Close
+        // Window's request names it through the shared `WindowCloser` path.
+        #[cfg(target_os = "macos")]
         self.native_menu_bar
             .pump_menu_events(self.focused_window.map(crate::renderer::WindowId::Winit));
+        #[cfg(target_os = "windows")]
+        self.native_menu_bar.pump_menu_events();
         self.mount_pending_windows(event_loop);
         let now = Instant::now();
         let mut next_gesture_deadline: Option<Instant> = None;
