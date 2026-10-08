@@ -1013,11 +1013,11 @@ fn deep_level_reads_are_independent_of_the_other_members() {
     }
 }
 
-/// Two groups anchored at the same layer sample one frozen copy taken at
-/// the anchor's paint position: neither group sees what the other paints,
+/// Two groups anchored at the same layer each capture the anchor's canvas
+/// at the anchor's paint position: neither group sees what the other paints,
 /// and each group runs its own chain (#2097).
 #[test]
-fn anchored_groups_sample_the_anchors_frozen_copy() {
+fn two_groups_anchored_at_one_layer_capture_the_same_canvas() {
     let engine = engine();
     let surface = engine
         .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
@@ -1076,13 +1076,13 @@ fn anchored_groups_sample_the_anchors_frozen_copy() {
     });
     engine.render(FrameTime::now()).expect("render");
     let readback = surface.readback().expect("readback");
-    // Inside A1 only: 50% green over the frozen red.
+    // Inside A1 only: 50% green over the red beneath the anchor.
     assert_pixel(pixel(&readback, 6, 6), [0.5, 0.5, 0.0, 1.0], 1e-5);
-    // Inside A1 and B1: B1's capture is the anchor's frozen blue — not
+    // Inside A1 and B1: B1's capture beneath the anchor is the blue — not
     // A1's composite — then 50% white over it. A first-member capture
     // would hold A1's [0.0, 0.5, 0.5] here and give [0.5, 0.75, 0.75].
     assert_pixel(pixel(&readback, 16, 16), [0.5, 0.5, 1.0, 1.0], 1e-5);
-    // Inside B1 and A2: A2 samples the same frozen blue — not B1's
+    // Inside B1 and A2: A2 samples the same blue — not B1's
     // [0.5, 0.5, 1.0] composite — then 50% green over it.
     assert_pixel(pixel(&readback, 24, 24), [0.0, 0.5, 0.5, 1.0], 1e-5);
     let memory = engine.memory();
@@ -1224,7 +1224,7 @@ fn unanchored_groups_keep_the_first_member_rule() {
     // Inside A1 and B1: B1 captured at its own paint position — A1's
     // [0.0, 0.5, 0.5] composite — then 50% white over it.
     assert_pixel(pixel(&readback, 16, 16), [0.5, 0.75, 0.75, 1.0], 1e-5);
-    // Inside B1 and A2: A2 still samples group A's frozen copy from its
+    // Inside B1 and A2: A2 still samples group A's capture from its
     // own first member — the blue — unchanged by anchoring absence.
     assert_pixel(pixel(&readback, 24, 24), [0.0, 0.5, 0.5, 1.0], 1e-5);
 }

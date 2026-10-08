@@ -1787,10 +1787,10 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
 }
 
 split_test! {
-/// Two groups anchored at the same layer sample one frozen copy taken at
-/// the anchor's paint position: neither group sees what the other paints,
-/// and each group runs its own chain (#2097).
-fn anchored_groups_sample_the_anchors_frozen_copy() -> Result<(), Box<dyn std::error::Error>> {
+/// Two groups anchored at the same layer each capture the anchor's
+/// canvas at the anchor's paint position: neither group sees what the
+/// other paints, and each group runs its own chain (#2097).
+fn two_groups_anchored_at_one_layer_capture_the_same_canvas() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     let anchor = surface.layer();
@@ -1847,13 +1847,13 @@ fn anchored_groups_sample_the_anchors_frozen_copy() -> Result<(), Box<dyn std::e
     });
     wait!(engine.render(FrameTime::now()))?;
     let readback = wait!(surface.readback())?;
-    // Inside A1 only: 50% green over the frozen red.
+    // Inside A1 only: 50% green over the red beneath the anchor.
     assert_pixel(pixel(&readback, 6, 6), [0.5, 0.5, 0.0, 1.0], 1e-3);
-    // Inside A1 and B1: B1's capture is the anchor's frozen blue — not
+    // Inside A1 and B1: B1's capture beneath the anchor is the blue — not
     // A1's composite — then 50% white over it. A first-member capture
     // would hold A1's [0.0, 0.5, 0.5] here and give [0.5, 0.75, 0.75].
     assert_pixel(pixel(&readback, 16, 16), [0.5, 0.5, 1.0, 1.0], 1e-3);
-    // Inside B1 and A2: A2 samples the same frozen blue — not B1's
+    // Inside B1 and A2: A2 samples the same blue — not B1's
     // [0.5, 0.5, 1.0] composite — then 50% green over it.
     assert_pixel(pixel(&readback, 24, 24), [0.0, 0.5, 0.5, 1.0], 1e-3);
     Ok(())
@@ -1861,14 +1861,11 @@ fn anchored_groups_sample_the_anchors_frozen_copy() -> Result<(), Box<dyn std::e
 }
 
 split_test! {
-/// The anchored groups of `anchored_groups_sample_the_anchors_frozen_copy`
-/// cost one shared copy beneath the anchor plus each group's own capture.
+/// The anchored groups of
+/// `two_groups_anchored_at_one_layer_capture_the_same_canvas` cost one
+/// capture each beneath the anchor — no shared copy texture.
 fn anchored_groups_capture_beneath_the_anchor() -> Result<(), Box<dyn std::error::Error>> {
-    let sink = cherenkov_gpu::diag::Sink::new();
-    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
-        alloc_diag: Some(sink.clone()),
-        ..Default::default()
-    }))?;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     let anchor = surface.layer();
     let spec = || {
@@ -1903,12 +1900,10 @@ fn anchored_groups_capture_beneath_the_anchor() -> Result<(), Box<dyn std::error
             .clip(Rect::new(20.0, 20.0, 28.0, 28.0))
             .backdrop(group_a.sample());
     });
-    let _ = sink.take();
     wait!(engine.render(FrameTime::now()))?;
-    // Both groups capture straight from the semantic target at the
-    // anchor's position — there is no shared copy texture: the memory
+    // Each group's capture reads the anchor's canvas straight from the
+    // semantic target — there is no shared copy texture: the memory
     // accounting below is exactly the groups' own captures.
-    let _ = sink.take();
     let memory = wait!(engine.memory());
     // Each group keeps only its own capture: A's 24×24 member union
     // and B's 16×24 member rect.
@@ -2045,7 +2040,7 @@ fn unanchored_groups_keep_the_first_member_rule() -> Result<(), Box<dyn std::err
     // Inside A1 and B1: B1 captured at its own paint position — A1's
     // [0.0, 0.5, 0.5] composite — then 50% white over it.
     assert_pixel(pixel(&readback, 16, 16), [0.5, 0.75, 0.75, 1.0], 1e-3);
-    // Inside B1 and A2: A2 still samples group A's frozen copy from its
+    // Inside B1 and A2: A2 still samples group A's capture from its
     // own first member — the blue — unchanged by anchoring absence.
     assert_pixel(pixel(&readback, 24, 24), [0.0, 0.5, 0.5, 1.0], 1e-3);
     Ok(())

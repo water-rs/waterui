@@ -604,6 +604,9 @@ pub struct Lowering<'a, 'b> {
     /// Each anchor layer's compositing canvas, paint-order index and
     /// innermost filter scope, as planned.
     anchor_pos: FxHashMap<LayerId, (Option<LayerId>, usize, Option<LayerId>)>,
+    /// Scratch for the anchored group ids `plan_anchors` sorts and
+    /// registers — reused across plans.
+    anchor_gids: Vec<u64>,
     /// The layer ids any planned group anchors at.
     anchor_refs: FxHashSet<LayerId>,
     /// The planning walk's paint-order counter.
@@ -930,6 +933,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             scope_aprons: FxHashMap::default(),
             anchor_groups: FxHashMap::default(),
             anchor_pos: FxHashMap::default(),
+            anchor_gids: Vec::new(),
             anchor_refs: FxHashSet::default(),
             plan_order: 0,
             commands_lowered: 0,
@@ -1043,7 +1047,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         self.plan_order += 1;
         let order = self.plan_order;
-        if self.anchor_refs.contains(&id) {
+        if !self.anchor_refs.is_empty() && self.anchor_refs.contains(&id) {
             self.anchor_pos
                 .insert(id, (canvas, order, scopes.last().copied()));
         }
@@ -1271,14 +1275,16 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// `backdrops` is a hash map: the anchored gids are sorted first so
     /// the validation error and `anchor_groups` order are deterministic.
     fn plan_anchors(&mut self, root: LayerId, tree: &SurfaceTree) -> Result<(), RenderError> {
-        let mut gids: Vec<u64> = self
-            .backdrops
-            .iter()
-            .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
-            .map(|(gid, _)| *gid)
-            .collect();
+        let mut gids = std::mem::take(&mut self.anchor_gids);
+        gids.clear();
+        gids.extend(
+            self.backdrops
+                .iter()
+                .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
+                .map(|(gid, _)| *gid),
+        );
         gids.sort_unstable();
-        for gid in gids {
+        for gid in gids.drain(..) {
             let (anchor, anchor_scope) = {
                 let plan = &self.backdrops[&gid];
                 let anchor = plan.spec.anchor_layer().expect("anchored above");
@@ -1328,6 +1334,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         for gids in self.anchor_groups.values_mut() {
             gids.sort_unstable();
         }
+        // The scratch Vec keeps its capacity for the next plan.
+        self.anchor_gids = gids;
         Ok(())
     }
 
@@ -1706,9 +1714,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         // An anchor's groups capture beneath it, before its own content
         // and children.
-        if self.anchor_groups.contains_key(&id) {
-            self.emit_anchor_captures(id);
-        }
+        self.emit_anchor_captures(id);
         if let Some(gid) = backdrop {
             self.emit_capture(gid, id);
         }
@@ -1810,12 +1816,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
     }
 
     /// Emits every group's capture anchored at `id`, in group id order.
+    /// `push_capture` needs `&mut self`, so the gids are read back by
+    /// index instead of cloned out of the map.
     fn emit_anchor_captures(&mut self, id: LayerId) {
-        let Some(gids) = self.anchor_groups.get(&id) else {
-            return;
-        };
-        let gids = gids.clone();
-        for gid in gids {
+        for i in 0..self.anchor_groups.get(&id).map_or(0, |gids| gids.len()) {
+            let gid = self.anchor_groups[&id][i];
             self.push_capture(gid);
         }
     }

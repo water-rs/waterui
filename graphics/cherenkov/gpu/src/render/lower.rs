@@ -1078,8 +1078,8 @@ struct MemberEntry {
     reach: f32,
 }
 
-/// The plan for one anchor layer: the groups anchored at it and the
-/// shared backdrop copy beneath it they run their chains on.
+/// The plan for one anchor layer: the groups anchored at it, each of
+/// which takes its own capture beneath the anchor.
 #[derive(Clone)]
 struct AnchorPlan {
     /// The anchored groups, in id order.
@@ -1149,6 +1149,9 @@ pub struct Lowering<'a> {
     anchor_pos: FxHashMap<LayerId, (Option<LayerId>, usize)>,
     /// The layer ids any planned group anchors at.
     anchor_refs: FxHashSet<LayerId>,
+    /// Scratch for the anchored group ids `plan_anchors` sorts and
+    /// emits — reused across frames.
+    anchor_gids: Vec<u64>,
     /// The planning walk's paint-order counter.
     plan_order: usize,
     /// The `FilterKey` of each filtered group's capture chain.
@@ -1233,6 +1236,7 @@ impl<'a> Lowering<'a> {
             anchors: FxHashMap::default(),
             anchor_pos: FxHashMap::default(),
             anchor_refs: FxHashSet::default(),
+            anchor_gids: Vec::new(),
             plan_order: 0,
             backdrop_filters: FxHashMap::default(),
             capture_isolation: false,
@@ -1299,10 +1303,9 @@ impl<'a> Lowering<'a> {
         tree: &SurfaceTree,
         groups: &FxHashMap<u64, BackdropGroupInfo>,
     ) -> Result<(), RenderError> {
-        self.anchor_refs = groups
-            .values()
-            .filter_map(|info| info.spec.anchor_layer())
-            .collect();
+        self.anchor_refs.clear();
+        self.anchor_refs
+            .extend(groups.values().filter_map(|info| info.spec.anchor_layer()));
         self.plan_order = 0;
         let start = self.start(tree);
         self.plan_layer(start, tree, groups, Affine::IDENTITY, None)?;
@@ -1396,14 +1399,16 @@ impl<'a> Lowering<'a> {
     /// anchored group never falls
     /// back to a capture at the member.
     fn plan_anchors(&mut self, root: LayerId, tree: &SurfaceTree) -> Result<(), RenderError> {
-        let mut gids: Vec<u64> = self
-            .backdrops
-            .iter()
-            .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
-            .map(|(gid, _)| *gid)
-            .collect();
+        let mut gids = std::mem::take(&mut self.anchor_gids);
+        gids.clear();
+        gids.extend(
+            self.backdrops
+                .iter()
+                .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
+                .map(|(gid, _)| *gid),
+        );
         gids.sort_unstable();
-        for gid in gids {
+        for gid in gids.drain(..) {
             let anchor = {
                 let plan = &self.backdrops[&gid];
                 let anchor = plan.spec.anchor_layer().expect("anchored above");
@@ -1448,6 +1453,8 @@ impl<'a> Lowering<'a> {
                 .groups
                 .push(gid);
         }
+        // The scratch Vec keeps its capacity for the next frame.
+        self.anchor_gids = gids;
         Ok(())
     }
 
@@ -1469,7 +1476,7 @@ impl<'a> Lowering<'a> {
         let node = tree.layer(id);
         self.plan_order += 1;
         let order = self.plan_order;
-        if self.anchor_refs.contains(&id) {
+        if !self.anchor_refs.is_empty() && self.anchor_refs.contains(&id) {
             self.anchor_pos.insert(id, (canvas, order));
         }
         let (transform, children) = self.placement(id, node, parent);
@@ -1708,9 +1715,10 @@ impl<'a> Lowering<'a> {
         self.animating = false;
         self.set_clip(None);
         self.backdrops.clear();
-        self.anchors.clear();
+        for plan in self.anchors.values_mut() {
+            plan.groups.clear();
+        }
         self.anchor_pos.clear();
-        self.anchor_refs.clear();
         self.backdrop_filters = groups
             .iter()
             .filter_map(|(g, info)| info.filter.map(|key| (*g, key)))
@@ -2094,6 +2102,8 @@ impl<'a> Lowering<'a> {
         self.set_clip(inner_clip);
         // A member's union sample inside this scratch carries no
         // ancestor clip — the composite applies them itself.
+        // Nested isolations split this scratch's open pass into segments;
+        // every segment at this depth needs the region.
         let passes_start = self.frame.passes.len();
         // Backdrop captures inside the body sample the nearest *semantic*
         // isolation's target; the scratches opened since it — pass-through
@@ -2105,7 +2115,8 @@ impl<'a> Lowering<'a> {
             || blend != cherenkov::BlendMode::Normal
             || space != cherenkov::BlendSpace::Linear;
         // Members composite in the declared space when the level
-        // composites onto it in isolation — isolated or translucent.
+        // composites onto it in isolation — isolated or translucent;
+        // a pass-through level shares the space it merges back into.
         let storage = if semantic || opacity < 1.0 {
             space
         } else {
@@ -2117,9 +2128,9 @@ impl<'a> Lowering<'a> {
         }
         self.scratch_space[scratch] = storage;
         self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
+        let inst_start = self.frame.instances.len();
         let (saved_capture, saved_target) = (self.capture_isolation, self.semantic_target);
         let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
-        let inst_start = self.frame.instances.len();
         self.capture_isolation = false;
         if semantic {
             self.semantic_target = Target::Scratch(scratch);
@@ -2477,22 +2488,20 @@ impl<'a> Lowering<'a> {
                 });
             }
             let covered = resolve.map_or(*region, |resolve| resolve.device);
-            {
-                for i in 0..self.painted_scratches.len() {
-                    let k = self.painted_scratches[i];
-                    // Looked-through scratches cover the full surface (see
-                    // `isolate`), so their texel origin is (0, 0), and each
-                    // is stored in the copy's space — the root's linear
-                    // space.
-                    self.emit_composite(
-                        Source::Scratch(k),
-                        [0.0, 0.0],
-                        1.0,
-                        covered,
-                        cherenkov::BlendMode::Normal,
-                        self.target_space(copy_from),
-                    );
-                }
+            for i in 0..self.painted_scratches.len() {
+                let k = self.painted_scratches[i];
+                // Looked-through scratches cover the full surface (see
+                // `isolate`), so their texel origin is (0, 0), and each
+                // is stored in the copy's space — the root's linear
+                // space.
+                self.emit_composite(
+                    Source::Scratch(k),
+                    [0.0, 0.0],
+                    1.0,
+                    covered,
+                    cherenkov::BlendMode::Normal,
+                    self.target_space(copy_from),
+                );
             }
             self.finish_pass();
             let pass = self.frame.passes.len() - 1;
@@ -2936,10 +2945,11 @@ impl<'a> Lowering<'a> {
         // beneath it, taken at its paint-order position — before the
         // anchor's own content and children — and read the semantic
         // target directly, like an unanchored capture at the member.
-        if let Some(plan) = self.anchors.get(&id) {
-            for gid in plan.groups.clone() {
-                self.emit_capture(gid, self.semantic_target);
-            }
+        // `emit_capture` needs `&mut self`, so the groups are read back
+        // by index instead of cloned out of the map.
+        for i in 0..self.anchors.get(&id).map_or(0, |plan| plan.groups.len()) {
+            let gid = self.anchors[&id].groups[i];
+            self.emit_capture(gid, self.semantic_target);
         }
         let node = tree.layer(id);
         if self.projects(id, tree) {

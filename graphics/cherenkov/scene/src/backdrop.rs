@@ -76,7 +76,8 @@ pub struct BackdropGroup {
     /// capture is taken beneath that layer, at its paint-order position
     /// before the layer's own content and children. Every member must
     /// then paint after the anchor in the anchor's compositing canvas —
-    /// its later siblings there; any other member fails the render
+    /// its descendants or its later siblings there; any other member
+    /// fails the render
     /// (`backdrop-member-before-anchor` /
     /// `backdrop-member-outside-anchor-canvas`). `None` (the default)
     /// captures at the first member's paint-order position.

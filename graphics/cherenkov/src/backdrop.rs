@@ -227,10 +227,11 @@ impl BackdropSpec {
     }
 
     /// Anchors the group's capture at `layer`'s paint-order position, before
-    /// the anchor's own content and its children: at the anchor the engine
-    /// takes the group's capture straight from the semantic target — one
-    /// capture per anchored group — so anchored members never see each
-    /// other — or content painted after the anchor — at all. Every member
+    /// the anchor's own content and its children: the group's capture reads
+    /// the anchor's compositing canvas as it stands at the anchor's paint
+    /// position — one capture per anchored group — so anchored members
+    /// never see each other — or content painted after the anchor — at
+    /// all. Every member
     /// must then paint after the anchor inside its compositing canvas —
     /// the anchor's descendants or its later siblings — or the frame fails
     /// instead of falling back to the first-member rule.
