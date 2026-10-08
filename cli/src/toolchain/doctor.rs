@@ -562,11 +562,7 @@ fn unfixable_message(error: &UnfixableToolchain) -> String {
 }
 
 /// Why a backend is (or is not) checked in the current run.
-///
-/// The declaration order is significant: `Ord` ranks `Optional` below
-/// `HostDefault` below `Selected`, so a platform's scope is the `max` of
-/// the backends that serve it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendScope {
     /// Neither: the backend is reported with its hints but does not fail
     /// the run.
@@ -586,15 +582,16 @@ impl BackendScope {
 /// What a doctor item's scope keys on.
 ///
 /// A [`TargetBackend`] keys on itself; a [`TargetPlatform`] keys on the
-/// best scope among the backends that serve it. The Android toolchain —
-/// SDK, NDK, Java, Kotlin and friends — is a platform requirement the
-/// Kotlin runtime and Hydrolysis share, so the Android group keys on the
-/// platform and is in scope wherever any Android backend is.
+/// platform itself. The Android toolchain — SDK, NDK, Java, Kotlin and
+/// friends — is a platform requirement the Kotlin runtime and Hydrolysis
+/// share, so the Android group keys on the platform and is in scope
+/// wherever Android is targeted — which on a bare host is never.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoctorScope {
     /// In scope when this backend is.
     Backend(TargetBackend),
-    /// In scope when any backend serving this platform is.
+    /// In scope when the host builds for this platform or a project
+    /// selects it.
     Platform(TargetPlatform),
 }
 
@@ -623,27 +620,42 @@ struct ProjectContext {
 impl ProjectContext {
     /// Whether `key` is checked in this run and why.
     ///
-    /// Inside a project every backend is [`BackendScope::Selected`]: the CLI
-    /// generates whichever backend a command selects. Outside a project the
-    /// host decides: the backends the machine can build for — Apple on
-    /// macOS, `WinUI` on Windows, GTK4 on Linux, Hydrolysis on every desktop
-    /// host — are [`BackendScope::HostDefault`]; the Kotlin Android backend
-    /// and Dew need a project to select them and are optional everywhere.
+    /// Inside a project every backend and every platform is
+    /// [`BackendScope::Selected`]: the CLI generates whichever backend a
+    /// command selects. Outside a project the host decides: the backends
+    /// the machine can build for — Apple on macOS, `WinUI` on Windows,
+    /// GTK4 on Linux, Hydrolysis on every desktop host — are
+    /// [`BackendScope::HostDefault`]; the Kotlin Android backend and Dew
+    /// need a project to select them and are optional everywhere.
     ///
-    /// A [`DoctorScope::Platform`] key takes the best scope among the
-    /// platform's backends. Hydrolysis serves Android and is a host default
-    /// everywhere, so the Android platform — and the toolchain group keyed
-    /// on it — is in scope on every host, project or not.
+    /// A [`DoctorScope::Platform`] key is host-default only when the host
+    /// itself builds for the platform — never for Android: Hydrolysis
+    /// cross-compiling to Android does not mean the host targets Android,
+    /// so the Android group stays optional without a project, exactly as
+    /// the Kotlin backend does.
     fn scope(&self, key: impl Into<DoctorScope>) -> BackendScope {
         match key.into() {
             DoctorScope::Backend(backend) => self.backend_scope(backend),
-            DoctorScope::Platform(platform) => platform
-                .available_backends()
-                .iter()
-                .map(|backend| self.backend_scope(*backend))
-                .max()
-                .unwrap_or(BackendScope::Optional),
+            DoctorScope::Platform(platform) => self.platform_scope(platform),
         }
+    }
+
+    /// A platform's scope comes from the platform itself: outside a
+    /// project it is host-default only when the host builds for it — its
+    /// own Apple toolchain on macOS, its own desktop on Linux or Windows.
+    /// Android, the web and the ESP32 chips are cross-compiled targets a
+    /// project must select.
+    fn platform_scope(&self, platform: TargetPlatform) -> BackendScope {
+        self.manifest.as_ref().map_or_else(
+            || {
+                if platform.host_builds() {
+                    BackendScope::HostDefault
+                } else {
+                    BackendScope::Optional
+                }
+            },
+            |_| BackendScope::Selected,
+        )
     }
 
     fn backend_scope(&self, backend: TargetBackend) -> BackendScope {
@@ -1143,9 +1155,8 @@ async fn windows_checks(host: &Host) -> (DoctorItem, DoctorItem) {
 
 /// `spirv-opt` (SPIRV-Tools). The engine's build script invokes it for
 /// every non-Apple native `cherenkov-gpu` target — Linux, Windows and
-/// Android — while Apple targets compile to Metal instead. Every host has
-/// such a target in scope: its own Linux or Windows desktop build, or
-/// Android through Hydrolysis, which cross-compiles from any host — so the
+/// Android — while Apple targets compile to Metal instead. The item rides
+/// the Hydrolysis group, which is host-default on every host — so the
 /// probe is unconditional. The item's `Ok` report carries the binary's own
 /// `--version` line.
 async fn spirv_opt_check(host: &Host) -> DoctorItem {
@@ -1481,6 +1492,14 @@ mod tests {
         ids::ANDROID_NDK,
     ];
 
+    /// The Android toolchain items the scope test asserts on.
+    const ANDROID_ITEMS: &[&str] = &[
+        ids::ANDROID_SDK,
+        ids::ANDROID_RUST_TARGETS,
+        ids::JAVA,
+        ids::KOTLIN,
+    ];
+
     /// A minimal `Water.toml` app manifest; `extra` is appended verbatim
     /// (`[esp32]`, `[web]`, ...).
     fn manifest(extra: &str) -> String {
@@ -1723,9 +1742,8 @@ mod tests {
         assert!(wasm_pack.is_fixable());
     }
 
-    /// `spirv-opt` is probed on every host: every host has a non-Apple
-    /// native target in scope — its own Linux/Windows build, or Android
-    /// through Hydrolysis.
+    /// `spirv-opt` is probed on every host: the item rides the Hydrolysis
+    /// group, which is host-default everywhere.
     #[test]
     fn doctor_probes_spirv_opt_on_every_host() {
         let machine = TestMachine::new();
@@ -1782,9 +1800,9 @@ mod tests {
     }
 
     /// The Android group's scope keys on the platform, whichever backend
-    /// serves it: Hydrolysis is host-default everywhere and cross-compiles
-    /// to Android, so the Android toolchain is in scope even without a
-    /// project, while the Kotlin backend itself stays project-gated.
+    /// serves it: no host targets Android natively — Hydrolysis merely
+    /// cross-compiles to it — so the platform and its toolchain items are
+    /// optional without a project and selected inside one.
     #[test]
     fn android_scope_covers_whichever_backend_serves_it() {
         let project = project_less();
@@ -1795,8 +1813,8 @@ mod tests {
         );
         assert_eq!(
             project.scope(TargetPlatform::Android),
-            BackendScope::HostDefault,
-            "Hydrolysis serves Android and is a host default"
+            BackendScope::Optional,
+            "no host targets Android without a project selecting it"
         );
         assert_eq!(
             project_with("").scope(TargetPlatform::Android),
@@ -1806,15 +1824,22 @@ mod tests {
         let machine = TestMachine::new();
         let host = machine.host(Vec::<(String, String)>::new());
         let items = smol::block_on(doctor(&host));
-        for id in [
-            ids::ANDROID_SDK,
-            ids::ANDROID_RUST_TARGETS,
-            ids::JAVA,
-            ids::KOTLIN,
-        ] {
+        for id in ANDROID_ITEMS {
+            assert!(
+                item(&items, id).optional,
+                "{id} is optional without a project"
+            );
+        }
+
+        // A project targets Android through the Hydrolysis default, so the
+        // same items are required inside one.
+        machine.file("Water.toml", &manifest(""));
+        let host = machine.host(Vec::<(String, String)>::new());
+        let items = smol::block_on(doctor(&host));
+        for id in ANDROID_ITEMS {
             assert!(
                 !item(&items, id).optional,
-                "{id} is in scope without a project"
+                "{id} is required in a Hydrolysis-default Android project"
             );
         }
     }
@@ -1841,8 +1866,8 @@ mod tests {
     }
 
     /// Outside a project the host's backends are probed — the Android
-    /// toolchain included, since Hydrolysis serves Android from every host
-    /// — and ESP32 is reported as optional rather than skipped-as-unselected.
+    /// toolchain is not: no host targets Android without a project — and
+    /// ESP32 is reported as optional rather than skipped-as-unselected.
     #[test]
     fn doctor_checks_the_hosts_backends_outside_a_project() {
         let machine = TestMachine::new();
@@ -1866,8 +1891,8 @@ mod tests {
         }
         for id in [ids::ANDROID_SDK, ids::ANDROID_RUST_TARGETS] {
             assert!(
-                !item(&items, id).optional,
-                "{id} is in scope: Hydrolysis serves Android on this host"
+                item(&items, id).optional,
+                "{id} is optional without a project"
             );
         }
         assert!(
@@ -1905,13 +1930,13 @@ mod tests {
                 .find(|section| section.group == DoctorGroup::Esp32)
                 .is_some_and(|section| section.optional)
         );
-        // Hydrolysis serves Android and is host-default everywhere, so the
-        // Android group's platform scope is in scope without a project.
+        // No host targets Android without a project — Hydrolysis merely
+        // cross-compiles to it — so the Android group is optional.
         assert!(
             sections
                 .iter()
                 .find(|section| section.group == DoctorGroup::Android)
-                .is_some_and(|section| !section.optional)
+                .is_some_and(|section| section.optional)
         );
         assert!(
             sections
