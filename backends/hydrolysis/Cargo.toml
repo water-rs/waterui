@@ -126,7 +126,6 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSWindow",
     "objc2-quartz-core",
 ] }
-objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
 objc2-foundation = { workspace = true, optional = true, features = [
     "NSArray",
     "NSBundle",
@@ -376,7 +375,6 @@ winit = [
     "dep:libc",
     "dep:objc2",
     "dep:objc2-app-kit",
-    "dep:objc2-core-graphics",
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
     "dep:muda",
