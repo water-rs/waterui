@@ -1208,7 +1208,9 @@ mod tests {
     #[test]
     fn painter_resolution_prefers_the_override_then_the_manifest() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project(&Host::current(), "").await;
+            let home = tempfile::tempdir().expect("scratch home");
+            let host = crate::toolchain::testing::real_toolchain_host(home.path());
+            let (_temporary, project) = fixture_project(&host, "").await;
             assert_eq!(
                 resolve_painter(&project, None),
                 HydrolysisAndroidPainter::Gpu
@@ -1219,7 +1221,7 @@ mod tests {
             );
 
             let (_temporary, project) =
-                fixture_project(&Host::current(), "\n[hydrolysis]\npainter = \"hwui\"\n").await;
+                fixture_project(&host, "\n[hydrolysis]\npainter = \"hwui\"\n").await;
             assert_eq!(
                 resolve_painter(&project, None),
                 HydrolysisAndroidPainter::Hwui
@@ -1501,7 +1503,9 @@ mod tests {
     #[test]
     fn the_scaffolded_project_root_resolves_against_the_android_dir() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project(&Host::current(), "").await;
+            let home = tempfile::tempdir().expect("scratch home");
+            let host = crate::toolchain::testing::real_toolchain_host(home.path());
+            let (_temporary, project) = fixture_project(&host, "").await;
             let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
             std::fs::create_dir_all(&android_dir).expect("android dir");
             let host_project_dir = project.root().join("android-host");
