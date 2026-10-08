@@ -249,9 +249,10 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
 cfg_aliases = "0.2.2"
 
 # cargo-machete: `cfg_aliases` is named only in `build.rs`, which the
-# analysis does not read.
+# analysis does not read; the `objc2-app-kit` dev-dependency only enables
+# features on cocoa-ui's edge and is reached as `cocoa_ui::objc2_app_kit`.
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases"]
+ignored = ["cfg_aliases", "objc2-app-kit"]
 
 [dev-dependencies]
 criterion = "0.8.2"

@@ -88,15 +88,6 @@ pub fn install_service(env: &mut Environment) {
     clippy::future_not_send,
     reason = "the capture borrows the main-thread leaf across its await"
 )]
-#[cfg_attr(
-    not(feature = "gpu_surface"),
-    expect(
-        clippy::unused_async,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the synchronous fallback keeps the async contract; a clamped positive extent fits"
-    )
-)]
 async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
     #[cfg_attr(
