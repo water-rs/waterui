@@ -2537,6 +2537,10 @@ mod tests {
         .expect("android MainActivity render");
 
         assert!(activity.contains("enableEdgeToEdge()"));
+        // The environment reaches the app through `waterui.env.*` intent
+        // extras applied by `Os.setenv`; nothing reads system properties.
+        assert!(activity.contains("setupEnvironmentFromIntent(intent)"));
+        assert!(!activity.contains("SystemProperties"));
         // The dev-server URL is forwarded only on debuggable builds.
         assert!(activity.contains(r#"envVar == "WATERUI_DEV_URL" && !BuildConfig.DEBUG"#));
         assert!(activity.contains("waterUiApplication.acquireRuntime(this)"));
