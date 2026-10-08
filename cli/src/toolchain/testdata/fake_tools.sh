@@ -363,19 +363,34 @@ adb)
     # `WATERUI_FAKE_DEVICE_DATA` names, with the host's own tools — the one
     # place this fixture runs external commands, on a PATH of its own:
     # `WATERUI_FAKE_DEVICE_PATH` (shims a test stages) ahead of the system
-    # directories. `WATERUI_FAKE_DEVICE_STDIN_LIMIT` cuts the streamed
-    # stdin off after that many bytes.
+    # directories. The device's `sh` is mksh, which has `pipefail`; bash
+    # stands in for it, since a host `/bin/sh` may be a dash without it.
+    # `WATERUI_FAKE_DEVICE_STDIN_LIMIT` cuts the streamed stdin off after
+    # that many bytes; `WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT` corrupts it
+    # past that many bytes with characters no base64 decoder accepts.
     if [ -n "${WATERUI_FAKE_DEVICE_DATA-}" ]; then
         case "$*" in
             *" run-as "*)
                 # `$5` is the run-as command, one shell-quoted word.
                 eval "set -- $5"
                 shift 2
+                if [ "$1" = sh ]; then
+                    shift
+                    set -- bash "$@"
+                fi
                 cd "$WATERUI_FAKE_DEVICE_DATA" || exit 1
                 PATH="${WATERUI_FAKE_DEVICE_PATH:+$WATERUI_FAKE_DEVICE_PATH:}/usr/bin:/bin"
                 export PATH
                 if [ -n "${WATERUI_FAKE_DEVICE_STDIN_LIMIT-}" ]; then
-                    /usr/bin/head -c "$WATERUI_FAKE_DEVICE_STDIN_LIMIT" | "$@"
+                    head -c "$WATERUI_FAKE_DEVICE_STDIN_LIMIT" | "$@"
+                    exit $?
+                fi
+                if [ -n "${WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT-}" ]; then
+                    {
+                        head -c "$WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT"
+                        printf '!!!!\n'
+                        cat
+                    } | "$@"
                     exit $?
                 fi
                 exec "$@"
@@ -415,8 +430,10 @@ adb)
             ;;
         *"run-as"*"tar -xf"*)
             # A payload stream: the archive arrives on stdin and lands
-            # where `WATERUI_FAKE_ADB_STREAM` points.
+            # where `WATERUI_FAKE_ADB_STREAM` points; the stamp the device
+            # then reports installed goes back.
             /bin/cat > "${WATERUI_FAKE_ADB_STREAM:-/dev/null}"
+            (respond_or_empty ADB_STREAM_STAMP)
             exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
             ;;
         *"run-as"*"payload.stamp"*)

@@ -67,6 +67,10 @@ const STRIP_RECORD_FILE: &str = "strip-source.json";
 /// The buffer the archive writes go through.
 const IO_CHUNK: usize = 64 * 1024;
 
+/// The column the base64-encoded archive wraps at, with LF line endings —
+/// the `base64` tool's own default width.
+const BASE64_LINE: usize = 76;
+
 /// One file the payload carries.
 #[derive(Debug, Clone)]
 struct PayloadEntry {
@@ -193,10 +197,12 @@ impl DevicePayload {
         &self.stamp
     }
 
-    /// The bytes the payload's files hold — what a stream of it carries,
-    /// before the archive's per-member headers.
-    pub(super) const fn size(&self) -> u64 {
-        self.size
+    /// The bytes a stream of the payload carries: its files' bytes,
+    /// base64-encoded and wrapped at [`BASE64_LINE`] — before the archive's
+    /// per-member headers.
+    pub(super) const fn stream_size(&self) -> u64 {
+        let encoded = self.size.div_ceil(3) * 4;
+        encoded + encoded.div_ceil(BASE64_LINE as u64)
     }
 
     /// The libraries' paths relative to the device run directory, in
@@ -216,21 +222,36 @@ impl DevicePayload {
         )
     }
 
-    /// Write the payload as a tar archive into `sink`, chunk by chunk: the
+    /// Write the payload as a tar archive into `sink`, chunk by chunk,
+    /// base64-encoded in lines of [`BASE64_LINE`] ending in LF: the
     /// directories, every file under [`PAYLOAD_DIR`], then the stamp as
-    /// [`INCOMING_STAMP_FILE`]. The archive runs on a blocking thread; the
-    /// bounded `sink` paces it to the consumer.
+    /// [`INCOMING_STAMP_FILE`]. The encoding is text that every host's
+    /// `adb` stdin carries unaltered — no CR and no 0x1A byte — and the
+    /// device decodes it with `base64 -d`. Archiving and encoding run on a
+    /// blocking thread; the bounded `sink` paces them to the consumer.
     ///
     /// # Errors
     /// Returns an error when a payload file cannot be read, or a
     /// `BrokenPipe` when the consumer dropped its end of `sink`.
-    pub(super) async fn write_archive(
+    pub(super) async fn write_encoded_archive(
         &self,
         sink: async_channel::Sender<Vec<u8>>,
     ) -> io::Result<()> {
         let entries = self.entries.clone();
         let stamp = self.stamp.clone();
-        smol::unblock(move || write_archive(&entries, &stamp, ChunkSink(sink))).await
+        smol::unblock(move || {
+            let lines = LineWrap {
+                inner: BufWriter::with_capacity(IO_CHUNK, ChunkSink(sink)),
+                column: 0,
+            };
+            let mut encoder = base64::write::EncoderWriter::new(
+                lines,
+                &base64::engine::general_purpose::STANDARD,
+            );
+            write_archive(&entries, &stamp, &mut encoder)?;
+            encoder.finish()?.finish()
+        })
+        .await
     }
 }
 
@@ -490,7 +511,8 @@ fn content_stamp(libraries: &[PayloadEntry], bundle_stamp: &str) -> io::Result<S
     Ok(hex::encode(hasher.finalize()))
 }
 
-/// Write the archive [`DevicePayload::write_archive`] describes into `sink`.
+/// Write the archive [`DevicePayload::write_encoded_archive`] describes,
+/// unencoded, into `sink`.
 fn write_archive(entries: &[PayloadEntry], stamp: &str, sink: impl Write) -> io::Result<()> {
     let mut builder = tar::Builder::new(BufWriter::with_capacity(IO_CHUNK, sink));
 
@@ -539,6 +561,45 @@ fn write_archive(entries: &[PayloadEntry], stamp: &str, sink: impl Write) -> io:
     builder.append_data(&mut header, INCOMING_STAMP_FILE, stamp.as_bytes())?;
 
     builder.into_inner()?.flush()
+}
+
+/// A [`Write`] that breaks the text written through it into lines of
+/// [`BASE64_LINE`] bytes, each ending in LF.
+struct LineWrap<W: Write> {
+    inner: W,
+    /// Bytes on the current, unfinished line.
+    column: usize,
+}
+
+impl<W: Write> LineWrap<W> {
+    /// End the last line and flush.
+    fn finish(mut self) -> io::Result<()> {
+        if self.column > 0 {
+            self.inner.write_all(b"\n")?;
+        }
+        self.inner.flush()
+    }
+}
+
+impl<W: Write> Write for LineWrap<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut rest = buf;
+        while !rest.is_empty() {
+            let (line, tail) = rest.split_at(rest.len().min(BASE64_LINE - self.column));
+            self.inner.write_all(line)?;
+            self.column += line.len();
+            if self.column == BASE64_LINE {
+                self.inner.write_all(b"\n")?;
+                self.column = 0;
+            }
+            rest = tail;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// A blocking [`Write`] that hands each chunk to an async consumer through

@@ -373,23 +373,28 @@ async fn prepare_run(
     Ok((!stamp.is_empty()).then(|| stamp.to_string()))
 }
 
-/// The deadline for streaming a payload of `size` bytes: its transfer at
-/// [`PAYLOAD_STREAM_MIN_THROUGHPUT`], never less than
+/// The deadline for streaming `size` bytes of encoded payload: their
+/// transfer at [`PAYLOAD_STREAM_MIN_THROUGHPUT`], never less than
 /// [`PAYLOAD_STREAM_DEADLINE_FLOOR`].
 fn payload_stream_deadline(size: u64) -> Duration {
     Duration::from_secs(size.div_ceil(PAYLOAD_STREAM_MIN_THROUGHPUT))
         .max(PAYLOAD_STREAM_DEADLINE_FLOOR)
 }
 
-/// Stream `payload` as a tar archive straight into the host's private
-/// files: the stamps go first — so no interruption after that point can
-/// leave a stamp naming a payload that is partly deleted or partly
-/// extracted — then the previous payload; the archive extracts in place,
-/// the libraries become read-only — `chmod a-w` satisfies the linker's
-/// read-only `System.load` requirement without write-protecting `lib/`
-/// itself, since unlinking needs write on the directory, not the file —
-/// and the archive's trailing stamp is renamed into place last, so the
-/// device names a payload only once all of it landed.
+/// Stream `payload` as a base64-encoded tar archive straight into the
+/// host's private files. The stamps go first — so no interruption after
+/// that point can leave a stamp naming a payload that is partly deleted or
+/// partly extracted — then the previous payload; the archive is decoded and
+/// extracted in place, the libraries become read-only — `chmod a-w`
+/// satisfies the linker's read-only `System.load` requirement without
+/// write-protecting `lib/` itself, since unlinking needs write on the
+/// directory, not the file — and the archive's trailing stamp is renamed
+/// into place last, so the device names a payload only once all of it
+/// landed.
+///
+/// The script's exit status is the first verdict. The second rides in the
+/// same call: the script ends by printing the stamp it installed, which
+/// must be the one sent.
 async fn stream_payload(
     host: &Host,
     adb: &Adb,
@@ -398,51 +403,52 @@ async fn stream_payload(
 ) -> Result<()> {
     let (sender, receiver) = async_channel::bounded(ARCHIVE_CHUNKS_IN_FLIGHT);
     let archive = receiver.map(Ok::<_, io::Error>).into_async_read();
-    // The archive is binary and reaches the device through `adb`'s own
-    // stdin. On Unix hosts that is a byte pipe end to end. On a Windows
-    // host it is not known to be: in adb's source (platform/packages/
-    // modules/adb, main at 1cf2f017d312), `adb shell` feeds stdin from
-    // `stdin_read_thread_loop` through `unix_read_interruptible`, which for
-    // a pipe calls the C runtime's `read()` (sysdeps_win32.cpp), and only
-    // the `exec-in`/`exec-out` path (`copy_to_file` →
-    // `stdinout_raw_prologue`) switches stdin to `_O_BINARY`. A text-mode
-    // stdin would rewrite CR/LF pairs and end at the first 0x1A byte. That
-    // reading says this stream is not binary-safe on Windows; it stays an
-    // open question until a Windows run streams a payload holding both.
     let upload = adb.run_as_with_input(
         host,
         serial,
         PREVIEW_HOST_PACKAGE,
         &STREAM_SCRIPT,
         archive,
-        payload_stream_deadline(payload.size()),
+        payload_stream_deadline(payload.stream_size()),
     );
-    let (archived, uploaded) = futures_util::join!(payload.write_archive(sender), upload);
-    match (archived, uploaded) {
+    let (archived, uploaded) = futures_util::join!(payload.write_encoded_archive(sender), upload);
+    let installed = match (archived, uploaded) {
         // A payload file that could not be read is the cause of whatever
         // the device then reported about the truncated archive.
         (Err(error), _) if error.kind() != io::ErrorKind::BrokenPipe => {
-            Err(eyre::eyre!(error).wrap_err("failed to archive the preview payload"))
+            return Err(eyre::eyre!(error).wrap_err("failed to archive the preview payload"));
         }
         (_, Err(error)) => {
-            Err(error
-                .wrap_err("failed to stream the preview payload into the host's private files"))
+            return Err(error
+                .wrap_err("failed to stream the preview payload into the host's private files"));
         }
         // A `BrokenPipe` archive under a successful upload: the device
-        // stopped reading after the stamp member — which it only renames
-        // once everything before it extracted — so the payload is whole.
-        (_, Ok(_)) => Ok(()),
+        // stopped reading after the stamp member, and the stamp check below
+        // is the verdict on what it installed.
+        (_, Ok(stdout)) => stdout,
+    };
+    let installed = installed.trim();
+    if installed != payload.stamp() {
+        bail!(
+            "the device installed payload stamp `{installed}` after streaming payload stamp `{}`",
+            payload.stamp()
+        );
     }
+    Ok(())
 }
 
 /// The `run-as` words [`stream_payload`] runs on the device: `$1` is the
 /// run directory, `$2` the payload directory, `$3` the stamp and `$4` the
 /// archive's incoming stamp.
+///
+/// The device's `/system/bin/sh` is mksh (AOSP `external/mksh`, the
+/// `cc_binary` named `sh`), whose `pipefail` option makes a failing
+/// `base64 -d` fail the pipeline even when `tar` succeeds.
 const STREAM_SCRIPT: [&str; 8] = [
     "sh",
     "-c",
-    "cd \"$1\" && rm -f \"$3\" \"$4\" && rm -rf \"$2\" && tar -xf - && \
-     chmod a-w \"$2\"/lib/* && mv \"$4\" \"$3\"",
+    "set -o pipefail && cd \"$1\" && rm -f \"$3\" \"$4\" && rm -rf \"$2\" && \
+     base64 -d | tar -xf - && chmod a-w \"$2\"/lib/* && mv \"$4\" \"$3\" && cat \"$3\"",
     "sh",
     FILES_RUN_DIR,
     PAYLOAD_DIR,
@@ -663,11 +669,27 @@ mod tests {
         .expect("the payload stages")
     }
 
-    /// Every member of a tar archive, in archive order, with its bytes.
-    fn archive_members(archive: &[u8]) -> Vec<(String, Vec<u8>)> {
+    /// The bytes a base64 stream in LF-ended lines carries.
+    fn base64_decoded(encoded: &[u8]) -> Vec<u8> {
+        use base64::Engine as _;
+
+        let text: Vec<u8> = encoded
+            .iter()
+            .copied()
+            .filter(|byte| *byte != b'\n')
+            .collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .expect("the stream is base64")
+    }
+
+    /// Every member of the tar archive a base64 stream carries, in archive
+    /// order, with its bytes.
+    fn archive_members(encoded: &[u8]) -> Vec<(String, Vec<u8>)> {
         use std::io::Read as _;
 
-        tar::Archive::new(archive)
+        let archive = base64_decoded(encoded);
+        tar::Archive::new(archive.as_slice())
             .entries()
             .expect("the stream is a tar archive")
             .map(|entry| {
@@ -734,6 +756,8 @@ mod tests {
                 ("WATERUI_FAKE_ADB_RUN_CONFIG", run_config.as_os_str()),
             ]);
             let payload = staged_payload(&machine);
+            // The stream script ends by printing the stamp it installed.
+            machine.respond("ADB_STREAM_STAMP", payload.stamp());
             let apk = machine.file("host.apk", "apk");
             let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
             // Only the device run's own invocations are under test.
@@ -1050,11 +1074,12 @@ mod tests {
         }
     }
 
-    /// The archive [`DevicePayload::write_archive`] produces, whole.
+    /// The encoded archive [`DevicePayload::write_encoded_archive`]
+    /// produces, whole.
     #[cfg(unix)]
-    fn archive_bytes(payload: &DevicePayload) -> Vec<u8> {
+    fn encoded_archive(payload: &DevicePayload) -> Vec<u8> {
         let (sender, receiver) = async_channel::unbounded();
-        smol::block_on(payload.write_archive(sender)).expect("the archive writes");
+        smol::block_on(payload.write_encoded_archive(sender)).expect("the archive writes");
         std::iter::from_fn(|| receiver.try_recv().ok())
             .flatten()
             .collect()
@@ -1127,13 +1152,35 @@ mod tests {
         device.install_whole_payload();
 
         // The archive ends with the stamp's 512-byte header, its data padded
-        // to 512 bytes, and the 1024-byte end marker.
-        let cut = archive_bytes(&device.payload).len() - 1024 - 512 - 256;
-        let cut = cut.to_string();
+        // to 512 bytes, and the 1024-byte end marker. The cut falls on a
+        // whole base64 group, so the decoder itself sees nothing wrong and
+        // the archive's own end is what is missing.
+        let archive_len = base64_decoded(&encoded_archive(&device.payload)).len();
+        let groups = (archive_len - 1024 - 512 - 256) / 3 * 4;
+        let cut = (groups + groups / 76).to_string();
         let host = device.host(&[("WATERUI_FAKE_DEVICE_STDIN_LIMIT", cut.as_ref())]);
         let error = device
             .stream(&host)
             .expect_err("a cut-off archive fails the stream");
+        assert!(format!("{error:#}").contains("status"), "{error:#}");
+        assert_eq!(device.stamp(), None);
+    }
+
+    /// A stream whose decoding fails fails the script, and leaves the
+    /// device holding no stamp, even when `tar` succeeds: the corruption
+    /// follows the whole archive, so only the decoder's own status reports
+    /// it — the case `pipefail` exists for.
+    #[test]
+    #[cfg(unix)]
+    fn a_corrupted_base64_stream_installs_no_stamp() {
+        let device = ScriptedDevice::new();
+        device.install_whole_payload();
+
+        let corrupt_at = encoded_archive(&device.payload).len().to_string();
+        let host = device.host(&[("WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT", corrupt_at.as_ref())]);
+        let error = device
+            .stream(&host)
+            .expect_err("a corrupted stream fails the stream");
         assert!(format!("{error:#}").contains("status"), "{error:#}");
         assert_eq!(device.stamp(), None);
     }
