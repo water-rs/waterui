@@ -646,26 +646,46 @@ fn apple_catalog_files(launch: &LaunchAssets) -> BTreeSet<PathBuf> {
     let mut files = BTreeSet::from([
         PathBuf::from("Contents.json"),
         PathBuf::from(APPLE_APP_ICON_SET).join("Contents.json"),
-        PathBuf::from(format!("{APPLE_ACCENT_COLOR_SET}.colorset")).join("Contents.json"),
+        PathBuf::from(apple_color_set_dir(APPLE_ACCENT_COLOR_SET)).join("Contents.json"),
     ]);
-    for (idiom, size, scale, _) in APPLE_APP_ICON_SPECS {
+    for &(idiom, size, scale, _) in APPLE_APP_ICON_SPECS {
         files.insert(
-            PathBuf::from(APPLE_APP_ICON_SET).join(format!("AppIcon-{idiom}-{size}@{scale}.png")),
+            PathBuf::from(APPLE_APP_ICON_SET).join(apple_app_icon_file(idiom, size, scale)),
         );
     }
     if launch.plan().background(ColorScheme::Light).is_some() {
         files.insert(
-            PathBuf::from(format!("{APPLE_LAUNCH_BACKGROUND_SET}.colorset")).join("Contents.json"),
+            PathBuf::from(apple_color_set_dir(APPLE_LAUNCH_BACKGROUND_SET)).join("Contents.json"),
         );
     }
     if launch.has_artwork() {
-        let set_dir = PathBuf::from(format!("{APPLE_LAUNCH_IMAGE_SET}.imageset"));
-        for (scale, _) in APPLE_LAUNCH_SCALES {
-            files.insert(set_dir.join(format!("{APPLE_LAUNCH_IMAGE_SET}@{scale}.png")));
+        let set_dir = PathBuf::from(apple_launch_image_set_dir());
+        for &(scale, _) in APPLE_LAUNCH_SCALES {
+            files.insert(set_dir.join(apple_launch_image_file(scale)));
         }
         files.insert(set_dir.join("Contents.json"));
     }
     files
+}
+
+/// Directory of the named color set inside the asset catalog.
+fn apple_color_set_dir(name: &str) -> String {
+    format!("{name}.colorset")
+}
+
+/// Directory of the launch image set inside the asset catalog.
+fn apple_launch_image_set_dir() -> String {
+    format!("{APPLE_LAUNCH_IMAGE_SET}.imageset")
+}
+
+/// File name of the launch artwork rendered at `scale`.
+fn apple_launch_image_file(scale: &str) -> String {
+    format!("{APPLE_LAUNCH_IMAGE_SET}@{scale}.png")
+}
+
+/// File name of one `AppIcon.appiconset` entry.
+fn apple_app_icon_file(idiom: &str, size: &str, scale: &str) -> String {
+    format!("AppIcon-{idiom}-{size}@{scale}.png")
 }
 
 /// Removes every file under `dir` that `keep` does not name, where `keep`
@@ -687,13 +707,9 @@ async fn prune_unlisted(dir: &Path, keep: &BTreeSet<PathBuf>) -> eyre::Result<()
         while let Some(entry) = entries.next().await {
             let entry = entry?;
             let path = entry.path();
-            let relative = path.strip_prefix(dir).wrap_err_with(|| {
-                format!(
-                    "staged entry '{}' escaped '{}'",
-                    path.display(),
-                    dir.display()
-                )
-            })?;
+            let relative = path
+                .strip_prefix(dir)
+                .expect("read_dir yields entries under the walked root");
             if entry.file_type().await?.is_dir() {
                 if keep_dirs.contains(relative) {
                     stack.push(path);
@@ -821,7 +837,7 @@ async fn write_apple_color_set(
             }],
         ));
     }
-    let set_dir = xcassets_dest.join(format!("{name}.colorset"));
+    let set_dir = xcassets_dest.join(apple_color_set_dir(name));
     fs::create_dir_all(&set_dir).await?;
     let json = serde_json::to_vec_pretty(&Contents {
         colors,
@@ -856,11 +872,11 @@ async fn write_apple_launch_image(source: &IconSource, xcassets_dest: &Path) -> 
         info: Info,
     }
 
-    let set_dir = xcassets_dest.join(format!("{APPLE_LAUNCH_IMAGE_SET}.imageset"));
+    let set_dir = xcassets_dest.join(apple_launch_image_set_dir());
     fs::create_dir_all(&set_dir).await?;
     let mut images = Vec::new();
     for &(scale, factor) in APPLE_LAUNCH_SCALES {
-        let filename = format!("{APPLE_LAUNCH_IMAGE_SET}@{scale}.png");
+        let filename = apple_launch_image_file(scale);
         write_png(
             &source.render(APPLE_LAUNCH_IMAGE_POINTS * factor)?,
             &set_dir.join(&filename),
@@ -932,7 +948,7 @@ async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre
 
     let mut images = Vec::new();
     for &(idiom, size, scale, pixels) in APPLE_APP_ICON_SPECS {
-        let file_name = format!("AppIcon-{idiom}-{size}@{scale}.png");
+        let file_name = apple_app_icon_file(idiom, size, scale);
         write_png(
             &render_apple_icon(source, idiom, pixels)?,
             &appicon_dir.join(&file_name),
