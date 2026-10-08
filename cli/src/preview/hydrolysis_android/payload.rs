@@ -79,6 +79,13 @@ const IO_CHUNK: usize = 64 * 1024;
 /// the `base64` tool's own default width.
 const BASE64_LINE: usize = 76;
 
+/// The version of the payload's shape the stamp's content does not cover:
+/// the archive's member layout, the payload's layout inside the device run
+/// directory and the contract the instrumentation reads. It is hashed into
+/// every content stamp, so raising it re-streams every payload; raise it
+/// with any change to those shapes that leaves the hashed paths alone.
+const PAYLOAD_FORMAT_VERSION: u32 = 1;
+
 /// One file the payload carries.
 #[derive(Debug, Clone)]
 struct PayloadEntry {
@@ -537,11 +544,12 @@ fn slash_path(relative: &Path) -> io::Result<String> {
     Ok(parts.join("/"))
 }
 
-/// The payload's content hash: every library entry's path, size and bytes,
-/// then the asset bundle's own stamp, which identifies every file the
-/// bundle contributes.
+/// The payload's content hash: [`PAYLOAD_FORMAT_VERSION`], then every
+/// library entry's path, size and bytes, then the asset bundle's own
+/// stamp, which identifies every file the bundle contributes.
 fn content_stamp(libraries: &[PayloadEntry], bundle_stamp: &str) -> io::Result<String> {
     let mut hasher = Sha256::new();
+    hasher.update(PAYLOAD_FORMAT_VERSION.to_le_bytes());
     for entry in libraries {
         hasher.update(entry.path.as_bytes());
         hasher.update([0]);
