@@ -651,7 +651,8 @@ mod token_probe {
                 icon_label_spacing: 4.0,
             }
         }
-        fn draw_tabs_bar(&self, _recorder: &mut Recorder, _bounds: Rect, _top_edge: bool) {}
+        fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
+        fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
         fn draw_tabs_highlight(
             &self,
             _recorder: &mut Recorder,

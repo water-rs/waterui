@@ -114,7 +114,7 @@ pub fn box_shape(shape: &ShapeData) -> Result<Option<Boxed>, RenderError> {
         ShapeData::Ellipse(e) => {
             let radii_v = e.radii();
             let (a, b) = (radii_v.x, radii_v.y);
-            if a <= 0.0 {
+            if a <= 0.0 || b <= 0.0 {
                 return Ok(None);
             }
             let half = [f32_f64(a), f32_f64(b)];

@@ -6,7 +6,8 @@ description: Build cross-platform native apps with the WaterUI Rust framework. U
 # Building apps with WaterUI
 
 WaterUI is a Rust UI framework that renders to real native widgets (UIKit/AppKit,
-Android View, GTK4) or to its own GPU renderer, from one view tree. It is
+GTK4) or to its own GPU renderer — Hydrolysis, which is also the Android
+backend — from one view tree. It is
 **fine-grained reactive**: a value change updates exactly the widget that reads it,
 without rebuilding the surrounding tree.
 

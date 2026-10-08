@@ -4730,7 +4730,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=bc412a1a7e796cedc30d2c62d33fe293634574a8#bc412a1a7e796cedc30d2c62d33fe293634574a8"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=9ade35272de87da502ae0e038e00bb4936bd0d7e#9ade35272de87da502ae0e038e00bb4936bd0d7e"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -13003,6 +13003,7 @@ dependencies = [
  "dirs 7.0.0",
  "dunce",
  "eyre",
+ "filetime",
  "flate2",
  "fontcull-klippa",
  "fontcull-skrifa",
@@ -13331,6 +13332,7 @@ version = "0.5.2"
 dependencies = [
  "async-channel",
  "futures-lite",
+ "hydrolysis-m3",
  "smol",
  "tracing",
  "waterui",
@@ -13338,6 +13340,7 @@ dependencies = [
  "waterui-controls",
  "waterui-icons-lucide",
  "waterui-inspector-protocol",
+ "waterui-testing",
 ]
 
 [[package]]

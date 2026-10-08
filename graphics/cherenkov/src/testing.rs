@@ -3013,6 +3013,116 @@ mod tests {
     }
 }
 
+/// The union field's quadratic smooth-min fold on two distances, sorted
+/// ascending as in the shader: `m ← min(m, d) − h²·k/4` with
+/// `h = max(k − |m − d|, 0)/k`. Shared by the GPU and CPU backdrop test
+/// suites.
+#[must_use]
+pub fn smin(field: f32, dist: f32, smoothing: f32) -> f32 {
+    let blend = (smoothing - (field - dist).abs()).max(0.0) / smoothing;
+    (blend * blend * smoothing).mul_add(-0.25, field.min(dist))
+}
+
+/// Signed distance to an axis-aligned rect — the clip's analytic SDF.
+/// Shared by the GPU and CPU backdrop test suites.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test geometry stays well inside f32"
+)]
+#[must_use]
+pub fn rect_sdf(px: f32, py: f32, rect: kurbo::Rect) -> f32 {
+    let qx = (f64::from(px) - rect.x0.midpoint(rect.x1)).abs() - (rect.x1 - rect.x0) / 2.0;
+    let qy = (f64::from(py) - rect.y0.midpoint(rect.y1)).abs() - (rect.y1 - rect.y0) / 2.0;
+    (qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0)) as f32
+}
+
+/// Antialiased coverage of `m < 0` at pixel-centre distance `m`.
+///
+/// `coverage(m, 1)` in the shader: the fold is a unit-gradient field
+/// along the axis the tests measure on. Shared by the GPU and CPU
+/// backdrop test suites.
+#[must_use]
+pub fn cover(field: f32) -> f32 {
+    (0.5 - field).clamp(0.0, 1.0)
+}
+
+/// Signed distance and unit outward normal of a circle's analytic SDF —
+/// the clip's `sdf_sample` result. Shared by the GPU and CPU backdrop
+/// test suites.
+#[must_use]
+pub fn circle_field(px: f32, py: f32, cx: f32, cy: f32, r: f32) -> (f32, [f32; 2]) {
+    let dx = px - cx;
+    let dy = py - cy;
+    let len = dx.hypot(dy).max(1e-6);
+    (len - r, [dx / len, dy / len])
+}
+
+/// Signed distance and unit outward normal of an axis-aligned rect's
+/// analytic SDF — the clip's `sdf_sample` result. Shared by the GPU and
+/// CPU backdrop test suites.
+#[must_use]
+#[expect(clippy::cast_possible_truncation, reason = "test coords stay small")]
+pub fn rect_field(px: f32, py: f32, rect: kurbo::Rect) -> (f32, [f32; 2]) {
+    let qx = (f64::from(px) - rect.x0.midpoint(rect.x1)).abs() - (rect.x1 - rect.x0) / 2.0;
+    let qy = (f64::from(py) - rect.y0.midpoint(rect.y1)).abs() - (rect.y1 - rect.y0) / 2.0;
+    let d = (qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0)) as f32;
+    let sx = if px >= rect.x0.midpoint(rect.x1) as f32 {
+        1.0
+    } else {
+        -1.0
+    };
+    let sy = if py >= rect.y0.midpoint(rect.y1) as f32 {
+        1.0
+    } else {
+        -1.0
+    };
+    let (ox, oy) = (qx.max(0.0) as f32 * sx, qy.max(0.0) as f32 * sy);
+    let len = ox.hypot(oy);
+    if len > 1e-6 {
+        (d, [ox / len, oy / len])
+    } else if qx > qy {
+        (d, [sx, 0.0])
+    } else {
+        (d, [0.0, sy])
+    }
+}
+
+/// The ownership weight of `members[member]` under the union contract.
+///
+/// `a_i = clamp(0.5 + f_i/|∇f_i|, 0, 1)` with `f_i = d₂ − d_i`, `d₂` the
+/// smallest distance among the other members, `|∇f_i| = |∇d₂ − ∇d_i|`;
+/// the weight is `a_i / Σ_j a_j`. Only where the boundary degenerates
+/// (`|∇f_i| < 1e-6`, coincident shapes) is ownership a hard step, an
+/// exact tie going to the earlier member in paint order — the members
+/// are in paint order. Shared by the GPU and CPU backdrop test suites.
+#[must_use]
+pub fn ownership(members: &[(f32, [f32; 2])], member: usize) -> f32 {
+    let mut order: Vec<usize> = (0..members.len()).collect();
+    order.sort_by(|&a, &b| members[a].0.total_cmp(&members[b].0));
+    let mut sum = 0.0f32;
+    let mut own = 0.0f32;
+    for (j, &(dj, gj)) in members.iter().enumerate() {
+        let other = if order[0] == j { order[1] } else { order[0] };
+        let (do2, go2) = members[other];
+        let f = do2 - dj;
+        let slope = (go2[0] - gj[0]).hypot(go2[1] - gj[1]);
+        let a = if slope < 1e-6 {
+            if f > 0.0 || (f == 0.0 && j == order[0]) {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            (0.5 + f / slope).clamp(0.0, 1.0)
+        };
+        sum += a;
+        if j == member {
+            own = a;
+        }
+    }
+    own / sum
+}
+
 /// Retained-lowering equivalence checks for first-party backends.
 pub mod incremental;
 
