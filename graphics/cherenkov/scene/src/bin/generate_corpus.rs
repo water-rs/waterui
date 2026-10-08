@@ -5699,6 +5699,67 @@ fn run() -> Result<(), SceneError> {
         });
     });
 
+    corpus.scene_setup("backdrop-anchor-levels", 256, 256, white, |b| {
+        // Two groups sharing one anchor: A's blur pyramid (sigma 8, three
+        // levels) and B's (sigma 3, one level) both capture beneath the
+        // layer carrying `id` 1, at its paint-order position — before
+        // the anchor's own content. Members interleave A, B, A, so B's
+        // capture must not contain A's member.
+        b.backdrop_group_anchored(
+            1,
+            1,
+            vec![BackdropFilter::GaussianBlur { sigma: 8.0 }],
+            1.0,
+            3,
+        );
+        b.backdrop_group_anchored(
+            2,
+            1,
+            vec![BackdropFilter::GaussianBlur { sigma: 3.0 }],
+            1.0,
+            1,
+        );
+        let l = &mut b.root();
+        backdrop_background(l);
+        // The anchor: a plain layer at the capture point. Its own content
+        // paints after the capture, so it must not reach either group's
+        // copy beneath it.
+        l.layer(|a| {
+            a.id(1);
+            a.fill(
+                Shape::circle(128.0, 128.0, 90.0),
+                solid(srgba(0.1, 0.9, 0.2, 0.5)),
+            );
+        });
+        l.layer(|m| {
+            let clip = Shape::RoundedRect(RoundedRect::new(24.0, 24.0, 150.0, 120.0, 14.0));
+            m.clip(clip);
+            m.backdrop(1);
+            m.fill(
+                Shape::rect(26.0, 26.0, 148.0, 118.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.25)),
+            );
+        });
+        l.layer(|m| {
+            let clip = Shape::RoundedRect(RoundedRect::new(90.0, 90.0, 200.0, 180.0, 16.0));
+            m.clip(clip);
+            m.backdrop(2);
+            m.fill(
+                Shape::rect(92.0, 92.0, 198.0, 178.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.25)),
+            );
+        });
+        l.layer(|m| {
+            let clip = Shape::RoundedRect(RoundedRect::new(150.0, 150.0, 236.0, 236.0, 18.0));
+            m.clip(clip);
+            m.backdrop(1);
+            m.fill(
+                Shape::rect(152.0, 152.0, 234.0, 234.0),
+                solid(srgba(1.0, 1.0, 1.0, 0.25)),
+            );
+        });
+    });
+
     corpus.scene_setup("backdrop-transform", 256, 256, white, |b| {
         // A saturation-boost colour matrix on premultiplied colour
         // (luminance-preserving, s = 1.6).

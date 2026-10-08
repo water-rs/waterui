@@ -45,10 +45,14 @@ pub const fn staged(pass: &Pass) -> bool {
 pub fn params(pass: &Pass) -> Params {
     of(pass).map_or_else(Params::default, |resolve| Params {
         texel_origin: [pass.region[0] as f32, pass.region[1] as f32],
+        // A staged resolve reads the group's staging texture at the draw
+        // region's origin; a direct one reads `copy_from` at its texel
+        // origin — `[0, 0]` for a semantic target, the shared copy's
+        // region origin for an anchored group.
         source_origin: if staged(pass) {
             [resolve.device[0] as f32, resolve.device[1] as f32]
         } else {
-            [0.0, 0.0]
+            [resolve.source[0] as f32, resolve.source[1] as f32]
         },
         extent: [resolve.extent[0] as f32, resolve.extent[1] as f32],
         scale: resolve.scale,

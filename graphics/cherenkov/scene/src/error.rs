@@ -41,6 +41,13 @@ pub enum SceneError {
     /// A layer has a `backdrop_effect` without a `backdrop` group.
     #[error("layer has a backdrop effect but no backdrop group")]
     BackdropEffectWithoutGroup,
+    /// A backdrop group anchors at a `Layer::id` no layer in the scene
+    /// carries.
+    #[error("backdrop group {0} anchors at an unknown layer id")]
+    UnknownBackdropAnchor(u32),
+    /// Two layers carry the `Layer::id` a backdrop anchor could name.
+    #[error("backdrop anchor layer id {0} is declared twice")]
+    DuplicateBackdropAnchor(u32),
     /// A `backdrop_effect` parameter is non-finite or out of range.
     #[error("invalid backdrop effect: {0}")]
     InvalidBackdropEffect(&'static str),

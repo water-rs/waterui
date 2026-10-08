@@ -81,6 +81,10 @@ pub struct Layer {
     /// The blend mode used when compositing onto the parent.
     #[serde(default)]
     pub blend: BlendMode,
+    /// An optional identifier a [`crate::BackdropGroup::anchor`] names:
+    /// the group's capture is taken beneath the layer carrying it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u32>,
     /// The id of the [`crate::BackdropGroup`] this layer samples, if any.
     /// A member layer must have a `clip`; the group's capture runs through
     /// the group's filters and is drawn as the bottom-most content inside
@@ -408,6 +412,7 @@ impl Default for Layer {
             clip: None,
             opacity: 1.0,
             blend: BlendMode::Normal,
+            id: None,
             backdrop: None,
             filter: None,
             backdrop_effect: None,

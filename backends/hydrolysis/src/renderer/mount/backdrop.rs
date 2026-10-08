@@ -27,9 +27,9 @@ pub enum BackdropScope {
     /// share.
     Solo(LayerId),
     /// The `.material_group()` wrapper node's identity — the address of
-    /// its cell, which the scope stack holds an `Rc` to while its
-    /// children flush, so the pointer cannot be reused mid-frame. Two
-    /// modifier instances are two groups.
+    /// its mount cell — stable for as long as the node stays mounted,
+    /// so the pointer cannot be reused mid-frame. Two modifier
+    /// instances are two groups.
     Scoped(usize),
 }
 
@@ -42,18 +42,18 @@ pub struct BackdropGroupKey {
     /// The nearest enclosing `.material_group()` node's identity the
     /// members share, or the member's own frame layer when it wraps in no
     /// group.
-    scope: BackdropScope,
+    pub(crate) scope: BackdropScope,
     /// The members' within-window level: one group runs one level's
     /// chain, so members of different levels never share a capture.
-    level: WithinWindowLevel,
+    pub(crate) level: WithinWindowLevel,
     /// The members' colour scheme, resolved at flush: a subtree may
     /// install its own scheme, so members at one level in one scope can
     /// differ — the group runs one constant scheme's chain.
-    scheme: waterui::theme::ColorScheme,
+    pub(crate) scheme: waterui::theme::ColorScheme,
     /// The install canvas the members' content mounts under: `None`
     /// under the surface root, `Some(frame)` under a filtered node's
     /// frame layer.
-    canvas: Option<LayerId>,
+    pub(crate) canvas: Option<LayerId>,
 }
 
 impl BackdropGroupKey {
@@ -135,6 +135,16 @@ struct MountedBackdrop<G> {
 pub struct BackdropGroups<G> {
     groups: FxHashMap<BackdropGroupKey, MountedBackdrop<G>>,
     members: FxHashMap<LayerId, MemberEntry>,
+    /// The layer id each `(scope, install canvas)` pair's groups
+    /// capture beneath: the `.material_group()` node's own frame for
+    /// members sharing its canvas, or the plain leading layer the
+    /// canvas's filtered node owns for a scope whose members mount
+    /// inside it (water-rs/waterui#2097).
+    anchors: FxHashMap<(usize, Option<LayerId>), LayerId>,
+    /// Each `.material_group()` scope's own frame, by scope — the entry
+    /// `anchors` keeps under the scope's own canvas, kept so
+    /// `material_group_anchor` can name the anchor a scope installs.
+    scope_frames: FxHashMap<usize, LayerId>,
 }
 
 impl<G> BackdropGroups<G> {
@@ -142,7 +152,61 @@ impl<G> BackdropGroups<G> {
         Self {
             groups: FxHashMap::default(),
             members: FxHashMap::default(),
+            anchors: FxHashMap::default(),
+            scope_frames: FxHashMap::default(),
         }
+    }
+
+    /// Registers `frame` — the `.material_group()` node's own layer —
+    /// as the anchor of `scope`'s groups in the canvas the node mounts
+    /// in.
+    pub(crate) fn set_scope_anchor(
+        &mut self,
+        scope: usize,
+        canvas: Option<LayerId>,
+        frame: LayerId,
+    ) {
+        self.anchors.insert((scope, canvas), frame);
+        self.scope_frames.insert(scope, frame);
+    }
+
+    /// Registers `layer` — a plain leading child of `canvas`'s frame —
+    /// as the anchor of `scope`'s groups inside the canvas.
+    pub(crate) fn set_anchor(&mut self, scope: usize, canvas: LayerId, layer: LayerId) {
+        self.anchors.insert((scope, Some(canvas)), layer);
+    }
+
+    /// Drops the registration `scope`/`canvas` names: the node owning
+    /// its layer retired.
+    pub(crate) fn remove_anchor(&mut self, scope: usize, canvas: Option<LayerId>) {
+        // The scope's own frame goes out of `scope_frames` with its
+        // registration; an in-canvas anchor's removal touches nothing
+        // else.
+        if self.anchors.remove(&(scope, canvas)) == self.scope_frames.get(&scope).copied() {
+            self.scope_frames.remove(&scope);
+        }
+    }
+
+    /// The layer a group keyed `key` captures beneath — `None` for a
+    /// solo group. A scoped group's anchor registers before its first
+    /// member commits: the scope's frame for the members sharing its
+    /// canvas, the canvas's own anchor layer for the members inside it.
+    fn anchor(&self, key: &BackdropGroupKey) -> Option<LayerId> {
+        let BackdropScope::Scoped(scope) = key.scope else {
+            return None;
+        };
+        Some(
+            self.anchors
+                .get(&(scope, key.canvas))
+                .copied()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "hydrolysis mounts: a scoped group's anchor layer was not registered: scope={scope:#x} canvas={:?} anchors={:?}",
+                        key.canvas,
+                        self.anchors.keys().collect::<Vec<_>>()
+                    )
+                }),
+        )
     }
 
     /// Makes `member`'s frame layer a member of the group `key` names:
@@ -167,7 +231,7 @@ impl<G> BackdropGroups<G> {
         display_scale: f64,
         membership: &MaterialMembership,
         hooks: (
-            impl Fn(&MaterialRuntime, f64) -> G,
+            impl Fn(&MaterialRuntime, f64, Option<LayerId>) -> G,
             impl Fn(&mut Transaction<'_, T>, &Layer, &G),
         ),
     ) {
@@ -185,6 +249,9 @@ impl<G> BackdropGroups<G> {
             return;
         }
         self.leave(member.id());
+        // A scoped group's spec anchors at the layer its `(scope,
+        // canvas)` pair registered; a solo group names none.
+        let anchor = self.anchor(&key);
         let group = match self.groups.entry(key) {
             Entry::Occupied(mut entry) => {
                 if entry.get().display_scale != bits {
@@ -196,7 +263,7 @@ impl<G> BackdropGroups<G> {
                     // released group.
                     let runtime = entry.get().runtime;
                     let rebuilt = MountedBackdrop {
-                        group: create(&runtime, display_scale),
+                        group: create(&runtime, display_scale, anchor),
                         runtime,
                         display_scale: bits,
                         members: std::mem::take(&mut entry.get_mut().members),
@@ -231,7 +298,7 @@ impl<G> BackdropGroups<G> {
             Entry::Vacant(entry) => {
                 let runtime = MaterialRuntime::new(key.level, key.scheme);
                 entry.insert(MountedBackdrop {
-                    group: create(&runtime, display_scale),
+                    group: create(&runtime, display_scale, anchor),
                     runtime,
                     display_scale: bits,
                     members: FxHashSet::default(),
@@ -304,6 +371,25 @@ impl<G> BackdropGroups<G> {
         self.groups
             .get(&key)
             .map(|group| f64::from_bits(group.display_scale))
+    }
+
+    /// The anchor layer `member`'s group captures beneath — `None` for
+    /// a solo group or while the member holds no membership. A
+    /// test-facing answer.
+    #[cfg(test)]
+    pub(crate) fn backdrop_anchor(&self, member: LayerId) -> Option<LayerId> {
+        let key = self.members.get(&member)?.key;
+        let BackdropScope::Scoped(scope) = key.scope else {
+            return None;
+        };
+        self.anchors.get(&(scope, key.canvas)).copied()
+    }
+
+    /// The `.material_group()` scope's own anchor frame — `None` once
+    /// the scope unmounted. A test-facing answer.
+    #[cfg(test)]
+    pub(crate) fn material_group_anchor(&self, scope: usize) -> Option<LayerId> {
+        self.scope_frames.get(&scope).copied()
     }
 
     /// How many live backdrop groups the table holds — a test-facing

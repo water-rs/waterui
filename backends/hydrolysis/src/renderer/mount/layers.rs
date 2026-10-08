@@ -164,6 +164,15 @@ pub struct NodeLayers {
     /// the mount's table keeps it weakly, so an unmount's `layers.take()`
     /// ends the membership at the next sweep.
     material: Option<MaterialMembership>,
+    /// The in-canvas backdrop anchors a filtered node owns: one plain
+    /// leading child of the frame per `.material_group()` scope open
+    /// when it flushed, keyed by the scope's identity
+    /// (water-rs/waterui#2097).
+    anchors: Vec<(usize, Layer)>,
+    /// The `(scope, install canvas)` keys this node's layers registered
+    /// in the group table — its own scope's frame registration and each
+    /// in-canvas anchor's — dropped when the layers retire.
+    anchor_keys: Vec<(usize, Option<LayerId>)>,
     /// The layer the frame is attached under.
     attached: Cell<Option<LayerId>>,
 }
@@ -282,10 +291,18 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             runs,
             inner_runs,
             scopes,
+            anchors,
+            anchor_keys,
             content_held,
             material,
             ..
         } = layers;
+        for (scope, canvas) in anchor_keys {
+            self.groups.remove_anchor(scope, canvas);
+        }
+        for (_, layer) in anchors {
+            self.retire_layer(layer);
+        }
         for run in runs.into_iter().chain(inner_runs) {
             self.retire_run(run);
         }
@@ -424,7 +441,7 @@ impl<T: LayerTarget> Mount<T> {
                 wakes,
             };
             for cell in roots {
-                commit_cell(&mut cx, cell, None, false);
+                commit_cell(&mut cx, cell, None, false, None);
             }
             let retained: Vec<_> = roots.iter().map(|cell| cell.retained()).collect();
             let guards: Vec<_> = retained.iter().map(|r| r.layers.borrow()).collect();
@@ -568,6 +585,7 @@ pub fn commit_cell<T: LayerTarget>(
     cell: &Rc<NodeCell>,
     canvas: Option<LayerId>,
     listed: bool,
+    scope_anchor: Option<usize>,
 ) {
     let retained = cell.retained();
     let mut program = retained.pending.borrow_mut().take();
@@ -610,6 +628,8 @@ pub fn commit_cell<T: LayerTarget>(
                 install_gpu: false,
                 material_request: None,
                 material: None,
+                anchors: Vec::new(),
+                anchor_keys: Vec::new(),
                 attached: Cell::new(None),
             }
         }
@@ -637,12 +657,20 @@ pub fn commit_cell<T: LayerTarget>(
             .then(|| layers.frame.id())
             .or(canvas);
         for child in committed_cells(&layers) {
-            commit_cell(cx, &child, child_canvas, true);
+            commit_cell(cx, &child, child_canvas, true, None);
         }
         *retained.layers.borrow_mut() = Some(layers);
         return;
     };
-    lower_program(cx, cell, &mut layers, transform, &program, canvas);
+    lower_program(
+        cx,
+        cell,
+        &mut layers,
+        transform,
+        &program,
+        canvas,
+        scope_anchor,
+    );
     *retained.lowered.borrow_mut() = Some(program);
     *retained.layers.borrow_mut() = Some(layers);
 }
@@ -669,6 +697,53 @@ fn committed_cells(layers: &NodeLayers) -> Vec<Rc<NodeCell>> {
         .collect()
 }
 
+/// Backdrop anchors (water-rs/waterui#2097): a `.material_group()`
+/// node's own frame is the anchor its scope's members capture
+/// beneath in the canvas the frame mounts in; a filtered node's
+/// canvas gets one plain leading layer per scope the node mounts
+/// inside, so members mounting there anchor there. Each lowering
+/// replaces the registrations the last one made.
+fn lower_scope_anchors<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    layers: &mut NodeLayers,
+    material_scopes: &[usize],
+    material_scope_anchors: &[usize],
+    filtered: bool,
+    canvas: Option<LayerId>,
+) {
+    for (scope, canvas) in std::mem::take(&mut layers.anchor_keys) {
+        cx.groups.remove_anchor(scope, canvas);
+    }
+    for &scope in material_scopes {
+        cx.groups.set_scope_anchor(scope, canvas, layers.frame.id());
+        layers.anchor_keys.push((scope, canvas));
+    }
+    let wanted: &[usize] = if filtered {
+        material_scope_anchors
+    } else {
+        &[]
+    };
+    let mut anchors = std::mem::take(&mut layers.anchors);
+    let mut kept = Vec::with_capacity(wanted.len());
+    for &scope in wanted {
+        let layer = match anchors
+            .iter()
+            .position(|&(s, _)| s == scope)
+            .map(|i| anchors.swap_remove(i))
+        {
+            Some((_, layer)) => layer,
+            None => cx.layer(),
+        };
+        cx.groups.set_anchor(scope, layers.frame.id(), layer.id());
+        layers.anchor_keys.push((scope, Some(layers.frame.id())));
+        kept.push((scope, layer));
+    }
+    for (_, layer) in anchors {
+        cx.retire_layer(layer);
+    }
+    layers.anchors = kept;
+}
+
 fn lower_program<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
     cell: &Rc<NodeCell>,
@@ -676,12 +751,15 @@ fn lower_program<T: LayerTarget>(
     transform: kurbo::Affine,
     program: &Program,
     canvas: Option<LayerId>,
+    scope_anchor: Option<usize>,
 ) {
     let Program {
         opacity,
         clip,
         filter,
         material,
+        material_scopes,
+        material_scope_anchors,
         producer,
         inner,
         items,
@@ -711,6 +789,24 @@ fn lower_program<T: LayerTarget>(
     // boundaries — otherwise the canvas the frame itself mounts under.
     let child_canvas = filter.is_some().then(|| layers.frame.id()).or(canvas);
 
+    lower_scope_anchors(
+        cx,
+        layers,
+        material_scopes,
+        material_scope_anchors,
+        filter.is_some(),
+        canvas,
+    );
+
+    // A `.material_group()` scope's anchor is this frame — the frame of
+    // the node the scope's cell parents, the group's paint position —
+    // registered before any member inside commits so the shared copy
+    // holds only what painted before the group (water-rs/waterui#2097).
+    if let Some(scope) = scope_anchor {
+        cx.groups.set_scope_anchor(scope, canvas, layers.frame.id());
+        layers.anchor_keys.push((scope, canvas));
+    }
+
     let mut scopes_old = std::mem::take(&mut layers.scopes);
     let mut scopes_new = Vec::new();
     lower_inner(
@@ -732,16 +828,23 @@ fn lower_program<T: LayerTarget>(
     }
 
     let leading: Vec<(LayerId, &Layer)> = layers
-        .inner
+        .anchors
         .iter()
-        .chain(layers.install.iter())
-        .map(|(layer, _)| (layer.id(), layer))
+        .map(|(_, layer)| (layer.id(), layer))
+        .chain(
+            layers
+                .inner
+                .iter()
+                .chain(layers.install.iter())
+                .map(|(layer, _)| (layer.id(), layer)),
+        )
         .collect();
     lower_list(
         cx,
         &layers.frame,
         &leading,
         items,
+        material_scopes,
         &mut layers.runs,
         &mut scopes_old,
         &mut scopes_new,
@@ -767,6 +870,11 @@ fn commit_material<T: LayerTarget>(
 ) {
     layers.material_request = material.copied();
     if let Some(request) = material.filter(|request| request.visible) {
+        // The request's scope says the member flushed under a
+        // `.material_group()`; the group it joins is keyed by the
+        // marked mount ancestor — the same identity the scope's
+        // registration and any filtered canvas's anchors carry
+        // (water-rs/waterui#2097).
         let key = BackdropGroupKey::new(layers.frame.id(), request, canvas);
         let membership = layers
             .material
@@ -820,6 +928,7 @@ fn lower_inner<T: LayerTarget>(
             inner_layer,
             &[],
             &inner.items,
+            &[],
             &mut layers.inner_runs,
             scopes_old,
             scopes_new,
@@ -1016,6 +1125,7 @@ fn lower_list<T: LayerTarget>(
     parent: &Layer,
     leading: &[(LayerId, &Layer)],
     items: &[Item],
+    material_scopes: &[usize],
     runs: &mut Vec<RunLayer>,
     scopes_old: &mut Vec<ScopeLayer>,
     scopes_new: &mut Vec<ScopeLayer>,
@@ -1045,7 +1155,15 @@ fn lower_list<T: LayerTarget>(
                 }
             }
             Item::Node(child) => {
-                commit_cell(cx, child, canvas, true);
+                // A child the `.material_group()` cell parents is the
+                // scope's content root: its frame is the scope's anchor
+                // (water-rs/waterui#2097).
+                let scope_anchor = material_scopes.iter().copied().find(|scope| {
+                    child
+                        .parent()
+                        .is_some_and(|parent| Rc::as_ptr(&parent) as usize == *scope)
+                });
+                commit_cell(cx, child, canvas, true, scope_anchor);
                 slots.push(Slot::Node(Rc::clone(child)));
             }
             Item::Scope {
@@ -1208,6 +1326,7 @@ fn lower_scope<T: LayerTarget>(
         layer,
         &[],
         items,
+        &[],
         runs,
         scopes_old,
         scopes_new,

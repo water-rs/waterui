@@ -122,13 +122,16 @@ impl CaptureLevels {
 /// ([`Surface::backdrop_group`](crate::Surface::backdrop_group),
 /// [`Surface::backdrop_group_unfiltered`](crate::Surface::backdrop_group_unfiltered)).
 ///
-/// The spec fixes the group's capture [`scale`](BackdropSpec::scale) and
-/// how many capture [`levels`](BackdropSpec::levels) the group's pyramid
-/// keeps; it is the parameter object the group is created with.
+/// The spec fixes the group's capture [`scale`](BackdropSpec::scale), how
+/// many capture [`levels`](BackdropSpec::levels) the group's pyramid keeps
+/// and the group's [`anchor`](BackdropSpec::anchor) layer when the capture
+/// is taken away from the first member; it is the parameter object the
+/// group is created with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BackdropSpec {
     scale: CaptureScale,
     levels: CaptureLevels,
+    anchor: Option<crate::LayerId>,
 }
 
 impl BackdropSpec {
@@ -138,7 +141,28 @@ impl BackdropSpec {
     /// A group captured at `scale`, keeping `levels` capture levels.
     #[must_use]
     pub const fn new(scale: CaptureScale, levels: CaptureLevels) -> Self {
-        Self { scale, levels }
+        Self {
+            scale,
+            levels,
+            anchor: None,
+        }
+    }
+
+    /// Anchors the group's capture at `layer`'s paint-order position, before
+    /// the anchor's own content and its children: the engine copies the
+    /// backdrop beneath the anchor once and every group anchored at the same
+    /// layer runs its own chain on that shared copy, so anchored members
+    /// never see each other — or content painted after the anchor — at all.
+    /// Every member must then paint after the anchor inside its compositing
+    /// canvas — the anchor's descendants or its later siblings — or the
+    /// frame fails instead of falling back to the first-member rule.
+    ///
+    /// A spec without an anchor keeps the first-member rule: the capture is
+    /// taken where the group's first member paints.
+    #[must_use]
+    pub const fn anchor(mut self, layer: crate::LayerId) -> Self {
+        self.anchor = Some(layer);
+        self
     }
 
     /// The capture scale `s`.
@@ -151,6 +175,13 @@ impl BackdropSpec {
     #[must_use]
     pub const fn levels(self) -> CaptureLevels {
         self.levels
+    }
+
+    /// The anchor layer, when the group is anchored; `None` under the
+    /// first-member rule.
+    #[must_use]
+    pub const fn anchor_layer(self) -> Option<crate::LayerId> {
+        self.anchor
     }
 }
 

@@ -1783,3 +1783,285 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
     Ok(())
 }
 }
+
+fn anchor_grows(events: &[cherenkov_gpu::diag::AllocEvent], label: &'static str) -> Vec<u64> {
+    events
+        .iter()
+        .filter_map(|event| match event.kind {
+            cherenkov_gpu::diag::EventKind::Grow { label: l, new, .. } if l == label => Some(new),
+            _ => None,
+        })
+        .collect()
+}
+
+split_test! {
+/// Two groups anchored at the same layer sample one frozen copy taken at
+/// the anchor's paint position: neither group sees what the other paints,
+/// and each group runs its own chain (#2097).
+fn anchored_groups_sample_the_anchors_frozen_copy() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let spec = || {
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id())
+    };
+    let group_a = surface.backdrop_group_unfiltered(spec());
+    let group_b = surface.backdrop_group_unfiltered(spec());
+    let a1 = surface.layer();
+    let b1 = surface.layer();
+    let a2 = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 16.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(16.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        // The anchor layer paints before every member, in the same canvas.
+        tx[surface.root()].push(&anchor);
+        tx[surface.root()].push(&a1).push(&b1).push(&a2);
+        tx[&a1]
+            .clip(Rect::new(4.0, 4.0, 20.0, 28.0))
+            .backdrop(group_a.sample())
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(4.0, 4.0, 20.0, 28.0),
+                    WorkingColor::new([0.0, 1.0, 0.0, 0.5]),
+                );
+            }));
+        tx[&b1]
+            .clip(Rect::new(12.0, 4.0, 28.0, 28.0))
+            .backdrop(group_b.sample())
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(12.0, 4.0, 28.0, 28.0),
+                    WorkingColor::new([1.0, 1.0, 1.0, 0.5]),
+                );
+            }));
+        tx[&a2]
+            .clip(Rect::new(20.0, 20.0, 28.0, 28.0))
+            .backdrop(group_a.sample())
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(20.0, 20.0, 28.0, 28.0),
+                    WorkingColor::new([0.0, 1.0, 0.0, 0.5]),
+                );
+            }));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Inside A1 only: 50% green over the frozen red.
+    assert_pixel(pixel(&readback, 6, 6), [0.5, 0.5, 0.0, 1.0], 1e-3);
+    // Inside A1 and B1: B1's capture is the anchor's frozen blue — not
+    // A1's composite — then 50% white over it. A first-member capture
+    // would hold A1's [0.0, 0.5, 0.5] here and give [0.5, 0.75, 0.75].
+    assert_pixel(pixel(&readback, 16, 16), [0.5, 0.5, 1.0, 1.0], 1e-3);
+    // Inside B1 and A2: A2 samples the same frozen blue — not B1's
+    // [0.5, 0.5, 1.0] composite — then 50% green over it.
+    assert_pixel(pixel(&readback, 24, 24), [0.0, 0.5, 0.5, 1.0], 1e-3);
+    Ok(())
+}
+}
+
+split_test! {
+/// The anchored groups of `anchored_groups_sample_the_anchors_frozen_copy`
+/// cost one shared copy beneath the anchor plus each group's own capture.
+fn anchored_groups_share_one_copy_beneath_the_anchor() -> Result<(), Box<dyn std::error::Error>> {
+    let sink = cherenkov_gpu::diag::Sink::new();
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        alloc_diag: Some(sink.clone()),
+        ..Default::default()
+    }))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let spec = || {
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id())
+    };
+    let group_a = surface.backdrop_group_unfiltered(spec());
+    let group_b = surface.backdrop_group_unfiltered(spec());
+    let a1 = surface.layer();
+    let b1 = surface.layer();
+    let a2 = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 16.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(16.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&anchor);
+        tx[surface.root()].push(&a1).push(&b1).push(&a2);
+        tx[&a1]
+            .clip(Rect::new(4.0, 4.0, 20.0, 28.0))
+            .backdrop(group_a.sample());
+        tx[&b1]
+            .clip(Rect::new(12.0, 4.0, 28.0, 28.0))
+            .backdrop(group_b.sample());
+        tx[&a2]
+            .clip(Rect::new(20.0, 20.0, 28.0, 28.0))
+            .backdrop(group_a.sample());
+    });
+    let _ = sink.take();
+    wait!(engine.render(FrameTime::now()))?;
+    // One copy beneath the anchor, shared by both groups: A's members
+    // union to x 4..28 × y 4..28 and B's member is inside that, so the
+    // copy is 24×24 texels.
+    assert_eq!(
+        anchor_grows(&sink.take(), "backdrop anchor copy"),
+        vec![24 * 24 * 8]
+    );
+    let memory = wait!(engine.memory());
+    // The anchor copy (24×24) plus each group's own capture — A's
+    // 24×24 union and B's 16×24 member rect.
+    assert_eq!(
+        memory.backdrop_captures,
+        Bytes((24 * 24 + 24 * 24 + 16 * 24) * 8)
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// A member that paints before its anchor fails the frame with the named
+/// error — the anchored rule never falls back to the first-member capture.
+fn a_member_before_the_anchor_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let member = surface.layer();
+    surface.update(|tx| {
+        // The member pushes first, the anchor second: the member paints
+        // before the anchor in the same canvas.
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+        tx[surface.root()].push(&anchor);
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-member-before-anchor"
+        ),
+        "unexpected result {result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// A member inside a compositing canvas of its own — a blended sibling's
+/// scratch — fails the frame with the named error: it is outside the
+/// anchor's canvas even though it paints after the anchor in the tree.
+fn a_member_outside_the_anchors_canvas_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let filtered = surface.layer();
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        // A filter on `filtered` makes its subtree its own compositing
+        // canvas — the member inside it is not in the anchor's canvas.
+        tx[surface.root()].push(&filtered);
+        let blur = engine.filter(filtrate::filters::GaussianBlur::new(1.0f32));
+        tx[&filtered].filter(blur.id());
+        tx[&filtered].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-member-outside-anchor-canvas"
+        ),
+        "unexpected result {result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// The same layout without an anchor keeps the first-member rule: group
+/// B's capture is taken at its own member's position and holds what A's
+/// member already painted.
+fn unanchored_groups_keep_the_first_member_rule() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let group_a = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let group_b = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let a1 = surface.layer();
+    let b1 = surface.layer();
+    let a2 = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 16.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(16.0, 0.0, 32.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&a1).push(&b1).push(&a2);
+        tx[&a1]
+            .clip(Rect::new(4.0, 4.0, 20.0, 28.0))
+            .backdrop(group_a.sample())
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(4.0, 4.0, 20.0, 28.0),
+                    WorkingColor::new([0.0, 1.0, 0.0, 0.5]),
+                );
+            }));
+        tx[&b1]
+            .clip(Rect::new(12.0, 4.0, 28.0, 28.0))
+            .backdrop(group_b.sample())
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(12.0, 4.0, 28.0, 28.0),
+                    WorkingColor::new([1.0, 1.0, 1.0, 0.5]),
+                );
+            }));
+        tx[&a2]
+            .clip(Rect::new(20.0, 20.0, 28.0, 28.0))
+            .backdrop(group_a.sample())
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(20.0, 20.0, 28.0, 28.0),
+                    WorkingColor::new([0.0, 1.0, 0.0, 0.5]),
+                );
+            }));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Inside A1 and B1: B1 captured at its own paint position — A1's
+    // [0.0, 0.5, 0.5] composite — then 50% white over it.
+    assert_pixel(pixel(&readback, 16, 16), [0.5, 0.75, 0.75, 1.0], 1e-3);
+    // Inside B1 and A2: A2 still samples group A's frozen copy from its
+    // own first member — the blue — unchanged by anchoring absence.
+    assert_pixel(pixel(&readback, 24, 24), [0.0, 0.5, 0.5, 1.0], 1e-3);
+    Ok(())
+}
+}

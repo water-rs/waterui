@@ -58,6 +58,17 @@ pub struct BackdropGroup {
     /// capture.
     #[serde(default = "default_levels", skip_serializing_if = "is_default_levels")]
     pub levels: u32,
+    /// The [`crate::Layer::id`] of the layer the capture anchors at: the
+    /// capture is taken beneath that layer, at its paint-order position
+    /// before the layer's own content and children, and every group
+    /// anchored at one layer shares the one copy. Every member must
+    /// paint after the anchor in the anchor's compositing canvas — the
+    /// anchor's descendants, or its later siblings in the same canvas;
+    /// any other member fails the render (`backdrop-member-before-anchor`
+    /// / `backdrop-member-outside-anchor-canvas`). `None` (the default)
+    /// captures at the first member's paint-order position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<u32>,
 }
 
 impl BackdropGroup {

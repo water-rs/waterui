@@ -61,6 +61,28 @@ impl SceneBuilder {
             filters,
             scale,
             levels,
+            anchor: None,
+        });
+        self
+    }
+
+    /// Declare a backdrop group `id` anchored at the layer carrying
+    /// `anchor` as its [`crate::Layer::id`], else as
+    /// [`SceneBuilder::backdrop_group`].
+    pub fn backdrop_group_anchored(
+        &mut self,
+        id: u32,
+        anchor: u32,
+        filters: Vec<BackdropFilter>,
+        scale: f64,
+        levels: u32,
+    ) -> &mut Self {
+        self.scene.backdrop_groups.push(BackdropGroup {
+            id,
+            filters,
+            scale,
+            levels,
+            anchor: Some(anchor),
         });
         self
     }
@@ -195,6 +217,13 @@ impl LayerBuilder<'_> {
     // `Option<Motion>` drops.
     pub fn motion(&mut self, motion: Motion) -> &mut Self {
         self.layer.motion = Some(motion);
+        self
+    }
+
+    /// Give the layer the `id` a [`crate::BackdropGroup::anchor`] can
+    /// name: the group's capture is taken beneath this layer.
+    pub const fn id(&mut self, id: u32) -> &mut Self {
+        self.layer.id = Some(id);
         self
     }
 

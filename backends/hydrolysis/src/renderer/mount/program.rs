@@ -142,6 +142,19 @@ pub struct Program {
     pub clip: Option<ShapeData>,
     pub filter: Option<Rc<RefCell<crate::renderer::effects::FilteredRuntime>>>,
     pub material: Option<MaterialRequest>,
+    /// The `.material_group()` scopes whose flush landed on this
+    /// program — the address of each scope node's cell, the same
+    /// identity the members' requests carry. A lazy stack's shared
+    /// program serves every row's own scope node, so it can carry
+    /// several; each scope's members capture beneath this node's
+    /// frame in the canvas the frame mounts in
+    /// (water-rs/waterui#2097).
+    pub material_scopes: Vec<usize>,
+    /// The `.material_group()` scopes open when a filtered node
+    /// flushed — the address of each scope's cell, in open order. Each
+    /// gets a plain leading layer inside the node's canvas that the
+    /// scope's members mounting here anchor at.
+    pub material_scope_anchors: Vec<usize>,
     pub producer: Option<ProducerContent>,
     pub inner: Option<InnerProgram>,
     pub items: Vec<Item>,
@@ -154,6 +167,8 @@ impl Program {
             clip: None,
             filter: None,
             material: None,
+            material_scopes: Vec::new(),
+            material_scope_anchors: Vec::new(),
             producer: None,
             inner: None,
             items: Vec::new(),

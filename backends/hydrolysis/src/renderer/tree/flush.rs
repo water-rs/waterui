@@ -391,6 +391,14 @@ impl RenderNode {
                         // The node's cell is the group scope: push it
                         // while the child flushes, then pop, so the
                         // members inside join its shared backdrop group.
+                        // The node's own frame anchors those groups at
+                        // its paint position in the canvas it mounts in
+                        // (water-rs/waterui#2097).
+                        renderer
+                            .program()
+                            .program_mut()
+                            .material_scopes
+                            .push(Rc::as_ptr(&node.core.cell) as usize);
                         renderer
                             .material_group_scopes
                             .push(Rc::clone(&node.core.cell));
@@ -644,7 +652,20 @@ impl RenderNode {
                 // them in a second time. Drain the ops above the filter, then
                 // unwind the paint stack for the child flush and re-open the
                 // scopes for what flushes after.
-                renderer.program().program_mut().filter = Some(Rc::clone(&node.runtime));
+                {
+                    // Every scope containing the filtered mount has its
+                    // subtree inside this canvas beginning at the
+                    // canvas's first child, so the canvas gets an anchor
+                    // layer for each open scope (water-rs/waterui#2097).
+                    let scopes: Vec<usize> = renderer
+                        .material_group_scopes
+                        .iter()
+                        .map(|cell| Rc::as_ptr(cell) as usize)
+                        .collect();
+                    let program = renderer.program().program_mut();
+                    program.filter = Some(Rc::clone(&node.runtime));
+                    program.material_scope_anchors = scopes;
+                }
                 node.child
                     .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);
             }

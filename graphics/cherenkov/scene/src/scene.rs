@@ -99,6 +99,9 @@ pub enum Feature {
     BackdropScale,
     /// A backdrop group captures a blur pyramid (`levels > 1`).
     BackdropLevels,
+    /// A backdrop group anchors its capture at a named layer
+    /// ([`BackdropGroup::anchor`]).
+    BackdropAnchor,
     /// A layer with a projective pose.
     Projective,
 }
@@ -193,6 +196,9 @@ impl Scene {
             }
             if group.levels > 1 {
                 f.insert(Feature::BackdropLevels);
+            }
+            if group.anchor.is_some() {
+                f.insert(Feature::BackdropAnchor);
             }
             for filter in &group.filters {
                 match filter {
@@ -345,8 +351,22 @@ impl Scene {
     }
 
     /// Every group's capture scale must be finite and in `(0, 1]`; every
-    /// layer's `backdrop` must name a declared group and carry a clip.
+    /// layer's `backdrop` must name a declared group and carry a clip,
+    /// and every group's `anchor` must name exactly one layer's `id`.
     fn validate_backdrops(&self) -> Result<(), SceneError> {
+        fn ids(layer: &Layer, seen: &mut std::collections::HashSet<u32>) -> Result<(), SceneError> {
+            if let Some(id) = layer.id
+                && !seen.insert(id)
+            {
+                return Err(SceneError::DuplicateBackdropAnchor(id));
+            }
+            for item in &layer.items {
+                if let Item::Layer(l) = item {
+                    ids(l, seen)?;
+                }
+            }
+            Ok(())
+        }
         fn walk(layer: &Layer, groups: &[BackdropGroup]) -> Result<(), SceneError> {
             if let Some(id) = layer.backdrop {
                 if layer.clip.is_none() {
@@ -382,6 +402,15 @@ impl Scene {
             .find(|g| !(1..=crate::BackdropGroup::MAX_LEVELS).contains(&g.levels))
         {
             return Err(SceneError::InvalidBackdropLevels(group.id));
+        }
+        let mut seen = std::collections::HashSet::new();
+        ids(&self.root, &mut seen)?;
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| !seen.contains(&a)))
+        {
+            return Err(SceneError::UnknownBackdropAnchor(group.id));
         }
         walk(&self.root, &self.backdrop_groups)
     }

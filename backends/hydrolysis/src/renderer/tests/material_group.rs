@@ -56,6 +56,18 @@ const MEMBER: (f32, f32) = (80.0, 60.0);
 /// Device pixels per point.
 const DISPLAY_SCALE: f64 = 2.0;
 
+/// The scope's shared anchor copy in device-pixel bytes: the window's
+/// device-pixel area at 8 bytes a pixel (the member union, window-wide
+/// in these tests).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "DISPLAY_SCALE is a known small positive constant"
+)]
+fn anchor_copy_bytes() -> u64 {
+    u64::from(WIDTH) * u64::from(HEIGHT) * (DISPLAY_SCALE * DISPLAY_SCALE) as u64 * 8
+}
+
 /// One `level` material member, `MEMBER` points large.
 fn member(level: Material) -> AnyView {
     AnyView::new(().size(MEMBER.0, MEMBER.1).background(level))
@@ -203,8 +215,10 @@ fn materials_in_one_group_share_one_backdrop_group() {
     assert_eq!(mounts.backdrop_group_count(), 1);
     assert_eq!(
         capture_bytes(&runtime),
-        capture_bytes(&solo),
-        "two members in one group cost exactly one capture"
+        capture_bytes(&solo) + anchor_copy_bytes(),
+        "two members in one group cost one capture plus the scope's \
+         shared copy beneath its anchor — the member union in device \
+         pixels, window-wide here"
     );
 }
 
@@ -428,8 +442,9 @@ fn a_display_scale_change_rebuilds_the_shared_group() {
     let solo_at_1x = rendered_at_scale(solo, 1.0);
     assert_eq!(
         capture_bytes(&runtime),
-        capture_bytes(&solo_at_1x),
-        "the rebuilt group still costs exactly one capture"
+        capture_bytes(&solo_at_1x) + anchor_copy_bytes(),
+        "the rebuilt group costs its 1x capture; the scope's shared copy \
+         lingers at its grow-only 2x size under the same anchor mount"
     );
 }
 
@@ -784,4 +799,153 @@ fn a_grouped_list_row_hoists_its_accessibility_label() {
         roles_and_labels(true),
         "the group wrapper changes nothing about the row's tree"
     );
+}
+
+/// A full-window `Thick` member — sized to the window, not `MEMBER` —
+/// under the same helpers `member` uses.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the window size is exact in f32"
+)]
+fn thick_full() -> AnyView {
+    AnyView::new(
+        ().size(WIDTH as f32, HEIGHT as f32)
+            .background(Material::Thick),
+    )
+}
+
+/// The window's pixels after one rendered frame at `DISPLAY_SCALE`.
+fn snap(view: impl Fn() -> AnyView + 'static) -> crate::HeadlessSnapshot {
+    let mut runtime = rendered(view);
+    runtime.pump_snapshot().snapshot.expect("a snapshot")
+}
+
+fn px(snap: &crate::HeadlessSnapshot, x: usize, y: usize) -> [u8; 4] {
+    let i = (y * snap.width as usize + x) * 4;
+    snap.rgba8[i..i + 4].try_into().unwrap()
+}
+
+/// A `.material_group()`'s scope gets a plain layer at the scope's paint
+/// position and every backdrop group the scope keys anchors at it
+/// (water-rs/waterui#2097): a `Regular` member and then a `Thick` member
+/// overlapping it capture beneath the anchor — so the `Thick` capture
+/// holds only what painted before the scope, never the `Regular` member.
+#[test]
+fn a_scopes_groups_capture_beneath_its_anchor() {
+    let scope_view = |grouped: bool| {
+        move || {
+            let members = zstack((member(Material::Regular), thick_full()));
+            AnyView::new(zstack((
+                Color::srgb(230, 38, 38),
+                if grouped {
+                    AnyView::new(members.material_group())
+                } else {
+                    AnyView::new(members)
+                },
+            )))
+        }
+    };
+    let (grouped_runtime, grouped) = {
+        let mut runtime = rendered(scope_view(true));
+        let snap = runtime.pump_snapshot().snapshot.expect("a snapshot");
+        (runtime, snap)
+    };
+    // The solo `Thick` member's own first-member capture holds only the
+    // red backdrop — exactly what the anchored copy holds too.
+    let solo = snap(|| AnyView::new(zstack((Color::srgb(230, 38, 38), thick_full()))));
+    let layers = material_layers(&grouped_runtime);
+    assert_eq!(layers.len(), 2);
+    let scope =
+        member_scope(&grouped_runtime, layers[0]).expect("the member flushed under a scope");
+    assert_eq!(member_scope(&grouped_runtime, layers[1]), Some(scope));
+    let anchor = mounts(&grouped_runtime).material_group_anchor(scope);
+    assert!(anchor.is_some(), "the scope installed its anchor layer");
+    for layer in &layers {
+        assert_eq!(
+            mounts(&grouped_runtime).backdrop_anchor(*layer),
+            anchor,
+            "every group the scope keys anchors at the scope's anchor layer"
+        );
+    }
+    // Outside the `Regular` member's bounds — the window corners and just
+    // above its top edge — the `Thick` member's output equals the solo
+    // member's: the shared capture holds the bare red backdrop. A capture
+    // taken at the member's own paint position would hold the `Regular`
+    // panel there and the blur would carry it past the panel's edge.
+    for point in [(10, 10), (310, 10), (10, 230), (310, 230), (160, 55)] {
+        assert_eq!(
+            px(&grouped, point.0, point.1),
+            px(&solo, point.0, point.1),
+            "pixel {point:?}: the `Thick` output differs from the solo capture"
+        );
+    }
+    // Inside the `Regular` member's bounds the `Thick` member covers it
+    // fully, so its composite reads exactly what it sampled: the bare red
+    // backdrop the anchor froze — the solo capture, again. The
+    // ungrouped comparison below proves the `Regular` member did paint:
+    // it is what makes the ungrouped capture differ.
+    assert_eq!(
+        px(&grouped, 160, 120),
+        px(&solo, 160, 120),
+        "inside the member's bounds the anchored `Thick` sample matches \
+         the solo capture — the `Regular` member never entered it"
+    );
+    // Ungrouped, the `Thick` member's first-member capture does hold the
+    // `Regular` member: the overlap and the panel's blur reach differ.
+    let ungrouped = snap(scope_view(false));
+    for point in [(160, 120), (160, 55)] {
+        assert_ne!(
+            px(&grouped, point.0, point.1),
+            px(&ungrouped, point.0, point.1),
+            "pixel {point:?}: the anchored capture holds the `Regular` member"
+        );
+    }
+}
+
+/// The scope's anchor mount releases with the scope: when the
+/// `.material_group()` leaves the frame its anchor layer is pruned from
+/// the mount table.
+#[test]
+fn a_scopes_anchor_releases_with_the_scope() {
+    let shown = Binding::container(true);
+    let mut runtime = {
+        let shown = shown.clone();
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(zstack((
+                Color::srgb(230, 38, 38),
+                when(shown.clone(), || member(Material::Regular).material_group()),
+            )))
+        });
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            pumped_test_environment(),
+            builder,
+            WIDTH,
+            HEIGHT,
+            MinimalTestTheme::default(),
+        )
+        .with_scale_factor(DISPLAY_SCALE);
+        pump(&mut runtime);
+        runtime
+    };
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 1);
+    let scope = member_scope(&runtime, layers[0]).expect("the member flushed under a scope");
+    assert!(
+        mounts(&runtime).material_group_anchor(scope).is_some(),
+        "the scope's anchor mount is installed"
+    );
+    assert_eq!(
+        mounts(&runtime).backdrop_anchor(layers[0]),
+        mounts(&runtime).material_group_anchor(scope),
+        "the member's group anchors at the anchor mount's layer"
+    );
+
+    shown.set(false);
+    pump(&mut runtime);
+    assert_eq!(material_layers(&runtime), Vec::<cherenkov::LayerId>::new());
+    assert!(
+        mounts(&runtime).material_group_anchor(scope).is_none(),
+        "the anchor mount released with the scope"
+    );
+    assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
 }

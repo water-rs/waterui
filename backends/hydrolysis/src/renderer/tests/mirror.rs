@@ -136,7 +136,7 @@ impl LayerTarget for MirrorTarget {
             key,
             display_scale,
             membership,
-            (|_runtime, _scale| (), |_tx, _member, _group| {}),
+            (|_runtime, _scale, _anchor| (), |_tx, _member, _group| {}),
         );
     }
 }

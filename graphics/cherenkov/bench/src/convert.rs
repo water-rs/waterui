@@ -1566,6 +1566,7 @@ mod tests {
             filters: Vec::new(),
             scale,
             levels: 1,
+            anchor: None,
         };
         let quarter = capture_scale(&group(0.25)).expect("0.25 is exact in f32");
         assert_eq!(quarter.get().to_bits(), 0.25f32.to_bits());
