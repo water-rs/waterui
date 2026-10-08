@@ -116,7 +116,7 @@ impl HydrolysisBackend {
         // engine-independent profile set resolves once for them all.
         let targets = hydrolysis_targets();
         let (project_packages, macos, linux, windows) = futures_util::future::try_join4(
-            project.project_packages_for(framework, &targets),
+            project.project_packages(framework, &targets),
             project.native_browser_answers(
                 crate::platform::NativeOs::MacOs,
                 section(crate::platform::NativeOs::MacOs),

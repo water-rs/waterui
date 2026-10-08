@@ -1340,11 +1340,18 @@ impl Project {
             .contains_key(package_name))
     }
 
-    /// The application's own packages in `target`'s graph: the app crate
-    /// plus every other package in its normal-edge dependency graph that is
-    /// a path package and does not belong to the resolved framework — the
-    /// set `generated_profiles` keeps at `opt-level = 0` with line tables so
-    /// the user's own code stays steppable in development builds.
+    /// The application's own packages across `targets`' graphs: the app
+    /// crate plus every other package in its normal-edge dependency graph
+    /// that is a path package and does not belong to the resolved framework
+    /// — the set `generated_profiles` keeps at `opt-level = 0` with line
+    /// tables so the user's own code stays steppable in development builds.
+    ///
+    /// The set is a union, not an agreement: a `[profile.dev.package]`
+    /// override applies to whichever build's resolve carries the package,
+    /// and an entry for a package a given target does not link merely never
+    /// applies. One `cargo tree` evaluation answers the whole set — every
+    /// triple rides the same resolve as its own `--target` flag, and the
+    /// printed union is the per-target union exactly.
     ///
     /// A package belongs to the framework when its manifest lies inside one of
     /// the framework's local roots — see `framework_local_roots`. Channel
@@ -1355,31 +1362,10 @@ impl Project {
     ///
     /// # Errors
     ///
-    /// Returns an error when Cargo cannot resolve the application graph, a
-    /// framework source or a path package's directory cannot be canonicalized.
-    pub async fn project_packages(
-        &self,
-        framework: &ResolvedFramework,
-        target: &Triple,
-    ) -> eyre::Result<BTreeSet<String>> {
-        let packages = self.linked_packages(target).await?;
-        let framework_roots = framework_local_roots(&self.root, self.manifest(), framework)?;
-        project_packages_from_tree(self.crate_name.as_str(), &packages, &framework_roots)
-    }
-
-    /// The application's own packages across `targets` — a union, not an
-    /// agreement: a `[profile.dev.package]` override applies to whichever
-    /// build's resolve carries the package, and an entry for a package a
-    /// given target does not link merely never applies. One `cargo tree`
-    /// evaluation answers the whole set — every triple rides the same
-    /// resolve as its own `--target` flag, and the printed union is the
-    /// per-target union exactly.
-    ///
-    /// # Errors
-    ///
     /// Returns an error when Cargo cannot resolve the application graph for
-    /// one of the targets.
-    pub(crate) async fn project_packages_for(
+    /// one of the targets, or a framework source or a path package's
+    /// directory cannot be canonicalized.
+    pub async fn project_packages(
         &self,
         framework: &ResolvedFramework,
         targets: &[Triple],
@@ -2161,7 +2147,7 @@ impl Project {
         .with_backend_project_path(backend_project_path)
         .with_project_root_path(self.root.clone())
         .with_project_packages(
-            self.project_packages_for(&framework, profile_targets)
+            self.project_packages(&framework, profile_targets)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,
         )

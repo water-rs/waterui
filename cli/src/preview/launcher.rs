@@ -1470,7 +1470,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             Some(project.root()),
             Some(
                 &project
-                    .project_packages_for(&framework, &preview_targets())
+                    .project_packages(&framework, &preview_targets())
                     .await?,
             ),
         )
@@ -1801,7 +1801,7 @@ async fn resolve_preview_metadata(
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
     let project_packages = project
-        .project_packages_for(&framework, &preview_targets())
+        .project_packages(&framework, &preview_targets())
         .await?;
     let metadata_start = Instant::now();
     let metadata_manifest_path = manifest_path.clone();
