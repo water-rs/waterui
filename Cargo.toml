@@ -594,10 +594,11 @@ waterui-webview = { path = "components/platform/webview" }
 # this entry makes it resolve to the in-tree backend so the graph carries
 # exactly one hydrolysis. The registry 0.3.1 theme implements the
 # four-argument `draw_button_chrome` removed on this branch; the pinned
-# revision carries the icon-button contract (water-rs/hydrolysis#115). Drop
-# the git pin once a release has the change.
+# revision carries the icon-button contract (water-rs/hydrolysis#115) and the
+# split tabs-bar surface and divider calls (#1982). Drop the git pin once a
+# release has both changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "bc412a1a7e796cedc30d2c62d33fe293634574a8" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "9ade35272de87da502ae0e038e00bb4936bd0d7e" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
