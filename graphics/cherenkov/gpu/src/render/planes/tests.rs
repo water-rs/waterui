@@ -99,6 +99,7 @@ struct Test;
 
 impl Compositor for Test {
     const BUDGET: usize = 2;
+    const HOSTS_OPACITY: bool = true;
     fn expresses_transform(transform: Affine) -> bool {
         axis_aligned(transform)
     }
@@ -677,4 +678,391 @@ fn a_backdrop_on_or_above_the_layer_keeps_it_in_the_engine() {
     let mut tree = scene();
     tree.apply(LayerOp::Backdrop(BELOW, Some(group.sample())));
     assert!(verdict(&tree).is_ok());
+}
+
+/// A compositor with the Android container's limits: its hosted layers
+/// take only translations and positive axis-aligned scales, rectangular
+/// clips and no opacity.
+struct Container;
+
+impl Compositor for Container {
+    const BUDGET: usize = 1;
+    const HOSTS_OPACITY: bool = false;
+    fn expresses_transform(transform: Affine) -> bool {
+        axis_aligned(transform)
+    }
+    fn hosts_transform(transform: Affine) -> bool {
+        crate::render::surface_control::plan::hosts_transform(transform)
+    }
+    fn expresses_clip(clip: &ShapeData) -> bool {
+        crate::render::surface_control::plan::expresses_clip(clip)
+    }
+    fn shows(_: &crate::interop::ExternalFrame) -> bool {
+        true
+    }
+}
+
+fn hosted_candidate() -> Candidate {
+    Candidate {
+        size: SIZE,
+        raster: Affine::IDENTITY,
+        source: Source::Hosted,
+    }
+}
+
+/// `VIDEO` as a hosted layer.
+fn hosted() -> FxHashMap<LayerId, Candidate> {
+    std::iter::once((VIDEO, hosted_candidate())).collect()
+}
+
+/// The hosted layer's verdict on compositor `C`: placed, or unplaced with
+/// its cause — never kept in the engine. Hosted content is never pending,
+/// so the ready set is empty.
+fn hosted_verdict<C: Compositor>(tree: &SurfaceTree) -> Result<Plan, Ineligible> {
+    let plan = plan::<C>(tree, &hosted(), &FxHashSet::default());
+    assert_eq!(
+        plan.rejected,
+        [],
+        "hosted content is never kept in the engine"
+    );
+    match plan.unplaced.as_slice() {
+        [] => Ok(plan),
+        [(layer, cause)] => {
+            assert_eq!(*layer, VIDEO);
+            assert_eq!(plan.planes, [], "an unplaced layer is on no plane");
+            Err(cause.clone())
+        }
+        more => panic!("one candidate, {} unplaced", more.len()),
+    }
+}
+
+/// A hosted layer sits between the part painted below it and the part
+/// painted above it — its children and later siblings — on the path the
+/// tree gives it, with no readiness to wait for.
+#[test]
+fn a_hosted_layer_is_placed_between_the_parts_below_and_above() {
+    let plan = hosted_verdict::<Test>(&scene()).expect("eligible");
+    assert_eq!(plan.planes.len(), 1);
+    let placement = &plan.planes[0];
+    assert_eq!((placement.layer, placement.source), (VIDEO, Source::Hosted));
+    assert_eq!(
+        placement.path.iter().map(|l| l.layer).collect::<Vec<_>>(),
+        [ROOT, PARENT, VIDEO]
+    );
+    assert!(plan.trailing, "ABOVE is painted after the hosted layer");
+    assert_eq!(plan.opens_part().collect::<Vec<_>>(), [VIDEO]);
+    assert_eq!(plan.parts(), 2);
+
+    // A child of the hosted layer paints above it, in the part above.
+    let mut tree = scene();
+    tree.remove(ABOVE);
+    let plan = hosted_verdict::<Test>(&tree).expect("eligible");
+    assert!(!plan.trailing, "nothing is painted after the hosted layer");
+    assert_eq!(plan.parts(), 1);
+    tree.apply(LayerOp::Create(LayerId::new(9)));
+    tree.apply(LayerOp::Push {
+        parent: VIDEO,
+        child: LayerId::new(9),
+    });
+    let plan = hosted_verdict::<Test>(&tree).expect("eligible");
+    assert!(plan.trailing, "its child is painted after it");
+    assert_eq!(plan.parts(), 2);
+}
+
+/// Every cause of the mandatory-plane rule leaves the hosted layer
+/// unplaced, naming the cause.
+#[test]
+fn a_hosted_layer_under_an_isolating_ancestor_is_unplaced() {
+    let mut tree = scene();
+    tree.apply(LayerOp::Opacity(PARENT, prop(0.5)));
+    assert_eq!(
+        hosted_verdict::<Test>(&tree),
+        Err(Ineligible::Isolated(PARENT))
+    );
+    let mut tree = scene();
+    tree.apply(LayerOp::Filter(PARENT, Some(FilterId::new(1))));
+    assert_eq!(
+        hosted_verdict::<Test>(&tree),
+        Err(Ineligible::Isolated(PARENT))
+    );
+}
+
+#[test]
+fn a_filtered_hosted_layer_is_unplaced() {
+    let mut tree = scene();
+    tree.apply(LayerOp::Filter(VIDEO, Some(FilterId::new(1))));
+    assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Filter));
+}
+
+#[test]
+fn a_blended_hosted_layer_is_unplaced() {
+    let mut tree = scene();
+    tree.apply(LayerOp::Push {
+        parent: ROOT,
+        child: VIDEO,
+    });
+    tree.apply(LayerOp::Blend(VIDEO, BlendMode::Multiply));
+    assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Blend));
+    // A child blending onto it needs its pixels.
+    let mut tree = scene();
+    tree.apply(LayerOp::Create(LayerId::new(9)));
+    tree.apply(LayerOp::Push {
+        parent: VIDEO,
+        child: LayerId::new(9),
+    });
+    tree.apply(LayerOp::Blend(LayerId::new(9), BlendMode::Screen));
+    assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Blend));
+}
+
+#[test]
+fn a_surface_level_blend_above_a_hosted_layer_unplaces_it() {
+    let mut tree = scene();
+    tree.apply(LayerOp::Blend(ABOVE, BlendMode::Multiply));
+    assert_eq!(
+        hosted_verdict::<Test>(&tree),
+        Err(Ineligible::BlendAbove(ABOVE))
+    );
+    let mut tree = scene();
+    tree.apply(LayerOp::Blend(BELOW, BlendMode::Multiply));
+    assert!(hosted_verdict::<Test>(&tree).is_ok());
+}
+
+#[test]
+fn a_hosted_layer_with_a_group_opacity_is_unplaced() {
+    let mut tree = scene();
+    tree.apply(LayerOp::Opacity(VIDEO, prop(0.5)));
+    let plan = hosted_verdict::<Test>(&tree).expect("a leaf opacity is a plane property");
+    assert!((plan.planes[0].opacity - 0.5).abs() < f32::EPSILON);
+    tree.apply(LayerOp::Create(LayerId::new(9)));
+    tree.apply(LayerOp::Push {
+        parent: VIDEO,
+        child: LayerId::new(9),
+    });
+    assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::GroupOpacity));
+}
+
+/// A compositor that cannot fade a hosted container leaves a translucent
+/// hosted leaf unplaced; an opaque one is placed.
+#[test]
+fn a_faded_hosted_layer_is_unplaced_where_the_system_cannot_fade_it() {
+    let tree = scene();
+    assert!(hosted_verdict::<Container>(&tree).is_ok());
+    let mut tree = scene();
+    tree.apply(LayerOp::Opacity(VIDEO, prop(0.5)));
+    assert_eq!(hosted_verdict::<Container>(&tree), Err(Ineligible::Opacity));
+}
+
+#[test]
+fn a_hosted_layer_under_an_inexpressible_transform_is_unplaced() {
+    let mut tree = scene();
+    tree.apply(LayerOp::Transform(PARENT, prop(Affine::rotate(0.3))));
+    assert_eq!(
+        hosted_verdict::<Test>(&tree),
+        Err(Ineligible::Transform(PARENT))
+    );
+    // A mirror a buffer plane carries is no container transform.
+    let mut tree = scene();
+    tree.apply(LayerOp::Transform(
+        PARENT,
+        prop(Affine::scale_non_uniform(-1.0, 1.0)),
+    ));
+    assert_eq!(
+        hosted_verdict::<Container>(&tree),
+        Err(Ineligible::Transform(PARENT))
+    );
+    let mut tree = scene();
+    tree.apply(LayerOp::Transform(
+        PARENT,
+        prop(Affine::translate((4.0, 8.0)) * Affine::scale(2.0)),
+    ));
+    assert!(hosted_verdict::<Container>(&tree).is_ok());
+}
+
+#[test]
+fn a_hosted_layer_under_an_inexpressible_clip_is_unplaced() {
+    let mut tree = scene();
+    tree.apply(LayerOp::Clip(
+        PARENT,
+        Some(ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0))),
+    ));
+    assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Clip(PARENT)));
+    let mut tree = scene();
+    tree.apply(LayerOp::Clip(
+        PARENT,
+        Some(ShapeData::RoundedRect(RoundedRect::new(
+            0.0, 0.0, 100.0, 50.0, 8.0,
+        ))),
+    ));
+    assert!(hosted_verdict::<Test>(&tree).is_ok());
+    assert_eq!(
+        hosted_verdict::<Container>(&tree),
+        Err(Ineligible::Clip(PARENT))
+    );
+}
+
+/// The rules that keep an opportunistic promotion pixel-identical to
+/// engine composition do not bind content the engine cannot composite:
+/// translucent controls above a hosted layer and nested shaped clips are
+/// the system compositor's to draw.
+#[test]
+fn translucency_above_and_nested_clips_do_not_unplace_a_hosted_layer() {
+    let mut tree = scene();
+    tree.apply(LayerOp::Opacity(ABOVE, prop(0.5)));
+    assert!(hosted_verdict::<Test>(&tree).is_ok());
+    let rounded = ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0));
+    let mut tree = scene();
+    tree.apply(LayerOp::Clip(PARENT, Some(rounded.clone())));
+    tree.apply(LayerOp::Clip(VIDEO, Some(rounded)));
+    assert!(hosted_verdict::<Test>(&tree).is_ok());
+}
+
+/// Hosted layers take the budget before external frames and captures;
+/// one beyond the budget is unplaced, while a frame beyond it stays in
+/// the engine.
+#[test]
+fn hosted_layers_take_the_budget_first_and_fail_beyond_it() {
+    let tree = scene();
+    let candidates: FxHashMap<_, _> = [
+        (BELOW, Candidate::from(SIZE)),
+        (VIDEO, hosted_candidate()),
+        (ABOVE, hosted_candidate()),
+    ]
+    .into_iter()
+    .collect();
+    let ready = all_ready(&candidates);
+    let first = plan::<Test>(&tree, &candidates, &ready);
+    assert_eq!(
+        first.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [VIDEO, ABOVE]
+    );
+    assert_eq!(first.rejected, [(BELOW, Ineligible::Budget(Test::BUDGET))]);
+    assert_eq!(first.unplaced, []);
+
+    let candidates: FxHashMap<_, _> = [
+        (BELOW, hosted_candidate()),
+        (VIDEO, hosted_candidate()),
+        (ABOVE, hosted_candidate()),
+    ]
+    .into_iter()
+    .collect();
+    let plan = plan::<Test>(&tree, &candidates, &FxHashSet::default());
+    assert_eq!(
+        plan.planes.iter().map(|p| p.layer).collect::<Vec<_>>(),
+        [BELOW, VIDEO]
+    );
+    assert_eq!(plan.rejected, []);
+    assert_eq!(plan.unplaced, [(ABOVE, Ineligible::Budget(Test::BUDGET))]);
+}
+
+/// A geometry change on the hosted layer's path moves its placement and
+/// nothing else: the plane keeps its layer, source, extent and slot in
+/// the stack, which is what lets a realization keep its native nodes.
+#[test]
+fn moving_a_hosted_layer_keeps_its_plane() {
+    let committed = hosted_verdict::<Test>(&scene()).expect("eligible");
+    let mut tree = scene();
+    tree.apply(LayerOp::Transform(
+        PARENT,
+        prop(Affine::translate((40.0, 30.0))),
+    ));
+    tree.apply(LayerOp::ScrollOffset(PARENT, prop(Vec2::new(0.0, 10.0))));
+    tree.apply(LayerOp::Clip(
+        VIDEO,
+        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+    ));
+    let moved = hosted_verdict::<Test>(&tree).expect("eligible");
+    assert_ne!(moved, committed);
+    let identity = |plan: &Plan| {
+        plan.planes
+            .iter()
+            .map(|p| (p.layer, p.source, p.size, p.path.len()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(identity(&moved), identity(&committed));
+    assert_eq!(moved.trailing, committed.trailing);
+    assert_eq!(
+        moved.planes[0].content_to_device(),
+        Affine::translate((40.0, 20.0))
+    );
+}
+
+/// A committed plan whose hosted layer became unplaceable is never the
+/// plane-only frame's plan: the frame takes the full path, which fails.
+#[test]
+fn an_unplaceable_hosted_layer_never_refreshes_through_the_planes() {
+    let tree = scene();
+    let candidates: FxHashMap<_, _> = [(VIDEO, hosted_candidate()), (BELOW, SIZE.into())]
+        .into_iter()
+        .collect();
+    let ready = all_ready(&candidates);
+    let committed = plan::<Test>(&tree, &candidates, &ready);
+    assert_eq!(committed.planes.len(), 2);
+    let frames: FxHashSet<LayerId> = std::iter::once(BELOW).collect();
+    let mut scratch = PlanScratch::default();
+    assert!(frames_only::<Test>(
+        &committed,
+        &tree,
+        &candidates,
+        &ready,
+        &frames,
+        &mut scratch
+    ));
+    let mut filtered = scene();
+    filtered.apply(LayerOp::Filter(VIDEO, Some(FilterId::new(1))));
+    assert!(!frames_only::<Test>(
+        &committed,
+        &filtered,
+        &candidates,
+        &ready,
+        &frames,
+        &mut scratch
+    ));
+    let failed = plan::<Test>(&filtered, &candidates, &ready);
+    assert_eq!(failed.unplaced, [(VIDEO, Ineligible::Filter)]);
+    assert!(!frames_only::<Test>(
+        &failed,
+        &filtered,
+        &candidates,
+        &ready,
+        &frames,
+        &mut scratch
+    ));
+}
+
+/// A hosted layer under or above a backdrop sample needs pixels the
+/// engine never has; a backdrop sampled below it does not.
+#[test]
+fn a_backdrop_on_or_above_a_hosted_layer_unplaces_it() {
+    use cherenkov::{Engine, Offscreen, OffscreenFormat};
+    let Ok(engine) = Engine::<crate::Gpu>::new(crate::GpuConfig::default()) else {
+        return;
+    };
+    let surface = engine
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+        .expect("offscreen surface");
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let mut tree = scene();
+    tree.apply(LayerOp::Backdrop(VIDEO, Some(group.sample())));
+    assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Backdrop));
+    let mut tree = scene();
+    tree.apply(LayerOp::Backdrop(ABOVE, Some(group.sample())));
+    assert_eq!(
+        hosted_verdict::<Test>(&tree),
+        Err(Ineligible::BackdropAbove(ABOVE))
+    );
+    let mut tree = scene();
+    tree.apply(LayerOp::Backdrop(BELOW, Some(group.sample())));
+    assert!(hosted_verdict::<Test>(&tree).is_ok());
+}
+
+/// The first hosted layer in paint order on a surface with no planes is
+/// the one its render names.
+#[test]
+fn the_first_hosted_layer_in_paint_order_is_found() {
+    let tree = scene();
+    assert_eq!(
+        super::first_in_paint_order(&tree, |layer| [ABOVE, VIDEO].contains(&layer)),
+        Some(VIDEO)
+    );
+    assert_eq!(super::first_in_paint_order(&tree, |_| false), None);
 }

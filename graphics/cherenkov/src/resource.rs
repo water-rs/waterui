@@ -463,6 +463,61 @@ impl<B: crate::GpuContent> GpuProducer<B> {
     }
 }
 
+/// A system layer the host supplies, shown in the layer tree on a
+/// system-compositor plane of its own ([`HostedLayers`](crate::HostedLayers)).
+///
+/// The host keeps the platform object's owner — on Apple the view that
+/// owns the `CALayer` stays in the host's view hierarchy, so it keeps
+/// receiving events and first-responder status — and goes on drawing into
+/// it; the engine owns only where it sits: its order among the layers
+/// painted below and above it, and the transform, clip and scroll of its
+/// path, committed with the rest of the frame.
+pub struct Hosted<B: crate::HostedLayers> {
+    object: B::Object,
+}
+
+impl<B: crate::HostedLayers> std::fmt::Debug for Hosted<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `B::Object` is a platform object, not required to be `Debug`.
+        f.write_str("Hosted(..)")
+    }
+}
+
+impl<B: crate::HostedLayers> Hosted<B> {
+    /// Wraps the platform object.
+    #[must_use]
+    pub const fn new(object: B::Object) -> Self {
+        Self { object }
+    }
+
+    /// Binds the hosted object to a layer with `size` as its extent in the
+    /// layer's content coordinates — the object's own coordinates, so a
+    /// `CALayer`'s points or a `SurfaceControl`'s pixels are the layer's
+    /// content units. Returns the layer content
+    /// [`LayerEdit::content`](crate::LayerEdit::content) installs.
+    ///
+    /// The object shows in one place: binding it again on the same layer
+    /// at a new size moves only its geometry, and binding it on a second
+    /// layer moves it there. Its pixels are the host's, so the layer is
+    /// never known to be opaque.
+    ///
+    /// # Panics
+    /// When `size` is not finite or has a negative side.
+    #[must_use]
+    pub fn at(&self, size: kurbo::Size) -> LayerContent<B> {
+        assert!(
+            size.is_finite() && size.width >= 0.0 && size.height >= 0.0,
+            "a hosted extent is a finite, non-negative size, not {size:?}"
+        );
+        let object = self.object.clone();
+        let install: crate::message::InstallOp<B> = Box::new(move |r, surface, layer| {
+            B::bind_hosted(r, surface, layer, object, size);
+            Some(false)
+        });
+        LayerContent::install(install)
+    }
+}
+
 /// The input end of a submitted-frame producer, created by
 /// [`Engine::frame_producer`](crate::Engine::frame_producer) together with
 /// its [`GpuProducer`].

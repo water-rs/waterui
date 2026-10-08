@@ -130,6 +130,20 @@ pub enum RenderError {
         /// What limit was exceeded, with the required size.
         reason: String,
     },
+    /// A layer whose content is shown only on a system-compositor plane —
+    /// a [`Hosted`](crate::Hosted) system layer — cannot be placed on one:
+    /// the surface has no system-compositor parent, or the layer fails the
+    /// mandatory-plane rule (a backdrop sampled on or above it, a
+    /// non-default blend, a filter or isolating opacity on its path, a
+    /// transform, clip or opacity the system layer cannot carry, or a spent
+    /// plane budget). There is no fallback to engine composition.
+    #[error("layer {layer:?} is shown only on a system-compositor plane, but {reason}")]
+    Unplaceable {
+        /// The layer.
+        layer: crate::LayerId,
+        /// The rule it fails.
+        reason: String,
+    },
     /// A draw names a resource the backend rejected after its handle was
     /// returned: its registration, or an image's latest replacement.
     /// Every render that draws the resource fails this way until the
