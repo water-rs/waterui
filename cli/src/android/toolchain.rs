@@ -1310,8 +1310,8 @@ const fn required_kotlin_version() -> &'static str {
 }
 
 async fn required_ndk_package_id(host: &Host) -> Result<String, AndroidToolchainError> {
-    // The NDK the runtime's Gradle `ndkVersion` demands is embedded in the
-    // binary — an installed CLI has no source checkout to read it from.
+    // The NDK Android builds compile against is embedded in the binary — an
+    // installed CLI has no source checkout to read it from.
     let package_id = format!("ndk;{}", ndk_version::ANDROID_NDK_VERSION);
     let available_packages = list_sdk_package_ids(host).await?;
     if available_packages

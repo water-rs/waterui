@@ -183,7 +183,6 @@ water run --platform macos
 - [`components/`](components/) — layouts, text, controls, forms, navigation, media, charts, and friends
 - [`backends/`](backends/) — the mainline backends: Apple (`UIKit`/`AppKit`) and Hydrolysis (self-drawn, and the Android backend)
 - [`cli/`](cli/) — `waterui-cli`, the `water` command and project generators (a workspace member)
-- [`ffi/`](ffi/) — the C ABI backends talk through
 - [`testing/`](testing/) — semantic UI testing over the accessibility tree
 - [`examples/`](examples/) — runnable applications
 
