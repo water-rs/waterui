@@ -5,7 +5,7 @@ use std::str::FromStr;
 use crate::build::{BuildProfile, BuildProgress};
 use eyre::bail;
 use target_lexicon::{
-    Aarch64Architecture, Architecture, BinaryFormat, DefaultToHost, Environment, OperatingSystem,
+    Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem,
     Riscv32Architecture, Triple, Vendor,
 };
 
@@ -536,11 +536,10 @@ impl NativeOs {
     /// macOS builds aarch64 only, so its set is [`TargetPlatform::MacOS`]'s
     /// own triple. A Linux or Windows build produces the host's own
     /// triple — the `Triple::host()` [`TargetPlatform::triple`] resolves —
-    /// so the served set is every host triple the released CLI runs on:
-    /// the `targets` list `dist-workspace.toml` ships, including its
-    /// `x86_64-unknown-linux-musl` build. Each is a literal built the way
-    /// `TargetPlatform::triple` builds its answers, so the list cannot
-    /// drift into an unparsable string the way a `from_str` table could.
+    /// so the served set is every host triple of that OS the released CLI
+    /// runs on: the `[package.metadata.dist] targets` list `dist` ships the
+    /// CLI for, which `build.rs` embeds, including its
+    /// `x86_64-unknown-linux-musl` build.
     ///
     /// The running host's own triple rides along whenever the host's OS is
     /// the served one: `Triple::host()` names the toolchain this CLI was
@@ -551,18 +550,8 @@ impl NativeOs {
     pub(crate) fn serving_triples(self) -> Vec<Triple> {
         let mut triples = match self {
             Self::MacOs => vec![TargetPlatform::MacOS.triple()],
-            Self::Linux => vec![
-                linux_host(Architecture::X86_64, Environment::Gnu),
-                linux_host(
-                    Architecture::Aarch64(Aarch64Architecture::Aarch64),
-                    Environment::Gnu,
-                ),
-                linux_host(Architecture::X86_64, Environment::Musl),
-            ],
-            Self::Windows => vec![
-                windows_host(Architecture::X86_64),
-                windows_host(Architecture::Aarch64(Aarch64Architecture::Aarch64)),
-            ],
+            Self::Linux => released_host_triples(OperatingSystem::Linux),
+            Self::Windows => released_host_triples(OperatingSystem::Windows),
         };
         let host = Triple::host();
         if self == Self::running_host() && !triples.contains(&host) {
@@ -584,27 +573,23 @@ impl NativeOs {
     }
 }
 
-/// A Linux host triple the released CLI builds for, spelled out the way
-/// `TargetPlatform::triple` spells `Triple::host()`'s answers.
-const fn linux_host(architecture: Architecture, environment: Environment) -> Triple {
-    Triple {
-        architecture,
-        vendor: Vendor::Unknown,
-        operating_system: OperatingSystem::Linux,
-        environment,
-        binary_format: BinaryFormat::Elf,
-    }
-}
-
-/// A Windows host triple the released CLI builds for — MSVC throughout.
-const fn windows_host(architecture: Architecture) -> Triple {
-    Triple {
-        architecture,
-        vendor: Vendor::Pc,
-        operating_system: OperatingSystem::Windows,
-        environment: Environment::Msvc,
-        binary_format: BinaryFormat::Coff,
-    }
+/// The host triples on `os` the released CLI ships for — the
+/// `[package.metadata.dist] targets` list `build.rs` embeds from the CLI's
+/// manifest, the list `dist` builds from.
+///
+/// # Panics
+/// Panics when an embedded target is not a target triple — `dist` cannot
+/// build such a list either.
+fn released_host_triples(os: OperatingSystem) -> Vec<Triple> {
+    env!("WATERUI_CLI_DIST_TARGETS")
+        .split_whitespace()
+        .map(|target| {
+            target.parse::<Triple>().unwrap_or_else(|error| {
+                panic!("the dist target `{target}` is not a target triple: {error}")
+            })
+        })
+        .filter(|triple| triple.operating_system == os)
+        .collect()
 }
 
 /// The desktop triples a generated manifest's
@@ -997,6 +982,29 @@ mod package_options_tests {
             PackageOptions::packaging(super::PackageAudience::Distribution, false),
         ] {
             assert!(!options.uses_shared_rust_runtime());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use target_lexicon::Triple;
+
+    use super::NativeOs;
+
+    /// Every host `dist` ships the CLI for is served by one desktop OS's
+    /// generated-manifest table: a shipped target on an OS no table models
+    /// would run a `water` whose generated manifests no section covers.
+    #[test]
+    fn every_shipped_host_is_served_by_a_native_table() {
+        for target in env!("WATERUI_CLI_DIST_TARGETS").split_whitespace() {
+            let triple: Triple = target.parse().expect("a dist target is a target triple");
+            assert!(
+                NativeOs::ALL
+                    .into_iter()
+                    .any(|os| os.serving_triples().contains(&triple)),
+                "the shipped host {target} is served by no native table"
+            );
         }
     }
 }
