@@ -1915,20 +1915,13 @@ fn anchored_groups_share_one_copy_beneath_the_anchor() -> Result<(), Box<dyn std
     });
     let _ = sink.take();
     wait!(engine.render(FrameTime::now()))?;
-    // One copy beneath the anchor, shared by both groups: A's members
-    // union to x 4..28 × y 4..28 and B's member is inside that, so the
-    // copy is 24×24 texels.
-    assert_eq!(
-        anchor_grows(&sink.take(), "backdrop anchor copy"),
-        vec![24 * 24 * 8]
-    );
+    // Both groups capture straight from the semantic target at the
+    // anchor's position — there is no shared copy texture.
+    assert_eq!(anchor_grows(&sink.take(), "backdrop anchor copy"), Vec::<u64>::new());
     let memory = wait!(engine.memory());
-    // The anchor copy (24×24) plus each group's own capture — A's
-    // 24×24 union and B's 16×24 member rect.
-    assert_eq!(
-        memory.backdrop_captures,
-        Bytes((24 * 24 + 24 * 24 + 16 * 24) * 8)
-    );
+    // Each group keeps only its own capture: A's 24×24 member union
+    // and B's 16×24 member rect.
+    assert_eq!(memory.backdrop_captures, Bytes((24 * 24 + 16 * 24) * 8));
     Ok(())
 }
 }
@@ -3098,6 +3091,44 @@ fn union_members_past_the_cap_are_unsupported() -> Result<(), Box<dyn std::error
             Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-union-members"
         ),
         "{result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// A member under a projective descendant of the anchor is outside the
+/// anchor's canvas — the strict rule admits no descendant exemption.
+fn a_member_under_a_projective_descendant_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let projected = surface.layer();
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        // A projection makes `projected`'s subtree its own canvas — the
+        // member inside it is not in the anchor's canvas.
+        tx[surface.root()].push(&projected);
+        tx[&projected]
+            .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+            .projection(cherenkov::Projective::perspective(100.0).expect("projection"));
+        tx[&projected].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-member-outside-anchor-canvas"
+        ),
+        "unexpected result {result:?}"
     );
     Ok(())
 }

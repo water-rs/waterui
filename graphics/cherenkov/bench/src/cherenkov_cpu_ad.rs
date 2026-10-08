@@ -23,6 +23,7 @@ use cherenkov_scene::{
 use filtrate::{FilterExt, FilterImage, filters};
 use kurbo::{Affine, BezPath, Circle, Ellipse, Line, Rect, RoundedRect, Vec2};
 
+use crate::convert::AnchorLayer as _;
 use crate::convert::{
     self, Blobs, Op, ShapeKind, engine_blend, group_op, op, shape_kind, text_op, working,
 };
@@ -469,10 +470,13 @@ struct ContentLayer {
     motion: Option<LayerMotion>,
 }
 
-impl ContentLayer {
-    /// The engine layer handle, resolving `None` to the surface root.
+impl convert::AnchorLayer<Raster> for ContentLayer {
     fn handle<'a>(&'a self, surface: &'a Surface<Raster>) -> &'a CpuLayer {
         self.layer.as_ref().unwrap_or_else(|| surface.root())
+    }
+
+    fn scene_id(&self) -> Option<u32> {
+        self.id
     }
 }
 
@@ -1289,62 +1293,6 @@ fn backdrop_group(
     })
 }
 
-/// Builds the scene's engine backdrop groups. A group's `anchor` names
-/// the `Layer::id` of a layer in `content_layers`, so the groups exist
-/// only once every layer is built.
-fn build_backdrop_groups(
-    surface: &Surface<Raster>,
-    groups: &[cherenkov_scene::BackdropGroup],
-    content_layers: &[ContentLayer],
-) -> Result<HashMap<u32, cherenkov::BackdropGroup>, BenchError> {
-    let anchors: HashMap<u32, usize> = content_layers
-        .iter()
-        .enumerate()
-        .filter_map(|(i, cl)| cl.id.map(|id| (id, i)))
-        .collect();
-    let mut backdrop_groups = HashMap::new();
-    for group in groups {
-        let anchor = group
-            .anchor
-            .map(|id| {
-                anchors
-                    .get(&id)
-                    .map(|&i| content_layers[i].handle(surface))
-                    .ok_or_else(|| {
-                        BenchError::Engine(format!(
-                            "cherenkov-cpu: backdrop group {} anchors at an unbuilt layer {id}",
-                            group.id
-                        ))
-                    })
-            })
-            .transpose()?;
-        backdrop_groups.insert(group.id, backdrop_group(surface, group, anchor)?);
-    }
-    Ok(backdrop_groups)
-}
-
-/// Points each pending member layer's backdrop at its group.
-fn apply_backdrop_members(
-    surface: &Surface<Raster>,
-    pending: Vec<(
-        usize,
-        u32,
-        Option<cherenkov::BackdropEffect>,
-        cherenkov::BackdropOuter,
-    )>,
-    content_layers: &[ContentLayer],
-    backdrop_groups: &HashMap<u32, cherenkov::BackdropGroup>,
-) {
-    surface.update(|tx| {
-        for (index, gid, effect, outer) in pending {
-            let edit = &mut tx[content_layers[index].handle(surface)];
-            let group = &backdrop_groups[&gid];
-            let sample = effect.map_or_else(|| group.sample(), |effect| group.sample_with(effect));
-            edit.backdrop(sample.outer(outer));
-        }
-    });
-}
-
 /// The engine and prepared scene state do not format.
 impl std::fmt::Debug for Cherenkov {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1495,9 +1443,14 @@ impl Engine for Cherenkov {
         });
         // A group's `anchor` names the `Layer::id` of a layer built above,
         // so the groups exist only once every layer does.
-        self.backdrop_groups =
-            build_backdrop_groups(&surface, &input.scene.backdrop_groups, &content_layers)?;
-        apply_backdrop_members(&surface, pending, &content_layers, &self.backdrop_groups);
+        self.backdrop_groups = convert::build_backdrop_groups(
+            &surface,
+            &input.scene.backdrop_groups,
+            &content_layers,
+            Self::NAME,
+            backdrop_group,
+        )?;
+        convert::apply_backdrop_members(&surface, pending, &content_layers, &self.backdrop_groups);
         self.has_motion = content_layers
             .iter()
             .any(|c| c.motion.is_some() || !c.motions.is_empty());

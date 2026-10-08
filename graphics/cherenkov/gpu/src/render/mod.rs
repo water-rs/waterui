@@ -332,8 +332,6 @@ struct SurfaceState {
     staging_bind: [Option<resolve::Bind>; 2],
     /// Backdrop groups registered on this surface by raw id.
     backdrop_groups: FxHashMap<u64, BackdropGroupState>,
-    /// Shared backdrop copies beneath anchor layers, by anchor layer id.
-    anchor_copies: FxHashMap<LayerId, AnchorCopy>,
     layers: FxHashMap<LayerId, ContentData>,
     /// GPU producer bindings by layer (`cherenkov::GpuContent`): a layer
     /// binds one producer, a producer serves bindings on any surface,
@@ -427,19 +425,6 @@ struct BackdropGroupState {
     resolves: Vec<Option<resolve::Bind>>,
 }
 
-/// The shared backdrop copy beneath one anchor layer: a plain 1:1
-/// device-pixel copy of the anchor's semantic target that every group
-/// anchored at the layer runs its chain on.
-struct AnchorCopy {
-    /// The copy texture, grow-only like a capture.
-    target: ScratchTarget,
-    /// The device position of the copy's texel `(0, 0)` this frame: the
-    /// shared region's origin.
-    origin: [u32; 2],
-    /// The copy's format — the format of the semantic target it copied.
-    format: wgpu::TextureFormat,
-}
-
 impl BackdropGroupState {
     /// Bytes the group's capture textures hold: every region's capture
     /// with its pyramid levels. Staging is the surface's, counted there.
@@ -509,11 +494,6 @@ impl SurfaceState {
             .values()
             .map(BackdropGroupState::bytes)
             .sum::<u64>()
-            + self
-                .anchor_copies
-                .values()
-                .map(|copy| copy.target.bytes())
-                .sum::<u64>()
     }
 
     /// Retained local images whose renderer-side inputs changed since
@@ -646,7 +626,6 @@ fn source_view(surf: &SurfaceState, target: Target) -> Result<&wgpu::TextureView
         Target::Part(n) => surf.part(n).0,
         Target::Projected(key) => &projective_entry(&surf.projective, key).levels[0],
         Target::Scratch(k) => &surf.scratch[&k].view,
-        Target::AnchorCopy(anchor) => &surf.anchor_copies[&anchor].target.view,
         Target::Backdrop { group, .. } => {
             return Err(RenderError::Render(format!(
                 "backdrop group {group} copies from a capture"
@@ -657,20 +636,15 @@ fn source_view(surf: &SurfaceState, target: Target) -> Result<&wgpu::TextureView
 
 /// The format a capture takes: the surface format when its copy
 /// source is a part, a projected image or a plane; the scratch format
-/// when it is a semantic isolation's scratch; the anchor copy's own
-/// format for an anchored group's shared copy. A capture never copies
+/// when it is a semantic isolation's scratch. A capture never copies
 /// a capture.
 fn capture_format(
-    surf: &SurfaceState,
     copy_from: Target,
     scratch_format: wgpu::TextureFormat,
 ) -> Result<wgpu::TextureFormat, RenderError> {
     match copy_from {
         Target::Part(_) | Target::Projected(_) | Target::Plane(_) => Ok(TARGET_FORMAT),
         Target::Scratch(_) => Ok(scratch_format),
-        // An anchored group's capture stores the shared copy's format,
-        // allocated at the anchor's pass.
-        Target::AnchorCopy(anchor) => Ok(surf.anchor_copies[&anchor].format),
         Target::Backdrop { group, .. } => Err(RenderError::Render(format!(
             "backdrop group {group} copies from a capture"
         ))),
@@ -711,7 +685,7 @@ fn prepare_resolve(
     let bind = if staged {
         // A staged resolve reads the staging slot of its capture's
         // format; one bind beside the slot serves every staged resolve.
-        let slot = staging_slot(capture_format(surf, capture.copy_from, scratch_format)?);
+        let slot = staging_slot(capture_format(capture.copy_from, scratch_format)?);
         let staging = &surf.staging[slot]
             .as_ref()
             .expect("staging allocated before encode")
@@ -3028,7 +3002,6 @@ impl Renderer for GpuRenderer {
                 staging: [None, None],
                 staging_bind: [None, None],
                 backdrop_groups: FxHashMap::default(),
-                anchor_copies: FxHashMap::default(),
                 layers: FxHashMap::default(),
                 bindings: FxHashMap::default(),
                 hosted: FxHashMap::default(),
@@ -3524,7 +3497,6 @@ impl Renderer for GpuRenderer {
             surf.backdrop = [None, None];
             surf.staging = [None, None];
             surf.staging_bind = [None, None];
-            surf.anchor_copies.clear();
             for state in surf.backdrop_groups.values_mut() {
                 state.truncate(0);
             }
@@ -6967,7 +6939,6 @@ impl GpuRenderer {
                 Target::Scratch(i) => Some(i + 1),
                 Target::Part(_)
                 | Target::Backdrop { .. }
-                | Target::AnchorCopy(_)
                 | Target::Projected(_)
                 | Target::Plane(_) => None,
             })
@@ -7094,70 +7065,12 @@ impl GpuRenderer {
         // Anchor copies whose texture this pass-order loop replaces:
         // their cached-resolve drops land once the loop's `surf.frame`
         // borrow ends.
-        let mut replaced_anchor_views = Vec::new();
         for pass in &surf.frame.passes {
             let Some(capture) = pass.capture else {
                 continue;
             };
             let (w, h) = (pass.region[2], pass.region[3]);
-            // One shared copy per anchor, a plain device-space texture:
-            // grow-only, its texel origin re-recorded every frame.
-            if let Target::AnchorCopy(anchor) = pass.target {
-                if w == 0 || h == 0 {
-                    continue;
-                }
-                let format = capture_format(surf, capture.copy_from, self.scratch_format)?;
-                let existing = surf.anchor_copies.get(&anchor);
-                if existing.is_none_or(|c| {
-                    c.target.width < w || c.target.height < h || c.target.texture.format() != format
-                }) {
-                    let old = existing.map_or(0, |c| c.target.bytes());
-                    let (nw, nh) = (
-                        w.max(existing.map_or(0, |c| c.target.width)),
-                        h.max(existing.map_or(0, |c| c.target.height)),
-                    );
-                    let (texture, view) = create_target(
-                        &self.device,
-                        "backdrop anchor copy",
-                        (nw, nh),
-                        TARGET_USAGES,
-                        format,
-                    );
-                    diag::grow(
-                        &self.device,
-                        "backdrop anchor copy",
-                        diag::Class::Target,
-                        old,
-                        u64::from(nw) * u64::from(nh) * texel_bytes(format),
-                        0,
-                        true,
-                    );
-                    if let Some(copy) = existing {
-                        replaced_anchor_views.push(copy.target.view.clone());
-                    }
-                    surf.anchor_copies.insert(
-                        anchor,
-                        AnchorCopy {
-                            target: ScratchTarget {
-                                texture,
-                                view,
-                                width: nw,
-                                height: nh,
-                            },
-                            origin: [pass.region[0], pass.region[1]],
-                            format,
-                        },
-                    );
-                    surf.bind_gen += 1;
-                } else {
-                    surf.anchor_copies
-                        .get_mut(&anchor)
-                        .expect("existing anchor copy")
-                        .origin = [pass.region[0], pass.region[1]];
-                }
-                continue;
-            }
-            let format = capture_format(surf, capture.copy_from, self.scratch_format)?;
+            let format = capture_format(capture.copy_from, self.scratch_format)?;
             let Some(group_state) = surf.backdrop_groups.get_mut(&capture.group) else {
                 return Err(RenderError::Render(format!(
                     "backdrop group {} was not registered",
@@ -7279,12 +7192,6 @@ impl GpuRenderer {
                 entry.2 = entry.2.max(resolve.device[3]);
             }
         }
-        // A cached direct-resolve bind on a replaced anchor copy samples
-        // the retired view — drop each with its texture so the
-        // predecessor frees (#2151's contract applies to anchor copies).
-        for view in replaced_anchor_views {
-            surf.drop_resolve_binds_on(&self.device, &view, "backdrop resolve");
-        }
         // A staged resolve's 1:1 device copy, one per format, shared by
         // every staged resolve on the surface and grown like a capture:
         // allocated once for the frame's largest staged device rect.
@@ -7329,8 +7236,7 @@ impl GpuRenderer {
                 );
             }
         }
-        // Regions dropped between frames drop their textures too; an
-        // anchor copy's `capture` label is no region of its group.
+        // Regions dropped between frames drop their textures too.
         let needed: FxHashMap<u64, u32> = surf
             .frame
             .passes
@@ -7341,33 +7247,6 @@ impl GpuRenderer {
                 m.entry(g).and_modify(|e| *e = (*e).max(n)).or_insert(n);
                 m
             });
-        // Anchor copies die with the frame that stops drawing them; a
-        // cached resolve bind on a dropped copy would keep its texture
-        // alive past this release.
-        let anchors: FxHashSet<LayerId> = surf
-            .frame
-            .passes
-            .iter()
-            .filter_map(|p| match p.target {
-                Target::AnchorCopy(anchor) => Some(anchor),
-                Target::Part(_)
-                | Target::Scratch(_)
-                | Target::Backdrop { .. }
-                | Target::Projected(_)
-                | Target::Plane(_) => None,
-            })
-            .collect();
-        let mut dropped_anchor_views = Vec::new();
-        surf.anchor_copies.retain(|anchor, copy| {
-            let keep = anchors.contains(anchor);
-            if !keep {
-                dropped_anchor_views.push(copy.target.view.clone());
-            }
-            keep
-        });
-        for view in dropped_anchor_views {
-            surf.drop_resolve_binds_on(&self.device, &view, "backdrop resolve");
-        }
         for (gid, n) in needed {
             if let Some(state) = surf.backdrop_groups.get_mut(&gid)
                 && state.captures.len() > n as usize
@@ -7402,7 +7281,7 @@ impl GpuRenderer {
                 let slot = match pass.target {
                     Target::Part(_) | Target::Projected(_) | Target::Plane(_) => 0,
                     Target::Scratch(_) => 1,
-                    Target::Backdrop { .. } | Target::AnchorCopy(_) => {
+                    Target::Backdrop { .. } => {
                         return Err(RenderError::Render(
                             "a blend backdrop copy on a capture pass".into(),
                         ));
@@ -8017,7 +7896,6 @@ impl GpuRenderer {
                     let group_state = &surf.backdrop_groups[&group];
                     let capture = if resolve::of(pass).is_some() && resolve::staged(pass) {
                         let slot = staging_slot(capture_format(
-                            surf,
                             pass.capture
                                 .expect("a staged resolve implies a capture")
                                 .copy_from,
@@ -8030,10 +7908,6 @@ impl GpuRenderer {
                         &group_state.captures[region as usize].target
                     };
                     (&capture.view, &capture.texture)
-                }
-                Target::AnchorCopy(anchor) => {
-                    let copy = &surf.anchor_copies[&anchor];
-                    (&copy.target.view, &copy.target.texture)
                 }
                 Target::Projected(key) => {
                     let entry = projective_entry(&surf.projective, key);
@@ -8048,8 +7922,8 @@ impl GpuRenderer {
             if let Some(capture) = pass.capture
                 && (capture.resolve.is_none() || resolve::staged(pass))
             {
-                let (src, sx, sy) = match capture.copy_from {
-                    Target::Plane(layer) => (
+                let src = match capture.copy_from {
+                    Target::Plane(layer) => {
                         &surf.static_layers[&layer]
                             .capture
                             .as_ref()
@@ -8057,33 +7931,26 @@ impl GpuRenderer {
                             .source
                             .as_ref()
                             .expect("capture source allocated before encode")
-                            .0,
-                        0,
-                        0,
-                    ),
-                    Target::Part(n) => (surf.part(n).1, 0, 0),
-                    Target::Projected(key) => {
-                        (&projective_entry(&surf.projective, key).texture, 0, 0)
+                            .0
                     }
-                    Target::Scratch(k) => (&surf.scratch[&k].texture, 0, 0),
-                    Target::AnchorCopy(anchor) => {
-                        let copy = &surf.anchor_copies[&anchor];
-                        (&copy.target.texture, copy.origin[0], copy.origin[1])
-                    }
+                    Target::Part(n) => surf.part(n).1,
+                    Target::Projected(key) => &projective_entry(&surf.projective, key).texture,
+                    Target::Scratch(k) => &surf.scratch[&k].texture,
                     Target::Backdrop { group, region } => {
-                        let capture = &surf.backdrop_groups[&group].captures[region as usize];
-                        (&capture.target.texture, 0, 0)
+                        &surf.backdrop_groups[&group].captures[region as usize]
+                            .target
+                            .texture
                     }
                 };
-                debug_assert!(draw_region[0].saturating_sub(sx) + draw_region[2] <= src.width());
-                debug_assert!(draw_region[1].saturating_sub(sy) + draw_region[3] <= src.height());
+                debug_assert!(draw_region[0] + draw_region[2] <= src.width());
+                debug_assert!(draw_region[1] + draw_region[3] <= src.height());
                 encoder.copy_texture_to_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture: src,
                         mip_level: 0,
                         origin: wgpu::Origin3d {
-                            x: draw_region[0].saturating_sub(sx),
-                            y: draw_region[1].saturating_sub(sy),
+                            x: draw_region[0],
+                            y: draw_region[1],
                             z: 0,
                         },
                         aspect: wgpu::TextureAspect::All,
@@ -8107,7 +7974,7 @@ impl GpuRenderer {
                 let slot = match pass.target {
                     Target::Part(_) | Target::Projected(_) | Target::Plane(_) => 0,
                     Target::Scratch(_) => 1,
-                    Target::Backdrop { .. } | Target::AnchorCopy(_) => {
+                    Target::Backdrop { .. } => {
                         return Err(RenderError::Render(
                             "a blend backdrop copy on a capture pass".into(),
                         ));
@@ -8188,9 +8055,6 @@ impl GpuRenderer {
                         Target::Scratch(i) => format!("scratch{i}"),
                         Target::Backdrop { group, region } => {
                             format!("backdrop{group}.{region}")
-                        }
-                        Target::AnchorCopy(anchor) => {
-                            format!("anchor{}", anchor.raw())
                         }
                         Target::Projected(key) => {
                             format!("projected{}.{}", key.layer.raw(), key.bucket)
@@ -8380,7 +8244,7 @@ impl GpuRenderer {
             let mut pipeline = Bound::Engine(PipelineKind::SrcOver, ShaderVariant::Simple);
             let backdrop_slot = scratch_backdrop.then_some(match pass.target {
                 Target::Part(_) | Target::Projected(_) | Target::Plane(_) => 0,
-                Target::Scratch(_) | Target::Backdrop { .. } | Target::AnchorCopy(_) => 1,
+                Target::Scratch(_) | Target::Backdrop { .. } => 1,
             });
             if replayable {
                 let bind1 = surf
@@ -8907,10 +8771,7 @@ impl GpuRenderer {
                     Target::Backdrop { group, region } => {
                         &surf.backdrop_groups[&group].captures[region as usize].target
                     }
-                    Target::Part(_)
-                    | Target::AnchorCopy(_)
-                    | Target::Projected(_)
-                    | Target::Plane(_) => {
+                    Target::Part(_) | Target::Projected(_) | Target::Plane(_) => {
                         return Err(RenderError::Render(format!(
                             "filter {filter:?} registered on a surface pass"
                         )));

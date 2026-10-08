@@ -390,9 +390,8 @@ struct BackdropPlan {
     scope: Option<LayerId>,
     /// Each member's paint-order record for an anchored group's range
     /// check: the member's compositing canvas (its innermost semantic
-    /// level), its paint-order index, and whether the group's anchor is
-    /// an ancestor.
-    pos: FxHashMap<LayerId, (Option<LayerId>, usize, bool)>,
+    /// level) and its paint-order index.
+    pos: FxHashMap<LayerId, (Option<LayerId>, usize)>,
 }
 
 impl BackdropPlan {
@@ -1036,7 +1035,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
         parent: Affine,
         scopes: &mut Vec<LayerId>,
         canvas: Option<LayerId>,
-        ancestors: &mut Vec<LayerId>,
     ) -> Result<(), RenderError> {
         let node = tree.layer(id);
         if self.projects(id, tree) {
@@ -1122,15 +1120,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     effect,
                 },
             );
-            plan.pos.insert(
-                id,
-                (
-                    canvas,
-                    order,
-                    spec.anchor_layer()
-                        .is_some_and(|anchor| ancestors.contains(&anchor)),
-                ),
-            );
+            if spec.anchor_layer().is_some() {
+                plan.pos.insert(id, (canvas, order));
+            }
         }
         // A semantically isolating layer — filtered or blended — is its
         // children's compositing canvas; other layers share their
@@ -1140,19 +1132,17 @@ impl<'a, 'b> Lowering<'a, 'b> {
         } else {
             canvas
         };
-        ancestors.push(id);
         if node.filter.is_some() {
             scopes.push(id);
         }
         for child in &node.children {
             self.plan_layer(
-                *child, tree, groups, filters, surface, children, scopes, canvas, ancestors,
+                *child, tree, groups, filters, surface, children, scopes, canvas,
             )?;
         }
         if node.filter.is_some() {
             scopes.pop();
         }
-        ancestors.pop();
         Ok(())
     }
 
@@ -1183,7 +1173,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let mut groups = FxHashMap::default();
         self.anchor_refs = filters.backdrop_anchors(surface).collect();
         self.plan_order = 0;
-        let mut ancestors = Vec::new();
         self.plan_layer(
             self.start(tree),
             tree,
@@ -1193,7 +1182,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
             Affine::IDENTITY,
             &mut Vec::new(),
             None,
-            &mut ancestors,
         )?;
         if self.backdrops.is_empty() {
             return Ok(());
@@ -1276,22 +1264,30 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// Validates every anchored group's member range and sets its capture
     /// scope to the anchor's, grouping the anchored groups under their
     /// anchors. A member of an anchored group must paint after its
-    /// anchor in the anchor's compositing canvas — the anchor's
-    /// descendants or its later siblings; an anchored group never falls
-    /// back to a capture at the member.
+    /// anchor in the anchor's compositing canvas — its later siblings
+    /// there; an anchored group never falls back to a capture at the
+    /// member.
+    /// `backdrops` is a hash map: the anchored gids are sorted first so
+    /// the validation error and `anchor_groups` order are deterministic.
     fn plan_anchors(&mut self) -> Result<(), RenderError> {
-        for (gid, plan) in &mut self.backdrops {
-            let Some(anchor) = plan.spec.anchor_layer() else {
-                continue;
-            };
+        let mut gids: Vec<u64> = self
+            .backdrops
+            .iter()
+            .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
+            .map(|(gid, _)| *gid)
+            .collect();
+        gids.sort_unstable();
+        for gid in gids {
+            let plan = self.backdrops.get_mut(&gid).expect("listed above");
+            let anchor = plan.spec.anchor_layer().expect("anchored above");
             let Some(&(anchor_canvas, anchor_order, anchor_scope)) = self.anchor_pos.get(&anchor)
             else {
                 return Err(RenderError::Unsupported(
                     names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS,
                 ));
             };
-            for &(canvas, order, inside) in plan.pos.values() {
-                if inside || (canvas == anchor_canvas && order > anchor_order) {
+            for &(canvas, order) in plan.pos.values() {
+                if canvas == anchor_canvas && order > anchor_order {
                     continue;
                 }
                 return Err(RenderError::Unsupported(if canvas == anchor_canvas {
@@ -1303,7 +1299,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             // The capture lands at the anchor — its scope is the
             // anchor's, not the first member's.
             plan.scope = anchor_scope;
-            self.anchor_groups.entry(anchor).or_default().push(*gid);
+            self.anchor_groups.entry(anchor).or_default().push(gid);
         }
         for gids in self.anchor_groups.values_mut() {
             gids.sort_unstable();

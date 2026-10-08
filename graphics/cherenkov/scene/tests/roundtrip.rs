@@ -1,8 +1,9 @@
 //! Scene serde round-trip and path/shape helper checks.
 
+const NONZERO: std::num::NonZeroU32 = std::num::NonZeroU32::MIN;
 use cherenkov_scene::{
-    BlendMode, Color, ColorSpace, Feature, FillRule, Glyph, GlyphRun, GradientStop, Item,
-    LinearGradient, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
+    BackdropGroup, BlendMode, Color, ColorSpace, Feature, FillRule, Glyph, GlyphRun, GradientStop,
+    Item, LinearGradient, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
 };
 use kurbo::{Affine, BezPath, Point, Rect};
 
@@ -307,7 +308,7 @@ fn image_encodings_roundtrip() {
 
 #[test]
 fn backdrop_effect_specs_roundtrip() {
-    use cherenkov_scene::{BackdropEffectSpec, BackdropFilter, SceneError};
+    use cherenkov_scene::{BackdropEffectSpec, BackdropFilter};
     let specs = [
         BackdropEffectSpec::ColorMatrix {
             matrix: [
@@ -333,7 +334,12 @@ fn backdrop_effect_specs_roundtrip() {
         assert_eq!(*spec, back);
 
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0, 1);
+        b.backdrop_group(BackdropGroup::new(
+            1,
+            vec![BackdropFilter::GaussianBlur { sigma: 4.0 }],
+            1.0,
+            1,
+        ));
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -346,10 +352,15 @@ fn backdrop_effect_specs_roundtrip() {
         let loaded = Scene::load(&scene_dir).unwrap();
         assert_eq!(scene, loaded);
     }
+}
 
+#[test]
+fn backdrop_effect_validation_cases() {
+    use cherenkov_scene::{BackdropEffectSpec, SceneError};
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-fxv-{}", std::process::id()));
     // A member without an effect keeps `backdrop_effect` out of the JSON.
     let mut b = Scene::builder(64, 64);
-    b.backdrop_group(1, Vec::new(), 1.0, 1);
+    b.backdrop_group(BackdropGroup::new(1, Vec::new(), 1.0, 1));
     b.root().layer(|m| {
         m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
         m.backdrop(1);
@@ -401,7 +412,7 @@ fn backdrop_effect_specs_roundtrip() {
         },
     ] {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, Vec::new(), 1.0, 1);
+        b.backdrop_group(BackdropGroup::new(1, Vec::new(), 1.0, 1));
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -420,17 +431,17 @@ fn backdrop_effect_specs_roundtrip() {
 
 #[test]
 fn backdrop_scale_loads_inside_its_range_only() {
-    use cherenkov_scene::{BackdropFilter, SceneError};
+    use cherenkov_scene::{BackdropFilter, BackdropGroup, SceneError};
     let dir = std::env::temp_dir().join(format!("cherenkov-scene-scale-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let scene = |scale| {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(
+        b.backdrop_group(BackdropGroup::new(
             7,
             vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
             scale,
             1,
-        );
+        ));
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(7);
@@ -464,12 +475,12 @@ fn backdrop_levels_load_inside_their_range_only() {
     let _ = std::fs::remove_dir_all(&dir);
     let scene = |levels| {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(
+        b.backdrop_group(BackdropGroup::new(
             7,
             vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
             0.5,
             levels,
-        );
+        ));
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(7);
@@ -502,7 +513,7 @@ fn backdrop_levels_default_to_one_and_skip_one() {
     let _ = std::fs::remove_dir_all(&dir);
     let scene = |levels| {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(7, Vec::new(), 1.0, levels);
+        b.backdrop_group(BackdropGroup::new(7, Vec::new(), 1.0, levels));
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(7);
@@ -531,20 +542,17 @@ fn backdrop_levels_default_to_one_and_skip_one() {
 
 #[test]
 fn backdrop_union_and_outer_roundtrip_and_validate() {
-    use cherenkov_scene::{BackdropFilter, SceneError};
+    use cherenkov_scene::{BackdropFilter, BackdropGroup, SceneError};
     let dir = std::env::temp_dir().join(format!("cherenkov-scene-union-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     // A union group plus an `outer` member round-trips.
     let mut b = Scene::builder(64, 64);
-    b.backdrop_union_group(
-        3,
-        vec![BackdropFilter::GaussianBlur { sigma: 4.0 }],
-        1.0,
-        1,
-        12.0,
-    );
-    b.backdrop_group(4, Vec::new(), 1.0, 1);
+    b.backdrop_group(BackdropGroup {
+        union: Some(12.0),
+        ..BackdropGroup::new(3, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0, 1)
+    });
+    b.backdrop_group(BackdropGroup::new(4, Vec::new(), 1.0, 1));
     let l = &mut b.root();
     l.layer(|m| {
         m.clip(Shape::rect(8.0, 8.0, 32.0, 32.0));
@@ -569,7 +577,7 @@ fn backdrop_union_and_outer_roundtrip_and_validate() {
 
     // A `backdrop_outer` of 0 is the default and stays out of the JSON.
     let mut b = Scene::builder(64, 64);
-    b.backdrop_group(4, Vec::new(), 1.0, 1);
+    b.backdrop_group(BackdropGroup::new(4, Vec::new(), 1.0, 1));
     b.root().layer(|m| {
         m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
         m.backdrop(4);
@@ -585,7 +593,10 @@ fn backdrop_union_and_outer_roundtrip_and_validate() {
     // negative outer, and an outer on a layer sampling no group.
     let bad_union = {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_union_group(3, Vec::new(), 1.0, 1, 0.0);
+        b.backdrop_group(BackdropGroup {
+            union: Some(0.0),
+            ..BackdropGroup::new(3, Vec::new(), 1.0, 1)
+        });
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(3);
@@ -602,7 +613,7 @@ fn backdrop_union_and_outer_roundtrip_and_validate() {
 
     let bad_outer = {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(4, Vec::new(), 1.0, 1);
+        b.backdrop_group(BackdropGroup::new(4, Vec::new(), 1.0, 1));
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(4);
@@ -635,4 +646,54 @@ fn backdrop_union_and_outer_roundtrip_and_validate() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A backdrop group anchored at the scene root is rejected by validation
+/// with the named error — the anchor must be a listed layer so the
+/// capture has a paint position.
+#[test]
+fn a_group_anchor_at_the_scene_root_is_rejected() {
+    let mut b = Scene::builder(8, 8);
+    b.root().id(NONZERO);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(NONZERO),
+        ..BackdropGroup::new(1, Vec::new(), 1.0, 1)
+    });
+    let scene = b.build();
+    assert!(
+        matches!(
+            scene.validate(),
+            Err(cherenkov_scene::SceneError::BackdropAnchorAtRoot(1))
+        ),
+        "unexpected result {:?}",
+        scene.validate()
+    );
+}
+
+/// A backdrop group anchored at a projective layer is rejected: the
+/// projective subtree is its own canvas, so the anchor's paint position
+/// is not in the members' canvas.
+#[test]
+fn a_group_anchor_at_a_projective_layer_is_rejected() {
+    let mut b = Scene::builder(8, 8);
+    b.root().layer(|m| {
+        m.projection(cherenkov_scene::Projection {
+            matrix: cherenkov_scene::Projection::perspective(100.0),
+            ..cherenkov_scene::Projection::default()
+        });
+        m.id(NONZERO);
+    });
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(NONZERO),
+        ..BackdropGroup::new(1, Vec::new(), 1.0, 1)
+    });
+    let scene = b.build();
+    assert!(
+        matches!(
+            scene.validate(),
+            Err(cherenkov_scene::SceneError::BackdropAnchorProjective(1))
+        ),
+        "unexpected result {:?}",
+        scene.validate()
+    );
 }

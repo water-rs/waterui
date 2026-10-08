@@ -40,9 +40,6 @@ pub enum Target {
     Scratch(usize),
     /// A backdrop group's capture texture for this region index.
     Backdrop { group: u64, region: u32 },
-    /// The shared backdrop copy beneath an anchor layer: every group
-    /// anchored at the layer runs its chain on this one copy.
-    AnchorCopy(LayerId),
     /// A projective layer's local image, base level (#84).
     Projected(LocalKey),
     /// A recorded layer captured for the system compositor.
@@ -178,10 +175,6 @@ pub struct Resolve {
     /// The device rect `(x, y, w, h)` the region's texels cover, clipped
     /// to `extent`.
     pub device: [u32; 4],
-    /// The device position of the source texture's texel `(0, 0)`: the
-    /// anchor copy's region origin for an anchored group, `[0, 0]`
-    /// otherwise.
-    pub source: [u32; 2],
     /// The device extent of the walk's raster: texel spans clip to it.
     pub extent: [u32; 2],
 }
@@ -1056,9 +1049,8 @@ struct BackdropPlan {
     next_ord: u32,
     /// Each member's paint-order record for an anchored group's range
     /// check: the compositing canvas it paints in (`None` at the surface
-    /// level), its paint-order index, and whether the group's anchor is
-    /// one of its ancestors.
-    pos: FxHashMap<LayerId, (Option<LayerId>, usize, bool)>,
+    /// level) and its paint-order index.
+    pos: FxHashMap<LayerId, (Option<LayerId>, usize)>,
 }
 
 /// One backdrop member's plan entry.
@@ -1092,11 +1084,6 @@ struct MemberEntry {
 struct AnchorPlan {
     /// The anchored groups, in id order.
     groups: Vec<u64>,
-    /// The shared copy's device-space region: the union of the anchored
-    /// groups' needed device rects; `None` while none samples.
-    region: Option<[u32; 4]>,
-    /// The shared copy's storage space: the anchor level's.
-    space: cherenkov::BlendSpace,
 }
 
 /// The lowering walk state for one surface frame.
@@ -1317,15 +1304,7 @@ impl<'a> Lowering<'a> {
             .filter_map(|info| info.spec.anchor_layer())
             .collect();
         self.plan_order = 0;
-        let mut ancestors = Vec::new();
-        self.plan_layer(
-            self.start(tree),
-            tree,
-            groups,
-            Affine::IDENTITY,
-            None,
-            &mut ancestors,
-        )?;
+        self.plan_layer(self.start(tree), tree, groups, Affine::IDENTITY, None)?;
         // Union-field members need the group's full membership before
         // their footprints and bounds inflate: the union fold's `r(n)`
         // depends on the member count. Rebuild each touched plan's
@@ -1408,71 +1387,46 @@ impl<'a> Lowering<'a> {
     }
 
     /// Validates every anchored group's member range, then builds each
-    /// anchor's [`AnchorPlan`]: the groups sharing it and the shared
-    /// copy's region — the union of their regions' device rects. A
-    /// member of an anchored group must paint after its anchor in the
-    /// anchor's compositing canvas — the anchor's descendants or its
-    /// later siblings; an anchored group never falls back to a capture
-    /// at the member.
+    /// anchor's [`AnchorPlan`]: the groups sharing it, in id order —
+    /// `backdrops` is a hash map, so the ids are sorted first for a
+    /// deterministic error and emission order. A member of an anchored
+    /// group must paint after its anchor in the anchor's compositing
+    /// canvas — its later siblings there; an anchored group never falls
+    /// back to a capture at the member.
     fn plan_anchors(&mut self) -> Result<(), RenderError> {
-        for (gid, plan) in &self.backdrops {
-            let Some(anchor) = plan.spec.anchor_layer() else {
-                continue;
-            };
-            let Some(&(anchor_canvas, anchor_order)) = self.anchor_pos.get(&anchor) else {
-                return Err(RenderError::Unsupported(
-                    names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS,
-                ));
-            };
-            for &(canvas, order, inside) in plan.pos.values() {
-                if inside || (canvas == anchor_canvas && order > anchor_order) {
-                    continue;
+        let mut gids: Vec<u64> = self
+            .backdrops
+            .iter()
+            .filter(|(_, plan)| plan.spec.anchor_layer().is_some())
+            .map(|(gid, _)| *gid)
+            .collect();
+        gids.sort_unstable();
+        for gid in gids {
+            let anchor = {
+                let plan = &self.backdrops[&gid];
+                let anchor = plan.spec.anchor_layer().expect("anchored above");
+                let Some(&(anchor_canvas, anchor_order)) = self.anchor_pos.get(&anchor) else {
+                    return Err(RenderError::Unsupported(
+                        names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS,
+                    ));
+                };
+                for &(canvas, order) in plan.pos.values() {
+                    if canvas == anchor_canvas && order > anchor_order {
+                        continue;
+                    }
+                    return Err(RenderError::Unsupported(if canvas == anchor_canvas {
+                        names::BACKDROP_MEMBER_BEFORE_ANCHOR
+                    } else {
+                        names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                    }));
                 }
-                return Err(RenderError::Unsupported(if canvas == anchor_canvas {
-                    names::BACKDROP_MEMBER_BEFORE_ANCHOR
-                } else {
-                    names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
-                }));
-            }
+                anchor
+            };
             self.anchors
                 .entry(anchor)
-                .or_insert(AnchorPlan {
-                    groups: Vec::new(),
-                    region: None,
-                    space: cherenkov::BlendSpace::Linear,
-                })
+                .or_insert_with(|| AnchorPlan { groups: Vec::new() })
                 .groups
-                .push(*gid);
-        }
-        // The shared copy covers every anchored group's need — the union
-        // of their regions' device rects.
-        for plan in self.backdrops.values() {
-            let Some(anchor) = plan.spec.anchor_layer() else {
-                continue;
-            };
-            let scale = plan.spec.scale();
-            let mut region = self.anchors.get(&anchor).and_then(|p| p.region);
-            for r in &plan.regions {
-                let device = if scale.is_full() {
-                    *r
-                } else {
-                    self.resolve(*r, scale).device
-                };
-                region = Some(region.map_or(device, |u| {
-                    [
-                        u[0].min(device[0]),
-                        u[1].min(device[1]),
-                        (u[0] + u[2]).max(device[0] + device[2]) - u[0].min(device[0]),
-                        (u[1] + u[3]).max(device[1] + device[3]) - u[1].min(device[1]),
-                    ]
-                }));
-            }
-            if let Some(plan) = self.anchors.get_mut(&anchor) {
-                plan.region = region;
-            }
-        }
-        for plan in self.anchors.values_mut() {
-            plan.groups.sort_unstable();
+                .push(gid);
         }
         Ok(())
     }
@@ -1488,7 +1442,6 @@ impl<'a> Lowering<'a> {
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         parent: Affine,
         canvas: Option<LayerId>,
-        ancestors: &mut Vec<LayerId>,
     ) -> Result<(), RenderError> {
         if self.projects(id, tree) {
             return Ok(());
@@ -1574,15 +1527,9 @@ impl<'a> Lowering<'a> {
                     reach: reach.unwrap_or(0.0),
                 },
             );
-            plan.pos.insert(
-                id,
-                (
-                    canvas,
-                    order,
-                    spec.anchor_layer()
-                        .is_some_and(|anchor| ancestors.contains(&anchor)),
-                ),
-            );
+            if spec.anchor_layer().is_some() {
+                plan.pos.insert(id, (canvas, order));
+            }
         }
         // A semantically isolating layer — filtered or blended — is its
         // children's compositing canvas; other layers share their
@@ -1592,11 +1539,9 @@ impl<'a> Lowering<'a> {
         } else {
             canvas
         };
-        ancestors.push(id);
         for child in &node.children {
-            self.plan_layer(*child, tree, groups, children, canvas, ancestors)?;
+            self.plan_layer(*child, tree, groups, children, canvas)?;
         }
-        ancestors.pop();
         Ok(())
     }
 
@@ -1850,11 +1795,6 @@ impl<'a> Lowering<'a> {
                 .get(&group)
                 .copied()
                 .unwrap_or(cherenkov::BlendSpace::Linear),
-            // A shared copy stores the space of the anchor's level.
-            Target::AnchorCopy(anchor) => self
-                .anchors
-                .get(&anchor)
-                .map_or(cherenkov::BlendSpace::Linear, |plan| plan.space),
         }
     }
 
@@ -1951,13 +1891,7 @@ impl<'a> Lowering<'a> {
                     .get(&g)
                     .and_then(|plan| plan.regions.get(r as usize))
                     .copied()
-                    .unwrap_or([0, 0, 0, 0]),
-                // A shared-copy pass covers the anchor's planned union.
-                Target::AnchorCopy(anchor) => self
-                    .anchors
-                    .get(&anchor)
-                    .and_then(|plan| plan.region)
-                    .unwrap_or([0, 0, 0, 0]),
+                    .expect("a capture pass's region is planned"),
             };
             if let Some(capture) = open.capture
                 && capture.levels > 1
@@ -2460,87 +2394,13 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Emits the shared copy every group anchored at `anchor` runs its
-    /// chain on, at the anchor's paint-order position — before its own
-    /// content and children: the semantic target beneath every anchored
-    /// group's capture is copied once, every looked-through scratch
-    /// opened since it that holds draws by then composes over that copy,
-    /// and each group's capture then copies or resolves out of it, so no
-    /// anchored member ever sees another. `looked_through_scratches`
-    /// stays: later unanchored captures still composite them.
-    fn emit_anchor_copy(&mut self, anchor: LayerId) {
-        let Some(plan) = self.anchors.get(&anchor).cloned() else {
-            return;
-        };
-        let Some(region) = plan.region else {
-            return;
-        };
-        let copy_from = self.semantic_target;
-        let current = self.current_target();
-        let space = self.target_space(copy_from);
-        self.anchors.get_mut(&anchor).expect("anchor plan").space = space;
-        // Which scratches the copy must already hold is the same question
-        // `emit_capture` answers: the levels painted since their nearest
-        // semantic isolation opened — the open pass carries what the
-        // innermost level drew before the anchor, so close it first.
-        self.finish_pass();
-        self.painted_scratches.clear();
-        self.painted_scratches
-            .extend(
-                self.looked_through_scratches
-                    .iter()
-                    .filter_map(|&(s, start)| {
-                        self.frame.passes[start..]
-                            .iter()
-                            .any(|pass| {
-                                pass.target == Target::Scratch(s) && !pass.ranges.is_empty()
-                            })
-                            .then_some(s)
-                    }),
-            );
-        self.begin_pass(Target::AnchorCopy(anchor), None);
-        if let Some(open) = &mut self.frame.open {
-            open.capture = Some(Capture {
-                // The copy belongs to the anchor, not one group: the first
-                // anchored group's id is only a label here.
-                group: plan.groups.first().copied().unwrap_or(0),
-                region: 0,
-                copy_from,
-                resolve: None,
-                levels: 1,
-            });
-        }
-        for i in 0..self.painted_scratches.len() {
-            let k = self.painted_scratches[i];
-            // Looked-through scratches cover the full surface (see
-            // `isolate`), so their texel origin is (0, 0), and each is
-            // stored in the copy's space.
-            self.emit_composite(
-                Source::Scratch(k),
-                [0.0, 0.0],
-                1.0,
-                region,
-                cherenkov::BlendMode::Normal,
-                space,
-            );
-        }
-        self.finish_pass();
-        self.begin_pass(current, None);
-        for gid in plan.groups {
-            self.emit_capture(gid, Target::AnchorCopy(anchor));
-        }
-        self.capture_isolation = true;
-    }
-
     /// Emits the group's capture passes — one per region: `region` is
     /// copied from `copy_from`, the semantic target at the first member's
-    /// paint-order position for an unanchored group or the anchor's
-    /// shared copy for an anchored one (whose device-position texel
-    /// origin a reduced group's resolve subtracts). Every looked-through
-    /// scratch opened since the semantic target that holds draws by then
-    /// composes over an unanchored copy; a shared copy already holds
-    /// them. A reduced-scale group composes over the device pixels under
-    /// the region and resolves them onto the capture grid.
+    /// paint-order position for an unanchored group or at the anchor's
+    /// position for an anchored one. Every looked-through scratch opened
+    /// since the semantic target that holds draws by then composes over
+    /// the copy. A reduced-scale group composes over the device pixels
+    /// under the region and resolves them onto the capture grid.
     fn emit_capture(&mut self, gid: u64, copy_from: Target) {
         let plan = &self.backdrops[&gid];
         let regions = plan.regions.clone();
@@ -2550,16 +2410,6 @@ impl<'a> Lowering<'a> {
         let scale = plan.spec.scale();
         let levels = plan.spec.levels().get();
         let current = self.current_target();
-        // An anchored copy's source reads at the shared copy's region
-        // origin in device pixels; an unanchored copy at device (0, 0).
-        let origin = match copy_from {
-            Target::AnchorCopy(anchor) => self
-                .anchors
-                .get(&anchor)
-                .and_then(|plan| plan.region)
-                .map_or([0, 0], |r| [r[0], r[1]]),
-            _ => [0, 0],
-        };
         // The capture texture stores the semantic target's space, and
         // every looked-through scratch shares it — layers never sit
         // inside an encoded group scope, so each is stored in the root's
@@ -2599,10 +2449,7 @@ impl<'a> Lowering<'a> {
                 },
                 None,
             );
-            let mut resolve = (!scale.is_full()).then(|| self.resolve(*region, scale));
-            if let Some(resolve) = &mut resolve {
-                resolve.source = origin;
-            }
+            let resolve = (!scale.is_full()).then(|| self.resolve(*region, scale));
             if let Some(open) = &mut self.frame.open {
                 open.capture = Some(Capture {
                     group: gid,
@@ -2613,8 +2460,7 @@ impl<'a> Lowering<'a> {
                 });
             }
             let covered = resolve.map_or(*region, |resolve| resolve.device);
-            // A shared copy already holds the looked-through composites.
-            if !matches!(copy_from, Target::AnchorCopy(_)) {
+            {
                 for i in 0..self.painted_scratches.len() {
                     let k = self.painted_scratches[i];
                     // Looked-through scratches cover the full surface (see
@@ -2659,7 +2505,6 @@ impl<'a> Lowering<'a> {
         Resolve {
             scale: scale.get(),
             device: [x0, y0, x1 - x0, y1 - y0],
-            source: [0, 0],
             extent: [w, h],
         }
     }
@@ -3070,11 +2915,14 @@ impl<'a> Lowering<'a> {
         caches: &mut FxHashMap<LayerId, ContentData>,
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
-        // Groups anchored at this layer share one copy of the backdrop
+        // Groups anchored at this layer each capture the backdrop
         // beneath it, taken at its paint-order position — before the
-        // anchor's own content and children.
-        if self.anchors.contains_key(&id) {
-            self.emit_anchor_copy(id);
+        // anchor's own content and children — and read the semantic
+        // target directly, like an unanchored capture at the member.
+        if let Some(plan) = self.anchors.get(&id) {
+            for gid in plan.groups.clone() {
+                self.emit_capture(gid, self.semantic_target);
+            }
         }
         let node = tree.layer(id);
         if self.projects(id, tree) {

@@ -7,7 +7,9 @@ mod union_cap;
 
 use cherenkov_oracle::color::{linear_srgb_to_linear_p3, to_working};
 use cherenkov_oracle::{Renderer, metrics};
-use cherenkov_scene::{Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape};
+use cherenkov_scene::{
+    BackdropGroup, Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape,
+};
 use kurbo::Rect;
 
 const W: u32 = 16;
@@ -779,7 +781,12 @@ fn destructive_layer_blend_is_bounded_by_the_clip() {
 fn refraction_on_a_path_clip_is_the_named_error() {
     use cherenkov_scene::{BackdropEffectSpec, BackdropFilter};
     let mut b = Scene::builder(W, H);
-    b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 2.0 }], 1.0, 1);
+    b.backdrop_group(BackdropGroup::new(
+        1,
+        vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
+        1.0,
+        1,
+    ));
     b.root().layer(|m| {
         let mut path = kurbo::BezPath::new();
         path.move_to((2.0, 2.0));
@@ -864,7 +871,10 @@ fn ownership(members: &[(f64, [f64; 2])], member: usize) -> f64 {
 /// counterpart.
 fn union_circles(circles: &[(f64, f64, f64)], opacities: &[f32]) -> cherenkov_oracle::F32Image {
     let mut b = Scene::builder(48, 40).clear(Color::srgb(0.0, 0.0, 0.0).with_alpha(0.0));
-    b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+    b.backdrop_group(BackdropGroup {
+        union: Some(20.0),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
     b.root().fill(
         Shape::Rect(Rect::new(0.0, 0.0, 48.0, 40.0)),
         Paint::Solid(Color::srgb(1.0, 0.0, 0.0).with_alpha(0.5)),
@@ -998,7 +1008,7 @@ fn the_three_weights_sum_to_one_near_a_triple_point() {
 #[test]
 fn a_mixed_group_without_a_union_draws_the_band() {
     let mut b = Scene::builder(48, 32);
-    b.backdrop_group(1, vec![], 1.0, 1);
+    b.backdrop_group(BackdropGroup::new(1, vec![], 1.0, 1));
     b.root().fill(
         Shape::Rect(Rect::new(0.0, 0.0, 48.0, 32.0)),
         Paint::Solid(Color::srgb(1.0, 0.0, 0.0)),
@@ -1054,7 +1064,10 @@ fn a_degenerate_union_member_is_unsupported() {
         Shape::Ellipse(kurbo::Ellipse::new((16.0, 16.0), (0.0, 4.0), 0.0)),
     ] {
         let mut b = Scene::builder(48, 32);
-        b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+        b.backdrop_group(BackdropGroup {
+            union: Some(20.0),
+            ..BackdropGroup::new(1, vec![], 1.0, 1)
+        });
         b.root().layer(|m| {
             m.clip(Shape::Rect(Rect::new(4.0, 8.0, 20.0, 24.0)));
             m.backdrop(1);
@@ -1079,7 +1092,10 @@ fn a_degenerate_union_member_is_unsupported() {
 #[test]
 fn union_members_past_the_cap_are_unsupported() {
     let mut b = Scene::builder(48, 32);
-    b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+    b.backdrop_group(BackdropGroup {
+        union: Some(20.0),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
     for _ in 0..=union_cap::UNION_MAX_MEMBERS {
         b.root().layer(|m| {
             m.clip(Shape::Rect(Rect::new(4.0, 8.0, 20.0, 24.0)));
@@ -1094,5 +1110,70 @@ fn union_members_past_the_cap_are_unsupported() {
             "unexpected error {e}"
         ),
         Ok(_) => panic!("union members past UNION_MAX_MEMBERS must fail"),
+    }
+}
+
+/// A member under a filtered descendant of the anchor fails with the
+/// named error — the anchor rule admits no descendant exemption.
+#[test]
+fn a_member_under_a_filtered_descendant_is_unsupported() {
+    use cherenkov_scene::LayerFilter;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+    });
+    b.root().layer(|m| {
+        m.filter(LayerFilter::GaussianBlur { sigma: 1.0 });
+        m.layer(|inner| {
+            inner.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member under a filtered descendant must fail"),
+    }
+}
+
+/// A member under a projective descendant of the anchor fails with the
+/// named error — the projective subtree is another canvas.
+#[test]
+fn a_member_under_a_projective_descendant_is_unsupported() {
+    use cherenkov_scene::{LayerFilter, Projection};
+    let _ = LayerFilter::GaussianBlur { sigma: 0.0 };
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+    });
+    b.root().layer(|m| {
+        m.projection(Projection {
+            matrix: Projection::perspective(100.0),
+            ..Projection::default()
+        });
+        m.layer(|inner| {
+            inner.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-member"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member under a projective descendant must fail"),
     }
 }

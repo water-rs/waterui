@@ -303,15 +303,14 @@ struct Capture {
 /// One anchored group's member positions as the paint-order walk records
 /// them: enclosing canvas, paint-order index and whether the member sits
 /// inside the anchor's subtree.
-type MemberPositions = HashMap<u32, Vec<(Option<usize>, usize, bool)>>;
+type MemberPositions = HashMap<u32, Vec<(Option<usize>, usize)>>;
 
 /// The paint-order walk behind [`Renderer::plan_anchors`]: records each
 /// `id`'d layer's canvas and index, and each anchored member's
-/// `(canvas, index, inside-anchor-subtree)`.
+/// `(canvas, index)`.
 fn walk_anchor_positions(
     layer: &Layer,
     canvas: Option<usize>,
-    ancestors: &mut Vec<(usize, Option<u32>)>,
     anchor_of: &HashMap<u32, u32>,
     anchor_pos: &mut HashMap<u32, (Option<usize>, usize)>,
     member_pos: &mut MemberPositions,
@@ -327,13 +326,9 @@ fn walk_anchor_positions(
             anchor_pos.insert(id.get(), (canvas, idx));
         }
         if let Some(gid) = child.backdrop
-            && let Some(anchor) = anchor_of.get(&gid)
+            && anchor_of.contains_key(&gid)
         {
-            member_pos.entry(gid).or_default().push((
-                canvas,
-                idx,
-                ancestors.iter().any(|&(_, id)| id == Some(*anchor)),
-            ));
+            member_pos.entry(gid).or_default().push((canvas, idx));
         }
         // A filtered, blended or projective layer is its children's
         // compositing canvas; other layers share their parent's.
@@ -345,11 +340,7 @@ fn walk_anchor_positions(
         } else {
             canvas
         };
-        ancestors.push((idx, child.id.map(std::num::NonZero::get)));
-        walk_anchor_positions(
-            child, canvas, ancestors, anchor_of, anchor_pos, member_pos, order,
-        );
-        ancestors.pop();
+        walk_anchor_positions(child, canvas, anchor_of, anchor_pos, member_pos, order);
     }
 }
 
@@ -467,7 +458,7 @@ impl Renderer {
         let mut anchors: HashMap<u32, Vec<u32>> = HashMap::new();
         for group in &scene.backdrop_groups {
             if let Some(anchor) = group.anchor {
-                anchors.entry(anchor).or_default().push(group.id);
+                anchors.entry(anchor.get()).or_default().push(group.id);
             }
         }
         for gids in anchors.values_mut() {
@@ -517,30 +508,31 @@ impl Renderer {
         let anchor_of: HashMap<u32, u32> = scene
             .backdrop_groups
             .iter()
-            .filter_map(|group| group.anchor.map(|anchor| (group.id, anchor)))
+            .filter_map(|group| group.anchor.map(|anchor| (group.id, anchor.get())))
             .collect();
         // Layer `id`s that anchor a group, their compositing canvas and
-        // paint-order index; members' the same plus `inside` — the canvas
-        // is the nearest enclosing filtered, blended or projective layer.
+        // paint-order index; members' the same — the canvas is the
+        // nearest enclosing filtered, blended or projective layer.
         let mut anchor_pos: HashMap<u32, (Option<usize>, usize)> = HashMap::new();
         let mut member_pos: MemberPositions = HashMap::new();
         walk_anchor_positions(
             &scene.root,
             None,
-            &mut Vec::new(),
             &anchor_of,
             &mut anchor_pos,
             &mut member_pos,
             &mut 0,
         );
-        for (gid, anchor) in &anchor_of {
+        let mut anchored: Vec<(&u32, &u32)> = anchor_of.iter().collect();
+        anchored.sort_unstable();
+        for &(gid, anchor) in &anchored {
             let Some(&(anchor_canvas, anchor_order)) = anchor_pos.get(anchor) else {
                 return Err(RenderError::Backdrop(
                     "backdrop-member-outside-anchor-canvas".into(),
                 ));
             };
-            for &(canvas, order, inside) in member_pos.get(gid).into_iter().flatten() {
-                if inside || (canvas == anchor_canvas && order > anchor_order) {
+            for &(canvas, order) in member_pos.get(gid).into_iter().flatten() {
+                if canvas == anchor_canvas && order > anchor_order {
                     continue;
                 }
                 return Err(RenderError::Backdrop(

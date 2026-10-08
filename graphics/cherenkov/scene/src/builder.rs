@@ -1,6 +1,6 @@
 use crate::{
-    BackdropFilter, BackdropGroup, BlendMode, Color, Draw, FillRule, GlyphRun, Group, Item, Layer,
-    LayerFilter, Motion, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
+    BackdropGroup, BlendMode, Color, Draw, FillRule, GlyphRun, Group, Item, Layer, LayerFilter,
+    Motion, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
 };
 use kurbo::{Affine, Rect, Vec2};
 
@@ -46,68 +46,12 @@ impl SceneBuilder {
         self
     }
 
-    /// Declare a backdrop group `id` capturing at `scale` with `filters`,
-    /// reduced into a pyramid of `levels` levels (`1` is the single-level
-    /// capture); layers sample it via [`LayerBuilder::backdrop`].
-    pub fn backdrop_group(
-        &mut self,
-        id: u32,
-        filters: Vec<BackdropFilter>,
-        scale: f64,
-        levels: u32,
-    ) -> &mut Self {
-        self.scene.backdrop_groups.push(BackdropGroup {
-            id,
-            filters,
-            scale,
-            levels,
-            anchor: None,
-            union: None,
-        });
-        self
-    }
-
-    /// Declare a backdrop group `id` anchored at the layer carrying
-    /// `anchor` as its [`crate::Layer::id`], else as
-    /// [`SceneBuilder::backdrop_group`].
-    pub fn backdrop_group_anchored(
-        &mut self,
-        id: u32,
-        anchor: u32,
-        filters: Vec<BackdropFilter>,
-        scale: f64,
-        levels: u32,
-    ) -> &mut Self {
-        self.scene.backdrop_groups.push(BackdropGroup {
-            id,
-            filters,
-            scale,
-            levels,
-            anchor: Some(anchor),
-            union: None,
-        });
-        self
-    }
-
-    /// Declare a backdrop group whose members composite against the
-    /// shared union field smoothed over `union` device pixels
-    /// ([`BackdropGroup::union`]).
-    pub fn backdrop_union_group(
-        &mut self,
-        id: u32,
-        filters: Vec<BackdropFilter>,
-        scale: f64,
-        levels: u32,
-        union: f64,
-    ) -> &mut Self {
-        self.scene.backdrop_groups.push(BackdropGroup {
-            id,
-            filters,
-            scale,
-            levels,
-            anchor: None,
-            union: Some(union),
-        });
+    /// Declare a backdrop group from its description — `id`, capture
+    /// `scale`, `filters`, pyramid `levels`, and optionally an `anchor`
+    /// layer id and a `union` field ([`BackdropGroup::new`] covers the
+    /// plain form); layers sample it via [`LayerBuilder::backdrop`].
+    pub fn backdrop_group(&mut self, group: BackdropGroup) -> &mut Self {
+        self.scene.backdrop_groups.push(group);
         self
     }
 
@@ -254,12 +198,8 @@ impl LayerBuilder<'_> {
 
     /// Give the layer the `id` a [`crate::BackdropGroup::anchor`] can
     /// name: the group's capture is taken beneath this layer.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `id` is `0`.
-    pub const fn id(&mut self, id: u32) -> &mut Self {
-        self.layer.id = Some(std::num::NonZeroU32::new(id).expect("layer id must be non-zero"));
+    pub const fn id(&mut self, id: std::num::NonZeroU32) -> &mut Self {
+        self.layer.id = Some(id);
         self
     }
 

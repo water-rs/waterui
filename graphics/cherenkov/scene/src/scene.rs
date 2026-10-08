@@ -244,10 +244,21 @@ impl Scene {
                 computed: scene.features.iter().cloned().collect(),
             });
         }
-        scene.validate_backdrops()?;
-        scene.validate_projections()?;
-        scene.validate_text()?;
+        scene.validate()?;
         Ok(scene)
+    }
+
+    /// The scene's structural contract: backdrop groups, projections and
+    /// text lowers as [`Scene::load`] checks them. `Scene::builder` output
+    /// is unchecked until this runs.
+    ///
+    /// # Errors
+    /// [`SceneError`] on the first violated rule.
+    pub fn validate(&self) -> Result<(), SceneError> {
+        self.validate_backdrops()?;
+        self.validate_projections()?;
+        self.validate_text()?;
+        Ok(())
     }
 
     /// A text layer's source must name fonts and character-boundary
@@ -363,15 +374,22 @@ impl Scene {
     /// layer's `backdrop` must name a declared group and carry a clip,
     /// and every group's `anchor` must name exactly one layer's `id`.
     fn validate_backdrops(&self) -> Result<(), SceneError> {
-        fn ids(layer: &Layer, seen: &mut std::collections::HashSet<u32>) -> Result<(), SceneError> {
-            if let Some(id) = layer.id
-                && !seen.insert(id.get())
-            {
-                return Err(SceneError::DuplicateBackdropAnchor(id.get()));
+        fn ids(
+            layer: &Layer,
+            seen: &mut std::collections::HashSet<u32>,
+            projective: &mut std::collections::HashSet<u32>,
+        ) -> Result<(), SceneError> {
+            if let Some(id) = layer.id {
+                if !seen.insert(id.get()) {
+                    return Err(SceneError::DuplicateBackdropAnchor(id.get()));
+                }
+                if layer.projection.is_some() {
+                    projective.insert(id.get());
+                }
             }
             for item in &layer.items {
                 if let Item::Layer(l) = item {
-                    ids(l, seen)?;
+                    ids(l, seen, projective)?;
                 }
             }
             Ok(())
@@ -418,11 +436,26 @@ impl Scene {
             return Err(SceneError::InvalidBackdropLevels(group.id));
         }
         let mut seen = std::collections::HashSet::new();
-        ids(&self.root, &mut seen)?;
+        let mut projective = std::collections::HashSet::new();
+        ids(&self.root, &mut seen, &mut projective)?;
         if let Some(group) = self
             .backdrop_groups
             .iter()
-            .find(|g| g.anchor.is_some_and(|a| !seen.contains(&a)))
+            .find(|g| g.anchor.is_some_and(|a| self.root.id == Some(a)))
+        {
+            return Err(SceneError::BackdropAnchorAtRoot(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| projective.contains(&a.get())))
+        {
+            return Err(SceneError::BackdropAnchorProjective(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| !seen.contains(&a.get())))
         {
             return Err(SceneError::UnknownBackdropAnchor(group.id));
         }
