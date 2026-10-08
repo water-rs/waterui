@@ -46,6 +46,8 @@ mod list_row_focus;
 mod list_row_hit;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_row_metrics;
+#[cfg(feature = "accessibility")]
+mod list_table_scroll_frames;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
 mod material;
@@ -423,9 +425,10 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 fn toggle_progress_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(false, nami::watcher::Context::from(false));
     let mut renderer = test_renderer();
+    let owner = RetainedIdentity::for_rc(&Rc::new(()));
 
     let (progress, selected) =
-        renderer.resolve_toggle_progress(&signal, Animation::linear(Duration::ZERO));
+        renderer.resolve_toggle_progress(&signal, &owner, Animation::linear(Duration::ZERO));
 
     approx::assert_relative_eq!(progress, 0.0);
     assert!(!selected);
@@ -525,6 +528,100 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
         Some(switch_point),
         "switch ripple must originate inside the switch control"
     );
+}
+
+/// One bit of `source` as a two-way `Binding<bool>` — every call reuses this
+/// one `Binding::mapping` call site, so the bindings it returns all carry the
+/// same `SignalIdentity` (nami keys a mapping's identity by the source plus a
+/// `#[track_caller]` call-site discriminator).
+fn bit(source: &Binding<u8>, bit: u8) -> Binding<bool> {
+    Binding::mapping(
+        source,
+        move |value| value & bit != 0,
+        move |source, on| {
+            source.set(if on {
+                source.snapshot() | bit
+            } else {
+                source.snapshot() & !bit
+            });
+        },
+    )
+}
+
+/// Regression for #2232: toggles whose bindings share a `SignalIdentity` must
+/// still own their thumb-progress animation slots. Two switches bound to
+/// mappings minted at one call site — the shape of the inspector's channel
+/// toggles — used to collapse onto one slot, so the off switch drew at the
+/// on switch's progress.
+#[test]
+fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
+    let toggle_draws = Rc::new(RefCell::new(Vec::new()));
+    let theme = MinimalTestTheme {
+        toggle_switch_draws: Rc::clone(&toggle_draws),
+        ..Default::default()
+    };
+    let mut renderer = test_renderer_with_theme(theme);
+    let env = test_environment();
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+    let s = Binding::container(0b01_u8);
+
+    // The collision the test exists for: both bindings carry one identity.
+    assert_eq!(
+        bit(&s, 1).identity(),
+        bit(&s, 2).identity(),
+        "same-site mappings must share a SignalIdentity for this test to cover the bug"
+    );
+
+    let draw_progress = |toggle_draws: &Rc<RefCell<Vec<ToggleSwitchDraw>>>| {
+        let mut frame = toggle_draws.borrow_mut().drain(..).collect::<Vec<_>>();
+        frame.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
+        frame
+            .iter()
+            .map(|(_, progress, selected)| (*progress, *selected))
+            .collect::<Vec<_>>()
+    };
+
+    capture_root_window(
+        &mut renderer,
+        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        &env,
+        bounds,
+    );
+    let first = draw_progress(&toggle_draws);
+    approx::assert_relative_eq!(first[0].0, 1.0);
+    assert!(first[0].1, "A is bound to an on bit");
+    approx::assert_relative_eq!(first[1].0, 0.0);
+    assert!(!first[1].1, "B is bound to an off bit");
+
+    // Toggling B animates only B's slot: mid-animation A still draws 1.0
+    // while B is in flight toward 1.0 (100ms linear in MinimalTestTheme).
+    let started = renderer.frame_instant();
+    bit(&s, 2).set(true);
+    renderer.set_frame_instant(started + Duration::from_millis(50));
+    capture_root_window(
+        &mut renderer,
+        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        &env,
+        bounds,
+    );
+    let mid = draw_progress(&toggle_draws);
+    approx::assert_relative_eq!(mid[0].0, 1.0);
+    assert!(
+        mid[1].0 > 0.0 && mid[1].0 < 1.0,
+        "B's thumb must be mid-animation, got {}",
+        mid[1].0
+    );
+
+    renderer.set_frame_instant(started + Duration::from_millis(200));
+    capture_root_window(
+        &mut renderer,
+        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        &env,
+        bounds,
+    );
+    let finished = draw_progress(&toggle_draws);
+    approx::assert_relative_eq!(finished[0].0, 1.0);
+    approx::assert_relative_eq!(finished[1].0, 1.0);
 }
 
 fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
@@ -2443,6 +2540,9 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
     assert!(renderer.hit_test.modal_interaction.is_none());
 }
 
+/// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
+type ToggleSwitchDraw = (Rect, f32, bool);
+
 #[derive(Default)]
 pub struct MinimalTestTheme {
     badge_draws: Rc<RefCell<Vec<Rect>>>,
@@ -2453,6 +2553,8 @@ pub struct MinimalTestTheme {
     navigation_bar_separator_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every tabs-bar surface bounds the theme was asked to draw.
     tabs_bar_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every tabs-bar divider bounds the theme was asked to draw.
+    tabs_bar_divider_draws: Rc<RefCell<Vec<Rect>>>,
     /// Forces the tab item layout the theme reports; `None` defaults to
     /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
     forced_tab_item_layout: Option<TabItemLayout>,
@@ -2476,6 +2578,8 @@ pub struct MinimalTestTheme {
     /// (water-rs/waterui#1788): the registry entries and the materials the
     /// state-layer draw replays.
     chrome: ChromePlan,
+    /// Every `draw_toggle_switch` call.
+    toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
 }
 
 /// One `backdrop_material` a chrome test's theme replays per
@@ -2625,11 +2729,14 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_toggle_switch(
         &self,
         _draw: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _selected: bool,
+        bounds: Rect,
+        progress: f32,
+        selected: bool,
         _state: WidgetInteractionState,
     ) {
+        self.toggle_switch_draws
+            .borrow_mut()
+            .push((bounds, progress, selected));
     }
 
     fn draw_toggle_checkbox(
@@ -2970,8 +3077,11 @@ impl WidgetTheme for MinimalTestTheme {
             icon_label_spacing: 4.0,
         }
     }
-    fn draw_tabs_bar(&self, _draw: &mut Recorder, bounds: Rect, _top_edge: bool) {
-        self.tabs_bar_draws.borrow_mut().push(bounds);
+    fn draw_tabs_bar(&self, _draw: &mut Recorder, surface: Rect) {
+        self.tabs_bar_draws.borrow_mut().push(surface);
+    }
+    fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
+        self.tabs_bar_divider_draws.borrow_mut().push(divider);
     }
     fn draw_tabs_highlight(&self, _draw: &mut Recorder, bounds: Rect, layout: TabItemLayout) {
         self.tabs_highlight_draws

@@ -33,10 +33,10 @@ mod macos {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    use cherenkov::kurbo::{Affine, Rect, RoundedRect};
+    use cherenkov::kurbo::{Affine, Rect, RoundedRect, Size};
     use cherenkov::{
-        Display, Draw as _, Engine, FrameTime, Layer, Offscreen, OffscreenFormat, Surface,
-        WorkingColor,
+        Display, Draw as _, Engine, FrameTime, Hosted, Layer, Offscreen, OffscreenFormat,
+        RenderError, Surface, WorkingColor,
     };
     use cherenkov_gpu::interop::wgpu::rwh::{
         AppKitWindowHandle, DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle,
@@ -44,7 +44,7 @@ mod macos {
     };
     use cherenkov_gpu::interop::{
         ExternalFrame, FrameColor, GpuContent, GpuContentBox, RgbAlpha, SharedDevice, YuvRange,
-        metal::import_texture, wgpu,
+        apple::HostedLayer, metal::import_texture, wgpu,
     };
     use cherenkov_gpu::{DisplaySync, Gpu, GpuConfig, WindowTarget};
     use dispatch2::DispatchQueue;
@@ -156,6 +156,18 @@ mod macos {
             case(
                 "every_part_presents_with_the_requested_display_sync",
                 every_part_presents_with_the_requested_display_sync,
+            ),
+            case(
+                "a_hosted_layer_sits_between_its_parts_and_moves_in_place",
+                a_hosted_layer_sits_between_its_parts_and_moves_in_place,
+            ),
+            case(
+                "an_unplaceable_hosted_layer_fails_every_render_until_placeable",
+                an_unplaceable_hosted_layer_fails_every_render_until_placeable,
+            ),
+            case(
+                "a_hosted_layer_without_planes_fails_the_render",
+                a_hosted_layer_without_planes_fails_the_render,
             ),
         ]
     }
@@ -1690,5 +1702,202 @@ mod macos {
         assert!(is::<CAMetalLayer>(first));
         assert!(is::<CAMetalLayer>(second));
         assert!(!is::<CAMetalLayer>(plane_a) && !is::<CAMetalLayer>(plane_b));
+    }
+
+    /// A host's layer, as the content of `web` at `EXTENT`, between a
+    /// backdrop painted below it and a bar painted above it.
+    fn hosted_scene(fixture: &Fixture, web: &Retained<CALayer>) -> [Layer; 4] {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let surface = &fixture.window;
+        let below = surface.layer();
+        let holder = surface.layer();
+        let hosted = surface.layer();
+        let above = surface.layer();
+        let backdrop = surface.record(|c| {
+            c.fill(
+                Rect::new(0.0, 0.0, 96.0, 64.0),
+                WorkingColor::new([0.1, 0.3, 0.6, 1.0]),
+            );
+        });
+        let bar = surface.record(|c| {
+            c.fill(
+                Rect::new(8.0, 44.0, 88.0, 58.0),
+                WorkingColor::new([0.5, 0.5, 0.5, 0.5]),
+            );
+        });
+        let object = Hosted::<Gpu>::new(HostedLayer::new(web.clone(), mtm));
+        surface.update(|tx| {
+            tx[surface.root()].push(&below).push(&holder).push(&above);
+            tx[&below].content(backdrop);
+            tx[&holder]
+                .push(&hosted)
+                .transform(Affine::translate((12.0, 8.0)))
+                .clip(RoundedRect::new(0.0, 0.0, 72.0, 48.0, 6.0));
+            tx[&hosted].content(object.at(EXTENT));
+            tx[&above].content(bar);
+        });
+        [below, holder, hosted, above]
+    }
+
+    /// Whether `a` and `b` are the same Core Animation layer.
+    fn same_layer(a: &CALayer, b: &CALayer) -> bool {
+        std::ptr::from_ref(a) == std::ptr::from_ref(b)
+    }
+
+    /// The hosted extent, in the layer's content units.
+    const EXTENT: Size = Size::new(40.5, 24.0);
+
+    /// Renders until `shown` holds. A frame that needs parts the window
+    /// does not have yet, or whose plan adds a static capture still being
+    /// converted, presents nothing and keeps the committed scene; the part
+    /// creation or the conversion wakes the engine for the frame that
+    /// presents.
+    fn render_until(fixture: &Fixture, shown: &dyn Fn() -> bool, what: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            fixture.woke.store(false, Ordering::Relaxed);
+            fixture.render();
+            if shown() {
+                return;
+            }
+            drive(deadline, &|| fixture.woke.load(Ordering::Acquire), &|| {
+                format!("{what}: no wake for the frame that presents it")
+            });
+        }
+    }
+
+    /// The host's layer is shown on a plane between the part painted below
+    /// it and the part painted above it — translucent controls included —
+    /// inside one node per tree level, at its extent; a move on its path
+    /// updates the same nodes, and clearing the content takes the layer
+    /// and its plane out of the engine's tree.
+    fn a_hosted_layer_sits_between_its_parts_and_moves_in_place() {
+        let fixture = Fixture::new();
+        let web = CALayer::new();
+        let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
+        render_until(&fixture, &|| web.superlayer().is_some(), "the hosted layer");
+        // Part, hosted plane, part — and, once the bar above has been quiet
+        // long enough, its static capture on a plane of its own.
+        let layers = stack(&fixture);
+        let [first, top, second, ..] = &layers[..] else {
+            panic!("part, plane, part — found {} layers", layers.len());
+        };
+        assert!(is::<CAMetalLayer>(first) && is::<CAMetalLayer>(second));
+        let top = top.clone();
+        let root_node = &sublayers(&top)[0];
+        let root_scroll = &sublayers(root_node)[0];
+        let holder_node = sublayers(root_scroll)[0].clone();
+        assert!((holder_node.affineTransform().tx - 12.0).abs() < 1e-12);
+        let holder_clip = &sublayers(&holder_node)[0];
+        assert!(holder_clip.masksToBounds());
+        let holder_scroll = &sublayers(holder_clip)[0];
+        let hosted_node = &sublayers(holder_scroll)[0];
+        let hosted_scroll = &sublayers(hosted_node)[0];
+        let [engine_holder] = &sublayers(hosted_scroll)[..] else {
+            panic!("one hosted holder");
+        };
+        let [shown] = &sublayers(engine_holder)[..] else {
+            panic!("the host's layer in its holder");
+        };
+        assert!(same_layer(shown, &web), "the host's own layer");
+        let bounds = web.bounds();
+        assert_eq!(
+            (bounds.size.width, bounds.size.height),
+            (EXTENT.width, EXTENT.height)
+        );
+
+        fixture.window.update(|tx| {
+            tx[&holder].transform(Affine::translate((20.0, 4.0)));
+        });
+        render_until(
+            &fixture,
+            &|| (holder_node.affineTransform().tx - 20.0).abs() < 1e-12,
+            "the move",
+        );
+        assert!(same_layer(&stack(&fixture)[1], &top), "the plane stays");
+        let node = &sublayers(&sublayers(&sublayers(&top)[0])[0])[0];
+        assert!(same_layer(node, &holder_node), "its level nodes stay");
+        assert!(
+            web.superlayer()
+                .is_some_and(|s| same_layer(&s, engine_holder))
+        );
+
+        fixture.window.update(|tx| {
+            tx[&hosted].clear_content();
+        });
+        render_until(&fixture, &|| web.superlayer().is_none(), "the release");
+        assert!(
+            top.superlayer().is_none(),
+            "the hosted plane left the stack"
+        );
+        assert!(engine_holder.superlayer().is_none(), "and its holder");
+    }
+
+    /// A hosted layer under an isolating ancestor cannot be placed: the
+    /// render fails naming it and the rule, every render after that fails
+    /// too, and the first render after the ancestor stops isolating shows
+    /// it.
+    fn an_unplaceable_hosted_layer_fails_every_render_until_placeable() {
+        let fixture = Fixture::new();
+        let web = CALayer::new();
+        let [_below, holder, hosted, _above] = hosted_scene(&fixture, &web);
+        fixture.window.update(|tx| {
+            tx[&holder].opacity(0.5f32);
+        });
+        for _ in 0..2 {
+            drain_main();
+            match fixture.engine.render(FrameTime::now()) {
+                Err(RenderError::Unplaceable { layer, reason }) => {
+                    assert_eq!(layer, hosted.id());
+                    assert!(reason.contains("isolates"), "{reason}");
+                }
+                other => panic!("an unplaceable hosted layer, got {other:?}"),
+            }
+        }
+        assert!(web.superlayer().is_none(), "never shown");
+        fixture.window.update(|tx| {
+            tx[&holder].opacity(1.0f32);
+        });
+        render_until(
+            &fixture,
+            &|| web.superlayer().is_some(),
+            "the placeable layer",
+        );
+        let layers = stack(&fixture);
+        assert!(
+            matches!(&layers[..], [first, plane, second, ..]
+                if is::<CAMetalLayer>(first)
+                    && !is::<CAMetalLayer>(plane)
+                    && is::<CAMetalLayer>(second)),
+            "part, plane, part"
+        );
+    }
+
+    /// A surface with no system-compositor parent cannot show a hosted
+    /// layer: its render fails, and nothing composites the layer instead.
+    fn a_hosted_layer_without_planes_fails_the_render() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let metal = metal();
+        let engine = Engine::<Gpu>::new(GpuConfig {
+            device: Some(metal.shared),
+            ..GpuConfig::default()
+        })
+        .expect("an engine");
+        let surface = engine
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF16), || {})
+            .expect("offscreen");
+        let web = surface.layer();
+        let object = Hosted::<Gpu>::new(HostedLayer::new(CALayer::new(), mtm));
+        surface.update(|tx| {
+            tx[surface.root()].push(&web);
+            tx[&web].content(object.at(EXTENT));
+        });
+        match engine.render(FrameTime::now()) {
+            Err(RenderError::Unplaceable { layer, reason }) => {
+                assert_eq!(layer, web.id());
+                assert_eq!(reason, "the surface has no system-compositor parent");
+            }
+            other => panic!("an unplaceable hosted layer, got {other:?}"),
+        }
     }
 }

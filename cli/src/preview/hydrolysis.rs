@@ -4,16 +4,15 @@ use askama::Template;
 use eyre::{Context as _, Result};
 
 use crate::artifact_symbols::ArtifactSymbols;
-use crate::backend::reinit_backend;
 use crate::build::{BuildOptions, BuildProfile, BuildProgress, BuiltTarget};
 use crate::hydrolysis::backend::HydrolysisBackend;
 use crate::hydrolysis::platform::{
     build_hydrolysis_with_envs_and_features, stage_hydrolysis_shared_runtime,
 };
-use crate::platform::{TargetBackend, TargetPlatform};
+use crate::platform::TargetPlatform;
 use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
 use crate::preview::{PreviewSource, PreviewTargetTemplate};
-use crate::project::{ManagedBackends, Project};
+use crate::project::Project;
 use crate::project_model::assets;
 use waterui_assets_planner::{FontDeclaration, FontSource};
 
@@ -102,7 +101,7 @@ pub async fn render_preview_with_hydrolysis(
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
         &project,
-        &built.artifact,
+        built.executable()?,
         width,
         height,
         output_path,
@@ -123,7 +122,7 @@ pub async fn test_preview_with_hydrolysis(
     let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
     stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
-    run_preview_test_binary(&project, &built.artifact, width, height).await
+    run_preview_test_binary(&project, built.executable()?, width, height).await
 }
 
 /// Build the managed hydrolysis binary for a preview request: write the
@@ -135,7 +134,7 @@ async fn build_preview_session(
     request: &HydrolysisPreviewRequest<'_>,
     automation_body: Option<&str>,
 ) -> Result<(Project, BuiltTarget)> {
-    let project = ensure_hydrolysis_backend_ready(request.project_path).await?;
+    let project = crate::hydrolysis::backend::open_ready(request.project_path).await?;
     write_preview_bindings(&project, request.source, request.theme, automation_body).await?;
 
     let mut build_options = BuildOptions::development(BuildProfile::Debug);
@@ -222,21 +221,6 @@ pub async fn stage_hydrolysis_resources(
     Ok(())
 }
 
-/// Opens the project and makes sure its managed Hydrolysis backend exists and
-/// matches the current templates. Shared by the preview and MCP flows.
-pub async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project> {
-    let project = Project::open(
-        project_path,
-        ManagedBackends::for_backend(TargetBackend::Hydrolysis),
-    )
-    .await?;
-    if HydrolysisBackend::requires_regeneration(&project).await? {
-        reinit_backend::<HydrolysisBackend>(&project).await?;
-    }
-
-    Ok(project)
-}
-
 async fn write_preview_bindings(
     project: &Project,
     source: PreviewSource<'_>,
@@ -261,7 +245,7 @@ async fn write_preview_bindings(
     )
     .render()
     .wrap_err("Failed to render hydrolysis preview bindings template")?;
-    smol::fs::write(&module_path, rendered)
+    crate::templates::write_file_if_changed(&module_path, rendered.as_bytes())
         .await
         .wrap_err_with(|| format!("Failed to write {}", module_path.display()))?;
     Ok(())

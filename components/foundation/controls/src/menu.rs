@@ -236,9 +236,9 @@ impl Shortcut {
     /// Creates a shortcut on `key` — a `char` or a [`NamedKey`].
     ///
     /// A backend whose platform menu cannot arm `key` — as an `AppKit` key
-    /// equivalent, a `UIKit` key command, a muda accelerator or an Android
-    /// menu shortcut character — panics when it builds the menu item, so
-    /// choose a key the target platforms' menus support.
+    /// equivalent, a `UIKit` key command, a Win32 menu accelerator or an
+    /// Android menu shortcut character — panics when it builds the menu
+    /// item, so choose a key the target platforms' menus support.
     #[must_use]
     pub fn new(key: impl Into<ShortcutKey>) -> Self {
         Self {

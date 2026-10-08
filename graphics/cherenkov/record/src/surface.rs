@@ -20,13 +20,16 @@ use kurbo::{Affine, Size, Vec2};
 use nami_core::watcher::Context;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::Instant;
 use crate::animation::Animation;
 use crate::ops::{
-    BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,
+    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
+    SurfaceId,
 };
 use crate::projective::Projective;
 use crate::record::{Binding, Content, ContentSpare, Live, LiveOwner, SampleFlag};
 use crate::shape::Shape;
+use crate::shape::ShapeData;
 use crate::size::LayoutSize;
 use crate::style::{BlendMode, FilterId};
 use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
@@ -352,6 +355,10 @@ impl<T: Target> Shared<T> {
     /// last write in program order wins. Nothing drains until then; the
     /// commit flushes once.
     ///
+    /// `animation` fills every animatable op that lacks one; `start` is
+    /// the instant those animations begin at on the host's clock — `None`
+    /// keeps first-sampled-frame starts.
+    ///
     /// # Panics
     /// Panics if `body` panics. A panicking body leaves the bindings its
     /// setters already replaced or removed replaced or removed, and the
@@ -366,6 +373,7 @@ impl<T: Target> Shared<T> {
     pub fn run_transaction(
         this: &Rc<RefCell<Self>>,
         animation: Option<Animation>,
+        start: Option<Instant>,
         body: impl FnOnce(&mut Transaction<'_, T>),
     ) {
         let mut open = {
@@ -395,6 +403,7 @@ impl<T: Target> Shared<T> {
                 layer: LayerId::new(0),
                 shared: Rc::clone(this),
                 default_animation: animation,
+                default_start: start,
                 last_edit: None,
             },
             lifetime: std::marker::PhantomData,
@@ -569,10 +578,10 @@ impl<T: Target> Shared<T> {
         }
     }
 
-    /// Binds `live` so its later changes queue `op(layer, value, animation)`
-    /// and notify the queue, returning the value the binding starts from:
-    /// the signal's value now. Replaces the property's previous binding.
-    /// While a transaction is open the changes queue through
+    /// Binds `live` so its later changes queue `op(layer, value, animation,
+    /// start)` and notify the queue, returning the value the binding starts
+    /// from: the signal's value now. Replaces the property's previous
+    /// binding. While a transaction is open the changes queue through
     /// [`Shared::deferred`] for the outermost commit to resolve.
     #[inline]
     fn bind<V, F>(
@@ -584,7 +593,7 @@ impl<T: Target> Shared<T> {
     ) -> V
     where
         V: 'static,
-        F: Fn(LayerId, V, Option<Animation>) -> LayerOp + 'static,
+        F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
     {
         // The watcher carries the generation the binding will be kept
         // under, taken before the watch starts: it fires only while the
@@ -620,16 +629,17 @@ impl<T: Target> Shared<T> {
     ) -> impl Fn(Context<V>) + 'static
     where
         V: 'static,
-        F: Fn(LayerId, V, Option<Animation>) -> LayerOp + 'static,
+        F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
     {
         let weak = Rc::downgrade(shared);
         move |context: Context<V>| {
             let animation = context.metadata().try_get::<Animation>();
+            let start = context.metadata().try_get::<AnimationStart>();
             let target = context.into_value();
             if let Some(shared) = weak.upgrade() {
                 // `op` runs user code — a clip's `Shape::into_data` — so
                 // the op is built before the surface is borrowed.
-                let op = Op::Layer(op(layer, target, animation));
+                let op = Op::Layer(op(layer, target, animation, start.map(|s| s.0)));
                 let mut shared = shared.borrow_mut();
                 if shared
                     .bindings
@@ -963,7 +973,8 @@ impl<T: Target> From<Picture> for LayerContent<T> {
 /// constant. The last write in program order wins: a bound signal's
 /// change made while a transaction is open lands at the outermost
 /// commit, after the transaction's edits, only if the binding is still
-/// the property's current one.
+/// the property's current one. An [`AnimationStart`] next to it starts
+/// the track at that instant instead of the first frame that samples it.
 pub struct LayerEdit<T: Target> {
     /// The layer the handle currently points at.
     layer: LayerId,
@@ -976,6 +987,8 @@ pub struct LayerEdit<T: Target> {
     /// retargets — and what proves the entry at that index is still the
     /// recorded one.
     last_edit: Option<(usize, u64)>,
+    /// The transaction-wide animation start, on the host's clock.
+    default_start: Option<Instant>,
 }
 
 impl<T: Target> LayerEdit<T> {
@@ -1005,6 +1018,7 @@ impl<T: Target> std::fmt::Debug for LayerEdit<T> {
         f.debug_struct("LayerEdit")
             .field("layer", &self.layer)
             .field("default_animation", &self.default_animation)
+            .field("default_start", &self.default_start)
             .finish_non_exhaustive()
     }
 }
@@ -1032,7 +1046,7 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             self.layer,
             PropKind::Projection,
             value.into(),
-            |layer, target, _| LayerOp::Projection(layer, target),
+            |layer, target, _, _| LayerOp::Projection(layer, target),
         );
         self.queue(Op::Layer(LayerOp::Projection(self.layer, target)));
         self
@@ -1051,13 +1065,23 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             self.layer,
             PropKind::Tilt,
             value.into(),
-            |layer, target, animation| LayerOp::Tilt(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Tilt(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Tilt(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1072,13 +1096,23 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             self.layer,
             PropKind::Depth,
             value.into(),
-            |layer, target, animation| LayerOp::Depth(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Depth(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Depth(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1111,7 +1145,7 @@ impl<T: BackdropSampling> LayerEdit<T> {
             self.layer,
             PropKind::Backdrop,
             sample.into(),
-            |layer, sample, _| LayerOp::Backdrop(layer, Some(sample)),
+            |layer, sample, _, _| LayerOp::Backdrop(layer, Some(sample)),
         );
         self.queue(Op::Layer(LayerOp::Backdrop(self.layer, Some(target))));
         self
@@ -1134,13 +1168,23 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Transform,
             transform.into(),
-            |layer, target, animation| LayerOp::Transform(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Transform(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Transform(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1156,13 +1200,23 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Translation,
             value.into(),
-            |layer, target, animation| LayerOp::Translation(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Translation(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Translation(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1180,13 +1234,23 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Rotation,
             value.into(),
-            |layer, target, animation| LayerOp::Rotation(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Rotation(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Rotation(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1202,13 +1266,23 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Scale,
             value.into(),
-            |layer, target, animation| LayerOp::Scale(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Scale(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Scale(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1225,13 +1299,23 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Skew,
             value.into(),
-            |layer, target, animation| LayerOp::Skew(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Skew(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Skew(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1247,13 +1331,23 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Pivot,
             value.into(),
-            |layer, target, animation| LayerOp::Pivot(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Pivot(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Pivot(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1266,13 +1360,23 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Opacity,
             opacity.into(),
-            |layer, target, animation| LayerOp::Opacity(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::Opacity(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Opacity(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1285,13 +1389,23 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::ScrollOffset,
             offset.into(),
-            |layer, target, animation| LayerOp::ScrollOffset(layer, Prop { target, animation }),
+            |layer, target, animation, start| {
+                LayerOp::ScrollOffset(
+                    layer,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::ScrollOffset(
             self.layer,
             Prop {
                 target,
                 animation: self.default_animation,
+                start: self.default_start,
             },
         )));
         self
@@ -1304,7 +1418,7 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Clip,
             shape.into(),
-            |layer, shape: S, _| LayerOp::Clip(layer, Some(shape.into_data())),
+            |layer, shape: S, _, _| LayerOp::Clip(layer, Some(ShapeData::of(&shape))),
         );
         self.queue(Op::Layer(LayerOp::Clip(
             self.layer,
@@ -1509,6 +1623,7 @@ impl<T: Target> std::fmt::Debug for Transaction<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Transaction")
             .field("default_animation", &self.edit.default_animation)
+            .field("default_start", &self.edit.default_start)
             .finish_non_exhaustive()
     }
 }
@@ -1592,7 +1707,7 @@ mod tests {
         let mut pointers = Vec::new();
 
         for _ in 0..7 {
-            Shared::run_transaction(&shared, None, |tx| {
+            Shared::run_transaction(&shared, None, None, |tx| {
                 tx[&layer].record(|_| {});
             });
             let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
@@ -1684,7 +1799,7 @@ mod tests {
         };
         let layer = layer(&shared);
         let records = std::cell::Cell::new(0);
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&root].push(&layer);
             tx[&layer].layout_size(Size::new(10.0, 20.0)).record(|c| {
                 records.set(records.get() + 1);
@@ -1704,7 +1819,7 @@ mod tests {
         );
 
         // A constant resize updates the bound fill in place.
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].layout_size(Size::new(30.0, 40.0));
         });
         assert_eq!(
@@ -1714,7 +1829,7 @@ mod tests {
 
         // A bound host signal keeps it updated with no transaction.
         let host = binding(Size::new(5.0, 6.0));
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].layout_size(host.clone());
         });
         assert_eq!(
@@ -1728,7 +1843,7 @@ mod tests {
         );
 
         // Setting the same size again changes nothing.
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&layer].layout_size(Size::new(7.0, 8.0));
         });
         assert_eq!(content_rects(&shared, layer.id(), now), Vec::new());
@@ -1742,7 +1857,7 @@ mod tests {
             let owner: Rc<dyn LayerOwner> = Rc::clone(&shared) as Rc<dyn LayerOwner>;
             Layer::new(LayerId::new(0), owner, false)
         };
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&root].layout_size(Size::new(10.0, 10.0));
         });
         let content = {
@@ -1751,7 +1866,7 @@ mod tests {
                 c.fill(c.layout_size().map(Size::to_rect), WorkingColor::WHITE);
             })
         };
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             tx[&root].content(content);
         });
         let start = crate::Instant::now();
@@ -1760,6 +1875,7 @@ mod tests {
         Shared::run_transaction(
             &shared,
             Some(Curve::linear(Duration::from_millis(400)).into()),
+            None,
             |tx| {
                 tx[&root].layout_size(Size::new(30.0, 10.0));
             },

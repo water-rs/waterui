@@ -24,7 +24,7 @@ use waterui_core::{AnyView, Environment, Str};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
-use waterui_navigation::tab::{Tab, Tabs};
+use waterui_navigation::tab::{Tab, Tabs, tab_style};
 use waterui_navigation::{
     NavigationPath, NavigationSplitView, NavigationStack, NavigationToolbar, NavigationToolbarItem,
     NavigationToolbarPlacement, NavigationView,
@@ -291,6 +291,72 @@ fn tab_bar_and_nested_navigation_bar_extend() {
         f64::from(TOP_INSET),
         WINDOW.y1 - f64::from(BOTTOM_INSET),
         "tabs under insets",
+    );
+}
+
+/// A `Tabs` view styled `Sidebar` docks its strip on the leading edge: the
+/// strip's surface reaches the window's top edge through the status band —
+/// and keeps reaching the bottom edge — while its divider is the 1 px
+/// column on the strip's inner (trailing) edge, spanning the surface's
+/// full reach (water-rs/waterui#1982).
+#[test]
+fn sidebar_strip_extends_through_the_top_inset_with_a_trailing_divider() {
+    let theme = MinimalTestTheme::default();
+    let tab_draws = Rc::clone(&theme.tabs_bar_draws);
+    let divider_draws = Rc::clone(&theme.tabs_bar_divider_draws);
+    let selection = Binding::container(0i32);
+    let _renderer = capture(
+        Tabs::new(
+            &selection,
+            vec![
+                Tab::new(0, "First", || NavigationView::new("One", text("one"))),
+                Tab::new(1, "Second", || NavigationView::new("Two", text("two"))),
+            ],
+        )
+        .style(tab_style::Sidebar),
+        &env_with_insets(edge_insets(), EdgeInsets::default()),
+        theme,
+    );
+
+    // In the strip's draw space the window's top edge sits at `-TOP_INSET`
+    // and its bottom edge at `content_height + BOTTOM_INSET`, the same
+    // measure the bottom-bar cases use.
+    let content_height = WINDOW.height() - f64::from(TOP_INSET) - f64::from(BOTTOM_INSET);
+    let window_bottom = content_height + f64::from(BOTTOM_INSET);
+    let tab_draws = tab_draws.borrow();
+    assert_eq!(
+        tab_draws.len(),
+        1,
+        "the tab strip draws once: {tab_draws:?}"
+    );
+    let strip = tab_draws[0];
+    assert!(
+        (strip.y0 + f64::from(TOP_INSET)).abs() <= EDGE_EPS,
+        "the strip's surface must reach the window's top edge through the \
+         status band: {strip:?}"
+    );
+    assert!(
+        (strip.y1 - window_bottom).abs() <= EDGE_EPS,
+        "the strip's surface must reach the window's bottom edge through \
+         the navigation band: {strip:?}"
+    );
+
+    let divider_draws = divider_draws.borrow();
+    assert_eq!(
+        divider_draws.len(),
+        1,
+        "the strip's divider draws once: {divider_draws:?}"
+    );
+    let divider = divider_draws[0];
+    assert!(
+        (divider.width() - 1.0).abs() <= EDGE_EPS && (divider.x1 - strip.x1).abs() <= EDGE_EPS,
+        "the divider must be the 1 px column on the strip's trailing edge: \
+         {divider:?} vs {strip:?}"
+    );
+    assert!(
+        (divider.y0 - strip.y0).abs() <= EDGE_EPS && (divider.y1 - strip.y1).abs() <= EDGE_EPS,
+        "the divider must span the strip's surface reach, top edge to \
+         bottom edge: {divider:?} vs {strip:?}"
     );
 }
 

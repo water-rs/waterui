@@ -265,7 +265,8 @@ mod imp {
             let host_view: &cocoa_ui::PlatformView = host;
             // SAFETY: `content_frame` borrows the views for the call;
             // `leaf_view` holds the retain for the host's lifetime.
-            let frame = crate::native_layout::content_frame(&leaf_view, host_view);
+            let frame =
+                crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
             cocoa_ui::view::set_frame(&leaf_view, frame);
         });
         window.set_content_view(&host);
@@ -1136,7 +1137,8 @@ mod imp {
             let host_view: &cocoa_ui::PlatformView = host;
             // SAFETY: `content_frame` borrows the views for the call;
             // `leaf_view` holds the retain for the host's lifetime.
-            let frame = crate::native_layout::content_frame(&leaf_view, host_view);
+            let frame =
+                crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
             cocoa_ui::view::set_frame(&leaf_view, frame);
         });
         keepalive.keep(leaf);

@@ -49,7 +49,7 @@ const FLAT: CaptureClass = CaptureClass::new(1);
 
 /// A tint shader that samples the backdrop — the smallest valid
 /// `backdrop_effect` for an engine registration.
-const TINT_WGSL: &str = "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> { return backdrop_sample(p) + params[0]; }\n";
+const TINT_WGSL: &str = "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> { return backdrop_sample(px.p) + params[0]; }\n";
 
 /// The chrome test plan: `GLASS` groups `Shared`, `FLAT` is `Solo`, and two
 /// registered shaders.

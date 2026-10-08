@@ -456,9 +456,27 @@ impl Uploads<Rgba16F> for Gpu {}
 impl cherenkov::HdrOutput for Gpu {}
 
 // System-compositor planes (#90): eligible layers of an Apple window surface
-// are promoted to Core Animation layers — see `render::planes`.
-#[cfg(target_vendor = "apple")]
+// are promoted to Core Animation layers, and of an Android surface-control
+// surface to child surface controls — see `render::planes`.
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
 impl cherenkov::Planes for Gpu {}
+
+// Hosted system layers (#2199): the host's `CALayer` or `SurfaceControl`
+// is placed on a plane of its own, never composited — see `render::planes`.
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
+impl cherenkov::HostedLayers for Gpu {
+    type Object = render::planes::Hosted;
+
+    fn bind_hosted(
+        r: &mut Self::Renderer,
+        surface: cherenkov::SurfaceId,
+        layer: cherenkov::LayerId,
+        object: Self::Object,
+        size: kurbo::Size,
+    ) {
+        r.bind_hosted(surface, layer, object, size);
+    }
+}
 
 impl cherenkov::BackdropSampling for Gpu {}
 

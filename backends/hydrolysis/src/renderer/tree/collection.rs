@@ -43,33 +43,57 @@ pub fn collect_replaced_ids<S: ViewSnapshot>(
 #[derive(Clone, Copy)]
 pub(super) enum EntryPhase {
     Stable,
-    /// Animating in since this instant.
-    Entering(Instant),
-    /// Animating out since this instant; dropped when the animation completes.
-    Exiting(Instant),
+    /// Animating in since `start`, from presence `from`: `0.0` for a fresh
+    /// enter, or the interrupted exit's sampled presence when the removal was
+    /// reversed mid-flight, so the enter resumes where the exit stopped.
+    Entering {
+        start: Instant,
+        from: f32,
+    },
+    /// Animating out since `start`, from presence `from`: `1.0` for a fresh
+    /// exit, or the interrupted enter's sampled presence when the insert was
+    /// reversed mid-flight. Dropped when the animation completes.
+    Exiting {
+        start: Instant,
+        from: f32,
+    },
 }
 
 impl EntryPhase {
     /// The 0..=1 presence factor at `now`: opacity and stack-axis size scale.
+    /// A phase carries everything the value depends on — a reversal samples
+    /// the interrupted phase into `from` rather than restarting it — so the
+    /// factor is a pure function of the phase and `now`.
     fn factor(self, now: Instant, animation: &Animation) -> f32 {
         match self {
             Self::Stable => 1.0,
-            Self::Entering(start) => animation.progress(now.saturating_duration_since(start)),
-            Self::Exiting(start) => 1.0 - animation.progress(now.saturating_duration_since(start)),
+            Self::Entering { start, from } => (1.0 - from).mul_add(
+                animation.progress(now.saturating_duration_since(start)),
+                from,
+            ),
+            Self::Exiting { start, from } => {
+                from * (1.0 - animation.progress(now.saturating_duration_since(start)))
+            }
         }
+    }
+
+    /// The presence this phase would render at `now`, clamped to the range
+    /// layout and flush consume — the value a reversal samples into `from`.
+    fn sampled_presence(self, now: Instant, animation: &Animation) -> f32 {
+        self.factor(now, animation).clamp(0.0, 1.0)
     }
 
     fn is_transitioning(self, now: Instant, animation: &Animation) -> bool {
         match self {
             Self::Stable => false,
-            Self::Entering(start) | Self::Exiting(start) => {
+            Self::Entering { start, .. } | Self::Exiting { start, .. } => {
                 !animation.is_complete(now.saturating_duration_since(start))
             }
         }
     }
 
     fn is_finished_exit(self, now: Instant, animation: &Animation) -> bool {
-        matches!(self, Self::Exiting(start) if animation.is_complete(now.saturating_duration_since(start)))
+        matches!(self, Self::Exiting { start, .. } if animation.is_complete(now.saturating_duration_since(start)))
     }
 
     /// Whether an entry in this phase is kept out of the accessibility tree. The
@@ -78,7 +102,7 @@ impl EntryPhase {
     /// is purely visual), while an exiting entry — already removed from the
     /// membership — is suppressed while it collapses out.
     const fn suppresses_accessibility(self) -> bool {
-        matches!(self, Self::Exiting(_))
+        matches!(self, Self::Exiting { .. })
     }
 }
 
@@ -163,17 +187,24 @@ pub(super) fn collection_transition_runtime(
 }
 
 /// The phase a reused live entry should carry after a reconcile: `Stable`
-/// without a transition, a fresh enter when it was leaving, otherwise its
-/// current phase (so an in-flight enter keeps running).
-const fn next_live_phase(
+/// without a transition, a reversal-resuming enter when it was leaving,
+/// otherwise its current phase (so an in-flight enter keeps running).
+fn next_live_phase(
     transition: Option<&CollectionTransitionRuntime>,
     previous: EntryPhase,
     now: Instant,
 ) -> EntryPhase {
-    match (transition.is_some(), previous) {
-        (false, _) => EntryPhase::Stable,
-        (true, EntryPhase::Exiting(_)) => EntryPhase::Entering(now),
-        (true, phase) => phase,
+    match (transition, previous) {
+        (None, _) => EntryPhase::Stable,
+        (Some(runtime), EntryPhase::Exiting { .. }) => {
+            let from = previous.sampled_presence(now, &runtime.animation);
+            tracing::trace!(
+                presence = from,
+                "collection entry exit reversed mid-flight; enter resumes from sampled presence"
+            );
+            EntryPhase::Entering { start: now, from }
+        }
+        (Some(_), phase) => phase,
     }
 }
 
@@ -703,9 +734,28 @@ impl CollectionNode {
             }
         }
 
+        let animation = self
+            .transition
+            .as_ref()
+            .map(|runtime| runtime.animation.clone());
         let begin_exit = |mut entry: CollectionEntry| -> CollectionEntry {
-            if !matches!(entry.phase, EntryPhase::Exiting(_)) {
-                entry.phase = EntryPhase::Exiting(now);
+            if !matches!(entry.phase, EntryPhase::Exiting { .. }) {
+                // Departed entries are only kept while a transition is
+                // configured, so the animation is present. An entry still
+                // entering exits from the presence it had reached, not from
+                // full presence — the siblings keep sliding from where they
+                // are instead of jumping to the fully-grown slot.
+                let animation = animation
+                    .as_ref()
+                    .expect("departed entries are only retained under a transition");
+                let from = entry.phase.sampled_presence(now, animation);
+                if matches!(entry.phase, EntryPhase::Entering { .. }) {
+                    tracing::trace!(
+                        presence = from,
+                        "collection entry enter reversed mid-flight; exit resumes from sampled presence"
+                    );
+                }
+                entry.phase = EntryPhase::Exiting { start: now, from };
             }
             entry
         };
@@ -741,7 +791,10 @@ impl CollectionNode {
                     core,
                     node,
                     phase: if animated {
-                        EntryPhase::Entering(now)
+                        EntryPhase::Entering {
+                            start: now,
+                            from: 0.0,
+                        }
                     } else {
                         EntryPhase::Stable
                     },
@@ -777,7 +830,7 @@ impl CollectionNode {
         let dropped = self.entries.len() != before;
         let mut transitioning = false;
         for entry in &mut self.entries {
-            if let EntryPhase::Entering(start) = entry.phase
+            if let EntryPhase::Entering { start, .. } = entry.phase
                 && animation.is_complete(now.saturating_duration_since(start))
             {
                 entry.phase = EntryPhase::Stable;

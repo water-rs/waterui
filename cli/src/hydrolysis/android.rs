@@ -19,6 +19,7 @@ use smol::fs;
 use tracing::info;
 
 use crate::{
+    android::device::AndroidAbiProvider,
     android::{
         backend::manifest_permissions,
         output_metadata::{OutputKind, packaged_artifact},
@@ -29,8 +30,8 @@ use crate::{
         },
     },
     assets::{self, AndroidThemeParent},
-    build::{BuildOptions, BuiltTarget, RustBuild},
-    device::Artifact,
+    build::{BuildOptions, BuildProgress, BuiltTarget, RustBuild},
+    device::{Artifact, Device, FailToRun, RunOptions, Running},
     hydrolysis::backend::HydrolysisBackend,
     platform::PackageOptions,
     project::Project,
@@ -481,12 +482,12 @@ async fn copy_build_outputs(
         )
     );
     let library = output_dir.join(library_name);
-    fs::copy(&built.artifact, &library).await?;
+    crate::utils::copy_file_if_changed(&built.artifact, &library).await?;
 
     // The NDK's shared STL follows the libraries that actually need it —
     // a Rust-only build never does.
     if staged_libs_need_libcxx(&output_dir).await? {
-        fs::copy(
+        crate::utils::copy_file_if_changed(
             ndk_libcxx_path(&context.ndk_path, abi),
             output_dir.join("libc++_shared.so"),
         )
@@ -601,6 +602,68 @@ pub async fn package_with_abis(
 
     let path = packaged_artifact(&android_dir, output_kind, variant).await?;
     Ok(Artifact::new(project.bundle_identifier(), path))
+}
+
+/// Build, package and run the project's Hydrolysis app on `device` as a
+/// debug development build.
+///
+/// The library counterpart of `water run --platform android --backend
+/// hydrolysis` for flows that pick their own device, such as the inspector
+/// support app: the launcher crate is built for the device's ABI, the
+/// generated Gradle app is assembled over the pinned host with `painter`, and
+/// the APK is installed and launched with `run_options`. The project's
+/// managed Hydrolysis backend must already be generated
+/// ([`crate::hydrolysis::backend::open_ready`]).
+///
+/// # Errors
+///
+/// Returns an error when signing resolution, the build, the packaging, or the
+/// launch fails.
+pub async fn run_on_device<D: Device + AndroidAbiProvider>(
+    project: &Project,
+    host: &Host,
+    painter: HydrolysisAndroidPainter,
+    device: D,
+    run_options: RunOptions,
+    build_options: BuildOptions,
+    progress: Option<BuildProgress>,
+) -> Result<Running, FailToRun> {
+    let abi = device.android_abi();
+
+    clean_jni_libs(project).await.map_err(FailToRun::Build)?;
+
+    let mut package_options = PackageOptions::development();
+    if let Some(progress) = &progress {
+        package_options = package_options.with_progress(progress.clone());
+    }
+    // Resolve release signing before the Rust build, as `water run` does: a
+    // misconfigured release package fails before compilation. A debug run
+    // resolves to a no-decision plan.
+    let prepared = crate::android::signing::PreparedSigning::resolve(project, &package_options)
+        .map_err(FailToRun::Package)?;
+
+    let build_options = match progress {
+        Some(progress) => build_options.with_progress(progress),
+        None => build_options,
+    };
+    let built = build(project, host, abi, build_options)
+        .await
+        .map_err(FailToRun::Build)?;
+
+    let artifact = package_with_abis(
+        project,
+        host,
+        painter,
+        &package_options,
+        &[abi],
+        &built,
+        &prepared,
+    )
+    .await
+    .map_err(FailToRun::Package)?;
+
+    info!("Running on device");
+    device.run(host, artifact, run_options).await
 }
 
 /// Remove the staged `jniLibs` under the generated Gradle app.
@@ -909,6 +972,14 @@ mod tests {
             assert!(manifest.contains("android:exported=\"true\""), "{manifest}");
             crate::assets::assert_component_markers_inside_application(manifest);
 
+            // A debug build prepares the inspector endpoint, so the debug
+            // source set declares INTERNET whatever the project declares.
+            let debug_manifest = files["app/src/debug/AndroidManifest.xml"].as_str();
+            assert!(
+                debug_manifest.contains("android:name=\"android.permission.INTERNET\""),
+                "{debug_manifest}"
+            );
+
             let activity = files["app/src/main/java/MainActivity.kt"].as_str();
             assert!(
                 activity.contains("import dev.waterui.hydrolysis.gpu.HydrolysisGpuBand"),
@@ -916,21 +987,62 @@ mod tests {
             );
             assert!(activity.contains("HydrolysisHostView"), "{activity}");
 
-            // The narrow JNI keep: only the Rust→Kotlin entry points survive
-            // R8 — the class members HydrolysisSession calls back by name.
-            let proguard = files["app/proguard-rules.pro"].as_str();
+            // The environment reaches the app through `waterui.env.*` intent
+            // extras applied by `Os.setenv`; nothing reads system properties.
             assert!(
-                proguard
-                    .contains("-keepclassmembers class dev.waterui.hydrolysis.HydrolysisSession"),
-                "{proguard}"
+                activity.contains("setupEnvironmentFromIntent(intent)"),
+                "{activity}"
             );
-            assert!(proguard.contains("onNativeRequestRedraw"), "{proguard}");
+            assert!(!activity.contains("SystemProperties"), "{activity}");
+
+            // The JNI keep travels with the host library: its
+            // consumer-rules.pro keeps every @CalledFromNative member, so
+            // the app's own rules carry no per-method list.
+            let proguard = files["app/proguard-rules.pro"].as_str();
+            assert!(!proguard.contains("keepclassmembers"), "{proguard}");
+            assert!(proguard.contains("CalledFromNative"), "{proguard}");
 
             // The 16 KiB page alignment the plan requires of every staged
             // native library is asserted by build(), which reuses
             // `require_aligned_shared_libraries` — the template level only
             // needs to not defeat it.
             assert!(files.contains_key("gradlew"), "gradle wrapper ships");
+        });
+    }
+
+    /// Release builds carry only the permissions the project declares: one
+    /// declaring none gets no INTERNET in its main manifest, while its debug
+    /// source set still declares it for the inspector endpoint.
+    #[test]
+    fn only_the_debug_source_set_adds_internet_to_an_undeclaring_project() {
+        smol::block_on(async {
+            let (_temporary, project) = fixture_project("").await;
+            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let host_project_dir =
+                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("host project dir");
+
+            let files = rendered_files(
+                rendered_android_outputs(
+                    &project,
+                    HydrolysisAndroidPainter::Gpu,
+                    &host_project_dir,
+                )
+                .await
+                .expect("scaffold renders"),
+            );
+
+            let manifest = files["app/src/main/AndroidManifest.xml"].as_str();
+            assert!(
+                !manifest.contains("android.permission.INTERNET"),
+                "{manifest}"
+            );
+            let debug_manifest = files["app/src/debug/AndroidManifest.xml"].as_str();
+            assert!(
+                debug_manifest.contains("android:name=\"android.permission.INTERNET\""),
+                "{debug_manifest}"
+            );
         });
     }
 

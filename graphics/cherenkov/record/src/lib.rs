@@ -52,9 +52,10 @@ pub use crate::animation::{
     settled, spring_step,
 };
 pub use crate::backdrop::{
-    BackdropEffect, BackdropSample, BackdropShaderEffect, BackdropShaderSource, BackdropSpec,
-    CaptureLevels, CaptureLevelsError, CaptureScale, CaptureScaleError, ColorMatrix, LevelRamp,
-    LevelRampError, Refraction, Rim,
+    BackdropEffect, BackdropOuter, BackdropOuterError, BackdropSample, BackdropShaderEffect,
+    BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
+    CaptureLevelsError, CaptureScale, CaptureScaleError, ColorMatrix, LevelRamp, LevelRampError,
+    Refraction, Rim,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
@@ -76,7 +77,8 @@ pub use crate::material::{
     MaterialGrouping, MaterialRegistry, MaterialRun, MaterialScope, MaterialShader,
 };
 pub use crate::ops::{
-    BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,
+    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
+    SurfaceId,
 };
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,

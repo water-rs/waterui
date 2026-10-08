@@ -485,7 +485,7 @@ impl<T: LayerTarget> Mount<T> {
             stats,
             ..
         } = self;
-        Shared::run_transaction(&shared, None, |tx| {
+        Shared::run_transaction(&shared, None, None, |tx| {
             if !*attached {
                 tx[&*root].push(window);
                 *attached = true;

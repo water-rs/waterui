@@ -12,6 +12,11 @@
 //! can declare them in a [`MaterialRegistry`](crate::MaterialRegistry)
 //! without an engine.
 
+/// The union member cap, shared engine-free with `cherenkov`'s copy —
+/// both `#[path]`-include the same file (see `union_cap.rs`'s note).
+#[path = "../../src/union_cap.rs"]
+mod union_cap;
+
 use std::borrow::Cow;
 
 use crate::BackdropShaderId;
@@ -232,6 +237,49 @@ impl BackdropEffect {
     }
 }
 
+/// A member composite's outer extent in device pixels: finite and
+/// non-negative. [`BackdropSample::outer`] draws the member's field a
+/// band this wide past its clip edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BackdropOuter(f32);
+
+/// Why a [`BackdropOuter`] could not be constructed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BackdropOuterError {
+    /// The extent is NaN or infinite.
+    #[error("the outer extent is not finite")]
+    NonFinite,
+    /// The extent is below 0.
+    #[error("the outer extent must not be negative")]
+    Negative,
+}
+
+impl BackdropOuter {
+    /// No outer extent: the composite keeps the clip's coverage.
+    pub const ZERO: Self = Self(0.0);
+
+    /// An outer extent of `px` device pixels.
+    ///
+    /// # Errors
+    /// [`BackdropOuterError::NonFinite`] when `px` is NaN or infinite,
+    /// [`BackdropOuterError::Negative`] when it is below 0.
+    pub fn new(px: f32) -> Result<Self, BackdropOuterError> {
+        if !px.is_finite() {
+            return Err(BackdropOuterError::NonFinite);
+        }
+        if px < 0.0 {
+            return Err(BackdropOuterError::Negative);
+        }
+        Ok(Self(px))
+    }
+
+    /// The extent in device pixels; finite and non-negative.
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+}
+
 /// A layer's backdrop sample: the group it samples and an optional
 /// per-member effect evaluated in the member's composite against the
 /// shared filtered capture.
@@ -241,6 +289,9 @@ pub struct BackdropSample {
     group: BackdropId,
     /// The per-member effect applied in the member's composite.
     effect: Option<BackdropEffect>,
+    /// How far the member's own field extends its composite past the
+    /// clip edge, in device pixels.
+    outer: BackdropOuter,
 }
 
 impl BackdropSample {
@@ -250,6 +301,7 @@ impl BackdropSample {
         Self {
             group,
             effect: None,
+            outer: BackdropOuter::ZERO,
         }
     }
 
@@ -260,6 +312,22 @@ impl BackdropSample {
         Self {
             group,
             effect: Some(effect.into()),
+            outer: BackdropOuter::ZERO,
+        }
+    }
+
+    /// An outer extent of `extent`: the member's composite covers where
+    /// its field is below it, not only where the clip covers — a band
+    /// that wide beyond the clip edge, antialiased from the field.
+    /// [`BackdropOuter::ZERO`] keeps today's coverage on a standalone
+    /// member; under a union the member's coverage is its ownership
+    /// weight times `field < outer` either way.
+    #[must_use]
+    pub fn outer(self, extent: BackdropOuter) -> Self {
+        Self {
+            group: self.group,
+            effect: self.effect,
+            outer: extent,
         }
     }
 
@@ -274,6 +342,13 @@ impl BackdropSample {
     #[must_use]
     pub const fn effect(&self) -> Option<&BackdropEffect> {
         self.effect.as_ref()
+    }
+
+    /// The member's outer extent ([`BackdropOuter::ZERO`] unless
+    /// [`BackdropSample::outer`] set it).
+    #[must_use]
+    pub const fn outer_extent(&self) -> BackdropOuter {
+        self.outer
     }
 }
 
@@ -338,6 +413,82 @@ impl CaptureScale {
     }
 }
 
+/// How strongly a backdrop union field blends the group's member shapes
+/// at their shared edge, in device pixels.
+///
+/// A group created with a union ([`BackdropSpec::union`]) replaces every
+/// member's own clip field with one shared field for its composite: the
+/// quadratic smooth minimum of all member distances, folded in ascending
+/// order with the smoothing distance `k` — between two members the
+/// smin blends over a band `k` wide centred on their boundary. The
+/// member's own distance stays available to effects as `own_sdf` (see
+/// [`BackdropShaderSource`]).
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct BackdropUnion(f32);
+
+/// Why a [`BackdropUnion`] could not be constructed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BackdropUnionError {
+    /// The smoothing distance is NaN or infinite.
+    #[error("the union smoothing is not finite")]
+    NonFinite,
+    /// The smoothing distance is not above 0.
+    #[error("the union smoothing must be above 0")]
+    OutOfRange,
+}
+
+impl BackdropUnion {
+    /// The most members a union group may carry.
+    ///
+    /// Groups larger than this are rejected with the
+    /// `backdrop-union-members` `Unsupported` error on every
+    /// implementation. The single definition lives in
+    /// `union_cap::UNION_MAX_MEMBERS`, which the gpu build script and
+    /// the oracle read directly — neither depends on this crate.
+    pub const MAX_MEMBERS: u32 = union_cap::UNION_MAX_MEMBERS;
+
+    /// A union field smoothed over `smoothing` device pixels.
+    ///
+    /// # Errors
+    /// [`BackdropUnionError::NonFinite`] when `smoothing` is NaN or
+    /// infinite, [`BackdropUnionError::OutOfRange`] unless it is above 0.
+    pub fn new(smoothing: f32) -> Result<Self, BackdropUnionError> {
+        if !smoothing.is_finite() {
+            return Err(BackdropUnionError::NonFinite);
+        }
+        if smoothing <= 0.0 {
+            return Err(BackdropUnionError::OutOfRange);
+        }
+        Ok(Self(smoothing))
+    }
+
+    /// The smoothing distance `k`, in device pixels.
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+
+    /// How far below the smallest member distance the fold can draw the
+    /// union field with `members` members: `r(1) = 0` and
+    /// `r(i + 1) = r(i) + (k − r(i))² / (4k)`, so `r(n) < k`. Draw
+    /// bounds and capture footprints pad every member by `r(n)` plus
+    /// its `outer` extent.
+    ///
+    /// `members` above [`MAX_MEMBERS`](Self::MAX_MEMBERS) cannot occur in
+    /// a lowered group (the cap is enforced at planning time); it still
+    /// returns a value so callers stay total.
+    #[must_use]
+    pub fn inflation(self, members: usize) -> f64 {
+        let k = f64::from(self.0);
+        let mut r = 0.0;
+        for _ in 1..members {
+            let d = k - r;
+            r += d * d / (4.0 * k);
+        }
+        r
+    }
+}
+
 /// The number of capture levels a backdrop group keeps, between 1 and
 /// [`CaptureLevels::MAX`]; `n` is fixed when the group is created.
 ///
@@ -398,6 +549,7 @@ impl CaptureLevels {
 pub struct BackdropSpec {
     scale: CaptureScale,
     levels: CaptureLevels,
+    union: Option<BackdropUnion>,
 }
 
 impl BackdropSpec {
@@ -407,7 +559,22 @@ impl BackdropSpec {
     /// A group captured at `scale`, keeping `levels` capture levels.
     #[must_use]
     pub const fn new(scale: CaptureScale, levels: CaptureLevels) -> Self {
-        Self { scale, levels }
+        Self {
+            scale,
+            levels,
+            union: None,
+        }
+    }
+
+    /// A group whose members composite against the shared union field
+    /// (see [`BackdropUnion`]).
+    #[must_use]
+    pub const fn union(self, union: BackdropUnion) -> Self {
+        Self {
+            scale: self.scale,
+            levels: self.levels,
+            union: Some(union),
+        }
     }
 
     /// The capture scale `s`.
@@ -420,6 +587,12 @@ impl BackdropSpec {
     #[must_use]
     pub const fn levels(self) -> CaptureLevels {
         self.levels
+    }
+
+    /// The group's union field, when one was declared.
+    #[must_use]
+    pub const fn union_field(self) -> Option<BackdropUnion> {
+        self.union
     }
 }
 
@@ -435,14 +608,21 @@ impl From<CaptureScale> for BackdropSpec {
 /// The source defines
 ///
 /// ```wgsl
-/// fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>,
-///                    size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32>
+/// struct BackdropPixel {
+///     p: vec2<f32>, sdf: f32, normal: vec2<f32>,
+///     own_sdf: f32, size: vec2<f32>,
+/// }
+/// fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32>
 /// ```
 ///
-/// where `p` is the member pixel centre in device space, `sdf` the signed
-/// distance to the member's clip edge (negative inside), `normal` the
-/// unit outward normal, `size` the member's device bounds size, and
-/// `params` the effect uniforms packed four per `vec4`, zero-filled.
+/// where `px.p` is the member pixel centre in device space, `px.sdf` the
+/// signed distance to the field's edge (negative inside) — the group's
+/// union field when it has one ([`BackdropUnion`]), else the member's
+/// own clip field — `px.normal` that field's unit outward normal,
+/// `px.own_sdf` the signed distance to the member's own clip edge,
+/// `px.size` the member's device bounds size, and `params` the effect
+/// uniforms packed four per `vec4`, zero-filled. Without a union,
+/// `px.sdf == px.own_sdf` and `px.normal` is the member's own normal.
 /// `fn backdrop_sample(q: vec2<f32>) -> vec4<f32>` bilinearly samples the
 /// filtered capture at device point `q` — at `q · s` on a group's capture
 /// grid ([`CaptureScale`]) — clamped to its region. For a group keeping
@@ -485,6 +665,21 @@ impl BackdropShaderSource {
 #[cfg(test)]
 mod tests {
     use super::{BackdropSpec, CaptureLevels, CaptureLevelsError, CaptureScale, CaptureScaleError};
+
+    #[test]
+    fn backdrop_union_is_finite_and_positive() {
+        for k in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(BackdropUnion::new(k), Err(BackdropUnionError::NonFinite));
+        }
+        for k in [0.0, -0.0, -1.0] {
+            assert_eq!(BackdropUnion::new(k), Err(BackdropUnionError::OutOfRange));
+        }
+        let union = BackdropUnion::new(12.0).expect("in range");
+        assert!((union.get() - 12.0).abs() <= f32::EPSILON);
+        let spec = BackdropSpec::FULL.union(union);
+        assert_eq!(spec.union_field(), Some(union));
+        assert_eq!(BackdropSpec::FULL.union_field(), None);
+    }
 
     #[test]
     fn capture_scale_is_finite_and_in_the_unit_interval() {

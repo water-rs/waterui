@@ -16,29 +16,31 @@
 //! result for the app's duration. What hydrolysis renders per platform:
 //!
 //! - **winit on macOS** — `NSApp.mainMenu` is the system menu bar: the
-//!   menus become real `NSMenu` items via `muda`, commands carrying their
-//!   `shortcut` as the `AppKit` key equivalent. `AppKit` matches a key
-//!   equivalent in `-[NSApplication sendEvent]` before the event is
-//!   delivered as `keyDown` to the window (winit's view does not override
-//!   `performKeyEquivalent`), so a claimed accelerator never reaches the
-//!   registry. The registry stays armed as the fallback for chords muda
-//!   could not express or `AppKit` did not claim — the two paths see
-//!   disjoint keys, so a chord still fires exactly once.
-//! - **winit on Windows** — every window owns a Win32 menu bar: `muda`
-//!   builds the `HMENU` and attaches it to each application window's
-//!   `HWND`, with the shortcuts as accelerator text. Stock winit's message
-//!   pump never calls `TranslateAcceleratorW`, so the accelerators are
-//!   display-only and the registry owns the chords: click through muda,
-//!   chord through the registry — exactly once.
+//!   menus become real `NSMenu` items via `waterkit-menu`, commands
+//!   carrying their `shortcut` as the `AppKit` key equivalent. `AppKit`
+//!   matches a key equivalent in `-[NSApplication sendEvent]` before the
+//!   event is delivered as `keyDown` to the window (winit's view does not
+//!   override `performKeyEquivalent`), so a claimed accelerator never
+//!   reaches the registry. The registry stays armed as the fallback for
+//!   chords `AppKit` does not claim — the two paths see disjoint keys, so
+//!   a chord still fires exactly once.
+//! - **winit on Windows** — every window owns a Win32 menu bar:
+//!   `waterkit-menu` builds the `HMENU` and attaches it to each
+//!   application window's `HWND`, one bar per window since a bar allows a
+//!   single attachment, with the shortcuts as accelerator text. Stock
+//!   winit's message pump never calls `TranslateAcceleratorW`, so the
+//!   accelerators are display-only and the registry owns the chords: click
+//!   through the bar's event stream, chord through the registry — exactly
+//!   once.
 //! - **winit on Linux, the web runner, and the headless hosts** — no
 //!   menu-bar surface (winit exposes none on Linux; a browser page cannot
 //!   own the browser's menus; a headless host has no chrome at all).
 //!   Shortcuts arm on every window and nothing renders — matching the
 //!   gtk-backend, which also does not surface `menu_bar` on Linux.
 //!
-//! Whichever path renders a native menu, choosing an item posts a
-//! `muda::MenuEvent` on muda's channel; the winit runner drains it once
-//! per event-loop pass and runs the command's `SharedAction` through
+//! Whichever path renders a native menu, choosing an item reports its
+//! `CommandId` on the bar's `events()` stream; the winit runner drains it
+//! once per event-loop pass and runs the command's `SharedAction` through
 //! `call_action_discarding_result` with the app env — the same dispatch
 //! the registry uses for chords.
 
