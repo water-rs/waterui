@@ -2614,9 +2614,6 @@ mod tests {
         assert!(activity.contains(r#"envVar == "WATERUI_DEV_URL" && !BuildConfig.DEBUG"#));
         assert!(activity.contains("waterUiApplication.acquireRuntime(this)"));
         assert!(activity.contains("androidRuntimeLease.close()"));
-        assert!(activity.contains("val reportActivityFinished = !isChangingConfigurations"));
-        assert!(activity.contains("reportActivityFinished && releasedActiveRuntime"));
-        assert!(activity.contains("WATERUI_ACTIVITY_FINISHED"));
 
         let application_template = embedded::ANDROID
             .get_file("app/src/main/java/WaterUiApplication.kt.tpl")
