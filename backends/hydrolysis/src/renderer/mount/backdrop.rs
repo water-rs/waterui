@@ -27,8 +27,9 @@ pub enum BackdropScope {
     /// share.
     Solo(LayerId),
     /// The `.material_group()` wrapper node's identity — the address of
-    /// its mount cell — stable for as long as the node stays mounted,
-    /// so the pointer cannot be reused mid-frame. Two modifier
+    /// its mount cell. The scope's `Item::Anchor` holds an [`Rc`] to the
+    /// cell for as long as the registration exists, so the address
+    /// cannot be freed and reused while it keys a group. Two modifier
     /// instances are two groups.
     Scoped(usize),
 }
@@ -141,10 +142,29 @@ pub struct BackdropGroups<G> {
     /// canvas's filtered node owns for a scope whose members mount
     /// inside it (water-rs/waterui#2097).
     anchors: FxHashMap<(usize, Option<LayerId>), LayerId>,
-    /// Each `.material_group()` scope's own frame, by scope — the entry
-    /// `anchors` keeps under the scope's own canvas, kept so
-    /// `material_group_anchor` can name the anchor a scope installs.
-    scope_frames: FxHashMap<usize, LayerId>,
+}
+
+/// The spec a group object was created with — the GPU target's
+/// [`cherenkov::BackdropGroup`] carries it; the mirror target's `()`
+/// carries none. A test-facing read.
+#[cfg(test)]
+pub trait SpecCarrier {
+    /// The spec the group was created with.
+    fn spec(&self) -> cherenkov::BackdropSpec;
+}
+
+#[cfg(test)]
+impl SpecCarrier for cherenkov::BackdropGroup {
+    fn spec(&self) -> cherenkov::BackdropSpec {
+        self.spec()
+    }
+}
+
+#[cfg(test)]
+impl SpecCarrier for () {
+    fn spec(&self) -> cherenkov::BackdropSpec {
+        unreachable!("hydrolysis tests: the mirror target carries no spec")
+    }
 }
 
 impl<G> BackdropGroups<G> {
@@ -153,60 +173,38 @@ impl<G> BackdropGroups<G> {
             groups: FxHashMap::default(),
             members: FxHashMap::default(),
             anchors: FxHashMap::default(),
-            scope_frames: FxHashMap::default(),
         }
     }
 
-    /// Registers `frame` — the `.material_group()` node's own layer —
-    /// as the anchor of `scope`'s groups in the canvas the node mounts
-    /// in.
+    /// Registers `layer` — the plain, empty layer the `.material_group()`
+    /// scope's anchor item mounts — as the anchor of `scope`'s groups in
+    /// `canvas` (water-rs/waterui#2097). While the entry stands, the
+    /// anchor item holds the scope's cell, so the `scope` address it
+    /// keys can never name a different cell.
     pub(crate) fn set_scope_anchor(
         &mut self,
         scope: usize,
         canvas: Option<LayerId>,
-        frame: LayerId,
+        layer: LayerId,
     ) {
-        self.anchors.insert((scope, canvas), frame);
-        self.scope_frames.insert(scope, frame);
-    }
-
-    /// Registers `layer` — a plain leading child of `canvas`'s frame —
-    /// as the anchor of `scope`'s groups inside the canvas.
-    pub(crate) fn set_anchor(&mut self, scope: usize, canvas: LayerId, layer: LayerId) {
-        self.anchors.insert((scope, Some(canvas)), layer);
+        self.anchors.insert((scope, canvas), layer);
     }
 
     /// Drops the registration `scope`/`canvas` names: the node owning
-    /// its layer retired.
+    /// its item's layer retired.
     pub(crate) fn remove_anchor(&mut self, scope: usize, canvas: Option<LayerId>) {
-        // The scope's own frame goes out of `scope_frames` with its
-        // registration; an in-canvas anchor's removal touches nothing
-        // else.
-        if self.anchors.remove(&(scope, canvas)) == self.scope_frames.get(&scope).copied() {
-            self.scope_frames.remove(&scope);
-        }
+        self.anchors.remove(&(scope, canvas));
     }
 
     /// The layer a group keyed `key` captures beneath — `None` for a
-    /// solo group. A scoped group's anchor registers before its first
-    /// member commits: the scope's frame for the members sharing its
-    /// canvas, the canvas's own anchor layer for the members inside it.
+    /// solo group, and `None` when the scope's anchor item sits on a
+    /// different canvas than the member's group: the engine rule
+    /// (`canvas == anchor_canvas`) leaves such a group unanchored.
     fn anchor(&self, key: &BackdropGroupKey) -> Option<LayerId> {
         let BackdropScope::Scoped(scope) = key.scope else {
             return None;
         };
-        Some(
-            self.anchors
-                .get(&(scope, key.canvas))
-                .copied()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "hydrolysis mounts: a scoped group's anchor layer was not registered: scope={scope:#x} canvas={:?} anchors={:?}",
-                        key.canvas,
-                        self.anchors.keys().collect::<Vec<_>>()
-                    )
-                }),
-        )
+        self.anchors.get(&(scope, key.canvas)).copied()
     }
 
     /// Makes `member`'s frame layer a member of the group `key` names:
@@ -373,23 +371,16 @@ impl<G> BackdropGroups<G> {
             .map(|group| f64::from_bits(group.display_scale))
     }
 
-    /// The anchor layer `member`'s group captures beneath — `None` for
-    /// a solo group or while the member holds no membership. A
+    /// The anchor layer written into `member`'s group's spec — `None`
+    /// for a solo group or while the member holds no membership. A
     /// test-facing answer.
     #[cfg(test)]
-    pub(crate) fn backdrop_anchor(&self, member: LayerId) -> Option<LayerId> {
+    pub(crate) fn backdrop_anchor(&self, member: LayerId) -> Option<LayerId>
+    where
+        G: SpecCarrier,
+    {
         let key = self.members.get(&member)?.key;
-        let BackdropScope::Scoped(scope) = key.scope else {
-            return None;
-        };
-        self.anchors.get(&(scope, key.canvas)).copied()
-    }
-
-    /// The `.material_group()` scope's own anchor frame — `None` once
-    /// the scope unmounted. A test-facing answer.
-    #[cfg(test)]
-    pub(crate) fn material_group_anchor(&self, scope: usize) -> Option<LayerId> {
-        self.scope_frames.get(&scope).copied()
+        self.groups.get(&key)?.group.spec().anchor_layer()
     }
 
     /// How many live backdrop groups the table holds — a test-facing

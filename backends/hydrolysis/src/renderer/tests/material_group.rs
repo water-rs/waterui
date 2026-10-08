@@ -56,18 +56,6 @@ const MEMBER: (f32, f32) = (80.0, 60.0);
 /// Device pixels per point.
 const DISPLAY_SCALE: f64 = 2.0;
 
-/// The scope's shared anchor copy in device-pixel bytes: the window's
-/// device-pixel area at 8 bytes a pixel (the member union, window-wide
-/// in these tests).
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "DISPLAY_SCALE is a known small positive constant"
-)]
-fn anchor_copy_bytes() -> u64 {
-    u64::from(WIDTH) * u64::from(HEIGHT) * (DISPLAY_SCALE * DISPLAY_SCALE) as u64 * 8
-}
-
 /// One `level` material member, `MEMBER` points large.
 fn member(level: Material) -> AnyView {
     AnyView::new(().size(MEMBER.0, MEMBER.1).background(level))
@@ -215,10 +203,10 @@ fn materials_in_one_group_share_one_backdrop_group() {
     assert_eq!(mounts.backdrop_group_count(), 1);
     assert_eq!(
         capture_bytes(&runtime),
-        capture_bytes(&solo) + anchor_copy_bytes(),
-        "two members in one group cost one capture plus the scope's \
-         shared copy beneath its anchor — the member union in device \
-         pixels, window-wide here"
+        capture_bytes(&solo),
+        "two members in one group cost exactly one capture — the \
+         anchored group reads the semantic target at its anchor, no \
+         shared copy"
     );
 }
 
@@ -442,9 +430,8 @@ fn a_display_scale_change_rebuilds_the_shared_group() {
     let solo_at_1x = rendered_at_scale(solo, 1.0);
     assert_eq!(
         capture_bytes(&runtime),
-        capture_bytes(&solo_at_1x) + anchor_copy_bytes(),
-        "the rebuilt group costs its 1x capture; the scope's shared copy \
-         lingers at its grow-only 2x size under the same anchor mount"
+        capture_bytes(&solo_at_1x),
+        "the rebuilt group costs exactly its 1x capture"
     );
 }
 
@@ -858,8 +845,10 @@ fn a_scopes_groups_capture_beneath_its_anchor() {
     let scope =
         member_scope(&grouped_runtime, layers[0]).expect("the member flushed under a scope");
     assert_eq!(member_scope(&grouped_runtime, layers[1]), Some(scope));
-    let anchor = mounts(&grouped_runtime).material_group_anchor(scope);
-    assert!(anchor.is_some(), "the scope installed its anchor layer");
+    // The anchor written into each group's spec: the plain layer the
+    // scope's anchor item mounts, and the same one for every member.
+    let anchor = mounts(&grouped_runtime).backdrop_anchor(layers[0]);
+    assert!(anchor.is_some(), "the scope's groups anchor at its layer");
     for layer in &layers {
         assert_eq!(
             mounts(&grouped_runtime).backdrop_anchor(*layer),
@@ -929,23 +918,133 @@ fn a_scopes_anchor_releases_with_the_scope() {
     };
     let layers = material_layers(&runtime);
     assert_eq!(layers.len(), 1);
-    let scope = member_scope(&runtime, layers[0]).expect("the member flushed under a scope");
     assert!(
-        mounts(&runtime).material_group_anchor(scope).is_some(),
-        "the scope's anchor mount is installed"
+        member_scope(&runtime, layers[0]).is_some(),
+        "the member flushed under a scope"
     );
-    assert_eq!(
-        mounts(&runtime).backdrop_anchor(layers[0]),
-        mounts(&runtime).material_group_anchor(scope),
-        "the member's group anchors at the anchor mount's layer"
+    assert!(
+        mounts(&runtime).backdrop_anchor(layers[0]).is_some(),
+        "the member's group anchors at the scope's anchor layer"
     );
 
     shown.set(false);
     pump(&mut runtime);
     assert_eq!(material_layers(&runtime), Vec::<cherenkov::LayerId>::new());
-    assert!(
-        mounts(&runtime).material_group_anchor(scope).is_none(),
-        "the anchor mount released with the scope"
-    );
     assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
+}
+
+/// The group's spec carries the anchor item's layer when the scope's
+/// content root is itself a member (water-rs/waterui#2097): the anchor
+/// item the `.material_group()` flush pushes is registered before the
+/// member commits, so a member that is also the scope's content root is
+/// still anchored at the plain layer the item mounts.
+#[test]
+fn a_member_as_the_scopes_content_root_is_anchored() {
+    let runtime = rendered(|| AnyView::new(member(Material::Regular).material_group()));
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 1);
+    let anchor = mounts(&runtime).backdrop_anchor(layers[0]);
+    assert!(
+        anchor.is_some(),
+        "the member's group anchors at the scope's anchor layer"
+    );
+    assert_ne!(
+        anchor,
+        Some(layers[0]),
+        "the anchor is a layer of its own, not the member's frame"
+    );
+}
+
+/// Pass-through content roots (gesture, env, retain wrappers) do not
+/// hide the anchor item: `.material_group()` pushes it into the
+/// enclosing program wherever the scope's content hangs, so the members
+/// inside anchor at it.
+#[test]
+fn a_passthrough_content_root_keeps_the_scope_anchored() {
+    let runtime = rendered(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((member(Material::Regular), thick_full()))
+                .on_tap(|| {})
+                .material_group(),
+        )))
+    });
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 2);
+    let anchor = mounts(&runtime).backdrop_anchor(layers[0]);
+    assert!(
+        anchor.is_some(),
+        "the members' group anchors at the scope's anchor layer"
+    );
+    for layer in &layers {
+        assert_eq!(mounts(&runtime).backdrop_anchor(*layer), anchor);
+    }
+}
+
+/// A scope inside a filtered view mounts its anchor item on the filter's
+/// canvas, and the members' groups on that canvas anchor at it.
+#[test]
+fn a_scope_inside_a_filtered_view_anchors_on_its_canvas() {
+    let runtime = rendered(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((member(Material::Regular), thick_full()))
+                .material_group()
+                .blur(2.0f32),
+        )))
+    });
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 2);
+    let anchor = mounts(&runtime).backdrop_anchor(layers[0]);
+    assert!(
+        anchor.is_some(),
+        "the members' group anchors at the scope's anchor layer"
+    );
+    for layer in &layers {
+        assert_eq!(mounts(&runtime).backdrop_anchor(*layer), anchor);
+    }
+}
+
+/// A partial re-record that re-records the anchor's scope node — here a
+/// `when` child inside the `.material_group()` toggled by a binding —
+/// leaves the anchor item and the members' spec anchor in place. (This
+/// deliberately re-records the scope node itself rather than a
+/// descendant that skips the scope flush, which is #2268's shape.)
+#[test]
+fn a_partial_re_record_keeps_the_scope_anchored() {
+    let shown = Binding::container(true);
+    let mut runtime = {
+        let shown = shown.clone();
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(zstack((
+                Color::srgb(230, 38, 38),
+                vstack((member(Material::Regular), when(shown.clone(), thick_full)))
+                    .material_group(),
+            )))
+        });
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            pumped_test_environment(),
+            builder,
+            WIDTH,
+            HEIGHT,
+            MinimalTestTheme::default(),
+        )
+        .with_scale_factor(DISPLAY_SCALE);
+        pump(&mut runtime);
+        runtime
+    };
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 2);
+    let anchor = mounts(&runtime).backdrop_anchor(layers[0]);
+    assert!(anchor.is_some());
+
+    shown.set(false);
+    pump(&mut runtime);
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 1);
+    assert_eq!(
+        mounts(&runtime).backdrop_anchor(layers[0]),
+        anchor,
+        "the surviving member's group still anchors at the same layer"
+    );
 }

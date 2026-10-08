@@ -28,6 +28,8 @@ pub struct ScopeKey {
 /// What a run sits directly beneath.
 #[derive(Clone)]
 pub enum ItemKey {
+    /// A `.material_group()` scope's anchor item — its cell's address.
+    Anchor(usize),
     Node(Rc<NodeCell>),
     Scope(ScopeKey),
 }
@@ -35,6 +37,7 @@ pub enum ItemKey {
 impl PartialEq for ItemKey {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Anchor(a), Self::Anchor(b)) => a == b,
             (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
             (Self::Scope(a), Self::Scope(b)) => a == b,
             _ => false,
@@ -62,6 +65,12 @@ pub struct ScopeProps {
 
 /// One entry of a layer's ordered content.
 pub enum Item {
+    /// A `.material_group()` scope's anchor: a plain, empty layer the
+    /// scope's members capture beneath, painted at this position in the
+    /// canvas the item's program mounts in (water-rs/waterui#2097).
+    /// Carrying the scope's cell pins its address against reuse while
+    /// the registration keyed by it stands.
+    Anchor(Rc<NodeCell>),
     Run(Recording),
     Node(Rc<NodeCell>),
     Scope {
@@ -76,6 +85,7 @@ pub enum Item {
 impl Item {
     pub(crate) fn key(&self) -> Option<ItemKey> {
         match self {
+            Self::Anchor(cell) => Some(ItemKey::Anchor(Rc::as_ptr(cell) as usize)),
             Self::Run(_) => None,
             Self::Node(cell) => Some(ItemKey::Node(Rc::clone(cell))),
             Self::Scope { key, .. } => Some(ItemKey::Scope(*key)),
@@ -142,19 +152,6 @@ pub struct Program {
     pub clip: Option<ShapeData>,
     pub filter: Option<Rc<RefCell<crate::renderer::effects::FilteredRuntime>>>,
     pub material: Option<MaterialRequest>,
-    /// The `.material_group()` scopes whose flush landed on this
-    /// program — the address of each scope node's cell, the same
-    /// identity the members' requests carry. A lazy stack's shared
-    /// program serves every row's own scope node, so it can carry
-    /// several; each scope's members capture beneath this node's
-    /// frame in the canvas the frame mounts in
-    /// (water-rs/waterui#2097).
-    pub material_scopes: Vec<usize>,
-    /// The `.material_group()` scopes open when a filtered node
-    /// flushed — the address of each scope's cell, in open order. Each
-    /// gets a plain leading layer inside the node's canvas that the
-    /// scope's members mounting here anchor at.
-    pub material_scope_anchors: Vec<usize>,
     pub producer: Option<ProducerContent>,
     pub inner: Option<InnerProgram>,
     pub items: Vec<Item>,
@@ -167,8 +164,6 @@ impl Program {
             clip: None,
             filter: None,
             material: None,
-            material_scopes: Vec::new(),
-            material_scope_anchors: Vec::new(),
             producer: None,
             inner: None,
             items: Vec::new(),
@@ -243,6 +238,12 @@ impl ProgramBuilder {
             Some(Item::Run(recording)) => recording,
             _ => unreachable!("a run was just ensured"),
         }
+    }
+
+    /// Appends a `.material_group()` scope's anchor item — the empty
+    /// layer the scope's members capture beneath (water-rs/waterui#2097).
+    pub(crate) fn push_anchor(&mut self, cell: Rc<NodeCell>) {
+        self.items_mut().push(Item::Anchor(cell));
     }
 
     /// Appends a child node's frame.
