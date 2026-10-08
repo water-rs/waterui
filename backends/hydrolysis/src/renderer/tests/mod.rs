@@ -2549,6 +2549,8 @@ pub struct MinimalTestTheme {
     navigation_bar_separator_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every tabs-bar surface bounds the theme was asked to draw.
     tabs_bar_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every tabs-bar divider bounds the theme was asked to draw.
+    tabs_bar_divider_draws: Rc<RefCell<Vec<Rect>>>,
     /// Forces the tab item layout the theme reports; `None` defaults to
     /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
     forced_tab_item_layout: Option<TabItemLayout>,
@@ -3021,8 +3023,11 @@ impl WidgetTheme for MinimalTestTheme {
             icon_label_spacing: 4.0,
         }
     }
-    fn draw_tabs_bar(&self, _draw: &mut Recorder, bounds: Rect, _top_edge: bool) {
-        self.tabs_bar_draws.borrow_mut().push(bounds);
+    fn draw_tabs_bar(&self, _draw: &mut Recorder, surface: Rect) {
+        self.tabs_bar_draws.borrow_mut().push(surface);
+    }
+    fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
+        self.tabs_bar_divider_draws.borrow_mut().push(divider);
     }
     fn draw_tabs_highlight(&self, _draw: &mut Recorder, bounds: Rect, layout: TabItemLayout) {
         self.tabs_highlight_draws

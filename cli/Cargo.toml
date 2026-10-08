@@ -48,6 +48,10 @@ futures-lite = "2.6"
 async-channel = "2.5"
 async-lock = "3.4"
 reflink-copy = "0.1.30"
+# Stamps a staged copy's mtime by path rather than through a file handle:
+# on Windows `SetFileTime` needs `FILE_WRITE_ATTRIBUTES`, which `File::open`
+# does not request — and the copy may keep its read-only source's mode.
+filetime = "0.2"
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 serde_json = "1.0"
 schemars = { version = "1.2", features = ["derive"] }

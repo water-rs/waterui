@@ -19,9 +19,14 @@ impl RustBuild {
     /// or rustc never reports the `native-static-libs` flags.
     pub async fn native_static_libraries(&self, release: bool) -> Result<Vec<NativeLink>> {
         let _lease = self.shared_target_lease().await?;
-        let profile_dir = self.lib_output_dir(release).await?;
         let output = self
-            .cargo_build_output(release, CargoTarget::Lib, &profile_dir)
+            .cargo_build_output(
+                release,
+                CargoTarget::Lib,
+                &self
+                    .user_rustflags(&self.project_cargo_config_files()?)
+                    .await?,
+            )
             .await?;
         if !output.status.success() {
             bail!(

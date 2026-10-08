@@ -15,6 +15,7 @@ use std::pin::Pin;
 
 use cargo_metadata::PackageId;
 use eyre::{Context, OptionExt};
+use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use smol::fs;
 use tracing::{debug, info, warn};
@@ -852,12 +853,13 @@ async fn stage_classpath_files(
     let mut keep_packages = BTreeSet::new();
 
     let java_dir = module_dir.join("src/main/java/waterui");
-    if java_dir.exists() {
-        fs::remove_dir_all(&java_dir).await?;
-    }
-    if !classpath.kotlin_sources.is_empty() {
+    let mut staged = HashSet::new();
+    if classpath.kotlin_sources.is_empty() {
+        if java_dir.exists() {
+            fs::remove_dir_all(&java_dir).await?;
+        }
+    } else {
         fs::create_dir_all(&java_dir).await?;
-        let mut staged = HashSet::new();
         for source in &classpath.kotlin_sources {
             let Some(name) = source.file_name() else {
                 eyre::bail!("Kotlin source {} has no file name", source.display());
@@ -879,7 +881,23 @@ async fn stage_classpath_files(
                     )
                 })?;
             keep_packages.insert(package);
-            fs::copy(source, java_dir.join(name)).await?;
+            crate::utils::copy_file_if_changed(source, &java_dir.join(name)).await?;
+        }
+        // Files an earlier classpath staged that no source still declares
+        // would keep a stale `keep` rule — drop them. The rest write only
+        // on change, so an unchanged build leaves Gradle's inputs alone.
+        let mut entries = fs::read_dir(&java_dir).await?;
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            if staged.contains(&entry.file_name()) {
+                continue;
+            }
+            let path = entry.path();
+            if entry.metadata().await?.is_dir() {
+                fs::remove_dir_all(&path).await?;
+            } else {
+                fs::remove_file(&path).await?;
+            }
         }
         info!(
             "Staged {} Kotlin sources into {}",
@@ -1792,7 +1810,7 @@ async fn copy_fontawesome_icons_json(extract_dir: &Path) -> eyre::Result<()> {
     fs::create_dir_all(&fontawesome_cache).await?;
 
     let dest = fontawesome_cache.join(format!("fontawesome-{version}-icons.json"));
-    fs::copy(&icons_json, &dest).await?;
+    crate::utils::copy_file_if_changed(&icons_json, &dest).await?;
 
     debug!("Copied icons.json to {}", dest.display());
     Ok(())
@@ -2037,7 +2055,7 @@ pub async fn copy_fonts(fonts: &[ResolvedFont], dest: &Path) -> eyre::Result<()>
             font.path.display(),
             dest_path.display()
         );
-        fs::copy(&font.path, &dest_path).await?;
+        crate::utils::copy_file_if_changed(&font.path, &dest_path).await?;
     }
 
     Ok(())
@@ -2112,7 +2130,8 @@ pub async fn write_font_manifest(
         default_family: default_family.map(str::to_string),
         fonts: manifest_fonts,
     })?;
-    fs::write(fonts_dest.join(FONT_MANIFEST_FILE_NAME), payload).await?;
+    super::templates::write_file_if_changed(&fonts_dest.join(FONT_MANIFEST_FILE_NAME), &payload)
+        .await?;
     Ok(())
 }
 

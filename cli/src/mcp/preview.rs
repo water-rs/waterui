@@ -160,7 +160,7 @@ impl PreviewTool {
 
         match request.backend {
             ResolvedPreviewBackend::Hydrolysis(platform) => {
-                render_preview_with_hydrolysis(
+                Box::pin(render_preview_with_hydrolysis(
                     HydrolysisPreviewRequest {
                         project_path: &self.project_path,
                         source: request.target.source(),
@@ -177,7 +177,7 @@ impl PreviewTool {
                     },
                     &output_path,
                     None,
-                )
+                ))
                 .await?;
             }
             ResolvedPreviewBackend::Apple => {

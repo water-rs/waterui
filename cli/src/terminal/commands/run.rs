@@ -307,19 +307,7 @@ fn resolve_backend(
     platform: TargetPlatform,
     backend_override: Option<TargetBackend>,
 ) -> Result<TargetBackend> {
-    // Default backends for each platform
-    let default_backend = match platform {
-        TargetPlatform::Ios | TargetPlatform::Macos => TargetBackend::Apple,
-        TargetPlatform::Android => TargetBackend::Android,
-        TargetPlatform::Linux | TargetPlatform::Windows | TargetPlatform::Web => {
-            TargetBackend::Hydrolysis
-        }
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
-            TargetBackend::Dew
-        }
-    };
-
-    let backend = backend_override.unwrap_or(default_backend);
+    let backend = backend_override.unwrap_or_else(|| default_backend(platform));
 
     // Validate backend supports platform
     let supported = matches!(
@@ -354,7 +342,7 @@ fn resolve_backend(
              Valid combinations:\n  \
              - iOS: apple\n  \
              - macOS: apple, hydrolysis\n  \
-             - Android: android, hydrolysis\n  \
+             - Android: hydrolysis, android\n  \
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis, winui\n  \
              - Web: hydrolysis\n  \
@@ -373,10 +361,10 @@ fn resolve_backend(
 const fn default_backend(platform: TargetPlatform) -> TargetBackend {
     match platform {
         TargetPlatform::Ios | TargetPlatform::Macos => TargetBackend::Apple,
-        TargetPlatform::Android => TargetBackend::Android,
-        TargetPlatform::Linux | TargetPlatform::Windows | TargetPlatform::Web => {
-            TargetBackend::Hydrolysis
-        }
+        TargetPlatform::Android
+        | TargetPlatform::Linux
+        | TargetPlatform::Windows
+        | TargetPlatform::Web => TargetBackend::Hydrolysis,
         TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
             TargetBackend::Dew
         }
@@ -572,7 +560,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     let launcher_dir = waterui_cli::tui::ensure_launcher(&project).await?;
 
     let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-    let binary = shell
+    let built = shell
         .display_output(waterui_cli::tui::build(
             &project,
             &launcher_dir,
@@ -586,7 +574,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
         "The TUI backend replaces this terminal until the app exits"
     );
     shell.clear();
-    waterui_cli::tui::exec(&binary)
+    waterui_cli::tui::exec(built)
 }
 
 async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunContext>> {
@@ -2192,7 +2180,7 @@ mod tests {
         );
         assert_eq!(
             resolve_backend(TargetPlatform::Android, None).expect("android backend"),
-            TargetBackend::Android
+            TargetBackend::Hydrolysis
         );
         assert_eq!(
             resolve_backend(TargetPlatform::Linux, None).expect("linux backend"),
@@ -2205,12 +2193,12 @@ mod tests {
     }
 
     #[test]
-    fn default_backend_is_the_platforms_native_backend() {
+    fn default_backend_matches_the_platform() {
         assert_eq!(default_backend(TargetPlatform::Macos), TargetBackend::Apple);
         assert_eq!(default_backend(TargetPlatform::Ios), TargetBackend::Apple);
         assert_eq!(
             default_backend(TargetPlatform::Android),
-            TargetBackend::Android
+            TargetBackend::Hydrolysis
         );
         assert_eq!(
             default_backend(TargetPlatform::Linux),
