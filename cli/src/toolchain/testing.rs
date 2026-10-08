@@ -260,12 +260,7 @@ fn dispatcher_source() -> PathBuf {
     let (_, path) = SOURCE.get_or_init(|| {
         let dir = tempfile::tempdir().expect("create fake-tool source dir");
         let canonical = dir.path().join("fake_tools.sh");
-        let status = std::process::Command::new("cp")
-            .arg(FAKE_TOOL_SOURCE)
-            .arg(&canonical)
-            .status()
-            .expect("copy the dispatcher fixture");
-        assert!(status.success(), "cp of the dispatcher fixture failed");
+        std::fs::copy(FAKE_TOOL_SOURCE, &canonical).expect("copy the dispatcher fixture");
         fs::set_permissions(&canonical, fs::Permissions::from_mode(0o755))
             .expect("mark dispatcher fixture executable");
         (dir, canonical)
