@@ -1535,7 +1535,6 @@ pub fn render_list_parts(
         .surface
         .begin_flush(ctx.renderer_mut(), &handle);
     let mut metrics = handle.metrics();
-    let needs_viewport_clip = metrics.max_y > 0.0;
     // Register before the rows flush: scroll-target dispatch walks the frame's
     // targets newest-first, so a scroll region inside a row wins the delta
     // until it hits its own edge, where it falls through to the list.
@@ -1544,21 +1543,47 @@ pub fn render_list_parts(
         surface_viewport,
         &handle,
     );
-    if needs_viewport_clip {
-        ctx.open_scope(
-            crate::renderer::mount::ScopeKey {
-                role: "viewport",
-                item: 0,
-            },
-            1.0,
-            surface_viewport,
-        );
-    }
 
     let span = state
         .borrow()
         .surface
         .visible_span(&metrics, ScrollAxis::Vertical);
+    let span_horizontal = state
+        .borrow()
+        .surface
+        .visible_span(&metrics, ScrollAxis::Horizontal);
+    // The rows scroll as the widget's inner layer `ScrollOffset`, exactly as a
+    // `scroll` node's content does (decision 1): they paint and place at their
+    // resting positions in content space and the inner layer shifts them, so a
+    // scroll frame writes the one scroll-offset property instead of re-placing
+    // every visible row. The viewport placement carries the same offset so the
+    // rows' hit regions and emitted bounds follow it without a re-record.
+    let offset = kurbo::Vec2::new(metrics.offset_x, metrics.offset_y);
+    {
+        let renderer = ctx.renderer_mut();
+        renderer.push_placement_scope(
+            crate::renderer::mount::ScopeDelta::RECORD_SPACE,
+            Some(surface_viewport),
+        );
+        let viewport_placement = renderer.current_placement();
+        viewport_placement.set_content_offset(-offset);
+        renderer.program().begin_inner(
+            surface_viewport,
+            offset,
+            std::rc::Rc::clone(&viewport_placement),
+        );
+        let world = renderer.record_world(kurbo::Affine::IDENTITY);
+        renderer.push_lazy_viewport(crate::renderer::LazyViewport {
+            bounds: kurbo::Rect::new(
+                span_horizontal.start,
+                span.start,
+                span_horizontal.end,
+                span.end,
+            ),
+            transform: world * kurbo::Affine::translate(-offset),
+        });
+    }
+
     let window = state
         .borrow()
         .extent_index
@@ -1587,7 +1612,10 @@ pub fn render_list_parts(
     // it travels past, so draw order can no longer be the order the vertical
     // cursor advances in.
     let mut rows = Vec::with_capacity(window.end.saturating_sub(window.start));
-    let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
+    // Rows live in content space: `leading_offset` is the window's resting
+    // position under the viewport's top edge, and the inner layer's scroll
+    // offset shifts the whole band on screen.
+    let mut y = viewport.y0 + window.leading_offset;
     // A row's extent is derived from its content's measured size every frame —
     // the same transient measure `list_content_rect` consumes below — so a row
     // whose content re-measures differently is re-measured here and only here:
@@ -1742,7 +1770,7 @@ pub fn render_list_parts(
             viewport.x1,
             resting_y + reorder_dy + row_height,
         );
-        if slot_rect.y1 <= surface_viewport.y0 || slot_rect.y0 >= surface_viewport.y1 {
+        if slot_rect.y1 <= span.start || slot_rect.y0 >= span.end {
             continue;
         }
         let header_height = chrome.header_height(&list_metrics);
@@ -2146,8 +2174,11 @@ pub fn render_list_parts(
     }
     state.borrow().record_viewport_anchor(metrics, row_count);
 
-    if needs_viewport_clip {
-        ctx.close_scope();
+    {
+        let renderer = ctx.renderer_mut();
+        renderer.pop_lazy_viewport("hydrolysis list");
+        renderer.program().end_inner();
+        renderer.pop_placement_scope();
     }
 
     // The focused-field clearance runs after recording, over the retained
