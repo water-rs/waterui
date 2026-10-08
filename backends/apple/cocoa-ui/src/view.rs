@@ -639,6 +639,29 @@ pub fn is_scroll_surface(view: &PlatformView) -> bool {
         && unsafe { objc2::msg_send![view, cocoaUiIsScrollSurface] }
 }
 
+/// Whether a kit scroll surface sits above `view`.
+///
+/// This is the ancestor walk the keyboard-region marking refuses to
+/// descend: a scroll surface's subtree sees no keyboard region — the
+/// surface already moved its content clear — so nothing under it is a
+/// region reader, and a surface nested inside another neither insets
+/// nor scrolls for the keyboard itself (the field clears once, through
+/// the innermost surface that sees the band). A foreign `UIScrollView`
+/// — a `UITextView` — does not answer `cocoaUiIsScrollSurface` and does
+/// not count.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn inside_scroll_surface(view: &PlatformView) -> bool {
+    let mut ancestor = superview(view);
+    while let Some(current) = ancestor {
+        if is_scroll_surface(&current) {
+            return true;
+        }
+        ancestor = superview(&current);
+    }
+    false
+}
+
 /// The scroll-surface candidates `view` declares through
 /// `cocoaUiScrollSurfaceCandidates`.
 ///

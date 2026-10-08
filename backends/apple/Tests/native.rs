@@ -4069,10 +4069,10 @@ mod safe_area {
     /// region: a `window_keyboard` read resolves the guide — here, the
     /// frame a resolved guide would report — and a non-zero seed marks
     /// the window's readers once, so the next pass re-places the
-    /// stacks-only content above the band. The simulator's guide never
-    /// resolves to a keyboard (it parks in the bottom safe-area band),
-    /// so the trial feeds the resolved frame through the same
-    /// function the read applies.
+    /// stacks-only content above the band. A spawned simulator
+    /// window's guide never resolves at all, so the trial asserts the
+    /// unresolved contract on the real reads and feeds the resolved
+    /// frame through the same function the read applies.
     fn a_stacks_only_window_seeds_its_region_and_replaces_above_the_band() {
         let draft = binding(Str::from(""));
         // Stacks only — a spacer over a composer row; no scroll
@@ -4091,6 +4091,29 @@ mod safe_area {
         assert!(
             resting > 700.0,
             "precondition: the composer sits at the window's bottom — {resting}",
+        );
+
+        // The real guide read: a spawned simulator window's guide
+        // never resolves — every `window_keyboard` read logs
+        // `resolved = false` — so the region must stay unseeded. A
+        // real app window's guide does resolve (the device capture):
+        // that branch asserts its rest position seeded no keyboard.
+        let guide_frame = mount.window.keyboardLayoutGuide().layoutFrame();
+        if guide_frame.size.width <= 0.0 {
+            assert!(
+                !keyboard::seeded(&mount.window),
+                "an unresolved guide must not seed",
+            );
+        } else {
+            assert!(
+                keyboard::seeded(&mount.window),
+                "a resolved guide seeds on a mount pass",
+            );
+        }
+        assert_eq!(
+            region_frame(&mount.host),
+            CGRect::ZERO,
+            "no docked keyboard seeds nothing",
         );
 
         // The frame the guide would report for a docked keyboard.

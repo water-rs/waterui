@@ -375,6 +375,15 @@ pub fn feed_guide_frame(window: &UIWindow, guide_frame: CGRect) {
     region_for(window).apply_guide_frame(window, guide_frame);
 }
 
+/// The native-test read of the region's seed state: whether a resolved
+/// guide read — or a notification — settled its pre-notification
+/// frame.
+#[cfg(feature = "native-test")]
+#[must_use]
+pub fn seeded(window: &UIWindow) -> bool {
+    region_for(window).ivars().seeded.get()
+}
+
 /// Marks every region reader in `view`'s subtree for the layout pass a
 /// keyboard region change drives: every kit `HostView` that runs a
 /// layout handler — its children's placement reads the boundaries
@@ -533,7 +542,7 @@ impl KeyboardTracking {
         {
             return;
         }
-        let contribution = if Self::nested_in_scroll(scroll) {
+        let contribution = if crate::view::inside_scroll_surface(scroll) {
             0.0
         } else {
             Self::keyboard_cover(scroll, frame, safe_bottom)
@@ -549,23 +558,6 @@ impl KeyboardTracking {
                 Self::scroll_focused_clear(scroll, false);
             }
         }
-    }
-
-    /// Whether another kit scroll surface sits above `scroll` — a nested
-    /// surface's subtree sees no keyboard region (the outer surface owns
-    /// its safe-area contract), so it neither insets nor scrolls for the
-    /// keyboard itself: the field clears once, through the innermost
-    /// surface that sees the band. A foreign `UIScrollView` — a
-    /// `UITextView` — is not a kit surface and does not count.
-    fn nested_in_scroll(scroll: &UIScrollView) -> bool {
-        let mut ancestor = scroll.superview();
-        while let Some(view) = ancestor {
-            if crate::view::is_scroll_surface(&view) {
-                return true;
-            }
-            ancestor = view.superview();
-        }
-        false
     }
 
     /// The depth of the keyboard band inside `scroll`'s window frame on
@@ -593,7 +585,7 @@ impl KeyboardTracking {
     /// Scrolls the current first responder inside `scroll` the minimum
     /// distance that brings its frame clear of the keyboard band.
     fn scroll_focused_clear(scroll: &UIScrollView, animated: bool) {
-        if Self::nested_in_scroll(scroll) {
+        if crate::view::inside_scroll_surface(scroll) {
             return;
         }
         let Some((keyboard, duration)) = window_keyboard(scroll) else {

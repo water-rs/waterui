@@ -99,20 +99,6 @@ fn declared_mask(view: &PlatformView) -> u16 {
     }
 }
 
-/// Whether `view` sits inside a scroll surface, whose subtree sees no
-/// regions — the surface already moved its content clear.
-#[cfg(target_os = "ios")]
-fn inside_scroll_surface(view: &PlatformView) -> bool {
-    let mut ancestor = view::superview(view);
-    while let Some(current) = ancestor {
-        if view::is_scroll_surface(&current) {
-            return true;
-        }
-        ancestor = view::superview(&current);
-    }
-    false
-}
-
 /// `view`'s bounds in its window's coordinate space.
 #[cfg(target_os = "ios")]
 fn window_frame(view: &PlatformView) -> CGRect {
@@ -244,7 +230,7 @@ fn cover_contribution(covered: &mut Covered, candidate: &PlatformView, context: 
 #[cfg(target_os = "ios")]
 fn covered_bands(view: &PlatformView, context: &WindowContext) -> Covered {
     let mut covered = Covered::default();
-    if inside_scroll_surface(view) {
+    if view::inside_scroll_surface(view) {
         return covered;
     }
     let mut current: Option<Retained<PlatformView>> = Some(Retained::from(view));
@@ -484,7 +470,7 @@ pub struct LayoutContext<'a> {
 impl<'a> LayoutContext<'a> {
     /// Computes the region context for `host`'s upcoming layout pass.
     pub fn of(host: &'a PlatformView) -> Self {
-        let inside_scroll = inside_scroll_surface(host);
+        let inside_scroll = view::inside_scroll_surface(host);
         let window = WindowContext::of(host);
         let covered = covered_bands(host, &window);
         let mut chain = ignorer_chain(host);
