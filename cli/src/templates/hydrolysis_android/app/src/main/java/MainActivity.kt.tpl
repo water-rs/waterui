@@ -1,5 +1,6 @@
 package {{ ctx.android_package_name() }}
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.system.Os
@@ -8,6 +9,7 @@ import android.view.View
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import dev.waterui.hydrolysis.HydrolysisEnvironment
 import dev.waterui.hydrolysis.HydrolysisActivity
+import dev.waterui.hydrolysis.HydrolysisEnvironment
 import dev.waterui.hydrolysis.HydrolysisHostView
 import dev.waterui.hydrolysis.HydrolysisSession
 {%- if ctx.hydrolysis_android_has_painter_band() %}
@@ -18,23 +20,18 @@ import {{ ctx.hydrolysis_android_painter_band_import() }}
  * The generated app entry: a [HydrolysisActivity] that loads this project's
  * Hydrolysis cdylib and mounts the painter's band beneath every host child.
  *
- * Everything the CLI passes to the app — environment variables, the bundled
- * asset tree, the cache directory — must be in place before
- * [HydrolysisActivity.onCreate] loads the native library, so it is all set
- * up ahead of `super.onCreate`.
+ * [HydrolysisEnvironment.prepare] owns the bundled asset tree and the default
+ * environment variables; the intent extras the CLI passes still override the
+ * defaults it sets, so they land between it and `super.onCreate` (which loads
+ * the native library).
  */
 class MainActivity : HydrolysisActivity() {
 
     override val nativeLibraryName: String = "{{ ctx.hydrolysis_android_native_library_name() }}"
 
     override fun createContentView(session: HydrolysisSession): View {
-        val host = HydrolysisHostView(this, session)
-        {%- if ctx.hydrolysis_android_has_painter_band() %}
-        // The painter band is the bottom-most child; platform-view overlays
-        // and native embeddings draw above it.
-        host.addView({{ ctx.hydrolysis_android_painter_band_class() }}(this, session), 0)
-        {%- endif %}
-        return host
+        val context: Context = this
+        return {% include "partials/hydrolysis_android_content_view.kt.tpl" %}
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

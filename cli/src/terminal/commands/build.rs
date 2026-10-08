@@ -11,17 +11,16 @@ use crate::shell::Shell;
 use crate::{error, header, line, success};
 use waterui_cli::toolchain_checks;
 use waterui_cli::{
-    android::{
-        embedded,
-        platform::{AndroidAbi, AndroidPlatform},
-    },
+    android::platform::{AndroidAbi, AndroidPlatform},
     apple::{platform::build_rust_lib, toolchain::AppleSdk},
     build::{BuildOptions, BuildProfile, BuiltTarget},
     esp32::platform::build_esp32,
     gtk4::platform::build_gtk4,
     hydrolysis::platform::build_hydrolysis,
+    hydrolysis::{self, android::embedded},
     platform::TargetPlatform as LibTargetPlatform,
     project::{ManagedBackends, Project},
+    toolchain::Host,
     winui::platform::build_winui,
 };
 
@@ -182,6 +181,9 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
     if args.platform != TargetPlatform::Android {
         bail!("embedded projects support the Apple and Android backends");
     }
+    if context.backend != TargetBackend::Hydrolysis {
+        bail!("embedded Android libraries are built by Hydrolysis: pass `--backend hydrolysis`");
+    }
 
     let abis: Vec<AndroidAbi> = args.arch.map_or_else(
         || embedded::ALL_ABIS.to_vec(),
@@ -202,6 +204,8 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
     let spinner = shell.spinner("Compiling...");
     let result = Box::pin(shell.display_output(embedded::build_aar(
         &context.project,
+        &Host::current(),
+        hydrolysis::android::resolve_painter(&context.project, None),
         &context.build_options,
         &abis,
     )))
@@ -218,6 +222,9 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
                 artifact.aar_path.display()
             );
             success!(shell, "Published to mavenLocal as {}", artifact.coordinate);
+            for host_coordinate in &artifact.host_coordinates {
+                line!(shell, "    published {}", host_coordinate);
+            }
             line!(shell, "In the host Gradle project, add:");
             line!(shell, "    mavenLocal() to repositories");
             line!(
@@ -227,10 +234,13 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
             );
             line!(
                 shell,
-                "then mount the WaterUI root with WaterUiEmbedding + WaterUiRootView:"
+                "then mount the WaterUI root with `WaterUi` (in `{}.waterui`):",
+                context.project.bundle_identifier()
             );
-            line!(shell, "    val waterui = WaterUiEmbedding(this)");
-            line!(shell, "    setContentView(WaterUiRootView(this, waterui))");
+            line!(
+                shell,
+                "    setContentView(WaterUi.createView(this) {{ finish() }})"
+            );
             Ok(())
         }
         Err(err) => {

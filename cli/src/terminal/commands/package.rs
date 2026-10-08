@@ -232,7 +232,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     // The per-backend artifact builds cross clippy's `large_futures` threshold
     // (16 KiB) on Windows, so the future is pinned on the heap.
     let built = Box::pin(build_packaging_artifacts(shell, &args, &context)).await?;
-    package_artifact(shell, &args, &context, built.as_ref()).await
+    Box::pin(package_artifact(shell, &args, &context, built.as_ref())).await
 }
 
 async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<PackagingContext>> {
@@ -551,8 +551,7 @@ async fn package_artifact(
     built: Option<&BuiltTarget>,
 ) -> Result<()> {
     let spinner = shell.spinner("Packaging application...");
-    let artifact = shell
-        .display_output(package_artifact_inner(args, context, built))
+    let artifact = Box::pin(shell.display_output(package_artifact_inner(args, context, built)))
         .await?;
     let artifact = place_in_project(&context.project, artifact).await?;
     // Consumers read the host library beside the `.app` this command reports,

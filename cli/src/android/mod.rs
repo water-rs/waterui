@@ -6,8 +6,6 @@ pub mod adb;
 pub mod backend;
 /// Android device detection and management.
 pub mod device;
-/// Embedded-mode builds: the host-owned app consumes a CLI-built AAR.
-pub mod embedded;
 /// Embedded Android NDK version and its runtime-Gradle parser.
 pub mod ndk_version;
 /// Gradle package task output discovery.

@@ -132,6 +132,7 @@ impl Backend for HydrolysisBackend {
         // changes when the painter or project does, which re-scaffolds
         // directly rather than through `reinit_backend`.
         "android",
+        "android-embedded",
         "android-host",
     ];
 
