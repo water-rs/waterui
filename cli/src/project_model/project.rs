@@ -3330,6 +3330,7 @@ mod channel_tests {
                 [package.metadata.waterui]
                 minimum-cli-version = "0.1.4"
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
             };
             metadata["package"]["metadata"]["waterui"]["minimum-cli-version"] =
                 toml::Value::String(minimum.to_string());
