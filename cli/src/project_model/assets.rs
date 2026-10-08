@@ -27,7 +27,6 @@ use waterui_assets_planner::{
 use zenwave::{Client as _, Method};
 
 use crate::project::Project;
-use crate::project_model::project_types::PermissionKey;
 
 mod android_manifest;
 mod app_values;
@@ -131,9 +130,6 @@ struct FontManifestEntry {
 /// [`waterui_assets_planner::dependency_font_declarations`].
 #[derive(Debug, Deserialize)]
 struct WaterUIMetadata {
-    /// Permissions this crate cannot work without, keyed by logical permission.
-    #[serde(default)]
-    permissions: BTreeMap<PermissionKey, PermissionRequirement>,
     /// Kotlin sources and Maven dependencies to place on the Android
     /// application classpath, from `[package.metadata.waterui.android]`.
     #[serde(default)]
@@ -250,39 +246,6 @@ impl AndroidTable {
             && self.meta_data.is_empty()
             && self.gradle_plugin.is_empty()
     }
-}
-
-/// One crate's declaration that it needs a permission to function.
-#[derive(Debug, Deserialize)]
-struct PermissionRequirement {
-    /// Human-readable justification, shown to the application author.
-    reason: String,
-    /// Only required when this cargo feature is enabled on the declaring crate.
-    #[serde(default, rename = "required-feature")]
-    required_feature: Option<String>,
-}
-
-/// A permission some dependency needs, and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RequiredPermission {
-    /// Crate that declared the requirement.
-    pub package: String,
-    /// The logical permission.
-    pub key: PermissionKey,
-    /// Why that crate needs it.
-    pub reason: String,
-    /// How the requirement was established.
-    pub evidence: PermissionEvidence,
-}
-
-/// How confident the audit is that a permission is actually needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionEvidence {
-    /// The crate declared the requirement in its own manifest metadata.
-    Declared,
-    /// Inferred from the shape of the dependency graph; may be a false
-    /// positive, so the report is phrased as a suggestion.
-    Inferred,
 }
 
 /// Fonts the project itself declares as `[[assets.font]]` tables in
@@ -532,28 +495,6 @@ pub struct AndroidClasspath {
     pub maven: BTreeSet<String>,
 }
 
-/// Which Gradle configuration a module's classpath dependencies land on.
-///
-/// `implementation` hides them from consumers — correct for an application
-/// module. `api` exports them through the published POM — required for the
-/// embedded AAR, whose host app resolves the classes at run time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AndroidDependencyScope {
-    /// `implementation(...)`: app module and hydrolysis app.
-    Implementation,
-    /// `api(...)`: the embedded `waterui` module consumers depend on.
-    Api,
-}
-
-impl AndroidDependencyScope {
-    const fn gradle_keyword(self) -> &'static str {
-        match self {
-            Self::Implementation => "implementation",
-            Self::Api => "api",
-        }
-    }
-}
-
 /// Scans `build_manifest`'s dependency graph for
 /// `[package.metadata.waterui.android]` declarations via `cargo metadata` —
 /// the same channel the font and permission scans read.
@@ -798,49 +739,23 @@ pub async fn stage_android_declarations(
     project: &Project,
     build_manifest: &Path,
     module_dir: &Path,
-    scope: AndroidDependencyScope,
     features: &[String],
 ) -> eyre::Result<()> {
     let declarations = scan_android_declarations(project, build_manifest, features).await?;
-    stage_classpath_files(&declarations.classpath, module_dir, scope).await?;
+    stage_classpath_files(&declarations.classpath, module_dir).await?;
     android_manifest::write_manifest_components(module_dir, &declarations.manifest).await?;
     app_values::stage_android_app_values(
         module_dir,
         project.root(),
         &declarations.app_values,
         &project.manifest().app_values,
-        scope,
     )
     .await?;
-    match scope {
-        AndroidDependencyScope::Implementation => {
-            let project_dir = module_dir
-                .parent()
-                .ok_or_eyre("the Gradle module has no parent project directory")?;
-            gradle_plugins::write_gradle_plugins(
-                project_dir,
-                module_dir,
-                &declarations.gradle_plugins,
-            )
-            .await
-        }
-        AndroidDependencyScope::Api => {
-            warn_host_applies_gradle_plugins(&declarations.gradle_plugins);
-            Ok(())
-        }
-    }
-}
-
-/// A Gradle plugin acts on the application module — `google-services`
-/// matches its configuration against the application id — so the embedded
-/// AAR, a library, cannot apply one for its host. The host application
-/// module must apply each plugin the graph declares itself.
-fn warn_host_applies_gradle_plugins(plugins: &GradlePlugins) {
-    for (crate_name, id, version) in plugins.iter() {
-        warn!(
-            "{crate_name} needs Gradle plugin `{id}` version `{version}`; the embedded library cannot apply it, so the host application module must declare `id(\"{id}\") version \"{version}\"`"
-        );
-    }
+    let project_dir = module_dir
+        .parent()
+        .ok_or_eyre("the Gradle module has no parent project directory")?;
+    gradle_plugins::write_gradle_plugins(project_dir, module_dir, &declarations.gradle_plugins)
+        .await
 }
 
 /// The classpath half of [`stage_android_declarations`], split from the cargo-metadata
@@ -848,7 +763,6 @@ fn warn_host_applies_gradle_plugins(plugins: &GradlePlugins) {
 async fn stage_classpath_files(
     classpath: &AndroidClasspath,
     module_dir: &Path,
-    scope: AndroidDependencyScope,
 ) -> eyre::Result<()> {
     let mut keep_packages = BTreeSet::new();
 
@@ -913,7 +827,7 @@ async fn stage_classpath_files(
         fs::remove_dir_all(&libs_dir).await?;
     }
 
-    write_android_dependencies(module_dir, &classpath.maven, scope).await?;
+    write_android_dependencies(module_dir, &classpath.maven).await?;
     write_android_keeps(module_dir, &keep_packages).await?;
     Ok(())
 }
@@ -983,7 +897,6 @@ fn splice_managed_block(
 async fn write_android_dependencies(
     module_dir: &Path,
     maven: &BTreeSet<String>,
-    scope: AndroidDependencyScope,
 ) -> eyre::Result<()> {
     let build_file = module_dir.join("build.gradle.kts");
     let existing = fs::read_to_string(&build_file)
@@ -1003,7 +916,7 @@ async fn write_android_dependencies(
     body.push('\n');
     for coordinate in maven {
         body.push_str("        ");
-        body.push_str(scope.gradle_keyword());
+        body.push_str("implementation");
         body.push_str("(\"");
         body.push_str(coordinate);
         body.push_str("\")\n");
@@ -1460,9 +1373,9 @@ async fn seed_font_cache_scoped(
 /// The project crate is always scanned; beyond it, the manifests that matter
 /// are the generated crates': the theme crate's
 /// `[package.metadata.waterui.assets.font]` entries are reachable only
-/// through the backend manifest that depends on it. Apple and Android builds
-/// scan the FFI companion, which `Project::open` scaffolds whenever either
-/// backend is managed; if it is still absent it is scaffolded here. Each of
+/// through the backend manifest that depends on it. Apple builds scan the
+/// Apple companion, which `Project::open` scaffolds whenever that backend is
+/// managed; if it is still absent it is scaffolded here. Each of
 /// the GTK4, Hydrolysis and `WinUI` crates is re-scaffolded with the
 /// current templates when missing or stale, exactly as the build and preview
 /// paths regenerate it. Scaffolding writes template files — nothing
@@ -1482,28 +1395,19 @@ async fn ensure_font_scan_manifests(
 ) -> eyre::Result<Vec<PathBuf>> {
     let mut manifests = vec![project.root().join("Cargo.toml")];
 
-    // Apple and Android builds scan the FFI companion; no other backend's
-    // build does, and a scoped fetch includes it only for those two.
-    let ffi_scanned = scope.is_none_or(|backend| {
-        matches!(
-            backend,
-            crate::platform::TargetBackend::Apple | crate::platform::TargetBackend::Android
-        )
-    });
-    if ffi_scanned {
-        let manifest = project.ffi_crate_path().join("Cargo.toml");
-        // Same selection rule `Project::open` applies: the companion on
-        // disk is rendered for this invocation's scope before it is read —
-        // a companion a different selection left behind is not the
-        // manifest this scan resolves. `scaffold_ffi_companion` itself
-        // drops the Apple pieces on hosts an Apple build cannot run.
-        let apple_selected =
-            scope.is_none_or(|backend| matches!(backend, crate::platform::TargetBackend::Apple));
+    // Only an Apple build reads the companion; no other backend's build
+    // does, and a scoped fetch includes it only for Apple.
+    let apple_scanned =
+        scope.is_none_or(|backend| matches!(backend, crate::platform::TargetBackend::Apple));
+    if apple_scanned {
+        let manifest = project.apple_crate_path().join("Cargo.toml");
+        // Same selection rule `Project::open` applies: the companion on disk
+        // is rendered before it is read.
         project
-            .scaffold_ffi_companion(apple_selected)
+            .scaffold_apple_companion(true)
             .await
             .map_err(|error| {
-                eyre::eyre!("could not scaffold the Apple/Android FFI companion crate: {error}")
+                eyre::eyre!("could not scaffold the Apple companion crate: {error}")
             })?;
         manifests.push(manifest);
     }
@@ -1978,9 +1882,8 @@ pub async fn stage_project_assets_for_android(
     backend_path: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
-    theme_parent: unified::AndroidThemeParent,
 ) -> eyre::Result<BundleManifest> {
-    unified::stage_for_android(project, backend_path, symbols, dev_server, theme_parent).await
+    unified::stage_for_android(project, backend_path, symbols, dev_server).await
 }
 
 /// Stage project assets for an embedded-mode Android library module
@@ -2034,7 +1937,7 @@ pub fn scan_project_font_assets(manifest: &BundleManifest) -> eyre::Result<Vec<R
     unified::scan_project_fonts(manifest)
 }
 
-pub use unified::{AndroidThemeParent, LaunchAssets};
+pub use unified::LaunchAssets;
 
 /// Resolve the project's launch screen and load its artwork.
 pub fn project_launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
@@ -2199,12 +2102,12 @@ pub async fn package_feature_enabled(
 /// An optional `WaterUI` capability, and what in the app's resolved graph says
 /// the app has it.
 ///
-/// The name is also the feature the FFI crate exports the capability's C
-/// surface under, so one entry drives both the FFI build and the native
+/// The name is also the feature the generated companion crate enables the
+/// capability under, so one entry drives both that build and the native
 /// backend's conditional compilation.
 struct Capability {
-    /// The capability's name, shared with `waterui-ffi`'s feature of the same
-    /// name.
+    /// The capability's name, shared with the generated manifest feature of
+    /// the same name.
     name: &'static str,
     /// The crate that actually provides the capability.
     package: &'static str,
@@ -2269,12 +2172,12 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
 /// Returns whether this app's resolved graph carries the named capability.
 ///
 /// This is the one predicate every consumer of a capability must share: the
-/// FFI build forwards the capability's feature, and the native backend build
-/// compiles the matching components, from this same answer. The FFI features
-/// are passed on the build command line rather than written into the
-/// generated manifest, so re-resolving `waterui-ffi`'s own features from the
-/// manifest graph would always read them as off — the backend then prunes
-/// components whose symbols the dylib does export.
+/// generated crate forwards the capability's feature, and the native backend
+/// build compiles the matching components, from this same answer. The
+/// features are passed on the build command line rather than written into
+/// the generated manifest, so re-resolving the dependency's own features
+/// from the manifest graph would always read them as off — the backend then
+/// prunes components whose symbols the dylib does export.
 ///
 /// `build_manifest` is the manifest of the crate being built — the resolved
 /// graph the feature check reads.
@@ -2300,27 +2203,27 @@ pub async fn capability_enabled(
     }
 }
 
-/// Returns the generated FFI crate's features to enable for this app's
+/// Returns the generated crate's features to enable for this app's
 /// capabilities.
 ///
-/// Each entry is a feature the generated manifest forwards to `waterui-ffi`
-/// of the same name (`FORWARDED_FFI_FEATURES`), keeping the resolve inside
+/// Each entry is a feature the generated manifest forwards to a dependency
+/// of the same name (`FORWARDED_FEATURES`), keeping the resolve inside
 /// the seeded lockfile.
 ///
 /// An app opts into a capability through its dependency graph — a component
 /// crate it depends on (`waterui-map`), or a crate that carries the capability
-/// with it (an SVG icon pack carries `waterui-graphics/gpu`). The generated FFI
-/// crate is what exports that capability's C surface, so the resolved graph's
-/// choice has to reach its build; reading it back out keeps one declaration in
-/// the app's manifest.
+/// with it (an SVG icon pack carries `waterui-graphics/gpu`). The generated
+/// companion crate is what links that capability into the application, so the
+/// resolved graph's choice has to reach its build; reading it back out keeps
+/// one declaration in the app's manifest.
 ///
-/// `build_manifest` is the manifest of the crate being built — the FFI
-/// companion for Apple and Android builds.
+/// `build_manifest` is the manifest of the crate being built — the Apple
+/// companion crate or the Hydrolysis Android launcher.
 ///
 /// # Errors
 ///
 /// Returns an error when `cargo metadata` cannot be read.
-pub async fn capability_ffi_features(
+pub async fn capability_features(
     project: &Project,
     build_manifest: &Path,
 ) -> eyre::Result<Vec<String>> {
@@ -2333,9 +2236,9 @@ pub async fn capability_ffi_features(
     Ok(features)
 }
 
-/// Returns the generated FFI crate features — forwarded to `waterui-ffi` —
-/// that select `WaterUI`'s own realizations of the semantic components the
-/// facade carries, for a platform with no native primitive to bridge.
+/// Returns the generated crate features that select `WaterUI`'s own
+/// realizations of the semantic components the facade carries, for a
+/// platform with no native primitive to bridge.
 ///
 /// Apple bridges `AVPlayer`, so an Apple build asks for none of these and links
 /// no player. Every other platform draws the video itself, and the
@@ -2351,8 +2254,8 @@ pub async fn capability_ffi_features(
 /// its own `app(env)`, the way it installs a browser engine, so no build flag
 /// selects it.
 ///
-/// `build_manifest` is the manifest of the crate being built — the FFI
-/// companion whose `video` feature this list feeds.
+/// `build_manifest` is the manifest of the crate being built — the generated
+/// crate whose `video` feature this list feeds.
 ///
 /// # Errors
 ///
@@ -2880,975 +2783,5 @@ mod tests {
             written.contains("\"file_name\": \"DejaVuSerif.ttf\""),
             "{written}"
         );
-    }
-}
-
-/// Collects the permissions this app's dependencies declare they need.
-///
-/// A crate states its own requirement in its manifest, so the CLI never has to
-/// know what any component does:
-///
-/// ```toml
-/// [package.metadata.waterui.permissions]
-/// internet = { reason = "downloads map styles and vector tiles" }
-/// ```
-///
-/// Declarations gated behind a cargo feature are skipped unless the resolved
-/// graph actually enabled that feature for the declaring crate.
-///
-/// The scan runs `cargo metadata` on `build_manifest` — the `Cargo.toml` of
-/// the crate this build compiles, i.e. the generated backend or FFI crate.
-/// That crate depends on the app, so its graph carries both the app's authored
-/// dependencies and the backend's own (a theme crate and friends); resolving
-/// the app's manifest instead would miss the backend's declarations entirely.
-///
-/// # Errors
-///
-/// Returns an error when `cargo metadata` cannot be read.
-pub async fn scan_required_permissions(
-    build_manifest: &Path,
-) -> eyre::Result<Vec<RequiredPermission>> {
-    let metadata = crate_metadata(build_manifest, &[])
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "Failed to run cargo metadata on {}",
-                build_manifest.display()
-            )
-        })?;
-
-    let enabled_features = resolved_features(&metadata);
-
-    let mut required = Vec::new();
-    for package in &metadata.packages {
-        let Some(parsed) = parse_waterui_metadata(package)? else {
-            continue;
-        };
-        let features = enabled_features
-            .get(&package.id)
-            .cloned()
-            .unwrap_or_default();
-        for (key, requirement) in parsed.permissions {
-            if let Some(gate) = &requirement.required_feature
-                && !features.contains(gate.as_str())
-            {
-                debug!(
-                    "Skipping {key:?} for {}: feature `{gate}` is not enabled",
-                    package.name
-                );
-                continue;
-            }
-            required.push(RequiredPermission {
-                package: package.name.to_string(),
-                key,
-                reason: requirement.reason.clone(),
-                evidence: PermissionEvidence::Declared,
-            });
-        }
-    }
-    if let Some(inferred) = infer_internet_from_http_clients(&metadata.packages, &required) {
-        required.push(inferred);
-    }
-    required.sort_by(|left, right| {
-        (left.key, left.package.as_str()).cmp(&(right.key, right.package.as_str()))
-    });
-    required.dedup();
-    Ok(required)
-}
-
-/// HTTP client crates whose presence almost always means the app talks to the
-/// network at runtime. Presence is a hint, not proof — a client can sit behind
-/// a disabled feature of some dependency — so hits are reported as
-/// [`PermissionEvidence::Inferred`].
-const HTTP_CLIENT_CRATES: &[&str] = &[
-    "attohttpc",
-    "curl",
-    "hyper",
-    "isahc",
-    "reqwest",
-    "surf",
-    "ureq",
-    "zenwave",
-];
-
-/// Suggests the `internet` permission when the dependency graph contains a
-/// known HTTP client and nothing declared that permission outright.
-///
-/// A declared requirement always carries better evidence and a better message,
-/// so the inference stays quiet as soon as one exists.
-fn infer_internet_from_http_clients(
-    packages: &[cargo_metadata::Package],
-    declared: &[RequiredPermission],
-) -> Option<RequiredPermission> {
-    if declared
-        .iter()
-        .any(|requirement| requirement.key == PermissionKey::Internet)
-    {
-        return None;
-    }
-    let mut clients: Vec<&str> = packages
-        .iter()
-        .map(|package| package.name.as_str())
-        .filter(|name| HTTP_CLIENT_CRATES.contains(name))
-        .collect();
-    clients.sort_unstable();
-    clients.dedup();
-    if clients.is_empty() {
-        return None;
-    }
-    Some(RequiredPermission {
-        package: clients.join(", "),
-        key: PermissionKey::Internet,
-        reason: String::from("the dependency graph contains an HTTP client"),
-        evidence: PermissionEvidence::Inferred,
-    })
-}
-
-/// Selects the declared requirements this app has not satisfied.
-///
-/// `relevant` decides whether a permission means anything on the platform being
-/// built, so an iOS build stays quiet about `internet` (which iOS never
-/// declares) while an Android build does not. Keeping this separate from the
-/// reporting makes the selection itself testable.
-fn missing_permissions<'a>(
-    enabled: &HashSet<PermissionKey>,
-    required: &'a [RequiredPermission],
-    relevant: impl Fn(PermissionKey) -> bool,
-) -> Vec<&'a RequiredPermission> {
-    required
-        .iter()
-        .filter(|requirement| !enabled.contains(&requirement.key) && relevant(requirement.key))
-        .collect()
-}
-
-/// Reports dependencies that need a permission this app has not enabled.
-pub fn warn_missing_permissions(
-    project: &Project,
-    required: &[RequiredPermission],
-    relevant: impl Fn(PermissionKey) -> bool,
-) {
-    let enabled: HashSet<PermissionKey> = project
-        .manifest()
-        .permissions
-        .iter()
-        .filter(|(_, entry)| entry.is_enabled())
-        .map(|(key, _)| *key)
-        .collect();
-
-    for requirement in missing_permissions(&enabled, required, relevant) {
-        let key = permission_toml_key(requirement.key);
-        match requirement.evidence {
-            PermissionEvidence::Declared => warn!(
-                "{} needs the `{key}` permission ({}). Add it to Water.toml:\n\n    [permissions.{key}]\n    enable = true\n",
-                requirement.package, requirement.reason
-            ),
-            PermissionEvidence::Inferred => warn!(
-                "This app likely needs the `{key}` permission: {} ({}). If it talks to the network, add it to Water.toml:\n\n    [permissions.{key}]\n    enable = true\n",
-                requirement.reason, requirement.package
-            ),
-        }
-    }
-}
-
-/// Renders a permission key the way it is written in `Water.toml`.
-fn permission_toml_key(key: PermissionKey) -> String {
-    serde_json::to_value(key)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| format!("{key:?}"))
-}
-
-#[cfg(test)]
-mod permission_audit_tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    fn requirement(key: PermissionKey) -> RequiredPermission {
-        RequiredPermission {
-            package: String::from("waterui-map-gpu"),
-            key,
-            reason: String::from("downloads map styles and vector tiles"),
-            evidence: PermissionEvidence::Declared,
-        }
-    }
-
-    fn package(name: &str) -> cargo_metadata::Package {
-        let manifest = format!(
-            r#"{{
-                "name": "{name}",
-                "version": "1.0.0",
-                "id": "registry+https://github.com/rust-lang/crates.io-index#{name}@1.0.0",
-                "dependencies": [],
-                "targets": [],
-                "features": {{}},
-                "manifest_path": "/dev/null/Cargo.toml"
-            }}"#
-        );
-        serde_json::from_str(&manifest).expect("synthesize a cargo package")
-    }
-
-    /// Writes a minimal compilable crate — `[package]` for `name`, an empty
-    /// `src/lib.rs`, and `extra` verbatim manifest TOML — and returns the
-    /// manifest path a scan can be pointed at.
-    fn write_crate(dir: &Path, name: &str, extra: &str) -> PathBuf {
-        std::fs::create_dir_all(dir.join("src")).expect("crate src dir");
-        let manifest = dir.join("Cargo.toml");
-        std::fs::write(
-            &manifest,
-            format!(
-                "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n{extra}"
-            ),
-        )
-        .expect("crate manifest");
-        std::fs::write(dir.join("src/lib.rs"), "").expect("crate source");
-        manifest
-    }
-
-    /// The scan resolves the graph of the manifest it is handed — the crate
-    /// the build actually compiles. A permission declared only through the
-    /// managed backend's dependency tree is reported from the backend's
-    /// manifest and is invisible from the FFI companion's.
-    #[test]
-    fn a_permission_declared_in_the_built_crates_graph_is_scanned() {
-        let project = tempdir().expect("temp project");
-        // `theme` stands in for a managed backend's own dependency, such as
-        // hydrolysis-m3: the backend crate links it, the FFI crate does not.
-        write_crate(
-            &project.path().join("theme"),
-            "theme",
-            "[package.metadata.waterui.permissions]\n\
-             internet = { reason = \"downloads map styles and vector tiles\" }\n",
-        );
-        let ffi_manifest = write_crate(&project.path().join("ffi"), "app-ffi", "");
-        let backend_manifest = write_crate(
-            &project.path().join("hydrolysis"),
-            "app-hydrolysis",
-            "[dependencies]\ntheme = { path = \"../theme\" }\n",
-        );
-
-        let required = smol::block_on(scan_required_permissions(&backend_manifest))
-            .expect("scan the built crate's graph");
-        assert!(
-            required
-                .iter()
-                .any(|requirement| requirement.package == "theme"
-                    && requirement.key == PermissionKey::Internet
-                    && requirement.evidence == PermissionEvidence::Declared),
-            "the backend graph must report the permission `theme` declares"
-        );
-
-        let ffi = smol::block_on(scan_required_permissions(&ffi_manifest))
-            .expect("scan the ffi crate's graph");
-        assert!(
-            ffi.is_empty(),
-            "the ffi graph does not carry `theme` and must stay silent"
-        );
-    }
-
-    /// `package_feature_enabled` reads the same graph: a feature a dependency
-    /// carries only through the managed backend's manifest reports enabled
-    /// there and absent from the FFI companion's.
-    #[test]
-    fn a_feature_enabled_in_the_built_crates_graph_is_seen() {
-        let project = tempdir().expect("temp project");
-        write_crate(
-            &project.path().join("theme"),
-            "theme",
-            "[features]\nextra = []\n",
-        );
-        let ffi_manifest = write_crate(&project.path().join("ffi"), "app-ffi", "");
-        let backend_manifest = write_crate(
-            &project.path().join("hydrolysis"),
-            "app-hydrolysis",
-            "[dependencies]\ntheme = { path = \"../theme\", features = [\"extra\"] }\n",
-        );
-
-        assert!(
-            smol::block_on(package_feature_enabled(&backend_manifest, "theme", "extra"))
-                .expect("scan the built crate's graph")
-        );
-        assert!(
-            !smol::block_on(package_feature_enabled(&ffi_manifest, "theme", "extra"))
-                .expect("scan the ffi crate's graph")
-        );
-    }
-
-    #[test]
-    fn an_http_client_in_the_graph_suggests_internet() {
-        let packages = vec![package("serde"), package("zenwave")];
-
-        let inferred = infer_internet_from_http_clients(&packages, &[])
-            .expect("zenwave should trigger the suggestion");
-
-        assert_eq!(inferred.key, PermissionKey::Internet);
-        assert_eq!(inferred.evidence, PermissionEvidence::Inferred);
-        assert!(inferred.package.contains("zenwave"));
-    }
-
-    #[test]
-    fn a_declared_internet_requirement_silences_the_inference() {
-        let packages = vec![package("reqwest")];
-        let declared = vec![requirement(PermissionKey::Internet)];
-
-        assert!(infer_internet_from_http_clients(&packages, &declared).is_none());
-    }
-
-    #[test]
-    fn a_graph_without_http_clients_suggests_nothing() {
-        let packages = vec![package("serde"), package("tracing")];
-
-        assert!(infer_internet_from_http_clients(&packages, &[]).is_none());
-    }
-
-    #[test]
-    fn a_declared_permission_the_app_enabled_is_not_reported() {
-        let enabled = HashSet::from([PermissionKey::Internet]);
-        let required = vec![requirement(PermissionKey::Internet)];
-
-        assert_eq!(
-            missing_permissions(&enabled, &required, |_| true),
-            [] as [&RequiredPermission; 0]
-        );
-    }
-
-    #[test]
-    fn a_missing_permission_is_reported_once() {
-        let required = vec![requirement(PermissionKey::Internet)];
-
-        let missing = missing_permissions(&HashSet::new(), &required, |_| true);
-
-        assert_eq!(missing.len(), 1);
-        assert_eq!(missing[0].key, PermissionKey::Internet);
-    }
-
-    /// iOS never declares network access, so warning about it there would be
-    /// noise — and a warning that cries wolf stops being read.
-    #[test]
-    fn a_permission_the_platform_does_not_declare_stays_quiet() {
-        let required = vec![requirement(PermissionKey::Internet)];
-
-        let android = missing_permissions(&HashSet::new(), &required, |key| {
-            key.android_permission_name().is_some()
-        });
-        let ios = missing_permissions(&HashSet::new(), &required, |key| {
-            key.ios_plist_key().is_some()
-        });
-
-        assert_eq!(android.len(), 1, "Android must ask for INTERNET");
-        assert!(ios.is_empty(), "iOS declares no network permission");
-    }
-
-    #[test]
-    fn the_reported_key_matches_the_water_toml_spelling() {
-        assert_eq!(permission_toml_key(PermissionKey::Internet), "internet");
-        assert_eq!(
-            permission_toml_key(PermissionKey::CoarseLocation),
-            "coarse_location"
-        );
-    }
-
-    /// `water fetch --backend android` must never touch the GTK4 scaffold:
-    /// the scoped scan covers only the crates an Android build reads, so a
-    /// backend crate whose dependency graph does not resolve on this host
-    /// cannot fail a fetch meant for another backend.
-    #[test]
-    fn a_backend_scope_selects_only_that_backends_crate() {
-        use crate::platform::TargetBackend;
-
-        let scope = Some(TargetBackend::Android);
-        assert!(!crate::gtk4::backend::Gtk4Backend::in_scope(scope));
-        assert!(!crate::hydrolysis::backend::HydrolysisBackend::in_scope(
-            scope
-        ));
-        assert!(!crate::winui::backend::WinUiBackend::in_scope(scope));
-
-        let gtk4 = Some(TargetBackend::Gtk4);
-        assert!(crate::gtk4::backend::Gtk4Backend::in_scope(gtk4));
-        assert!(!crate::hydrolysis::backend::HydrolysisBackend::in_scope(
-            gtk4
-        ));
-        assert!(!crate::winui::backend::WinUiBackend::in_scope(gtk4));
-
-        // An unscoped fetch keeps scanning every wanted crate.
-        assert!(crate::gtk4::backend::Gtk4Backend::in_scope(None));
-        assert!(crate::hydrolysis::backend::HydrolysisBackend::in_scope(
-            None
-        ));
-        assert!(crate::winui::backend::WinUiBackend::in_scope(None));
-    }
-
-    /// Manifest components are collected across the resolved graph the way
-    /// Kotlin sources are: a `feature.<name>` table whose cargo feature is
-    /// disabled contributes nothing, the same table with the feature on
-    /// contributes its components, and two crates declaring one component
-    /// differently fail the collection naming both.
-    #[test]
-    fn manifest_components_are_collected_across_the_graph() {
-        let project = tempdir().expect("temp project");
-        let provider = "name = \"waterkit.clipboard.ClipboardFileProvider\"\n\
-                        authorities = [\"${applicationId}.waterkit.clipboard\"]\n\
-                        exported = false\n\
-                        grant-uri-permissions = true\n";
-        write_crate(
-            &project.path().join("clipboard"),
-            "clipboard",
-            &format!(
-                "[features]\nfiles = []\n\n\
-                 [[package.metadata.waterui.android.feature.files.provider]]\n{provider}"
-            ),
-        );
-        let gated = write_crate(
-            &project.path().join("gated"),
-            "app-gated",
-            "[dependencies]\nclipboard = { path = \"../clipboard\" }\n",
-        );
-        let enabled = write_crate(
-            &project.path().join("enabled"),
-            "app-enabled",
-            "[dependencies]\nclipboard = { path = \"../clipboard\", features = [\"files\"] }\n",
-        );
-
-        let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
-            collect_android_declarations(&metadata)
-        };
-        let block = |declarations: AndroidDeclarations| {
-            declarations
-                .manifest
-                .render_block()
-                .expect("render the collected components")
-        };
-
-        let gated = block(collect(&gated).expect("collect the gated graph"));
-        assert!(!gated.contains("<provider"), "{gated}");
-        let enabled = block(collect(&enabled).expect("collect the enabled graph"));
-        assert!(
-            enabled.contains("android:name=\"waterkit.clipboard.ClipboardFileProvider\""),
-            "{enabled}"
-        );
-
-        // A second crate exporting the same provider differently.
-        write_crate(
-            &project.path().join("other"),
-            "other-clipboard",
-            &format!(
-                "[[package.metadata.waterui.android.provider]]\n{}",
-                provider.replace("exported = false", "exported = true")
-            ),
-        );
-        let conflicting = write_crate(
-            &project.path().join("conflicting"),
-            "app-conflicting",
-            "[dependencies]\n\
-             clipboard = { path = \"../clipboard\", features = [\"files\"] }\n\
-             other-clipboard = { path = \"../other\" }\n",
-        );
-        let error = collect(&conflicting).expect_err("conflicting providers must fail");
-        let message = error.to_string();
-        assert!(message.contains("`clipboard`"), "{message}");
-        assert!(message.contains("`other-clipboard`"), "{message}");
-
-        // A feature table naming a cargo feature the crate does not declare.
-        write_crate(
-            &project.path().join("typo"),
-            "typo",
-            "[package.metadata.waterui.android.feature.phantom]\nmaven = []\n",
-        );
-        let mistyped = write_crate(
-            &project.path().join("mistyped"),
-            "app-mistyped",
-            "[dependencies]\ntypo = { path = \"../typo\" }\n",
-        );
-        let message = collect(&mistyped)
-            .expect_err("a feature table the crate does not declare must fail")
-            .to_string();
-        assert!(message.contains("typo"), "{message}");
-        assert!(message.contains("phantom"), "{message}");
-    }
-
-    /// Gradle plugins are collected across the resolved graph like every
-    /// other Android declaration: a `feature.<name>` table whose cargo
-    /// feature is disabled contributes nothing, the same table with the
-    /// feature on contributes its plugin, and two crates pinning one plugin
-    /// at different versions fail the collection naming both.
-    #[test]
-    fn gradle_plugins_are_collected_across_the_graph() {
-        let project = tempdir().expect("temp project");
-        let plugin = "id = \"com.google.gms.google-services\"\n\
-                      version = \"4.4.2\"\n";
-        write_crate(
-            &project.path().join("push"),
-            "push",
-            &format!(
-                "[features]\nremote = []\n\n\
-                 [[package.metadata.waterui.android.feature.remote.gradle-plugin]]\n{plugin}"
-            ),
-        );
-        let gated = write_crate(
-            &project.path().join("gated"),
-            "app-gated",
-            "[dependencies]\npush = { path = \"../push\" }\n",
-        );
-        let enabled = write_crate(
-            &project.path().join("enabled"),
-            "app-enabled",
-            "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
-        );
-        let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
-            collect_android_declarations(&metadata)
-        };
-
-        let gated = collect(&gated).expect("collect the gated graph");
-        assert_eq!(gated.gradle_plugins.iter().count(), 0);
-        let enabled = collect(&enabled).expect("collect the enabled graph");
-        let plugins: Vec<String> = enabled
-            .gradle_plugins
-            .iter()
-            .map(|(crate_name, id, version)| format!("{crate_name} {id} {version}"))
-            .collect();
-        assert_eq!(plugins, ["push com.google.gms.google-services 4.4.2"]);
-
-        write_crate(
-            &project.path().join("other"),
-            "other-push",
-            &format!(
-                "[[package.metadata.waterui.android.gradle-plugin]]\n{}",
-                plugin.replace("4.4.2", "4.3.0")
-            ),
-        );
-        let conflicting = write_crate(
-            &project.path().join("conflicting"),
-            "app-conflicting",
-            "[dependencies]\n\
-             push = { path = \"../push\", features = [\"remote\"] }\n\
-             other-push = { path = \"../other\" }\n",
-        );
-        let message = collect(&conflicting)
-            .expect_err("two versions of one plugin must fail")
-            .to_string();
-        assert!(message.contains("`push`"), "{message}");
-        assert!(message.contains("`other-push`"), "{message}");
-    }
-
-    /// Apple declarations are collected across the resolved graph: a
-    /// `feature.<name>` table whose cargo feature is disabled contributes
-    /// nothing, the same table with the feature on reaches the entitlements
-    /// and `Info.plist`, and two crates giving one entitlement different
-    /// values fail naming both.
-    #[test]
-    fn apple_declarations_are_collected_across_the_graph() {
-        let project = tempdir().expect("temp project");
-        write_crate(
-            &project.path().join("push"),
-            "push",
-            "[features]\nremote = []\n\n\
-             [package.metadata.waterui.apple.feature.remote]\n\
-             environment-entitlements = [\"aps-environment\"]\n\n\
-             [package.metadata.waterui.apple.feature.remote.entitlements]\n\
-             \"com.apple.developer.usernotifications.time-sensitive\" = true\n\n\
-             [package.metadata.waterui.apple.feature.remote.info-plist]\n\
-             UIBackgroundModes = [\"remote-notification\"]\n",
-        );
-        let gated = write_crate(
-            &project.path().join("gated"),
-            "app-gated",
-            "[dependencies]\npush = { path = \"../push\" }\n",
-        );
-        let enabled = write_crate(
-            &project.path().join("enabled"),
-            "app-enabled",
-            "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
-        );
-        let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
-            collect_apple_declarations(&metadata)
-        };
-        let signed = |declarations: &AppleDeclarations| {
-            let mut entitlements = plist::Dictionary::new();
-            declarations
-                .merge_into_entitlements(
-                    &mut entitlements,
-                    crate::platform::TargetPlatform::IOS,
-                    SigningEnvironment::Development,
-                )
-                .expect("merge entitlements");
-            entitlements
-        };
-
-        let gated = collect(&gated).expect("collect the gated graph");
-        assert!(signed(&gated).is_empty());
-        let mut plist = plist::Dictionary::new();
-        gated
-            .merge_into_info_plist(&mut plist)
-            .expect("merge Info.plist");
-        assert!(plist.is_empty());
-
-        let enabled = collect(&enabled).expect("collect the enabled graph");
-        let entitlements = signed(&enabled);
-        assert_eq!(
-            entitlements.get("aps-environment"),
-            Some(&plist::Value::String("development".to_owned()))
-        );
-        assert_eq!(
-            entitlements.get("com.apple.developer.usernotifications.time-sensitive"),
-            Some(&plist::Value::Boolean(true))
-        );
-        enabled
-            .merge_into_info_plist(&mut plist)
-            .expect("merge Info.plist");
-        assert_eq!(
-            plist.get("UIBackgroundModes"),
-            Some(&plist::Value::Array(vec![plist::Value::String(
-                "remote-notification".to_owned()
-            )]))
-        );
-
-        write_crate(
-            &project.path().join("other"),
-            "other-push",
-            "[package.metadata.waterui.apple.entitlements]\n\
-             \"com.apple.developer.usernotifications.time-sensitive\" = false\n",
-        );
-        let conflicting = write_crate(
-            &project.path().join("conflicting"),
-            "app-conflicting",
-            "[dependencies]\n\
-             push = { path = \"../push\", features = [\"remote\"] }\n\
-             other-push = { path = \"../other\" }\n",
-        );
-        let message = collect(&conflicting)
-            .expect_err("two values of one entitlement must fail")
-            .to_string();
-        assert!(message.contains("`push`"), "{message}");
-        assert!(message.contains("`other-push`"), "{message}");
-
-        // A feature table naming a cargo feature the crate does not declare.
-        write_crate(
-            &project.path().join("typo"),
-            "typo",
-            "[package.metadata.waterui.apple.feature.phantom.entitlements]\n\
-             \"com.apple.developer.applesignin\" = [\"Default\"]\n",
-        );
-        let mistyped = write_crate(
-            &project.path().join("mistyped"),
-            "app-mistyped",
-            "[dependencies]\ntypo = { path = \"../typo\" }\n",
-        );
-        let message = collect(&mistyped)
-            .expect_err("a feature table the crate does not declare must fail")
-            .to_string();
-        assert!(message.contains("typo"), "{message}");
-        assert!(message.contains("phantom"), "{message}");
-    }
-
-    /// App-value requests are collected across the resolved graph and gated
-    /// per entry: a request behind a disabled `required-feature` asks the
-    /// app for nothing.
-    #[test]
-    fn app_value_requests_are_collected_across_the_graph() {
-        let project = tempdir().expect("temp project");
-        write_crate(
-            &project.path().join("push"),
-            "push",
-            "[features]\nremote = []\n\n\
-             [[package.metadata.waterui.app-value]]\n\
-             key = \"firebase_config\"\n\
-             required-feature = \"remote\"\n\n\
-             [[package.metadata.waterui.app-value]]\n\
-             key = \"cast_receiver_app_id\"\n",
-        );
-        let gated = write_crate(
-            &project.path().join("gated"),
-            "app-gated",
-            "[dependencies]\npush = { path = \"../push\" }\n",
-        );
-        let enabled = write_crate(
-            &project.path().join("enabled"),
-            "app-enabled",
-            "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
-        );
-        let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
-            collect_android_declarations(&metadata).expect("collect the graph")
-        };
-        let push = ["push".to_owned()];
-
-        let gated = collect(&gated);
-        assert_eq!(
-            gated
-                .app_values
-                .requesters(app_values::AppValueKey::FirebaseConfig),
-            None
-        );
-        assert_eq!(
-            gated
-                .app_values
-                .requesters(app_values::AppValueKey::CastReceiverAppId),
-            Some(&push[..])
-        );
-
-        let enabled = collect(&enabled);
-        assert_eq!(
-            enabled
-                .app_values
-                .requesters(app_values::AppValueKey::FirebaseConfig),
-            Some(&push[..])
-        );
-    }
-
-    /// An unknown key in `[package.metadata.waterui.apple]` fails the
-    /// collection instead of silently dropping a declaration from the app.
-    #[test]
-    fn unknown_apple_metadata_keys_fail_the_scan() {
-        let project = tempdir().expect("temp project");
-        write_crate(
-            &project.path().join("typo"),
-            "typo",
-            "[package.metadata.waterui.apple]\nentitlement = { \"com.apple.developer.applesignin\" = [\"Default\"] }\n",
-        );
-        let app = write_crate(
-            &project.path().join("app"),
-            "app",
-            "[dependencies]\ntypo = { path = \"../typo\" }\n",
-        );
-        let metadata =
-            smol::block_on(crate_metadata(&app, &[])).expect("resolve the fixture graph");
-        let message = collect_apple_declarations(&metadata)
-            .expect_err("an unknown key must fail")
-            .to_string();
-        assert!(message.contains("typo"), "{message}");
-    }
-
-    /// Every key of `[package.metadata.waterui.android]` is the CLI's: a
-    /// misspelt one fails the collection instead of silently dropping a
-    /// declaration from the app.
-    #[test]
-    fn an_unknown_android_metadata_key_fails() {
-        let project = tempdir().expect("temp project");
-        let manifest = write_crate(
-            project.path(),
-            "typo",
-            "[[package.metadata.waterui.android.providers]]\nname = \"a.B\"\n",
-        );
-        let metadata =
-            smol::block_on(crate_metadata(&manifest, &[])).expect("resolve the fixture graph");
-        let error = collect_android_declarations(&metadata).expect_err("unknown key must fail");
-        assert!(error.to_string().contains("providers"), "{error}");
-    }
-
-    /// The Gradle `dependencies` block markers a generated module ships.
-    const DEPS_MARKERS: &str = "dependencies {\n    // --- begin waterui android classpath dependencies ---\n    // --- end waterui android classpath dependencies ---\n}\n";
-
-    /// Writes a module dir scaffold carrying the managed dependencies block
-    /// the generated modules ship.
-    fn module_dir_with_deps_block(root: &Path) -> PathBuf {
-        let module_dir = root.join("app");
-        std::fs::create_dir_all(&module_dir).expect("module dir");
-        std::fs::write(module_dir.join("build.gradle.kts"), DEPS_MARKERS)
-            .expect("module build script");
-        module_dir
-    }
-
-    /// A staged classpath lands its Kotlin sources under `src/main/java/waterui/`,
-    /// its Maven coordinates inside the managed dependencies block, and emits
-    /// an R8 keep per package a staged source lives in — the only thing
-    /// standing between `loadClass` and the release build's shrinker.
-    #[test]
-    fn staging_places_sources_maven_deps_and_keep_rules() {
-        let root = tempdir().expect("temp root");
-        let crate_dir = root.path().join("crate");
-        std::fs::create_dir_all(&crate_dir).expect("crate dir");
-        let source = crate_dir.join("DialogHelper.kt");
-        std::fs::write(
-            &source,
-            "package waterkit.dialog\n\nobject DialogHelper {}\n",
-        )
-        .expect("kotlin source");
-        let module_dir = module_dir_with_deps_block(root.path());
-
-        smol::block_on(stage_classpath_files(
-            &AndroidClasspath {
-                kotlin_sources: vec![source],
-                maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
-            },
-            &module_dir,
-            AndroidDependencyScope::Implementation,
-        ))
-        .expect("stage classpath");
-
-        assert!(
-            module_dir
-                .join("src/main/java/waterui/DialogHelper.kt")
-                .is_file()
-        );
-        let build =
-            std::fs::read_to_string(module_dir.join("build.gradle.kts")).expect("build script");
-        assert!(
-            build.contains("implementation(\"androidx.health.connect:connect-client:1.1.0\")"),
-            "{build}"
-        );
-        let rules =
-            std::fs::read_to_string(module_dir.join("proguard-rules.pro")).expect("keep rules");
-        assert!(
-            rules.contains("-keep class waterkit.dialog.** { *; }"),
-            "{rules}"
-        );
-    }
-
-    /// The embedded AAR module exports its classpath dependencies as `api`
-    /// so consumers resolve them through the published POM.
-    #[test]
-    fn embedded_scope_stages_maven_dependencies_as_api() {
-        let root = tempdir().expect("temp root");
-        let module_dir = module_dir_with_deps_block(root.path());
-
-        smol::block_on(stage_classpath_files(
-            &AndroidClasspath {
-                kotlin_sources: Vec::new(),
-                maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
-            },
-            &module_dir,
-            AndroidDependencyScope::Api,
-        ))
-        .expect("stage classpath");
-
-        let build =
-            std::fs::read_to_string(module_dir.join("build.gradle.kts")).expect("build script");
-        assert!(
-            build.contains("api(\"androidx.health.connect:connect-client:1.1.0\")"),
-            "{build}"
-        );
-    }
-
-    /// Restaging an empty classpath removes everything an earlier stage left:
-    /// sources, Maven coordinates, and the managed keep block — never stale
-    /// classes.
-    #[test]
-    fn restaging_an_empty_classpath_removes_stale_entries() {
-        let root = tempdir().expect("temp root");
-        let crate_dir = root.path().join("crate");
-        std::fs::create_dir_all(&crate_dir).expect("crate dir");
-        let source = crate_dir.join("PermissionHelper.kt");
-        std::fs::write(&source, "package waterkit.permission\n").expect("kotlin source");
-        let module_dir = module_dir_with_deps_block(root.path());
-
-        smol::block_on(stage_classpath_files(
-            &AndroidClasspath {
-                kotlin_sources: vec![source],
-                maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
-            },
-            &module_dir,
-            AndroidDependencyScope::Implementation,
-        ))
-        .expect("stage classpath");
-        smol::block_on(stage_classpath_files(
-            &AndroidClasspath::default(),
-            &module_dir,
-            AndroidDependencyScope::Implementation,
-        ))
-        .expect("restage empty");
-
-        assert!(!module_dir.join("src/main/java/waterui").exists());
-        let rules =
-            std::fs::read_to_string(module_dir.join("proguard-rules.pro")).expect("keep rules");
-        assert!(
-            !rules.contains("-keep class waterkit.permission"),
-            "{rules}"
-        );
-        assert!(!rules.contains(ANDROID_KEEPS_BEGIN), "{rules}");
-        let build =
-            std::fs::read_to_string(module_dir.join("build.gradle.kts")).expect("build script");
-        assert!(!build.contains("connect-client"), "{build}");
-        assert!(build.contains(ANDROID_DEPS_BEGIN), "{build}");
-    }
-
-    /// A declared Kotlin source without a `package` directive cannot be kept
-    /// by R8 — it fails the stage rather than silently shipping an
-    /// unresolvable class.
-    #[test]
-    fn a_kotlin_source_without_a_package_declaration_fails() {
-        let root = tempdir().expect("temp root");
-        let source = root.path().join("NoPackage.kt");
-        std::fs::write(&source, "object NoPackage {}\n").expect("kotlin source");
-        let module_dir = module_dir_with_deps_block(root.path());
-
-        let error = smol::block_on(stage_classpath_files(
-            &AndroidClasspath {
-                kotlin_sources: vec![source],
-                maven: BTreeSet::new(),
-            },
-            &module_dir,
-            AndroidDependencyScope::Implementation,
-        ))
-        .expect_err("a package-less Kotlin source must fail the stage");
-        assert!(error.to_string().contains("package"), "{error}");
-    }
-
-    /// A module build script without the managed markers was hand-edited or
-    /// predates the mechanism — error rather than silently skipping the deps.
-    #[test]
-    fn a_module_build_script_without_the_deps_markers_fails() {
-        let root = tempdir().expect("temp root");
-        let module_dir = root.path().join("app");
-        std::fs::create_dir_all(&module_dir).expect("module dir");
-        std::fs::write(module_dir.join("build.gradle.kts"), "dependencies {\n}\n")
-            .expect("module build script");
-
-        let error = smol::block_on(stage_classpath_files(
-            &AndroidClasspath {
-                kotlin_sources: Vec::new(),
-                maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
-            },
-            &module_dir,
-            AndroidDependencyScope::Implementation,
-        ))
-        .expect_err("a build script without the managed block must fail");
-        assert!(error.to_string().contains("managed"), "{error}");
-    }
-
-    /// A keep file carrying two managed blocks or a dangling begin marker is
-    /// corrupt — error rather than appending a third block.
-    #[test]
-    fn a_malformed_keep_block_fails() {
-        let root = tempdir().expect("temp root");
-        let module_dir = module_dir_with_deps_block(root.path());
-        let rules = module_dir.join("proguard-rules.pro");
-        std::fs::write(
-            &rules,
-            format!("{ANDROID_KEEPS_BEGIN}\n{ANDROID_KEEPS_BEGIN}\n"),
-        )
-        .expect("duplicate keep markers");
-
-        let error = smol::block_on(stage_classpath_files(
-            &AndroidClasspath {
-                kotlin_sources: Vec::new(),
-                maven: BTreeSet::new(),
-            },
-            &module_dir,
-            AndroidDependencyScope::Implementation,
-        ))
-        .expect_err("duplicated keep markers must fail");
-        assert!(error.to_string().contains("more than one"), "{error}");
-
-        std::fs::write(
-            &rules,
-            format!("{ANDROID_KEEPS_BEGIN}\n-keep class x.** {{*;}}\n"),
-        )
-        .expect("unterminated keep marker");
-        let error = smol::block_on(stage_classpath_files(
-            &AndroidClasspath {
-                kotlin_sources: Vec::new(),
-                maven: BTreeSet::new(),
-            },
-            &module_dir,
-            AndroidDependencyScope::Implementation,
-        ))
-        .expect_err("a begin marker without its end must fail");
-        assert!(error.to_string().contains("malformed"), "{error}");
     }
 }

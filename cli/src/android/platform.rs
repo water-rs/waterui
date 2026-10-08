@@ -337,6 +337,7 @@ pub(crate) struct AndroidBuildContext {
     pub(crate) ar: PathBuf,
     pub(crate) cxx: PathBuf,
     pub(crate) target_underscore: String,
+    pub(crate) target_upper: String,
     pub(crate) java_home: PathBuf,
     pub(crate) java_bin_dir: PathBuf,
     pub(crate) kotlin_compiler: PathBuf,
@@ -485,6 +486,7 @@ pub(crate) async fn resolve_android_build_context(
         }
     }
     let target_underscore = triple.to_string().replace('-', "_");
+    let target_upper = target_underscore.to_uppercase();
     let (java_home, java_bin_dir) = resolve_java_home(host).await?;
     let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home(host).await?;
     let (sdk_path, android_jar) = resolve_android_sdk_paths(host).await?;
@@ -497,6 +499,7 @@ pub(crate) async fn resolve_android_build_context(
         ar,
         cxx,
         target_underscore,
+        target_upper,
         java_home,
         java_bin_dir,
         kotlin_compiler,

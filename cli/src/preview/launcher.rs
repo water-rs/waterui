@@ -99,13 +99,13 @@ impl PreviewLinkMode {
     const MACOS_DYNAMIC: Self = Self {
         crate_type_override: None,
         prefer_dynamic: true,
-        abi_feature: crate::templates::preview_ffi::APPLE_ABI_FEATURE,
+        abi_feature: crate::templates::apple_preview_module::APPLE_ABI_FEATURE,
         signature_tag: "preview-dylib+shared-waterui-dylib+prefer-dynamic",
     };
     const PORTABLE_DYNAMIC: Self = Self {
         crate_type_override: Some("cdylib"),
         prefer_dynamic: true,
-        abi_feature: crate::templates::preview_ffi::APPLE_ABI_FEATURE,
+        abi_feature: crate::templates::apple_preview_module::APPLE_ABI_FEATURE,
         signature_tag: "preview-cdylib+shared-waterui-dylib+prefer-dynamic",
     };
     const fn for_platform(platform: PreviewPlatform) -> Self {
@@ -1299,11 +1299,11 @@ fn preview_support_log_path() -> Result<PathBuf> {
 
 /// Root of the workspace a preview module joins.
 ///
-/// This is the support runtime's generated FFI crate. The path is derived rather
+/// This is the support runtime's generated Apple companion crate. The path is derived rather
 /// than read from an opened [`Project`] because the module has to exist before the
 /// support application is scaffolded: resolving the runtime's requirements reads
 /// the module's own Cargo metadata.
-async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
+async fn preview_support_apple_crate_path() -> Result<PathBuf> {
     // The support application's root has to exist before its build-cache path can
     // be derived, because deriving it canonicalizes the root. On the very first
     // preview nothing has scaffolded it yet, and an empty directory is exactly
@@ -1321,7 +1321,7 @@ async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
     // CLI failed with a manifest path that does not exist.
     Ok(crate::water_dir::ensure_project_build_cache(&support_path)
         .await?
-        .join("ffi"))
+        .join("apple"))
 }
 
 /// Write the project's preview module into the support runtime's workspace.
@@ -1346,7 +1346,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
         .map(|path| project.root().join(path));
     support_app::discard_support_app_for_other_runtime(&support_path, runtime_path.as_deref())
         .await?;
-    let workspace_root = preview_support_ffi_crate_path().await?;
+    let workspace_root = preview_support_apple_crate_path().await?;
     let modules_root = workspace_root.join(crate::templates::PREVIEW_MODULES_DIR);
     let crate_path = project.preview_dylib_crate_path(&workspace_root);
     if let Ok(mut entries) = smol::fs::read_dir(&modules_root).await {
@@ -1361,7 +1361,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
         }
     }
     let crate_path = project
-        .scaffold_preview_ffi_companion(&workspace_root)
+        .scaffold_apple_preview_module(&workspace_root)
         .await
         .wrap_err("Failed to scaffold the preview module")?;
 
@@ -1393,7 +1393,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             }
             None => framework.patches(),
         };
-        crate::project_model::templates::ffi::write_workspace_root_manifest(
+        crate::project_model::templates::apple_companion::write_workspace_root_manifest(
             &workspace_root,
             patches,
             Some(project.root()),
@@ -1899,7 +1899,7 @@ mod tests {
         assert!(link_mode.prefer_dynamic);
         assert_eq!(
             link_mode.abi_feature,
-            crate::templates::preview_ffi::APPLE_ABI_FEATURE
+            crate::templates::apple_preview_module::APPLE_ABI_FEATURE
         );
         assert_eq!(
             link_mode.signature_tag(),
@@ -1917,7 +1917,7 @@ mod tests {
             assert!(link_mode.prefer_dynamic);
             assert_eq!(
                 link_mode.abi_feature,
-                crate::templates::preview_ffi::APPLE_ABI_FEATURE
+                crate::templates::apple_preview_module::APPLE_ABI_FEATURE
             );
             assert_eq!(
                 link_mode.signature_tag(),

@@ -30,29 +30,21 @@ enum OpenMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ManagedBackends {
     apple: bool,
-    android: bool,
 }
 
 impl ManagedBackends {
     /// No managed native backend.
-    pub const NONE: Self = Self {
-        apple: false,
-        android: false,
-    };
+    pub const NONE: Self = Self { apple: false };
 
     /// Every managed native backend, for commands that act on all of them.
-    pub const ALL: Self = Self {
-        apple: true,
-        android: true,
-    };
+    pub const ALL: Self = Self { apple: true };
 
-    /// The backends `platform` builds with: Apple for the Apple platforms,
-    /// Android for Android, none for the rest.
+    /// The managed backend `platform` builds with: Apple for the Apple
+    /// platforms, none for the rest.
     #[must_use]
     pub const fn for_platform(platform: TargetPlatform) -> Self {
         Self {
             apple: crate::apple::platform::is_apple_platform(platform),
-            android: crate::android::platform::is_android_platform(platform),
         }
     }
 
@@ -64,12 +56,11 @@ impl ManagedBackends {
         })
     }
 
-    /// The managed backend `backend` itself is, if it is one: Apple or Android.
+    /// The managed backend `backend` itself is, if it is one: Apple.
     #[must_use]
     pub const fn for_backend(backend: TargetBackend) -> Self {
         Self {
             apple: matches!(backend, TargetBackend::Apple),
-            android: matches!(backend, TargetBackend::Android),
         }
     }
 
@@ -77,7 +68,6 @@ impl ManagedBackends {
     const fn union(self, other: Self) -> Self {
         Self {
             apple: self.apple || other.apple,
-            android: self.android || other.android,
         }
     }
 
@@ -85,12 +75,6 @@ impl ManagedBackends {
     #[must_use]
     pub const fn apple(self) -> bool {
         self.apple
-    }
-
-    /// Whether the Android backend is selected.
-    #[must_use]
-    pub const fn android(self) -> bool {
-        self.android
     }
 }
 
@@ -155,11 +139,6 @@ pub struct Project {
     /// checkout supplies, resolved before any template or backend
     /// generation ran — a malformed slot already failed the open.
     local_sources: crate::templates::LocalBackendSources,
-    /// Whether the ffi companion's manifest existed before this open
-    /// re-rendered it — a backend init audits only a companion carried
-    /// over from a prior open, not the fresh render its own build
-    /// resolves next anyway.
-    pub(crate) ffi_companion_preexisting: bool,
 }
 
 impl Project {
@@ -405,21 +384,21 @@ impl Project {
         &self.crate_name
     }
 
-    /// Get configured or default FFI crate name.
+    /// Get configured or default Apple companion crate name.
     ///
     /// The default is tagged with this project's root — see
     /// [`generated_crate_name`]; an explicit `[crates]` override is verbatim.
     #[must_use]
-    pub fn ffi_crate_name(&self) -> CrateName {
+    pub fn apple_crate_name(&self) -> CrateName {
         self.app_crate_overrides()
-            .and_then(|crates| crates.ffi.clone())
-            .unwrap_or_else(|| generated_crate_name(&self.crate_name, "ffi", &self.root))
+            .and_then(|crates| crates.apple.clone())
+            .unwrap_or_else(|| generated_crate_name(&self.crate_name, "apple", &self.root))
     }
 
     /// Get configured preview wrapper crate name for preview dylib builds.
     #[must_use]
-    pub fn preview_ffi_crate_name(&self) -> CrateName {
-        generated_crate_name(&self.crate_name, "preview-ffi", &self.root)
+    pub fn preview_apple_crate_name(&self) -> CrateName {
+        generated_crate_name(&self.crate_name, "apple-preview-module", &self.root)
     }
 
     /// Get the generated Apple in-process preview binary's crate name.
@@ -431,13 +410,13 @@ impl Project {
     /// Get the crate root path used to build preview dylibs.
     #[must_use]
     pub fn preview_dylib_crate_path(&self, workspace_root: &Path) -> PathBuf {
-        self.preview_ffi_crate_path(workspace_root)
+        self.preview_apple_crate_path(workspace_root)
     }
 
     /// Get the crate name used to build preview dylibs.
     #[must_use]
     pub fn preview_dylib_crate_name(&self) -> CrateName {
-        self.preview_ffi_crate_name()
+        self.preview_apple_crate_name()
     }
 
     /// Get configured or default GTK backend crate name.
@@ -542,15 +521,15 @@ impl Project {
         self.managed_backends_root.join(B::DEFAULT_PATH)
     }
 
-    /// Get the full path to the managed native FFI companion crate.
+    /// Get the full path to the managed Apple companion crate.
     #[must_use]
-    pub fn ffi_crate_path(&self) -> PathBuf {
-        self.managed_backends_root.join("ffi")
+    pub fn apple_crate_path(&self) -> PathBuf {
+        self.managed_backends_root.join("apple-companion")
     }
 
     /// Get the full path to the managed Apple in-process preview package.
     ///
-    /// It sits next to the FFI companion crate: the two share one
+    /// It sits next to the Apple companion crate: the two share one
     /// dependency-table function so the preview binary resolves the same
     /// `waterui` and `libwaterui_dylib` build `water run` produces.
     #[must_use]
@@ -562,24 +541,18 @@ impl Project {
     #[must_use]
     pub fn preview_module_member_path(&self) -> PathBuf {
         Path::new(crate::templates::PREVIEW_MODULES_DIR)
-            .join(self.preview_ffi_crate_name().to_string())
+            .join(self.preview_apple_crate_name().to_string())
     }
 
-    /// Get the full path to the managed preview-only companion crate.
+    /// Get the full path to the managed Apple preview module crate.
     ///
     /// The crate lives inside the support runtime's workspace rather than this
     /// project's build cache, because a preview module and the runtime it is
     /// loaded into must come out of one Cargo resolution to agree on the
     /// `-C metadata` hash mangled into every symbol.
     #[must_use]
-    pub fn preview_ffi_crate_path(&self, workspace_root: &Path) -> PathBuf {
+    pub fn preview_apple_crate_path(&self, workspace_root: &Path) -> PathBuf {
         workspace_root.join(self.preview_module_member_path())
-    }
-
-    /// Get the Android backend if this open generated one.
-    #[must_use]
-    pub const fn android_backend(&self) -> Option<&AndroidBackend> {
-        self.backends.android()
     }
 
     /// Get the project's `[esp32]` device configuration, if declared.
@@ -873,15 +846,15 @@ impl Project {
     }
 
     /// The names of every crate the CLI generates for this project: the
-    /// backend, FFI, preview and launcher crates. Each is tagged with this
+    /// backend, Apple companion, preview and launcher crates. Each is tagged with this
     /// project's root (see [`generated_crate_name`]) unless `[crates]`
     /// overrides it, so their units in the shared Cargo target directory are
     /// this project's alone.
     #[must_use]
     pub fn generated_crate_names(&self) -> Vec<String> {
         let mut names: Vec<String> = [
-            self.ffi_crate_name(),
-            self.preview_ffi_crate_name(),
+            self.apple_crate_name(),
+            self.preview_apple_crate_name(),
             self.apple_preview_crate_name(),
             self.gtk_backend_crate_name(),
             self.hydrolysis_backend_crate_name(),
@@ -1421,31 +1394,35 @@ impl Project {
             .map_err(crate::backend::FailToInitBackend::Io)
     }
 
-    /// Scaffold the managed native FFI companion crate.
+    /// Scaffold the managed Apple companion crate.
     ///
     /// # Errors
     ///
     /// Returns an error when the generated crate cannot be written.
-    pub(crate) async fn scaffold_ffi_companion(
+    pub(crate) async fn scaffold_apple_companion(
         &self,
         apple_selected: bool,
     ) -> Result<(), crate::backend::FailToInitBackend> {
         let (ctx, framework) = self
-            .apple_managed_crate_context(apple_selected, self.ffi_crate_path())
+            .apple_managed_crate_context(apple_selected, self.apple_crate_path())
             .await?;
 
-        templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
-            .await
-            .map_err(crate::backend::FailToInitBackend::Io)?;
+        templates::apple_companion::scaffold(
+            &self.apple_crate_path(),
+            &ctx,
+            &self.apple_crate_name(),
+        )
+        .await
+        .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.ffi_crate_path(), &framework)
+        self.seed_managed_crate_lock(&self.apple_crate_path(), &framework)
             .await
     }
 
     /// Scaffold the managed Apple in-process preview package `water preview
     /// --platform macos` builds and execs.
     ///
-    /// The package sits next to the FFI companion in the managed build
+    /// The package sits next to the Apple companion in the managed build
     /// cache and shares its dependency tables through
     /// `templates::apple_preview`, so its binary resolves the same
     /// `waterui` and `libwaterui_dylib` `water run` produces. Its lock is
@@ -1478,7 +1455,7 @@ impl Project {
     /// # Errors
     ///
     /// Returns an error when the generated crate cannot be written.
-    pub async fn scaffold_preview_ffi_companion(
+    pub async fn scaffold_apple_preview_module(
         &self,
         workspace_root: &Path,
     ) -> Result<PathBuf, crate::backend::FailToInitBackend> {
@@ -1500,13 +1477,17 @@ impl Project {
             &framework,
             self.local_sources(),
         )
-        .with_backend_project_path(self.preview_ffi_crate_path(workspace_root))
+        .with_backend_project_path(self.preview_apple_crate_path(workspace_root))
         .with_project_root_path(self.root.clone());
 
-        let crate_path = self.preview_ffi_crate_path(workspace_root);
-        templates::preview_ffi::scaffold(&crate_path, &ctx, &self.preview_ffi_crate_name())
-            .await
-            .map_err(crate::backend::FailToInitBackend::Io)?;
+        let crate_path = self.preview_apple_crate_path(workspace_root);
+        templates::apple_preview_module::scaffold(
+            &crate_path,
+            &ctx,
+            &self.preview_apple_crate_name(),
+        )
+        .await
+        .map_err(crate::backend::FailToInitBackend::Io)?;
         Ok(crate_path)
     }
 
@@ -1703,7 +1684,6 @@ impl Project {
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
-            ffi_companion_preexisting: false,
         })
     }
 
@@ -1983,7 +1963,6 @@ impl Project {
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
-            ffi_companion_preexisting: false,
         };
 
         // Initialize the managed backends the caller selected.
@@ -2000,22 +1979,19 @@ impl Project {
             || std::env::var("XCODE_PRODUCT_BUILD_VERSION").is_ok();
 
         if !skip_backend_init && open_mode == OpenMode::Full {
-            // The ffi companion is rendered for THIS invocation's selection
-            // before either backend runs — both `init`s read its manifest, so
-            // a companion left over from a different selection must never be
-            // the one they see.
-            if backends.apple() || backends.android() {
-                project.ffi_companion_preexisting =
-                    project.ffi_crate_path().join("Cargo.toml").exists();
-                let ffi_companion_start = std::time::Instant::now();
+            // The Apple companion is rendered before `init` runs — `init`
+            // reads its manifest, so a companion left over from a different
+            // selection must never be the one it sees.
+            if backends.apple() {
+                let apple_companion_start = std::time::Instant::now();
                 project
-                    .scaffold_ffi_companion(backends.apple())
+                    .scaffold_apple_companion(backends.apple())
                     .await
                     .map_err(FailToOpenProject::BackendInit)?;
                 info!(
                     path = %project.root.display(),
-                    elapsed_ms = ffi_companion_start.elapsed().as_millis(),
-                    "Project::open scaffolded native ffi companion"
+                    elapsed_ms = apple_companion_start.elapsed().as_millis(),
+                    "Project::open scaffolded Apple companion"
                 );
             }
 
@@ -2030,19 +2006,6 @@ impl Project {
                     "Project::open initialized Apple backend"
                 );
                 project.backends.set_apple(apple_backend);
-            }
-
-            if backends.android() {
-                let android_backend_start = std::time::Instant::now();
-                let android_backend = AndroidBackend::init(&project)
-                    .await
-                    .map_err(FailToOpenProject::BackendInit)?;
-                info!(
-                    path = %project.root.display(),
-                    elapsed_ms = android_backend_start.elapsed().as_millis(),
-                    "Project::open initialized Android backend"
-                );
-                project.backends.set_android(android_backend);
             }
         }
 
@@ -2753,7 +2716,7 @@ use smol::{fs::read_to_string, unblock};
 use waterui_assets_planner::{LaunchConfig, ThemeConfig};
 
 use crate::{
-    android::{backend::AndroidBackend, signing::AndroidSigningConfig},
+    android::signing::AndroidSigningConfig,
     apple::backend::AppleBackend,
     backend::{Backend, Backends},
     build::{BuildOptions, BuildProfile},
@@ -3035,17 +2998,16 @@ impl ResolvedWebViewBackend {
             Self::System => matches!(
                 (platform, backend),
                 (
-                    TargetPlatform::MacOS,
-                    TargetBackend::Apple | TargetBackend::Hydrolysis
-                ) | (
-                    TargetPlatform::IOS
+                    TargetPlatform::MacOS
+                        | TargetPlatform::IOS
                         | TargetPlatform::IOSSimulator
                         | TargetPlatform::VisionOS
                         | TargetPlatform::VisionOSSimulator,
                     TargetBackend::Apple
-                ) | (TargetPlatform::Android, TargetBackend::Android)
-                    | (TargetPlatform::Linux, TargetBackend::Gtk4)
-                    | (TargetPlatform::Web, TargetBackend::Hydrolysis)
+                ) | (
+                    TargetPlatform::MacOS | TargetPlatform::Android | TargetPlatform::Web,
+                    TargetBackend::Hydrolysis
+                ) | (TargetPlatform::Linux, TargetBackend::Gtk4)
             ),
             Self::Wpe => {
                 matches!(platform, TargetPlatform::Linux)
@@ -3150,9 +3112,9 @@ pub struct AppConfig {
 /// Crate name overrides for the generated crates (`[app.crates]`).
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AppCrates {
-    /// Optional override crate name for generated FFI crate.
+    /// Optional override crate name for the generated Apple companion crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ffi: Option<CrateName>,
+    pub apple: Option<CrateName>,
     /// Optional override crate name for generated GTK backend crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gtk: Option<CrateName>,
@@ -3252,11 +3214,12 @@ mod managed_backends_tests {
         ] {
             let selected = ManagedBackends::for_platform(platform);
             assert!(selected.apple(), "{platform:?} builds with Apple");
-            assert!(!selected.android(), "{platform:?} leaves Android alone");
         }
-        let selected = ManagedBackends::for_platform(TargetPlatform::Android);
-        assert!(selected.android());
-        assert!(!selected.apple());
+        assert_eq!(
+            ManagedBackends::for_platform(TargetPlatform::Android),
+            ManagedBackends::NONE,
+            "Hydrolysis Android is generated on demand, not at open"
+        );
     }
 
     /// The backends generated on demand (GTK4, hydrolysis, `WinUI`, ESP32) are
@@ -3295,9 +3258,6 @@ mod managed_backends_tests {
     #[test]
     fn a_backend_selects_itself_when_it_is_managed_natively() {
         assert!(ManagedBackends::for_backend(TargetBackend::Apple).apple());
-        assert!(!ManagedBackends::for_backend(TargetBackend::Apple).android());
-        assert!(ManagedBackends::for_backend(TargetBackend::Android).android());
-        assert!(!ManagedBackends::for_backend(TargetBackend::Android).apple());
         for backend in [
             TargetBackend::Gtk4,
             TargetBackend::Hydrolysis,
@@ -3464,7 +3424,7 @@ mod webview_backend_tests {
         );
         assert!(
             ResolvedWebViewBackend::Cef
-                .validate(TargetPlatform::Android, TargetBackend::Android)
+                .validate(TargetPlatform::Android, TargetBackend::Hydrolysis)
                 .is_err()
         );
         assert_eq!(
@@ -3479,7 +3439,6 @@ mod webview_backend_tests {
     fn cef_is_available_to_every_non_dew_backend_on_desktop_platforms() {
         for backend in [
             TargetBackend::Apple,
-            TargetBackend::Android,
             TargetBackend::Gtk4,
             TargetBackend::Hydrolysis,
         ] {
@@ -3512,7 +3471,7 @@ mod webview_backend_tests {
             );
         }
         for (platform, backend) in [
-            (TargetPlatform::Android, TargetBackend::Android),
+            (TargetPlatform::Android, TargetBackend::Hydrolysis),
             (TargetPlatform::IOS, TargetBackend::Apple),
             (TargetPlatform::Web, TargetBackend::Hydrolysis),
         ] {
@@ -3788,12 +3747,12 @@ mod scaffold_tests {
         }
     }
 
-    /// The `waterui-ffi` feature table every vendored stub carries.
-    const FFI_FEATURES: &[&str] = &[
-        "android-jni",
-        "c-api",
+    /// The `waterui` feature table every vendored facade stub carries —
+    /// the capability surface the generated manifests' forwards select from.
+    const FORWARDED_FEATURES: &[&str] = &[
         "chromium",
         "dev",
+        "dynamic_linking",
         "gpu",
         "inspector",
         "map",
@@ -3805,26 +3764,22 @@ mod scaffold_tests {
 
     /// Stage the canonical framework checkout the `apple_backend` arm of
     /// [`create_project`] names in `Water.toml`: the `waterui` facade as root
-    /// package, `waterui-ffi` at `ffi`, `waterui-apple` at `backends/apple`.
+    /// package and `waterui-apple` at `backends/apple`.
     fn stage_waterui_checkout(root: &Path, vendor_dir: &Path) {
         let mut waterui_manifest = toml_edit::DocumentMut::new();
         waterui_manifest["package"]["name"] = toml_edit::value("waterui");
         waterui_manifest["package"]["version"] = toml_edit::value("0.4.1");
         waterui_manifest["package"]["edition"] = toml_edit::value("2021");
-        for feature in ["dynamic_linking", "media"] {
+        for feature in std::iter::once("dynamic_linking").chain(FORWARDED_FEATURES.iter().copied())
+        {
             waterui_manifest["features"][feature] = toml_edit::value(toml_edit::Array::new());
         }
         waterui_manifest["workspace"]["members"] =
-            toml_edit::value(toml_edit::Array::from_iter(["ffi", "backends/apple"]));
+            toml_edit::value(toml_edit::Array::from_iter(["backends/apple"]));
         std::fs::create_dir_all(vendor_dir.join("src")).expect("waterui stub dir");
         std::fs::write(vendor_dir.join("Cargo.toml"), waterui_manifest.to_string())
             .expect("waterui checkout manifest");
         std::fs::write(vendor_dir.join("src/lib.rs"), "").expect("waterui lib");
-        crate::framework::test_fixtures::write_vendor_stub(
-            &vendor_dir.join("ffi"),
-            "waterui-ffi",
-            FFI_FEATURES,
-        );
         crate::framework::test_fixtures::write_vendor_stub(
             &vendor_dir.join("backends/apple"),
             "waterui-apple",
@@ -3841,13 +3796,13 @@ mod scaffold_tests {
     }
 
     /// A remote-channel project whose framework pins resolve without a
-    /// network: `waterui` and `waterui-ffi` ride `[patch.crates-io]` onto
-    /// vendor stubs (the only source `[patch]` can redirect offline), and
-    /// `waterui-apple` rides the canonical `backends/apple` slot of the
-    /// vendored checkout `waterui_path` names — a path dependency — so the
-    /// ffi companion's feature-table probe resolves entirely locally.
-    /// `apple_backend` stages that checkout and names it in `Water.toml` for
-    /// the opens that select the Apple backend.
+    /// network: `waterui` rides `[patch.crates-io]` onto a vendor stub (the
+    /// only source `[patch]` can redirect offline), and `waterui-apple` rides
+    /// the canonical `backends/apple` slot of the vendored checkout
+    /// `waterui_path` names — a path dependency — so the companion's
+    /// feature-table probe resolves entirely locally. `apple_backend` stages
+    /// that checkout and names it in `Water.toml` for the opens that select
+    /// the Apple backend.
     fn create_project(root: &Path, vendor_dir: &Path, apple_backend: bool) -> Project {
         let project = smol::block_on(Project::create(
             root,
@@ -3872,12 +3827,7 @@ mod scaffold_tests {
             crate::framework::test_fixtures::write_vendor_stub(
                 &vendor_dir.join("waterui"),
                 "waterui",
-                &["dynamic_linking", "media"],
-            );
-            crate::framework::test_fixtures::write_vendor_stub(
-                &vendor_dir.join("waterui-ffi"),
-                "waterui-ffi",
-                FFI_FEATURES,
+                FORWARDED_FEATURES,
             );
         }
         let manifest_path = root.join("Cargo.toml");
@@ -3885,16 +3835,10 @@ mod scaffold_tests {
             .expect("project Cargo.toml exists")
             .parse()
             .expect("project Cargo.toml parses");
-        let patch_targets: [(String, PathBuf); 2] = if apple_backend {
-            [
-                ("waterui".to_string(), vendor_dir.to_path_buf()),
-                ("waterui-ffi".to_string(), vendor_dir.join("ffi")),
-            ]
+        let patch_targets: [(String, PathBuf); 1] = if apple_backend {
+            [("waterui".to_string(), vendor_dir.to_path_buf())]
         } else {
-            [
-                ("waterui".to_string(), vendor_dir.join("waterui")),
-                ("waterui-ffi".to_string(), vendor_dir.join("waterui-ffi")),
-            ]
+            [("waterui".to_string(), vendor_dir.join("waterui"))]
         };
         for (name, dir) in patch_targets {
             document["patch"]["crates-io"][name]["path"] =
@@ -3915,11 +3859,12 @@ mod scaffold_tests {
     }
 
     /// Opening a project for one platform scaffolds the managed backend
-    /// that platform builds with and nothing else: a macOS open must not
-    /// leave an Android project behind, and an Android open no Apple project.
+    /// that platform builds with and nothing else: a macOS open scaffolds
+    /// the Apple project, and an Android open scaffolds nothing managed —
+    /// Hydrolysis Android is generated on demand by the command that builds
+    /// it.
     #[test]
     fn opening_a_project_scaffolds_only_the_platforms_managed_backend() {
-        use crate::android::backend::AndroidBackend;
         use crate::apple::backend::AppleBackend;
         use crate::platform::TargetPlatform;
 
@@ -3938,16 +3883,10 @@ mod scaffold_tests {
             .expect("opening the project must succeed");
 
             let apple_path = project.backend_path::<AppleBackend>();
-            let android_path = project.backend_path::<AndroidBackend>();
             assert_eq!(
                 project.apple_backend().is_some(),
                 apple_expected,
                 "{platform:?}: apple backend"
-            );
-            assert_eq!(
-                project.android_backend().is_some(),
-                !apple_expected,
-                "{platform:?}: android backend"
             );
             assert_eq!(
                 apple_path.exists(),
@@ -3956,139 +3895,11 @@ mod scaffold_tests {
                 apple_path.display()
             );
             assert_eq!(
-                android_path.exists(),
-                !apple_expected,
-                "{platform:?}: {}",
-                android_path.display()
+                project.apple_crate_path().join("Cargo.toml").exists(),
+                apple_expected,
+                "{platform:?}: Apple companion scaffolded"
             );
         }
-    }
-
-    /// An ffi companion a previous apple-selected render left behind — a
-    /// manifest naming `waterui-apple` plus the entry-owning bin file — is
-    /// re-rendered for THIS invocation's selection before the backend reads
-    /// it: an android open must produce a companion with no `waterui-apple`
-    /// pieces, or the backend's `cargo metadata` audit either resolves the
-    /// Apple backend for a build that never uses it or fails on its source.
-    #[test]
-    fn android_open_re_renders_a_stale_apple_ffi_manifest_before_backend_init() {
-        use crate::platform::TargetPlatform;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let root = dir.path().join("water-example");
-        create_project(&root, dir.path(), false);
-
-        // A `waterui_path` checkout whose `backends/apple` slot is absent —
-        // the stale companion still names it, so `cargo metadata` on that
-        // manifest fails unless the open re-renders it first.
-        let waterui_root = dir.path().join("waterui");
-        let mut waterui_manifest = toml_edit::DocumentMut::new();
-        waterui_manifest["package"]["name"] = toml_edit::value("waterui");
-        waterui_manifest["package"]["version"] = toml_edit::value("0.4.1");
-        waterui_manifest["package"]["edition"] = toml_edit::value("2021");
-        for feature in ["dynamic_linking", "media"] {
-            waterui_manifest["features"][feature] = toml_edit::value(toml_edit::Array::new());
-        }
-        waterui_manifest["workspace"]["members"] =
-            toml_edit::value(toml_edit::Array::from_iter(["ffi"]));
-        std::fs::create_dir_all(waterui_root.join("src")).expect("waterui root dir");
-        std::fs::write(
-            waterui_root.join("Cargo.toml"),
-            waterui_manifest.to_string(),
-        )
-        .expect("waterui root manifest");
-        std::fs::write(waterui_root.join("src/lib.rs"), "").expect("waterui lib");
-        crate::framework::test_fixtures::write_vendor_stub(
-            &waterui_root.join("ffi"),
-            "waterui-ffi",
-            &[],
-        );
-        let missing_apple = waterui_root.join("backends/apple");
-        let water_toml = root.join("Water.toml");
-        let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&water_toml)
-            .expect("Water.toml exists")
-            .parse()
-            .expect("Water.toml parses");
-        document["waterui_path"] = toml_edit::value(waterui_root.to_string_lossy().as_ref());
-        std::fs::write(&water_toml, document.to_string()).expect("name the framework checkout");
-
-        // Shape the build cache before seeding: `ensure_project_build_cache`
-        // records the project root and this CLI's commit in its metadata and
-        // wipes any cache directory whose metadata does not match, so only a
-        // companion left inside a shaped cache survives to the
-        // `ffi_companion_preexisting` check that arms the backend's audit.
-        let ffi_dir = smol::block_on(crate::water_dir::ensure_project_build_cache(&root))
-            .expect("build cache dir")
-            .join("ffi");
-
-        // The stale companion an earlier apple-selected open left behind: a
-        // manifest carrying a `waterui-apple` path dependency that no longer
-        // resolves plus the entry file, so `cargo metadata` on it fails.
-        std::fs::create_dir_all(ffi_dir.join("src/bin")).expect("stale ffi dir");
-        let mut stale_ffi = toml_edit::DocumentMut::new();
-        stale_ffi["package"]["name"] = toml_edit::value("water-example-ffi");
-        stale_ffi["package"]["version"] = toml_edit::value("0.1.0");
-        stale_ffi["package"]["edition"] = toml_edit::value("2021");
-        stale_ffi["dependencies"]["waterui-apple"]["path"] =
-            toml_edit::value(missing_apple.to_string_lossy().as_ref());
-        std::fs::write(ffi_dir.join("Cargo.toml"), stale_ffi.to_string())
-            .expect("seed the stale ffi manifest");
-        std::fs::write(ffi_dir.join("src/lib.rs"), "").expect("seed the stale ffi lib");
-        std::fs::write(ffi_dir.join("src/bin/waterui-apple-main.rs"), "")
-            .expect("seed the stale apple entry file");
-
-        let project = smol::block_on(Project::open(
-            &root,
-            ManagedBackends::for_platform(TargetPlatform::Android),
-        ))
-        .expect("android open re-renders the companion before the backend reads it");
-
-        let rendered = std::fs::read_to_string(project.ffi_crate_path().join("Cargo.toml"))
-            .expect("the re-rendered ffi manifest");
-        assert!(!rendered.contains("waterui-apple"), "{rendered}");
-        let manifest = rendered
-            .parse::<toml::Table>()
-            .expect("the re-rendered manifest parses");
-        assert!(
-            manifest
-                .get("bin")
-                .and_then(toml::Value::as_array)
-                .is_none_or(Vec::is_empty),
-            "an android-selected companion declares no entry-owning bin"
-        );
-        assert!(
-            !project
-                .ffi_crate_path()
-                .join("src/bin/waterui-apple-main.rs")
-                .exists(),
-            "an android-selected companion renders no apple entry file"
-        );
-    }
-
-    /// The companion's Apple pieces exist only where an Apple build can
-    /// run: an apple-selected render on a host that cannot produce one
-    /// emits no `waterui-apple` — the manifest it writes must resolve on
-    /// the host that rendered it.
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn apple_selected_companion_carries_no_apple_pieces_off_macos() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let root = dir.path().join("water-example");
-        let project = create_project(&root, dir.path(), true);
-
-        smol::block_on(project.scaffold_ffi_companion(true))
-            .expect("an apple-selected scaffold must succeed");
-
-        let rendered = std::fs::read_to_string(project.ffi_crate_path().join("Cargo.toml"))
-            .expect("the rendered ffi manifest");
-        assert!(!rendered.contains("waterui-apple"), "{rendered}");
-        assert!(
-            !project
-                .ffi_crate_path()
-                .join("src/bin/waterui-apple-main.rs")
-                .exists(),
-            "a companion rendered off macOS renders no apple entry file"
-        );
     }
 
     /// Packaged executables stage under the project's own managed backend
@@ -4414,7 +4225,7 @@ mod local_patch_tests {
     }
 
     #[test]
-    fn a_failing_ffi_scaffold_fails_create_and_leaves_nothing_behind() {
+    fn a_failing_companion_scaffold_fails_create_and_leaves_nothing_behind() {
         let machine = TestMachine::new();
         machine.install("cargo");
         machine.install("git");
@@ -4437,7 +4248,7 @@ mod local_patch_tests {
             cache.display()
         );
 
-        let error = smol::block_on(draft.finish()).expect_err("the FFI scaffold must fail");
+        let error = smol::block_on(draft.finish()).expect_err("the companion scaffold must fail");
         assert!(
             matches!(error, FailToCreateProject::ScaffoldGeneratedCrates(_)),
             "{error}"
@@ -4448,7 +4259,7 @@ mod local_patch_tests {
             "{message}"
         );
         assert!(
-            message.contains("could not scaffold the Apple/Android FFI companion crate"),
+            message.contains("could not scaffold the Apple companion crate"),
             "{message}"
         );
         assert!(
