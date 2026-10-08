@@ -12,10 +12,7 @@
 //! can declare them in a [`MaterialRegistry`](crate::MaterialRegistry)
 //! without an engine.
 
-/// The union member cap, shared engine-free with `cherenkov`'s copy —
-/// both `#[path]`-include the same file (see `union_cap.rs`'s note).
-#[path = "../../src/union_cap.rs"]
-mod union_cap;
+use crate::union_cap;
 
 use std::borrow::Cow;
 

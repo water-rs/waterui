@@ -2,7 +2,7 @@
 
 /// The shared union member cap — the same definition the oracle's
 /// renderer reads, pulled in without depending on the engine crate.
-#[path = "../../src/union_cap.rs"]
+#[path = "../../record/src/union_cap.rs"]
 mod union_cap;
 
 use cherenkov_oracle::color::{linear_srgb_to_linear_p3, to_working};
