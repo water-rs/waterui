@@ -640,7 +640,7 @@ pub async fn launch_preview_session(
     progress: Option<BuildProgress>,
 ) -> Result<PreviewSession> {
     let requirements_start = Instant::now();
-    let requirements = resolve_preview_requirements(project_path, platform).await?;
+    let requirements = Box::pin(resolve_preview_requirements(project_path, platform)).await?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = requirements_start.elapsed().as_millis(),
