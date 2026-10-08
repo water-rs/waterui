@@ -47,6 +47,10 @@ pub mod android;
     any(target_os = "android", all(test, not(target_arch = "wasm32")))
 ))]
 pub mod android_accessibility;
+/// The `HydrolysisSession` callback table — compiled on Android for the
+/// JNI bridge and on host for the Kotlin-agreement test; dead elsewhere.
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+pub mod android_methods;
 // Bare wasm has no window pump to drive these modules' diagnostics
 // and menu-bar plumbing.
 /// The Android UI-thread executor and its `eventfd` wake — compiled on

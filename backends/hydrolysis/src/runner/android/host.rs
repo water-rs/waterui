@@ -19,8 +19,9 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use jni::JavaVM;
-use jni::objects::{GlobalRef, JValue};
+use jni::objects::{GlobalRef, JMethodID, JValue};
+use jni::signature::{Primitive, ReturnType};
+use jni::{JNIEnv, JavaVM};
 use nami::Signal;
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
@@ -40,6 +41,7 @@ use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
 };
 use crate::runner::android_executor::AndroidMainThreadExecutor;
+use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::window::{
     RuntimeWindow, advance_runtime, handle_input_events, render_window, reports_ui_idle,
 };
@@ -87,25 +89,65 @@ pub struct MetricsSnapshot {
     pub(crate) scroll_friction: f64,
 }
 
-/// The session's JNI handle back into the Kotlin host — a cached `JavaVM`
-/// plus a global reference to the `HydrolysisHostView` that owns this
-/// session. Every call lands on the UI thread (the only thread these
+/// The session's JNI handle back into the Kotlin host — a cached `JavaVM`,
+/// a global reference to the `HydrolysisSession` object that owns this
+/// session, and the `jmethodID`s of every [`HOST_METHODS`] entry, resolved
+/// once here. Every call lands on the UI thread (the only thread these
 /// callbacks ever run on) through `get_env`/`attach_current_thread`.
 pub struct HostBridge {
     vm: JavaVM,
     host_view: GlobalRef,
+    /// Cached ids in [`HOST_METHODS`] order — call sites index it by
+    /// [`HostMethodId`], so no name or signature literal appears elsewhere.
+    methods: Vec<JMethodID>,
 }
 
 impl HostBridge {
-    fn call(&self, name: &'static str, sig: &'static str, args: &[JValue]) {
+    /// Resolves every [`HOST_METHODS`] entry with `GetMethodID` on the
+    /// session object's class. A host method that went missing — stripped
+    /// or renamed by R8 — fails the session's creation naming the method
+    /// and its signature, rather than the first call that reaches for it.
+    pub(crate) fn new(
+        env: &mut JNIEnv,
+        vm: JavaVM,
+        host_view: GlobalRef,
+    ) -> Result<Self, JniError> {
+        let class = env.get_object_class(&host_view)?;
+        let mut methods = Vec::with_capacity(HOST_METHODS.len());
+        for method in HOST_METHODS {
+            match env.get_method_id(&class, method.name, method.signature) {
+                Ok(id) => methods.push(id),
+                Err(error) => {
+                    // GetMethodID leaves a pending NoSuchMethodError; the
+                    // guard's IllegalStateException is the report that must
+                    // reach Kotlin, so the pending one is cleared first.
+                    if env.exception_check().unwrap_or(false) {
+                        let _ = env.exception_clear();
+                    }
+                    return Err(JniError(format!(
+                        "hydrolysis android: HydrolysisSession is missing \
+                         {} {}: {error}",
+                        method.name, method.signature
+                    )));
+                }
+            }
+        }
+        Ok(Self {
+            vm,
+            host_view,
+            methods,
+        })
+    }
+
+    fn call(&self, method: HostMethodId, args: &[JValue]) {
         match self.vm.get_env() {
-            Ok(mut env) => self.call_with_env(&mut env, name, sig, args),
+            Ok(mut env) => self.call_with_env(&mut env, method, args),
             Err(_) => match self.vm.attach_current_thread() {
-                Ok(mut guard) => self.call_with_env(&mut guard, name, sig, args),
+                Ok(mut guard) => self.call_with_env(&mut guard, method, args),
                 Err(error) => {
                     tracing::error!(
                         target: "waterui::hydrolysis::android",
-                        method = name,
+                        method = HOST_METHODS[method as usize].name,
                         %error,
                         "host callback could not attach a JNI env"
                     );
@@ -114,14 +156,20 @@ impl HostBridge {
         }
     }
 
-    fn call_with_env(
-        &self,
-        env: &mut jni::JNIEnv,
-        name: &'static str,
-        sig: &'static str,
-        args: &[JValue],
-    ) {
-        if let Err(error) = env.call_method(&self.host_view, name, sig, args) {
+    fn call_with_env(&self, env: &mut JNIEnv, method: HostMethodId, args: &[JValue]) {
+        let jni_args: Vec<jni::sys::jvalue> = args.iter().map(JValue::as_jni).collect();
+        // SAFETY: `methods` holds the ids `GetMethodID` resolved on this
+        // object's class, in table order; `method` indexes the matching id
+        // and every table entry is a void method whose argument list the
+        // caller matches to the declared signature.
+        if let Err(error) = unsafe {
+            env.call_method_unchecked(
+                &self.host_view,
+                self.methods[method as usize],
+                ReturnType::Primitive(Primitive::Void),
+                &jni_args,
+            )
+        } {
             // A pending Java exception (the host's deliberate throw for a
             // fatal GPU error) surfaces to the Kotlin caller as-is — but
             // describe it first, or the next JNI call aborts the process on
@@ -134,7 +182,7 @@ impl HostBridge {
             }
             tracing::error!(
                 target: "waterui::hydrolysis::android",
-                method = name,
+                method = HOST_METHODS[method as usize].name,
                 %error,
                 "host callback failed"
             );
@@ -143,26 +191,30 @@ impl HostBridge {
 
     /// Posts a Choreographer frame request on the host view's scheduler.
     pub(crate) fn request_frame(&self) {
-        self.call("onNativeRequestRedraw", "()V", &[]);
+        self.call(HostMethodId::RequestRedraw, &[]);
     }
 
     /// `call` for a single `String` argument — the JSON pushes serialize
     /// into a `jstring` inside the env first.
-    fn call_str(&self, name: &'static str, json: &str) {
+    fn call_str(&self, method: HostMethodId, json: &str) {
         let Ok(mut env) = self.vm.get_env() else {
             return;
         };
         let Ok(value) = env.new_string(json) else {
             return;
         };
-        if env
-            .call_method(
+        let jni_args = [JValue::Object(&value).as_jni()];
+        // SAFETY: as in `call_with_env` — the cached id matches this
+        // method's `(Ljava/lang/String;)V` signature exactly.
+        if unsafe {
+            env.call_method_unchecked(
                 &self.host_view,
-                name,
-                "(Ljava/lang/String;)V",
-                &[JValue::Object(&value)],
+                self.methods[method as usize],
+                ReturnType::Primitive(Primitive::Void),
+                &jni_args,
             )
-            .is_err()
+        }
+        .is_err()
             && env.exception_check().unwrap_or(false)
         {
             let _ = env.exception_describe();
@@ -172,20 +224,20 @@ impl HostBridge {
     /// `session.onNativeEditingState(json)` — the authoritative editing
     /// state for the connection's `Editable` mirror.
     pub(crate) fn editing_state_changed(&self, json: &str) {
-        self.call_str("onNativeEditingState", json);
+        self.call_str(HostMethodId::EditingState, json);
     }
 
     /// `session.onNativeCursorAnchorInfo(json)` — the subscribed cursor
     /// anchor info, in logical units.
     pub(crate) fn cursor_anchor_changed(&self, json: &str) {
-        self.call_str("onNativeCursorAnchorInfo", json);
+        self.call_str(HostMethodId::CursorAnchorInfo, json);
     }
 
     /// `session.onNativeSoftInput(visible)` — shows or hides the soft
     /// keyboard. Candidate geometry and the field's input contract travel on
     /// the editing-state and cursor-anchor pushes instead.
     fn set_soft_input_visible(&self, visible: bool) {
-        self.call("onNativeSoftInput", "(Z)V", &[JValue::Bool(visible.into())]);
+        self.call(HostMethodId::SoftInput, &[JValue::Bool(visible.into())]);
     }
 
     /// `session.onNativeAccessibilityTreeChanged(json)` — the JSON event
@@ -193,14 +245,14 @@ impl HostBridge {
     /// each entry as the scoped accessibility event it describes.
     #[cfg(feature = "accessibility")]
     pub fn accessibility_tree_changed(&self, events_json: &str) {
-        self.call_str("onNativeAccessibilityTreeChanged", events_json);
+        self.call_str(HostMethodId::AccessibilityTreeChanged, events_json);
     }
 
     /// Marks the published platform-view placement set dirty on the host
     /// side — the registry re-reads `nativePlatformViewFrames` and re-lays
     /// out its slots.
     pub(crate) fn platform_views_changed(&self) {
-        self.call("onNativePlatformViewsChanged", "()V", &[]);
+        self.call(HostMethodId::PlatformViewsChanged, &[]);
     }
 
     /// Delivers a fatal error (GPU loss, unrecoverable renderer failure) —
@@ -217,17 +269,22 @@ impl HostBridge {
         let Ok(message) = env.new_string(message) else {
             return;
         };
-        let _ = env.call_method(
-            &self.host_view,
-            "onNativeFatalError",
-            "(Ljava/lang/String;)V",
-            &[JValue::Object(&message)],
-        );
+        let jni_args = [JValue::Object(&message).as_jni()];
+        // SAFETY: as in `call_with_env` — the cached id matches
+        // `onNativeFatalError`'s `(Ljava/lang/String;)V` signature exactly.
+        let _ = unsafe {
+            env.call_method_unchecked(
+                &self.host_view,
+                self.methods[HostMethodId::FatalError as usize],
+                ReturnType::Primitive(Primitive::Void),
+                &jni_args,
+            )
+        };
     }
 
     /// The window's content asked to close — the host finishes the activity.
     fn close_requested(&self) {
-        self.call("onNativeCloseRequested", "()V", &[]);
+        self.call(HostMethodId::CloseRequested, &[]);
     }
 
     /// `session.onNativeBackAvailable(available)` — the host enables its back
@@ -235,8 +292,7 @@ impl HostBridge {
     /// callback leaves back to the system, which finishes the activity.
     fn set_back_navigation_available(&self, available: bool) {
         self.call(
-            "onNativeBackAvailable",
-            "(Z)V",
+            HostMethodId::BackAvailable,
             &[JValue::Bool(available.into())],
         );
     }
@@ -630,12 +686,13 @@ impl AndroidSession {
     /// `metrics` is the host's snapshot at creation time — content size and
     /// scale exist from the start, before the surface band attaches.
     pub(crate) fn create(
+        env: &mut JNIEnv,
         vm: JavaVM,
         host_view: GlobalRef,
         metrics: MetricsSnapshot,
         services: &'static UiThreadServices,
     ) -> Result<Box<Self>, JniError> {
-        let bridge = HostBridge { vm, host_view };
+        let bridge = HostBridge::new(env, vm, host_view)?;
         let executor = services.executor.clone();
 
         waterui_locale::start_system_locale_listener();

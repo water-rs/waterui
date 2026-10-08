@@ -296,7 +296,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             max_fling_velocity_px: 0.0,
             scroll_friction: 0.0,
         };
-        let session = AndroidSession::create(vm, host_view, metrics, services(services_ptr))?;
+        let session = AndroidSession::create(env, vm, host_view, metrics, services(services_ptr))?;
         Ok(Box::into_raw(session) as jlong)
     })
 }
