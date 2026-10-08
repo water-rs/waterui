@@ -23,6 +23,13 @@ pub struct Args {
 }
 
 impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Args {
     /// The channel to select, or `None` to report the current selection.
     /// `--rev` pins a commit of the dev channel — the certified channels are
     /// already exact revisions and an omitted channel selects nothing — so

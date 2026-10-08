@@ -69,6 +69,13 @@ pub struct Args {
     yes: bool,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// Run the clean command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     if args.global_cache {

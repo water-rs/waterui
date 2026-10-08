@@ -32,6 +32,7 @@ use walkdir::WalkDir;
 pub const CLI_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 
 const BUILD_CACHE_DIR_NAME: &str = "build_cache";
+const LOCKS_DIR_NAME: &str = "locks";
 const MANAGED_BACKENDS_DIR_NAME: &str = "managed_backends";
 const SHARED_TARGET_DIR_NAME: &str = "target";
 const CONFIG_FILE_NAME: &str = "config.toml";
@@ -583,6 +584,173 @@ async fn require_exclusive_shared_target_lease(target_dir: &Path) -> eyre::Resul
         })
 }
 
+/// `~/.water/locks/` — the cross-process advisory locks that guard a
+/// shared resource rather than a directory's contents, so they live beside
+/// the build cache instead of inside it.
+fn locks_dir_in(water_home: &Path) -> PathBuf {
+    water_home.join(LOCKS_DIR_NAME)
+}
+
+/// Take an exclusive advisory lock on `path`, creating its parent
+/// directory and the file itself, and waiting until the lock is granted.
+///
+/// The lock is tried first; when another process holds it, `contended`
+/// runs — the caller names what it is waiting for — before the wait
+/// blocks. Like `.build-lease` a lock file is never deleted — it is the
+/// thing being locked, not a signal — so the granted lock always guards
+/// the live inode and needs no liveness re-check. The returned file holds
+/// the lock until it drops.
+///
+/// # Errors
+/// Returns an error if the parent directory or the lock file cannot be
+/// created, or the lock cannot be taken.
+async fn exclusive_lock_file(
+    path: PathBuf,
+    contended: impl FnOnce(),
+) -> eyre::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await.wrap_err_with(|| {
+            format!("Failed to create the lock directory {}", parent.display())
+        })?;
+    }
+    let (file, granted, path) = smol::unblock(move || -> eyre::Result<_> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .wrap_err_with(|| format!("Failed to open the lock {}", path.display()))?;
+        let granted = match FileExt::try_lock(&file) {
+            Ok(()) => true,
+            Err(TryLockError::WouldBlock) => false,
+            Err(TryLockError::Error(error)) => {
+                return Err(eyre::Report::from(error))
+                    .wrap_err_with(|| format!("Failed to take the lock {}", path.display()));
+            }
+        };
+        Ok((file, granted, path))
+    })
+    .await?;
+    if granted {
+        return Ok(file);
+    }
+    contended();
+    smol::unblock(move || -> eyre::Result<std::fs::File> {
+        FileExt::lock(&file)
+            .wrap_err_with(|| format!("Failed to take the lock {}", path.display()))?;
+        Ok(file)
+    })
+    .await
+}
+
+/// The lock serializing `water preview --platform android` runs of one
+/// project.
+///
+/// Every run stages its payload into the project's one fixed staging
+/// directory and writes the preview bindings its launcher build reads, so
+/// a second run of the same project waits here until the first finishes.
+/// The lock lives under `~/.water/locks/`, keyed by a hash of the canonical
+/// project root, so `water clean` dropping the build cache cannot unlink it
+/// under a running preview.
+///
+/// # Errors
+/// Returns an error if the Water home cannot be resolved, the project root
+/// cannot be canonicalized, or the lock cannot be taken.
+pub async fn android_preview_project_lock(
+    host: &crate::toolchain::Host,
+    project_root: &Path,
+) -> eyre::Result<std::fs::File> {
+    path_keyed_lock(host, "android-preview-project", project_root, |canonical| {
+        info!(
+            project = %canonical.display(),
+            "Waiting for another Android preview of this project to finish"
+        );
+    })
+    .await
+}
+
+/// The lock serializing every Gradle build that `includeBuild`s one
+/// Hydrolysis Android host checkout.
+///
+/// Both the project's Hydrolysis Android app and the preview host
+/// composite `includeBuild` the host checkout the framework selects — for
+/// a local checkout, the one in-tree host every project of that checkout
+/// shares — and Gradle writes the included build's `build/` and `.gradle/`
+/// inside it, so any two such builds, `water run` beside `water preview`
+/// included, would race on the same directories. Keyed by a hash of the
+/// canonical `host_project_dir` under `~/.water/locks/`.
+///
+/// # Errors
+/// Returns an error if the Water home cannot be resolved, the host
+/// directory cannot be canonicalized, or the lock cannot be taken.
+pub async fn android_host_build_lock(
+    host: &crate::toolchain::Host,
+    host_project_dir: &Path,
+) -> eyre::Result<std::fs::File> {
+    path_keyed_lock(host, "android-host-build", host_project_dir, |canonical| {
+        info!(
+            host = %canonical.display(),
+            "Waiting for another build of this Android host to finish"
+        );
+    })
+    .await
+}
+
+/// An exclusive lock under `~/.water/locks/` named `<kind>-<sha256 of the
+/// canonical path>.lock`, so every spelling of one directory takes the
+/// same lock and `water clean` dropping a build cache cannot unlink it.
+async fn path_keyed_lock(
+    host: &crate::toolchain::Host,
+    kind: &str,
+    path: &Path,
+    contended: impl FnOnce(&Path),
+) -> eyre::Result<std::fs::File> {
+    use sha2::Digest as _;
+
+    let water_home = water_home_dir_in(host)?;
+    let canonical = fs::canonicalize(path)
+        .await
+        .wrap_err_with(|| format!("Failed to canonicalize {}", path.display()))?;
+    let digest = sha2::Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    let name = format!("{kind}-{}.lock", hex::encode(digest));
+    exclusive_lock_file(locks_dir_in(&water_home).join(name), || {
+        contended(&canonical);
+    })
+    .await
+}
+
+/// The lock serializing `water preview --platform android` runs on one
+/// device.
+///
+/// `am instrument` force-stops the preview host package and a concurrent
+/// install replaces it, so one device serves one preview render at a time:
+/// a second run on the same device waits here until the first has pulled
+/// its output. `device_key` names one device across its adb transports —
+/// a physical device's own `ro.serialno`, so one phone reached over USB and
+/// over `adb connect` takes the same lock, and an emulator's
+/// `emulator-<port>` adb serial, since emulators share their `ro.serialno`.
+///
+/// # Errors
+/// Returns an error if the Water home cannot be resolved or the lock
+/// cannot be taken.
+pub async fn android_preview_device_lock(
+    host: &crate::toolchain::Host,
+    device_key: &str,
+) -> eyre::Result<std::fs::File> {
+    let water_home = water_home_dir_in(host)?;
+    let name = format!(
+        "android-preview-device-{}.lock",
+        sanitize_os_str(device_key.as_ref())
+    );
+    exclusive_lock_file(locks_dir_in(&water_home).join(name), || {
+        info!(
+            device = device_key,
+            "Waiting for another preview on this device to finish"
+        );
+    })
+    .await
+}
+
 /// Return the managed build-cache directory for a project.
 ///
 /// # Errors
@@ -689,12 +857,6 @@ pub async fn ensure_project_build_cache(
     let project_root = canonicalize_project_root(project_root)?;
     let water_home = water_home_dir_in(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
-    if let Err(error) = spawn_build_cache_cleanup_process(host, &project_root).await {
-        warn!(
-            current_project_root = %project_root.display(),
-            "Failed to spawn build-cache cleanup process: {error}"
-        );
-    }
     ensure_project_build_cache_in(&project_root, &cache_root, &config).await
 }
 
@@ -713,35 +875,66 @@ pub async fn cleanup_stale_build_caches_for_project(
     cleanup_stale_caches_if_idle(&cache_root, &project_root, &config).await
 }
 
-async fn spawn_build_cache_cleanup_process(
+/// Start `water gc build-cache --path <project_root>` in the background on
+/// `host`, re-launching the running executable.
+///
+/// Only the `water` binary's entry point calls this: the running executable
+/// must be `water` itself, which no library consumer — an example, a test
+/// harness — is. The sweep runs as its own process so a short command never
+/// waits on it, with no stdio, and a detached task reaps it the moment it
+/// exits, so it never lingers as a zombie while this process runs; a sweep
+/// still running when `water` exits is reparented and reaped by the system.
+/// On Unix it leads its own process group, so the terminal's `Ctrl-C` for
+/// the command never interrupts the sweep mid-removal; the Windows console
+/// has no group signal routing and delivers `Ctrl-C` to every attached
+/// process.
+/// `project_root` is the project the command works on, whose cache the
+/// sweep keeps even while its marker is about to be refreshed.
+///
+/// # Errors
+/// Returns an error if the running executable cannot be located or the
+/// sweep cannot be spawned.
+pub fn spawn_build_cache_cleanup(
     host: &crate::toolchain::Host,
     project_root: &Path,
 ) -> eyre::Result<()> {
-    let current_executable = std::env::current_exe()
-        .wrap_err("Failed to resolve current water executable for build-cache cleanup")?;
-    let project_root = project_root.to_path_buf();
-    let mut command = host.std_command(&current_executable);
-    command
+    let executable = crate::toolchain::Host::current_exe()
+        .wrap_err("Failed to locate the running water executable for build-cache cleanup")?;
+    #[cfg(unix)]
+    let mut command = host.command_in_own_process_group(&executable);
+    #[cfg(not(unix))]
+    let mut command = host.command(&executable);
+    let mut child = command
         .arg("gc")
         .arg("build-cache")
         .arg("--path")
-        .arg(&project_root)
+        .arg(project_root)
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    smol::unblock(move || -> eyre::Result<()> {
-        command
-            .spawn()
-            .map(|_| ())
-            .map_err(eyre::Report::from)
-            .wrap_err_with(|| {
-                format!(
-                    "Failed to spawn build-cache cleanup process for {}",
-                    project_root.display()
-                )
-            })
+        .stderr(Stdio::null())
+        .spawn()
+        .wrap_err_with(|| {
+            format!(
+                "Failed to spawn the build-cache cleanup for {}",
+                project_root.display()
+            )
+        })?;
+    let project_root = project_root.to_path_buf();
+    smol::spawn(async move {
+        match child.status().await {
+            Ok(status) if status.success() => {}
+            Ok(status) => warn!(
+                project_root = %project_root.display(),
+                "Build-cache cleanup exited with {status}"
+            ),
+            Err(error) => warn!(
+                project_root = %project_root.display(),
+                "Failed to wait for the build-cache cleanup: {error}"
+            ),
+        }
     })
-    .await
+    .detach();
+    Ok(())
 }
 
 /// Remove the managed build cache for a project.

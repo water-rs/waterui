@@ -97,6 +97,11 @@ pub enum ScenarioPointerButton {
 impl PreviewRunConfig {
     /// Reads the JSON configuration file [`PREVIEW_RUN_CONFIG_ENV`] names.
     ///
+    /// A relative `output`/`output_dir` resolves against the configuration
+    /// file's own directory, so a host that cannot name the payload's
+    /// absolute root — a device-side staging area under private files —
+    /// writes its outputs run-relative.
+    ///
     /// # Errors
     ///
     /// Returns a typed failure when the variable is unset, the file cannot be
@@ -109,7 +114,23 @@ impl PreviewRunConfig {
             path: path.clone(),
             source,
         })?;
-        serde_json::from_str(&text).map_err(|source| RunConfigError::Json { path, source })
+        let mut config: Self =
+            serde_json::from_str(&text).map_err(|source| RunConfigError::Json {
+                path: path.clone(),
+                source,
+            })?;
+        if let Some(base) = path.parent() {
+            match &mut config.mode {
+                PreviewRunMode::Image { output } if !output.is_absolute() => {
+                    *output = base.join(&*output);
+                }
+                PreviewRunMode::Scenario { output_dir, .. } if !output_dir.is_absolute() => {
+                    *output_dir = base.join(&*output_dir);
+                }
+                _ => {}
+            }
+        }
+        Ok(config)
     }
 }
 

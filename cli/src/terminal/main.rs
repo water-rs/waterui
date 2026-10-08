@@ -90,13 +90,58 @@ enum Commands {
     Completions(completions::Args),
 }
 
-fn main() -> Result<()> {
-    // A `RUSTC_WRAPPER` build-std invocation enters the process before any CLI
-    // parsing: Cargo calls this binary as `water <rustc> <args…>`.
-    if let Some(code) = waterui_cli::rustc_wrapper::wrapper_main() {
-        std::process::exit(code);
+impl Commands {
+    /// The project directory a command works on — the one whose managed
+    /// build cache the background sweep keeps — or `None` for a command
+    /// that opens no project.
+    fn project_dir(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Run(args) => Some(args.project_dir()),
+            Self::Bench(args) => Some(args.project_dir()),
+            Self::Build(args) => Some(args.project_dir()),
+            Self::Package(args) => Some(args.project_dir()),
+            Self::Clean(args) => Some(args.project_dir()),
+            Self::Fetch(args) => Some(args.project_dir()),
+            Self::Preview(args) => Some(args.project_dir()),
+            Self::Inspector(args) => Some(args.project_dir()),
+            Self::Mcp(args) => Some(args.project_dir()),
+            Self::Channel(args) => Some(args.project_dir()),
+            Self::Create(_)
+            | Self::Init(_)
+            | Self::Doctor(_)
+            | Self::Device(_)
+            | Self::Devices(_)
+            | Self::Gc(_)
+            | Self::Update(_)
+            | Self::Completions(_) => None,
+        }
     }
+}
 
+/// Sweep stale managed build caches in the background, keeping the cache of
+/// the project `command` works on. Only this binary requests the sweep: it
+/// re-launches the running executable, which is `water` only here.
+async fn request_build_cache_cleanup(command: &Commands) {
+    let Some(project_dir) = command.project_dir() else {
+        return;
+    };
+    // A path that does not resolve names no project, so no sweep starts;
+    // the command itself then fails with the canonicalization error.
+    let Ok(project_root) = smol::fs::canonicalize(project_dir).await else {
+        return;
+    };
+    if let Err(error) = waterui_cli::water_dir::spawn_build_cache_cleanup(
+        &waterui_cli::toolchain::Host::current(),
+        &project_root,
+    ) {
+        tracing::warn!(
+            project_root = %project_root.display(),
+            "Failed to start the build-cache cleanup: {error:#}"
+        );
+    }
+}
+
+fn main() -> Result<()> {
     color_eyre::config::HookBuilder::default()
         .display_location_section(false)
         .display_env_section(false)
@@ -123,6 +168,7 @@ fn main() -> Result<()> {
     smol::block_on(async move {
         waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
             .await?;
+        request_build_cache_cleanup(&cli.command).await;
 
         // The passive update check stays off the `build`/`run` hot path,
         // off machine-consumed output (`mcp`, `completions`), and never

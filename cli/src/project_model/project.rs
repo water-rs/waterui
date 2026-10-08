@@ -289,63 +289,6 @@ impl Project {
         self.run_packaged(device, artifact, run_options).await
     }
 
-    /// Run the Android backend for the specific target ABI of the device.
-    ///
-    /// This is required because Android packaging is ABI-dependent (e.g., `x86_64` emulator vs
-    /// `arm64-v8a` physical device).
-    ///
-    /// `build_options` decides the Rust runtime linkage: a support app that
-    /// `dlopen`s `WaterUI` modules (the preview app) must pass
-    /// [`BuildOptions::with_dynamic_module_loading`] so the shared runtime is
-    /// built and packaged; a standalone app links it in.
-    ///
-    /// # Errors
-    /// Returns an error if building, packaging, or launching the Android app fails.
-    pub async fn run_android_with_options<D: Device + AndroidAbiProvider>(
-        &self,
-        _backend: &AndroidBackend,
-        device: D,
-        run_options: RunOptions,
-        build_options: BuildOptions,
-        progress: Option<BuildProgress>,
-    ) -> Result<Running, FailToRun> {
-        let abi = device.android_abi();
-
-        self.browser_runtime_plan(TargetPlatform::Android, TargetBackend::Android)
-            .await
-            .map_err(FailToRun::Build)?;
-
-        AndroidPlatform::clean_jni_libs(self)
-            .await
-            .map_err(FailToRun::Build)?;
-
-        let mut package_options = PackageOptions::development();
-        if let Some(progress) = &progress {
-            package_options = package_options.with_progress(progress.clone());
-        }
-        // Resolve release signing before the Rust build: a misconfigured
-        // release package fails here rather than after compilation. Debug
-        // runs resolve to a no-decision plan.
-        let prepared = crate::android::signing::PreparedSigning::resolve(self, &package_options)
-            .map_err(FailToRun::Package)?;
-
-        let mut build_options = build_options;
-        if let Some(progress) = progress {
-            build_options = build_options.with_progress(progress);
-        }
-        let built = AndroidPlatform::new(abi)
-            .build(self, build_options)
-            .await
-            .map_err(FailToRun::Build)?;
-
-        let artifact =
-            AndroidPlatform::package_with_abis(self, package_options, &[abi], &built, &prepared)
-                .await
-                .map_err(FailToRun::Package)?;
-
-        self.run_packaged(device, artifact, run_options).await
-    }
-
     async fn run_packaged<D: Device>(
         &self,
         device: D,
@@ -2847,10 +2790,7 @@ use smol::{fs::read_to_string, unblock};
 use waterui_assets_planner::{LaunchConfig, ThemeConfig};
 
 use crate::{
-    android::{
-        backend::AndroidBackend, device::AndroidAbiProvider, platform::AndroidPlatform,
-        signing::AndroidSigningConfig,
-    },
+    android::{backend::AndroidBackend, signing::AndroidSigningConfig},
     apple::backend::AppleBackend,
     backend::{Backend, Backends},
     build::{BuildOptions, BuildProfile},

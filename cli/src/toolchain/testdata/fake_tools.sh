@@ -349,6 +349,15 @@ sdkmanager)
     esac
     ;;
 adb)
+    # Every invocation appends its argv to the log a test points
+    # `WATERUI_FAKE_ADB_LOG` at, so sequences can be asserted.
+    if [ -n "${WATERUI_FAKE_ADB_LOG-}" ]; then
+        printf '%s\n' "$*" >> "$WATERUI_FAKE_ADB_LOG"
+    fi
+    # A wedged transport — spin until the caller's bound kills the process.
+    if [ -n "${WATERUI_FAKE_ADB_HANG-}" ]; then
+        while :; do :; done
+    fi
     case "$*" in
         version)
             printf 'Android Debug Bridge version 1.0.41\nVersion %s\n' "${WATERUI_FAKE_ADB_VERSION:-36.0.0-test}"
@@ -369,6 +378,34 @@ adb)
             ;;
         *wait-for-device*)
             exit 0
+            ;;
+        *"pm list packages"*)
+            respond_or_empty ADB_PM_PACKAGES
+            ;;
+        *" install "*)
+            # A failed install still prints its `Failure […]` text before
+            # the exit status — `respond_or_empty` exits 0 itself, so it
+            # runs in a subshell and the status is this branch's own.
+            (respond_or_empty ADB_INSTALL)
+            exit "${WATERUI_FAKE_ADB_INSTALL_STATUS:-0}"
+            ;;
+        *logcat*)
+            respond_or_empty ADB_LOGCAT
+            ;;
+        *"run-as"*cat*)
+            respond_or_empty ADB_CAT
+            ;;
+        *"run-as"*)
+            exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
+            ;;
+        *shell*date*)
+            printf '%s\n' "${WATERUI_FAKE_ADB_DATE:-01-01 00:00:00.000}"
+            ;;
+        *shell*instrument*)
+            respond_or_empty ADB_AM_INSTRUMENT
+            ;;
+        *shell*)
+            exit "${WATERUI_FAKE_ADB_SHELL_STATUS:-0}"
             ;;
         *)
             exit 0

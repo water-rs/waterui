@@ -159,6 +159,13 @@ pub struct Args {
     yes: bool,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// The build profile flags: at most one of them, and `release` when neither is
 /// given — `water package` builds what users ship unless asked otherwise.
 #[derive(ClapArgs, Debug)]
