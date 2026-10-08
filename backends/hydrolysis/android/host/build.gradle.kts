@@ -18,6 +18,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 
+    testOptions {
+        // Robolectric reads the merged manifest AGP hands the unit tests.
+        unitTests.isIncludeAndroidResources = true
+        // Robolectric's API 36 runtime writes raw FileDescriptor fields
+        // through `jdk.internal.access`, which JDK 17+ keeps closed.
+        unitTests.all { it.jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED") }
+    }
+
     lint {
         abortOnError = true
         warningsAsErrors = true
@@ -38,4 +46,9 @@ dependencies {
     // `HintConstants`: the OTP/password hints beyond `View.AUTOFILL_HINT_*`
     // (`AUTOFILL_HINT_SMS_OTP`, `AUTOFILL_HINT_NEW_PASSWORD`).
     implementation("androidx.autofill:autofill:1.3.0")
+
+    // The host's JVM tests run the Kotlin half against a shadowed
+    // `NativeBridge` on Robolectric's Android runtime.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.17")
 }

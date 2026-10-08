@@ -903,7 +903,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: ${{ steps.gradle-version.outputs.version }}
-      - run: gradle :host:lintDebug
+      - run: gradle :host:lintDebug :host:testDebugUnitTest
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,

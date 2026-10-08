@@ -72,10 +72,13 @@ constructor(
     private fun attemptAttach() {
         val surface = holder.surface
         if (surface == null || !surface.isValid) return
+        // Outside the retry: a destroyed session is a named error, not an
+        // attach failure to retry.
+        val sessionPtr = session.nativePtr(NativeBridge::nativeSurfaceAttached.name)
         val attached =
             try {
                 NativeBridge.nativeSurfaceAttached(
-                    session.nativePtr,
+                    sessionPtr,
                     surface,
                     width,
                     height,
@@ -106,13 +109,21 @@ constructor(
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        NativeBridge.nativeSurfaceChanged(session.nativePtr, width, height, generation)
+        NativeBridge.nativeSurfaceChanged(
+            session.nativePtr(NativeBridge::nativeSurfaceChanged.name),
+            width,
+            height,
+            generation,
+        )
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         attachPending = false
         Choreographer.getInstance().removeFrameCallback(attachRetry)
-        NativeBridge.nativeSurfaceDestroyed(session.nativePtr, generation)
+        NativeBridge.nativeSurfaceDestroyed(
+            session.nativePtr(NativeBridge::nativeSurfaceDestroyed.name),
+            generation,
+        )
     }
 
     private companion object {

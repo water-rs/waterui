@@ -111,8 +111,11 @@ internal class HydrolysisAccessibilityProvider(
     private fun ensureTree() {
         if (!dirty) return
         dirty = false
-        val sessionPtr = session?.nativePtr ?: return
-        val json = NativeBridge.nativeAccessibilityTree(sessionPtr) ?: return
+        val session = session ?: return
+        val json =
+            NativeBridge.nativeAccessibilityTree(
+                session.nativePtr(NativeBridge::nativeAccessibilityTree.name),
+            ) ?: return
         // The envelope is a serde struct — a missing field is a mismatched
         // host, and propagating the error beats serving a half-read tree.
         val payload = JSONObject(json)
@@ -198,10 +201,13 @@ internal class HydrolysisAccessibilityProvider(
 
     /** The served node under the view-space point, resolved on the native side. */
     private fun hitTest(x: Float, y: Float): Long {
-        val sessionPtr = session?.nativePtr ?: return INVALID_ID
-        if (sessionPtr == 0L) return INVALID_ID
+        val session = session ?: return INVALID_ID
         val density = host.resources.displayMetrics.density
-        return NativeBridge.nativeAccessibilityHitTest(sessionPtr, x / density, y / density)
+        return NativeBridge.nativeAccessibilityHitTest(
+            session.nativePtr(NativeBridge::nativeAccessibilityHitTest.name),
+            x / density,
+            y / density,
+        )
     }
 
     private fun childIds(node: JSONObject): List<Long> {
@@ -511,10 +517,10 @@ internal class HydrolysisAccessibilityProvider(
         }
 
         val mapped = mapAction(node, action, arguments) ?: return false
-        val sessionPtr = session?.nativePtr ?: return false
+        val session = session ?: return false
         val handled =
             NativeBridge.nativeAccessibilityAction(
-                sessionPtr,
+                session.nativePtr(NativeBridge::nativeAccessibilityAction.name),
                 id,
                 mapped.index,
                 mapped.arg1,
@@ -751,9 +757,9 @@ internal class HydrolysisAccessibilityProvider(
         ensureTree()
         val node = nodes[id] ?: return false
         if (!isEditable(node) || !hasAction(node, AK_SET_VALUE)) return false
-        val sessionPtr = session?.nativePtr ?: return false
+        val session = session ?: return false
         return NativeBridge.nativeAccessibilityAction(
-            sessionPtr,
+            session.nativePtr(NativeBridge::nativeAccessibilityAction.name),
             id,
             AK_SET_VALUE,
             -1,
