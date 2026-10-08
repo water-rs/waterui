@@ -6,14 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     android::platform::AndroidAbi,
-    backend::Backend,
+    backend::{Backend, reinit_backend},
     build::BuildOptions,
     device::Artifact,
     hydrolysis::platform::{
         build_hydrolysis, clean_hydrolysis, is_hydrolysis_platform, package_hydrolysis,
     },
     platform::{PackageOptions, TargetBackend, TargetPlatform},
-    project::Project,
+    project::{ManagedBackends, Project},
     templates::{self, TemplateContext},
     toolchain::Host,
 };
@@ -207,6 +207,29 @@ impl Backend for HydrolysisBackend {
     async fn clean(&self, project: &Project, _platform: TargetPlatform) -> eyre::Result<()> {
         clean_hydrolysis(project).await
     }
+}
+
+/// Open the project at `project_path` with its managed Hydrolysis backend
+/// generated and matching the current templates.
+///
+/// Every flow that builds the managed launcher crate outside `water run` —
+/// preview, the MCP child and the inspector support app — opens its project
+/// through this.
+///
+/// # Errors
+///
+/// Returns an error when the project cannot be opened or the backend cannot
+/// be regenerated.
+pub async fn open_ready(project_path: &Path) -> eyre::Result<Project> {
+    let project = Project::open(
+        project_path,
+        ManagedBackends::for_backend(TargetBackend::Hydrolysis),
+    )
+    .await?;
+    if HydrolysisBackend::requires_regeneration(&project).await? {
+        reinit_backend::<HydrolysisBackend>(&project).await?;
+    }
+    Ok(project)
 }
 
 fn default_hydrolysis_project_path() -> PathBuf {
