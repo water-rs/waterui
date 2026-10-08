@@ -479,6 +479,12 @@ impl Project {
         generated_crate_name(&self.crate_name, "preview-ffi", &self.root)
     }
 
+    /// Get the generated Apple in-process preview binary's crate name.
+    #[must_use]
+    pub fn apple_preview_crate_name(&self) -> CrateName {
+        generated_crate_name(&self.crate_name, "apple-preview", &self.root)
+    }
+
     /// Get the crate root path used to build preview dylibs.
     #[must_use]
     pub fn preview_dylib_crate_path(&self, workspace_root: &Path) -> PathBuf {
@@ -597,6 +603,16 @@ impl Project {
     #[must_use]
     pub fn ffi_crate_path(&self) -> PathBuf {
         self.managed_backends_root.join("ffi")
+    }
+
+    /// Get the full path to the managed Apple in-process preview package.
+    ///
+    /// It sits next to the FFI companion crate: the two share one
+    /// dependency-table function so the preview binary resolves the same
+    /// `waterui` and `libwaterui_dylib` build `water run` produces.
+    #[must_use]
+    pub fn apple_preview_crate_path(&self) -> PathBuf {
+        self.managed_backends_root.join("apple-preview")
     }
 
     /// Directory name this project's preview module occupies inside a workspace.
@@ -923,6 +939,7 @@ impl Project {
         let mut names: Vec<String> = [
             self.ffi_crate_name(),
             self.preview_ffi_crate_name(),
+            self.apple_preview_crate_name(),
             self.gtk_backend_crate_name(),
             self.hydrolysis_backend_crate_name(),
             self.winui_backend_crate_name(),
@@ -1378,18 +1395,23 @@ impl CreateOptions {
 }
 
 impl Project {
-    /// `apple_selected` is whether this invocation selected the Apple backend —
-    /// one that does not emit a companion with no `waterui-apple` dependency,
-    /// entry-owning bin, or entry file, and removes a stale entry file a
-    /// previous apple-selected render left behind. Apple pieces are also
-    /// omitted on hosts that cannot run an Apple build.
-    pub(crate) async fn scaffold_ffi_companion(
+    /// The `TemplateContext` the generated crates this project builds for
+    /// Apple targets share — the FFI companion and the Apple preview
+    /// package read one context so their generated dependency tables cannot
+    /// drift.
+    ///
+    /// `apple_selected` is whether this invocation selected the Apple
+    /// backend — an Apple-unselected render emits a companion with no
+    /// `waterui-apple` dependency, entry-owning bin, or entry file, and
+    /// removes a stale entry file a previous apple-selected render left
+    /// behind. Apple pieces are also omitted on hosts that cannot run an
+    /// Apple build: a host that cannot produce one must not resolve the
+    /// Apple backend crate merely because the project selected it.
+    async fn apple_managed_crate_context(
         &self,
         apple_selected: bool,
-    ) -> Result<(), crate::backend::FailToInitBackend> {
-        // The companion's Apple pieces exist only where an Apple build runs.
-        // A host that cannot produce an Apple build must not resolve the
-        // Apple backend crate merely because the project selected it.
+        backend_project_path: PathBuf,
+    ) -> Result<(TemplateContext, ResolvedFramework), crate::backend::FailToInitBackend> {
         let apple_selected = apple_selected && cfg!(target_os = "macos");
         let manifest = self.manifest();
         let app_name = manifest
@@ -1421,7 +1443,7 @@ impl Project {
             &framework,
             self.local_sources(),
         )
-        .with_backend_project_path(self.ffi_crate_path())
+        .with_backend_project_path(backend_project_path)
         .with_project_root_path(self.root.clone())
         .with_project_packages(
             self.project_packages(&framework)
@@ -1432,11 +1454,17 @@ impl Project {
         .with_webview_enabled(webview_enabled)
         .with_chromium_enabled(chromium_enabled)
         .with_browser_engine(browser_engine);
+        Ok((ctx, framework))
+    }
 
-        templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
-            .await
-            .map_err(crate::backend::FailToInitBackend::Io)?;
-
+    /// Seed `crate_dir`'s `Cargo.lock` from the project's lock and the
+    /// channel's certified `Water.lock` — the lock every managed crate
+    /// resolves with.
+    async fn seed_managed_crate_lock(
+        &self,
+        crate_dir: &Path,
+        framework: &ResolvedFramework,
+    ) -> Result<(), crate::backend::FailToInitBackend> {
         let lockfile = self
             .lockfile_path()
             .await
@@ -1445,9 +1473,61 @@ impl Project {
             .canonical_lock(&self.root)
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
-        templates::seed_lockfile(&self.ffi_crate_path(), &lockfile, canonical.as_ref())
+        templates::seed_lockfile(crate_dir, &lockfile, canonical.as_ref())
             .await
             .map_err(crate::backend::FailToInitBackend::Io)
+    }
+
+    /// Scaffold the managed native FFI companion crate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generated crate cannot be written.
+    pub(crate) async fn scaffold_ffi_companion(
+        &self,
+        apple_selected: bool,
+    ) -> Result<(), crate::backend::FailToInitBackend> {
+        let (ctx, framework) = self
+            .apple_managed_crate_context(apple_selected, self.ffi_crate_path())
+            .await?;
+
+        templates::ffi::scaffold(&self.ffi_crate_path(), &ctx, &self.ffi_crate_name())
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
+
+        self.seed_managed_crate_lock(&self.ffi_crate_path(), &framework)
+            .await
+    }
+
+    /// Scaffold the managed Apple in-process preview package `water preview
+    /// --platform macos` builds and execs.
+    ///
+    /// The package sits next to the FFI companion in the managed build
+    /// cache and shares its dependency tables through
+    /// `templates::apple_preview`, so its binary resolves the same
+    /// `waterui` and `libwaterui_dylib` `water run` produces. Its lock is
+    /// seeded like the other managed crates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generated crate cannot be written.
+    pub(crate) async fn scaffold_apple_preview_companion(
+        &self,
+    ) -> Result<(), crate::backend::FailToInitBackend> {
+        let (ctx, framework) = self
+            .apple_managed_crate_context(true, self.apple_preview_crate_path())
+            .await?;
+
+        templates::apple_preview::scaffold(
+            &self.apple_preview_crate_path(),
+            &ctx,
+            &self.apple_preview_crate_name(),
+        )
+        .await
+        .map_err(crate::backend::FailToInitBackend::Io)?;
+
+        self.seed_managed_crate_lock(&self.apple_preview_crate_path(), &framework)
+            .await
     }
 
     /// Scaffold this project's preview module inside `workspace_root`.
