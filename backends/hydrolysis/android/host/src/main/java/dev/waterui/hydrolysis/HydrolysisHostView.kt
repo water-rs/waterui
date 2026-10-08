@@ -46,7 +46,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
      * always above the GPU band. Populated from the session's placement frames
      * by [platformViewRegistry].
      */
-    val platformViewRegistry: PlatformViewRegistry = PlatformViewRegistry(context, session)
+    val platformViewRegistry: PlatformViewRegistry =
+        PlatformViewRegistry(context, session, this)
 
     private val accessibilityProvider: HydrolysisAccessibilityProvider =
         HydrolysisAccessibilityProvider(this, session)
@@ -316,6 +317,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             getChildAt(i).layout(0, 0, r - l, b - t)
         }
         platformViewRegistry.publishIfPending()
+    }
+
+    // ------------------------------------------------------------------
+    // Frame scheduling — the session's scheduler, which stops with it.
+
+    internal open fun requestFrame() {
+        session?.frameScheduler?.requestFrame("redraw-request")
     }
 
     // ------------------------------------------------------------------

@@ -49,7 +49,8 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// the `HydrolysisWebView` natives join the edge; 13 =
 /// `nativePlatformViewFocus` reported whether a mounted platform-view child
 /// held UI focus; 14 = the report reads through the frame instead —
-/// `platformViewFocusInside` replaces the pushed native, which left with it.
+/// `onNativePlatformViewFocus` / `platform_view_focus_inside` replaces the
+/// pushed native, which left with it.
 pub const JNI_SCHEMA: jint = 14;
 
 /// A failure crossing the JNI boundary as an exception.

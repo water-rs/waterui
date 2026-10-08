@@ -36,10 +36,27 @@ import org.json.JSONArray
 class PlatformViewRegistry internal constructor(
     private val context: Context,
     private val session: HydrolysisSession?,
+    private val hostView: HydrolysisHostView?,
 ) {
-    /** The overlay container the host view adds as its topmost child. */
+    /**
+     * The overlay container the host view adds as its topmost child. A
+     * child focus gain or loss inside it requests the frame that pulls
+     * [focusInside]: `requestFrame` only posts a Choreographer callback,
+     * so the hook can never re-enter the session the way a pushed native
+     * report did.
+     */
     internal val container: FrameLayout =
-        FrameLayout(context).apply {
+        object : FrameLayout(context) {
+            override fun requestChildFocus(child: View?, focused: View?) {
+                super.requestChildFocus(child, focused)
+                hostView?.requestFrame()
+            }
+
+            override fun clearChildFocus(child: View?) {
+                super.clearChildFocus(child)
+                hostView?.requestFrame()
+            }
+        }.apply {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             clipChildren = true
         }

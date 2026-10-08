@@ -206,25 +206,16 @@ impl PlatformViewTable {
 #[derive(Clone, Debug, Default)]
 pub struct PlatformViewFocus {
     holding: Rc<Cell<bool>>,
-    changed: Rc<Cell<bool>>,
 }
 
 #[cfg(target_os = "android")]
 impl PlatformViewFocus {
-    /// The host's "focus is inside a platform-view container" report —
+    /// The frame's "focus is inside a platform-view container" pull —
     /// idempotent. `true` is returned when the boolean flipped, so the
-    /// caller can request the frame that consumes the edge.
+    /// frame that pulled it can run the edge work (clearing the `WaterUI`
+    /// claim, refreshing, redrawing).
     pub fn set(&self, focused: bool) -> bool {
-        if self.holding.replace(focused) != focused {
-            self.changed.set(true);
-            return true;
-        }
-        false
-    }
-
-    /// The edge flag the frame pump consumes, exactly once.
-    pub fn take_changed(&self) -> bool {
-        self.changed.replace(false)
+        self.holding.replace(focused) != focused
     }
 
     /// Whether a platform-view child currently holds UI focus.
