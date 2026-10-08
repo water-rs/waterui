@@ -305,22 +305,17 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
         compile(out_dir, spec, apple.as_ref(), wasm, spirv);
     }
     if let Some(apple) = apple.as_ref() {
-        // The tile executor's composition shaders — one module per
-        // engine specialization the tile path draws: the stripped
-        // no-union variant and the union-linked variant.
-        for (name, source) in [
-            ("engine_tile", specs[2].source.as_str()),
-            ("engine_tile_union", specs[3].source.as_str()),
-        ] {
-            let spec = Spec {
-                name: name.into(),
-                source: source.to_string(),
-                groups: bindings::ENGINE_GROUPS,
-                metal: true,
-                merge_pair: None,
-            };
-            compile(out_dir, &spec, Some(apple), false, false);
-        }
+        // The tile executor's composition shaders. Only the stripped
+        // no-union variant: a union member samples its group's capture,
+        // a read `ExecutionPlan::epoch` never admits into a tile epoch.
+        let spec = Spec {
+            name: "engine_tile".into(),
+            source: specs[2].source.clone(),
+            groups: bindings::ENGINE_GROUPS,
+            metal: true,
+            merge_pair: None,
+        };
+        compile(out_dir, &spec, Some(apple), false, false);
         let fixture = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
             .join("tests/shaders/attachment_read.metal");
         std::io::Write::write_fmt(
@@ -356,7 +351,7 @@ fn compile(out_dir: &Path, spec: &Spec, apple: Option<&AppleTarget>, wasm: bool,
             e.emit_to_string(&spec.source)
         )
     });
-    if spec.name.starts_with("engine_tile") {
+    if spec.name == "engine_tile" {
         tile::attachment_inputs(&mut module);
     }
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
@@ -771,7 +766,7 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
     let options = msl::Options {
         // The floor Metal language version wgpu selects on supported
         // hardware; the shader test covers the same value.
-        lang_version: if spec.name.starts_with("engine_tile") {
+        lang_version: if spec.name == "engine_tile" {
             (3, 0)
         } else {
             (2, 0)
@@ -823,30 +818,13 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
     std::fs::write(&metal, &source).unwrap();
 
     if let Some(apple) = apple {
-        let input = match spec.name.as_str() {
-            "engine_tile" => {
-                let scaffold = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-                    .join("src/render/composite/attachment.metal");
-                println!("cargo::rerun-if-changed={}", scaffold.display());
-                scaffold
-            }
-            "engine_tile_union" => {
-                // The tile driver's union twin: the same native stage
-                // interfaces, including the union-linked engine module.
-                let scaffold = out_dir.join("attachment_union.metal");
-                let source = std::fs::read_to_string(
-                    PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-                        .join("src/render/composite/attachment.metal"),
-                )
-                .unwrap()
-                .replace(
-                    "#include \"engine_tile.metal\"",
-                    "#include \"engine_tile_union.metal\"",
-                );
-                std::fs::write(&scaffold, source).unwrap();
-                scaffold
-            }
-            _ => metal,
+        let input = if spec.name == "engine_tile" {
+            let scaffold = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+                .join("src/render/composite/attachment.metal");
+            println!("cargo::rerun-if-changed={}", scaffold.display());
+            scaffold
+        } else {
+            metal
         };
         compile_metal(out_dir, &spec.name, &input, apple, options.lang_version);
     }
