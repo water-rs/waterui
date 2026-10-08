@@ -1,4 +1,5 @@
-//! The keyboard region: what a `UIKit` keyboard notification carries.
+//! The keyboard region: what a `UIKit` keyboard notification carries,
+//! and the one object that holds it per window.
 //!
 //! `UIKit` announces every keyboard frame transition —
 //! show, hide and resize alike — through
@@ -8,36 +9,49 @@
 //! mirrors the keyboard's motion applies its own change inside a `UIView`
 //! animation with the same parameters.
 //!
-//! The window's keyboard owner — the window root, or the outermost kit
-//! host view when the window root is not one of ours — tracks the last
-//! reported frame and duration and reports them through
-//! `cocoaUiKeyboardFrame`, `cocoaUiKeyboardDuration` and
-//! `cocoaUiTracksKeyboard`. [`tracker_for`] resolves that owner for any
-//! view; scroll surfaces read the shared state in their own layout passes
-//! instead of keeping a private copy, so a surface's inset follows its
-//! current frame and never depends on notification delivery order.
+//! One [`KeyboardRegion`] per `UIWindow` — a plain `NSObject` attached to
+//! the window as an associated object — keeps the last reported frame in
+//! window coordinates and the animation's duration. [`region_for`]
+//! creates it lazily on first lookup, so the region exists from the
+//! first notification after any `WaterUI` view reaches the window and is
+//! shared by every host in it — including hosts in apps that own their
+//! own `UIWindow`. Hosts and scroll surfaces read the region and only
+//! mark: on a notification the region walks the window's whole view
+//! tree once — presented panels, which mount their own `HostView` and
+//! scroll surfaces outside any content owner's subtree, are reached —
+//! marks every region reader, and flushes the pass with
+//! `layoutIfNeeded`, all inside a `UIView` animation carrying the
+//! notification's duration and curve.
 //!
 //! # Safety
 //!
-//! The `unsafe` here reads `userInfo` by messaging the dictionary directly —
-//! the keys are constants `UIKit` exports — and unpacks the `NSValue` the
-//! frame key names into a `CGRect`, a copy `NSValue` documents as typed.
+//! The `unsafe` here reads `userInfo` by messaging the dictionary
+//! directly — the keys are constants `UIKit` exports — unpacks the
+//! `NSValue` the frame key names into a `CGRect`, a copy `NSValue`
+//! documents as typed, and stores the region as a retained associated
+//! object on the window.
 
-use std::cell::{Cell, RefCell};
+use core::ffi::c_void;
+use std::cell::{Cell, OnceCell, RefCell};
 
 use block2::RcBlock;
+use objc2::ffi::{
+    OBJC_ASSOCIATION_RETAIN_NONATOMIC, objc_getAssociatedObject, objc_setAssociatedObject,
+};
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly, msg_send, sel};
-use objc2_core_foundation::{CGPoint, CGRect};
-use objc2_foundation::{NSNotification, NSNumber, NSObjectProtocol, NSString, NSValue};
+use objc2::runtime::{AnyObject, Sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_foundation::{NSNotification, NSNumber, NSObject, NSObjectProtocol, NSString, NSValue};
 use objc2_ui_kit::{
     UICoordinateSpace, UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
-    UIKeyboardFrameEndUserInfoKey, UIScrollView, UITextFieldTextDidBeginEditingNotification,
-    UITextViewTextDidBeginEditingNotification, UIView, UIViewAnimationOptions, UIWindow,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIScrollView,
+    UITextFieldTextDidBeginEditingNotification, UITextViewTextDidBeginEditingNotification, UIView,
+    UIViewAnimationOptions, UIWindow,
 };
 
 use crate::notification::{NotificationName, NotificationObserver, observe_with_notification};
+use crate::uikit::host_view::HostView;
 
 /// The frame and animation a keyboard notification reports, resolved
 /// into the window's coordinate space.
@@ -70,7 +84,7 @@ fn user_info(note: &NSNotification, key: &'static NSString) -> Option<Retained<A
 /// # Panics
 ///
 /// When `notification` is not a `UIKeyboardWillChangeFrameNotification` —
-/// the owner registers it on that one name, so a missing frame end,
+/// the region registers it on that one name, so a missing frame end,
 /// duration or curve is a caller bug, not an event to skip.
 #[must_use]
 pub fn change(notification: &NSNotification, window: &UIWindow) -> KeyboardChange {
@@ -109,110 +123,234 @@ pub fn change(notification: &NSNotification, window: &UIWindow) -> KeyboardChang
     }
 }
 
-/// Whether `candidate` currently tracks the keyboard for its window —
-/// `cocoaUiTracksKeyboard` is `true` only while a window owner (a kit
-/// host view) holds live observers.
-pub(crate) fn is_tracking(candidate: &UIView) -> bool {
-    candidate.respondsToSelector(sel!(cocoaUiTracksKeyboard))
-        // SAFETY: only kit classes declare the selector, as a `bool`
-        // report of live keyboard tracking.
-        && unsafe { msg_send![candidate, cocoaUiTracksKeyboard] }
+/// The state one window's keyboard region holds.
+#[derive(Default, Debug)]
+pub struct KeyboardRegionIvars {
+    /// The keyboard's end frame in the window's coordinates —
+    /// `CGRect::ZERO` while no keyboard shows.
+    frame: Cell<CGRect>,
+    /// The animation the last notification reported — what a follow-up
+    /// animation (a focused field scrolling clear) adopts.
+    duration: Cell<f64>,
+    /// The window the region belongs to — weak, since the window owns
+    /// the region through its associated object.
+    window: OnceCell<Weak<UIWindow>>,
+    /// The keyboard notification observation — `WillChangeFrame` alone
+    /// carries every transition: show, hide and resize post it alongside
+    /// their semantic notifications.
+    observers: RefCell<Vec<NotificationObserver>>,
 }
 
-/// The `(frame, duration)` a tracking owner reports.
-///
-/// # Safety
-///
-/// `owner` must answer `true` to [`is_tracking`] — kit classes declare
-/// both selectors as a `CGRect` frame and an `NSTimeInterval` duration.
-unsafe fn read_tracked(owner: &UIView) -> (CGRect, f64) {
-    // SAFETY: see the caller contract above.
-    unsafe {
-        (
-            msg_send![owner, cocoaUiKeyboardFrame],
-            msg_send![owner, cocoaUiKeyboardDuration],
-        )
+define_class!(
+    // SAFETY: `NSObject` has no subclassing requirements; the class
+    // holds value cells and an observer token and does not implement
+    // `Drop`.
+    #[unsafe(super(NSObject))]
+    #[name = "CocoaUiKeyboardRegion"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = KeyboardRegionIvars]
+    /// One window's keyboard region: the frame `UIKit` last reported and
+    /// the animation it played, shared by every `WaterUI` host in the
+    /// window. Created lazily by [`region_for`] and retained by the
+    /// window as an associated object.
+    pub struct KeyboardRegion;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
+    unsafe impl NSObjectProtocol for KeyboardRegion {}
+);
+
+impl KeyboardRegion {
+    /// A fresh region for `window` with the keyboard observation live.
+    fn new(mtm: MainThreadMarker, window: &UIWindow) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(KeyboardRegionIvars::default());
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+        this.ivars()
+            .window
+            .set(Weak::new(window))
+            .expect("a fresh region has no window yet");
+        let weak = Weak::new(&*this);
+        // SAFETY: `UIKit` exports the notification name as a constant for
+        // the process's lifetime.
+        let observer = observe_with_notification(
+            mtm,
+            &NotificationName::framework(unsafe { UIKeyboardWillChangeFrameNotification }),
+            move |note| {
+                if let Some(region) = weak.load() {
+                    region.apply(note);
+                }
+            },
+        );
+        this.ivars().observers.borrow_mut().push(observer);
+        this
+    }
+
+    /// The keyboard's end frame in the window's coordinates —
+    /// `CGRect::ZERO` until the first notification.
+    #[must_use]
+    pub fn frame(&self) -> CGRect {
+        self.ivars().frame.get()
+    }
+
+    /// The animation duration the last keyboard notification reported.
+    #[must_use]
+    pub fn duration(&self) -> f64 {
+        self.ivars().duration.get()
+    }
+
+    /// Applies a keyboard notification: stores the change and relayouts
+    /// the window inside the notification's own animation — the same
+    /// `UIView` animation parameters a consumer mirrors, so every region
+    /// reader lands its new frame with the keyboard's motion.
+    fn apply(&self, note: &NSNotification) {
+        let Some(window) = self.ivars().window.get().and_then(Weak::load) else {
+            return;
+        };
+        let change = change(note, &window);
+        let block = RcBlock::new({
+            let region: Retained<Self> = Retained::from(self);
+            let window: Retained<UIWindow> = window;
+            move || {
+                region.ivars().frame.set(change.frame);
+                region.ivars().duration.set(change.duration);
+                mark_region_readers(&window);
+                window.layoutIfNeeded();
+            }
+        });
+        UIView::animateWithDuration_delay_options_animations_completion(
+            change.duration,
+            0.0,
+            change.options,
+            &block,
+            None,
+            self.mtm(),
+        );
     }
 }
 
-/// The view owning the keyboard state for `view`'s window.
-///
-/// The window root when it tracks, or the nearest strict ancestor of
-/// `view` that does — a kit view inside a window whose root is foreign
-/// still finds the embedded host view that took tracking. `view` itself
-/// answers last, for the tracker asking about itself.
-///
-/// Ownership never depends on the order `didMoveToWindow` visits a
-/// subtree: a host arriving above an already-tracking subtree adopts the
-/// earlier tracker's state and takes the ownership over, so the answer
-/// is the same whatever order the two attached in. `None` while `view`
-/// is outside any window, or when nothing in it tracks.
-#[must_use]
-pub fn tracker_for(view: &UIView) -> Option<Retained<UIView>> {
-    let window = view.window()?;
-    if let Some(root) = window.rootViewController().and_then(|c| c.view())
-        && is_tracking(&root)
-    {
-        return Some(root);
-    }
-    let mut current = view.superview();
-    while let Some(candidate) = current {
-        if is_tracking(&candidate) {
-            return Some(candidate);
-        }
-        current = candidate.superview();
-    }
-    is_tracking(view).then(|| Retained::from(view))
+/// The associated-object key under `window` — a registered selector
+/// string, the same storage key idiom `dynamic_range` uses.
+fn association_key() -> *const c_void {
+    let selector = Sel::register(c"dev.cocoaui.keyboardRegion");
+    // SAFETY: `Sel` is `repr(transparent)` over the selector pointer the
+    // associated-object API expects as the key.
+    unsafe { core::mem::transmute::<Sel, *const c_void>(selector) }
 }
 
-/// The keyboard's window-space frame and last animation duration the
-/// window's keyboard owner tracks for `view`. `None` while `view` is
-/// outside any window, where there is no keyboard to see.
+/// The keyboard region attached to `window`, created and associated on
+/// first lookup.
+///
+/// Laziness is the contract: the first `WaterUI` view to reach a window
+/// brings the region into existence, so it answers from the first
+/// notification after that — and a second call answers the same object.
 ///
 /// # Panics
 ///
-/// When `view` is in a window but no tracker exists — the root does not
-/// track and no ancestor host view does either. Every kit-mounted tree
-/// owns one (the window root, or the outermost `HostView` under a foreign
-/// root), so reaching this means a subtree was attached without any kit
-/// host.
+/// Off the main thread — the region is a main-thread object, like the
+/// window it attaches to.
+#[must_use]
+pub fn region_for(window: &UIWindow) -> Retained<KeyboardRegion> {
+    // SAFETY: `window` is a live object on the main thread; the returned
+    // pointer is only borrowed for this lookup.
+    let existing = unsafe {
+        objc_getAssociatedObject(
+            core::ptr::from_ref::<UIWindow>(window).cast::<AnyObject>(),
+            association_key(),
+        )
+    };
+    if !existing.is_null() {
+        // SAFETY: `region_for` writes only `KeyboardRegion` instances
+        // under this key, and the association retains them.
+        return unsafe { Retained::retain(existing.cast_mut().cast::<KeyboardRegion>()) }
+            .expect("the window's associated region is a live object");
+    }
+    let mtm =
+        MainThreadMarker::new().expect("a window's keyboard region attaches on the main thread");
+    let region = KeyboardRegion::new(mtm, window);
+    // SAFETY: `window` and `region` are live objects on the main thread;
+    // the runtime retains `region` for the association's lifetime.
+    unsafe {
+        objc_setAssociatedObject(
+            core::ptr::from_ref::<UIWindow>(window)
+                .cast_mut()
+                .cast::<AnyObject>(),
+            association_key(),
+            Retained::as_ptr(&region).cast_mut().cast::<AnyObject>(),
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC,
+        );
+    }
+    region
+}
+
+/// The keyboard state `view`'s window reports: the frame in window
+/// coordinates and the last animation's duration. `None` while `view`
+/// sits outside any window, where there is no keyboard to see.
 #[must_use]
 pub fn window_keyboard(view: &UIView) -> Option<(CGRect, f64)> {
-    view.window()?;
-    let owner = tracker_for(view).expect(
-        "no keyboard tracking is live in this window: the window root does \
-         not answer `cocoaUiTracksKeyboard` and no ancestor of the view \
-         tracks — kit content laid out in a window must sit under a kit \
-         host view that took tracking in `didMoveToWindow`",
-    );
-    // SAFETY: `owner` reports live tracking.
-    Some(unsafe { read_tracked(&owner) })
+    let window = view.window()?;
+    let region = region_for(&window);
+    Some((region.frame(), region.duration()))
+}
+
+/// Marks every region reader in `view`'s subtree for the layout pass a
+/// keyboard region change drives: every kit `HostView` that runs a
+/// layout handler — its children's placement reads the boundaries
+/// through the sibling backend's region context — and every kit scroll
+/// surface, whose content insets do. The region object starts the walk
+/// at the window, once per notification, so readers presented outside a
+/// content owner's subtree — a menu panel's `HostView` and scroll
+/// surface — are reached too. The walk descends through the foreign
+/// containers `UIKit` interposes (transition, container and wrapper
+/// views inside navigation and tab controllers), which never run kit
+/// `layoutSubviews`; a scroll surface's own subtree is not walked — it
+/// owns the safe-area contract inside itself and nothing under it reads
+/// the regions.
+fn mark_region_readers(view: &UIView) {
+    if crate::view::is_scroll_surface(view) {
+        // SAFETY: every view answering `cocoaUiIsScrollSurface` is a kit
+        // surface, which also implements `cocoaUiMarkKeyboard`.
+        let _: () = unsafe { msg_send![view, cocoaUiMarkKeyboard] };
+        return;
+    }
+    if let Some(host) = view.downcast_ref::<HostView>()
+        && host.has_layout_handler()
+    {
+        view.setNeedsLayout();
+    }
+    for subview in &view.subviews() {
+        mark_region_readers(&subview);
+    }
 }
 
 /// A scroll surface's keyboard state (layout-spec §7.1 "scroll
 /// surfaces").
 ///
 /// The surface's own layout pass recomputes the depth the keyboard band
-/// covers inside its window frame — from the frame the window's keyboard
-/// owner tracks — and that depth, beyond the `safeAreaInsets` the band
-/// already carries, becomes the bottom content inset so the content's
-/// tail scrolls up clear of the keyboard region. Recomputing inside the
-/// layout pass means the inset follows the surface's frame however it
-/// changes — a window move, a resize, a sibling growing — not only a
-/// notification, and it moves the inset by the delta rather than
+/// covers inside its window frame — from the window's keyboard region —
+/// when the pass was marked by a notification or the surface's bounds
+/// size changed; a pass re-run by anything else — a content-offset
+/// change, a same-size move — recomputes nothing. The depth, beyond the
+/// `safeAreaInsets` the band already carries, becomes the bottom content
+/// inset, shifted by the delta from the last applied value rather than
 /// overwriting any other `contentInset.bottom` contribution.
 ///
 /// A text field gaining focus while the keyboard is up is scrolled the
 /// minimum distance that brings its frame clear.
 ///
 /// `ScrollView` and `TableView` hold one in their ivars and rebind its
-/// focus observer as they move between windows — owned state, never
+/// focus observers as they move between windows — owned state, never
 /// global.
 pub struct KeyboardTracking {
     /// The keyboard contribution the last pass wrote into
     /// `contentInset.bottom` — kept so the next pass shifts the inset by
     /// the delta instead of clobbering other bottom-inset terms.
     applied_inset: Cell<f64>,
+    /// The bounds size the last contribution computed against — a
+    /// resize re-derives the covered band with no notification at all.
+    applied_size: Cell<CGSize>,
+    /// The mark the window's notification walk left — the next pass
+    /// recomputes whatever the size did.
+    marked: Cell<bool>,
     /// The text-editing focus observers, live while the surface sits in
     /// a window.
     observers: RefCell<Vec<NotificationObserver>>,
@@ -231,13 +369,21 @@ impl Default for KeyboardTracking {
 }
 
 impl KeyboardTracking {
-    /// An idle tracker: no observers, nothing applied yet.
+    /// An idle tracking state: no observers, nothing applied yet.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             applied_inset: Cell::new(0.0),
+            applied_size: Cell::new(CGSize::ZERO),
+            marked: Cell::new(false),
             observers: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The window's notification walk marked the surface — the next
+    /// layout pass recomputes the keyboard contribution.
+    pub fn mark(&self) {
+        self.marked.set(true);
     }
 
     /// Drops the observers: the surface left its window, or its handlers
@@ -251,8 +397,8 @@ impl KeyboardTracking {
     /// after [`Self::clear`], so a surface that moves windows never
     /// holds two sets of registrations. Installs only the text-editing
     /// focus observers: the keyboard frame itself comes from the
-    /// window's tracking owner at layout time (`window_keyboard`), and
-    /// the owner's notification already drives the layout passes that
+    /// window's region object at layout time (`window_keyboard`), and
+    /// the region's notification already drives the layout passes that
     /// re-read it, so a surface needs no observer of its own.
     pub fn attach(&self, scroll: &UIScrollView, mtm: MainThreadMarker) {
         let mut observers = self.observers.borrow_mut();
@@ -278,19 +424,26 @@ impl KeyboardTracking {
     }
 
     /// Recomputes the keyboard contribution in `scroll`'s own layout
-    /// pass: the covered band depth becomes the bottom content inset —
-    /// shifted by the delta from the last pass so other
-    /// `contentInset.bottom` terms survive. The focused field is
-    /// scrolled clear only when the contribution itself grows; a pass
-    /// that re-runs because the user scrolled must leave the offset
-    /// alone.
+    /// pass — only when the window's notification marked the surface or
+    /// its bounds size changed; a pass `UIKit` runs for any other
+    /// reason (a content-offset change) recomputes nothing. The covered
+    /// band depth becomes the bottom content inset — shifted by the
+    /// delta from the last applied value so other `contentInset.bottom`
+    /// terms survive. The focused field is scrolled clear only when the
+    /// contribution itself grows; a pass that re-runs because the user
+    /// scrolled must leave the offset alone.
     pub fn apply_layout(&self, scroll: &UIScrollView) {
+        let size = scroll.bounds().size;
+        if !self.marked.replace(false) && self.applied_size.get() == size {
+            return;
+        }
         let contribution = if Self::nested_in_scroll(scroll) {
             0.0
         } else {
             Self::keyboard_cover(scroll)
         };
         let previous = self.applied_inset.replace(contribution);
+        self.applied_size.set(size);
         if (contribution - previous).abs() > f64::EPSILON {
             let mut inset = scroll.contentInset();
             inset.bottom += contribution - previous;

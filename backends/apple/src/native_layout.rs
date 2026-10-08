@@ -9,12 +9,13 @@
 //! content by them. `docs/layout-spec.md` §7.1 is the normative contract.
 //!
 //! `UIKit` reports the container region through `safeAreaInsets`. The
-//! keyboard region is geometric: the window's keyboard owner tracks the
-//! keyboard's frame from `UIKit`'s keyboard notifications
-//! (`cocoaUiKeyboardFrame`) and the inset a view measures is the depth of
-//! that rect inside the view's own window frame, on the edges the rect
-//! covers. A scroll surface owns the safe-area contract for its whole
-//! subtree, so inside one the regions read zero.
+//! keyboard region is geometric: the window's `KeyboardRegion` object —
+//! one per `UIWindow`, shared by every host — tracks the keyboard's
+//! frame from `UIKit`'s keyboard notifications, and the inset a view
+//! measures is the depth of that rect inside the view's own window
+//! frame, on the edges the rect covers. A scroll surface owns the
+//! safe-area contract for its whole subtree, so inside one the regions
+//! read zero.
 //!
 //! Ignored regions accumulate down the view tree as a mask — bits 0–3 the
 //! container `Edges` mask, bits 4–7 the keyboard `Edges` mask — that a
@@ -119,9 +120,9 @@ fn window_frame(view: &PlatformView) -> CGRect {
 }
 
 /// The keyboard's frame in the view's window coordinates — the frame the
-/// window's keyboard owner tracks (`keyboard::window_keyboard` finds the
-/// owner and panics when a windowed view has none). `CGRect::ZERO` only
-/// while the view is outside any window, where there is no keyboard.
+/// window's `KeyboardRegion` holds (`keyboard::window_keyboard` reads it).
+/// `CGRect::ZERO` only while the view is outside any window, where there
+/// is no keyboard.
 #[cfg(target_os = "ios")]
 fn keyboard_rect(view: &PlatformView) -> CGRect {
     cocoa_ui::uikit::keyboard::window_keyboard(view).map_or(CGRect::ZERO, |(frame, _)| frame)
@@ -580,9 +581,14 @@ impl<'a> LayoutContext<'a> {
     /// The frame the host hands its single content view: the bounds when
     /// the content manages its own safe area — an ignorer's bounds still
     /// released only as far as its accumulated declaration reaches — the
-    /// safe-area rect otherwise.
+    /// safe-area rect otherwise. Inside a scroll surface the surface owns
+    /// the subtree's safe-area contract, so the content frame is the
+    /// plain `safe_rect` — the bounds — with no region release.
     #[must_use]
     pub fn content_frame(&self, content: &PlatformView) -> Rect {
+        if self.inside_scroll {
+            return self.safe_rect();
+        }
         if is_ignorer(content) {
             let covered = self.child_covered(content);
             let released = fold_released(&self.chain, &self.window, &covered, self.tolerance);

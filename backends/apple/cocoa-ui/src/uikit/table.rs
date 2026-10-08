@@ -153,7 +153,7 @@ pub struct TableViewIvars {
     flight: Rc<ScrollFlight>,
     /// The keyboard tracking (§7.1 scroll surfaces): the covered band's
     /// depth becomes the bottom content inset in the surface's own layout
-    /// pass, read from the window's keyboard owner; the focus observers
+    /// pass, read from the window's keyboard region; the focus observers
     /// scroll a focused field clear of the keyboard region.
     keyboard: Rc<KeyboardTracking>,
 }
@@ -460,13 +460,17 @@ define_class!(
                 self.ivars().keyboard.clear();
                 if self.window().is_some() {
                     self.ivars().keyboard.attach(self, self.mtm());
+                    // Re-entering a window whose keyboard moved while the
+                    // view was out of the tree — a popped page's surface —
+                    // recomputes the contribution on the next pass.
+                    self.ivars().keyboard.mark();
                 }
             });
         }
 
         /// Keeps `UIKit`'s layout — cells and separators — then
         /// recomputes the keyboard inset and the focused-field clearance
-        /// from the window owner's tracked keyboard frame (§7.1).
+        /// from the window's keyboard region (§7.1).
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
             guarded("TableView layoutSubviews", || {
@@ -474,6 +478,16 @@ define_class!(
                 let _: () = unsafe { msg_send![super(self), layoutSubviews] };
                 self.ivars().keyboard.apply_layout(self);
             });
+        }
+
+        /// The window's keyboard notification marked this surface — the
+        /// next layout pass recomputes the keyboard contribution, and
+        /// the mark itself queues that pass.
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(cocoaUiMarkKeyboard))]
+        fn mark_keyboard(&self) {
+            self.ivars().keyboard.mark();
+            self.setNeedsLayout();
         }
 
         /// The kit scroll-surface marker — only `ScrollView` and

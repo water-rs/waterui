@@ -49,7 +49,7 @@ pub struct ScrollViewIvars {
     flight: Rc<ScrollFlight>,
     /// The keyboard tracking (§7.1 scroll surfaces): the covered band's
     /// depth becomes the bottom content inset in the surface's own layout
-    /// pass, read from the window's keyboard owner; the focus observers
+    /// pass, read from the window's keyboard region; the focus observers
     /// scroll a focused field clear of the keyboard region.
     keyboard: Rc<KeyboardTracking>,
 }
@@ -114,7 +114,7 @@ define_class!(
     impl ScrollView {
         /// A view that moves to another window or leaves its window lands
         /// the flight it was running — a parked flight's clock ticks only
-        /// for the window it armed on. The keyboard observers follow the
+        /// for the window it armed on. The focus observers follow the
         /// window: installed once the view has one, dropped when it leaves
         /// one.
         #[unsafe(method(didMoveToWindow))]
@@ -126,6 +126,10 @@ define_class!(
                 self.ivars().keyboard.clear();
                 if self.window().is_some() {
                     self.ivars().keyboard.attach(self, self.mtm());
+                    // Re-entering a window whose keyboard moved while the
+                    // view was out of the tree — a popped page's surface —
+                    // recomputes the contribution on the next pass.
+                    self.ivars().keyboard.mark();
                 }
             });
         }
@@ -144,11 +148,21 @@ define_class!(
                     handler(self);
                 }
                 // The keyboard inset and the focused-field clearance are
-                // layout work: they recompute from the window owner's
-                // tracked keyboard frame on every pass, so they follow
-                // the surface's frame however it moves (§7.1).
+                // layout work: they recompute from the window's keyboard
+                // region when a notification marked the pass or the
+                // surface's size changed (§7.1).
                 self.ivars().keyboard.apply_layout(self);
             });
+        }
+
+        /// The window's keyboard notification marked this surface — the
+        /// next layout pass recomputes the keyboard contribution, and
+        /// the mark itself queues that pass.
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(cocoaUiMarkKeyboard))]
+        fn mark_keyboard(&self) {
+            self.ivars().keyboard.mark();
+            self.setNeedsLayout();
         }
 
         /// The kit scroll-surface marker — only `ScrollView` and

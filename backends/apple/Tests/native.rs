@@ -2829,8 +2829,9 @@ mod controller_bounds {
 }
 
 /// §7.1's two safe-area regions on `UIKit`: the container region
-/// `safeAreaInsets` reports and the keyboard region `track_keyboard`
-/// derives from the real `UIKeyboard` notifications. Hydrolysis's
+/// `safeAreaInsets` reports and the keyboard region the window's
+/// `KeyboardRegion` object derives from the real `UIKeyboard`
+/// notifications. Hydrolysis's
 /// `tests/safe_area.rs` is the reference — these trials mount the same
 /// view shapes through `mount_uikit` and assert laid-out frames, content
 /// insets and scroll offsets, never pixels.
@@ -2843,10 +2844,13 @@ mod safe_area {
     use cocoa_ui::objc2_ui_kit::{
         UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
         UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
-        UIKeyboardWillHideNotification, UIKeyboardWillShowNotification, UINavigationBar, UITabBar,
-        UITextView,
+        UIKeyboardWillHideNotification, UIKeyboardWillShowNotification, UINavigationBar,
+        UINavigationController, UIScrollView, UITabBar, UITextView,
     };
-    use cocoa_ui::uikit::{ColorView, Label, ScrollView, TableView, TextField};
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::{
+        ColorView, Label, NavContentController, ScrollView, TableView, TextField, keyboard,
+    };
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadOnly, msg_send};
@@ -2868,281 +2872,251 @@ mod safe_area {
 
     use super::mtm;
 
-    /// The `safe_area::` trials.
-    pub fn trials() -> Vec<libtest_mimic::Trial> {
+    /// One `safe_area::` trial entry.
+    fn t(name: &'static str, body: fn()) -> libtest_mimic::Trial {
+        libtest_mimic::Trial::test(format!("safe_area::{name}"), move || {
+            body();
+            Ok(())
+        })
+    }
+
+    /// The container-region and `IgnoreSafeArea` declaration trials.
+    fn container_trials() -> Vec<libtest_mimic::Trial> {
         vec![
-            libtest_mimic::Trial::test(
-                "safe_area::root_content_stays_inside_the_safe_area",
-                || {
-                    root_content_stays_inside_the_safe_area();
-                    Ok(())
-                },
+            t(
+                "root_content_stays_inside_the_safe_area",
+                root_content_stays_inside_the_safe_area,
             ),
-            libtest_mimic::Trial::test(
-                "safe_area::ignore_safe_area_all_reaches_the_window_origin",
-                || {
-                    ignore_safe_area_all_reaches_the_window_origin();
-                    Ok(())
-                },
+            t(
+                "ignore_safe_area_all_reaches_the_window_origin",
+                ignore_safe_area_all_reaches_the_window_origin,
             ),
-            libtest_mimic::Trial::test(
-                "safe_area::ignore_safe_area_releases_only_the_flagged_edges",
-                || {
-                    ignore_safe_area_releases_only_the_flagged_edges();
-                    Ok(())
-                },
+            t(
+                "ignore_safe_area_releases_only_the_flagged_edges",
+                ignore_safe_area_releases_only_the_flagged_edges,
             ),
-            libtest_mimic::Trial::test(
-                "safe_area::an_ignore_releases_only_on_an_edge_the_frame_touches",
-                || {
-                    an_ignore_releases_only_on_an_edge_the_frame_touches();
-                    Ok(())
-                },
+            t(
+                "an_ignore_releases_only_on_an_edge_the_frame_touches",
+                an_ignore_releases_only_on_an_edge_the_frame_touches,
             ),
-            libtest_mimic::Trial::test("safe_area::a_safe_area_change_relays_out_the_root", || {
-                a_safe_area_change_relays_out_the_root();
-                Ok(())
-            }),
-            libtest_mimic::Trial::test(
-                "safe_area::ignoring_only_the_keyboard_region_keeps_the_container_inset",
-                || {
-                    ignoring_only_the_keyboard_region_keeps_the_container_inset();
-                    Ok(())
-                },
+            t(
+                "a_safe_area_change_relays_out_the_root",
+                a_safe_area_change_relays_out_the_root,
             ),
-            libtest_mimic::Trial::test(
-                "safe_area::ignoring_only_the_container_region_releases_nothing_under_the_keyboard",
-                || {
-                    ignoring_only_the_container_region_releases_nothing_under_the_keyboard();
-                    Ok(())
-                },
+            t(
+                "ignoring_only_the_keyboard_region_keeps_the_container_inset",
+                ignoring_only_the_keyboard_region_keeps_the_container_inset,
             ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_fractional_keyboard_still_touches_the_boundary",
-                || {
-                    a_fractional_keyboard_still_touches_the_boundary();
-                    Ok(())
-                },
+            t(
+                "ignoring_only_the_container_region_releases_nothing_under_the_keyboard",
+                ignoring_only_the_container_region_releases_nothing_under_the_keyboard,
             ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_fill_background_paints_under_the_keyboard_region",
-                || {
-                    a_fill_background_paints_under_the_keyboard_region();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test("safe_area::a_fill_inside_opacity_still_extends", || {
-                a_fill_inside_opacity_still_extends();
-                Ok(())
-            }),
-            libtest_mimic::Trial::test(
-                "safe_area::a_fill_with_an_empty_ignore_extends_nowhere",
-                || {
-                    a_fill_with_an_empty_ignore_extends_nowhere();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_fill_ignore_names_the_only_edge_that_extends",
-                || {
-                    a_fill_ignore_names_the_only_edge_that_extends();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::non_fill_leaves_at_an_edge_do_not_extend",
-                || {
-                    non_fill_leaves_at_an_edge_do_not_extend();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_non_fill_background_stays_inside_the_keyboard_region",
-                || {
-                    a_non_fill_background_stays_inside_the_keyboard_region();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom",
-                || {
-                    a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard",
-                || {
-                    a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_keyboard_inset_change_clears_the_field_on_that_frame",
-                || {
-                    a_keyboard_inset_change_clears_the_field_on_that_frame();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_field_in_a_nested_scroll_is_cleared_once",
-                || {
-                    a_field_in_a_nested_scroll_is_cleared_once();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_focused_field_clears_to_the_surface_frame_above_a_toolbar",
-                || {
-                    a_focused_field_clears_to_the_surface_frame_above_a_toolbar();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_list_row_field_scrolls_clear_of_the_keyboard",
-                || {
-                    a_list_row_field_scrolls_clear_of_the_keyboard();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_tab_bar_stays_docked_under_the_keyboard",
-                || {
-                    a_tab_bar_stays_docked_under_the_keyboard();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_navigation_page_without_a_bar_passes_the_edge_through",
-                || {
-                    a_navigation_page_without_a_bar_passes_the_edge_through();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_navigation_page_touching_the_bottom_still_extends_its_fill",
-                || {
-                    a_navigation_page_touching_the_bottom_still_extends_its_fill();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::an_ignore_top_inside_navigation_content_stays_below_the_bar",
-                || {
-                    an_ignore_top_inside_navigation_content_stays_below_the_bar();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_navigation_page_background_stays_below_the_bar",
-                || {
-                    a_navigation_page_background_stays_below_the_bar();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_navigation_bottom_toolbar_stays_docked_under_the_keyboard",
-                || {
-                    a_navigation_bottom_toolbar_stays_docked_under_the_keyboard();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar",
-                || {
-                    a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_fixed_height_tabs_inside_tab_content_docks_its_own_bar",
-                || {
-                    a_fixed_height_tabs_inside_tab_content_docks_its_own_bar();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_form_inside_navigation_content_clears_the_focused_field",
-                || {
-                    a_form_inside_navigation_content_clears_the_focused_field();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard",
-                || {
-                    a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_scroll_above_a_composer_keeps_a_zero_keyboard_inset",
-                || {
-                    a_scroll_above_a_composer_keeps_a_zero_keyboard_inset();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_text_view_inside_the_tree_is_not_a_scroll_surface",
-                || {
-                    a_text_view_inside_the_tree_is_not_a_scroll_surface();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_moving_container_re_extends_its_fill_to_each_region_boundary",
-                || {
-                    a_moving_container_re_extends_its_fill_to_each_region_boundary();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass",
-                || {
-                    a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass();
-                    Ok(())
-                },
-            ),
-            libtest_mimic::Trial::test(
-                "safe_area::an_embedded_host_tracks_the_keyboard_in_either_mount_order",
-                || {
-                    an_embedded_host_tracks_the_keyboard_in_either_mount_order();
-                    Ok(())
-                },
+            t(
+                "a_fractional_keyboard_still_touches_the_boundary",
+                a_fractional_keyboard_still_touches_the_boundary,
             ),
         ]
     }
 
-    /// The window every trial mounts into — the `iPhone 17` frame the
-    /// layout-spec's worked examples use.
-    const WINDOW_FRAME: cocoa_ui::Rect = cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0);
+    /// The background-slot fill extension trials.
+    fn fill_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            t(
+                "a_fill_background_paints_under_the_keyboard_region",
+                a_fill_background_paints_under_the_keyboard_region,
+            ),
+            t(
+                "a_fill_inside_opacity_still_extends",
+                a_fill_inside_opacity_still_extends,
+            ),
+            t(
+                "a_fill_with_an_empty_ignore_extends_nowhere",
+                a_fill_with_an_empty_ignore_extends_nowhere,
+            ),
+            t(
+                "a_fill_ignore_names_the_only_edge_that_extends",
+                a_fill_ignore_names_the_only_edge_that_extends,
+            ),
+            t(
+                "non_fill_leaves_at_an_edge_do_not_extend",
+                non_fill_leaves_at_an_edge_do_not_extend,
+            ),
+            t(
+                "a_non_fill_background_stays_inside_the_keyboard_region",
+                a_non_fill_background_stays_inside_the_keyboard_region,
+            ),
+            t(
+                "a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom",
+                a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom,
+            ),
+            t(
+                "a_moving_container_re_extends_its_fill_to_each_region_boundary",
+                a_moving_container_re_extends_its_fill_to_each_region_boundary,
+            ),
+            t(
+                "a_navigation_page_touching_the_bottom_still_extends_its_fill",
+                a_navigation_page_touching_the_bottom_still_extends_its_fill,
+            ),
+            t(
+                "a_navigation_page_background_stays_below_the_bar",
+                a_navigation_page_background_stays_below_the_bar,
+            ),
+            t(
+                "an_ignore_top_inside_navigation_content_stays_below_the_bar",
+                an_ignore_top_inside_navigation_content_stays_below_the_bar,
+            ),
+        ]
+    }
 
-    /// The end frame a keyboard occupying the bottom 336 points reports —
-    /// screen coordinates, the whole screen width.
-    const KEYBOARD_END: CGRect = CGRect::new(
-        cocoa_ui::objc2_core_foundation::CGPoint::new(0.0, 508.0),
-        CGSize::new(390.0, 336.0),
-    );
+    /// The scroll-surface, focused-field and window-region trials.
+    fn scroll_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            t(
+                "a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard",
+                a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard,
+            ),
+            t(
+                "a_keyboard_inset_change_clears_the_field_on_that_frame",
+                a_keyboard_inset_change_clears_the_field_on_that_frame,
+            ),
+            t(
+                "a_field_in_a_nested_scroll_is_cleared_once",
+                a_field_in_a_nested_scroll_is_cleared_once,
+            ),
+            t(
+                "a_focused_field_clears_to_the_surface_frame_above_a_toolbar",
+                a_focused_field_clears_to_the_surface_frame_above_a_toolbar,
+            ),
+            t(
+                "a_list_row_field_scrolls_clear_of_the_keyboard",
+                a_list_row_field_scrolls_clear_of_the_keyboard,
+            ),
+            t(
+                "a_form_inside_navigation_content_clears_the_focused_field",
+                a_form_inside_navigation_content_clears_the_focused_field,
+            ),
+            t(
+                "a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard",
+                a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard,
+            ),
+            t(
+                "a_scroll_above_a_composer_keeps_a_zero_keyboard_inset",
+                a_scroll_above_a_composer_keeps_a_zero_keyboard_inset,
+            ),
+            t(
+                "a_text_view_inside_the_tree_is_not_a_scroll_surface",
+                a_text_view_inside_the_tree_is_not_a_scroll_surface,
+            ),
+            t(
+                "a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass",
+                a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass,
+            ),
+            t(
+                "nested_hosts_and_a_scroll_share_the_windows_keyboard_region",
+                nested_hosts_and_a_scroll_share_the_windows_keyboard_region,
+            ),
+            t(
+                "a_page_pushed_over_the_keyboard_returns_keyboard_free",
+                a_page_pushed_over_the_keyboard_returns_keyboard_free,
+            ),
+        ]
+    }
+
+    /// The chrome-docking trials under navigation and tab hosts.
+    fn chrome_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            t(
+                "a_tab_bar_stays_docked_under_the_keyboard",
+                a_tab_bar_stays_docked_under_the_keyboard,
+            ),
+            t(
+                "a_navigation_page_without_a_bar_passes_the_edge_through",
+                a_navigation_page_without_a_bar_passes_the_edge_through,
+            ),
+            t(
+                "a_navigation_bottom_toolbar_stays_docked_under_the_keyboard",
+                a_navigation_bottom_toolbar_stays_docked_under_the_keyboard,
+            ),
+            t(
+                "a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar",
+                a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar,
+            ),
+            t(
+                "a_fixed_height_tabs_inside_tab_content_docks_its_own_bar",
+                a_fixed_height_tabs_inside_tab_content_docks_its_own_bar,
+            ),
+        ]
+    }
+
+    /// The `safe_area::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        [
+            container_trials(),
+            fill_trials(),
+            scroll_trials(),
+            chrome_trials(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// The keyboard band's height — the layout-spec's worked examples
+    /// use 336 points — at the window's real screen width.
+    const KEYBOARD_HEIGHT: f64 = 336.0;
+
+    /// The end frame a keyboard `height` points tall reports against
+    /// `window`'s screen — screen coordinates, the whole screen width.
+    fn keyboard_end_sized(window: &cocoa_ui::objc2_ui_kit::UIWindow, height: f64) -> CGRect {
+        let screen = window.screen().bounds();
+        CGRect::new(
+            CGPoint::new(0.0, screen.size.height - height),
+            CGSize::new(screen.size.width, height),
+        )
+    }
+
+    /// The end frame a keyboard occupying the bottom `KEYBOARD_HEIGHT`
+    /// points reports.
+    fn keyboard_end(window: &cocoa_ui::objc2_ui_kit::UIWindow) -> CGRect {
+        keyboard_end_sized(window, KEYBOARD_HEIGHT)
+    }
 
     /// The end frame `UIKeyboardWillHideNotification` reports: the
     /// keyboard slid to just under the screen's bottom edge, overlapping
     /// the window not at all.
-    const KEYBOARD_HIDE_END: CGRect =
-        CGRect::new(CGPoint::new(0.0, 844.0), CGSize::new(390.0, 336.0));
+    fn keyboard_hide_end(window: &cocoa_ui::objc2_ui_kit::UIWindow) -> CGRect {
+        let screen = window.screen().bounds();
+        CGRect::new(
+            CGPoint::new(0.0, screen.size.height),
+            CGSize::new(screen.size.width, KEYBOARD_HEIGHT),
+        )
+    }
 
     /// Frame-comparison slack — within one point of the expected edge.
     const TOLERANCE: f64 = 1.0;
 
     /// Mounts `content` through the real embedding path and lays the
-    /// window out once. The window carries the iPhone 17's real
-    /// `safeAreaInsets` — the notch band above and the home-indicator
-    /// band below — so the covered chrome bands, the navigation bar's
-    /// band and the home indicator stay exercised by the container
-    /// region the window itself reports.
+    /// window out once. The window takes the screen's bounds, so it
+    /// carries the device's real `safeAreaInsets` — the notch band
+    /// above and the home-indicator band below — and the covered chrome
+    /// bands, the navigation bar's band and the home indicator stay
+    /// exercised by the container region the window itself reports.
+    ///
+    /// # Panics
+    ///
+    /// When the window never reports a nonzero top and bottom container
+    /// band — the device type the suite is pinned to must carry both.
     fn mount(content: impl View) -> UIKitMount {
         let env = render_environment();
-        let mount = mount_uikit(mtm(), AnyView::new(content), &env, WINDOW_FRAME);
-        mount.window.layoutIfNeeded();
+        let mount = mount_uikit(mtm(), AnyView::new(content), &env);
+        let bands = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            mount.host.safeAreaInsets().top > 0.0 && mount.host.safeAreaInsets().bottom > 0.0
+        });
+        assert!(
+            bands,
+            "the test window must report nonzero top and bottom container bands"
+        );
         mount
     }
 
@@ -3163,10 +3137,10 @@ mod safe_area {
     /// `Label` whose rendered string matches exactly.
     fn find_label(view: &PlatformView, text: &str) -> Option<Retained<PlatformView>> {
         for sub in view::subviews(view) {
-            if let Some(label) = sub.downcast_ref::<Label>() {
-                if label.text().map(|t| t.to_string()).as_deref() == Some(text) {
-                    return Some(sub);
-                }
+            if let Some(label) = sub.downcast_ref::<Label>()
+                && label.text().map(|t| t.to_string()).as_deref() == Some(text)
+            {
+                return Some(sub);
             }
             if let Some(found) = find_label(&sub, text) {
                 return Some(found);
@@ -3224,7 +3198,7 @@ mod safe_area {
     /// The keyboard region's top boundary — `window.height` once the
     /// keyboard is gone.
     fn keyboard_top(mount: &UIKitMount) -> f64 {
-        mount.host.keyboard_frame().origin.y
+        keyboard::region_for(&mount.window).frame().origin.y
     }
 
     /// The `userInfo` a real keyboard notification carries: the end frame
@@ -3234,18 +3208,26 @@ mod safe_area {
         let duration = NSNumber::new_f64(duration);
         let curve = NSNumber::new_i64(curve);
         let dict = NSDictionary::<NSString, AnyObject>::from_retained_objects(
-            // SAFETY: `UIKit` exports the three keys as `NSString`
-            // constants for the process's lifetime.
             &[
+                // SAFETY: `UIKit` exports the keys as `NSString`
+                // constants for the process's lifetime.
                 unsafe { UIKeyboardFrameEndUserInfoKey },
+                // SAFETY: `UIKit` exports the keys as `NSString`
+                // constants for the process's lifetime.
                 unsafe { UIKeyboardAnimationDurationUserInfoKey },
+                // SAFETY: `UIKit` exports the keys as `NSString`
+                // constants for the process's lifetime.
                 unsafe { UIKeyboardAnimationCurveUserInfoKey },
             ],
             &[
                 // SAFETY: every `NSObject` is an `AnyObject`; the cast
                 // only erases the concrete class.
                 unsafe { Retained::cast_unchecked::<AnyObject>(frame) },
+                // SAFETY: every `NSObject` is an `AnyObject`; the cast
+                // only erases the concrete class.
                 unsafe { Retained::cast_unchecked::<AnyObject>(duration) },
+                // SAFETY: every `NSObject` is an `AnyObject`; the cast
+                // only erases the concrete class.
                 unsafe { Retained::cast_unchecked::<AnyObject>(curve) },
             ],
         );
@@ -3260,16 +3242,10 @@ mod safe_area {
     /// `UIKit` posts for keyboard transitions.
     const KEYBOARD_ANIMATION: (f64, i64) = (0.25, 7);
 
-    /// Posts a keyboard `notification` with `end_frame` — the way `UIKit`
-    /// announces the keyboard, duration and curve included — and pumps
-    /// the main queue until the window root has applied it and relaid
-    /// out. `UIKit` posts `UIKeyboardWillChangeFrameNotification` for
-    /// every transition alongside the semantic name, so the helpers post
-    /// both when the semantic name is not the frame change itself.
     /// Posts a keyboard `notification` with `end_frame` into `window` —
     /// the way `UIKit` announces the keyboard, duration and curve
     /// included — and pumps the main queue until `applied` holds, the
-    /// tracked frame or laid-out geometry the caller waits on. `UIKit`
+    /// region frame or laid-out geometry the caller waits on. `UIKit`
     /// posts `UIKeyboardWillChangeFrameNotification` for every
     /// transition alongside the semantic name, so the post sends both
     /// when the semantic name is not the frame change itself.
@@ -3287,9 +3263,9 @@ mod safe_area {
         } else {
             &[name, frame_change]
         };
-        // SAFETY: a real keyboard notification — a name `UIKit` exports,
-        // the `userInfo` shape it documents.
         for notification in names {
+            // SAFETY: a real keyboard notification — a name `UIKit`
+            // exports, the `userInfo` shape it documents.
             unsafe {
                 NSNotificationCenter::defaultCenter().postNotificationName_object_userInfo(
                     notification,
@@ -3302,19 +3278,21 @@ mod safe_area {
             window.layoutIfNeeded();
             applied()
         });
-        assert!(landed, "the keyboard frame never reached its tracker");
+        assert!(landed, "the keyboard frame never reached its region");
     }
 
     /// Posts `notification` into `mount`'s window and pumps until the
     /// window root has applied the end frame.
     fn post_keyboard(mount: &UIKitMount, name: &'static NSString, end_frame: CGRect) {
         post_keyboard_raw(&mount.window, name, end_frame, || {
-            mount.host.keyboard_frame() == end_frame
+            keyboard::region_for(&mount.window).frame() == end_frame
         });
     }
 
-    /// Posts `UIKeyboardWillShowNotification` for `end_frame`.
-    fn show_keyboard(mount: &UIKitMount, end_frame: CGRect) {
+    /// Posts `UIKeyboardWillShowNotification` for the window's keyboard
+    /// end frame.
+    fn show_keyboard(mount: &UIKitMount) {
+        let end_frame = keyboard_end(&mount.window);
         // SAFETY: `UIKit` exports the name as a constant.
         post_keyboard(mount, unsafe { UIKeyboardWillShowNotification }, end_frame);
     }
@@ -3336,7 +3314,7 @@ mod safe_area {
         post_keyboard(
             mount,
             unsafe { UIKeyboardWillHideNotification },
-            KEYBOARD_HIDE_END,
+            keyboard_hide_end(&mount.window),
         );
     }
 
@@ -3464,7 +3442,7 @@ mod safe_area {
             hstack.frame(),
         );
 
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let chain_after: Vec<(CGRect, [CGSize; 3])> = std::iter::once(field_host.clone())
             .chain(std::iter::successors(field_host.superview(), |v| {
                 v.superview()
@@ -3608,7 +3586,7 @@ mod safe_area {
         let scroll_view = surface
             .downcast_ref::<ScrollView>()
             .expect("the found view is a scroll view");
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         assert!(
             window_bottom(&surface) <= keyboard_top(&mount) + TOLERANCE,
             "precondition: the scroll ends above the keyboard band — bottom {}, band top {}",
@@ -3643,10 +3621,12 @@ mod safe_area {
         // A raw `UITextView` wrapped around the surface, spanning the
         // window — a foreign `UIScrollView` the surface check must not
         // count as an enclosing scroll surface.
+        // SAFETY: `initWithFrame:` is `UITextView`'s designated
+        // initializer — a plain untracked text view.
         let text_view: Retained<UITextView> = unsafe {
             msg_send![
                 UITextView::alloc(mtm()),
-                initWithFrame: CGRect::new(CGPoint::ZERO, CGSize::new(390.0, 844.0))
+                initWithFrame: mount.window.bounds()
             ]
         };
         mount.host.addSubview(&text_view);
@@ -3661,7 +3641,7 @@ mod safe_area {
             !text_view.respondsToSelector(cocoa_ui::objc2::sel!(cocoaUiIsScrollSurface)),
             "a `UITextView` does not answer the kit scroll-surface marker",
         );
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let cover = window_bottom(&surface) - keyboard_top(&mount);
         let want = (cover - surface.safeAreaInsets().bottom).max(0.0);
         // The notification's own mark walk crosses the foreign parent —
@@ -3688,17 +3668,28 @@ mod safe_area {
                 .background(Color::new(Srgb::new(0.3, 0.5, 0.9))),
         )));
         let fill = find_view::<ColorView>(&mount.host).expect("the fill is mounted");
-        show_keyboard(&mount, KEYBOARD_END);
+        let window_bottom_edge = mount.window.bounds().size.height;
+        show_keyboard(&mount);
         expect_top(
             &fill,
             keyboard_top(&mount) - 48.0,
             "the fill follows the moved container to the keyboard band",
+        );
+        expect_bottom(
+            &fill,
+            window_bottom_edge,
+            "the fill still paints to the window's bottom edge",
         );
         hide_keyboard(&mount);
         expect_top(
             &fill,
             container_bottom(&mount) - 48.0,
             "the fill re-extends when the container moves back",
+        );
+        expect_bottom(
+            &fill,
+            window_bottom_edge,
+            "the fill still paints to the window's bottom edge",
         );
     }
 
@@ -3713,7 +3704,7 @@ mod safe_area {
             field("Message", &value).size(350.0, 44.0),
             spacer().size(390.0, 380.0),
         ))));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
         let scroll_view = surface
             .downcast_ref::<ScrollView>()
@@ -3735,31 +3726,138 @@ mod safe_area {
         );
     }
 
-    /// The keyboard owner binds in either mount order: an embedded host
-    /// joined to its container before the container reaches the window,
-    /// and one joined into an already-windowed container, both take
-    /// tracking — `didMoveToWindow` walks a subtree in an undocumented
-    /// order, so ownership resolves through `tracker_for`, never the
-    /// walk order.
-    fn an_embedded_host_tracks_the_keyboard_in_either_mount_order() {
-        for attach_first in [true, false] {
+    /// A window owns exactly one keyboard region however the host
+    /// reaches it: content carrying nested hosts — the page inside a
+    /// `NavigationStack` — and a scroll mounts into an embedded host
+    /// before and after the host joins the windowed tree; both orders
+    /// read the same region object and the scroll takes the same
+    /// inset.
+    fn nested_hosts_and_a_scroll_share_the_windows_keyboard_region() {
+        for content_first in [true, false] {
+            let value = binding(Str::from(""));
             let env = render_environment();
             let mount = mount_uikit_embedded(
                 mtm(),
-                AnyView::new(text("embedded")),
+                AnyView::new(NavigationStack::new(NavigationView::new(
+                    "Form",
+                    scroll(vstack((
+                        spacer().size(390.0, 560.0),
+                        field("Message", &value).size(350.0, 44.0),
+                        spacer().size(390.0, 380.0),
+                    ))),
+                ))),
                 &env,
-                WINDOW_FRAME,
-                attach_first,
+                content_first,
             );
             mount.window.layoutIfNeeded();
+            let end = keyboard_end(&mount.window);
+            // The window hands every reader the one region object —
+            // lazily created on first lookup, shared ever after.
+            let region = keyboard::region_for(&mount.window);
+            let again = keyboard::region_for(&mount.window);
+            assert!(
+                core::ptr::eq(Retained::as_ptr(&region), Retained::as_ptr(&again)),
+                "the window's keyboard region is a single object",
+            );
             post_keyboard_raw(
                 &mount.window,
                 // SAFETY: `UIKit` exports the name as a constant.
                 unsafe { UIKeyboardWillShowNotification },
-                KEYBOARD_END,
-                || mount.host.keyboard_frame() == KEYBOARD_END,
+                end,
+                || keyboard::region_for(&mount.window).frame() == end,
+            );
+            let surface =
+                find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+            let scroll_view = surface
+                .downcast_ref::<ScrollView>()
+                .expect("the found view is a scroll view");
+            let cover = window_bottom(&surface) - end.origin.y;
+            let want = (cover - surface.safeAreaInsets().bottom).max(0.0);
+            let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                mount.window.layoutIfNeeded();
+                (scroll_view.contentInset().bottom - want).abs() <= TOLERANCE
+            });
+            assert!(
+                landed,
+                "the scroll read the window's keyboard region — {} vs {want}",
+                scroll_view.contentInset().bottom,
             );
         }
+    }
+
+    /// The `UINavigationController` owning a view in the subtree —
+    /// either the view's own controller is the nav controller, or the
+    /// page controller answers one.
+    fn nav_controller_in(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// A page pushed over while the keyboard is up and hidden under
+    /// while it is away misses no change: on pop the field page's
+    /// scroll inset and its fill are back at the keyboard-free values
+    /// — the window's one region object marked every reader and the
+    /// re-entering views re-read it.
+    fn a_page_pushed_over_the_keyboard_returns_keyboard_free() {
+        let value = binding(Str::from(""));
+        let mount = mount(NavigationStack::new(NavigationView::new(
+            "Form",
+            scroll(vstack((
+                spacer().size(390.0, 560.0),
+                field("Message", &value).size(350.0, 44.0),
+                spacer().size(390.0, 380.0),
+            )))
+            .background(Color::new(Srgb::new(0.2, 0.4, 0.8))),
+        )));
+        let nav = nav_controller_in(&mount.host).expect("a stack mounts the nav controller");
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        let fill = find_view::<ColorView>(&mount.host).expect("the fill is mounted");
+        let free_inset = scroll_view.contentInset().bottom;
+
+        show_keyboard(&mount);
+        let covered = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            scroll_view.contentInset().bottom > free_inset + 1.0
+        });
+        assert!(covered, "precondition: the keyboard covers the scroll");
+
+        // A page hides the field's page; the keyboard goes away while
+        // the page is out of the visible stack.
+        let cover_scroll = UIScrollView::new(mtm());
+        let cover_page = NavContentController::new(mtm(), &cover_scroll);
+        nav.pushViewController_animated(&cover_page, false);
+        hide_keyboard(&mount);
+        nav.popViewControllerAnimated(false);
+
+        let restored = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            (scroll_view.contentInset().bottom - free_inset).abs() <= TOLERANCE
+        });
+        assert!(
+            restored,
+            "the returning page's scroll inset is keyboard-free — {} vs {free_inset}",
+            scroll_view.contentInset().bottom,
+        );
+        expect_bottom(
+            &fill,
+            mount.window.bounds().size.height,
+            "the returning page's fill re-extends to the window's bottom edge",
+        );
     }
 
     /// §7.1 "Layout avoids the regions": the root leaf's children lay
@@ -3784,7 +3882,7 @@ mod safe_area {
             "the stack's content clears the container bottom band",
         );
 
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         pump_until_bottom_on(&mount, spacer, keyboard_top(&mount));
     }
 
@@ -3796,8 +3894,8 @@ mod safe_area {
     fn ignore_safe_area_all_reaches_the_window_origin() {
         let released = mount(vstack((card("released"), spacer())).ignore_safe_area(EdgeSet::ALL));
         let plain = mount(vstack((card("plain"), spacer())));
-        show_keyboard(&released, KEYBOARD_END);
-        show_keyboard(&plain, KEYBOARD_END);
+        show_keyboard(&released);
+        show_keyboard(&plain);
         let bounds = released.window.bounds();
         let frame = window_frame(&leaf(&released));
         assert!(
@@ -3823,7 +3921,7 @@ mod safe_area {
     /// still stops at the keyboard region.
     fn ignore_safe_area_releases_only_the_flagged_edges() {
         let mount = mount(vstack((card("content"), spacer())).ignore_safe_area(EdgeSet::TOP));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let leaf = leaf(&mount);
         expect_top(
             &leaf,
@@ -3846,7 +3944,7 @@ mod safe_area {
             spacer(),
             card("plain"),
         )));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let probe = find_id(&mount.host, "top-edge").expect("the probe is mounted");
         expect_top(
             &probe,
@@ -3870,12 +3968,12 @@ mod safe_area {
         let spacer = children(&mount).swap_remove(1);
         expect_bottom(&spacer, container_bottom(&mount), "keyboard down");
 
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         expect_bottom(&spacer, keyboard_top(&mount), "keyboard shown");
 
-        let grown = CGRect::new(CGPoint::new(0.0, 444.0), CGSize::new(390.0, 400.0));
+        let grown = keyboard_end_sized(&mount.window, 400.0);
         change_keyboard(&mount, grown);
-        expect_bottom(&spacer, 444.0, "the grown band lifts the content");
+        expect_bottom(&spacer, grown.origin.y, "the grown band lifts the content");
 
         hide_keyboard(&mount);
         expect_bottom(&spacer, container_bottom(&mount), "keyboard hidden");
@@ -3897,7 +3995,7 @@ mod safe_area {
                 ),
             )),
         )));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let probe = find_id(&mount.host, "bottom-edge").expect("the probe is mounted");
         expect_bottom(
             &probe,
@@ -3921,7 +4019,7 @@ mod safe_area {
                 .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM)),
         );
         let leaf = leaf(&mount);
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         expect_bottom(
             &leaf,
             keyboard_top(&mount),
@@ -3941,11 +4039,16 @@ mod safe_area {
     fn a_fractional_keyboard_still_touches_the_boundary() {
         let mount = mount(vstack((card("content"), spacer())));
         let spacer = children(&mount).swap_remove(1);
-        change_keyboard(
-            &mount,
-            CGRect::new(CGPoint::new(0.0, 507.75), CGSize::new(390.0, 336.25)),
+        let fractional = CGRect::new(
+            CGPoint::new(0.0, mount.window.bounds().size.height - 336.25),
+            CGSize::new(mount.window.bounds().size.width, 336.25),
         );
-        expect_bottom(&spacer, 507.75, "the fractional band is the boundary");
+        change_keyboard(&mount, fractional);
+        expect_bottom(
+            &spacer,
+            fractional.origin.y,
+            "the fractional band is the boundary",
+        );
     }
 
     /// A fill in a `.background` slot paints through the keyboard and the
@@ -3955,7 +4058,7 @@ mod safe_area {
     /// its frame extends to the window edge it touches, carrying the fill.
     fn a_fill_background_paints_under_the_keyboard_region() {
         let mount = mount(vstack((spacer(), card("composer"))));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let children = children(&mount);
         let composer = &children[1];
         let fill = view::subviews(composer)
@@ -3986,7 +4089,7 @@ mod safe_area {
                 .padding_with(8.0)
                 .background(Color::new(Srgb::new(0.85, 0.2, 0.3)).opacity(0.6)),
         )));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let fill = find_view::<ColorView>(&mount.host).expect("the opacity wrap keeps a ColorView");
         expect_bottom(
             &fill,
@@ -4012,7 +4115,7 @@ mod safe_area {
                 .padding_with(8.0)
                 .background(Color::new(Srgb::new(0.2, 0.6, 0.4)).ignore_safe_area(EdgeSet::NONE)),
         )));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let fill = find_view::<ColorView>(&mount.host).expect("the fill is mounted");
         expect_bottom(
             &fill,
@@ -4030,7 +4133,7 @@ mod safe_area {
             vstack((spacer(), text("content").body()))
                 .background(Color::new(Srgb::new(0.9, 0.7, 0.1)).ignore_safe_area(EdgeSet::BOTTOM)),
         );
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let children = children(&mount);
         let fill = &children[0];
         expect_bottom(
@@ -4059,7 +4162,7 @@ mod safe_area {
             spacer(),
             Color::new(Srgb::new(0.7, 0.2, 0.8)).size(390.0, 4.0),
         )));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let strip = find_view::<ColorView>(&mount.host).expect("the color strip mounts");
         expect_bottom(
             &strip,
@@ -4078,7 +4181,7 @@ mod safe_area {
                 .padding_with(8.0)
                 .background(text("panel")),
         )));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let background = view::subviews(&children(&mount)[1])
             .into_iter()
             .next()
@@ -4100,7 +4203,7 @@ mod safe_area {
                 .ignore_safe_area(EdgeSet::TOP)
                 .background(Color::new(Srgb::new(0.3, 0.5, 0.9))),
         );
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let children = children(&mount);
         let (fill, content) = (&children[0], &children[1]);
         expect_top(content, 0.0, "the ancestor's named edge releases the top");
@@ -4127,7 +4230,7 @@ mod safe_area {
             field("Message", &value).size(350.0, 44.0),
             spacer().size(390.0, 380.0),
         ))));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
 
         let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
         let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
@@ -4166,15 +4269,13 @@ mod safe_area {
             field("Message", &value).size(350.0, 44.0),
             spacer().size(390.0, 380.0),
         ))));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
         focus_and_clear(&mount, &field, || keyboard_top(&mount));
 
-        change_keyboard(
-            &mount,
-            CGRect::new(CGPoint::new(0.0, 444.0), CGSize::new(390.0, 400.0)),
-        );
-        pump_until_bottom_on(&mount, &field, 444.0);
+        let grown = keyboard_end_sized(&mount.window, 400.0);
+        change_keyboard(&mount, grown);
+        pump_until_bottom_on(&mount, &field, grown.origin.y);
     }
 
     /// A field nested inside a second scroll is cleared once — by the
@@ -4192,7 +4293,7 @@ mod safe_area {
             .size(350.0, 200.0),
             spacer().size(390.0, 380.0),
         ))));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
 
         let surfaces = find_views::<ScrollView>(&mount.host);
         assert!(
@@ -4240,7 +4341,7 @@ mod safe_area {
             ))),
             card("toolbar").size(390.0, 56.0),
         )));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
         let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
         let surface_bottom = window_bottom(&surface);
@@ -4258,18 +4359,15 @@ mod safe_area {
         let field_row = 10usize;
         let mount = mount(List::for_each(
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
-            {
-                let value = value.clone();
-                move |item| {
-                    if *item == field_row {
-                        ListItem::new(AnyView::new(field("Notes", &value).size(350.0, 44.0)))
-                    } else {
-                        ListItem::new(text(format!("row-{}", *item)))
-                    }
+            move |item| {
+                if *item == field_row {
+                    ListItem::new(AnyView::new(field("Notes", &value).size(350.0, 44.0)))
+                } else {
+                    ListItem::new(text(format!("row-{}", *item)))
                 }
             },
         ));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
 
         let table = find_view::<TableView>(&mount.host).expect("the list mounts a UITableView");
         let field = find_view::<TextField>(&mount.host).expect("the row field is mounted");
@@ -4324,7 +4422,7 @@ mod safe_area {
             "the bar docks at the container boundary — bottom {docked}"
         );
 
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         pump_layout(&mount, || {
             (window_bottom(&tab_bar) - docked).abs() <= TOLERANCE
         });
@@ -4353,7 +4451,7 @@ mod safe_area {
             )
             .navigation_bar_visibility(false),
         );
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let probe = find_id(&mount.host, "top-edge").expect("the probe is mounted");
         expect_top(
             &probe,
@@ -4378,7 +4476,7 @@ mod safe_area {
             vstack((text("content").body(), spacer(), text("tail").body()))
                 .background(Color::new(Srgb::new(0.5, 0.3, 0.7))),
         ));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let tail = find_label(&mount.host, "tail").expect("the tail is mounted");
         expect_bottom(
             &tail,
@@ -4432,7 +4530,7 @@ mod safe_area {
             window_bottom(&bar),
             "the page background starts below the covering bar",
         );
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let tail = find_label(&mount.host, "tail").expect("the tail is mounted");
         expect_bottom(
             &tail,
@@ -4479,7 +4577,7 @@ mod safe_area {
             "the bar item docks at the bottom edge — frame {docked:?}"
         );
 
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         pump_layout(&mount, || keyboard_top(&mount) > TOLERANCE);
         let covered = window_frame(&item);
         assert!(
@@ -4539,7 +4637,7 @@ mod safe_area {
             "the bar item docks at the bottom edge — frame {docked:?}"
         );
 
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         pump_layout(&mount, || keyboard_top(&mount) > TOLERANCE);
         let covered = window_frame(&item);
         assert!(
@@ -4616,7 +4714,7 @@ mod safe_area {
             window_frame(&outer_bar),
         );
 
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         pump_layout(&mount, || keyboard_top(&mount) > TOLERANCE);
         assert!(
             window_bottom(&inner_bar) <= window_top(&below) + TOLERANCE,
@@ -4644,7 +4742,7 @@ mod safe_area {
                 spacer().size(390.0, 380.0),
             ))),
         ));
-        show_keyboard(&mount, KEYBOARD_END);
+        show_keyboard(&mount);
         let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
         assert!(
             window_bottom(&field) > keyboard_top(&mount) + TOLERANCE,
