@@ -290,6 +290,10 @@ impl<T> std::fmt::Debug for Subscribe<T> {
 
 trait Subscription<T> {
     fn start(&self, watch: Watch<T>) -> Option<Box<dyn Any>>;
+    /// The source's value now: for rebinding a stored `Live` — a change
+    /// the signal made between the `Live`'s making and the rebind folded
+    /// into the value the new binding starts from.
+    fn current(&self) -> T;
 }
 
 struct SignalSubscription<S>(S);
@@ -309,6 +313,10 @@ impl<S: Signal> Subscription<S::Output> for SignalSubscription<S> {
         } else {
             Some(Box::new(guard) as Box<dyn Any>)
         }
+    }
+
+    fn current(&self) -> S::Output {
+        self.0.snapshot()
     }
 }
 
@@ -394,10 +402,32 @@ impl<T> Live<T> {
     /// value at that point. A binding ([`watch`](Self::watch)) starts
     /// from the same value — the binding snapshots once, when the `Live`
     /// is made, and a change between then and the watch starting lands
-    /// through the watch like any change.
+    /// through the watch like any change. A `Live` stored and bound later
+    /// starts from the signal's value at the bind instead — see
+    /// [`rebound`](Self::rebound).
     #[must_use]
     pub const fn value(&self) -> &T {
         &self.value
+    }
+
+    /// This `Live` starting from its source's value now: for rebinding a
+    /// `Live` a recording stored — changes the signal made between the
+    /// `Live`'s making and the rebind fold into the value the new binding
+    /// starts from, where `watch` alone would restart stale. A constant
+    /// is unchanged. The subscription is shared, not re-made.
+    #[must_use]
+    pub fn rebound(&self) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            value: self
+                .subscription
+                .0
+                .as_ref()
+                .map_or_else(|| self.value.clone(), |inner| inner.current()),
+            subscription: self.subscription.clone(),
+        }
     }
 
     /// Whether this `Live` carries a signal's subscription: `false` only
@@ -418,7 +448,9 @@ impl<T> Live<T> {
     /// signal's value when the `Live` was made — and the guard keeping
     /// the subscription alive: `None` for a constant, and for a signal
     /// whose guard is zero-sized with no drop glue. Either way the
-    /// binding replaces the property's previous one.
+    /// binding replaces the property's previous one. To rebind a `Live`
+    /// stored since its recording, go through [`rebound`](Self::rebound)
+    /// first so the binding starts from the signal's current value.
     #[expect(
         clippy::inline_always,
         reason = "expose the concrete subscription to the binding's call site"
@@ -479,6 +511,10 @@ impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for Mapped
                 watch.notify(context.map(&*f));
             },
         ))
+    }
+
+    fn current(&self) -> U {
+        (self.f)(self.inner.current())
     }
 }
 

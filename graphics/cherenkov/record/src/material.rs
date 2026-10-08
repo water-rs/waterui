@@ -725,15 +725,21 @@ mod tests {
             MaterialEffect::new(vec![1.]),
             "the value when the `Live` was made — a single snapshot per value"
         );
+        let rebound = effect.rebound();
+        assert_eq!(
+            *rebound.value(),
+            MaterialEffect::new(vec![2.]),
+            "a rebound `Live` reads the signal's current value"
+        );
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let (start, _guard) = effect.watch({
+        let (start, _guard) = rebound.watch({
             let seen = Rc::clone(&seen);
             move |context| seen.borrow_mut().push(context.into_value())
         });
         assert_eq!(
             start,
-            MaterialEffect::new(vec![1.]),
-            "the binding starts from the value the `Live` was made with"
+            MaterialEffect::new(vec![2.]),
+            "the binding starts from the rebound value, not the recording-time one"
         );
         gain.set(3.);
         assert_eq!(
