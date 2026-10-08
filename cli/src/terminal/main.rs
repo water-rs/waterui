@@ -121,13 +121,13 @@ impl Commands {
 /// Sweep stale managed build caches in the background, keeping the cache of
 /// the project `command` works on. Only this binary requests the sweep: it
 /// re-launches the running executable, which is `water` only here.
-fn request_build_cache_cleanup(command: &Commands) {
+async fn request_build_cache_cleanup(command: &Commands) {
     let Some(project_dir) = command.project_dir() else {
         return;
     };
-    // A path that does not resolve fails the command itself with the
-    // canonicalization error; the sweep just has no project to keep.
-    let Ok(project_root) = project_path::canonicalize(project_dir) else {
+    // A path that does not resolve names no project, so no sweep starts;
+    // the command itself then fails with the canonicalization error.
+    let Ok(project_root) = smol::fs::canonicalize(project_dir).await else {
         return;
     };
     if let Err(error) = waterui_cli::water_dir::spawn_build_cache_cleanup(
@@ -167,7 +167,7 @@ fn main() -> Result<()> {
 
     smol::block_on(async move {
         waterui_cli::water_dir::ensure_global_config().await?;
-        request_build_cache_cleanup(&cli.command);
+        request_build_cache_cleanup(&cli.command).await;
 
         // The passive update check stays off the `build`/`run` hot path,
         // off machine-consumed output (`mcp`, `completions`), and never

@@ -677,34 +677,30 @@ pub async fn android_preview_project_lock(
     .await
 }
 
-/// The lock serializing Gradle builds of the preview host composite
-/// against one Hydrolysis Android host checkout.
+/// The lock serializing every Gradle build that `includeBuild`s one
+/// Hydrolysis Android host checkout.
 ///
-/// Every project's preview host `includeBuild`s the host checkout the
-/// framework selects — for a local checkout, the one in-tree host every
-/// project of that checkout shares — and Gradle writes the included
-/// build's outputs inside it, so two projects' builds would race on the
-/// same build directories. Keyed by a hash of the canonical
-/// `host_project_dir` under `~/.water/locks/`.
+/// Both the project's Hydrolysis Android app and the preview host
+/// composite `includeBuild` the host checkout the framework selects — for
+/// a local checkout, the one in-tree host every project of that checkout
+/// shares — and Gradle writes the included build's `build/` and `.gradle/`
+/// inside it, so any two such builds, `water run` beside `water preview`
+/// included, would race on the same directories. Keyed by a hash of the
+/// canonical `host_project_dir` under `~/.water/locks/`.
 ///
 /// # Errors
 /// Returns an error if the Water home cannot be resolved, the host
 /// directory cannot be canonicalized, or the lock cannot be taken.
-pub async fn android_preview_host_build_lock(
+pub async fn android_host_build_lock(
     host: &crate::toolchain::Host,
     host_project_dir: &Path,
 ) -> eyre::Result<std::fs::File> {
-    path_keyed_lock(
-        host,
-        "android-preview-host-build",
-        host_project_dir,
-        |canonical| {
-            info!(
-                host = %canonical.display(),
-                "Waiting for another build of this Android preview host to finish"
-            );
-        },
-    )
+    path_keyed_lock(host, "android-host-build", host_project_dir, |canonical| {
+        info!(
+            host = %canonical.display(),
+            "Waiting for another build of this Android host to finish"
+        );
+    })
     .await
 }
 
@@ -886,6 +882,10 @@ pub async fn cleanup_stale_build_caches_for_project(
 /// waits on it, with no stdio, and a detached task reaps it the moment it
 /// exits, so it never lingers as a zombie while this process runs; a sweep
 /// still running when `water` exits is reparented and reaped by the system.
+/// On Unix it leads its own process group, so the terminal's `Ctrl-C` for
+/// the command never interrupts the sweep mid-removal; the Windows console
+/// has no group signal routing and delivers `Ctrl-C` to every attached
+/// process.
 /// `project_root` is the project the command works on, whose cache the
 /// sweep keeps even while its marker is about to be refreshed.
 ///
@@ -898,8 +898,11 @@ pub fn spawn_build_cache_cleanup(
 ) -> eyre::Result<()> {
     let executable = crate::toolchain::Host::current_exe()
         .wrap_err("Failed to locate the running water executable for build-cache cleanup")?;
-    let mut child = host
-        .command(&executable)
+    #[cfg(unix)]
+    let mut command = host.command_in_own_process_group(&executable);
+    #[cfg(not(unix))]
+    let mut command = host.command(&executable);
+    let mut child = command
         .arg("gc")
         .arg("build-cache")
         .arg("--path")

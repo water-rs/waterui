@@ -885,10 +885,13 @@ jobs:
   # `backends/hydrolysis/android-preview-host` (never committed), then
   # `:app:assembleDebug` compiles it against the in-tree host checkout —
   # the only place the generated app's Kotlin↔Gradle wiring is checked.
-  # The CLI renders that app, so a CLI-only change runs the job too. The
-  # wrapper JARs are not committed (the CLI materializes them), so each
-  # build installs the distribution its own wrapper pins: the host's for
-  # the lint, the rendered app's — the Gradle users run — for the assemble.
+  # The CLI renders that app, so a CLI-only change runs the job too, but
+  # only the render and the assemble: no CLI change reaches the host's
+  # Kotlin, so the host lint and its Gradle setup run only when the scope
+  # reaches Hydrolysis. The wrapper JARs are not committed (the CLI
+  # materializes them), so each build installs the distribution its own
+  # wrapper pins: the host's for the lint, the rendered app's — the Gradle
+  # users run — for the assemble.
   hydrolysis-android-host:
     name: Hydrolysis Android host lint
     if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'waterui-cli')
@@ -905,14 +908,18 @@ jobs:
           java-version: "21"
       - name: Gradle version pinned by the host wrapper
         id: host-gradle-version
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
         run: |
           version="$(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin\.zip$|\1|p' gradle/wrapper/gradle-wrapper.properties)"
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: gradle/actions/setup-gradle@v4
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
         with:
           gradle-version: ${{ steps.host-gradle-version.outputs.version }}
-      - run: gradle :host:lintDebug :preview:lintDebug
+      - name: Lint the host and preview modules
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+        run: gradle :host:lintDebug :preview:lintDebug
       - uses: ./.github/actions/setup-rust
         with:
           components: ""

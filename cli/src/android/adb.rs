@@ -11,7 +11,7 @@
 //! every later client command finds the server already up and spawns
 //! nothing. Code that needs the server takes an `&Adb`, never a bare path.
 //!
-//! Every command runs through [`run_bounded_adb_output`]: an `adb` verb can
+//! Every command runs through `run_bounded_adb_output`: an `adb` verb can
 //! wedge on a stalled transport, so each carries a deadline.
 
 use std::ffi::{OsStr, OsString};

@@ -159,8 +159,8 @@ fn android_dir(backend_path: &Path) -> PathBuf {
     backend_path.join("android")
 }
 
-/// Ensure the checkout the Hydrolysis Android host lives inside exists and
-/// return its root.
+/// Ensure the checkout the Hydrolysis Android host lives inside exists for
+/// `resolved` and return its root.
 ///
 /// The host is a subdirectory of the selected framework source —
 /// `hydrolysis-android-host-subdirectory` names the Gradle root inside the
@@ -169,19 +169,14 @@ fn android_dir(backend_path: &Path) -> PathBuf {
 /// under `<backend>/android-host/<revision>` — a stamp file records the
 /// revision a directory was produced for so a repin replaces it. For a
 /// `waterui_path` project the framework checkout itself is the host
-/// checkout; no clone exists for a filesystem source.
+/// checkout; no clone exists for a filesystem source. The caller passes the
+/// resolution it already holds, so one that also reads the resolution's
+/// other metadata resolves it once.
 ///
 /// # Errors
 ///
 /// Returns an error when the framework's host coordinates are missing or
 /// the git fetch fails.
-pub async fn ensure_android_host(project: &Project, host: &Host) -> eyre::Result<PathBuf> {
-    materialize_android_host(project, host, &project.resolved_framework().await?).await
-}
-
-/// [`ensure_android_host`] against a framework resolution the caller
-/// already holds, so a caller that also reads the resolution's other
-/// metadata resolves it once.
 async fn materialize_android_host(
     project: &Project,
     host: &Host,
@@ -658,7 +653,14 @@ pub async fn package_with_abis(
     if release_signing == Some(crate::android::signing::ReleaseSigning::Suppressed) {
         envs.push((crate::android::signing::UNSIGNED_ENV, "1".to_owned()));
     }
-    run_gradle_tasks(&android_dir, &[command_name], &envs).await?;
+    {
+        // The app `includeBuild`s the host checkout, whose `build/` and
+        // `.gradle/` every other build of that checkout — a preview host
+        // included — writes too.
+        let _host_build =
+            crate::water_dir::android_host_build_lock(host, &host_project_dir).await?;
+        run_gradle_tasks(&android_dir, &[command_name], &envs).await?;
+    }
 
     let path = packaged_artifact(&android_dir, output_kind, variant).await?;
     Ok(Artifact::new(project.bundle_identifier(), path))
@@ -870,7 +872,7 @@ fn preview_host_fingerprint(
 /// The host is a composite over the pinned Hydrolysis Android checkout
 /// (`hydrolysis-android-host-subdirectory`), rendered under
 /// `<backend>/android-preview-host/`; its `versionCode` is the
-/// [`preview_host_fingerprint`]'s projection, so a changed template or a
+/// `preview_host_fingerprint`'s projection, so a changed template or a
 /// changed host `preview` module produces a different code and the device
 /// receives a reinstall. Returns the APK path and that `versionCode`.
 ///
@@ -912,8 +914,7 @@ pub async fn ensure_preview_host_apk(
 
     {
         let _host_build =
-            crate::water_dir::android_preview_host_build_lock(host, &composite.host_project_dir)
-                .await?;
+            crate::water_dir::android_host_build_lock(host, &composite.host_project_dir).await?;
         info!("Building the hydrolysis preview host APK");
         run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[]).await?;
     }
@@ -927,7 +928,7 @@ pub async fn ensure_preview_host_apk(
 ///
 /// The composite's `:app` packages the instrumentation and
 /// `includeBuild`s the project's Hydrolysis Android host, resolved exactly
-/// as [`ensure_android_host`] and `hydrolysis-android-host-subdirectory`
+/// as `materialize_android_host` and `hydrolysis-android-host-subdirectory`
 /// resolve it for every other build.
 ///
 /// [`ensure_preview_host_apk`] renders the managed host through the same
@@ -1125,7 +1126,7 @@ mod tests {
 
     /// A host whose `git` materializes `staged` — a fake framework checkout
     /// root carrying `backends/hydrolysis/android/<module>` directories as
-    /// the host subdirectory — on checkout, as `ensure_android_host`'s fetch
+    /// the host subdirectory — on checkout, as `materialize_android_host`'s fetch
     /// sequence would produce.
     fn machine_with_staged_host(staged: &Path, modules: &[&str]) -> (TestMachine, Host) {
         let machine = TestMachine::new();
@@ -1193,12 +1194,16 @@ mod tests {
     /// sequence the fake `git` materializes; the stamp file then answers the
     /// next scaffold without a fetch at all.
     #[test]
-    fn ensure_android_host_materializes_then_reuses_the_stamped_checkout() {
+    fn materialize_android_host_materializes_then_reuses_the_stamped_checkout() {
         smol::block_on(async {
             let (_temporary, project) = fixture_project("").await;
             let (machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu", "hwui"]);
 
-            let checkout = ensure_android_host(&project, &host)
+            let resolved = project
+                .resolved_framework()
+                .await
+                .expect("framework resolves");
+            let checkout = materialize_android_host(&project, &host, &resolved)
                 .await
                 .expect("host materializes");
             // The checkout clones the framework repository itself at the
@@ -1219,7 +1224,7 @@ mod tests {
             // fake git entirely and the host still resolves.
             std::fs::remove_file(machine.bin().join(tool_file_name("git")))
                 .expect("remove fake git");
-            let again = ensure_android_host(&project, &host)
+            let again = materialize_android_host(&project, &host, &resolved)
                 .await
                 .expect("stamped checkout needs no git");
             assert_eq!(again, checkout);
