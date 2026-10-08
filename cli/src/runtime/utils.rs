@@ -26,6 +26,16 @@ pub enum CommandError {
         #[source]
         source: io::Error,
     },
+    /// The input streamed into the command's stdin could not be read or
+    /// written.
+    #[error("failed to feed input to `{program}`: {source}")]
+    Input {
+        /// The program that was invoked.
+        program: String,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
     /// The command exited with a non-zero status.
     #[error("command `{program}` failed with status {status}{report}")]
     Failed {

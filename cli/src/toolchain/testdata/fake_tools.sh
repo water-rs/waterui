@@ -392,6 +392,20 @@ adb)
         *logcat*)
             respond_or_empty ADB_LOGCAT
             ;;
+        *"run-as"*"tar -xf"*)
+            # A payload stream: the archive arrives on stdin and lands
+            # where `WATERUI_FAKE_ADB_STREAM` points.
+            /bin/cat > "${WATERUI_FAKE_ADB_STREAM:-/dev/null}"
+            exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
+            ;;
+        *"run-as"*"payload.stamp"*)
+            # A run preparation: the run config arrives on stdin and lands
+            # where `WATERUI_FAKE_ADB_RUN_CONFIG` points; the device's
+            # payload stamp goes back.
+            /bin/cat > "${WATERUI_FAKE_ADB_RUN_CONFIG:-/dev/null}"
+            (respond_or_empty ADB_PAYLOAD_STAMP)
+            exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
+            ;;
         *"run-as"*cat*)
             respond_or_empty ADB_CAT
             ;;

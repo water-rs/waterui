@@ -2,15 +2,18 @@
 //! Hydrolysis inside the preview host APK's instrumentation — device GPU,
 //! device fonts, device realizations — with no Kotlin runtime involved.
 //!
-//! The sequence is push-staged, not streamed: the CLI builds the launcher's
-//! preview-mode cdylib for the device's ABI, stages its assets and the run
-//! config under `<backend>/android-preview/`, pushes the payload to
-//! `/data/local/tmp`, copies it into the host's private files with `run-as`
-//! (the shell user cannot write app-private storage), and runs
-//! `am instrument -w` — whose return is the completion signal — before
-//! reading the produced PNGs back through `adb shell -T`.
+//! The CLI builds the launcher's preview-mode cdylib for the device's ABI
+//! and stages it with the project's assets as one content-hashed payload. On
+//! the device everything lives in the host's private files under
+//! `files/waterui-preview`: each run writes its config and clears `out/` there
+//! while reading the payload stamp back, streams the payload straight into
+//! private storage through `run-as` only when its content hash differs from
+//! that stamp, and runs `am instrument -w` — whose return is the completion
+//! signal — before reading the produced PNGs back through `adb shell -T`.
 
-use std::ffi::OsStr;
+mod payload;
+
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -22,40 +25,41 @@ use tracing::info;
 use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
 
 use crate::android::adb::{Adb, AdbCommandError, recent_crash_log};
-use crate::android::device::{AndroidAbiProvider, AndroidTarget};
-use crate::android::platform::{AndroidAbi, ndk_llvm_tool};
-use crate::build::{BuildOptions, BuildProfile};
+use crate::android::device::AndroidTarget;
 use crate::device::Device as _;
 use crate::hydrolysis::android::{
     self as hydrolysis_android, PREVIEW_HOST_INSTRUMENTATION, PREVIEW_HOST_PACKAGE,
 };
-use crate::hydrolysis::backend::HydrolysisBackend;
 use crate::preview::hydrolysis::{
     HydrolysisPreviewRequest, HydrolysisPreviewScenario, scenario_frame_path,
     write_preview_bindings,
 };
-use crate::preview::run::write_run_config;
-use crate::project::Project;
-use crate::project_model::{assets, water_dir};
+use crate::preview::run::{RUN_CONFIG_FILE_NAME, run_config_json};
+use crate::project_model::water_dir;
 use crate::toolchain::Host;
+
+use payload::{DevicePayload, INCOMING_STAMP_FILE, PAYLOAD_DIR, STAMP_FILE};
 
 /// `am instrument -w` is the completion signal; this bound is only the
 /// backstop for a wedged instrumentation run, not the render's expected
 /// duration.
 const PREVIEW_RENDER_DEADLINE: Duration = Duration::from_mins(3);
 
-/// The shell-side staging directory a run pushes its payload into —
-/// replaced on every run, removed as soon as `run-as` has copied it into
-/// the host's private files.
-const DEVICE_TMP_ROOT: &str = "/data/local/tmp/waterui-preview";
+/// The backstop for streaming a changed payload into the host's private
+/// files — the transfer scales with the stripped library's size.
+const PAYLOAD_STREAM_DEADLINE: Duration = Duration::from_mins(2);
 
-/// The payload root inside the preview host's `filesDir` — the
-/// instrumentation extras are paths relative to `filesDir` itself, and
-/// every run replaces this one fixed directory.
+/// The run directory inside the preview host's `filesDir` — the
+/// instrumentation extras are paths relative to `filesDir` itself.
 const FILES_PREVIEW_DIR: &str = "waterui-preview";
 
-/// The same payload root as `run-as` sees it from the app's data dir.
-const FILES_PAYLOAD_DIR: &str = "files/waterui-preview";
+/// The same run directory as `run-as` sees it from the app's data dir.
+const FILES_RUN_DIR: &str = "files/waterui-preview";
+
+/// Archive chunks in flight between the archive thread and `adb`'s stdin —
+/// bounded so a slow transport paces the archive instead of buffering the
+/// whole payload in memory.
+const ARCHIVE_CHUNKS_IN_FLIGHT: usize = 8;
 
 /// Scenario frame pulls overlap the shell round trips a `run-as cat` spends
 /// per frame — bounded so a wide capture set cannot flood the transport.
@@ -89,30 +93,28 @@ pub async fn render_preview_with_hydrolysis_android(
     // waits until the first finishes; the lease is held for the whole run.
     let _project_lease = water_dir::android_preview_project_lock(&host, project.root()).await?;
 
-    let ((), (adb, serial, abi)) = futures_util::try_join!(
+    let ((), target) = futures_util::try_join!(
         write_preview_bindings(&project, request.source, request.theme, None),
         async {
             let target = AndroidTarget::first_available(&host).await?;
             target.launch(&host).await?;
-            let serial = target
-                .serial()
-                .ok_or_else(|| eyre::eyre!("the Android target has no adb serial after launch"))?
-                .to_string();
-            eyre::Ok((Adb::locate(&host).await?, serial, target.android_abi()))
+            eyre::Ok(target)
         },
     )?;
+    // The device carries the client its scan located, so every command
+    // below reuses that one running server.
+    let device = target
+        .launched_device()
+        .ok_or_else(|| eyre::eyre!("the Android target has no adb device after launch"))?;
+    let (adb, serial) = (device.adb(), device.identifier());
 
     // Everything local — the host APK and the launcher payload — builds
     // before the device is claimed, so a second preview waiting on this
     // device still overlaps its own builds with this run's render.
-    let device_dir = project
-        .backend_path::<HydrolysisBackend>()
-        .join("android-preview")
-        .join("device");
-    let ((host_apk, version_code), libraries, device_key) = futures_util::try_join!(
+    let ((host_apk, version_code), payload, device_key) = futures_util::try_join!(
         hydrolysis_android::ensure_preview_host_apk(&project, &host),
-        stage_device_payload(&project, &host, request, abi, &device_dir),
-        device_lock_key(&host, &adb, &serial),
+        DevicePayload::stage(&project, &host, request, device.abi()),
+        device_lock_key(&host, adb, serial),
     )?;
 
     // Output paths in the run config are relative: the runtime resolves
@@ -128,40 +130,22 @@ pub async fn render_preview_with_hydrolysis_android(
             events: scenario.events.clone(),
         },
     );
-    let config_path = write_run_config(
-        &device_dir,
-        &PreviewRunConfig {
-            width: request.width,
-            height: request.height,
-            mode,
-        },
-    )
-    .await?;
-    let config_name = config_path
-        .file_name()
-        .ok_or_else(|| {
-            eyre::eyre!(
-                "the run config path {} has no file name",
-                config_path.display()
-            )
-        })?
-        .to_string_lossy()
-        .into_owned();
+    let run_config = run_config_json(&PreviewRunConfig {
+        width: request.width,
+        height: request.height,
+        mode,
+    })?;
 
     render_on_device(
         &host,
         &DeviceRender {
-            adb: &adb,
-            serial: &serial,
+            adb,
+            serial,
             device_key: &device_key,
             host_apk: &host_apk,
             version_code,
-            device_dir: &device_dir,
-            run: DeviceRun {
-                run_dir: FILES_PREVIEW_DIR,
-                config_name: &config_name,
-                libraries: &libraries,
-            },
+            payload: &payload,
+            run_config: &run_config,
             output_path,
             scenario,
         },
@@ -179,15 +163,17 @@ struct DeviceRender<'a> {
     device_key: &'a str,
     host_apk: &'a Path,
     version_code: u32,
-    /// The staged payload `push_payload` sends.
-    device_dir: &'a Path,
-    run: DeviceRun<'a>,
+    /// The staged payload, shipped only when the device's stamp differs.
+    payload: &'a DevicePayload,
+    /// This run's config document.
+    run_config: &'a [u8],
     output_path: &'a Path,
     scenario: Option<&'a HydrolysisPreviewScenario>,
 }
 
-/// Take the device lease, then install the host if needed, push and stage
-/// the payload, run the instrumentation and pull its output.
+/// Take the device lease, then install the host if needed, prepare the run
+/// and ship the payload if the device's copy is stale, run the
+/// instrumentation and pull its output.
 ///
 /// `am instrument` force-stops the host package and an install replaces
 /// it, so a second run's install or instrumentation would kill the render
@@ -199,31 +185,28 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
         device_key,
         host_apk,
         version_code,
-        device_dir,
-        ref run,
+        payload,
+        run_config,
         output_path,
         scenario,
     } = *render;
     let _device_lease = water_dir::android_preview_device_lock(host, device_key).await?;
 
-    // The install, the shell-side push and the `logcat -T` stamp bounding
-    // the crash log to this run are independent; only the `run-as` copy
-    // into the host's private files needs the host installed.
-    let (_installed, (), since) = futures_util::try_join!(
+    // The install and the `logcat -T` stamp bounding the crash log to this
+    // run are independent; everything `run-as` does needs the host
+    // installed. `install -r` keeps the host's private files, so a payload
+    // already extracted there survives a host upgrade.
+    let (_installed, since) = futures_util::try_join!(
         install_host_if_needed(host, adb, serial, host_apk, version_code),
-        push_payload(host, adb, serial, device_dir),
         device_time_stamp(host, adb, serial),
     )?;
-    copy_payload_into_host(host, adb, serial).await?;
-
-    // The shell-side copy is dead weight once `run-as` staged it — remove
-    // it while the render runs.
-    let instrument_and_pull = async {
-        run_instrumentation(host, adb, serial, run, &since).await?;
-        pull_outputs(host, adb, serial, run.run_dir, output_path, scenario).await
-    };
-    futures_util::try_join!(clear_device_tmp(host, adb, serial), instrument_and_pull)?;
-    Ok(())
+    let device_stamp = prepare_run(host, adb, serial, run_config).await?;
+    if device_stamp.as_deref() != Some(payload.stamp()) {
+        info!("Streaming the preview payload to the device");
+        stream_payload(host, adb, serial, payload).await?;
+    }
+    run_instrumentation(host, adb, serial, &payload.library_paths(), &since).await?;
+    pull_outputs(host, adb, serial, output_path, scenario).await
 }
 
 /// Install `apk` when the device's installed `versionCode` differs from
@@ -310,159 +293,94 @@ async fn device_time_stamp(host: &Host, adb: &Adb, serial: &str) -> Result<Strin
         .to_string())
 }
 
-/// Build the launcher's preview-mode cdylib, strip it in place, stage the
-/// project's assets under `resources/`, and answer the staged library file
-/// names in `System.load` order.
-async fn stage_device_payload(
-    project: &Project,
+/// Prepare the run directory in one `run-as` round trip: clear `out/` so a
+/// failed render can never hand back the previous run's frames, write
+/// `run_config` (streamed through stdin) as the run config, and answer the
+/// payload stamp the device holds — `None` when it holds none.
+async fn prepare_run(
     host: &Host,
-    request: &HydrolysisPreviewRequest<'_>,
-    abi: AndroidAbi,
-    device_dir: &Path,
-) -> Result<Vec<String>> {
-    match fs::remove_dir_all(device_dir).await {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    let lib_dir = device_dir.join("lib");
-    fs::create_dir_all(&lib_dir).await?;
-
-    let mut options =
-        BuildOptions::development(BuildProfile::Debug).with_output_dir(lib_dir.clone());
-    if let Some(sccache_path) = request.sccache_path.clone() {
-        options = options.with_sccache(sccache_path);
-    }
-    if let Some(progress) = request.progress.clone() {
-        options = options.with_progress(progress);
-    }
-    let build = hydrolysis_android::build_with_features(
-        project,
-        host,
-        abi,
-        options,
-        &["waterui-preview-mode"],
-    )
-    .await?;
-
-    // Strip debug info in place: the cdylib carries a full desktop-sized
-    // symbol set that only bloats the push. The build hands back the
-    // context it resolved, so the strip runs under the same NDK without a
-    // second resolve.
-    let app_library = lib_dir.join(
-        build
-            .staged_libraries
-            .last()
-            .ok_or_else(|| eyre::eyre!("the launcher build staged no libraries"))?,
-    );
-    let strip = smol::unblock({
-        let ndk_path = build.context.ndk_path.clone();
-        move || ndk_llvm_tool(&ndk_path, "llvm-strip")
-    })
-    .await?;
-    host.run(
-        &strip,
-        [OsStr::new("--strip-debug"), app_library.as_os_str()],
-    )
-    .await
-    .map_err(|error| eyre::eyre!("llvm-strip on {} failed: {error}", app_library.display()))?;
-
-    // Asset mounts ship as the library layout's `waterui_assets` directory —
-    // stage through the shared planner, then place it under `resources/`
-    // where the run's `assetsRoot` extra names it.
-    let stage_dir = project
-        .backend_path::<HydrolysisBackend>()
-        .join("android-preview")
-        .join("stage");
-    let (_manifest, staged) = assets::stage_project_assets_for_android_library(
-        project,
-        &stage_dir,
-        &build.built.app_symbols()?,
-        false,
-    )
-    .await?;
-    let resources = device_dir.join("resources");
-    fs::create_dir_all(&resources).await?;
-    let assets_dest = resources.join(assets::ANDROID_ASSET_BUNDLE_DIR);
-    fs::rename(&staged.bundle, &assets_dest)
+    adb: &Adb,
+    serial: &str,
+    run_config: &[u8],
+) -> Result<Option<String>> {
+    // The script's positions keep the names off the command template: `$1`
+    // is the run directory, `$2` the config file, `$3` the payload stamp.
+    let stamp = adb
+        .run_as_with_input(
+            host,
+            serial,
+            PREVIEW_HOST_PACKAGE,
+            &[
+                "sh",
+                "-c",
+                "mkdir -p \"$1\" && cd \"$1\" && rm -rf out && mkdir out && cat > \"$2\" && \
+                 if [ -f \"$3\" ]; then cat \"$3\"; fi",
+                "sh",
+                FILES_RUN_DIR,
+                RUN_CONFIG_FILE_NAME,
+                STAMP_FILE,
+            ],
+            run_config,
+            Duration::from_secs(30),
+        )
         .await
-        .wrap_err_with(|| {
-            format!(
-                "failed to move {} to {}",
-                staged.bundle.display(),
-                assets_dest.display()
-            )
-        })?;
-
-    Ok(build.staged_libraries)
+        .wrap_err("failed to prepare the preview run in the host's private files")?;
+    let stamp = stamp.trim();
+    Ok((!stamp.is_empty()).then(|| stamp.to_string()))
 }
 
-/// Remove the shell-side staging directory.
-async fn clear_device_tmp(host: &Host, adb: &Adb, serial: &str) -> Result<()> {
-    adb.shell_run(
-        host,
-        serial,
-        &["rm", "-rf", DEVICE_TMP_ROOT],
-        Duration::from_secs(30),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Push the staged payload into the shell-side staging directory, cleared
-/// first: `adb push` merges into an existing directory, so a previous run's
-/// failed copy, timeout or interrupt would otherwise leave its files inside
-/// this run's payload.
-async fn push_payload(host: &Host, adb: &Adb, serial: &str, device_dir: &Path) -> Result<()> {
-    clear_device_tmp(host, adb, serial).await?;
-    adb.push(
-        host,
-        serial,
-        &device_dir.join("."),
-        DEVICE_TMP_ROOT,
-        Duration::from_secs(120),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Copy the pushed payload into the preview host's private files, replacing
-/// the previous run's — `chmod a-w` on the libraries satisfies the linker's
-/// read-only `System.load` requirement without write-protecting `lib/`
-/// itself (unlinking needs write on the directory, not the file), and
-/// `out/` takes the render's output. `run-as` needs the host installed.
-async fn copy_payload_into_host(host: &Host, adb: &Adb, serial: &str) -> Result<()> {
-    // The script's positions keep the two paths off the command template:
-    // `$1` is the `files/`-relative payload root inside the host's private
-    // data, `$2` the shell-side staging directory it is copied from.
-    adb.run_as(
+/// Stream `payload` as a tar archive straight into the host's private
+/// files: the previous payload and its stamp are removed first, the archive
+/// extracts in place, the libraries become read-only — `chmod a-w`
+/// satisfies the linker's read-only `System.load` requirement without
+/// write-protecting `lib/` itself, since unlinking needs write on the
+/// directory, not the file — and the archive's trailing stamp is renamed
+/// into place last, so the device names a payload only once all of it
+/// landed.
+async fn stream_payload(
+    host: &Host,
+    adb: &Adb,
+    serial: &str,
+    payload: &DevicePayload,
+) -> Result<()> {
+    let (sender, receiver) = async_channel::bounded(ARCHIVE_CHUNKS_IN_FLIGHT);
+    let archive = receiver.map(Ok::<_, io::Error>).into_async_read();
+    // `$1` is the run directory, `$2` the payload directory, `$3` the stamp
+    // and `$4` the archive's incoming stamp.
+    let upload = adb.run_as_with_input(
         host,
         serial,
         PREVIEW_HOST_PACKAGE,
         &[
             "sh",
             "-c",
-            "rm -rf \"$1\" && mkdir -p \"$(dirname \"$1\")\" && cp -R \"$2\" \"$1\" && \
-             chmod a-w \"$1\"/lib/* && mkdir -p \"$1\"/out",
+            "cd \"$1\" && rm -rf \"$2\" \"$3\" \"$4\" && tar -xf - && chmod a-w \"$2\"/lib/* && \
+             mv \"$4\" \"$3\"",
             "sh",
-            FILES_PAYLOAD_DIR,
-            DEVICE_TMP_ROOT,
+            FILES_RUN_DIR,
+            PAYLOAD_DIR,
+            STAMP_FILE,
+            INCOMING_STAMP_FILE,
         ],
-        Duration::from_secs(60),
-    )
-    .await?;
-    Ok(())
-}
-
-/// The device-side layout of a pushed run — every path is relative to the
-/// preview host's `filesDir` and resolved there by the instrumentation.
-struct DeviceRun<'a> {
-    /// The run's `waterui-preview` payload root under `filesDir`.
-    run_dir: &'a str,
-    /// The run config's file name inside `run_dir`.
-    config_name: &'a str,
-    /// Staged library file names in `System.load` order.
-    libraries: &'a [String],
+        archive,
+        PAYLOAD_STREAM_DEADLINE,
+    );
+    let (archived, uploaded) = futures_util::join!(payload.write_archive(sender), upload);
+    match (archived, uploaded) {
+        // A payload file that could not be read is the cause of whatever
+        // the device then reported about the truncated archive.
+        (Err(error), _) if error.kind() != io::ErrorKind::BrokenPipe => {
+            Err(eyre::eyre!(error).wrap_err("failed to archive the preview payload"))
+        }
+        (_, Err(error)) => {
+            Err(error
+                .wrap_err("failed to stream the preview payload into the host's private files"))
+        }
+        // A `BrokenPipe` archive under a successful upload: the device
+        // stopped reading after the stamp member — which it only renames
+        // once everything before it extracted — so the payload is whole.
+        (_, Ok(_)) => Ok(()),
+    }
 }
 
 /// Run the preview instrumentation: `am instrument -w` returns when the run
@@ -473,19 +391,15 @@ async fn run_instrumentation(
     host: &Host,
     adb: &Adb,
     serial: &str,
-    run: &DeviceRun<'_>,
+    libraries: &[String],
     since: &str,
 ) -> Result<()> {
-    let run_dir = run.run_dir;
-    let device_libraries: Vec<String> = run
-        .libraries
-        .iter()
-        .map(|name| format!("{run_dir}/lib/{name}"))
-        .collect();
+    let in_run_dir = |path: &str| format!("{FILES_PREVIEW_DIR}/{path}");
+    let device_libraries: Vec<String> = libraries.iter().map(|path| in_run_dir(path)).collect();
     let words = instrument_words(
         &device_libraries,
-        &format!("{run_dir}/{}", run.config_name),
-        &format!("{run_dir}/resources/{}", assets::ANDROID_ASSET_BUNDLE_DIR),
+        &in_run_dir(RUN_CONFIG_FILE_NAME),
+        &in_run_dir(&DevicePayload::assets_root()),
     );
     let output = adb
         .shell(
@@ -541,25 +455,26 @@ async fn pull_outputs(
     host: &Host,
     adb: &Adb,
     serial: &str,
-    run_dir: &str,
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
-    /// Read one rendered PNG out of the host's private files and write it
-    /// locally once its signature checks out.
+    /// Read the rendered PNG at `remote_name` — a path relative to the run
+    /// directory — out of the host's private files, and write it to `local`
+    /// once its signature checks out.
     async fn pull_png(
         host: &Host,
         adb: &Adb,
         serial: &str,
-        remote: &str,
+        remote_name: &str,
         local: &Path,
     ) -> Result<()> {
+        let remote = format!("{FILES_RUN_DIR}/{remote_name}");
         let bytes = adb
             .run_as_cat(
                 host,
                 serial,
                 PREVIEW_HOST_PACKAGE,
-                remote,
+                &remote,
                 Duration::from_secs(60),
             )
             .await?;
@@ -574,27 +489,6 @@ async fn pull_outputs(
         Ok(())
     }
 
-    /// Pull `remote_name` — a path relative to the run dir — out of the
-    /// host's `files/` tree into `local`.
-    async fn pull_relative(
-        host: &Host,
-        adb: &Adb,
-        serial: &str,
-        run_dir: &str,
-        remote_name: &str,
-        local: &Path,
-    ) -> Result<()> {
-        // `run-as` sees `files/` from the app's data dir.
-        pull_png(
-            host,
-            adb,
-            serial,
-            &format!("files/{run_dir}/{remote_name}"),
-            local,
-        )
-        .await
-    }
-
     if let Some(scenario) = scenario {
         if let Some(parent) = scenario.output_dir.parent() {
             fs::create_dir_all(parent).await?;
@@ -603,7 +497,7 @@ async fn pull_outputs(
         futures_util::stream::iter(scenario.captures_ms.iter().copied().map(|capture_ms| {
             let remote = format!("out/scenario/frame-{capture_ms:04}ms.png");
             let local = scenario_frame_path(&scenario.output_dir, capture_ms);
-            async move { pull_relative(host, adb, serial, run_dir, &remote, &local).await }
+            async move { pull_png(host, adb, serial, &remote, &local).await }
         }))
         .buffer_unordered(SCENARIO_PULL_CONCURRENCY)
         .try_collect::<()>()
@@ -614,7 +508,7 @@ async fn pull_outputs(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    pull_relative(host, adb, serial, run_dir, "out/preview.png", output_path).await
+    pull_png(host, adb, serial, "out/preview.png", output_path).await
 }
 
 /// Parse `am instrument -r` output: `-1` means OK, any other code or an
@@ -674,36 +568,80 @@ mod tests {
         (machine, host, log)
     }
 
-    /// The logged adb argv — one invocation per line.
+    /// The logged adb argv — one invocation per line, none when adb never
+    /// ran.
     fn adb_argv(log: &Path) -> String {
-        std::fs::read_to_string(log).expect("read the fake adb argv log")
+        match std::fs::read_to_string(log) {
+            Ok(argv) => argv,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(error) => panic!("read the fake adb argv log: {error}"),
+        }
     }
 
-    /// A staged payload dir a `push_payload` can send: `lib/` plus a run
-    /// config.
-    fn staged_payload(machine: &TestMachine) -> PathBuf {
-        let device_dir = machine.dir("device");
-        std::fs::create_dir_all(device_dir.join("lib")).expect("lib dir");
-        std::fs::write(device_dir.join("lib/libx.so"), b"\x7fELF").expect("lib");
-        std::fs::write(device_dir.join("preview-run.json"), b"{}").expect("config");
-        device_dir
+    /// A staged payload: one library plus an asset bundle holding a nested
+    /// image and the bundle's sync stamp.
+    fn staged_payload(machine: &TestMachine) -> DevicePayload {
+        let lib_dir = machine.dir("lib");
+        std::fs::write(lib_dir.join("libx.so"), b"\x7fELF-library").expect("lib");
+        let bundle = machine.dir("stage/waterui_assets");
+        std::fs::write(bundle.join("waterui-sync-stamp"), b"assets-v1").expect("stamp");
+        std::fs::create_dir_all(bundle.join("images")).expect("images dir");
+        std::fs::write(bundle.join("images/logo.png"), b"logo-bytes").expect("image");
+        smol::block_on(DevicePayload::from_staged(
+            &lib_dir,
+            vec!["libx.so".to_string()],
+            &bundle,
+        ))
+        .expect("the payload stages")
     }
+
+    /// Every member of a tar archive, in archive order, with its bytes.
+    fn archive_members(archive: &[u8]) -> Vec<(String, Vec<u8>)> {
+        use std::io::Read as _;
+
+        tar::Archive::new(archive)
+            .entries()
+            .expect("the stream is a tar archive")
+            .map(|entry| {
+                let mut entry = entry.expect("a well-formed member");
+                let path = entry
+                    .path()
+                    .expect("a member path")
+                    .to_string_lossy()
+                    .into_owned();
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).expect("member bytes");
+                (path, bytes)
+            })
+            .collect()
+    }
+
+    /// The positional arguments that end a run preparation's argv.
+    const PREPARE_ARGS: &str = "sh files/waterui-preview preview-run.json payload.stamp";
+
+    /// The run config a test run ships.
+    const RUN_CONFIG: &[u8] = br#"{"width":320,"height":240}"#;
 
     /// A fake device whose instrumentation succeeds, whose `cat` answers a
     /// PNG, and whose installed host is already `versionCode` 7 — plus the
-    /// staged payload and host APK a run sends it.
+    /// staged payload and host APK a run sends it. The streamed archive and
+    /// the run config the device receives land in files the test reads.
     struct RenderingDevice {
         machine: TestMachine,
         host: Host,
         log: PathBuf,
         adb: Adb,
-        device_dir: PathBuf,
+        payload: DevicePayload,
         apk: PathBuf,
+        stream: PathBuf,
+        run_config: PathBuf,
     }
 
     impl RenderingDevice {
         fn new() -> Self {
-            let (machine, host, log) = adb_test_machine();
+            let machine = TestMachine::new();
+            let sdk = machine.install_android_sdk();
+            machine.install_adb();
             machine.respond(
                 "ADB_AM_INSTRUMENT",
                 "INSTRUMENTATION_STATUS: stream=\nINSTRUMENTATION_CODE: -1\n",
@@ -718,24 +656,41 @@ mod tests {
                 b"\x89PNG\r\n\x1a\nfake-frame-bytes",
             )
             .expect("stage the canned cat");
-            let device_dir = staged_payload(&machine);
+            let log = machine.root().join("adb-argv.log");
+            let stream = machine.root().join("streamed-payload.tar");
+            let run_config = machine.root().join("received-run-config.json");
+            let host = machine.host([
+                ("ANDROID_SDK_ROOT", sdk.as_os_str()),
+                ("WATERUI_FAKE_ADB_LOG", log.as_os_str()),
+                ("WATERUI_FAKE_ADB_STREAM", stream.as_os_str()),
+                ("WATERUI_FAKE_ADB_RUN_CONFIG", run_config.as_os_str()),
+            ]);
+            let payload = staged_payload(&machine);
             let apk = machine.file("host.apk", "apk");
             let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
+            // Only the device run's own invocations are under test.
+            std::fs::remove_file(&log).expect("clear the locate's argv");
             Self {
                 machine,
                 host,
                 log,
                 adb,
-                device_dir,
+                payload,
                 apk,
+                stream,
+                run_config,
             }
+        }
+
+        /// The payload stamp the device answers with.
+        fn holds_stamp(&self, stamp: &str) {
+            self.machine.respond("ADB_PAYLOAD_STAMP", stamp);
         }
 
         /// One run's device-side half through the production
         /// [`render_on_device`]; the installed `versionCode` matches, so it
-        /// goes straight to push, stage, instrument and pull.
+        /// never installs.
         async fn run(&self, out: &Path) {
-            let libraries = ["libx.so".to_string()];
             render_on_device(
                 &self.host,
                 &DeviceRender {
@@ -744,12 +699,8 @@ mod tests {
                     device_key: "serial",
                     host_apk: &self.apk,
                     version_code: 7,
-                    device_dir: &self.device_dir,
-                    run: DeviceRun {
-                        run_dir: FILES_PREVIEW_DIR,
-                        config_name: "preview-run.json",
-                        libraries: &libraries,
-                    },
+                    payload: &self.payload,
+                    run_config: RUN_CONFIG,
                     output_path: out,
                     scenario: None,
                 },
@@ -757,37 +708,177 @@ mod tests {
             .await
             .expect("the device run succeeds");
         }
+
+        fn argv(&self) -> String {
+            adb_argv(&self.log)
+        }
+    }
+
+    /// The index of the one argv line containing `needle`.
+    fn line_of(lines: &[&str], needle: &str) -> usize {
+        let found: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(needle))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(found.len(), 1, "exactly one `{needle}` line: {lines:#?}");
+        found[0]
     }
 
     // Every adb-driven test below is `#[cfg(unix)]`: on Windows the staged
     // `platform-tools/adb.exe` cannot carry the shell dispatcher (see
     // `TestMachine::install_adb`), so the fake adb cannot run there.
+
+    /// A device holding no payload gets it streamed straight into the host's
+    /// private files — no `adb push`, no shell-side staging — after the run
+    /// is prepared and before the instrumentation; the archive carries the
+    /// whole payload and ends with the stamp.
     #[test]
     #[cfg(unix)]
-    fn the_pipeline_pushes_stages_instruments_and_pulls_in_order() {
+    fn a_device_without_the_payload_receives_it_streamed() {
         let device = RenderingDevice::new();
         let out = device.machine.root().join("preview.png");
 
         smol::block_on(device.run(&out));
 
-        let argv = adb_argv(&device.log);
-        let clear = argv
-            .find("shell rm -rf /data/local/tmp/waterui-preview")
-            .expect("the shell-side staging dir was cleared");
-        let push = argv.find(" push ").expect("push ran");
-        let run_as = argv.find("run-as").expect("run-as ran");
-        let instrument = argv.find("am instrument").expect("instrument ran");
-        let cat = argv.rfind("cat files/").expect("cat ran");
+        let argv = device.argv();
+        let lines: Vec<&str> = argv.lines().collect();
         assert!(
-            clear < push && push < run_as && run_as < instrument && instrument < cat,
-            "clear -> push -> run-as -> instrument -> pull order: {argv}"
+            !argv.contains(" push ") && !argv.contains("/data/local/tmp"),
+            "nothing goes through adb push or shell-side staging: {argv}"
+        );
+        let prepare = line_of(&lines, PREPARE_ARGS);
+        let stream = line_of(&lines, "tar -xf");
+        let instrument = line_of(&lines, "am instrument");
+        let pull = line_of(&lines, "cat files/waterui-preview/out/preview.png");
+        assert!(
+            prepare < stream && stream < instrument && instrument < pull,
+            "prepare -> stream -> instrument -> pull: {argv}"
         );
         assert!(
-            out.is_file()
-                && std::fs::read(&out)
-                    .expect("read")
-                    .starts_with(PNG_SIGNATURE),
+            lines[instrument].contains(
+                "libraries waterui-preview/payload/lib/libx.so -e runConfig \
+                 waterui-preview/preview-run.json -e assetsRoot \
+                 waterui-preview/payload/resources/waterui_assets"
+            ),
+            "the instrumentation loads the streamed payload: {}",
+            lines[instrument]
+        );
+
+        let members = archive_members(&std::fs::read(&device.stream).expect("the stream landed"));
+        let names: Vec<&str> = members.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "payload",
+                "payload/lib",
+                "payload/resources",
+                "payload/resources/waterui_assets",
+                "payload/resources/waterui_assets/images",
+                "payload/lib/libx.so",
+                "payload/resources/waterui_assets/images/logo.png",
+                "payload/resources/waterui_assets/waterui-sync-stamp",
+                "payload.stamp.new",
+            ],
+            "directories first, then the payload, the stamp last"
+        );
+        assert_eq!(members[5].1, b"\x7fELF-library");
+        assert_eq!(
+            members[8].1,
+            device.payload.stamp().as_bytes(),
+            "the archive's trailing member is the payload's stamp"
+        );
+        assert_eq!(
+            std::fs::read(&device.run_config).expect("the run config landed"),
+            RUN_CONFIG,
+            "the run config travels through the preparation's stdin"
+        );
+        assert!(
+            std::fs::read(&out)
+                .expect("read")
+                .starts_with(PNG_SIGNATURE),
             "the pulled PNG landed"
+        );
+    }
+
+    /// A device whose stamp matches the payload's content hash receives
+    /// nothing: the payload is neither streamed nor pushed.
+    #[test]
+    #[cfg(unix)]
+    fn an_unchanged_payload_issues_no_push() {
+        let device = RenderingDevice::new();
+        device.holds_stamp(device.payload.stamp());
+
+        smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+        let argv = device.argv();
+        assert!(
+            !argv.contains("tar -xf") && !argv.contains(" push "),
+            "an unchanged payload ships nothing: {argv}"
+        );
+        assert!(
+            !device.stream.exists(),
+            "no archive reached the device's stdin"
+        );
+    }
+
+    /// A device holding a different stamp gets the changed payload streamed,
+    /// carrying the new stamp.
+    #[test]
+    #[cfg(unix)]
+    fn a_changed_payload_streams() {
+        let device = RenderingDevice::new();
+        device.holds_stamp(&"0".repeat(64));
+
+        smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+        assert!(device.argv().contains("tar -xf"), "{}", device.argv());
+        let members = archive_members(&std::fs::read(&device.stream).expect("the stream landed"));
+        let (last, stamp) = members.last().expect("the archive has members");
+        assert_eq!(last, "payload.stamp.new");
+        assert_eq!(stamp, device.payload.stamp().as_bytes());
+    }
+
+    /// A warm run — host installed, payload current — is the version query
+    /// and the clock read side by side, then one preparation, the
+    /// instrumentation and the pull: five adb invocations, no others.
+    #[test]
+    #[cfg(unix)]
+    fn a_warm_run_issues_the_minimal_adb_sequence() {
+        let device = RenderingDevice::new();
+        device.holds_stamp(device.payload.stamp());
+
+        smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+        let argv = device.argv();
+        let lines: Vec<&str> = argv.lines().collect();
+        let mut concurrent = lines[..2].to_vec();
+        concurrent.sort_unstable();
+        assert_eq!(
+            concurrent,
+            [
+                "-s serial shell date '+%m-%d %H:%M:%S.000'",
+                "-s serial shell pm list packages --show-versioncode \
+                 dev.waterui.hydrolysis.preview",
+            ],
+            "{argv}"
+        );
+        assert_eq!(lines.len(), 5, "{argv}");
+        assert!(
+            lines[2].starts_with("-s serial shell -T run-as dev.waterui.hydrolysis.preview sh -c")
+                && lines[2].ends_with(PREPARE_ARGS),
+            "{argv}"
+        );
+        assert!(
+            lines[3].starts_with("-s serial shell am instrument"),
+            "{argv}"
+        );
+        assert_eq!(
+            lines[4],
+            "-s serial shell -T run-as dev.waterui.hydrolysis.preview cat \
+             files/waterui-preview/out/preview.png",
+            "{argv}"
         );
     }
 
@@ -836,7 +927,7 @@ mod tests {
     fn a_nonzero_run_as_surfaces() {
         let (machine, host, _log) = adb_test_machine();
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
-        // The run-as copy fails the way a missing package would.
+        // The preparation fails the way a missing package would.
         let host = machine.host([
             (
                 "ANDROID_SDK_ROOT",
@@ -845,17 +936,18 @@ mod tests {
             ("WATERUI_FAKE_ADB_RUN_AS_STATUS", "7".as_ref()),
         ]);
         let error = smol::block_on(async {
-            copy_payload_into_host(&host, &adb, "serial")
+            prepare_run(&host, &adb, "serial", RUN_CONFIG)
                 .await
                 .expect_err("a non-zero run-as must fail")
         });
-        assert!(error.to_string().contains("run-as"), "{error}");
+        let message = format!("{error:#}");
+        assert!(message.contains("run-as"), "{message}");
     }
 
     /// Two previews on one serial hold the device lease for the whole
-    /// device-side run: the second push, install and instrument cannot
-    /// interleave the first run's, because `am instrument` force-stops the
-    /// host package the first render lives in.
+    /// device-side run: the second run's preparation, stream, install and
+    /// instrument cannot interleave the first run's, because `am instrument`
+    /// force-stops the host package the first render lives in.
     #[test]
     #[cfg(unix)]
     fn concurrent_previews_on_one_serial_serialize() {
@@ -867,14 +959,14 @@ mod tests {
             futures_util::join!(device.run(&out_a), device.run(&out_b));
         });
 
-        // The loser's whole device run lands after the winner's pull —
-        // its push never interleaves the winner's instrument/pull window.
-        let argv = adb_argv(&device.log);
-        let second_push = argv.rfind(" push ").expect("two pushes ran");
+        // The loser's whole device run lands after the winner's pull — its
+        // preparation never interleaves the winner's instrument/pull window.
+        let argv = device.argv();
+        let second_prepare = argv.rfind(PREPARE_ARGS).expect("two runs prepared");
         let first_pull = argv.find("cat files/").expect("the first run pulled");
         let first_instrument = argv.find("am instrument").expect("instrumented");
         assert!(
-            first_pull < second_push && first_instrument < first_pull,
+            first_pull < second_prepare && first_instrument < first_pull,
             "the second run waited for the first to finish:\n{argv}"
         );
     }
@@ -962,19 +1054,9 @@ mod tests {
         );
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
         let error = smol::block_on(async {
-            run_instrumentation(
-                &host,
-                &adb,
-                "serial",
-                &DeviceRun {
-                    run_dir: FILES_PREVIEW_DIR,
-                    config_name: "preview-run.json",
-                    libraries: &[],
-                },
-                "01-01 00:00:00.000",
-            )
-            .await
-            .expect_err("a failed instrumentation must surface")
+            run_instrumentation(&host, &adb, "serial", &[], "01-01 00:00:00.000")
+                .await
+                .expect_err("a failed instrumentation must surface")
         });
         assert!(error.to_string().contains("preview exploded"), "{error}");
     }

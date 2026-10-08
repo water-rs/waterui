@@ -50,13 +50,27 @@ pub struct AndroidDevice {
     identifier: String,
     /// Primary ABI of the device (e.g., "arm64-v8a", "`x86_64`")
     abi: AndroidAbi,
+    /// The client whose server reported this device — every later command
+    /// addressed to it reuses that running server instead of starting one.
+    adb: Adb,
 }
 
 impl AndroidDevice {
-    /// Create a new Android device with the given identifier and ABI.
+    /// Create a new Android device with the given identifier and ABI, reached
+    /// through `adb`.
     #[must_use]
-    pub const fn new(identifier: String, abi: AndroidAbi) -> Self {
-        Self { identifier, abi }
+    pub const fn new(identifier: String, abi: AndroidAbi, adb: Adb) -> Self {
+        Self {
+            identifier,
+            abi,
+            adb,
+        }
+    }
+
+    /// The `adb` client this device is reached through.
+    #[must_use]
+    pub const fn adb(&self) -> &Adb {
+        &self.adb
     }
 
     /// Get the device identifier.
@@ -78,14 +92,13 @@ impl Device for AndroidDevice {
     }
 
     async fn launch(&self, host: &Host) -> eyre::Result<()> {
-        let adb = Adb::locate(host).await?;
         // `wait-for-device` returns only once the device is online — a
         // device mid-boot legitimately spends the bound; the timeout is the
         // backstop for a transport that never comes up, not the expected
         // wait.
         run_bounded_adb_command(
             host,
-            &adb,
+            &self.adb,
             ["-s", self.identifier.as_str(), "wait-for-device"],
             "waiting for the Android device",
             WAIT_FOR_DEVICE_TIMEOUT,
@@ -100,7 +113,7 @@ impl Device for AndroidDevice {
         artifact: Artifact,
         options: RunOptions,
     ) -> Result<Running, FailToRun> {
-        run_on_android(host, &self.identifier, artifact, options).await
+        run_on_android(host, &self.adb, &self.identifier, artifact, options).await
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
@@ -148,7 +161,7 @@ impl AndroidDevice {
                     .parse::<AndroidAbi>()
                     .map_err(|e| eyre!("Unsupported device ABI: {e}"))?;
 
-                devices.push(Self::new(identifier, abi));
+                devices.push(Self::new(identifier, abi, adb.clone()));
             }
         }
 
@@ -185,13 +198,13 @@ impl AndroidTarget {
         Ok(Self::Emulator(AndroidEmulator::open(host, avd_name).await?))
     }
 
-    /// The `adb` serial of the target: the device's own, or the one the
+    /// The device the target is: a connected device itself, or the one the
     /// emulator came up as once it has been launched.
     #[must_use]
-    pub fn serial(&self) -> Option<&str> {
+    pub fn launched_device(&self) -> Option<&AndroidDevice> {
         match self {
-            Self::Device(device) => Some(device.identifier()),
-            Self::Emulator(emulator) => emulator.launched_device().map(AndroidDevice::identifier),
+            Self::Device(device) => Some(device),
+            Self::Emulator(emulator) => emulator.launched_device(),
         }
     }
 }
@@ -279,13 +292,11 @@ impl AndroidAbiProvider for AndroidEmulator {
 /// - Streaming logs
 async fn run_on_android(
     host: &Host,
+    adb: &Adb,
     device_id: &str,
     artifact: Artifact,
     options: RunOptions,
 ) -> Result<Running, FailToRun> {
-    let adb = Adb::locate(host)
-        .await
-        .map_err(|error| FailToRun::Run(error.into()))?;
     let env_vars = options
         .env_vars()
         .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -298,22 +309,22 @@ async fn run_on_android(
         crate::web::dev_url_port(env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .map_err(|error| FailToRun::Launch(eyre!("Invalid dev-server handoff: {error}")))?
     {
-        reverse_dev_server_port(host, &adb, device_id, port).await?;
+        reverse_dev_server_port(host, adb, device_id, port).await?;
     }
 
     // The preview support app listens on the device's loopback; `adb forward`
     // maps each candidate host port onto it so the CLI can reach the server.
     for port in options.forward_tcp_ports() {
-        forward_device_port(host, &adb, device_id, *port).await?;
+        forward_device_port(host, adb, device_id, *port).await?;
     }
 
-    install_android_artifact(host, &adb, device_id, artifact.path()).await?;
+    install_android_artifact(host, adb, device_id, artifact.path()).await?;
     let start_args =
         build_android_start_args(device_id, &artifact, &env_vars, options.log_level())?;
-    launch_android_app(host, &adb, start_args).await?;
+    launch_android_app(host, adb, start_args).await?;
 
     // Wait for the process to start and get its PID
-    let pid = wait_for_app_pid(host, &adb, device_id, artifact.bundle_id()).await?;
+    let pid = wait_for_app_pid(host, adb, device_id, artifact.bundle_id()).await?;
 
     let (mut running, sender, control) = Running::new();
     if !options.forward_tcp_ports().is_empty() {
@@ -327,7 +338,7 @@ async fn run_on_android(
 
     let logcat = spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
         host,
-        adb: &adb,
+        adb,
         device_id,
         bundle_id: artifact.bundle_id(),
         pid,
@@ -1515,7 +1526,7 @@ impl Device for AndroidEmulator {
                 self.avd_name
             ))
         })?;
-        run_on_android(host, device.identifier(), artifact, options).await
+        run_on_android(host, device.adb(), device.identifier(), artifact, options).await
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
@@ -2110,7 +2121,56 @@ mod tests {
             matches!(target, super::AndroidTarget::Device(_)),
             "{target:?}"
         );
-        assert_eq!(target.serial(), Some("R5CX1234"));
+        assert_eq!(
+            target
+                .launched_device()
+                .map(super::AndroidDevice::identifier),
+            Some("R5CX1234")
+        );
+    }
+
+    /// A connected device carries the client its scan located: launching it
+    /// reuses that running server, so the scan's `start-server` is the only
+    /// one a scan-then-launch issues.
+    #[test]
+    #[cfg(unix)]
+    fn launching_a_scanned_device_starts_no_second_server() {
+        // The argv log lives in the scratch root, known only once the
+        // machine exists, so the host is declared after it.
+        let (machine, _) = android_machine(&[]);
+        let log = machine.root().join("adb-argv.log");
+        let sdk = machine.root().join("sdk");
+        let host = machine.host([
+            ("ANDROID_SDK_ROOT", sdk.as_os_str()),
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman model:Pixel_9_Pro".as_ref(),
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a".as_ref()),
+            ("WATERUI_FAKE_ADB_LOG", log.as_os_str()),
+        ]);
+
+        smol::block_on(async {
+            let target = super::AndroidTarget::first_available(&host)
+                .await
+                .expect("a target is available");
+            crate::device::Device::launch(&target, &host)
+                .await
+                .expect("the device is online");
+        });
+
+        let argv = std::fs::read_to_string(&log).expect("read the argv log");
+        let lines: Vec<&str> = argv.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "start-server",
+                "devices -l",
+                "-s R5CX1234 shell getprop ro.product.cpu.abi",
+                "-s R5CX1234 wait-for-device",
+            ],
+            "{argv}"
+        );
     }
 
     #[test]
@@ -2133,10 +2193,9 @@ mod tests {
             super::AndroidAbiProvider::android_abi(&target),
             crate::android::platform::AndroidAbi::Arm64V8a
         );
-        assert_eq!(
-            target.serial(),
-            None,
-            "an emulator has no serial before launch"
+        assert!(
+            target.launched_device().is_none(),
+            "an emulator has no device before launch"
         );
     }
 
