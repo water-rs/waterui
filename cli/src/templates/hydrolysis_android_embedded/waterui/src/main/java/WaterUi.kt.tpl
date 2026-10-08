@@ -20,16 +20,32 @@ object WaterUi {
     const val NATIVE_LIBRARY: String = "{{ ctx.hydrolysis_android_embedded().app.native_library_name }}"
 
     /** Mounts the library's app as a View owned by [activity]. */
-    fun createView(activity: ComponentActivity, onCloseRequested: () -> Unit): View =
-        createView(activity, activity, activity, activity.onBackPressedDispatcher, onCloseRequested)
+    fun createView(
+        activity: ComponentActivity,
+        onCloseRequested: () -> Unit,
+        key: String = NATIVE_LIBRARY,
+    ): View =
+        createView(
+            activity,
+            activity,
+            activity,
+            activity.onBackPressedDispatcher,
+            onCloseRequested,
+            key,
+        )
 
-    /** Mounts the library's app for any owner set (a Fragment passes its viewLifecycleOwner). */
+    /**
+     * Mounts the library's app for any owner set (a Fragment passes its
+     * viewLifecycleOwner). Two mounts under the same owner need distinct
+     * [key]s — each key retains its own session.
+     */
     fun createView(
         context: Context,
         lifecycleOwner: LifecycleOwner,
         viewModelStoreOwner: ViewModelStoreOwner,
         onBackPressedDispatcher: OnBackPressedDispatcher,
         onCloseRequested: () -> Unit,
+        key: String = NATIVE_LIBRARY,
     ): View = HydrolysisEmbedding.createView(
         context,
         lifecycleOwner,
@@ -37,6 +53,7 @@ object WaterUi {
         onBackPressedDispatcher,
         NATIVE_LIBRARY,
         onCloseRequested,
+        key = key,
         createContentView = { session ->
             {% include "partials/hydrolysis_android_content_view.kt.tpl" %}
         },

@@ -113,7 +113,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     }
                 if (imeAnimating && imeRunning) {
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-                    pushMetrics(intArrayOf(ime.left, ime.top, ime.right, ime.bottom))
+                    pushMetrics(windowLocalEdges(ime))
                 } else {
                     // A non-IME animation (e.g. a system-bar hide/show)
                     // lands here too and pushes the persisted
@@ -171,7 +171,10 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
         addView(platformViewRegistry.container)
         ViewCompat.setWindowInsetsAnimationCallback(this, insetsAnimationCallback)
-        session?.bind(this)
+        // The session binds only once the view is actually attached — a
+        // created-but-never-attached view must not keep `session.hostView`,
+        // trip the session's single-binding check for the next mount, or
+        // retain its creating Activity.
     }
 
     override fun onAttachedToWindow() {
@@ -209,6 +212,25 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         return super.onApplyWindowInsets(insets)
     }
 
+    /**
+     * The edges of [insets] that actually touch this view in the window —
+     * the per-side intersection of the window-root inset band with the
+     * view's own rect. A view below a toolbar avoids the status bar a
+     * second time, and a view ending above the keyboard avoids the full
+     * IME height; §7.1 wants the region the view truly overlaps.
+     */
+    private fun windowLocalEdges(insets: androidx.core.graphics.Insets): IntArray {
+        val (x, y) = IntArray(2).also { getLocationInWindow(it) }.let { it[0] to it[1] }
+        val windowWidth = rootView?.width ?: width
+        val windowHeight = rootView?.height ?: height
+        return intArrayOf(
+            (insets.left - x).coerceAtLeast(0),
+            (insets.top - y).coerceAtLeast(0),
+            (insets.right - (windowWidth - x - width)).coerceAtLeast(0),
+            (insets.bottom - (windowHeight - y - height)).coerceAtLeast(0),
+        )
+    }
+
     private fun pushMetrics(keyboardEdgesOverride: IntArray? = null) {
         val session = session ?: return
         val metrics = resources.displayMetrics
@@ -229,13 +251,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             // animation runs, the keyboard region comes only from
             // `onProgress`/`onEnd`; a dispatch carrying the end state
             // leaves the last pushed value in place.
-            containerEdges = intArrayOf(bars.left, bars.top, bars.right, bars.bottom)
+            containerEdges = windowLocalEdges(bars)
             keyboardEdges =
                 keyboardEdgesOverride
                     ?: if (imeAnimating) {
                         lastKeyboardInsets
                     } else {
-                        intArrayOf(ime.left, ime.top, ime.right, ime.bottom)
+                        windowLocalEdges(ime)
                     }
         } else {
             containerEdges = intArrayOf(0, 0, 0, 0)
