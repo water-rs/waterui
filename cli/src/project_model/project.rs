@@ -748,7 +748,7 @@ impl Project {
     /// steppable in development builds.
     ///
     /// A package belongs to the framework when its manifest lies inside one of
-    /// the framework's local roots — see [`framework_local_roots`]. Channel
+    /// the framework's local roots — see `framework_local_roots`. Channel
     /// and git framework packages have non-path sources, so the path condition
     /// already excludes them. `framework` is the framework the caller already
     /// resolved — [`Self::resolved_framework`] — so a command resolves it

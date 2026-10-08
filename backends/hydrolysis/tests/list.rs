@@ -73,9 +73,10 @@ fn mount_messages(
 }
 
 /// The `messages` offset in the tree the last pumped frame published, read
-/// without the query's sync pumps: while a run is live every query would
-/// pump up to eight more frames first, so frame-exact samples of a run read
-/// the held tree directly.
+/// without the query's sync pumps: a query first applies whatever that frame
+/// left pending — a membership re-anchor, rows measured late — so a
+/// frame-exact sample of what one frame published reads the held tree
+/// directly.
 fn frame_scroll_y(app: &OffscreenApp) -> f64 {
     app.tree()
         .nodes()
@@ -185,6 +186,59 @@ fn animate_to_a_row_glides_and_lands_where_the_jump_would_offscreen() {
     approx::assert_relative_eq!(scroll_y(&mut app), jump_offset);
     app.query().label("row 8").assert_exists();
     app.query().label("row 0").assert_not_exists();
+}
+
+/// Reading the tree never advances the clock (water-rs/waterui#2243): a
+/// query between two frames of an `animate_to` run answers the frame the
+/// clock is on, so sampling the run once per frame observes one frame of
+/// motion per sample — the whole glide, not a jump to its end after a
+/// sample or two.
+#[test]
+fn querying_between_frames_of_animate_to_observes_every_frame_offscreen() {
+    /// A linear run moves the same distance every frame, so a sample that
+    /// moved further than that saw the clock advance behind its back.
+    const DURATION: std::time::Duration = std::time::Duration::from_millis(320);
+    let items = ReactiveList::<SelfId<usize>>::new();
+    let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
+    let controller = ScrollController::new(0);
+    let mut app = mount_messages(&items, &controller);
+
+    controller.animate_to(
+        SCROLL_TARGET,
+        waterui::animation::Animation::linear(DURATION),
+    );
+    let target = support::usize_as_f64(SCROLL_TARGET) * ROW_HEIGHT;
+    let frames = DURATION.as_millis() / waterui_testing::VIRTUAL_FRAME.as_millis();
+    let frame_motion = target / support::usize_as_f64(usize::try_from(frames).unwrap());
+    let mut samples = vec![scroll_y(&mut app)];
+    for _ in 0..frames + 2 {
+        app.pump_for(waterui_testing::VIRTUAL_FRAME);
+        samples.push(scroll_y(&mut app));
+    }
+
+    for pair in samples.windows(2) {
+        let step = pair[1] - pair[0];
+        assert!(
+            (-0.5..=frame_motion + 0.5).contains(&step),
+            "each frame must move the run by at most one frame of motion ({frame_motion}pt): \
+             {} → {} in samples {samples:?}",
+            pair[0],
+            pair[1],
+        );
+    }
+    let in_flight = samples
+        .iter()
+        .filter(|&&offset| offset > 0.5 && offset < target - 0.5)
+        .count();
+    assert!(
+        in_flight + 2 >= usize::try_from(frames).unwrap(),
+        "a {frames}-frame run must show its intermediate offsets frame by frame: {samples:?}"
+    );
+    let landed = *samples.last().expect("sampled the run");
+    assert!(
+        (landed - target).abs() < 1.0,
+        "the run must land on row {SCROLL_TARGET} at {target}: {samples:?}"
+    );
 }
 
 /// A membership change mid-flight must not kill an animated scroll: a chat

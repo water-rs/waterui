@@ -482,12 +482,12 @@ async fn copy_build_outputs(
         )
     );
     let library = output_dir.join(library_name);
-    fs::copy(&built.artifact, &library).await?;
+    crate::utils::copy_file_if_changed(&built.artifact, &library).await?;
 
     // The NDK's shared STL follows the libraries that actually need it —
     // a Rust-only build never does.
     if staged_libs_need_libcxx(&output_dir).await? {
-        fs::copy(
+        crate::utils::copy_file_if_changed(
             ndk_libcxx_path(&context.ndk_path, abi),
             output_dir.join("libc++_shared.so"),
         )
@@ -986,6 +986,14 @@ mod tests {
                 "gpu band mounts on the gpu painter: {activity}"
             );
             assert!(activity.contains("HydrolysisHostView"), "{activity}");
+
+            // The environment reaches the app through `waterui.env.*` intent
+            // extras applied by `Os.setenv`; nothing reads system properties.
+            assert!(
+                activity.contains("setupEnvironmentFromIntent(intent)"),
+                "{activity}"
+            );
+            assert!(!activity.contains("SystemProperties"), "{activity}");
 
             // The narrow JNI keep: only the Rust→Kotlin entry points survive
             // R8 — the class members HydrolysisSession calls back by name.
