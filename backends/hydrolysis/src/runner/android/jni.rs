@@ -18,7 +18,7 @@ use crate::platform::{
     BackEdge, BackNavigation, InputEvent, Modifiers, PointerButton, PointerKind,
 };
 
-use super::host::{AndroidSession, MetricsSnapshot};
+use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 
 /// The JNI schema this build of the runner speaks — `nativeInit` returns it
 /// and the Kotlin `NativeBridge` refuses a mismatch, so a stale native
@@ -42,8 +42,10 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// and report whether a back target is registered; 10 = `nativeSetMetrics`
 /// splits the window insets into the container and keyboard regions of
 /// layout-spec.md §7.1, and the host's `WindowInsetsAnimationCompat` progress
-/// pushes each IME animation frame.
-pub const JNI_SCHEMA: jint = 10;
+/// pushes each IME animation frame; 11 = `nativeUiThreadServices` creates
+/// the one executor per UI thread at load time, and `nativeCreateSession`
+/// takes its handle so every session shares it.
+pub const JNI_SCHEMA: jint = 11;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -65,6 +67,16 @@ impl From<super::gpu::GpuError> for JniError {
 /// back into Kotlin (redraw requests, IME state, accessibility publishes)
 /// attach envs through it.
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
+
+/// The process's `JavaVM`, captured at `nativeInit`. Entry points receive a
+/// `JNIEnv` from their caller, but code that runs outside a Java-to-native
+/// entry point — the executor's `ALooper` fd callback — resolves the env
+/// through this.
+pub(super) fn java_vm() -> &'static JavaVM {
+    JAVA_VM
+        .get()
+        .expect("hydrolysis android: nativeInit sets JAVA_VM before any session exists")
+}
 
 /// The `Application` published to `ndk_context`, held as a JNI global
 /// reference for the life of the process.
@@ -138,6 +150,17 @@ fn session(ptr: jlong) -> &'static mut AndroidSession {
     // Kotlin host owns, and every entry point runs on the UI thread, so no
     // aliased &mut ever coexists.
     unsafe { &mut *(ptr as *mut AndroidSession) }
+}
+
+/// Decodes the UI-thread services pointer. The host passes exactly what
+/// `nativeUiThreadServices` returned — a process-lifetime object the load
+/// hook created once.
+fn services(ptr: jlong) -> &'static UiThreadServices {
+    assert!(ptr != 0, "hydrolysis android: null services pointer");
+    // SAFETY: the pointer came from Box::into_raw on the UiThreadServices
+    // the load hook created and the Kotlin host keeps for the process's
+    // life; sessions only ever read it, on the UI thread.
+    unsafe { &*(ptr as *const UiThreadServices) }
 }
 
 /// Runs `f` on the session, mapping `JniError` → `IllegalStateException` and a
@@ -236,12 +259,32 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit(
     })
 }
 
+/// The load hook's second half, after the schema handshake: creates the
+/// UI-thread services — the one executor per UI thread, registered with the
+/// main `ALooper`, plus the process environment that carries the
+/// inspector — and returns them as an opaque handle the Kotlin `NativeBridge`
+/// keeps for the process's life and hands to every `nativeCreateSession`.
+///
+/// Called once, on the UI thread (its main looper must already exist).
+/// The returned pointer is process-owned and never freed.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeUiThreadServices(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    guard_val(&mut env, 0, |_env| {
+        let services = UiThreadServices::init()?;
+        Ok(Box::into_raw(Box::new(services)) as jlong)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSession(
     mut env: JNIEnv,
     _class: JClass,
     host_view: JObject,
     context: JObject,
+    services_ptr: jlong,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
@@ -263,7 +306,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             max_fling_velocity_px: 0.0,
             scroll_friction: 0.0,
         };
-        let session = AndroidSession::create(vm, host_view, metrics)?;
+        let session = AndroidSession::create(env, vm, host_view, metrics, services(services_ptr))?;
         Ok(Box::into_raw(session) as jlong)
     })
 }

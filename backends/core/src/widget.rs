@@ -1519,7 +1519,15 @@ pub trait WidgetTheme {
     /// Return tabs layout metrics for items laid out as `layout`.
     fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics;
     /// Draw a tabs bar.
-    fn draw_tabs_bar(&self, recorder: &mut Recorder, bounds: Rect, top_edge: bool);
+    ///
+    /// `surface` is the bar's surface already extended through the safe-area
+    /// regions of every edge it touches.
+    fn draw_tabs_bar(&self, recorder: &mut Recorder, surface: Rect);
+    /// Draw a tabs bar divider.
+    ///
+    /// `divider` is the bar's inner edge: the top row of a bottom bar, the
+    /// trailing column of a sidebar strip.
+    fn draw_tabs_bar_divider(&self, recorder: &mut Recorder, divider: Rect);
     /// Draw the selected tab highlight of an item laid out as `layout`.
     fn draw_tabs_highlight(&self, recorder: &mut Recorder, bounds: Rect, layout: TabItemLayout);
     /// Draw the state layer of a tab button whose item is laid out as

@@ -163,7 +163,7 @@ pub async fn build_cache_root() -> eyre::Result<PathBuf> {
 /// reports it in usage surveys and reclaims it once it has been unused for
 /// the configured window — but only while holding the exclusive build
 /// lease, which stays out of reach for as long as any build compiling into
-/// the tree holds a shared one (see [`SharedTargetLease`]). One target also
+/// the tree holds a shared one (see `shared_target_lease_path`). One target also
 /// means one Cargo build-directory lock: builds of different projects
 /// serialize, and a waiting build prints `Blocking waiting for file lock on
 /// build directory` — visible through the piped progress render — for the

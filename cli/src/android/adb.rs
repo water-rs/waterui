@@ -4,8 +4,10 @@
 //! that daemon inherits every inheritable handle the client held — which is
 //! every one this process held, including the pipe whoever ran `water` is
 //! reading. The server outlives us, so that reader never sees end-of-file.
-//! An [`Adb`] therefore exists only once `adb start-server` has run through
-//! [`Host::run_detached`], where the launcher gets no handle of ours at all;
+//! An [`Adb`](crate::android::adb::Adb) therefore exists only once `adb
+//! start-server` has run through
+//! [`Host::run_detached`](crate::toolchain::Host::run_detached), where the
+//! launcher gets no handle of ours at all;
 //! every later client command finds the server already up and spawns
 //! nothing. Code that needs the server takes an `&Adb`, never a bare path.
 
