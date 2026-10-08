@@ -98,10 +98,7 @@ def measure(path, symbol):
     root = ids[0]
     ncalls = sum(c for (a, b), c in calls.items() if b == root)
     ir = sum(c for (a, b), c in edge.items() if b == root)
-    if ncalls != 1 or ir == 0:
-        # A call already in flight when instrumentation switched on
-        # leaves a dump-after with the fn record but no incoming call
-        # edge — not a sample.
+    if ir == 0:
         return None
     is_alloc = lambda k: bool(ALLOC.search(names.get(k, '')))
     is_mem = lambda k: bool(MEM.search(names.get(k, '')))
@@ -125,7 +122,7 @@ def measure(path, symbol):
                     counts[kind] += calls[(a, b)]
         elif is_mem(b):
             mem_ir += cost; mem_calls += calls[(a, b)]
-    return {'path': str(path), 'ir': ir, 'alloc_ir': alloc_ir, 'mem_ir': mem_ir, 'mem_calls': mem_calls,
+    return {'path': str(path), 'ir': ir, 'ncalls': ncalls, 'alloc_ir': alloc_ir, 'mem_ir': mem_ir, 'mem_calls': mem_calls,
             'rust_ir': ir - alloc_ir - mem_ir, 'outside_ir': total - ir if total is not None else None, **counts}
 
 
@@ -222,7 +219,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
                             head = (out / name).read_text().split('\n\nob=', 1)[0]
                             for phase, symbol in roots.items():
                                 if f'desc: Trigger: --dump-after={symbol}\n' in head:
-                                    after[phase].append(number)
+                                    after[phase].append((number, match[2]))
         finally:
             process.terminate()
             try:
@@ -235,13 +232,28 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     result = {'tag': tag, 'scene': scene, 'binary': str(binary), 'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'pause_at': pause_at, 'command': command}
     for phase, symbol in roots.items():
+        # One call of the root is the span between its consecutive
+        # --dump-after triggers on its own thread: nested roots write
+        # their dumps inside that span, so the call's incoming edge and
+        # its cost are spread over several files — a sample merges them.
+        bounds = sorted(after[phase])
         samples = []
-        for number in sorted(after[phase]):
-            found = [m for m in (measure(p, symbol) for p in dump_files(out, prefix.name, number)) if m]
-            if not found:
+        prev = 0
+        for number, thread in bounds:
+            span = [p for n in range(prev + 1, number + 1)
+                    for p in dump_files(out, prefix.name, n) if p.name.endswith('-' + thread)]
+            prev = number
+            found = [m for m in (measure(p, symbol) for p in span) if m]
+            if not found or sum(m['ncalls'] for m in found) != 1:
+                # A call in flight when instrumentation switched on has
+                # no incoming edge — not a sample.
                 continue
-            assert len(found) == 1, (tag, scene, phase, number, len(found))
-            samples.append(found[0])
+            merged = {k: sum(m[k] for m in found)
+                      for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls',
+                                'rust_ir', 'allocs', 'reallocs', 'deallocs')}
+            merged['outside_ir'] = None
+            merged['path'] = str(span[-1])
+            samples.append(merged)
             if len(samples) == 3:
                 break
         assert len(samples) == 3, (tag, scene, phase, len(samples))
