@@ -10166,21 +10166,6 @@ dependencies = [
 
 [[package]]
 name = "shaderloom"
-version = "0.1.2"
-source = "git+https://github.com/water-rs/shaderloom?rev=b0b6870c8b560d902c1de9a4d039c3a921b18b92#b0b6870c8b560d902c1de9a4d039c3a921b18b92"
-dependencies = [
- "naga 30.0.1",
- "prettyplease 0.3.0",
- "proc-macro2",
- "quote",
- "serde",
- "syn 3.0.6",
- "toml 1.1.6+spec-1.1.0",
- "wgpu 30.0.1",
-]
-
-[[package]]
-name = "shaderloom"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8c154d4b181547cb1f51464df6aefd0b002d8d5778fddc0311820122d790bc3"
@@ -12436,7 +12421,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-io-surface",
- "shaderloom 0.2.1",
+ "shaderloom",
  "swift-bridge",
  "thiserror 2.0.21",
  "tracing",
@@ -12455,7 +12440,7 @@ name = "waterkit-camera-filters-example"
 version = "0.1.0"
 dependencies = [
  "futures",
- "shaderloom 0.2.1",
+ "shaderloom",
  "tracing",
  "waterkit-camera",
  "waterkit-permission",
@@ -12512,7 +12497,7 @@ dependencies = [
  "objc2-video-toolbox",
  "rav1d",
  "rav1e",
- "shaderloom 0.2.1",
+ "shaderloom",
  "swift-bridge",
  "thiserror 2.0.21",
  "tracing",
@@ -13242,7 +13227,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "pastey 0.2.3",
  "pollster 1.0.1",
- "shaderloom 0.2.1",
+ "shaderloom",
  "thiserror 2.0.21",
  "tracing",
  "ttf-parser",
@@ -13632,14 +13617,14 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=e0ea3655ad77c09ab1b149a7b8464748105a03d3#e0ea3655ad77c09ab1b149a7b8464748105a03d3"
+source = "git+https://github.com/water-rs/particle?rev=bf663af85211d1f0bcce511b94ac435efad046a6#bf663af85211d1f0bcce511b94ac435efad046a6"
 dependencies = [
  "bytemuck",
  "encase",
  "fastrand",
  "glam",
  "num-traits",
- "shaderloom 0.1.2",
+ "shaderloom",
  "waterui-core",
  "waterui-graphics",
 ]
@@ -13837,7 +13822,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=f43d46521dee1af7660d773e9dbfdf8547ad3480#f43d46521dee1af7660d773e9dbfdf8547ad3480"
+source = "git+https://github.com/water-rs/video-gpu?rev=db9e70ac9b4ff8050b961144566f8866b5bf9abf#db9e70ac9b4ff8050b961144566f8866b5bf9abf"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13846,7 +13831,7 @@ dependencies = [
  "jni 0.22.4",
  "nami",
  "num-traits",
- "shaderloom 0.1.2",
+ "shaderloom",
  "tracing",
  "uuid",
  "waterkit-audio",
