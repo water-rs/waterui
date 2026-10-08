@@ -2429,20 +2429,14 @@ Automatic meson installation failed: {install_err}\n\n{}",
             return Ok(target_dir.clone());
         }
 
-        let build_path = self.path.clone();
-        let metadata = unblock(move || {
-            cargo_metadata::MetadataCommand::new()
-                .no_deps()
-                .current_dir(build_path)
-                .exec()
-                .map_err(|e| {
-                    RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    ))
-                })
-        })
-        .await?;
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command.no_deps().current_dir(&self.path);
+        let metadata = self.host.cargo_metadata(&command).await.map_err(|e| {
+            RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e,
+            ))
+        })?;
         Ok(metadata.target_directory.as_std_path().to_path_buf())
     }
 

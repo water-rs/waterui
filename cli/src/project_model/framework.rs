@@ -1118,16 +1118,14 @@ impl ResolvedFramework {
         // directory (a preview module under `managed_backends/ffi/modules`)
         // is never read (#197).
         let workspace_root = {
-            let manifest_dir = directory.to_path_buf();
-            smol::unblock(move || {
-                cargo_metadata::MetadataCommand::new()
-                    .current_dir(manifest_dir)
-                    .no_deps()
-                    .exec()
-            })
-            .await?
-            .workspace_root
-            .into_std_path_buf()
+            let mut command = cargo_metadata::MetadataCommand::new();
+            command.current_dir(directory).no_deps();
+            project
+                .host()
+                .cargo_metadata(&command)
+                .await?
+                .workspace_root
+                .into_std_path_buf()
         };
         let lock_path = workspace_root.join("Cargo.lock");
         let previous_lock = match smol::fs::read_to_string(&lock_path).await {
@@ -1242,7 +1240,7 @@ impl ResolvedFramework {
         // wanting an `accesskit` newer than the pin the channel certifies
         // (#203). That is the project's state, not something to resolve
         // past: name it and say how the seed is regenerated.
-        let metadata = managed_crate_metadata(root, features)
+        let metadata = managed_crate_metadata(host, root, features)
             .await
             .map_err(|error| {
                 eyre!(
@@ -1650,18 +1648,15 @@ impl ResolvedFramework {
 /// Resolve a managed crate's dependency metadata for the feature selection
 /// the build was invoked with.
 async fn managed_crate_metadata(
+    host: &crate::toolchain::Host,
     root: &std::path::Path,
     features: &[String],
 ) -> std::result::Result<cargo_metadata::Metadata, cargo_metadata::Error> {
-    let root = root.to_path_buf();
-    let features = features.to_vec();
-    smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .current_dir(root)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(features))
-            .exec()
-    })
-    .await
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command
+        .current_dir(root)
+        .features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
+    host.cargo_metadata(&command).await
 }
 
 /// Every version the framework's own lock records for a package name —

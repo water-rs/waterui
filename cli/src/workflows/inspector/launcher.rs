@@ -346,14 +346,12 @@ async fn resolve_inspector_requirements(
     host: &crate::toolchain::Host,
     project_path: &Path,
 ) -> Result<InspectorRequirements> {
-    let current_dir = project_path.to_path_buf();
-    let metadata = smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .current_dir(current_dir)
-            .exec()
-    })
-    .await
-    .wrap_err("Failed to resolve user project Cargo metadata for inspector compatibility")?;
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.current_dir(project_path);
+    let metadata = host
+        .cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to resolve user project Cargo metadata for inspector compatibility")?;
 
     let waterui = select_unique_package(&metadata, "waterui")?;
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;

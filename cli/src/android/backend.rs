@@ -97,7 +97,7 @@ impl Backend for AndroidBackend {
             crate::assets::seed_managed_crate_lock(project, &ffi_manifest)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?;
-            let required = crate::assets::scan_required_permissions(&ffi_manifest)
+            let required = crate::assets::scan_required_permissions(project.host(), &ffi_manifest)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?;
             crate::assets::warn_missing_permissions(project, &required, |key| {
