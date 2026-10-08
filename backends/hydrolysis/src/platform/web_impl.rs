@@ -507,8 +507,8 @@ impl PlatformWindow for BrowserWindow {
 }
 
 impl GpuSurfaceWindow for BrowserWindow {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider {
-        &mut self.surface
+    fn surface(&mut self) -> crate::platform::PresentationTarget<'_> {
+        crate::platform::PresentationTarget::HostAcquired(&mut self.surface)
     }
 }
 

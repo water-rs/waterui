@@ -146,7 +146,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
-    fn surface(&mut self) -> &mut dyn crate::platform::SurfaceProvider {
+    fn surface(&mut self) -> crate::platform::PresentationTarget<'_> {
         crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
     }
 

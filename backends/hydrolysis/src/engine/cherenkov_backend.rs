@@ -183,8 +183,14 @@ const fn pipeline_cache_path(_adapter: &wgpu::Adapter) -> Option<std::path::Path
 pub struct CherenkovSurface {
     engine: Rc<GpuEngine>,
     surface: Rc<cherenkov::Surface<cherenkov_gpu::Gpu>>,
-    textures: mpsc::Receiver<wgpu::Texture>,
+    /// The offscreen texture notifications — `None` on an engine-presented
+    /// surface (the macOS window, #2223), which produces none.
+    textures: Option<mpsc::Receiver<wgpu::Texture>>,
     texture: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The display probes an engine-presented Apple surface pushes per
+    /// output configuration; drained on main for [`Self::display`].
+    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    probe: Option<mpsc::Receiver<cherenkov_gpu::interop::DisplayProbe>>,
     presenter: cherenkov_gpu::interop::Presenter,
     size: (u32, u32),
 }
@@ -218,7 +224,7 @@ impl CherenkovSurface {
         let surface = engine
             .surface(target, wake)
             .expect("hydrolysis renderer: failed to create the Cherenkov surface");
-        Self::build(engine, device, backend, size, surface, textures)
+        Self::build(engine, device, backend, size, surface, Some(textures))
     }
 
     /// [`Self::new`], async on wasm32 where `Engine::surface` awaits the
@@ -240,7 +246,29 @@ impl CherenkovSurface {
             .surface(target, wake)
             .await
             .expect("hydrolysis renderer: failed to create the Cherenkov surface");
-        Self::build(engine, device, backend, size, surface, textures)
+        Self::build(engine, device, backend, size, surface, Some(textures))
+    }
+
+    /// The macOS winit window's surface (#2223): the engine presents
+    /// through `target`'s `WindowTarget`, so no texture channel exists and
+    /// [`Self::present_into`] can never be called. The probe channel the
+    /// target registered is kept for [`Self::probed_headroom`].
+    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    pub fn new_window(
+        engine: Rc<GpuEngine>,
+        device: &wgpu::Device,
+        backend: wgpu::Backend,
+        mut target: cherenkov_gpu::WindowTarget,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let size = target.size();
+        let probe = target.output_probe();
+        let surface = engine
+            .surface(target, wake)
+            .expect("hydrolysis renderer: failed to create the Cherenkov window surface");
+        let mut built = Self::build(engine, device, backend, size, surface, None);
+        built.probe = Some(probe);
+        built
     }
 
     /// The construction the sync native and async wasm32 [`Self::new`]
@@ -251,7 +279,7 @@ impl CherenkovSurface {
         backend: wgpu::Backend,
         size: (u32, u32),
         surface: cherenkov::Surface<cherenkov_gpu::Gpu>,
-        textures: mpsc::Receiver<wgpu::Texture>,
+        textures: Option<mpsc::Receiver<wgpu::Texture>>,
     ) -> Self {
         let delivery = cherenkov_gpu::interop::shader_delivery(backend, device)
             .expect("hydrolysis renderer: shader delivery unsupported on this device");
@@ -260,6 +288,8 @@ impl CherenkovSurface {
             surface: Rc::new(surface),
             textures,
             texture: None,
+            #[cfg(all(target_os = "macos", hydrolysis_winit))]
+            probe: None,
             presenter: cherenkov_gpu::interop::Presenter::new(device, delivery),
             size,
         }
@@ -344,14 +374,30 @@ impl CherenkovSurface {
     /// The texture-notification drain and `Next` plumbing the two
     /// [`Self::render`] variants share past `Engine::render`.
     fn render_inner(&mut self, next: cherenkov::Next) -> cherenkov::Next {
-        while let Ok(texture) = self.textures.try_recv() {
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.texture = Some((texture, view));
+        if let Some(textures) = &self.textures {
+            while let Ok(texture) = textures.try_recv() {
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.texture = Some((texture, view));
+            }
+            self.texture
+                .as_ref()
+                .expect("hydrolysis renderer: engine produced no surface texture");
         }
-        self.texture
-            .as_ref()
-            .expect("hydrolysis renderer: engine produced no surface texture");
         next
+    }
+
+    /// The latest headroom an engine-presented Apple surface reported: the
+    /// engine pushes a `DisplayProbe` per output configuration and the host
+    /// feeds it back through `Surface::display`, sampled on main.
+    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    pub fn probed_headroom(&self) -> f32 {
+        let mut headroom = 1.0;
+        if let Some(probe) = &self.probe {
+            while let Ok(latest) = probe.try_recv() {
+                headroom = latest.tone_map_headroom().unwrap_or(1.0);
+            }
+        }
+        headroom
     }
 
     /// Converts the rendered engine texture into `output` through the

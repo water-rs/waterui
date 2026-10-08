@@ -907,6 +907,59 @@ struct SurfaceRenderResult {
 crate::engine::cfg_async_fn! {
     fn render_to_surface {
         renderer: &mut HydrolysisRenderer,
+        surface: crate::platform::PresentationTarget<'_>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture_snapshot: bool,
+        render: impl FnOnce(
+            &mut HydrolysisRenderer,
+            crate::renderer::FrameRenderTarget<'_>,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
+    } {
+        renderer: &mut HydrolysisRenderer,
+        surface: crate::platform::PresentationTarget<'_>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture_snapshot: bool,
+        render: impl AsyncFnOnce(
+            &mut HydrolysisRenderer,
+            crate::renderer::FrameRenderTarget<'_>,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
+    } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    if let crate::platform::PresentationTarget::EnginePresented(surface) = surface {
+        return Ok(crate::engine::engine_await!(render_engine_presented_frame(
+            renderer,
+            surface,
+            clear_color,
+            display_scale,
+            capture_snapshot,
+            render,
+        )));
+    }
+    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    let crate::platform::PresentationTarget::HostAcquired(surface) = surface else {
+        unreachable!("engine-presented handled above")
+    };
+    #[cfg(not(all(target_os = "macos", hydrolysis_winit)))]
+    let crate::platform::PresentationTarget::HostAcquired(surface) = surface;
+    crate::engine::engine_await!(render_host_acquired_frame(
+        renderer,
+        surface,
+        clear_color,
+        display_scale,
+        capture_snapshot,
+        render,
+    ))
+    }
+}
+
+crate::engine::cfg_async_fn! {
+    /// The host-acquired frame: `render` draws the scene into the engine's
+    /// retained target, then the frame is acquired, the engine output
+    /// copied in, and the frame presented.
+    fn render_host_acquired_frame {
+        renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
         clear_color: peniko::Color,
         display_scale: f64,
@@ -951,6 +1004,8 @@ crate::engine::cfg_async_fn! {
             width,
             height,
             base_color: crate::renderer::working_color(clear_color),
+            #[cfg(all(target_os = "macos", hydrolysis_winit))]
+            engine_window: None,
         },
     ))
     .unwrap_or_else(|error| {
@@ -958,7 +1013,7 @@ crate::engine::cfg_async_fn! {
     });
     let engine_render = render_started_at.elapsed();
     let acquire_started_at = Instant::now();
-    let frame = acquire_surface_frame(surface)?;
+    let frame = acquire_surface_frame(&mut *surface)?;
     let acquire = acquire_started_at.elapsed();
     let copy_started_at = Instant::now();
     renderer.present_engine_frame(
@@ -1019,6 +1074,80 @@ crate::engine::cfg_async_fn! {
         present,
         snapshot,
     })
+    }
+}
+
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+crate::engine::cfg_async_fn! {
+    /// The engine-presented frame: `render` is the whole presentation —
+    /// there is no host frame to acquire, copy into or present. The
+    /// profile stages that do not run here stay measured durations: the
+    /// skipped calls take no time.
+    fn render_engine_presented_frame {
+        renderer: &mut HydrolysisRenderer,
+        surface: &mut dyn crate::platform::EnginePresentedSurface,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture_snapshot: bool,
+        render: impl FnOnce(
+            &mut HydrolysisRenderer,
+            crate::renderer::FrameRenderTarget<'_>,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
+    } {
+        renderer: &mut HydrolysisRenderer,
+        surface: &mut dyn crate::platform::EnginePresentedSurface,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture_snapshot: bool,
+        render: impl AsyncFnOnce(
+            &mut HydrolysisRenderer,
+            crate::renderer::FrameRenderTarget<'_>,
+        ) -> Result<crate::renderer::EngineFrame, cherenkov::RenderError>,
+    } -> SurfaceRenderResult {
+    assert!(
+        !capture_snapshot,
+        "hydrolysis snapshot: an engine-presented window surface is not \
+         readable — the engine documents an Apple window surface as \
+         non-readable, so a Snapshot reader is a programming error"
+    );
+    let (width, height) = surface.size();
+    let context = surface.device_loss().gpu_context();
+    let render_started_at = Instant::now();
+    let engine_frame = crate::engine::engine_await!(render(
+        renderer,
+        crate::renderer::FrameRenderTarget {
+            adapter: surface.adapter(),
+            device: surface.device(),
+            queue: surface.queue(),
+            device_loss: surface.device_loss().clone(),
+            gpu_context_id: context.context_id,
+            shared_device: context.shared_device,
+            display_scale,
+            headroom: surface.display_headroom(),
+            // The engine presents through its own Metal layers; their
+            // attachments are the working float format.
+            format: wgpu::TextureFormat::Rgba16Float,
+            width,
+            height,
+            base_color: crate::renderer::working_color(clear_color),
+            engine_window: Some(surface.engine_window()),
+        },
+    ))
+    .unwrap_or_else(|error| {
+        panic!("hydrolysis renderer: engine render failed: {error:#}")
+    });
+    drop(engine_frame);
+    let render = render_started_at.elapsed();
+    #[cfg(feature = "frame-profile")]
+    {
+        renderer.finish_gpu_frame_profile(context.context_id, surface.device(), surface.queue());
+    }
+    SurfaceRenderResult {
+        acquire: render_started_at.elapsed().saturating_sub(render),
+        render,
+        present: render_started_at.elapsed().saturating_sub(render),
+        snapshot: None,
+    }
     }
 }
 

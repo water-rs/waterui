@@ -62,6 +62,11 @@ pub struct FrameRenderTarget<'a> {
     pub width: u32,
     pub height: u32,
     pub base_color: waterui_graphics::draw::WorkingColor,
+    /// The window the engine presents through — `Some` only for an
+    /// engine-presented window (the macOS winit window, #2223): the surface
+    /// is built as a `cherenkov_gpu::WindowTarget` from these inputs.
+    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    pub engine_window: Option<crate::platform::EngineWindowTarget>,
 }
 
 impl<'a> HydrolysisRenderTarget<'a> {
@@ -83,6 +88,8 @@ impl<'a> HydrolysisRenderTarget<'a> {
             width: self.width,
             height: self.height,
             base_color: self.base_color,
+            #[cfg(all(target_os = "macos", hydrolysis_winit))]
+            engine_window: None,
         }
     }
 }
@@ -211,7 +218,14 @@ impl HydrolysisRenderer {
         ));
         let context_id = target.gpu_context_id;
         let replace = self.cherenkov_window.as_ref().is_none_or(|window| {
-            window.context_id != context_id || window.device_loss.is_lost()
+            let outdated = window.context_id != context_id || window.device_loss.is_lost();
+            #[cfg(all(target_os = "macos", hydrolysis_winit))]
+            // A transparency change is a different `WindowTarget`: the
+            // engine surface is rebuilt with the new composite alpha.
+            let outdated = outdated
+                || window.engine_window_transparent
+                    != target.engine_window.as_ref().map(|w| w.transparent);
+            outdated
         });
         if replace {
             if self.cherenkov_window.is_some() {
@@ -247,9 +261,17 @@ impl HydrolysisRenderer {
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 0);
 
         window.surface.resize((target.width, target.height));
-        window
-            .surface
-            .display(target.display_scale, target.headroom);
+        #[cfg(all(target_os = "macos", hydrolysis_winit))]
+        let headroom = if target.engine_window.is_some() {
+            // The engine's output probe reports the display's headroom;
+            // sampled on main and fed back through `Surface::display`.
+            window.surface.probed_headroom()
+        } else {
+            target.headroom
+        };
+        #[cfg(not(all(target_os = "macos", hydrolysis_winit)))]
+        let headroom = target.headroom;
+        window.surface.display(target.display_scale, headroom);
         window.surface.clear_color(target.base_color);
 
         let roots = self.mount_roots();
@@ -308,6 +330,10 @@ pub struct CherenkovWindow {
     pub(crate) state: Rc<crate::engine::SharedEngineState>,
     context_id: u64,
     device_loss: crate::platform::DeviceLoss,
+    /// The `WindowTarget::transparent` input the surface was built with on
+    /// an engine-presented window; a change rebuilds the surface.
+    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    engine_window_transparent: Option<bool>,
     #[cfg(feature = "frame-profile")]
     pub(crate) gpu_profiler: Option<GpuFrameProfiler>,
 }
@@ -329,6 +355,38 @@ crate::engine::cfg_async_fn! {
             metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
             wake: Option<RedrawHandle>,
         ) -> Self {
+            #[cfg(all(target_os = "macos", hydrolysis_winit))]
+            let surface = if let Some(window) = &target.engine_window {
+                let target_window = cherenkov_gpu::WindowTarget::new(
+                    std::sync::Arc::clone(&window.window),
+                    (target.width, target.height),
+                )
+                .transparent(window.transparent);
+                crate::engine::CherenkovSurface::new_window(
+                    Rc::clone(&state.engine),
+                    target.device,
+                    target.adapter.get_info().backend,
+                    target_window,
+                    move || {
+                        if let Some(wake) = &wake {
+                            wake.request_redraw();
+                        }
+                    },
+                )
+            } else {
+                crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
+                    Rc::clone(&state.engine),
+                    target.device,
+                    target.adapter.get_info().backend,
+                    (target.width, target.height),
+                    move || {
+                        if let Some(wake) = &wake {
+                            wake.request_redraw();
+                        }
+                    },
+                ))
+            };
+            #[cfg(not(all(target_os = "macos", hydrolysis_winit)))]
             let surface = crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
                 Rc::clone(&state.engine),
                 target.device,
@@ -356,6 +414,8 @@ crate::engine::cfg_async_fn! {
                 state,
                 context_id: target.gpu_context_id,
                 device_loss: target.device_loss.clone(),
+                #[cfg(all(target_os = "macos", hydrolysis_winit))]
+                engine_window_transparent: target.engine_window.as_ref().map(|w| w.transparent),
                 #[cfg(feature = "frame-profile")]
                 gpu_profiler: GpuFrameProfiler::new(target.device),
             }
