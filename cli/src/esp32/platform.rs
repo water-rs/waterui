@@ -454,7 +454,7 @@ pub async fn qemu_esp32(project: &Project, chip: Esp32Chip, elf: &Path) -> eyre:
 
     let staging = tempfile::Builder::new()
         .prefix("waterui-esp32-qemu")
-        .tempdir()
+        .tempdir_in(host.temp_dir())
         .wrap_err("Failed to create QEMU staging directory")?;
     let flash_image = staging.path().join("flash.bin");
 

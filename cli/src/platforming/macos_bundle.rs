@@ -250,13 +250,19 @@ pub async fn sign_macos_app(
             } else {
                 "-"
             };
-            let plan = codesign_plan(app_path, identity, bundle_id.as_str(), None).await?;
+            let plan = codesign_plan(host, app_path, identity, bundle_id.as_str(), None).await?;
             run_sign_plan(host, plan).await
         }
         MacOsSigning::Distribution(distribution) => {
             let identity = developer_id_identity(host, &distribution.team_id).await?;
-            let plan =
-                codesign_plan(app_path, &identity, bundle_id.as_str(), Some(distribution)).await?;
+            let plan = codesign_plan(
+                host,
+                app_path,
+                &identity,
+                bundle_id.as_str(),
+                Some(distribution),
+            )
+            .await?;
             run_sign_plan(host, plan).await?;
             notarize_app(host, app_path, &distribution.notary_profile).await?;
             staple_app(host, app_path).await
@@ -380,8 +386,8 @@ struct HelperEntitlements {
 
 #[cfg(target_os = "macos")]
 impl HelperEntitlements {
-    fn new() -> eyre::Result<Self> {
-        let scratch = tempfile::tempdir()
+    fn new(host: &crate::toolchain::Host) -> eyre::Result<Self> {
+        let scratch = tempfile::tempdir_in(host.temp_dir())
             .wrap_err("a scratch directory for helper entitlements must be writable")?;
         let cef_jit = scratch.path().join("cef-helper.entitlements");
         plist::Value::Dictionary(plist::Dictionary::from_iter([(
@@ -414,6 +420,7 @@ struct CodesignPlan {
 /// on `smol::unblock` rather than the async executor.
 #[cfg(target_os = "macos")]
 async fn codesign_plan(
+    host: &Host,
     app_path: &Path,
     identity: &str,
     bundle_id: &str,
@@ -428,6 +435,7 @@ async fn codesign_plan(
         Seal::Development
     };
     let app_entitlements = distribution.and_then(|d| d.entitlements.clone());
+    let host = host.clone();
     smol::unblock(move || {
         let mut invocations = Vec::new();
         let mut helpers: Option<HelperEntitlements> = None;
@@ -435,7 +443,7 @@ async fn codesign_plan(
             let entitlements = match nested_entitlements(&nested) {
                 Some(NestedEntitlements::CefJit) => {
                     if helpers.is_none() {
-                        helpers = Some(HelperEntitlements::new()?);
+                        helpers = Some(HelperEntitlements::new(&host)?);
                     }
                     helpers.as_ref().map(|h| h.cef_jit.as_path())
                 }

@@ -268,7 +268,10 @@ pub(crate) async fn until_interrupt<T>(
 }
 
 fn init_cli_tracing() {
-    if std::env::var_os("RUST_LOG").is_none() {
+    if waterui_cli::toolchain::Host::current()
+        .env("RUST_LOG")
+        .is_none()
+    {
         return;
     }
 
