@@ -55,7 +55,7 @@ pub async fn ensure(project: &Path) -> io::Result<()> {
     if let Some(parent) = jar.parent() {
         fs::create_dir_all(parent).await?;
     }
-    fs::copy(&cached, &jar).await?;
+    crate::utils::copy_file_if_changed(&cached, &jar).await?;
     Ok(())
 }
 

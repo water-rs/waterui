@@ -290,7 +290,7 @@ pub(crate) async fn build_rust_lib_with_links(
 
     let target_dir = project.water_target_dir(options.linkage()).await?;
     let build = build.with_target_dir(target_dir.clone());
-    let built_target = match host_library {
+    let mut built_target = match host_library {
         // The shared runtime's lib build emits every crate type the
         // manifest declares — not a `--crate-type` selection, which
         // writes only the chosen artifact — because this build feeds
@@ -342,7 +342,7 @@ pub(crate) async fn build_rust_lib_with_links(
     if let Some(output_dir) = options.output_dir() {
         fs::create_dir_all(output_dir).await?;
         let dest_lib = output_dir.join(host_library.linked_file_name());
-        copy_file(&built_target.artifact, &dest_lib).await?;
+        crate::utils::copy_file_if_changed(&built_target.artifact, &dest_lib).await?;
         remove_superseded_host_library(output_dir, host_library).await?;
         if options.linkage() == RustLinkage::SharedRuntime {
             let libraries = RustDynamicLibraries::resolve(&built_target, &triple, project).await?;
@@ -430,9 +430,11 @@ pub(crate) async fn build_rust_lib_with_links(
 
     // The helper `[[bin]]` exists only when the manifest declared it — the
     // application's linked engine, not chromium alone — so the build gates
-    // on the manifest's own predicate or Cargo reports `no bin target`.
+    // on the manifest's own predicate or Cargo reports `no bin target`. Its
+    // `BuiltTarget` rides on this build's result so packaging reads the
+    // helper's own artifact, never a name reconstructed in a directory.
     if project.declares_cef_helper().await? {
-        build
+        let helper = build
             .clone()
             .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@executable_path/../Frameworks")
             .build_binary(
@@ -442,6 +444,7 @@ pub(crate) async fn build_rust_lib_with_links(
                 options.is_release(),
             )
             .await?;
+        built_target.cef_helper = Some(Box::new(helper));
     }
 
     Ok((built_target, Vec::new()))
@@ -786,6 +789,7 @@ pub async fn package_apple(
             artifact: layout.executable_file(&product_name),
             shared_runtime: built.shared_runtime.clone(),
             app_library: None,
+            cef_helper: None,
         };
         let libraries = RustDynamicLibraries::resolve(&bin_built, &triple, project).await?;
         libraries.stage(&layout.frameworks_dir).await?;
@@ -817,12 +821,14 @@ pub async fn package_apple(
         // chromium alone stages the runtime but builds no helper.
         if project.declares_cef_helper().await? {
             let main_binary = layout.executable_file(&product_name);
-            let helper_binary = built.profile_dir.join(
-                crate::project_model::project_types::cef_helper_binary_name(
-                    project.ffi_crate_name().as_str(),
-                ),
-            );
-            package_cef_helper_app(&app_path, &main_binary, &helper_binary, &bundle_id).await?;
+            let helper_binary = built
+                .cef_helper
+                .as_ref()
+                .map(|helper| helper.artifact.as_path())
+                .ok_or_else(|| {
+                    eyre::eyre!("the project declares a CEF helper but the build produced none")
+                })?;
+            package_cef_helper_app(&app_path, &main_binary, helper_binary, &bundle_id).await?;
         }
     }
 

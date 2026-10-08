@@ -1093,21 +1093,18 @@ impl ResolvedFramework {
             .await?
             .parse()?;
         // Cargo resolves a member's lockfile at the workspace root, so the
-        // seed has to land there — a `Cargo.lock` written into a member
-        // directory (a preview module under `managed_backends/ffi/modules`)
-        // is never read (#197).
-        let workspace_root = {
-            let manifest_dir = directory.to_path_buf();
-            smol::unblock(move || {
-                cargo_metadata::MetadataCommand::new()
-                    .current_dir(manifest_dir)
-                    .no_deps()
-                    .exec()
-            })
-            .await?
-            .workspace_root
-            .into_std_path_buf()
-        };
+        // seed has to land there — writing it into the member directory is
+        // never read (#197).
+        let manifest_dir = directory.to_path_buf();
+        let workspace_root = smol::unblock(move || {
+            cargo_metadata::MetadataCommand::new()
+                .current_dir(manifest_dir)
+                .no_deps()
+                .exec()
+        })
+        .await?
+        .workspace_root
+        .into_std_path_buf();
         let lock_path = workspace_root.join("Cargo.lock");
         let previous: Option<Lockfile> = match smol::fs::read_to_string(&lock_path).await {
             Ok(contents) => Some(contents.parse()?),
@@ -1115,11 +1112,8 @@ impl ResolvedFramework {
             Err(error) => return Err(error.into()),
         };
         let allow_new = previous.as_ref().is_none_or(|previous| {
-            let previous: BTreeSet<_> = previous
-                .packages
-                .iter()
-                .map(LockedDependency::from)
-                .collect();
+            let previous: BTreeSet<_> =
+                previous.packages.iter().map(LockedDependency::from).collect();
             project_lock
                 .packages
                 .iter()
@@ -1136,8 +1130,7 @@ impl ResolvedFramework {
             .map(|contents| self.cargo_lock(contents))
             .transpose()?;
         // Every identity an input lock records is an acceptable resolution
-        // outcome — a second version beside a locked one is an addition, not
-        // a change — so `allowed` still sees all three locks.
+        // outcome — `allowed` still sees all three locks.
         let allowed = self.allowed_packages(
             previous
                 .iter()
@@ -1146,17 +1139,18 @@ impl ResolvedFramework {
                 .chain(project_lock.packages.iter()),
         );
         let packages = seed_packages(canonical_lock.as_ref(), &project_lock, previous.as_ref());
-        let mut seed = project_lock;
-        seed.packages = packages;
-        smol::fs::write(&lock_path, seed.to_string()).await?;
+        let seed = Lockfile { packages, ..project_lock };
+        // Write only when the resolution itself changed — emit churn dirties
+        // every `rerun-if-changed` input downstream (#2073).
+        if previous.as_ref().is_none_or(|p| !lockfile_semantically_equal(p, &seed)) {
+            smol::fs::write(&lock_path, seed.to_string()).await?;
+        }
         let root = directory.to_path_buf();
         let features = features.to_vec();
         let result = async {
-            // A previous lock resolved without the canonical pins can carry a
-            // generation the seeded locks contradict — an `accesskit_winit`
-            // wanting an `accesskit` newer than the pin the channel certifies
-            // (#203). That is the project's state, not something to resolve
-            // past: name it and say how the seed is regenerated.
+            // A previous lock resolved without the canonical pins can
+            // contradict the seeded locks (#203). That is the project's
+            // state: name it and say how the seed is regenerated.
             let metadata = managed_crate_metadata(&root, &features)
                 .await
                 .map_err(|error| {
@@ -1187,7 +1181,8 @@ impl ResolvedFramework {
         }.await;
         if let Err(error) = &result {
             let restore = if let Some(previous) = previous {
-                smol::fs::write(&lock_path, previous.to_string()).await
+                let restored = previous.to_string();
+                crate::templates::write_file_if_changed(&lock_path, restored.as_bytes()).await
             } else {
                 smol::fs::remove_file(&lock_path).await
             };
@@ -1747,6 +1742,31 @@ pub(crate) fn seed_packages(
     }
     packages.extend(rest.into_values());
     packages
+}
+
+/// Whether two parsed lockfiles record the same resolution: the same lockfile
+/// version, root, metadata, and packages — names, versions, sources,
+/// checksums, and dependency lists — plus the same unused patches.
+///
+/// Package order is an emit detail, and `[[patch.unused]]` order is Cargo's
+/// own nondeterminism — Cargo re-orders the table in hash-map order on every
+/// re-emit, so a byte comparison reports churn that is not a change (#2073).
+pub(crate) fn lockfile_semantically_equal(a: &Lockfile, b: &Lockfile) -> bool {
+    if a.version != b.version || a.root != b.root || a.metadata != b.metadata {
+        return false;
+    }
+    let mut packages_a = a.packages.clone();
+    let mut packages_b = b.packages.clone();
+    packages_a.sort();
+    packages_b.sort();
+    if packages_a != packages_b {
+        return false;
+    }
+    let mut unused_a = a.patch.unused.clone();
+    let mut unused_b = b.patch.unused.clone();
+    unused_a.sort();
+    unused_b.sort();
+    unused_a == unused_b
 }
 
 /// `dev` has no certification; the repository tree's own gitlinks record which
@@ -5800,5 +5820,73 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
                 .to_string();
             assert!(message.contains("dev"), "{message} must name dev");
         }
+    }
+
+    /// `[[patch.unused]]` order is Cargo's own emit nondeterminism — it
+    /// re-orders the table in hash-map order on every re-emit — and package
+    /// order is an emit detail as well: a pure reorder of either reports
+    /// equal, while a different resolution — checksum, version, dependency
+    /// list, or patch membership — does not (#2073).
+    #[test]
+    fn lockfile_semantically_equal_ignores_emit_order() {
+        fn package(name: &str, version: &str, checksum: char, dependencies: &str) -> String {
+            format!(
+                "[[package]]\n\
+                 name = \"{name}\"\n\
+                 version = \"{version}\"\n\
+                 source = \"registry+https://github.com/rust-lang/crates.io-index\"\n\
+                 checksum = \"{}\"\n\
+                 dependencies = [{dependencies}]\n\n",
+                checksum.to_string().repeat(64)
+            )
+        }
+        fn patch_entry(name: &str, version: &str) -> String {
+            format!(
+                "[[patch.unused]]\n\
+                 name = \"{name}\"\n\
+                 version = \"{version}\"\n\
+                 source = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n"
+            )
+        }
+        fn lockfile(body: &str) -> Lockfile {
+            format!("version = 4\n\n{body}")
+                .parse()
+                .expect("the fixture lockfile parses")
+        }
+
+        let alpha = package("alpha", "1.0.0", 'a', "\n    \"beta\",\n");
+        let beta = package("beta", "2.0.0", 'b', "");
+        let gamma = patch_entry("gamma", "3.0.0");
+        let delta = patch_entry("delta", "4.0.0");
+        let base = lockfile(&format!("{alpha}{beta}{gamma}{delta}"));
+
+        // Package order and `[[patch.unused]]` order are emit details.
+        let reordered = lockfile(&format!("{beta}{alpha}{delta}{gamma}"));
+        assert!(
+            lockfile_semantically_equal(&base, &reordered),
+            "a pure emit reorder must report equal"
+        );
+
+        // A different checksum, version, or dependency list is a different
+        // resolution.
+        let changed_checksum = lockfile(&format!(
+            "{alpha}{}{gamma}{delta}",
+            package("beta", "2.0.0", 'c', "")
+        ));
+        assert!(!lockfile_semantically_equal(&base, &changed_checksum));
+        let changed_version = lockfile(&format!(
+            "{alpha}{}{gamma}{delta}",
+            package("beta", "2.0.1", 'b', "")
+        ));
+        assert!(!lockfile_semantically_equal(&base, &changed_version));
+        let changed_dependencies = lockfile(&format!(
+            "{}{gamma}{delta}",
+            package("alpha", "1.0.0", 'a', "")
+        ));
+        assert!(!lockfile_semantically_equal(&base, &changed_dependencies));
+
+        // A dropped patch entry is not a reorder.
+        let dropped_patch = lockfile(&format!("{alpha}{beta}{gamma}"));
+        assert!(!lockfile_semantically_equal(&base, &dropped_patch));
     }
 }

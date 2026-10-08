@@ -315,6 +315,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
             &output.stdout,
             &project.root().join("Cargo.toml"),
         )?,
+        cef_helper: None,
     })
 }
 

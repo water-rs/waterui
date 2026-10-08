@@ -52,9 +52,9 @@ pub async fn build_winui(project: &Project, options: BuildOptions) -> eyre::Resu
     // backend compiles. Assets and fonts stage after the build instead: the
     // mount metadata they need is read from the library artifact this build
     // produces.
-    fs::write(
-        backend_path.join("app-icon.ico"),
-        assets::project_windows_ico(project)?,
+    crate::templates::write_file_if_changed(
+        &backend_path.join("app-icon.ico"),
+        &assets::project_windows_ico(project)?,
     )
     .await?;
 
@@ -231,7 +231,7 @@ async fn copy_dir(source: &Path, destination: &Path) -> eyre::Result<()> {
             if entry.path().is_dir() {
                 stack.push((entry.path(), target));
             } else {
-                fs::copy(entry.path(), &target).await?;
+                crate::utils::copy_file_if_changed(entry.path(), &target).await?;
             }
         }
     }

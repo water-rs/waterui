@@ -567,7 +567,7 @@ fn preview_run_options(platform: PreviewPlatform) -> RunOptions {
 
 async fn write_dylib_signature(path: &Path, signature: &str) -> Result<()> {
     let signature_path = dylib_signature_path(path);
-    smol::fs::write(signature_path, signature.as_bytes()).await?;
+    crate::templates::write_file_if_changed(&signature_path, signature.as_bytes()).await?;
     Ok(())
 }
 

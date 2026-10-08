@@ -3704,30 +3704,63 @@ mod tests {
             .expect("seeding the managed lockfile should succeed");
         };
         let managed = || std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock");
+        // The seed path parses the recorded resolutions, so the fixtures are
+        // real lockfiles.
+        let lock = |name: &str, version: &str| {
+            format!("version = 4\n\n[[package]]\nname = \"{name}\"\nversion = \"{version}\"\n")
+        };
+        let pins_v1 = lock("pins", "1.0.0");
+        let pins_v1_with_ffi =
+            format!("{pins_v1}\n[[package]]\nname = \"ffi-entries\"\nversion = \"0.1.0\"\n");
+        let pins_v2 = lock("pins", "2.0.0");
 
         // No project lockfile: nothing to pin, the managed crate resolves on its own.
         seed();
         assert!(!managed_lock.exists());
 
-        std::fs::write(&project_lock, "pins v1").expect("project lock");
+        std::fs::write(&project_lock, &pins_v1).expect("project lock");
         seed();
-        assert_eq!(managed(), "pins v1");
+        assert_eq!(managed(), pins_v1);
 
         // Cargo rewrote the managed lockfile (pruned the project's unused entries,
         // added the FFI crate's own); an unchanged project lockfile leaves that alone.
-        std::fs::write(&managed_lock, "pins v1 + ffi entries").expect("managed lock");
+        std::fs::write(&managed_lock, &pins_v1_with_ffi).expect("managed lock");
         seed();
-        assert_eq!(managed(), "pins v1 + ffi entries");
+        assert_eq!(managed(), pins_v1_with_ffi);
 
         // The project re-resolved: the managed crate follows it.
-        std::fs::write(&project_lock, "pins v2").expect("project lock");
+        std::fs::write(&project_lock, &pins_v2).expect("project lock");
         seed();
-        assert_eq!(managed(), "pins v2");
+        assert_eq!(managed(), pins_v2);
 
         // A managed lockfile that went missing is re-seeded from the current pins.
         std::fs::remove_file(&managed_lock).expect("remove managed lock");
         seed();
-        assert_eq!(managed(), "pins v2");
+        assert_eq!(managed(), pins_v2);
+
+        // A pure `[[patch.unused]]` reorder is Cargo's own emit nondeterminism,
+        // not a new resolution: it re-seeds nothing (#2073).
+        let patch = |name: &str| {
+            format!(
+                "[[patch.unused]]\nname = \"{name}\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n"
+            )
+        };
+        std::fs::write(
+            ffi_dir.join(super::LOCKFILE_SEED),
+            format!("{pins_v2}{}{}", patch("b"), patch("a")),
+        )
+        .expect("seed copy");
+        std::fs::write(
+            &project_lock,
+            format!("{pins_v2}{}{}", patch("a"), patch("b")),
+        )
+        .expect("project lock");
+        seed();
+        assert_eq!(
+            managed(),
+            pins_v2,
+            "an emit reorder must not re-seed the managed lock"
+        );
     }
 
     /// A `waterui_path` ctx resolves `waterui-preview` through `cargo
@@ -4240,7 +4273,11 @@ fn render_dir_outputs(
 pub async fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<()> {
     match fs::read(path).await {
         Ok(existing) if existing == contents => return Ok(()),
-        Ok(_) | Err(_) => {}
+        Ok(_) => {}
+        // Only a missing file reads as "to be written" — any other read
+        // failure is an error of its own, not permission to overwrite.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
 
     fs::write(path, contents).await
@@ -6352,7 +6389,10 @@ pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
 /// Cargo rewrites `Cargo.lock` on every resolution, so the seed cannot be
 /// compared against it. A copy of the seed is kept as [`LOCKFILE_SEED`]
 /// instead, and the crate is re-seeded only when the project's lockfile
-/// differs from that copy, or when the crate has no `Cargo.lock` at all.
+/// records a different resolution than that copy — a pure `[[patch.unused]]`
+/// reorder is not a difference
+/// ([`crate::framework::lockfile_semantically_equal`]) — or when the crate
+/// has no `Cargo.lock` at all.
 /// A project without a lockfile has nothing to pin yet and is left to
 /// resolve on its own.
 ///
@@ -6378,8 +6418,14 @@ pub async fn seed_lockfile(
 
     let seed_copy = base_dir.join(LOCKFILE_SEED);
     let managed_lockfile = base_dir.join("Cargo.lock");
+    // Cargo re-orders `[[patch.unused]]` on every re-emit, so a byte
+    // comparison treats a pure reorder as a new resolution and re-seeds on
+    // every run; compare the parsed resolutions instead (#2073).
     let seeded_from = match fs::read(&seed_copy).await {
-        Ok(previous) => previous == seed,
+        Ok(previous) => crate::framework::lockfile_semantically_equal(
+            &parse_lockfile(&previous)?,
+            &parse_lockfile(&seed)?,
+        ),
         Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(error) => return Err(error),
     };
@@ -6387,40 +6433,49 @@ pub async fn seed_lockfile(
         return Ok(());
     }
 
-    let contents = match canonical {
+    let previous: Option<cargo_lock::Lockfile> = match fs::read(&managed_lockfile).await {
+        Ok(contents) => Some(parse_lockfile(&contents)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let (seeded, contents) = match canonical {
         // The project's pins do not name the packages only the managed crate
         // resolves; without the channel's certified pins Cargo takes whatever
         // the registry holds newest — an `accesskit` generation `Water.lock`
         // contradicts (#203).
         Some(canonical) => {
-            let project: cargo_lock::Lockfile = std::str::from_utf8(&seed)
-                .map_err(io::Error::other)?
-                .parse()
-                .map_err(io::Error::other)?;
-            let previous: Option<cargo_lock::Lockfile> = match fs::read(&managed_lockfile).await {
-                Ok(contents) => Some(
-                    std::str::from_utf8(&contents)
-                        .map_err(io::Error::other)?
-                        .parse()
-                        .map_err(io::Error::other)?,
-                ),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error),
-            };
+            let project = parse_lockfile(&seed)?;
             let mut merged = project.clone();
             merged.packages =
                 crate::framework::seed_packages(Some(canonical), &project, previous.as_ref());
-            merged.to_string().into_bytes()
+            let contents = merged.to_string().into_bytes();
+            (merged, contents)
         }
-        None => seed.clone(),
+        None => (parse_lockfile(&seed)?, seed.clone()),
     };
+    if previous
+        .as_ref()
+        .is_none_or(|previous| !crate::framework::lockfile_semantically_equal(previous, &seeded))
+    {
+        tracing::debug!(
+            lockfile = %project_lockfile.display(),
+            "seeding the managed crate's Cargo.lock from the project lockfile"
+        );
+        fs::write(&managed_lockfile, contents).await?;
+    }
+    if !seeded_from {
+        fs::write(&seed_copy, &seed).await?;
+    }
+    Ok(())
+}
 
-    tracing::debug!(
-        lockfile = %project_lockfile.display(),
-        "seeding the managed crate's Cargo.lock from the project lockfile"
-    );
-    fs::write(&managed_lockfile, contents).await?;
-    fs::write(&seed_copy, &seed).await
+/// Parse `contents` as a `Cargo.lock` — the format both Cargo and the CLI
+/// emit.
+fn parse_lockfile(contents: &[u8]) -> io::Result<cargo_lock::Lockfile> {
+    std::str::from_utf8(contents)
+        .map_err(io::Error::other)?
+        .parse()
+        .map_err(io::Error::other)
 }
 
 /// The `[patch]` tables of the `WaterUI` checkout at `waterui_path`, rebased
@@ -8139,5 +8194,61 @@ mod template_digest_tests {
             !hydrolysis_preview.contents().is_empty(),
             "the template the digest is meant to track must be non-empty"
         );
+    }
+}
+
+#[cfg(test)]
+mod write_file_if_changed_tests {
+    /// A rewrite with identical bytes must not touch the file: build scripts
+    /// watch generated files as `rerun-if-changed` inputs, so every rewrite
+    /// is a rebuild trigger whether or not the bytes moved (#2073).
+    #[test]
+    fn identical_bytes_leave_the_file_untouched() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let path = temporary.path().join("generated.rs");
+        smol::block_on(async {
+            super::write_file_if_changed(&path, b"same bytes")
+                .await
+                .expect("the first write lands");
+            // Pin mtime to a fixed past value so a rewrite — which always
+            // bumps mtime, whatever the filesystem granularity — is caught
+            // by the assertion below.
+            let past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .expect("open for set_modified")
+                .set_modified(past)
+                .expect("set mtime");
+            super::write_file_if_changed(&path, b"same bytes")
+                .await
+                .expect("the second write is a no-op");
+            assert_eq!(
+                std::fs::metadata(&path)
+                    .expect("metadata")
+                    .modified()
+                    .expect("mtime"),
+                past,
+                "unchanged bytes must not rewrite the file — a rewrite bumps mtime"
+            );
+        });
+    }
+
+    /// Different bytes do land: the helper is a write gate, not a no-op, and
+    /// a missing file is written rather than reported.
+    #[test]
+    fn changed_and_missing_files_are_written() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let path = temporary.path().join("generated.rs");
+        smol::block_on(async {
+            super::write_file_if_changed(&path, b"first")
+                .await
+                .expect("a missing file is written");
+            assert_eq!(std::fs::read(&path).expect("contents"), b"first");
+            super::write_file_if_changed(&path, b"second")
+                .await
+                .expect("changed bytes are written");
+            assert_eq!(std::fs::read(&path).expect("contents"), b"second");
+        });
     }
 }

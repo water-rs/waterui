@@ -155,7 +155,9 @@ pub struct BuiltTarget {
     pub profile_dir: PathBuf,
     /// The final artifact Cargo reported writing for the selected target —
     /// its own `compiler-artifact` message, not a name reconstructed under
-    /// the profile root.
+    /// the profile root. For a `--bin` build this is the variant-stable
+    /// `deps/<name>-<marker>` hard link of the reported `executable`, made
+    /// while the binary artifact lock was held.
     pub artifact: PathBuf,
     /// The `waterui-dylib` dynamic library Cargo reported, when this build
     /// produced one.
@@ -166,6 +168,12 @@ pub struct BuiltTarget {
     /// exports `crate::artifact_symbols::ArtifactSymbols` reads. `None` when
     /// no project is attached or Cargo reported no library unit for it.
     pub app_library: Option<PathBuf>,
+    /// The CEF helper `[[bin]]` the generated hydrolysis backend crate
+    /// builds next to the application binary — `Some` only on a hydrolysis
+    /// build whose project declared one. Its own `BuiltTarget` carries the
+    /// helper's `artifact` path, so packaging never reconstructs it from
+    /// this target's artifact directory.
+    pub cef_helper: Option<Box<Self>>,
 }
 
 impl BuiltTarget {
@@ -453,7 +461,7 @@ impl RustDynamicLibraries {
                 })?;
             return Ok(staged);
         }
-        crate::utils::copy_file(&self.waterui.source, &staged)
+        crate::utils::copy_file_if_changed(&self.waterui.source, &staged)
             .await
             .wrap_err_with(|| {
                 format!(
@@ -505,7 +513,7 @@ impl RustDynamicLibraries {
             if library.source == staged {
                 continue;
             }
-            crate::utils::copy_file(&library.source, &staged)
+            crate::utils::copy_file_if_changed(&library.source, &staged)
                 .await
                 .wrap_err_with(|| {
                     format!(
@@ -637,7 +645,7 @@ pub async fn stage_dxc_runtime(destination: &Path) -> eyre::Result<()> {
         let file_name = source.file_name().ok_or_else(|| {
             eyre::eyre!("dxc runtime path has no file name: {}", source.display())
         })?;
-        crate::utils::copy_file(&source, &destination.join(file_name))
+        crate::utils::copy_file_if_changed(&source, &destination.join(file_name))
             .await
             .wrap_err_with(|| {
                 format!(
@@ -1716,10 +1724,13 @@ impl RustBuild {
 
     /// Builds one named binary and returns its full output path.
     ///
-    /// The path is `<profile>/<name>` re-issued from the binary unit's own
-    /// rustc output — never Cargo's `executable` report alone, which a
-    /// `fresh` unit can leave naming bytes another build variant or a
-    /// same-named crate wrote. See [`Self::binary_artifact`].
+    /// The path is `deps/<name>-<marker>` — a hard link, taken under the
+    /// binary artifact lock, to the `executable` this run's
+    /// `compiler-artifact` message reported. The unhashed `<profile>/<name>`
+    /// uplift the message names is shared by every same-named unit in the
+    /// target directory, so it is only trusted while the lock is held; the
+    /// marked link stays this variant's bytes afterwards. See
+    /// [`binary_artifact_lock`] and [`marked_binary_artifact`].
     ///
     /// # Errors
     ///
@@ -1762,8 +1773,23 @@ impl RustBuild {
         // cache garbage collector from dropping the target mid-compile.
         let _target_lease = self.shared_target_lease().await?;
         let profile_dir = self.lib_output_dir(release).await?;
+        // The shared-target lease is a *shared* lease — concurrent `water`
+        // builds in this target directory are expected. For a `--bin` unit,
+        // hold an exclusive per-binary lock from before Cargo's invocation
+        // until its reported executable has been relinked under the
+        // variant-stable `deps/<name>-<marker>` name: a same-named binary
+        // build uplifts the same `<profile>/<name>`, so without the lock it
+        // could replace this run's bytes in the window between Cargo
+        // exiting and the relink.
+        let _artifact_lock = match cargo_target {
+            CargoTarget::Binary(name) => Some(binary_artifact_lock(&profile_dir, name).await?),
+            CargoTarget::Lib => None,
+        };
+        let user_rustflags = self
+            .user_rustflags(&self.project_cargo_config_files()?)
+            .await?;
         let mut output = self
-            .cargo_build_output(release, cargo_target, &profile_dir)
+            .cargo_build_output(release, cargo_target, &user_rustflags)
             .await?;
 
         if !output.status.success() {
@@ -1775,7 +1801,7 @@ impl RustBuild {
                 && self.clean_stale_cmake_build_dirs().await?
             {
                 output = self
-                    .cargo_build_output(release, cargo_target, &profile_dir)
+                    .cargo_build_output(release, cargo_target, &user_rustflags)
                     .await?;
                 combined = combined_build_output(&output);
             }
@@ -1784,7 +1810,7 @@ impl RustBuild {
                 match ensure_meson_installed_for_build().await {
                     Ok(()) => {
                         output = self
-                            .cargo_build_output(release, cargo_target, &profile_dir)
+                            .cargo_build_output(release, cargo_target, &user_rustflags)
                             .await?;
                     }
                     Err(install_err) => {
@@ -1810,15 +1836,8 @@ Automatic meson installation failed: {install_err}\n\n{}",
             ));
         }
 
-        let mut artifact = self
-            .select_artifact(
-                &output,
-                cargo_target,
-                release,
-                artifact_extension,
-                &profile_dir,
-            )
-            .await?;
+        let mut artifact =
+            reported_artifact(&output.stdout, &self.path, cargo_target, artifact_extension)?;
 
         // A dependency's final `dylib`/`cdylib` artifact uplifts to an
         // unhashed name (`deps/libwaterui_dylib.so`), so one filename serves
@@ -1833,9 +1852,19 @@ Automatic meson installation failed: {install_err}\n\n{}",
             release,
             cargo_target,
             artifact_extension,
-            &profile_dir,
+            &user_rustflags,
         )
         .await?;
+        // Relink under the still-held artifact lock: the `executable`
+        // report names the shared uplift, so the variant-stable path has
+        // to be taken while no same-named build can overwrite it.
+        let artifact = match cargo_target {
+            CargoTarget::Binary(name) => {
+                let marker = self.artifact_marker(release, cargo_target, &user_rustflags);
+                marked_binary_artifact(&artifact, &profile_dir, name, &marker, &self.triple).await?
+            }
+            CargoTarget::Lib => artifact,
+        };
 
         let shared_runtime = reported_shared_runtime(&output.stdout)?;
         let app_library = match self.project.as_ref() {
@@ -1849,6 +1878,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             artifact,
             shared_runtime,
             app_library,
+            cef_helper: None,
         })
     }
 
@@ -1869,7 +1899,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         release: bool,
         cargo_target: CargoTarget<'_>,
         artifact_extension: Option<&'static str>,
-        profile_dir: &Path,
+        user_rustflags: &[String],
     ) -> Result<(), RustBuildError> {
         let needed = needed_libraries_of(artifact).await?;
         let stale = stale_shared_dylib_packages(&output.stdout, &needed).await?;
@@ -1887,7 +1917,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             clean_cargo_package(&self.path, &unit.package, &target_dir).await?;
         }
         *output = self
-            .cargo_build_output(release, cargo_target, profile_dir)
+            .cargo_build_output(release, cargo_target, user_rustflags)
             .await?;
         if !output.status.success() {
             let combined = combined_build_output(output);
@@ -1898,103 +1928,14 @@ Automatic meson installation failed: {install_err}\n\n{}",
                 )),
             ));
         }
-        *artifact = self
-            .select_artifact(
-                output,
-                cargo_target,
-                release,
-                artifact_extension,
-                profile_dir,
-            )
-            .await?;
+        *artifact =
+            reported_artifact(&output.stdout, &self.path, cargo_target, artifact_extension)?;
         let needed = needed_libraries_of(artifact).await?;
         let unrecovered = stale_shared_dylib_packages(&output.stdout, &needed).await?;
         if !unrecovered.is_empty() {
             return Err(unrecoverable_shared_dylib_error(&unrecovered, &target_dir));
         }
         Ok(())
-    }
-
-    /// Resolve the binary this build's own `cargo rustc` wrote.
-    ///
-    /// Cargo uplifts the selected `--bin` unit to one unhashed
-    /// `<profile>/<name>` per target directory — a filename every build
-    /// variant of the crate shares, where a `fresh` unit uplifts nothing and
-    /// Cargo's `executable` report names whatever the last writer left
-    /// behind: an older feature set, different `RUSTFLAGS`, or a same-named
-    /// crate's binary. `cargo_build_output` therefore directs the unit's
-    /// link emit to `deps/<underscored>-<marker>` — a path no other build
-    /// configuration writes, on every Cargo artifact layout. That file is
-    /// the artifact: Cargo reporting success while the file it was asked to
-    /// write is absent is a bug, not a stale cache, so a missing file is a
-    /// hard error naming the expected path.
-    async fn binary_artifact(
-        &self,
-        output: &std::process::Output,
-        binary_name: &str,
-        release: bool,
-        cargo_target: CargoTarget<'_>,
-        profile_dir: &Path,
-        user_rustflags: &[String],
-    ) -> Result<PathBuf, RustBuildError> {
-        let suffix = executable_suffix(&self.triple);
-        let deps_artifact = marked_binary_deps_path(
-            profile_dir,
-            binary_name,
-            &self.artifact_marker(release, cargo_target, user_rustflags),
-            suffix,
-        );
-        if !deps_artifact.is_file() {
-            return Err(RustBuildError::FailToBuildRustLibrary(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "Cargo reported binary `{binary_name}` of {} but its expected artifact {} does not exist",
-                    self.path.join("Cargo.toml").display(),
-                    deps_artifact.display()
-                ),
-            )));
-        }
-        // Re-issue the unhashed uplift on every build so `<profile>/<name>` —
-        // the path every packager and launcher consumes — aliases this
-        // build's own output rather than whatever wrote there last.
-        uplift_binary(
-            &deps_artifact,
-            &profile_dir.join(format!("{binary_name}{suffix}")),
-        )
-        .await?;
-        reported_artifact(&output.stdout, &self.path, cargo_target, None)
-    }
-
-    /// The artifact the selected target produced in `output` — the library
-    /// Cargo reported for `--lib`, or this build's own rustc output for
-    /// `--bin` (see [`Self::binary_artifact`]).
-    async fn select_artifact(
-        &self,
-        output: &std::process::Output,
-        cargo_target: CargoTarget<'_>,
-        release: bool,
-        artifact_extension: Option<&'static str>,
-        profile_dir: &Path,
-    ) -> Result<PathBuf, RustBuildError> {
-        match cargo_target {
-            CargoTarget::Lib => {
-                reported_artifact(&output.stdout, &self.path, cargo_target, artifact_extension)
-            }
-            CargoTarget::Binary(name) => {
-                let user_rustflags = self
-                    .user_rustflags(&self.project_cargo_config_files()?)
-                    .await?;
-                self.binary_artifact(
-                    output,
-                    name,
-                    release,
-                    cargo_target,
-                    profile_dir,
-                    &user_rustflags,
-                )
-                .await
-            }
-        }
     }
 
     /// The artifact extension this build's `--crate-type` override produces,
@@ -2140,7 +2081,8 @@ Automatic meson installation failed: {install_err}\n\n{}",
 
     /// The union of the user's resolved rustflags and this build's own
     /// `rustc_flags`, handed to cargo through `CARGO_ENCODED_RUSTFLAGS`.
-    /// Returns the resolved user set for the artifact marker.
+    /// `user_rustflags` is the caller's resolved set — the same value
+    /// the artifact marker records, so it is computed once per build.
     ///
     /// Cargo resolves rustflags from mutually exclusive sources — an
     /// `RUSTFLAGS`/`CARGO_ENCODED_RUSTFLAGS` value discards every
@@ -2150,14 +2092,13 @@ Automatic meson installation failed: {install_err}\n\n{}",
     /// precedence decides what applies, the CLI's flags append on top,
     /// the encoded form survives spaces in either set, and the whole
     /// value lands in every unit fingerprint Cargo computes.
-    async fn apply_rustflags(
+    fn apply_rustflags(
         &self,
         cmd: &mut Command,
-        cargo_config_files: &[PathBuf],
-    ) -> Result<Vec<String>, RustBuildError> {
-        let user_rustflags = self.user_rustflags(cargo_config_files).await?;
+        user_rustflags: &[String],
+    ) -> Result<(), RustBuildError> {
         if self.rustc_flags.is_empty() {
-            return Ok(user_rustflags);
+            return Ok(());
         }
         let mut flags = cargo_config2::Flags::default();
         for flag in user_rustflags.iter().chain(&self.rustc_flags) {
@@ -2167,7 +2108,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             "CARGO_ENCODED_RUSTFLAGS",
             flags.encode().map_err(rustflags_resolution_error)?,
         );
-        Ok(user_rustflags)
+        Ok(())
     }
 
     async fn prepare_framework_build(&self) -> Result<bool, RustBuildError> {
@@ -2208,7 +2149,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         &self,
         release: bool,
         cargo_target: CargoTarget<'_>,
-        profile_dir: &Path,
+        user_rustflags: &[String],
     ) -> Result<std::process::Output, RustBuildError> {
         let framework = self.prepare_framework_build().await?;
         let crate_type_override = if cargo_target.accepts_crate_type_override() {
@@ -2217,8 +2158,10 @@ Automatic meson installation failed: {install_err}\n\n{}",
             None
         };
         let mut cmd = Command::new("cargo");
-        // A `--bin` unit always builds through `cargo rustc`: the trailing
-        // `-Cextra-filename` and `--emit link` pin where its artifact lands.
+        // A `--bin` unit always builds through `cargo rustc`: link flags for
+        // the final crate (`final_rustc_args`) can then be passed after `--`,
+        // where they reach only the selected unit's compilation and leave
+        // dependency fingerprints identical across link variants.
         let cargo_subcommand = if crate_type_override.is_some()
             || !self.final_rustc_args.is_empty()
             || matches!(cargo_target, CargoTarget::Binary(_))
@@ -2272,7 +2215,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         }
         let mut cmd = self.with_project_toolchain_env(cmd).await?;
 
-        let user_rustflags = self.apply_rustflags(cmd, &cargo_config_files).await?;
+        self.apply_rustflags(cmd, user_rustflags)?;
 
         configure_generated_crate_compilation(cmd);
 
@@ -2319,21 +2262,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             cmd = cmd.args(["--features", &self.features.join(",")]);
         }
 
-        if let CargoTarget::Binary(_) = cargo_target {
-            // `--emit link` names the deps/ artifact `binary_artifact`
-            // reads back, and rustc does not create the directory itself.
-            smol::fs::create_dir_all(profile_dir.join("deps"))
-                .await
-                .map_err(|error| {
-                    RustBuildError::FailToBuildRustLibrary(io::Error::other(format!(
-                        "failed to create the artifact directory {}: {error}",
-                        profile_dir.join("deps").display()
-                    )))
-                })?;
-        }
-
-        let trailing_args =
-            self.trailing_rustc_args(release, cargo_target, &user_rustflags, profile_dir);
+        let trailing_args = self.trailing_rustc_args(release, cargo_target, user_rustflags);
         if !trailing_args.is_empty() {
             cmd = cmd.arg("--").args(trailing_args);
         }
@@ -2378,21 +2307,22 @@ Automatic meson installation failed: {install_err}\n\n{}",
     }
 
     /// The arguments after `cargo rustc --`: this build's trailing rustc
-    /// arguments, and — for a `--bin` unit — `-Cextra-filename=-<marker>` plus
-    /// `--emit link=<deps path>`. Cargo gives a `cargo rustc` bin's link
-    /// artifact a layout-dependent home (`<profile>/deps/` on older Cargos,
-    /// `<profile>/build/<pkg>/<fingerprint>/out/` since Cargo's build-dir
-    /// layout) and reports only the unhashed `<profile>/<name>` uplift in its
-    /// JSON, so the emit flag names the artifact path directly: rustc writes
-    /// the file where [`Self::binary_artifact`] reads it, on every layout.
-    /// The deps directory it writes through is created by
-    /// [`Self::cargo_build_output`]; this function only composes arguments.
+    /// arguments — a `--crate-type` override on the library target, any
+    /// `final_rustc_args`, and for a `--bin` unit the build's marker as a
+    /// `--cfg`. The marker keeps each build variant its own Cargo unit:
+    /// Cargo 1.99's unit metadata covers features, rustflags and trailing
+    /// arguments, but not the manifest path or the process environment —
+    /// a same-named crate in a second directory reports `fresh` on its
+    /// first build and its `executable` names the first crate's bytes.
+    /// The marker must not rename or redirect the artifact: Cargo's
+    /// freshness check reads the output at `deps/<name>-<unit metadata>`,
+    /// so `-Cextra-filename` or `--emit link` leave that file missing
+    /// (`FailedToReadMetadata`) and the unit dirty on every run (#2073).
     fn trailing_rustc_args(
         &self,
         release: bool,
         cargo_target: CargoTarget<'_>,
         user_rustflags: &[String],
-        profile_dir: &Path,
     ) -> Vec<String> {
         let mut args = Vec::new();
         // A `--crate-type` override only has meaning for the library target;
@@ -2404,16 +2334,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
             args.push(crate_type.clone());
         }
         args.extend(self.final_rustc_args.iter().cloned());
-        if let CargoTarget::Binary(name) = cargo_target {
+        if let CargoTarget::Binary(_) = cargo_target {
             let marker = self.artifact_marker(release, cargo_target, user_rustflags);
-            args.push(format!("-Cextra-filename=-{marker}"));
-            let deps_artifact = marked_binary_deps_path(
-                profile_dir,
-                name,
-                &marker,
-                executable_suffix(&self.triple),
-            );
-            args.push(format!("--emit=link={}", deps_artifact.display()));
+            args.extend(["--cfg".to_owned(), format!("water_build_marker_{marker}")]);
         }
         args
     }
@@ -2557,14 +2480,21 @@ Automatic meson installation failed: {install_err}\n\n{}",
             })
     }
 
-    /// The `deps/` filename suffix `-Cextra-filename` gives a `--bin` unit's
-    /// own rustc output: a hash of the crate directory, the target and the
-    /// profile, the binary's name, and every compiler-shaping option this
-    /// build carries — features, the resolved rustflags set, environment
-    /// overrides and the trailing `cargo rustc` arguments. Two builds of the
-    /// same crate that differ in any of those never share the marker, so
-    /// their `deps/` outputs cannot alias one another the way the unhashed
-    /// `<profile>/<name>` uplift does.
+    /// The `--cfg` value distinguishing one build variant's `--bin` unit:
+    /// a hash of the crate directory, the target and the profile, the
+    /// binary's name, and every compiler-shaping option this build carries
+    /// — features, the resolved rustflags set, environment overrides and
+    /// the trailing `cargo rustc` arguments. Two builds of the same crate
+    /// that differ in any of those never share the marker, and neither do
+    /// two same-named crates in different directories: Cargo 1.99's unit
+    /// metadata covers features, rustflags and trailing rustc arguments,
+    /// but not the manifest path or the process environment — on this
+    /// toolchain a same-named crate in a second directory reports `fresh`
+    /// on its first build, its `executable` naming the first crate's
+    /// bytes. The marker folds those unhashed inputs into the unit so
+    /// each variant compiles, fingerprints and uplifts separately, and it
+    /// names the variant-stable `deps/<name>-<marker>` path
+    /// [`marked_binary_artifact`] relinks to.
     fn artifact_marker(
         &self,
         release: bool,
@@ -2687,12 +2617,7 @@ pub(crate) fn reported_artifact(
     cargo_target: CargoTarget<'_>,
     artifact_extension: Option<&'static str>,
 ) -> Result<PathBuf, RustBuildError> {
-    let manifest_path = dunce::canonicalize(crate_dir.join("Cargo.toml")).map_err(|error| {
-        RustBuildError::FailToBuildRustLibrary(io::Error::other(format!(
-            "failed to canonicalize {}: {error}",
-            crate_dir.join("Cargo.toml").display()
-        )))
-    })?;
+    let manifest_path = canonical_manifest_path(crate_dir)?;
     let mut artifacts = Vec::new();
     for artifact in compiler_artifacts(stdout)? {
         if cargo_target.matches(&artifact.target)
@@ -2702,6 +2627,125 @@ pub(crate) fn reported_artifact(
         }
     }
     reported_artifact_file(&artifacts, cargo_target, artifact_extension, &manifest_path)
+}
+
+/// An exclusive lock on the unhashed `<profile>/<name>` uplift a `--bin`
+/// build shares with every other same-named binary unit in this target
+/// directory.
+///
+/// `shared_target_lease` is a *shared* lease — concurrent `water` builds
+/// into this target directory are expected — so this lock file takes fs4's
+/// exclusive lock for the span from before Cargo's invocation to after the
+/// reported executable is relinked by [`marked_binary_artifact`]. A second
+/// same-named build then uplifts `<profile>/<name>` only after this build
+/// owns its bytes, and its own `executable` report names its own output.
+/// The lock is per binary name: unrelated builds proceed in parallel.
+async fn binary_artifact_lock(
+    profile_dir: &Path,
+    binary_name: &str,
+) -> Result<std::fs::File, RustBuildError> {
+    let lock_path = profile_dir.join(format!(".water-artifact-{binary_name}.lock"));
+    let profile_dir = profile_dir.to_path_buf();
+    smol::unblock(move || {
+        std::fs::create_dir_all(&profile_dir).map_err(RustBuildError::FailToBuildRustLibrary)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(RustBuildError::FailToBuildRustLibrary)?;
+        fs4::FileExt::lock(&file).map_err(RustBuildError::FailToBuildRustLibrary)?;
+        Ok(file)
+    })
+    .await
+}
+
+/// The variant-stable name of this `--bin` build's artifact: a hard link
+/// at `deps/<name>-<marker>` to the unhashed `<profile>/<name>` executable
+/// Cargo reported for this run.
+///
+/// The link — not a copy — must be made while [`binary_artifact_lock`] is
+/// held: the uplift name is shared, so a same-named build could re-uplift
+/// different bytes over it once the lock is gone. The marked name is
+/// stable afterwards: only a build hashing to the same marker rewrites
+/// it, and such a build produces the same unit's output. The link goes
+/// through a same-directory temporary plus `rename`, so a concurrent
+/// reader of the marked path sees either the previous or the new inode —
+/// never a partially written one. The hard link is required, with no copy
+/// fallback: a copy would publish an `artifact` name that stops tracking
+/// the unit's output, so a filesystem that cannot hard-link inside
+/// `deps/` fails the build rather than silently break that tracking.
+async fn marked_binary_artifact(
+    uplift: &Path,
+    profile_dir: &Path,
+    binary_name: &str,
+    marker: &str,
+    triple: &Triple,
+) -> Result<PathBuf, RustBuildError> {
+    let deps_dir = profile_dir.join("deps");
+    let suffix = executable_suffix(triple);
+    let marked_path = deps_dir.join(format!("{binary_name}-{marker}{suffix}"));
+    let staging = deps_dir.join(format!(".{binary_name}-{marker}{suffix}.tmp"));
+    smol::fs::create_dir_all(&deps_dir)
+        .await
+        .map_err(RustBuildError::FailToBuildRustLibrary)?;
+
+    // `rename` may do nothing when source and destination are links to
+    // the same file — macOS takes that no-op branch — which would leave
+    // the staging name behind on a same-inode relink. When the marked
+    // path already names this run's inode the link is already correct:
+    // drop any stale staging name instead.
+    if same_file(uplift, &marked_path).await? {
+        match smol::fs::remove_file(&staging).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(RustBuildError::FailToBuildRustLibrary(error)),
+        }
+        return Ok(marked_path);
+    }
+
+    match smol::fs::remove_file(&staging).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(RustBuildError::FailToBuildRustLibrary(error)),
+    }
+    smol::fs::hard_link(uplift, &staging)
+        .await
+        .map_err(RustBuildError::FailToBuildRustLibrary)?;
+    smol::fs::rename(&staging, &marked_path)
+        .await
+        .map_err(RustBuildError::FailToBuildRustLibrary)?;
+    Ok(marked_path)
+}
+
+/// Whether `a` and `b` name the same file — `false` when `b` does not
+/// exist, an error for any other stat failure.
+async fn same_file(a: &Path, b: &Path) -> Result<bool, RustBuildError> {
+    let a = a.to_path_buf();
+    let b = b.to_path_buf();
+    smol::unblock(move || {
+        let b_handle = match same_file::Handle::from_path(&b) {
+            Ok(handle) => handle,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(RustBuildError::FailToBuildRustLibrary(error)),
+        };
+        let a_handle =
+            same_file::Handle::from_path(&a).map_err(RustBuildError::FailToBuildRustLibrary)?;
+        Ok(a_handle == b_handle)
+    })
+    .await
+}
+
+/// The canonicalized `Cargo.toml` path of `crate_dir` — the spelling
+/// `compiler-artifact` messages report `manifest_path` in.
+fn canonical_manifest_path(crate_dir: &Path) -> Result<PathBuf, RustBuildError> {
+    dunce::canonicalize(crate_dir.join("Cargo.toml")).map_err(|error| {
+        RustBuildError::FailToBuildRustLibrary(io::Error::other(format!(
+            "failed to canonicalize {}: {error}",
+            crate_dir.join("Cargo.toml").display()
+        )))
+    })
 }
 
 /// Every `compiler-artifact` message in a cargo `--message-format=json`
@@ -2909,6 +2953,13 @@ fn reported_artifact_file(
         })
         .collect();
     let artifact = match cargo_target {
+        // Cargo re-uplifts the selected `--bin` unit to the unhashed
+        // `<profile>/<name>` on every run — `fresh` included — so
+        // `executable` names this run's own bytes. That only holds
+        // because the marker `--cfg` keeps every variant its own unit:
+        // without it a same-named crate at a different path reports
+        // `fresh` against the sibling's unit and `executable` names the
+        // sibling's bytes.
         CargoTarget::Binary(_) => artifacts
             .iter()
             .find_map(|artifact| artifact.executable.as_ref())
@@ -3397,25 +3448,6 @@ async fn clean_cargo_package(
     Ok(())
 }
 
-/// The `deps/` filename rustc writes for a `--bin` unit built with
-/// `-Cextra-filename=-<marker>`: `<underscored target name>-<marker><suffix>`.
-fn marked_binary_file_name(binary_name: &str, marker: &str, suffix: &str) -> String {
-    format!("{}-{marker}{suffix}", binary_name.replace('-', "_"))
-}
-
-/// The `deps/` path `--emit link` directs a `--bin` unit's artifact to, and
-/// the file the artifact check reads back.
-fn marked_binary_deps_path(
-    profile_dir: &Path,
-    binary_name: &str,
-    marker: &str,
-    suffix: &str,
-) -> PathBuf {
-    profile_dir
-        .join("deps")
-        .join(marked_binary_file_name(binary_name, marker, suffix))
-}
-
 /// `RustBuildError` for the rustflags-resolution path: a malformed Cargo
 /// config file, a failed `rustc --print cfg`, or a flag that cannot be
 /// encoded.
@@ -3435,36 +3467,6 @@ fn executable_suffix(triple: &Triple) -> &'static str {
     } else {
         ""
     }
-}
-
-/// Replace `destination` with `artifact` — Cargo's own uplift mechanics: a
-/// hardlink, and a copy where the filesystem cannot link — so the unhashed
-/// `<profile>/<name>` alias names the artifact this build produced.
-async fn uplift_binary(artifact: &Path, destination: &Path) -> Result<(), RustBuildError> {
-    match smol::fs::remove_file(destination).await {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(RustBuildError::FailToBuildRustLibrary(io::Error::other(
-                format!(
-                    "failed to replace the uplifted binary {}: {error}",
-                    destination.display()
-                ),
-            )));
-        }
-    }
-    if smol::fs::hard_link(artifact, destination).await.is_err() {
-        smol::fs::copy(artifact, destination)
-            .await
-            .map_err(|error| {
-                RustBuildError::FailToBuildRustLibrary(io::Error::other(format!(
-                    "failed to copy the built binary {} to {}: {error}",
-                    artifact.display(),
-                    destination.display()
-                )))
-            })?;
-    }
-    Ok(())
 }
 
 fn combined_build_output(output: &std::process::Output) -> String {
@@ -3567,8 +3569,7 @@ mod tests {
         BuildOptions, BuildProfile, BuiltTarget, CargoTarget, CompileEvent, RustBuild,
         RustDynamicLibraries, RustLinkage, classify_compile_line, combined_build_output,
         dynamic_library_file_name, executable_suffix, lib_extension_for_triple,
-        marked_binary_deps_path, reported_shared_runtime, resolve_dxc_runtime_in,
-        resolve_rust_standard_library_in,
+        reported_shared_runtime, resolve_dxc_runtime_in, resolve_rust_standard_library_in,
     };
 
     fn shared_runtime_artifact_json(
@@ -3645,6 +3646,7 @@ mod tests {
             artifact: temporary.path().join("app"),
             shared_runtime: None,
             app_library: None,
+            cef_helper: None,
         }
         .shared_runtime()
         .expect_err("missing runtime should fail");
@@ -4059,19 +4061,21 @@ mod tests {
         });
     }
 
-    /// Two same-named crates in different directories share one Cargo target:
-    /// the second build's fingerprint collides with the first's, so Cargo
-    /// reports it `fresh` and uplifts nothing — the `executable` it reports
-    /// still aliases the first crate's binary. The artifact the build
-    /// resolves must be the one this build's own rustc wrote.
+    /// Two same-named crates in different directories share one Cargo
+    /// target: Cargo 1.99's unit metadata omits the manifest path, so
+    /// without the marker the second build's fingerprint would collide
+    /// with the first's — reported `fresh`, its `executable` naming the
+    /// sibling's bytes. The marker `--cfg` keeps each source its own
+    /// unit, and the resolved artifact is the variant-stable
+    /// `deps/<name>-<marker>` link of the `executable` this run reported.
     #[test]
     fn binary_artifact_is_the_output_of_the_build_that_just_ran() {
         let temporary = tempdir().expect("tempdir");
         let shared_target = temporary.path().join("shared-target");
         let package = "demo-hydrolysis-deadbeef";
-        // Both crates' sources exist before either build runs: the second
-        // build's fingerprint then matches the first's recorded state, so
-        // Cargo reports it `fresh` and uplifts nothing.
+        // Both crates' sources exist before either build runs: each is its
+        // own unit under the marker, so `second` compiles against `first`'s
+        // unit rather than aliasing it.
         for (directory, marker) in [("first", "first"), ("second", "second")] {
             let crate_dir = temporary.path().join(directory).join("hydrolysis");
             std::fs::create_dir_all(crate_dir.join("src")).expect("crate dir");
@@ -4089,7 +4093,14 @@ mod tests {
             .expect("main.rs");
         }
         smol::block_on(async {
-            for (directory, marker) in [("first", "first"), ("second", "second")] {
+            // The third entry rebuilds `first`: its unit is `fresh` this
+            // time, and Cargo re-uplifts its `deps/` output over the
+            // sibling's bytes at the shared `<profile>/<name>` — the
+            // marked link keeps each variant's artifact stable regardless.
+            let mut artifacts = Vec::new();
+            for (directory, marker) in
+                [("first", "first"), ("second", "second"), ("first", "first")]
+            {
                 let crate_dir = temporary.path().join(directory).join("hydrolysis");
                 let artifact = super::RustBuild::new(&crate_dir, Triple::host())
                     .with_target_dir(&shared_target)
@@ -4097,9 +4108,9 @@ mod tests {
                     .await
                     .expect("the generated crate builds")
                     .artifact;
-                // `<profile>/<name>` is one shared name per target directory,
-                // so each build's artifact runs before the next build writes
-                // the slot.
+                // `deps/<name>-<marker>`: the marked name is unique per
+                // variant — running it checks the slot carries this
+                // build's output whether the unit compiled or stayed fresh.
                 let ran = Command::new(&artifact)
                     .output()
                     .await
@@ -4109,17 +4120,26 @@ mod tests {
                     marker,
                     "the launched artifact is the build that just ran, not the sibling's"
                 );
+                artifacts.push(artifact);
             }
+            assert_ne!(
+                artifacts[0], artifacts[1],
+                "the marker separates the two same-named sources' artifacts"
+            );
+            assert_eq!(
+                artifacts[0], artifacts[2],
+                "the same variant relinks to the same marked path"
+            );
         });
     }
 
-    /// The resolved binary artifact is the `<profile>/<name>` uplift of the
-    /// file `--emit link=` directed at `<profile>/deps/<name>-<marker>` — an
-    /// explicit location that holds on every Cargo artifact layout — and a
-    /// rebuild overwrites that same file rather than leaving the earlier
-    /// build's bytes.
+    /// The resolved binary artifact is the variant-stable
+    /// `deps/<name>-<marker>` hard link of the reported `executable`.
+    /// The marker covers the build's identity, not its sources, so a
+    /// rebuild of the same crate relinks the same marked path to the new
+    /// run's bytes — never keeping the earlier build's.
     #[test]
-    fn binary_artifact_lives_at_the_explicit_deps_emit_path() {
+    fn binary_artifact_is_the_variant_stable_marked_link() {
         let temporary = tempdir().expect("tempdir");
         let shared_target = temporary.path().join("shared-target");
         let package = "demo-hydrolysis-deadbeef";
@@ -4132,6 +4152,7 @@ mod tests {
         .expect("manifest");
 
         smol::block_on(async {
+            let mut artifacts = Vec::new();
             for marker in ["first", "second"] {
                 smol::fs::write(
                     crate_dir.join("src/main.rs"),
@@ -4139,51 +4160,36 @@ mod tests {
                 )
                 .await
                 .expect("main.rs");
-                let build = super::RustBuild::new(&crate_dir, Triple::host())
-                    .with_target_dir(&shared_target);
-                let artifact = build
+                let artifact = super::RustBuild::new(&crate_dir, Triple::host())
+                    .with_target_dir(&shared_target)
                     .build_binary(package, false)
                     .await
                     .expect("the generated crate builds")
                     .artifact;
-                let profile_dir = artifact.parent().expect("profile dir").to_path_buf();
-                let uplift_name = format!("{package}{}", executable_suffix(&Triple::host()));
+                let file_name = artifact
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("artifact file name");
                 assert_eq!(
-                    artifact.file_name().and_then(|name| name.to_str()),
-                    Some(uplift_name.as_str()),
-                    "the resolved artifact is the re-issued unhashed uplift"
-                );
-
-                // The emit file this build's own rustc wrote, wherever this
-                // Cargo lays out unit outputs: the marker-suffixed artifact
-                // `deps/` carries is byte-identical to the uplift. The marker
-                // is resolved the way `select_artifact` resolves it — ambient
-                // RUSTFLAGS/CARGO_ENCODED_RUSTFLAGS feed the real build's
-                // marker too, so recomputing with an empty set would name a
-                // file this build never wrote.
-                let artifact_marker = build.artifact_marker(
-                    false,
-                    CargoTarget::Binary(package),
-                    &build
-                        .user_rustflags(&build.project_cargo_config_files().expect("config files"))
-                        .await
-                        .expect("the build's rustflags resolve"),
-                );
-                let emit = marked_binary_deps_path(
-                    &profile_dir,
-                    package,
-                    &artifact_marker,
-                    executable_suffix(&Triple::host()),
+                    artifact
+                        .parent()
+                        .and_then(|parent| parent.file_name())
+                        .and_then(|name| name.to_str()),
+                    Some("deps"),
+                    "the resolved artifact lives under deps/: {}",
+                    artifact.display()
                 );
                 assert!(
-                    emit.is_file(),
-                    "the emit path carries this build's marked artifact: {}",
-                    emit.display()
-                );
-                assert_eq!(
-                    smol::fs::read(&artifact).await.expect("uplift bytes"),
-                    smol::fs::read(&emit).await.expect("emit bytes"),
-                    "the uplift aliases the emit output, not stale bytes"
+                    file_name
+                        .strip_prefix(package)
+                        .and_then(|rest| rest.strip_prefix('-'))
+                        .is_some_and(|marked| {
+                            !marked
+                                .strip_suffix(executable_suffix(&Triple::host()))
+                                .unwrap_or(marked)
+                                .is_empty()
+                        }),
+                    "the resolved artifact is `deps/<name>-<marker><suffix>`: {file_name}"
                 );
 
                 let ran = Command::new(&artifact)
@@ -4193,9 +4199,75 @@ mod tests {
                 assert_eq!(
                     String::from_utf8_lossy(&ran.stdout).trim(),
                     marker,
-                    "the rebuild rewrote the emit path instead of leaving stale bytes"
+                    "the rebuild relinked the marked path instead of leaving stale bytes"
                 );
+                artifacts.push(artifact);
             }
+            assert_eq!(
+                artifacts[0], artifacts[1],
+                "the same build variant resolves the same marked path"
+            );
+        });
+    }
+
+    /// `marked_binary_artifact` hard-links the reported uplift to
+    /// `deps/<name>-<marker>` and replaces it atomically on the next call.
+    #[test]
+    fn marked_binary_artifact_relinks_the_uplift_to_the_marked_path() {
+        let temporary = tempdir().expect("tempdir");
+        let profile_dir = temporary.path().join("debug");
+        std::fs::create_dir_all(profile_dir.join("deps")).expect("deps dir");
+        let uplift = profile_dir.join("probe_bin");
+        std::fs::write(&uplift, b"first bytes").expect("uplift");
+
+        smol::block_on(async {
+            let marked = super::marked_binary_artifact(
+                &uplift,
+                &profile_dir,
+                "probe_bin",
+                "deadbeef",
+                &Triple::host(),
+            )
+            .await
+            .expect("the marked link is made");
+            let expected = format!("probe_bin-deadbeef{}", executable_suffix(&Triple::host()));
+            assert_eq!(
+                marked.file_name().and_then(|name| name.to_str()),
+                Some(expected.as_str()),
+            );
+            assert_eq!(
+                smol::fs::read(&marked).await.expect("marked artifact"),
+                b"first bytes"
+            );
+
+            // A second relink — as a same-variant build performs it —
+            // replaces the marked path with the new run's bytes atomically
+            // through the same-directory temporary and `rename`.
+            smol::fs::write(&uplift, b"second bytes")
+                .await
+                .expect("rewrite uplift");
+            let relinked = super::marked_binary_artifact(
+                &uplift,
+                &profile_dir,
+                "probe_bin",
+                "deadbeef",
+                &Triple::host(),
+            )
+            .await
+            .expect("the marked link is replaced");
+            assert_eq!(marked, relinked);
+            assert_eq!(
+                smol::fs::read(&relinked).await.expect("marked artifact"),
+                b"second bytes"
+            );
+            let staging = format!(
+                ".probe_bin-deadbeef{}.tmp",
+                executable_suffix(&Triple::host())
+            );
+            assert!(
+                !profile_dir.join("deps").join(&staging).exists(),
+                "no staging file is left behind"
+            );
         });
     }
 
@@ -5113,6 +5185,23 @@ mod tests {
             .with_env("CARGO_HOME", cargo_home)
     }
 
+    /// `cargo_build_output` for a probe build: resolves the user's
+    /// rustflags the way `build_inner` does once per build, then runs the
+    /// lib build so `RFPROBE` echoes the union rustc received.
+    async fn probe_build_output(build: &super::RustBuild) -> std::process::Output {
+        let config_files = build
+            .project_cargo_config_files()
+            .expect("project config files resolve");
+        let user_rustflags = build
+            .user_rustflags(&config_files)
+            .await
+            .expect("rustflags resolve");
+        build
+            .cargo_build_output(false, CargoTarget::Lib, &user_rustflags)
+            .await
+            .expect("the probe crate builds")
+    }
+
     /// The `RFPROBE=` marker's encoded value from the build output.
     fn probed_rustflags(output: &std::process::Output) -> String {
         let log = combined_build_output(output);
@@ -5143,10 +5232,11 @@ mod tests {
             )
             .expect("config");
 
-            let output = rustflags_probe_build(&crate_dir, &temporary.path().join("cargo-home"))
-                .cargo_build_output(false, CargoTarget::Lib, temporary.path())
-                .await
-                .expect("the probe crate builds");
+            let output = probe_build_output(&rustflags_probe_build(
+                &crate_dir,
+                &temporary.path().join("cargo-home"),
+            ))
+            .await;
 
             let rustflags = probed_rustflags(&output);
             let config = rustflags.find("--cfg=water_config_probe");
@@ -5183,10 +5273,11 @@ mod tests {
             )
             .expect("config");
 
-            let output = rustflags_probe_build(&crate_dir, &temporary.path().join("cargo-home"))
-                .cargo_build_output(false, CargoTarget::Lib, temporary.path())
-                .await
-                .expect("the probe crate builds");
+            let output = probe_build_output(&rustflags_probe_build(
+                &crate_dir,
+                &temporary.path().join("cargo-home"),
+            ))
+            .await;
 
             let rustflags = probed_rustflags(&output);
             assert!(
@@ -5207,11 +5298,11 @@ mod tests {
             let crate_dir = temporary.path().join("crate");
             rustflags_probe_crate(&crate_dir, "water_env_probe");
 
-            let output = rustflags_probe_build(&crate_dir, &temporary.path().join("cargo-home"))
-                .with_env("RUSTFLAGS", "--cfg=water_env_probe")
-                .cargo_build_output(false, CargoTarget::Lib, temporary.path())
-                .await
-                .expect("the probe crate builds");
+            let output = probe_build_output(
+                &rustflags_probe_build(&crate_dir, &temporary.path().join("cargo-home"))
+                    .with_env("RUSTFLAGS", "--cfg=water_env_probe"),
+            )
+            .await;
 
             let rustflags = probed_rustflags(&output);
             assert!(

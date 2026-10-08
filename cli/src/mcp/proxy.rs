@@ -37,7 +37,7 @@ use waterui_preview_protocol::hydrolysis::{MCP_RUN_CONFIG_ENV, McpRunConfig};
 use crate::build::{BuildOptions, BuildProfile};
 use crate::hydrolysis::backend::HydrolysisBackend;
 use crate::hydrolysis::platform::{
-    build_hydrolysis_with_envs_and_features, stage_hydrolysis_shared_runtime,
+    build_hydrolysis_with_envs_and_features, profile_binary_path, stage_hydrolysis_shared_runtime,
 };
 use crate::mcp::{host_platform, write_run_config};
 use crate::preview::hydrolysis::{
@@ -318,7 +318,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
     )
     .await?;
     stage_hydrolysis_shared_runtime(&project, &built, platform).await?;
-    let binary_path = &built.artifact;
+    let binary_path = profile_binary_path(&project, &built);
 
     let run_config = McpRunConfig {
         width: config.width,
@@ -330,7 +330,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
 
     // stdout is the MCP link — never inherit it; stderr flows straight to the
     // parent's stderr so app logs and build diagnostics stay visible.
-    let mut command = smol::process::Command::new(binary_path);
+    let mut command = smol::process::Command::new(&binary_path);
     command
         .kill_on_drop(true)
         .current_dir(&backend_path)

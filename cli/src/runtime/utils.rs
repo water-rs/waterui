@@ -308,17 +308,76 @@ pub(crate) fn parse_whitespace_separated_u32s(input: &str) -> Vec<u32> {
 pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
     let from = from.as_ref().to_path_buf();
     let to = to.as_ref().to_path_buf();
-    unblock(move || {
-        // `reflink_or_copy` refuses to overwrite; every caller expects the
-        // staged file at `to` to carry `from`'s contents afterwards.
-        match std::fs::remove_file(&to) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+    unblock(move || copy_file_overwriting(&from, &to)).await
+}
+
+/// Copy `from` onto `to` only when its bytes differ.
+///
+/// The write-on-change path for file-to-file copies — the counterpart of
+/// `crate::templates::write_file_if_changed` for byte buffers. A per-build
+/// staged copy that already carries the right bytes is left untouched, so
+/// its mtime never marks a managed output as fresh input to the next build.
+///
+/// An existing `to` that cannot be read is an error — only `NotFound`
+/// counts as absent, matching `write_file_if_changed`.
+///
+/// # Errors
+/// - If `from` or an existing `to` cannot be read, or the copy fails.
+pub async fn copy_file_if_changed(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+    let from = from.as_ref().to_path_buf();
+    let to = to.as_ref().to_path_buf();
+    unblock(move || copy_file_if_changed_sync(&from, &to)).await
+}
+
+/// The blocking form of [`copy_file_if_changed`], for call sites already
+/// inside `smol::unblock` or synchronous contexts.
+///
+/// # Errors
+/// - If `from` or an existing `to` cannot be read, or the copy fails.
+pub fn copy_file_if_changed_sync(from: &Path, to: &Path) -> io::Result<()> {
+    if files_identical(from, to)? {
+        return Ok(());
+    }
+    copy_file_overwriting(from, to)
+}
+
+fn copy_file_overwriting(from: &Path, to: &Path) -> io::Result<()> {
+    // `reflink_or_copy` refuses to overwrite; every caller expects the
+    // staged file at `to` to carry `from`'s contents afterwards.
+    match std::fs::remove_file(to) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    reflink_copy::reflink_or_copy(from, to).map(|_| ())
+}
+
+/// Whether `from` and `to` hold the same bytes — `false` when `to` does
+/// not exist, an error for any other read failure on either side.
+fn files_identical(from: &Path, to: &Path) -> io::Result<bool> {
+    use std::io::Read as _;
+
+    let mut to_file = match std::fs::File::open(to) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if to_file.metadata()?.len() != std::fs::metadata(from)?.len() {
+        return Ok(false);
+    }
+    let mut from_file = std::fs::File::open(from)?;
+    let mut from_buf = vec![0_u8; 64 * 1024].into_boxed_slice();
+    let mut to_buf = vec![0_u8; 64 * 1024].into_boxed_slice();
+    loop {
+        let from_read = from_file.read(&mut from_buf)?;
+        if from_read == 0 {
+            return Ok(true);
         }
-        reflink_copy::reflink_or_copy(from, to).map(|_| ())
-    })
-    .await
+        to_file.read_exact(&mut to_buf[..from_read])?;
+        if from_buf[..from_read] != to_buf[..from_read] {
+            return Ok(false);
+        }
+    }
 }
 
 #[cfg(test)]

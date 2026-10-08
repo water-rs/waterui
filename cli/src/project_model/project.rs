@@ -2928,7 +2928,7 @@ impl Manifest {
     pub async fn save(&self, dir: impl AsRef<Path>) -> Result<(), FailToSaveManifest> {
         let path = dir.as_ref().join("Water.toml");
         let content = toml::to_string_pretty(self).map_err(FailToSaveManifest::Serialize)?;
-        smol::fs::write(&path, content)
+        crate::templates::write_file_if_changed(&path, content.as_bytes())
             .await
             .map_err(FailToSaveManifest::Write)
     }
