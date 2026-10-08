@@ -24,7 +24,8 @@ use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::draw::{
     BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live,
-    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialShader, ShapeData,
+    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialShader,
+    OuterExtent, ShapeData, UnionSmoothing,
 };
 
 use super::mirror::{mirror_engine, no_shader_mount};
@@ -33,7 +34,7 @@ use super::{
 };
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
-use crate::renderer::mount::backdrop::ChromeScope;
+use crate::renderer::mount::backdrop::BackdropScope;
 use crate::renderer::mount::target::attach_material_shaders;
 
 /// The window, in points.
@@ -81,6 +82,7 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
             ),
         ],
         draws,
+        stateful_draws: None,
     }
 }
 
@@ -94,7 +96,8 @@ fn union_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
             scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
             levels: CaptureLevels::ONE,
             grouping: MaterialGrouping::Union {
-                smoothing: UNION_SMOOTHING,
+                smoothing: UnionSmoothing::new(UNION_SMOOTHING)
+                    .expect("the test smoothing is valid"),
             },
         },
     ));
@@ -193,7 +196,10 @@ fn mirror_chrome_layers(renderer: &crate::renderer::HydrolysisRenderer) -> Vec<c
 /// The window's chrome group table on the GPU mount.
 fn chrome_mount(
     runtime: &HeadlessRuntime,
-) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<cherenkov::BackdropGroup> {
+) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<
+    cherenkov::BackdropGroup,
+    cherenkov::BackdropShader,
+> {
     super::window_mount(runtime).chrome_groups()
 }
 
@@ -493,7 +499,7 @@ fn shared_members_in_one_scope_share_a_group() {
     assert!(
         matches!(
             chrome_mount(&runtime).chrome_scope(members[0]),
-            Some(ChromeScope::Scoped(_)),
+            Some(BackdropScope::Scoped(_)),
         ),
         "the members key under the enclosing material scope",
     );
@@ -520,7 +526,7 @@ fn solo_members_never_share() {
     assert!(
         matches!(
             chrome_mount(&runtime).chrome_scope(members[0]),
-            Some(ChromeScope::Solo(id)) if id == members[0],
+            Some(BackdropScope::Solo(id)) if id == members[0],
         ),
         "the solo key carries the member's own layer",
     );
@@ -818,7 +824,7 @@ fn union_members_share_one_group_on_one_union_field() {
     assert!(
         matches!(
             groups.chrome_scope(members[0]),
-            Some(ChromeScope::Scoped(_)),
+            Some(BackdropScope::Scoped(_)),
         ),
         "a Union class keys under the enclosing material scope",
     );
@@ -866,7 +872,9 @@ fn union_members_outside_every_scope_never_share() {
 fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
     let theme = MinimalTestTheme {
         chrome: union_plan(vec![ChromeDraw {
-            effect: Live::from(MaterialEffect::new(vec![0.5]).outer(3.0)),
+            effect: Live::from(
+                MaterialEffect::new(vec![0.5]).outer(OuterExtent::new(3.0).expect("non-negative")),
+            ),
             ..chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])
         }]),
         ..Default::default()
@@ -910,11 +918,32 @@ fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
     );
 }
 
-/// A union smoothing that is not positive panics at registration, the
-/// earliest point it is seen, naming the class.
+/// A union smoothing that is not finite or not positive is rejected by
+/// `UnionSmoothing` itself — an invalid value cannot reach a
+/// `MaterialGrouping::Union` registration.
 #[test]
-#[should_panic(expected = "union smoothing 0 is invalid")]
-fn an_invalid_union_smoothing_panics_at_registration() {
+fn an_invalid_union_smoothing_is_rejected_by_the_logical_type() {
+    assert_eq!(
+        UnionSmoothing::new(0.0),
+        Err(cherenkov_record::UnionSmoothingError::OutOfRange)
+    );
+    assert_eq!(
+        UnionSmoothing::new(f32::NAN),
+        Err(cherenkov_record::UnionSmoothingError::NonFinite)
+    );
+    assert_eq!(
+        UnionSmoothing::new(f32::INFINITY),
+        Err(cherenkov_record::UnionSmoothingError::NonFinite)
+    );
+}
+
+/// A valid logical union smoothing whose device-pixel conversion fails —
+/// here, overflowing `f32` — panics at group build inside the mounted
+/// commit, naming the class and the scale. The error is surfaced, never
+/// clamped.
+#[test]
+#[should_panic(expected = "invalid at display scale 4: the union smoothing is not finite")]
+fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
     let theme = MinimalTestTheme {
         chrome: {
             let mut plan = glass_plan(vec![chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])]);
@@ -923,46 +952,141 @@ fn an_invalid_union_smoothing_panics_at_registration() {
                 MaterialCapture {
                     scale: CaptureScale::FULL,
                     levels: CaptureLevels::ONE,
-                    grouping: MaterialGrouping::Union { smoothing: 0.0 },
+                    grouping: MaterialGrouping::Union {
+                        smoothing: UnionSmoothing::new(1e38).expect("finite and positive"),
+                    },
                 },
             ));
             plan
         },
         ..Default::default()
     };
-    let _renderer = test_renderer_with_theme(theme);
+    let mut renderer = test_renderer_with_theme(theme);
+    mirror_frame_at(&mut renderer, tap_view(), 4.0);
 }
 
-/// A valid logical union smoothing whose device-pixel conversion fails —
-/// here, overflowing `f32` — panics at group build, naming the class and
-/// the scale. The error is surfaced, never clamped.
+/// A non-finite or negative logical outer extent is rejected by
+/// `OuterExtent` itself — the same rule [`BackdropOuter`] enforces on the
+/// device-pixel value — so `MaterialEffect::outer` only takes valid ones.
 #[test]
-#[should_panic(expected = "invalid at display scale 4: the union smoothing is not finite")]
-fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
-    let capture = MaterialCapture {
-        scale: CaptureScale::FULL,
-        levels: CaptureLevels::ONE,
-        grouping: MaterialGrouping::Union { smoothing: 1e38 },
-    };
-    let _union = crate::renderer::mount::target::union_of(&capture, 4.0, UNION_GLASS);
-}
-
-/// A negative logical outer extent is rejected by `MaterialEffect::outer`
-/// itself — the same rule [`BackdropOuter`] enforces on the device-pixel
-/// value.
-#[test]
-#[should_panic(expected = "backdrop material outer extent -2 is invalid")]
-fn an_invalid_outer_extent_panics_in_the_effect() {
-    let _effect = MaterialEffect::new(vec![]).outer(-2.0);
+fn an_invalid_outer_extent_is_rejected_by_the_logical_type() {
+    assert_eq!(
+        OuterExtent::new(-2.0),
+        Err(cherenkov_record::OuterExtentError::Negative)
+    );
+    assert_eq!(
+        OuterExtent::new(f32::NAN),
+        Err(cherenkov_record::OuterExtentError::NonFinite)
+    );
+    assert_eq!(
+        OuterExtent::new(f32::INFINITY),
+        Err(cherenkov_record::OuterExtentError::NonFinite)
+    );
 }
 
 /// A finite logical outer extent whose device-pixel conversion overflows
-/// `f32` panics at conversion, naming the extent and the scale. The
-/// error is surfaced, never clamped.
+/// `f32` panics at the member's bind inside the mounted commit, naming
+/// the extent and the scale. The error is surfaced, never clamped.
 #[test]
 #[should_panic(
     expected = "outer extent 340282350000000000000000000000000000000 is invalid at display scale 2: the outer extent is not finite"
 )]
-fn an_outer_extent_that_overflows_device_pixels_panics_at_conversion() {
-    let _outer = crate::renderer::mount::target::outer_of(f32::MAX, 2.0);
+fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
+    let theme = MinimalTestTheme {
+        chrome: glass_plan(vec![ChromeDraw {
+            effect: Live::from(
+                MaterialEffect::new(vec![]).outer(OuterExtent::new(f32::MAX).expect("finite")),
+            ),
+            ..chrome_draw(GLASS, GLASS_SHADER, vec![])
+        }]),
+        ..Default::default()
+    };
+    let mut renderer = test_renderer_with_theme(theme);
+    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE);
+}
+
+/// Two members of one shared group carry different uniforms; a display-scale
+/// rebuild rebinds each member's own effect onto the new group — never the
+/// joining member's.
+#[test]
+fn a_scale_rebuild_keeps_each_members_own_effect() {
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+        chrome: glass_plan(vec![
+            chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
+            chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
+        ]),
+        ..Default::default()
+    });
+    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE);
+    let members = mirror_chrome_layers(&renderer);
+    assert_eq!(members.len(), 2, "the two draws mounted two members");
+
+    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE * 2.0);
+    let rebuilt = mirror_chrome_layers(&renderer);
+    assert_eq!(members, rebuilt, "the rebuild kept the member layers");
+    let uniforms: Vec<Vec<f32>> = rebuilt
+        .iter()
+        .map(|member| {
+            let node = mirrored_node(&renderer, *member);
+            let sample = node.backdrop.as_ref().expect("the member binds a sample");
+            let Some(BackdropEffect::Shader(effect)) = sample.effect() else {
+                panic!("the member's effect is its shader effect")
+            };
+            effect.uniforms.clone()
+        })
+        .collect();
+    assert_eq!(
+        uniforms,
+        [vec![1.0, 0.0], vec![0.0, 1.0]],
+        "each member kept its own uniforms across the rebuild",
+    );
+}
+
+/// A theme whose uniforms depend on `WidgetInteractionState`: a press
+/// re-records the chrome with new uniforms, and the member's rebound
+/// sample carries them — the re-record rebinds the new effect, not just
+/// the clip. (`stateful_draws` is how such a theme resolves its uniforms
+/// per draw from the live state; the flag stands in for the press.)
+#[test]
+fn a_re_record_rebinds_the_members_new_effect() {
+    let uniforms = std::rc::Rc::new(std::cell::Cell::new(0.0_f32));
+    let read = std::rc::Rc::clone(&uniforms);
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+        chrome: ChromePlan {
+            stateful_draws: Some(std::rc::Rc::new(move |_state| {
+                vec![chrome_draw(GLASS, GLASS_SHADER, vec![read.get()])]
+            })),
+            ..glass_plan(vec![])
+        },
+        ..Default::default()
+    });
+    mirror_frame(&mut renderer, tap_view());
+    let member = mirror_chrome_layers(&renderer)[0];
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer| {
+        let node = mirrored_node(renderer, member);
+        let Some(BackdropEffect::Shader(effect)) = node
+            .backdrop
+            .as_ref()
+            .expect("the member binds a sample")
+            .effect()
+        else {
+            panic!("the member's effect is its shader effect")
+        };
+        effect.uniforms.clone()
+    };
+    assert_eq!(bound(&renderer), [0.0]);
+
+    // The press re-record: the same key, a new effect.
+    uniforms.set(1.0);
+    mirror_frame(&mut renderer, tap_view());
+    assert_eq!(
+        bound(&renderer),
+        [1.0],
+        "the re-record rebound the member's new effect, not the old bind",
+    );
+    assert_eq!(
+        mirror_chrome_layers(&renderer),
+        [member],
+        "the re-record kept the member layer",
+    );
 }

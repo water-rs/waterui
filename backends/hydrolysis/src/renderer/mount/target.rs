@@ -12,10 +12,9 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, MaterialBackdropGroups,
-    MaterialMembership, MemberJoin,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    MaterialBackdropGroups, MaterialMembership, MemberJoin,
 };
-use crate::renderer::mount::program::ChromeMaterial;
 use crate::renderer::recording::SceneResources;
 
 /// A layer target: recorded runs land through `Transaction`, and the
@@ -31,7 +30,7 @@ pub trait LayerTarget: cherenkov::Target {
     /// The engine's backdrop-shader handle the material registry's
     /// sources resolve to at attach — `cherenkov::BackdropShader` on the
     /// GPU target.
-    type Shader: 'static;
+    type Shader: Clone + 'static;
 
     /// Whether the target's engine realizes backdrop shaders at all.
     /// `false` — a CPU engine — makes a [`Mount`](super::Mount::new)
@@ -94,8 +93,9 @@ pub trait LayerTarget: cherenkov::Target {
     /// `key` names, sharing the group's unfiltered capture with every
     /// member under the same `(scope, class, canvas)` key, rebuilding it
     /// when `display_scale` changes. `params` is the class's registered
-    /// capture terms; `chrome` carries the live shape and effect the
-    /// member binds (water-rs/waterui#1788).
+    /// capture terms; `payload` carries the member's own class, shader
+    /// handle and live effect — the terms the member binds and a group
+    /// rebuild rebinds (water-rs/waterui#1788).
     #[expect(
         clippy::too_many_arguments,
         reason = "one install hands the group's whole context at once"
@@ -103,13 +103,13 @@ pub trait LayerTarget: cherenkov::Target {
     fn mount_chrome(
         host: &Self::Host,
         tx: &mut Transaction<'_, Self>,
-        groups: &mut ChromeBackdropGroups<Self::Group>,
+        groups: &mut ChromeBackdropGroups<Self::Group, Self::Shader>,
         layer: &Layer,
         key: ChromeGroupKey,
         params: cherenkov_record::MaterialCapture,
         display_scale: f64,
         membership: &MaterialMembership,
-        chrome: &ChromeMaterial,
+        payload: ChromeMemberPayload<Self::Shader>,
     );
 
     /// Clears the backdrop membership [`mount_chrome`](Self::mount_chrome)
@@ -163,11 +163,14 @@ pub fn attach_material_shaders(
     registry
         .shaders()
         .map(|(key, source)| {
-            let shader = engine.backdrop_shader(source.clone()).unwrap_or_else(|error| {
-                panic!(
-                    "hydrolysis materials: backdrop shader {key:?} failed to register on the                      attached engine: {error}"
-                )
-            });
+            let shader = engine
+                .backdrop_shader(source.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "hydrolysis materials: backdrop shader {key:?} failed to register on the \
+                     attached engine: {error}"
+                    )
+                });
             (key, shader)
         })
         .collect()
@@ -289,6 +292,7 @@ impl LayerTarget for cherenkov_gpu::Gpu {
             MemberJoin {
                 layer,
                 membership,
+                payload: (),
                 resolve: super::layers::NodeLayers::frame_layer,
             },
             (
@@ -300,6 +304,7 @@ impl LayerTarget for cherenkov_gpu::Gpu {
                 },
                 |tx: &mut Transaction<'_, Self>,
                  layer,
+                 _payload: &(),
                  group: &cherenkov::BackdropGroup,
                  _scale| {
                     tx[layer].backdrop(group.sample());
@@ -319,30 +324,19 @@ impl LayerTarget for cherenkov_gpu::Gpu {
     fn mount_chrome(
         host: &CherenkovHost,
         tx: &mut Transaction<'_, Self>,
-        groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup>,
+        groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, cherenkov::BackdropShader>,
         layer: &Layer,
         key: ChromeGroupKey,
         params: cherenkov_record::MaterialCapture,
         display_scale: f64,
         membership: &MaterialMembership,
-        chrome: &ChromeMaterial,
+        payload: ChromeMemberPayload<cherenkov::BackdropShader>,
     ) {
         let surface = host
             .surface
             .upgrade()
             .expect("hydrolysis materials: the engine surface was dropped during its commit");
-        let shader = host
-            .materials
-            .shaders
-            .get(&chrome.material.shader())
-            .unwrap_or_else(|| {
-                panic!(
-                    "hydrolysis materials: backdrop shader {:?} is registered but has no handle                      on this engine — a theme's registry is registered at engine attach",
-                    chrome.material.shader(),
-                )
-            })
-            .clone();
-        let (_, effect) = chrome.material.lives();
+        let class = payload.class;
         groups.join(
             tx,
             key,
@@ -351,21 +345,27 @@ impl LayerTarget for cherenkov_gpu::Gpu {
             MemberJoin {
                 layer,
                 membership,
+                payload,
                 resolve: super::layers::NodeLayers::member_layer,
             },
             (
                 move |params, scale| {
                     let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels);
-                    if let Some(union) = union_of(params, scale, chrome.material.capture()) {
+                    if let Some(union) = union_of(params, scale, class) {
                         spec = spec.union(union);
                     }
                     surface.backdrop_group_unfiltered(spec)
                 },
-                move |tx, layer, group, scale| {
+                |tx,
+                 member,
+                 payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
+                 group,
+                 scale| {
                     let id = group.id();
-                    let shader = shader.clone();
-                    tx[layer].backdrop(
-                        effect
+                    let shader = payload.shader.clone();
+                    tx[member].backdrop(
+                        payload
+                            .effect
                             .clone()
                             .map(move |effect| group_sample_with(id, &shader, &effect, scale)),
                     );
@@ -395,11 +395,12 @@ pub fn union_of(
     let cherenkov_record::MaterialGrouping::Union { smoothing } = params.grouping else {
         return None;
     };
-    let device = f64::from(smoothing) * scale;
+    let device = f64::from(smoothing.get()) * scale;
     Some(
         cherenkov::BackdropUnion::new(crate::num_cast::f64_as_f32(device)).unwrap_or_else(|error| {
             panic!(
-                "hydrolysis materials: capture class {class:?} union smoothing {smoothing} is invalid at display scale {scale}: {error}"
+                "hydrolysis materials: capture class {class:?} union smoothing {} is invalid at display scale {scale}: {error}",
+                smoothing.get(),
             )
         }),
     )
@@ -411,11 +412,12 @@ pub fn union_of(
 /// # Panics
 /// Panics when `extent` converted to device pixels is not a valid
 /// [`BackdropOuter`]: its error is surfaced, never clamped.
-pub fn outer_of(extent: f32, scale: f64) -> cherenkov::BackdropOuter {
-    let device = f64::from(extent) * scale;
+pub fn outer_of(extent: cherenkov_record::OuterExtent, scale: f64) -> cherenkov::BackdropOuter {
+    let device = f64::from(extent.get()) * scale;
     cherenkov::BackdropOuter::new(crate::num_cast::f64_as_f32(device)).unwrap_or_else(|error| {
         panic!(
-            "hydrolysis materials: outer extent {extent} is invalid at display scale {scale}: {error}"
+            "hydrolysis materials: outer extent {} is invalid at display scale {scale}: {error}",
+            extent.get(),
         )
     })
 }

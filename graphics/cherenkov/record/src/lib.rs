@@ -75,7 +75,8 @@ pub use crate::image::{
 };
 pub use crate::material::{
     BackdropMaterial, CaptureClass, LayeredContent, MaterialCapture, MaterialEffect,
-    MaterialGrouping, MaterialRegistry, MaterialRun, MaterialScope, MaterialShader,
+    MaterialGrouping, MaterialRegistry, MaterialRun, MaterialScope, MaterialShader, OuterExtent,
+    OuterExtentError, UnionSmoothing, UnionSmoothingError,
 };
 pub use crate::ops::{
     AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,

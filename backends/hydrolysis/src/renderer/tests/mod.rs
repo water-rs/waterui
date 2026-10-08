@@ -2607,6 +2607,10 @@ pub struct ChromePlan {
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
     /// The materials `draw_interaction_state_layer` records per call.
     pub draws: Vec<ChromeDraw>,
+    /// When set, `draw_interaction_state_layer` records the materials
+    /// this resolves from the live `WidgetInteractionState` instead —
+    /// how a theme whose uniforms depend on the press is written.
+    pub stateful_draws: Option<Rc<dyn Fn(WidgetInteractionState) -> Vec<ChromeDraw>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2704,7 +2708,12 @@ impl WidgetTheme for MinimalTestTheme {
         state: WidgetInteractionState,
     ) {
         self.state_layer_draws.borrow_mut().push((state, radii));
-        for chrome in &self.chrome.draws {
+        let draws = self
+            .chrome
+            .stateful_draws
+            .as_ref()
+            .map_or_else(|| self.chrome.draws.clone(), |resolve| resolve(state));
+        for chrome in &draws {
             draw.backdrop_material(
                 chrome.shape.clone(),
                 chrome.shader,

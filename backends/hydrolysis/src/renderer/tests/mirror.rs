@@ -186,11 +186,12 @@ impl LayerTarget for MirrorTarget {
             MemberJoin {
                 layer,
                 membership,
+                payload: (),
                 resolve: NodeLayers::frame_layer,
             },
             (
                 |_runtime, _scale| key_id(&key),
-                |_tx, _member, _group, _scale| {},
+                |_tx, _member, _p: &(), _group, _scale| {},
             ),
         );
     }
@@ -202,24 +203,21 @@ impl LayerTarget for MirrorTarget {
     fn mount_chrome(
         host: &MirrorHost,
         tx: &mut Transaction<'_, Self>,
-        groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<BackdropId>,
+        groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<
+            BackdropId,
+            cherenkov::BackdropShader,
+        >,
         layer: &Layer,
         key: crate::renderer::mount::backdrop::ChromeGroupKey,
         params: cherenkov_record::MaterialCapture,
         display_scale: f64,
         membership: &crate::renderer::mount::backdrop::MaterialMembership,
-        chrome: &crate::renderer::mount::program::ChromeMaterial,
+        payload: crate::renderer::mount::backdrop::ChromeMemberPayload<cherenkov::BackdropShader>,
     ) {
         // The mirror's group id is the id its members' samples carry: the
         // install binds `BackdropSample::with_effect(id, …)` from the
-        // engine-side shader handle, exactly as the GPU target's.
-        let shader = host
-            .materials
-            .shaders
-            .get(&chrome.material.shader())
-            .expect("hydrolysis mirror: a mounted chrome member's shader is registered")
-            .clone();
-        let (_, effect) = chrome.material.lives();
+        // member's own payload, exactly as the GPU target's.
+        let class = payload.class;
         groups.join(
             tx,
             key,
@@ -228,28 +226,30 @@ impl LayerTarget for MirrorTarget {
             MemberJoin {
                 layer,
                 membership,
+                payload,
                 resolve: NodeLayers::member_layer,
             },
             (
-                |params: &cherenkov_record::MaterialCapture, scale| {
+                move |params: &cherenkov_record::MaterialCapture, scale| {
                     // The same union conversion the GPU target runs; a
                     // test reads the device-pixel result off the log.
                     host.union_log
                         .borrow_mut()
                         .push(crate::renderer::mount::target::union_of(
-                            params,
-                            scale,
-                            chrome.material.capture(),
+                            params, scale, class,
                         ));
                     key_id(&key)
                 },
-                move |tx: &mut Transaction<'_, Self>,
-                      member: &Layer,
-                      id: &BackdropId,
-                      scale: f64| {
+                |tx: &mut Transaction<'_, Self>,
+                 member: &Layer,
+                 payload: &crate::renderer::mount::backdrop::ChromeMemberPayload<
+                    cherenkov::BackdropShader,
+                >,
+                 id: &BackdropId,
+                 scale: f64| {
                     let id = *id;
-                    let shader = shader.clone();
-                    tx[member].backdrop(effect.clone().map(move |effect| {
+                    let shader = payload.shader.clone();
+                    tx[member].backdrop(payload.effect.clone().map(move |effect| {
                         crate::renderer::mount::target::group_sample_with(
                             id, &shader, &effect, scale,
                         )
@@ -405,7 +405,10 @@ impl MirrorWindow {
     /// The mirror's chrome group table.
     pub fn chrome_groups(
         &self,
-    ) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<BackdropId> {
+    ) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<
+        BackdropId,
+        cherenkov::BackdropShader,
+    > {
         self.mount.chrome_groups()
     }
 
@@ -519,13 +522,13 @@ impl LayerTarget for NoShaderTarget {
     fn mount_chrome(
         _host: &NoShaderHost,
         _tx: &mut Transaction<'_, Self>,
-        _groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<()>,
+        _groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<(), ()>,
         _layer: &Layer,
         _key: crate::renderer::mount::backdrop::ChromeGroupKey,
         _params: cherenkov_record::MaterialCapture,
         _display_scale: f64,
         _membership: &crate::renderer::mount::backdrop::MaterialMembership,
-        _chrome: &crate::renderer::mount::program::ChromeMaterial,
+        _payload: crate::renderer::mount::backdrop::ChromeMemberPayload<()>,
     ) {
     }
 }

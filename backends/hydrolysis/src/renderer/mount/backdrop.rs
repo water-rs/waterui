@@ -16,9 +16,7 @@ use std::rc::{Rc, Weak};
 use cherenkov::{Layer, LayerId, Transaction};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use std::num::NonZeroU64;
-
-use cherenkov_record::{CaptureClass, MaterialGrouping};
+use cherenkov_record::{CaptureClass, Live, MaterialEffect, MaterialGrouping};
 
 use crate::renderer::material::{MaterialRuntime, WithinWindowLevel};
 use crate::renderer::mount::{MaterialRequest, NodeCell};
@@ -84,29 +82,16 @@ impl BackdropGroupKey {
     }
 }
 
-/// What a chrome-material member's shared group is scoped to
-/// (water-rs/waterui#1788): the `MaterialScope` the recording was opened
-/// under, or the member's own layer when it is a group of its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ChromeScope {
-    /// A member outside every material scope, or of a `Solo` class:
-    /// a group of its own, keyed by its own layer.
-    Solo(LayerId),
-    /// The enclosing `.material_group()` scope's identity the members
-    /// share.
-    Scoped(NonZeroU64),
-}
-
 /// Which chrome group a material member joins: the tuple `(scope,
 /// capture class, install canvas)`. Members of one class inside one
 /// scope and one compositing canvas share one group — one capture, one
 /// chain; `Solo` members and members in different scopes, classes or
-/// canvases never share.
+/// canvases never share (water-rs/waterui#1788).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChromeGroupKey {
     /// The material scope the members share, or the member's own layer
     /// when it is a group of its own.
-    scope: ChromeScope,
+    scope: BackdropScope,
     /// The members' capture class: one group runs one class's chain.
     class: CaptureClass,
     /// The install canvas the members' content mounts under: `None`
@@ -129,8 +114,11 @@ impl ChromeGroupKey {
     ) -> Self {
         Self {
             scope: match scope.id() {
-                Some(scope) if grouping != MaterialGrouping::Solo => ChromeScope::Scoped(scope),
-                _ => ChromeScope::Solo(member),
+                Some(scope) if grouping != MaterialGrouping::Solo => BackdropScope::Scoped(
+                    usize::try_from(scope.get())
+                        .expect("hydrolysis materials: a scope id fits usize"),
+                ),
+                _ => BackdropScope::Solo(member),
             },
             class,
             canvas,
@@ -173,8 +161,12 @@ struct MemberMarker;
 /// membership its `NodeLayers` holds, and the cell owning those layers —
 /// the link a group rebuild follows to re-point the member's frame layer
 /// at the replacement group without waiting for the member's own commit.
-struct MemberEntry<K> {
+struct MemberEntry<K, M> {
     key: K,
+    /// The member's own binding payload — its shader handle and live
+    /// effect — kept so a group rebuild rebinds each member's own
+    /// sample, never the joining member's.
+    payload: M,
     marker: Weak<MemberMarker>,
     owner: Weak<NodeCell>,
 }
@@ -203,11 +195,14 @@ struct MountedBackdrop<P, G> {
 /// The member side of a [`BackdropGroups::join`]: the joining layer, its
 /// node's membership hold, and the resolver a group rebuild re-points
 /// the other members' live layers with.
-pub struct MemberJoin<'a, R> {
+pub struct MemberJoin<'a, R, M> {
     /// The member's frame layer.
     pub layer: &'a Layer,
     /// Its node's hold on the group: the rebuild sweeps through it.
     pub membership: &'a MaterialMembership,
+    /// The member's own binding payload, stored on its entry so a group
+    /// rebuild rebinds each member's own terms.
+    pub payload: M,
     /// Finds another member's live layer inside its node's layers.
     pub resolve: R,
 }
@@ -217,11 +212,11 @@ pub struct MemberJoin<'a, R> {
 /// material groups (`BackdropGroupKey` → `MaterialRuntime`) and the
 /// chrome groups (`ChromeGroupKey` → `MaterialCapture`) share one
 /// mechanism.
-pub struct BackdropGroups<K, P, G> {
+pub struct BackdropGroups<K, P, G, M> {
     groups: FxHashMap<K, MountedBackdrop<P, G>>,
-    members: FxHashMap<LayerId, MemberEntry<K>>,
+    members: FxHashMap<LayerId, MemberEntry<K, M>>,
 }
-impl<K: std::fmt::Debug, P: std::fmt::Debug, G> std::fmt::Debug for BackdropGroups<K, P, G> {
+impl<K: std::fmt::Debug, P: std::fmt::Debug, G, M> std::fmt::Debug for BackdropGroups<K, P, G, M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BackdropGroups")
             .field("groups", &self.groups.keys())
@@ -231,13 +226,29 @@ impl<K: std::fmt::Debug, P: std::fmt::Debug, G> std::fmt::Debug for BackdropGrou
 }
 
 /// The material groups a [`Mount`] keeps — one table per mount.
-pub type MaterialBackdropGroups<G> = BackdropGroups<BackdropGroupKey, MaterialRuntime, G>;
+pub type MaterialBackdropGroups<G> = BackdropGroups<BackdropGroupKey, MaterialRuntime, G, ()>;
+
+/// A chrome member's own binding terms (water-rs/waterui#1788): the
+/// shader's engine handle and the member's live effect. Stored on the
+/// member's table entry so a group rebuild — or a re-join on the same
+/// key — binds the member's own, never the joining member's.
+#[derive(Debug)]
+pub struct ChromeMemberPayload<S> {
+    /// The member's capture class — the union conversion names it in its
+    /// panic.
+    pub class: CaptureClass,
+    /// The shader's engine handle, resolved at attach.
+    pub shader: S,
+    /// The member's live effect: the sample's uniforms re-read as it
+    /// changes.
+    pub effect: Live<MaterialEffect>,
+}
 
 /// The chrome groups a [`Mount`] keeps (water-rs/waterui#1788).
-pub type ChromeBackdropGroups<G> =
-    BackdropGroups<ChromeGroupKey, cherenkov_record::MaterialCapture, G>;
+pub type ChromeBackdropGroups<G, S> =
+    BackdropGroups<ChromeGroupKey, cherenkov_record::MaterialCapture, G, ChromeMemberPayload<S>>;
 
-impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
+impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M> BackdropGroups<K, P, G, M> {
     pub(crate) fn new() -> Self {
         Self {
             groups: FxHashMap::default(),
@@ -262,10 +273,11 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
     ///
     /// `hooks` packs the target's two callbacks: `create` builds the
     /// target's group object from the parameters the key resolves to and
-    /// the display scale; `apply` installs a member layer on a group,
-    /// handed the display scale the group was built for — a member's
-    /// device-pixel terms convert at that scale, and a scale rebuild
-    /// re-runs it for every member.
+    /// the display scale; `apply` installs a member layer on a group from
+    /// the member's own payload, handed the display scale the group was
+    /// built for — a member's device-pixel terms convert at that scale,
+    /// and a scale rebuild re-runs it for every member with the payload
+    /// its entry holds.
     pub(crate) fn join<T: cherenkov::Target>(
         &mut self,
         tx: &mut Transaction<'_, T>,
@@ -275,16 +287,18 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
         member: MemberJoin<
             '_,
             impl for<'a> Fn(&'a super::layers::NodeLayers, LayerId) -> Option<&'a Layer>,
+            M,
         >,
         hooks: (
             impl Fn(&P, f64) -> G,
-            impl Fn(&mut Transaction<'_, T>, &Layer, &G, f64),
+            impl Fn(&mut Transaction<'_, T>, &Layer, &M, &G, f64),
         ),
     ) {
         let (create, apply) = hooks;
         let MemberJoin {
             layer: member,
             membership,
+            payload,
             resolve,
         } = member;
         let bits = display_scale.to_bits();
@@ -297,6 +311,19 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
                 .get(&key)
                 .is_some_and(|group| group.display_scale == bits)
         {
+            // Membership unchanged: still bind the member's (possibly
+            // new) payload — a re-record on the same key carries a new
+            // effect, and the member samples it, not its old bind.
+            let group = &self
+                .groups
+                .get(&key)
+                .expect("the group the check found")
+                .group;
+            apply(tx, member, &payload, group, display_scale);
+            self.members
+                .get_mut(&member.id())
+                .expect("the entry the check found")
+                .payload = payload;
             return;
         }
         self.leave(member.id());
@@ -330,11 +357,18 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
                         // A member mid-commit — on this commit's
                         // ancestor stack — holds its layers outside the
                         // cell; only the joining member can be one, and
-                        // its `apply` below covers it.
+                        // its `apply` below covers it. Each member keeps
+                        // its own payload: the rebuild rebinds the
+                        // member's own sample, never the joiner's.
+                        let payload = &self
+                            .members
+                            .get(other)
+                            .expect("a member's entry outlives its membership")
+                            .payload;
                         if let Some(layers) = &*retained.layers.borrow()
                             && let Some(member) = resolve(layers, *other)
                         {
-                            apply(tx, member, &rebuilt.group, display_scale);
+                            apply(tx, member, payload, &rebuilt.group, display_scale);
                         }
                     }
                     *entry.get_mut() = rebuilt;
@@ -352,12 +386,13 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
                 members: FxHashSet::default(),
             }),
         };
-        apply(tx, member, &group.group, display_scale);
+        apply(tx, member, &payload, &group.group, display_scale);
         group.members.insert(member.id());
         self.members.insert(
             member.id(),
             MemberEntry {
                 key,
+                payload,
                 marker: Rc::downgrade(&membership.marker),
                 owner: membership.owner.clone(),
             },
@@ -435,7 +470,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G> BackdropGroups<K, P, G> {
     }
 }
 
-impl BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup> {
+impl BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup, ()> {
     /// The id of the backdrop group `member` samples — `None` while the
     /// member holds no membership. Two members answering the same id
     /// share one capture. A test-facing answer.
@@ -447,11 +482,18 @@ impl BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup>
 }
 
 /// Chrome-group test accessors over the members the key maps.
-impl<G> BackdropGroups<ChromeGroupKey, cherenkov_record::MaterialCapture, G> {
+impl<G>
+    BackdropGroups<
+        ChromeGroupKey,
+        cherenkov_record::MaterialCapture,
+        G,
+        ChromeMemberPayload<cherenkov::BackdropShader>,
+    >
+{
     /// The scope `member`'s chrome group is keyed by — `None` while the
     /// member holds no membership.
     #[cfg(test)]
-    pub(crate) fn chrome_scope(&self, member: LayerId) -> Option<ChromeScope> {
+    pub(crate) fn chrome_scope(&self, member: LayerId) -> Option<BackdropScope> {
         self.members.get(&member).map(|entry| entry.key.scope)
     }
 
@@ -480,7 +522,7 @@ impl<G> BackdropGroups<ChromeGroupKey, cherenkov_record::MaterialCapture, G> {
     }
 }
 
-impl<G> BackdropGroups<BackdropGroupKey, MaterialRuntime, G> {
+impl<G> BackdropGroups<BackdropGroupKey, MaterialRuntime, G, ()> {
     /// The scope `member`'s backdrop group is keyed by — `None` while the
     /// member holds no membership. A test-facing answer.
     #[cfg(test)]

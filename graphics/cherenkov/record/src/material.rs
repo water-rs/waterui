@@ -106,6 +106,94 @@ pub struct MaterialCapture {
     pub grouping: MaterialGrouping,
 }
 
+/// A union field's smoothing width in the group's local **logical**
+/// pixels: finite and positive.
+///
+/// The realizing host converts it to device pixels at the display scale
+/// the group is built for — surfacing a non-finite device value there —
+/// so the value states its unit in the type.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnionSmoothing(f32);
+
+/// Why a [`UnionSmoothing`] is rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum UnionSmoothingError {
+    /// NaN or infinite.
+    #[error("the union smoothing is not finite")]
+    NonFinite,
+    /// Zero or negative — a union field needs a positive width.
+    #[error("the union smoothing must be positive")]
+    OutOfRange,
+}
+
+impl UnionSmoothing {
+    /// Validates `px` as a logical union-smoothing width.
+    ///
+    /// # Errors
+    /// [`UnionSmoothingError`] for a non-finite or non-positive `px`.
+    pub const fn new(px: f32) -> Result<Self, UnionSmoothingError> {
+        if !px.is_finite() {
+            return Err(UnionSmoothingError::NonFinite);
+        }
+        if px <= 0.0 {
+            return Err(UnionSmoothingError::OutOfRange);
+        }
+        Ok(Self(px))
+    }
+
+    /// The logical-pixel value.
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+}
+
+/// A member composite's outer extent in the group's local **logical**
+/// pixels: finite and non-negative.
+///
+/// The realizing host converts it to device pixels at the display scale
+/// the group is built for and binds it as the member's
+/// [`BackdropOuter`](crate::BackdropOuter), surfacing a non-finite device
+/// value there — so the value states its unit in the type.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OuterExtent(f32);
+
+/// Why an [`OuterExtent`] is rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum OuterExtentError {
+    /// NaN or infinite.
+    #[error("the outer extent is not finite")]
+    NonFinite,
+    /// Negative — an extent reaches outward or not at all.
+    #[error("the outer extent must be non-negative")]
+    Negative,
+}
+
+impl OuterExtent {
+    /// The zero extent: the clip's coverage.
+    pub const ZERO: Self = Self(0.0);
+
+    /// Validates `px` as a logical outer extent.
+    ///
+    /// # Errors
+    /// [`OuterExtentError`] for a non-finite or negative `px`.
+    pub const fn new(px: f32) -> Result<Self, OuterExtentError> {
+        if !px.is_finite() {
+            return Err(OuterExtentError::NonFinite);
+        }
+        if px < 0.0 {
+            return Err(OuterExtentError::Negative);
+        }
+        Ok(Self(px))
+    }
+
+    /// The logical-pixel value.
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+}
+
 /// How a capture class's members form groups inside a
 /// [`MaterialScope`]: the scope a view subtree declares to say that its
 /// materials belong together.
@@ -122,19 +210,19 @@ pub enum MaterialGrouping {
     /// The class's members group like [`Shared`](Self::Shared) and
     /// additionally sample one union field: the smooth minimum of the
     /// members' signed distances with `smoothing` as the field's width
-    /// ([`BackdropUnion`]). `smoothing` is in the group's local logical
-    /// pixels; the realizing host converts it to device pixels at the
-    /// display scale the group is built for, surfacing
-    /// [`BackdropUnionError`] for a non-finite or non-positive value.
+    /// ([`UnionSmoothing`], a validated logical-pixel value — the device
+    /// [`BackdropUnion`]). The realizing host converts it to device
+    /// pixels at the display scale the group is built for, surfacing
+    /// [`BackdropUnionError`] for a non-finite device value.
     ///
     /// [`BackdropUnion`]: crate::BackdropUnion
     /// [`BackdropUnionError`]: crate::BackdropUnionError
     Union {
         /// The union field's width in the group's local logical pixels
-        /// ([`BackdropUnion`]'s smoothing): finite and positive.
+        /// ([`BackdropUnion`]'s smoothing).
         ///
         /// [`BackdropUnion`]: crate::BackdropUnion
-        smoothing: f32,
+        smoothing: UnionSmoothing,
     },
 }
 
@@ -149,10 +237,10 @@ pub struct MaterialEffect {
     /// The member composite's outer extent in the group's local logical
     /// pixels; the realizing host converts it to device pixels at the
     /// display scale the group is built for and binds it as the member's
-    /// [`BackdropOuter`]. Zero keeps the clip's coverage.
+    /// [`BackdropOuter`]. [`OuterExtent::ZERO`] keeps the clip's coverage.
     ///
     /// [`BackdropOuter`]: crate::BackdropOuter
-    outer: f32,
+    outer: OuterExtent,
 }
 
 impl MaterialEffect {
@@ -181,31 +269,23 @@ impl MaterialEffect {
         }
         Self {
             uniforms,
-            outer: 0.0,
+            outer: OuterExtent::ZERO,
         }
     }
 
-    /// The member composite's outer extent: `px` logical pixels beyond
-    /// the field's edge, converted to device pixels at the group's build
-    /// display scale by the realizing host and bound as the member's
-    /// [`BackdropOuter`]. Zero — the default — keeps the clip's
-    /// coverage.
+    /// The member composite's outer extent — `extent` logical pixels
+    /// beyond the field's edge, validated by [`OuterExtent`] — converted
+    /// to device pixels at the group's build display scale by the
+    /// realizing host and bound as the member's
+    /// [`BackdropOuter`]. [`OuterExtent::ZERO`] — the default — keeps the
+    /// clip's coverage.
     ///
     /// [`BackdropOuter`]: crate::BackdropOuter
-    ///
-    /// # Panics
-    /// Panics, naming the violated rule, on a non-finite or negative
-    /// extent: the logical extent converts to a device-pixel
-    /// [`BackdropOuter`](crate::BackdropOuter), which enforces the same
-    /// rule.
     #[must_use]
-    pub fn outer(self, px: f32) -> Self {
-        if let Err(error) = crate::BackdropOuter::new(px) {
-            panic!("backdrop material outer extent {px} is invalid: {error}");
-        }
+    pub fn outer(self, extent: OuterExtent) -> Self {
         Self {
             uniforms: self.uniforms,
-            outer: px,
+            outer: extent,
         }
     }
 
@@ -217,10 +297,10 @@ impl MaterialEffect {
     }
 
     /// The outer extent the effect was made with, in the group's local
-    /// logical pixels: finite and non-negative, zero unless
+    /// logical pixels: [`OuterExtent::ZERO`] unless
     /// [`outer`](Self::outer) set it.
     #[must_use]
-    pub const fn outer_extent(&self) -> f32 {
+    pub const fn outer_extent(&self) -> OuterExtent {
         self.outer
     }
 }
@@ -326,20 +406,6 @@ impl BackdropMaterial {
     pub const fn scope(&self) -> MaterialScope {
         self.scope
     }
-
-    /// Rebinds the shape and effect lives: a host realizing the member
-    /// binds clones so a group rebuild can rebind the same signal later.
-    #[must_use]
-    pub fn lives(&self) -> (Live<ShapeData>, Live<MaterialEffect>) {
-        (self.shape.clone(), self.effect.clone())
-    }
-
-    /// The live shape and effect, for the host to bind to the member
-    /// layer's clip and backdrop sample.
-    #[must_use]
-    pub fn into_live(self) -> (Live<ShapeData>, Live<MaterialEffect>) {
-        (self.shape, self.effect)
-    }
 }
 
 /// One material of a layered recording and the content recorded after it,
@@ -408,22 +474,12 @@ impl MaterialRegistry {
     /// Registers the capture class `capture` under `key`.
     ///
     /// # Panics
-    /// Panics when `key` is already registered, or when a
-    /// [`MaterialGrouping::Union`] smoothing is not finite or not
-    /// positive — the scale-independent part of what the union field
-    /// requires, checked at the earliest point it is seen.
+    /// Panics when `key` is already registered.
     pub fn register_capture_class(
         &mut self,
         key: CaptureClass,
         capture: MaterialCapture,
     ) -> &mut Self {
-        if let MaterialGrouping::Union { smoothing } = capture.grouping
-            && let Err(error) = crate::BackdropUnion::new(smoothing)
-        {
-            panic!(
-                "backdrop material capture class {key:?} union smoothing {smoothing} is invalid: {error}"
-            );
-        }
         let previous = self.captures.insert(key, capture);
         assert!(
             previous.is_none(),
@@ -612,7 +668,7 @@ mod tests {
         let _ = below.take_change();
         let _ = above.take_change();
 
-        let (shape, effect) = material.into_live();
+        let (shape, effect) = (material.shape().clone(), material.effect().clone());
         let shapes = Rc::new(RefCell::new(Vec::new()));
         let effects = Rc::new(RefCell::new(Vec::new()));
         let (_, shape_guard) = shape.watch({
@@ -645,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn a_material_effect_binds_from_its_signal_value_at_binding() {
+    fn a_material_effect_binds_and_tracks_its_signal() {
         let gain = binding(1.0_f32);
         let LayeredContent { runs, .. } =
             Content::record_layered(&LayoutSize::new(), MaterialScope::SOLO, |r| {
@@ -656,23 +712,34 @@ mod tests {
                     gain.clone().map(|g| MaterialEffect::new(vec![g])),
                 );
             });
-        let (_, effect) = runs
+        let effect = runs
             .into_iter()
             .next()
             .expect("one run")
             .material
-            .into_live();
+            .effect()
+            .clone();
         gain.set(2.);
         assert_eq!(
             *effect.value(),
             MaterialEffect::new(vec![1.]),
-            "the value when the `Live` was made"
+            "the value when the `Live` was made — a single snapshot per value"
         );
-        let (start, _guard) = effect.watch(|_| {});
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let (start, _guard) = effect.watch({
+            let seen = Rc::clone(&seen);
+            move |context| seen.borrow_mut().push(context.into_value())
+        });
         assert_eq!(
             start,
-            MaterialEffect::new(vec![2.]),
-            "the binding starts from the change made before it bound"
+            MaterialEffect::new(vec![1.]),
+            "the binding starts from the value the `Live` was made with"
+        );
+        gain.set(3.);
+        assert_eq!(
+            *seen.borrow(),
+            [MaterialEffect::new(vec![3.])],
+            "changes after the bind arrive through the watch"
         );
     }
 
@@ -739,12 +806,13 @@ mod tests {
                     gain.clone().map(|g| MaterialEffect::new(vec![g])),
                 );
             });
-        let (_, effect) = runs
+        let effect = runs
             .into_iter()
             .next()
             .expect("one run")
             .material
-            .into_live();
+            .effect()
+            .clone();
         let (_, _guard) = effect.watch(|_| {});
         gain.set(f32::INFINITY);
     }

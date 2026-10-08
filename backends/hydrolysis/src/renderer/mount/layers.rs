@@ -156,10 +156,8 @@ pub struct MemberLayer {
     /// clip, its live effect binds the backdrop sample — and a group
     /// rebuild rebinds them from these handles.
     chrome: Option<ChromeMaterial>,
-    /// The chrome group the member joined, `None` while invisible.
-    key: Option<ChromeGroupKey>,
     /// The class's resolved capture parameters — the terms a no-program
-    /// commit re-joins by.
+    /// commit re-keys and re-joins by.
     params: Option<cherenkov_record::MaterialCapture>,
     /// The member's group membership, held so its layers' drop ends it.
     membership: Option<MaterialMembership>,
@@ -295,7 +293,7 @@ pub struct Mount<T: LayerTarget> {
     /// The window's chrome-group table (water-rs/waterui#1788):
     /// `ChromeMaterial` members join and leave their `(scope, class,
     /// canvas)` groups through it.
-    chrome_groups: ChromeBackdropGroups<T::Group>,
+    chrome_groups: ChromeBackdropGroups<T::Group, T::Shader>,
     /// The window layer's own backdrop membership: the window material
     /// the root mounts over, when the window background names one.
     window_material: Option<MaterialMembership>,
@@ -314,7 +312,7 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget> {
     /// The mount's backdrop-group table: material members join and leave
     /// through it, and the commit's sweep releases emptied groups.
     groups: &'m mut MaterialBackdropGroups<T::Group>,
-    chrome_groups: &'m mut ChromeBackdropGroups<T::Group>,
+    chrome_groups: &'m mut ChromeBackdropGroups<T::Group, T::Shader>,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
     wakes: &'m mut dyn FnMut(&Rc<NodeCell>) -> ProducerWake,
@@ -397,7 +395,9 @@ impl<T: LayerTarget> Mount<T> {
     ) -> Self {
         assert!(
             T::BACKDROP_SHADERS || registry.is_empty(),
-            "hydrolysis materials: this layer target's engine has no backdrop shaders,              but the theme registered {} — the material chrome would have nothing to draw              with; attach the theme to a GPU engine or register no shaders",
+            "hydrolysis materials: this layer target's engine has no backdrop shaders, \
+             but the theme registered {} — the material chrome would have nothing to draw \
+             with; attach the theme to a GPU engine or register no shaders",
             registry
                 .shaders()
                 .map(|(key, _)| format!("{key:?}"))
@@ -450,7 +450,7 @@ impl<T: LayerTarget> Mount<T> {
 
     /// The mount's chrome-group table.
     #[cfg(test)]
-    pub(crate) const fn chrome_groups(&self) -> &ChromeBackdropGroups<T::Group> {
+    pub(crate) const fn chrome_groups(&self) -> &ChromeBackdropGroups<T::Group, T::Shader> {
         &self.chrome_groups
     }
 
@@ -750,7 +750,7 @@ pub fn commit_cell<T: LayerTarget>(
             .is_some()
             .then(|| layers.frame.id())
             .or(canvas);
-        commit_chrome(cx, &mut layers);
+        commit_chrome(cx, &mut layers, canvas);
         for child in committed_cells(&layers) {
             commit_cell(cx, &child, child_canvas, true);
         }
@@ -1607,7 +1607,6 @@ fn lower_chrome<T: LayerTarget>(
             layer: cx.layer(),
             transform: kurbo::Affine::IDENTITY,
             chrome: None,
-            key: None,
             params: None,
             membership: None,
         },
@@ -1617,21 +1616,22 @@ fn lower_chrome<T: LayerTarget>(
         cx.tx[&member.layer].transform(chrome.transform);
         member.transform = chrome.transform;
     }
-    let (shape, _) = chrome.material.lives();
-    cx.tx[&member.layer].clip(shape);
+    cx.tx[&member.layer].clip(chrome.material.shape().clone());
     member.chrome = Some(chrome.clone());
     if chrome.visible {
         let registry = &T::material_terms(cx.host).registry;
         let class = chrome.material.capture();
         let params = *registry.capture_class(class).unwrap_or_else(|| {
             panic!(
-                "hydrolysis materials: capture class {class:?} is not registered; the theme                  declares its classes through `WidgetTheme::register_backdrop_shaders`"
+                "hydrolysis materials: capture class {class:?} is not registered; the theme \
+                 declares its classes through `WidgetTheme::register_backdrop_shaders`"
             )
         });
         let shader = chrome.material.shader();
         assert!(
             registry.shader(shader).is_some(),
-            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme              declares its shaders through `WidgetTheme::register_backdrop_shaders`"
+            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme \
+             declares its shaders through `WidgetTheme::register_backdrop_shaders`"
         );
         let key = ChromeGroupKey::new(
             member.layer.id(),
@@ -1643,6 +1643,7 @@ fn lower_chrome<T: LayerTarget>(
         let membership = member
             .membership
             .get_or_insert_with(|| MaterialMembership::new(token.owner.clone()));
+        let payload = chrome_member_payload::<T>(cx.host, chrome, class);
         T::mount_chrome(
             cx.host,
             cx.tx,
@@ -1652,26 +1653,55 @@ fn lower_chrome<T: LayerTarget>(
             params,
             cx.display_scale,
             membership,
-            chrome,
+            payload,
         );
-        member.key = Some(key);
         member.params = Some(params);
     } else {
         cx.chrome_groups.clear(member.layer.id());
         T::clear_chrome(cx.tx, &member.layer);
         member.membership = None;
-        member.key = None;
         member.params = None;
     }
     members.push(member);
     members.len() - 1
 }
 
+/// The member's own binding payload (water-rs/waterui#1788): its capture
+/// class, the shader's engine handle and its live effect — the terms the
+/// group table stores on the member's entry so a group rebuild rebinds
+/// each member's own sample.
+fn chrome_member_payload<T: LayerTarget>(
+    host: &T::Host,
+    chrome: &ChromeMaterial,
+    class: cherenkov_record::CaptureClass,
+) -> super::backdrop::ChromeMemberPayload<T::Shader> {
+    let shader = T::material_terms(host)
+        .shaders
+        .get(&chrome.material.shader())
+        .unwrap_or_else(|| {
+            panic!(
+                "hydrolysis materials: backdrop shader {:?} is registered but has no handle \
+                 on this engine — a theme's registry is registered at engine attach",
+                chrome.material.shader(),
+            )
+        })
+        .clone();
+    super::backdrop::ChromeMemberPayload {
+        class,
+        shader,
+        effect: chrome.material.effect().clone(),
+    }
+}
+
 /// Re-joins a node's chrome members on a commit that carried no program:
-/// the mount's terms — the display scale — may have changed without a
-/// re-flush, so every mounted member re-keys under the terms it was last
-/// lowered with.
-fn commit_chrome<T: LayerTarget>(cx: &mut CommitCx<'_, '_, '_, T>, layers: &mut NodeLayers) {
+/// the mount's terms — the display scale and the install canvas — may
+/// have changed without a re-flush, so every mounted member re-keys under
+/// the canvas this commit mounts under, like `commit_material` does.
+fn commit_chrome<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    layers: &mut NodeLayers,
+    canvas: Option<LayerId>,
+) {
     for member in layers
         .members
         .iter_mut()
@@ -1683,14 +1713,22 @@ fn commit_chrome<T: LayerTarget>(cx: &mut CommitCx<'_, '_, '_, T>, layers: &mut 
                 .flat_map(|scope| scope.members.iter_mut()),
         )
     {
-        let (Some(key), Some(params), Some(chrome), Some(membership)) = (
-            member.key,
+        let (Some(params), Some(chrome), Some(membership)) = (
             member.params,
             member.chrome.as_ref(),
             member.membership.as_ref(),
         ) else {
             continue;
         };
+        let class = chrome.material.capture();
+        let key = ChromeGroupKey::new(
+            member.layer.id(),
+            chrome.material.scope(),
+            class,
+            params.grouping,
+            canvas,
+        );
+        let payload = chrome_member_payload::<T>(cx.host, chrome, class);
         T::mount_chrome(
             cx.host,
             cx.tx,
@@ -1700,7 +1738,7 @@ fn commit_chrome<T: LayerTarget>(cx: &mut CommitCx<'_, '_, '_, T>, layers: &mut 
             params,
             cx.display_scale,
             membership,
-            chrome,
+            payload,
         );
     }
 }
