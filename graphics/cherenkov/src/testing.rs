@@ -63,6 +63,8 @@ pub enum Event {
     RetireProducer(crate::ProducerId),
     /// `drain_gpu_producers` ran.
     DrainProducers,
+    /// `bind_hosted` ran, with the bound extent.
+    BindHosted(SurfaceId, LayerId, kurbo::Size),
     /// `remove_layer` ran.
     RemoveLayer(SurfaceId, LayerId),
     /// `set_visibility` ran.
@@ -593,6 +595,24 @@ impl ShaderPaint for Null {
 
 impl Uploads<Rgba8> for Null {}
 impl Uploads<Rgba16F> for Null {}
+
+impl crate::Planes for Null {}
+
+/// `Null` hosts nothing — it has no planes to place an object on — and
+/// records the binding, enough to exercise `Hosted::at`'s install.
+impl crate::HostedLayers for Null {
+    type Object = ();
+
+    fn bind_hosted(
+        r: &mut NullRenderer,
+        surface: SurfaceId,
+        layer: LayerId,
+        _object: (),
+        size: kurbo::Size,
+    ) {
+        let _ = r.events.send(Event::BindHosted(surface, layer, size));
+    }
+}
 
 /// `Null` retains no producer state beyond the bindings `submit_frame`
 /// needs to name its layers — enough for `frame_producer` to exercise the
@@ -1891,6 +1911,39 @@ mod tests {
         let record = frames(&rx).pop().expect("a frame record");
         assert!(!record.changed);
         assert_eq!(record.plane_frames, None);
+    }
+
+    /// `Hosted::at` installs the object on the layer it is set on, at its
+    /// extent.
+    #[test]
+    fn hosted_content_binds_the_layer_at_its_extent() {
+        let (engine, rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let web = surface.layer();
+        let hosted = crate::Hosted::<Null>::new(());
+        surface.update(|tx| {
+            tx[surface.root()].push(&web);
+            tx[&web].content(hosted.at(kurbo::Size::new(300.5, 200.0)));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::BindHosted(s, l, size)
+                    if (*s, *l) == (surface.id(), web.id())
+                        && *size == kurbo::Size::new(300.5, 200.0)
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a hosted extent is a finite, non-negative size")]
+    fn a_hosted_extent_must_be_finite() {
+        let _ = crate::Hosted::<Null>::new(()).at(kurbo::Size::new(f64::NAN, 1.0));
     }
 
     #[test]

@@ -116,6 +116,25 @@ unsafe extern "C" {
         destination: *const ARect,
         transform: i32,
     );
+    // API 31: a container's crop, position and scale, which apply to its
+    // children — `setGeometry` places only a buffer.
+    fn ASurfaceTransaction_setCrop(
+        transaction: *mut ASurfaceTransaction,
+        surface_control: *mut ASurfaceControl,
+        crop: *const ARect,
+    );
+    fn ASurfaceTransaction_setPosition(
+        transaction: *mut ASurfaceTransaction,
+        surface_control: *mut ASurfaceControl,
+        x: i32,
+        y: i32,
+    );
+    fn ASurfaceTransaction_setScale(
+        transaction: *mut ASurfaceTransaction,
+        surface_control: *mut ASurfaceControl,
+        x_scale: f32,
+        y_scale: f32,
+    );
     fn ASurfaceTransaction_setBufferTransparency(
         transaction: *mut ASurfaceTransaction,
         surface_control: *mut ASurfaceControl,
@@ -170,6 +189,11 @@ pub struct SurfaceControl(NonNull<ASurfaceControl>);
 // SAFETY: an `ASurfaceControl` is a strong reference to a reference-counted
 // `SurfaceControl`, whose NDK entry points are callable from any thread.
 unsafe impl Send for SurfaceControl {}
+
+// SAFETY: a shared `SurfaceControl` exposes only its raw handle, and every
+// NDK entry point that takes the handle is callable from any thread; the
+// reference count it holds is the system's, atomically managed.
+unsafe impl Sync for SurfaceControl {}
 
 impl SurfaceControl {
     /// Takes ownership of one reference to `raw`.
@@ -323,6 +347,12 @@ impl Transaction {
                         buffer_transform(geometry.transform),
                     );
                 }
+                Op::Crop(crop) => {
+                    let crop = arect(crop);
+                    ASurfaceTransaction_setCrop(t, sc, &raw const crop);
+                }
+                Op::Position(x, y) => ASurfaceTransaction_setPosition(t, sc, x, y),
+                Op::Scale(x, y) => ASurfaceTransaction_setScale(t, sc, x, y),
                 Op::Alpha(alpha) => ASurfaceTransaction_setBufferAlpha(t, sc, alpha),
                 Op::Opaque(opaque) => ASurfaceTransaction_setBufferTransparency(
                     t,

@@ -6,6 +6,7 @@
 
 use kurbo::{Affine, Vec2};
 
+use crate::Instant;
 use crate::Target;
 use crate::WorkingColor;
 use crate::animation::Animation;
@@ -77,7 +78,24 @@ pub struct Prop<T> {
     pub target: T,
     /// The animation applied, if any; `None` snaps.
     pub animation: Option<Animation>,
+    /// The instant the animation starts at, on the host's clock. `None`
+    /// keeps the engine's own timing: the track starts at the first frame
+    /// that samples it, and a retarget continues from the previous track's
+    /// last sample. `Some(t)` starts the track at `t`, and a retarget
+    /// continues from the previous track's value and velocity evaluated at
+    /// `t`. A `start` without an `animation` is ignored.
+    pub start: Option<Instant>,
 }
+
+/// The instant a bound change's [`Animation`] starts at.
+///
+/// Carried in the change's `Context` metadata next to that animation when
+/// the host drives animations from its own clock. Without it the track
+/// starts at the first frame that samples it.
+///
+/// [`Animation`]: crate::Animation
+#[derive(Clone, Copy, Debug)]
+pub struct AnimationStart(pub Instant);
 
 /// What a layer draws, crossing to the consumer.
 #[derive(Clone, Debug)]

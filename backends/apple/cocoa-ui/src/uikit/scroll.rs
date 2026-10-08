@@ -34,6 +34,7 @@ use objc2_ui_kit::{
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point, Size};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
+use crate::uikit::keyboard::KeyboardTracking;
 
 /// The handler [`ScrollView`] calls after `UIKit` lays it out.
 type LayoutHandler = Rc<dyn Fn(&ScrollView)>;
@@ -46,6 +47,11 @@ pub struct ScrollViewIvars {
     scroll: RefCell<Option<ScrollHandler>>,
     /// The scroll animation state: at most one flight per surface.
     flight: Rc<ScrollFlight>,
+    /// The keyboard tracking (§7.1 scroll surfaces): the covered band's
+    /// depth becomes the bottom content inset in the surface's own layout
+    /// pass, read from the window's keyboard region; the focus observers
+    /// scroll a focused field clear of the keyboard region.
+    keyboard: Rc<KeyboardTracking>,
 }
 
 impl ScrollViewIvars {
@@ -56,6 +62,7 @@ impl ScrollViewIvars {
             layout: RefCell::new(None),
             scroll: RefCell::new(None),
             flight: ScrollFlight::new(mtm),
+            keyboard: Rc::new(KeyboardTracking::new()),
         }
     }
 }
@@ -107,13 +114,23 @@ define_class!(
     impl ScrollView {
         /// A view that moves to another window or leaves its window lands
         /// the flight it was running — a parked flight's clock ticks only
-        /// for the window it armed on.
+        /// for the window it armed on. The focus observers follow the
+        /// window: installed once the view has one, dropped when it leaves
+        /// one.
         #[unsafe(method(didMoveToWindow))]
         fn did_move_to_window(&self) {
             guarded("ScrollView didMoveToWindow", || {
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
                 self.ivars().flight.land();
+                self.ivars().keyboard.clear();
+                if self.window().is_some() {
+                    self.ivars().keyboard.attach(self, self.mtm());
+                    // Re-entering a window whose keyboard moved while the
+                    // view was out of the tree — a popped page's surface —
+                    // recomputes the contribution on the next pass.
+                    self.mark_keyboard();
+                }
             });
         }
 
@@ -130,7 +147,39 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                // The keyboard inset and the focused-field clearance are
+                // layout work: they recompute from the window's keyboard
+                // region when a notification marked the pass or the
+                // surface's size changed (§7.1).
+                self.ivars().keyboard.apply_layout(self);
             });
+        }
+
+        /// Any frame change — a parent's layout pass translating or
+        /// resizing the surface — marks the surface for its own pass:
+        /// `UIKit` invalidates layout on a bounds change but not on a
+        /// bare translate, and the keyboard contribution reads the
+        /// window position, which a translate changes.
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(setFrame:))]
+        fn set_frame_override(&self, frame: CGRect) {
+            guarded("ScrollView setFrame:", || {
+                let changed = self.frame() != frame;
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setFrame: frame] };
+                if changed {
+                    self.setNeedsLayout();
+                }
+            });
+        }
+
+        /// The kit scroll-surface marker — only `ScrollView` and
+        /// `TableView` answer it, so a `UIScrollView` that is not one of
+        /// ours (`UITextView`) never counts as a scroll surface (§7.1).
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(cocoaUiIsScrollSurface))]
+        fn is_scroll_surface_override(&self) -> bool {
+            true
         }
 
         /// The scroll view offers no intrinsic size: it fills the space its
@@ -146,6 +195,16 @@ define_class!(
 );
 
 impl ScrollView {
+    /// The window's keyboard region marked this surface for a region
+    /// change — the next layout pass recomputes the keyboard
+    /// contribution, and the mark itself queues that pass. Called by
+    /// the region's whole-window walk and by `didMoveToWindow` on
+    /// re-entry.
+    pub(crate) fn mark_keyboard(&self) {
+        self.ivars().keyboard.mark();
+        self.setNeedsLayout();
+    }
+
     /// A scroll view showing an indicator and bouncing on each enabled axis,
     /// with the platform's automatic safe-area inset adjustment and a clear
     /// backdrop.
@@ -294,10 +353,12 @@ impl crate::teardown::HandlerSlots for ScrollView {
     /// Each `set_*_handler` slot answers `None` afterwards, so a callback
     /// `UIKit` delivers to this view does nothing by construction rather
     /// than reaching state the owner released, and the handlers no longer
-    /// keep that state alive: layout and scroll.
+    /// keep that state alive: layout and scroll — and the keyboard and
+    /// focus observers, so the center no longer holds the view's entries.
     fn clear_handlers(&self) {
         let ivars = self.ivars();
         ivars.layout.replace(None);
         ivars.scroll.replace(None);
+        ivars.keyboard.clear();
     }
 }

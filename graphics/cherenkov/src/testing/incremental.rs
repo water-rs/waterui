@@ -503,6 +503,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
                         random(step, 12).mul_add(0.4, 0.8),
                     ),
                 animation: Some(Animation::Curve(Curve::linear(Duration::from_millis(40)))),
+                start: None,
             },
         ));
     }
@@ -512,6 +513,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
             Prop {
                 target: if step % 16 == 6 { 0.6 } else { 1. },
                 animation: Some(Animation::Curve(Curve::linear(Duration::from_millis(40)))),
+                start: None,
             },
         ));
     }
@@ -525,6 +527,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
             Prop {
                 target: Vec2::new(1., 2.),
                 animation: None,
+                start: None,
             },
         ));
     }

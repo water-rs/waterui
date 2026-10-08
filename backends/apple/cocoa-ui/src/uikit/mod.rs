@@ -55,6 +55,7 @@ pub mod colors;
 mod host_view;
 pub mod image;
 pub mod input_view;
+pub mod keyboard;
 mod menu;
 mod navigation;
 pub use pointer::PointerInteraction;
