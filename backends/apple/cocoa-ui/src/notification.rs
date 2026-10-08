@@ -86,7 +86,7 @@ pub fn observe(
     name: &NotificationName,
     handler: impl Fn() + 'static,
 ) -> NotificationObserver {
-    observe_impl(mtm, name, None, handler)
+    observe_impl(mtm, name, None, move |_| handler())
 }
 
 /// Like [`observe`], but only for notifications whose object is `object` —
@@ -97,25 +97,39 @@ pub fn observe_object(
     object: &AnyObject,
     handler: impl Fn() + 'static,
 ) -> NotificationObserver {
-    observe_impl(mtm, name, Some(object), handler)
+    observe_impl(mtm, name, Some(object), move |_| handler())
 }
 
-/// The registration [`observe`] and [`observe_object`] share.
+/// Like [`observe`], but the handler receives the posted notification —
+/// for notifications whose `userInfo` carries what changed, such as a
+/// keyboard end frame and its animation.
+pub fn observe_with_notification(
+    mtm: MainThreadMarker,
+    name: &NotificationName,
+    handler: impl Fn(&NSNotification) + 'static,
+) -> NotificationObserver {
+    observe_impl(mtm, name, None, handler)
+}
+
+/// The registration [`observe`], [`observe_object`] and
+/// [`observe_with_notification`] share.
 fn observe_impl(
     mtm: MainThreadMarker,
     name: &NotificationName,
     object: Option<&AnyObject>,
-    handler: impl Fn() + 'static,
+    handler: impl Fn(&NSNotification) + 'static,
 ) -> NotificationObserver {
     // The center may release the block on the thread that posted the last
     // notification it delivered, so the handler is bound to the main thread
     // and dropped there.
     let handler = MainThreadBound::new(handler, mtm);
-    let block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
+    let block = RcBlock::new(move |notification: NonNull<NSNotification>| {
         guarded("notification observer", || {
             let mtm = MainThreadMarker::new()
                 .expect("the main operation queue must deliver notifications on the main thread");
-            (handler.get(mtm))();
+            // SAFETY: the center delivers a live notification object for the
+            // duration of the block call.
+            (handler.get(mtm))(unsafe { notification.as_ref() });
         });
     });
     let center = NSNotificationCenter::defaultCenter();

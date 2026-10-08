@@ -301,6 +301,12 @@ impl<T: 'static, G> SubscribedSnapshot<T, G> {
     }
 }
 
+/// The renderer-local animation-key discriminator of a toggle's
+/// thumb-progress slot on its owning node. It must stay disjoint from the
+/// discriminators the interaction engine claims for the same owner address
+/// (`input/interaction.rs`'s `animation_discriminator`).
+const TOGGLE_PROGRESS_KEY: usize = 0x0100_0008;
+
 impl SemanticCore {
     /// Pushes a watcher guard onto the store the current phase reads into:
     /// the reading node's `subscriptions` while it records, its
@@ -487,22 +493,31 @@ impl SemanticCore {
 
     /// Resolves a boolean toggle signal into its animated progress and the
     /// current target value (the direction the animation is heading).
+    ///
+    /// The slot keys off `owner` — the retained toggle node — not the signal:
+    /// nami derives a `Binding::mapping`'s identity from its source plus a
+    /// call-site discriminator, so two mappings minted at one call site over
+    /// one source share a `SignalIdentity` and would otherwise collapse onto
+    /// one thumb position (water-rs/waterui#2232). The `InteractionKey` the
+    /// caller registers for the same node keeps the owner `Rc` alive for as
+    /// long as the slot is rebound, so the address cannot be reused while the
+    /// slot lives.
     pub(crate) fn resolve_toggle_progress<S>(
         &mut self,
         signal: &S,
+        owner: &RetainedIdentity,
         default_animation: Animation,
     ) -> (f32, bool)
     where
         S: Signal<Output = bool> + Clone + 'static,
     {
-        let Some(identity) = signal.identity() else {
-            let selected = self.read_signal(signal);
-            return (if selected { 1.0 } else { 0.0 }, selected);
-        };
         let (subscription, selected) = SubscribedSnapshot::new(signal);
         let now = self.frame_instant;
         let target = if selected { 1.0 } else { 0.0 };
-        let key = AnimationKey::scalar(identity);
+        let key = AnimationKey::renderer_local_scalar_with_discriminator(
+            owner.address(),
+            TOGGLE_PROGRESS_KEY,
+        );
         let handle = self.animation_controller.bind_scalar_target(
             key,
             target,

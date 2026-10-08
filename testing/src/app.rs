@@ -1128,6 +1128,12 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// This waits on unapplied work only, never on work that continues by
     /// itself: an app with a running animation is never settled, so settling
     /// here would spend the full pump budget on every query.
+    ///
+    /// Reading the tree never advances time: every pump here is held at the
+    /// current virtual instant. Animations and glides sample the same instant
+    /// to the same values, so the update lands in the phase the clock already
+    /// shows, and only [`OffscreenApp::pump_for`] and the other explicit
+    /// pumping paths move the clock.
     fn sync_tree(&mut self) {
         /// Enough pumps for a change to cascade (a patch that schedules the
         /// next), far below anything a real update needs. Exceeding it means
@@ -1139,7 +1145,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             if !self.runtime.has_pending_semantic_update() {
                 return;
             }
-            self.pump_once();
+            self.pump_held();
         }
     }
 

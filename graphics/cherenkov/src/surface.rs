@@ -18,7 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cherenkov_record::{ChangeSet, Layer, Queue, Shared, SurfaceId, Transaction};
+use cherenkov_record::{ChangeSet, Instant, Layer, Queue, Shared, SurfaceId, Transaction};
 
 use crate::WorkingColor;
 use crate::animation::Animation;
@@ -340,7 +340,7 @@ impl<B: Backend> Surface<B> {
     /// # Panics
     /// Panics if `body` panics; the transaction is then dropped unapplied.
     pub fn update(&self, body: impl FnOnce(&mut Transaction<'_, B>)) {
-        Shared::run_transaction(&self.shared, None, body);
+        Shared::run_transaction(&self.shared, None, None, body);
     }
 
     /// Like [`Surface::update`], filling `animation` for every animatable
@@ -353,7 +353,25 @@ impl<B: Backend> Surface<B> {
         animation: impl Into<Animation>,
         body: impl FnOnce(&mut Transaction<'_, B>),
     ) {
-        Shared::run_transaction(&self.shared, Some(animation.into()), body);
+        Shared::run_transaction(&self.shared, Some(animation.into()), None, body);
+    }
+
+    /// Like [`Surface::update_animated`], starting every track at `start`
+    /// on the host's clock instead of the first frame that samples it.
+    /// A retarget then continues from the previous track's value and
+    /// velocity evaluated at `start`, so the tracks the host issues agree
+    /// with [`AnimationTrack::sample`](crate::AnimationTrack::sample) at
+    /// every instant.
+    ///
+    /// # Panics
+    /// Panics if `body` panics.
+    pub fn update_animated_at(
+        &self,
+        animation: impl Into<Animation>,
+        start: Instant,
+        body: impl FnOnce(&mut Transaction<'_, B>),
+    ) {
+        Shared::run_transaction(&self.shared, Some(animation.into()), Some(start), body);
     }
 
     /// The pixels of the surface after the last

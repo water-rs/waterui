@@ -38,7 +38,7 @@ pub enum Connection {
 }
 
 /// A section of the inspector, and the sidebar selection type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Section {
     /// Connection and target summary.
     Overview,
@@ -89,6 +89,14 @@ impl Section {
             Self::Logs => Some(Channel::Logs),
             Self::Signals => Some(Channel::Signals),
         }
+    }
+}
+
+impl Identifiable for Section {
+    type Id = Self;
+
+    fn id(&self) -> Self {
+        *self
     }
 }
 

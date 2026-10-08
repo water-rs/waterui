@@ -4680,22 +4680,31 @@ impl SemanticCore {
         );
     }
 
-    /// Advances every scroll view's smoothed wheel scroll and reports whether
-    /// more animation frames are needed.
+    /// Advances every scroll view's smoothed wheel scroll or programmatic
+    /// run and reports whether this frame needs to run: a tick moved an
+    /// offset, or a glide still has frames to go.
+    ///
+    /// The tick that lands a glide moves the offset onto its target and ends
+    /// the glide in one step, so "still gliding" alone would leave the landed
+    /// offset unrendered — the touch fling's tick reports the same pair.
     #[expect(
         clippy::needless_pass_by_ref_mut,
         reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
     )]
     pub(crate) fn tick_smooth_scrolls(&mut self, now: Instant) -> bool {
-        let mut active = false;
+        let mut ticked = false;
         for target in &self.hit_test.scroll_targets {
-            let ticked = target.handle.tick_smooth_scroll(now);
-            if ticked && let Some(cell) = target.owner.upgrade() {
+            let before = target.handle.metrics();
+            let gliding = target.handle.tick_smooth_scroll(now);
+            let after = target.handle.metrics();
+            let moved = before.offset_x.to_bits() != after.offset_x.to_bits()
+                || before.offset_y.to_bits() != after.offset_y.to_bits();
+            if moved && let Some(cell) = target.owner.upgrade() {
                 cell.mark(crate::renderer::Dirty::PAINT);
             }
-            active |= ticked;
+            ticked |= moved || gliding;
         }
-        active
+        ticked
     }
 
     /// Whether any scroll view's smoothed wheel scroll is still gliding,

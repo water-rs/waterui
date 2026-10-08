@@ -67,7 +67,8 @@ pub use crate::image::{
     Rgba16F,
 };
 pub use crate::ops::{
-    BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop, SurfaceId,
+    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, LayerId, LayerOp, Op, Prop,
+    SurfaceId,
 };
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,

@@ -61,8 +61,8 @@ pub use crate::backend::{
 };
 pub use crate::capability::{
     Backdrop, BackdropChain, BackdropRuns, BackdropShaders, DrainedProducer, Effects, Filters,
-    GpuContent, HdrOutput, Planes, Runs, ShaderPaint as ShaderPaintCapability, ShaderSource,
-    Uploads,
+    GpuContent, HdrOutput, HostedLayers, Planes, Runs, ShaderPaint as ShaderPaintCapability,
+    ShaderSource, Uploads,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
@@ -96,7 +96,8 @@ pub use crate::record::{
     Recorder, SampleFlag, StaticRecorder,
 };
 pub use crate::resource::{
-    BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Image, Shader,
+    BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Hosted, Image,
+    Shader,
 };
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
@@ -108,10 +109,10 @@ pub use crate::text::{TextLayout, draw_text};
 // The moved layer-tree types: re-exported at the root exactly like the
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
-    BackdropEffect, BackdropId, BackdropSample, BackdropSampling, BackdropShaderEffect,
-    BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
-    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
-    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
+    AnimationStart, BackdropEffect, BackdropId, BackdropSample, BackdropSampling,
+    BackdropShaderEffect, BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls, ImageLimits,
+    Install, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner,
+    LevelRamp, LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
     Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
     snap_animating,
 };

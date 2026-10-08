@@ -141,6 +141,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
 
         let mounted = ctx.render(metadata.content).mount(host_view);
+
+        // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
+        // chain — `Color.opacity(..)` in a background slot stays a fill.
         crate::primary_content::forward(&host, mounted.view());
         view::set_translates_autoresizing(mounted.view(), true);
 
