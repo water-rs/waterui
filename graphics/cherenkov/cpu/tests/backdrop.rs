@@ -1548,14 +1548,18 @@ fn a_plain_member_in_a_mixed_group_is_not_inflated() {
 
 /// Union members carrying an outer band keep ownership weights summing
 /// to one at the field's outer antialiased edge. The members are rects:
-/// their bounds hug the shape exactly, so a draw bound one pixel short —
-/// `r(n) + outer + 1` — would clip the outermost sampled pixels a member
-/// still owns.
+/// a second member offset so their top corners nearly tie keeps band
+/// coverage and a shared ownership weight on pixels out to the field's
+/// coverage wall — bound-distance past `r(n) + outer − 0.5` — so a
+/// draw bound more than half a pixel short would clip the outermost
+/// sampled pixels a member still owns. (No owned pixel can reach the
+/// pad's last pixel: the field's coverage dies at `r(n) + outer + 0.5`,
+/// before the `+1.5` bound's margin ends.)
 #[test]
 fn the_seam_weights_sum_to_one_at_the_outer_edge() {
     const RECTS: [Rect; 2] = [
-        Rect::new(6.0, 13.5, 24.0, 31.5),
-        Rect::new(24.0, 13.5, 42.0, 31.5),
+        Rect::new(4.0, 14.0, 10.0, 28.0),
+        Rect::new(16.0, 14.4, 24.0, 28.4),
     ];
     const OUTER: f32 = 4.0;
     let engine = engine();
@@ -1637,15 +1641,16 @@ fn the_seam_weights_sum_to_one_at_the_outer_edge() {
                     "pixel ({col}, {row}): no deposit at the outer edge (cov = {cov})"
                 );
             }
-            // The pad's last half pixel: an owner reaches `r(n) + outer +
-            // 1.5` past its bounds — bound-distance in (9, 9.5] — where a
-            // `+1` bound would clip its deposit away.
+            // The owned pixels nearest the draw bound: an owner reaches
+            // `r(n) + outer − 0.5` past its bounds before the field's
+            // coverage wall — bound-distance in (9, 10.5] — where a
+            // bound more than half a pixel short would clip it.
             for (i, rect) in RECTS.iter().enumerate() {
                 if ownership(&members, i) < 0.05 {
                     continue;
                 }
                 let dist = rect_field(px, py, *rect).0.max(0.0);
-                if (9.0..=9.5).contains(&dist) {
+                if (9.0..=10.5).contains(&dist) {
                     let deposit = pixel(if i == 0 { &only_a } else { &only_b }, col, row)[3] - 0.5;
                     pad_pixels += 1;
                     assert!(
@@ -1680,6 +1685,7 @@ fn a_destructive_member_under_a_masked_ancestor_samples_its_union() {
     let group = surface.backdrop_group_unfiltered(
         cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
     );
+    let decoy = surface.layer();
     let ancestor = surface.layer();
     let a = surface.layer();
     let b = surface.layer();
@@ -1690,6 +1696,28 @@ fn a_destructive_member_under_a_masked_ancestor_samples_its_union() {
                 WorkingColor::new([1.0, 0.0, 0.0, 0.5]),
             );
         }));
+        tx[surface.root()].push(&decoy);
+        // A decoy path clip lands in the mask atlas first: without it
+        // the ancestor's triangle would sit at texel (0, 0), exactly
+        // where an unpatched instance reads — the test would pass while
+        // the defect it checks for is still live.
+        tx[&decoy]
+            .clip(cherenkov::ShapeData::Path {
+                elements: vec![
+                    cherenkov::kurbo::PathEl::MoveTo((0.0, 30.0).into()),
+                    cherenkov::kurbo::PathEl::LineTo((6.0, 40.0).into()),
+                    cherenkov::kurbo::PathEl::LineTo((0.0, 40.0).into()),
+                    cherenkov::kurbo::PathEl::ClosePath,
+                ]
+                .into(),
+                rule: cherenkov::FillRule::NonZero,
+            })
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 30.0, 6.0, 40.0),
+                    WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+                );
+            }));
         tx[surface.root()].push(&ancestor);
         // A triangle clip masks: the ancestor's clip has no analytic
         // edge a member clip could merge with.
@@ -1724,6 +1752,124 @@ fn a_destructive_member_under_a_masked_ancestor_samples_its_union() {
     assert_pixel(pixel(&readback, 32, 14), [0.625, 0.0, 0.0, 0.625], 3e-3);
     // At the seam midpoint (35.5, 20.5) the weights split: w_a = 0.5.
     assert_pixel(pixel(&readback, 35, 20), [0.5625, 0.0, 0.0, 0.5625], 4e-3);
+}
+
+/// Union members whose layer-level isolation opens a scratch — `SrcOut`
+/// blend, `Screen` blend, opacity over overlapping content, filter with
+/// opacity — must agree under a path-clipped (masked) ancestor and under
+/// none. A sample emitted inside the scratch that carried the ancestor
+/// clip would read the mask atlas at texel (0, 0) with no patch; the
+/// decoy's triangle lands there first, so the ancestor's own triangle
+/// sits elsewhere and the wrong read loses the deposit. Asserts the
+/// same pixels as the GPU twin
+/// (`isolated_members_under_a_masked_ancestor_match_unclipped`). The
+/// engine is per-render: a raster cache an earlier render leaves would
+/// paper over an unpatched mask reference.
+#[test]
+fn isolated_members_under_a_masked_ancestor_match_unclipped() {
+    let render = |masked: bool, mode: u32| {
+        let engine = engine();
+        let surface = engine
+            .surface(Offscreen::new((48, 40), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        let identity = engine.filter(filtrate::filters::ColorMatrix([
+            1.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ]));
+        let group = surface.backdrop_group_unfiltered(
+            cherenkov::BackdropSpec::FULL
+                .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+        );
+        let decoy = surface.layer();
+        let ancestor = surface.layer();
+        let a = surface.layer();
+        let b = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 48.0, 40.0),
+                    WorkingColor::new([1.0, 0.0, 0.0, 0.5]),
+                );
+            }));
+            tx[surface.root()].push(&decoy);
+            // The decoy's mask keeps the ancestor's off texel (0, 0).
+            tx[&decoy]
+                .clip(cherenkov::ShapeData::Path {
+                    elements: vec![
+                        cherenkov::kurbo::PathEl::MoveTo((0.0, 30.0).into()),
+                        cherenkov::kurbo::PathEl::LineTo((6.0, 40.0).into()),
+                        cherenkov::kurbo::PathEl::LineTo((0.0, 40.0).into()),
+                        cherenkov::kurbo::PathEl::ClosePath,
+                    ]
+                    .into(),
+                    rule: cherenkov::FillRule::NonZero,
+                })
+                .content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(0.0, 30.0, 6.0, 40.0),
+                        WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+                    );
+                }));
+            tx[surface.root()].push(&ancestor);
+            if masked {
+                // A triangle clip masks: the ancestor's clip has no
+                // analytic edge a member clip could merge with.
+                tx[&ancestor].clip(cherenkov::ShapeData::Path {
+                    elements: vec![
+                        cherenkov::kurbo::PathEl::MoveTo((0.0, 0.0).into()),
+                        cherenkov::kurbo::PathEl::LineTo((48.0, 0.0).into()),
+                        cherenkov::kurbo::PathEl::LineTo((48.0, 40.0).into()),
+                        cherenkov::kurbo::PathEl::ClosePath,
+                    ]
+                    .into(),
+                    rule: cherenkov::FillRule::NonZero,
+                });
+            }
+            tx[&ancestor].push(&a);
+            tx[&ancestor].push(&b);
+            {
+                let la = &mut tx[&a];
+                la.clip(RoundedRect::new(30.0, 10.0, 40.0, 20.0, 3.0))
+                    .backdrop(group.sample());
+                match mode {
+                    // `SrcOut` isolates destructively, `Screen`
+                    // non-destructively, low opacity and a filter open a
+                    // scratch for the body.
+                    0 => {
+                        la.blend(cherenkov::BlendMode::SrcOut).opacity(0.5f32);
+                    }
+                    1 => {
+                        la.blend(cherenkov::BlendMode::Screen);
+                    }
+                    2 => {
+                        la.opacity(0.5f32).content(surface.record(|r| {
+                            r.fill(
+                                Rect::new(30.0, 10.0, 40.0, 20.0),
+                                WorkingColor::new([0.0, 0.0, 1.0, 0.25]),
+                            );
+                        }));
+                    }
+                    _ => {
+                        la.opacity(0.5f32).filter(identity.id());
+                    }
+                }
+            }
+            tx[&b]
+                .clip(RoundedRect::new(36.0, 18.0, 46.0, 28.0, 3.0))
+                .backdrop(group.sample())
+                .opacity(0.5f32);
+        });
+        engine.render(FrameTime::now()).expect("render");
+        surface.readback().expect("readback")
+    };
+    for mode in 0..4 {
+        let plain = render(false, mode);
+        let masked = render(true, mode);
+        // Deep inside the triangle the ancestor's coverage is 1, so the
+        // masked render must read like the unclipped one.
+        for (x, y) in [(32usize, 14usize), (35, 20), (38, 12), (33, 11)] {
+            assert_pixel(pixel(&masked, x, y), pixel(&plain, x, y), 3e-3);
+        }
+    }
 }
 
 /// Members whose clip's analytic SDF degenerates cannot fold into the

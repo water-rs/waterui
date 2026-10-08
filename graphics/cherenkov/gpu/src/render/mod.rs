@@ -870,7 +870,8 @@ struct BackdropShaderEntry {
     /// The union-shaped module, built lazily with the first union slot.
     union_module: Option<wgpu::ShaderModule>,
     /// The plain-variant pipelines by format index — built at
-    /// registration, always `Some`.
+    /// registration, `Some` for each distinct target format (the
+    /// scratch-format slot stays `None` when it equals the target's).
     plain: [Option<wgpu::RenderPipeline>; 2],
     /// The union-shaped pipelines by format index — built on first use.
     union: [Option<wgpu::RenderPipeline>; 2],

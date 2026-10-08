@@ -1055,13 +1055,16 @@ pub struct Lowering<'a> {
     /// The current clip's pending mask raster index, if any.
     mask_pending: Option<u32>,
     /// The clip in force outside the innermost layer clip of the
-    /// current target — a member layer's ancestors. The layer walk
-    /// refreshes it to `clip` at each layer boundary, `run_clipped`'s
-    /// merge arms set it to the pre-merge clip and its isolate arms to
-    /// `None` (the scratch's composite applies the outer clip itself),
-    /// both restoring it afterwards. A union member's sample instance
-    /// carries it, so the instance's clip mask always matches
-    /// `mask_pending`.
+    /// current target — a member layer's ancestors in the enclosing
+    /// target, `None` inside a fresh scratch whose composite applies
+    /// those ancestors itself. The layer walk refreshes it to `clip`
+    /// at each layer boundary, `run_clipped`'s merge arms set it to the
+    /// pre-merge clip and its isolate arms to `None`, and every scratch
+    /// opening (`isolate_direct`, `silhouette_scope`) takes it to `None`
+    /// for the body's lifetime — all restoring it afterwards. A union
+    /// member's sample instance carries it, so the instance never names
+    /// a clip mask `mask_pending` does not hold and never multiplies an
+    /// ancestor coverage the composite applies again.
     member_outer_clip: Option<DeviceClip>,
     /// Atlas writes and cache updates to commit, in lowering order.
     pub(crate) pending: Vec<PendingRaster>,
@@ -1962,8 +1965,10 @@ impl<'a> Lowering<'a> {
     ) -> Result<(), RenderError> {
         self.depth += 1;
         let scratch = self.depth - 1;
-        let outer_clip = self.clip;
+        let (outer_clip, outer_member_clip) = (self.clip, self.member_outer_clip.take());
         self.set_clip(inner_clip);
+        // A member's union sample inside this scratch carries no
+        // ancestor clip — the composite applies them itself.
         // Nested isolations split this scratch's open pass into segments;
         // every segment at this depth needs the region.
         let passes_start = self.frame.passes.len();
@@ -1991,8 +1996,7 @@ impl<'a> Lowering<'a> {
         self.scratch_space[scratch] = storage;
         self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
         let inst_start = self.frame.instances.len();
-        let saved_capture = self.capture_isolation;
-        let saved_target = self.semantic_target;
+        let (saved_capture, saved_target) = (self.capture_isolation, self.semantic_target);
         let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
         self.capture_isolation = false;
         if semantic {
@@ -2007,8 +2011,9 @@ impl<'a> Lowering<'a> {
         self.finish_pass();
         self.depth -= 1;
         self.set_clip(outer_clip);
+        self.member_outer_clip = outer_member_clip;
         let inner_capture = self.capture_isolation;
-        self.capture_isolation = saved_capture || inner_capture;
+        self.capture_isolation |= saved_capture;
         self.semantic_target = saved_target;
         self.looked_through_scratches = saved_scratches;
         let outer_target = self.current_target();
@@ -2121,7 +2126,11 @@ impl<'a> Lowering<'a> {
                 "shadow capture exceeds addressable extent".into(),
             ));
         }
+        // The silhouette is a scratch too: clips in force at its open
+        // apply when its shadow composites, so the body's member outer
+        // clip is `None` for the same reason `isolate_direct`'s is.
         let saved = (self.transform, self.width, self.height, self.clip);
+        let saved_member_outer = self.member_outer_clip.take();
         self.finish_pass();
         self.depth += 1;
         let scratch = self.depth - 1;
@@ -2149,6 +2158,7 @@ impl<'a> Lowering<'a> {
             },
         ));
         (self.transform, self.width, self.height, self.clip) = saved;
+        self.member_outer_clip = saved_member_outer;
         self.depth -= 1;
         self.begin_pass(self.current_target(), None);
         let mut instance = Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip);
@@ -4704,7 +4714,7 @@ fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), Rend
         // Union-field members inflate by `r(n) + outer + 1.5`; members
         // with no field behind them are not inflated at all.
         let pad = if union_spec.is_some() || entry.outer > 0.0 {
-            r + f64::from(entry.outer) + 1.5
+            r + f64::from(entry.outer) + 1.0
         } else {
             0.0
         };

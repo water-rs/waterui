@@ -6466,7 +6466,7 @@ fn run() -> Result<(), SceneError> {
                     interior_level: 0.0,
                 });
                 m.fill(
-                    Shape::rect(cx - 24.0, cy - 12.0, cx + 24.0, cy + 12.0),
+                    Shape::rect(cx - 24.0, cy - 12.0, 48.0, 24.0),
                     solid(srgba(1.0, 1.0, 1.0, 0.15)),
                 );
             });
@@ -6495,7 +6495,7 @@ fn run() -> Result<(), SceneError> {
             m.backdrop(1);
             m.backdrop_outer(8.0);
             m.fill(
-                Shape::rect(48.0, 48.0, 96.0, 72.0),
+                Shape::rect(48.0, 48.0, 48.0, 24.0),
                 solid(srgba(1.0, 1.0, 1.0, 0.15)),
             );
         });
@@ -6506,7 +6506,7 @@ fn run() -> Result<(), SceneError> {
             m.backdrop(2);
             m.backdrop_outer(6.0);
             m.fill(
-                Shape::rect(56.0, 164.0, 90.0, 196.0),
+                Shape::rect(56.0, 164.0, 34.0, 32.0),
                 solid(srgba(1.0, 1.0, 1.0, 0.15)),
             );
         });
@@ -6517,7 +6517,7 @@ fn run() -> Result<(), SceneError> {
             m.backdrop(2);
             m.backdrop_outer(6.0);
             m.fill(
-                Shape::rect(166.0, 164.0, 200.0, 196.0),
+                Shape::rect(166.0, 164.0, 34.0, 32.0),
                 solid(srgba(1.0, 1.0, 1.0, 0.15)),
             );
         });

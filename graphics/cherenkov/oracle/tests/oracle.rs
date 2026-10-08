@@ -807,7 +807,6 @@ fn refraction_on_a_path_clip_is_the_named_error() {
 // Backdrop union contracts: local copies of the engines' shared field
 // helpers so the oracle's test suite stays independent of the engine.
 
-/// Signed distance and unit outward normal of a circle's analytic SDF.
 /// The smooth-min fold `min − h²·k/4`, mirroring `cherenkov::testing::smin`.
 fn smin(a: f64, b: f64, k: f64) -> f64 {
     let h = (k - (a - b).abs()).max(0.0) / k;
@@ -820,6 +819,7 @@ fn cover(field: f64) -> f64 {
     (0.5 - field).clamp(0.0, 1.0)
 }
 
+/// Signed distance and unit outward normal of a circle's analytic SDF.
 fn circle_field(px: f64, py: f64, cx: f64, cy: f64, r: f64) -> (f64, [f64; 2]) {
     let dx = px - cx;
     let dy = py - cy;
