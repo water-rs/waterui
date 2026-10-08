@@ -298,15 +298,19 @@ async fn prune_to_layout(root: &Path) -> Result<()> {
 /// with the build's artifact and answer the staged libraries in
 /// `System.load` order.
 ///
-/// `water run` and `water build` rewrite the same artifact without the
-/// preview's lock, so the artifact is read exactly once: it is snapshotted
-/// (a clone on APFS), and the hash and the strip both read the snapshot —
-/// the record can never name bytes other than the ones stripped.
+/// The artifact is hashed in place: a [`StripRecord`] naming its hash and
+/// the build's NDK means the cache already holds the strip of exactly
+/// those bytes, so a hit costs only that one read. `water run` and
+/// `water build` rewrite the same artifact without the preview's lock, so
+/// only on a miss is the artifact snapshotted (a clone on APFS), the
+/// snapshot re-hashed and the snapshot stripped — the record can never
+/// name bytes other than the ones stripped.
 ///
-/// The cache is current when its [`StripRecord`] names the snapshot's hash
-/// and the build's NDK; otherwise the cache is rebuilt from scratch — the
-/// record removed with it first, so an interrupted rebuild is never taken
-/// for a current one — and the record written last.
+/// The cache is current when its [`StripRecord`] names the artifact's
+/// hash and the build's NDK and every library it lists is still in place;
+/// on a miss it is rebuilt from scratch — the record removed with it
+/// first, so an interrupted rebuild is never taken for a current one — and
+/// the record written last.
 async fn stage_stripped_libraries(
     project: &Project,
     host: &Host,
@@ -315,6 +319,26 @@ async fn stage_stripped_libraries(
     root: &Path,
 ) -> Result<Vec<String>> {
     let lib_dir = root.join(LIBRARY_DIR);
+    let artifact_sha256 = smol::unblock({
+        let artifact = build.built.artifact.clone();
+        move || -> Result<String> {
+            let mut hasher = Sha256::new();
+            hash_file_into(&mut hasher, &artifact)
+                .wrap_err_with(|| format!("failed to hash {}", artifact.display()))?;
+            Ok(hex::encode(hasher.finalize()))
+        }
+    })
+    .await?;
+    let ndk = build.context.ndk_path.clone();
+    let record_path = lib_dir.join(STRIP_RECORD_FILE);
+    if let Some(record) = read_strip_record(&record_path).await?
+        && record.source_sha256 == artifact_sha256
+        && record.ndk == ndk
+        && libraries_present(&lib_dir, &record.libraries).await
+    {
+        return Ok(record.libraries);
+    }
+
     let (snapshot_dir, snapshot, source_sha256) = smol::unblock({
         let artifact = build.built.artifact.clone();
         let root = root.to_path_buf();
@@ -359,9 +383,24 @@ async fn stage_stripped_libraries(
     libraries
 }
 
-/// The cache half of [`stage_stripped_libraries`]: answer the cached
-/// libraries when the record names `source_sha256` and the build's NDK, and
-/// otherwise strip `snapshot` into a fresh `lib_dir`.
+/// Whether every library a [`StripRecord`] names is still in `lib_dir`:
+/// the record only vouches for a cache whose files are all still there —
+/// a removed library must rebuild, not fail the payload's content hash on
+/// every run.
+async fn libraries_present(lib_dir: &Path, libraries: &[String]) -> bool {
+    for name in libraries {
+        match fs::metadata(lib_dir.join(name)).await {
+            Ok(metadata) if metadata.is_file() => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// The strip half of [`stage_stripped_libraries`], reached only on a cache
+/// miss: clear `lib_dir`, `llvm-strip` `snapshot` into it and stage the
+/// runtime libraries beside it, then write the [`StripRecord`] naming the
+/// snapshot's hash and the build's NDK.
 async fn refresh_stripped_libraries(
     project: &Project,
     host: &Host,
@@ -373,12 +412,6 @@ async fn refresh_stripped_libraries(
 ) -> Result<Vec<String>> {
     let ndk = build.context.ndk_path.clone();
     let record_path = lib_dir.join(STRIP_RECORD_FILE);
-    if let Some(record) = read_strip_record(&record_path).await?
-        && record.source_sha256 == source_sha256
-        && record.ndk == ndk
-    {
-        return Ok(record.libraries);
-    }
 
     match fs::remove_dir_all(lib_dir).await {
         Ok(()) => {}
