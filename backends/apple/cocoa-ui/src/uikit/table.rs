@@ -463,7 +463,7 @@ define_class!(
                     // Re-entering a window whose keyboard moved while the
                     // view was out of the tree — a popped page's surface —
                     // recomputes the contribution on the next pass.
-                    self.ivars().keyboard.mark();
+                    self.mark_keyboard();
                 }
             });
         }
@@ -480,14 +480,20 @@ define_class!(
             });
         }
 
-        /// The window's keyboard notification marked this surface — the
-        /// next layout pass recomputes the keyboard contribution, and
-        /// the mark itself queues that pass.
+        /// Any frame change — a parent's layout pass translating or
+        /// resizing the surface — marks the surface for its own pass:
+        /// `UIKit` invalidates layout on a bounds change but not on a
+        /// bare translate, and the keyboard contribution reads the
+        /// window position, which a translate changes.
         /// SAFETY: see the module safety note.
-        #[unsafe(method(cocoaUiMarkKeyboard))]
-        fn mark_keyboard(&self) {
-            self.ivars().keyboard.mark();
-            self.setNeedsLayout();
+        #[unsafe(method(setFrame:))]
+        fn set_frame_override(&self, frame: CGRect) {
+            let changed = self.frame() != frame;
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrame: frame] };
+            if changed {
+                self.setNeedsLayout();
+            }
         }
 
         /// The kit scroll-surface marker — only `ScrollView` and
@@ -503,6 +509,16 @@ define_class!(
 );
 
 impl TableView {
+    /// The window's keyboard region marked this surface for a region
+    /// change — the next layout pass recomputes the keyboard
+    /// contribution, and the mark itself queues that pass. Called by
+    /// the region's whole-window walk and by `didMoveToWindow` on
+    /// re-entry.
+    pub(crate) fn mark_keyboard(&self) {
+        self.ivars().keyboard.mark();
+        self.setNeedsLayout();
+    }
+
     /// Creates a table styled `.insetGrouped` with fixed 16-point horizontal
     /// directional margins, `fromCellEdges` separator references, and the
     /// estimated heights a plain grouped row takes.

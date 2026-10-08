@@ -807,3 +807,16 @@ pub fn set_accessibility_content(view: &PlatformView, label: Option<&str>, value
         view.setIsAccessibilityElement(true, mtm);
     }
 }
+
+/// An associated-object storage key derived from a selector name.
+///
+/// Registering the same string yields the same key at every call, so a
+/// platform-side compatibility layer using the same name shares the
+/// association.
+#[must_use]
+pub fn association_key(name: &core::ffi::CStr) -> *const core::ffi::c_void {
+    let selector = objc2::runtime::Sel::register(name);
+    // SAFETY: `Sel` is `repr(transparent)` over the selector pointer the
+    // associated-object API expects as the key.
+    unsafe { core::mem::transmute::<objc2::runtime::Sel, *const core::ffi::c_void>(selector) }
+}

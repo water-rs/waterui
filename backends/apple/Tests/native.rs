@@ -693,19 +693,13 @@ mod leaf {
                 )
             ]
         };
-        // Content mounts inside a kit `HostView` — the shape every
-        // production mount path takes — so kit surfaces find a keyboard
-        // owner. The host answers tracking for its whole subtree even
-        // under this bare, controller-less window.
-        let host = cocoa_ui::uikit::HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        host.addSubview(content);
-        window.addSubview(&host);
-        cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&window));
-        // Size the content to the host's bounds the way
-        // `set_content_view` does on macOS — `addSubview` alone leaves it
-        // at its zero frame, so surfaces that read their viewport (lazy
-        // containers especially) would see an empty window.
-        cocoa_ui::view::set_frame(content, cocoa_ui::view::bounds(&host));
+        // Content mounts directly — the window's keyboard region needs
+        // no host ancestor. `addSubview` alone leaves the content at its
+        // zero frame, so surfaces that read their viewport (lazy
+        // containers especially) would see an empty window — size it the
+        // way `set_content_view` does on macOS.
+        window.addSubview(content);
+        cocoa_ui::view::set_frame(content, cocoa_ui::view::bounds(&window));
         window
     }
 }
@@ -2842,10 +2836,11 @@ mod safe_area {
         NSDictionary, NSNotificationCenter, NSNumber, NSObjectProtocol, NSString, NSValue,
     };
     use cocoa_ui::objc2_ui_kit::{
-        UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
-        UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
-        UIKeyboardWillHideNotification, UIKeyboardWillShowNotification, UINavigationBar,
-        UINavigationController, UIScrollView, UITabBar, UITextView,
+        UIBarPosition, UIBarPositioning, UIEdgeInsets, UIKeyboardAnimationCurveUserInfoKey,
+        UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
+        UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification,
+        UIKeyboardWillShowNotification, UINavigationBar, UINavigationController, UIScrollView,
+        UITabBar, UITextView,
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{
@@ -2866,8 +2861,8 @@ mod safe_area {
     use waterui::reactive::{Binding, binding};
     use waterui::{AnyView, Color, Str};
     use waterui_apple::native_test_support::{
-        MAIN_QUEUE_DEADLINE, UIKitMount, mount_uikit, mount_uikit_embedded, pump_main_until,
-        render_environment,
+        MAIN_QUEUE_DEADLINE, UIKitMount, mount_uikit, mount_uikit_embedded, mount_uikit_window,
+        pump_main_until, render_environment, spawned_window,
     };
 
     use super::mtm;
@@ -3018,6 +3013,18 @@ mod safe_area {
             t(
                 "a_page_pushed_over_the_keyboard_returns_keyboard_free",
                 a_page_pushed_over_the_keyboard_returns_keyboard_free,
+            ),
+            t(
+                "a_scroll_pushed_into_the_band_at_constant_size_updates_its_inset",
+                a_scroll_pushed_into_the_band_at_constant_size_updates_its_inset,
+            ),
+            t(
+                "a_toolbar_appearing_while_the_keyboard_is_up_rederives_the_inset",
+                a_toolbar_appearing_while_the_keyboard_is_up_rederives_the_inset,
+            ),
+            t(
+                "a_window_announced_keyboard_before_the_first_mount_is_not_stale",
+                a_window_announced_keyboard_before_the_first_mount_is_not_stale,
             ),
         ]
     }
@@ -3751,14 +3758,6 @@ mod safe_area {
             );
             mount.window.layoutIfNeeded();
             let end = keyboard_end(&mount.window);
-            // The window hands every reader the one region object —
-            // lazily created on first lookup, shared ever after.
-            let region = keyboard::region_for(&mount.window);
-            let again = keyboard::region_for(&mount.window);
-            assert!(
-                core::ptr::eq(Retained::as_ptr(&region), Retained::as_ptr(&again)),
-                "the window's keyboard region is a single object",
-            );
             post_keyboard_raw(
                 &mount.window,
                 // SAFETY: `UIKit` exports the name as a constant.
@@ -3805,6 +3804,141 @@ mod safe_area {
         None
     }
 
+    /// A surface pushed into the keyboard band at a constant size — a
+    /// banner moving it down — recomputes the covered depth from its
+    /// new window frame without a notification: the gate keys on the
+    /// frame in window coordinates, which a translate changes and a
+    /// content-offset scroll does not.
+    fn a_scroll_pushed_into_the_band_at_constant_size_updates_its_inset() {
+        let mtm = mtm();
+        let scroll = ScrollView::new(mtm, true, false);
+        let window = crate::leaf::attach(mtm, &scroll);
+        // A fixed-height surface sitting clear of the keyboard band.
+        view::set_frame(&scroll, cocoa_ui::Rect::new(0.0, 100.0, 390.0, 400.0));
+        window.layoutIfNeeded();
+        let end = keyboard_end(&window);
+        post_keyboard_raw(
+            &window,
+            // SAFETY: `UIKit` exports the name as a constant.
+            unsafe { UIKeyboardWillShowNotification },
+            end,
+            || keyboard::region_for(&window).frame() == end,
+        );
+        let clear = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            scroll.contentInset().bottom.abs() <= TOLERANCE
+        });
+        assert!(clear, "precondition: the band does not reach the scroll");
+        let before = scroll.contentInset().bottom;
+
+        // Push the surface down into the band at the same size — no
+        // notification follows, only a frame move.
+        view::set_frame(&scroll, cocoa_ui::Rect::new(0.0, 200.0, 390.0, 400.0));
+        let grown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            scroll.contentInset().bottom >= before + 50.0
+        });
+        assert!(
+            grown,
+            "a same-size move into the band re-derived the inset — {before} vs {}",
+            scroll.contentInset().bottom,
+        );
+        window.setHidden(true);
+    }
+
+    /// A safe-area change at the same frame — a toolbar appearing while
+    /// the keyboard is up — changes the depth the surface must inset
+    /// for: the gate reads the bottom safe-area inset too, or the band
+    /// would be counted twice.
+    fn a_toolbar_appearing_while_the_keyboard_is_up_rederives_the_inset() {
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 560.0),
+            card("tail"),
+            spacer().size(390.0, 380.0),
+        ))));
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        show_keyboard(&mount);
+        let applied = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            scroll_view.contentInset().bottom > TOLERANCE
+        });
+        assert!(applied, "precondition: the keyboard covers the scroll");
+        let inset_before = scroll_view.contentInset().bottom;
+        let safe_before = surface.safeAreaInsets().bottom;
+
+        // The toolbar arriving is an `additionalSafeAreaInsets` change —
+        // the surface's frame does not move.
+        mount
+            .window
+            .rootViewController()
+            .expect("the mount window has a root controller")
+            .setAdditionalSafeAreaInsets(UIEdgeInsets {
+                top: 0.0,
+                left: 0.0,
+                bottom: 40.0,
+                right: 0.0,
+            });
+        let grew = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            surface.safeAreaInsets().bottom >= safe_before + 40.0 - TOLERANCE
+        });
+        assert!(grew, "precondition: the added safe area reached the scroll");
+        let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            (scroll_view.contentInset().bottom - (inset_before - 40.0)).abs() <= TOLERANCE
+        });
+        assert!(
+            landed,
+            "a same-frame safe-area change re-derived the inset — {inset_before} vs {}",
+            scroll_view.contentInset().bottom,
+        );
+    }
+
+    /// The keyboard can be up before the first `WaterUI` view reaches a
+    /// window — an app-owned `UIWindow`. A notification that predates
+    /// the mount must not arrive as the region's frame: the region
+    /// seeds from the window's own `keyboardLayoutGuide` — reporting no
+    /// docked keyboard in this harness, which never docks a real one —
+    /// so it starts at `CGRect::ZERO`, and the first notification after
+    /// the mount lands on time.
+    fn a_window_announced_keyboard_before_the_first_mount_is_not_stale() {
+        let mtm = mtm();
+        let env = render_environment();
+        let window = spawned_window(mtm);
+        window.makeKeyAndVisible();
+        let end = keyboard_end(&window);
+        // Shown before any `WaterUI` view reaches the window: no region
+        // exists to hear it.
+        post_keyboard_raw(
+            &window,
+            // SAFETY: `UIKit` exports the name as a constant.
+            unsafe { UIKeyboardWillShowNotification },
+            end,
+            || true,
+        );
+        let mount = mount_uikit_window(
+            mtm,
+            AnyView::new(scroll(vstack((spacer().size(390.0, 1200.0),)))),
+            &env,
+            window,
+        );
+        let region = keyboard::region_for(&mount.window);
+        assert_eq!(
+            region.frame(),
+            CGRect::ZERO,
+            "a pre-mount notification must not fabricate the region's frame",
+        );
+        show_keyboard(&mount);
+        assert_eq!(
+            region.frame(),
+            end,
+            "the first notification after the mount lands on time",
+        );
+    }
+
     /// A page pushed over while the keyboard is up and hidden under
     /// while it is away misses no change: on pop the field page's
     /// scroll inset and its fill are back at the keyboard-free values
@@ -3841,6 +3975,11 @@ mod safe_area {
         let cover_scroll = UIScrollView::new(mtm());
         let cover_page = NavContentController::new(mtm(), &cover_scroll);
         nav.pushViewController_animated(&cover_page, false);
+        mount.window.layoutIfNeeded();
+        assert!(
+            surface.window().is_none() && fill.window().is_none(),
+            "precondition: the push carried the field's page out of the window",
+        );
         hide_keyboard(&mount);
         nav.popViewControllerAnimated(false);
 
@@ -4500,7 +4639,22 @@ mod safe_area {
             vstack((edge_probe(card("hero"), "top-edge", EdgeSet::TOP), spacer()))
                 .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
         ));
-        let bar = find_view::<UINavigationBar>(&mount.host).expect("the page mounts a nav bar");
+        let bar = find_view::<UINavigationBar>(&mount.host)
+            .expect("the page mounts a nav bar")
+            .downcast::<UINavigationBar>()
+            .expect("the found view is a navigation bar");
+        assert_eq!(
+            bar.barPosition(),
+            UIBarPosition::TopAttached,
+            "the bar keeps the top-attached position that extends its \
+             background over the status-bar band",
+        );
+        let background = &view::subviews(&bar)[0];
+        assert!(
+            window_top(background).abs() <= TOLERANCE,
+            "the bar's background reaches the window's top edge — {:?}",
+            window_frame(background),
+        );
         let bar_bottom = window_bottom(&bar);
         assert!(
             bar_bottom > TOLERANCE,

@@ -219,10 +219,23 @@ pub fn spawned_window(
 #[cfg(target_os = "ios")]
 #[must_use]
 pub fn mount_uikit(mtm: MainThreadMarker, view: waterui::AnyView, env: &Environment) -> UIKitMount {
+    mount_uikit_window(mtm, view, env, spawned_window(mtm))
+}
+
+/// `mount_uikit` into a window the caller already owns — a trial that
+/// must reach the window before the first mount (the keyboard can be
+/// up first) uses this.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit_window(
+    mtm: MainThreadMarker,
+    view: waterui::AnyView,
+    env: &Environment,
+    window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+) -> UIKitMount {
     use objc2::Message;
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     let host = controller.host_view().retain();
-    let window = spawned_window(mtm);
     window.setRootViewController(Some(&controller));
     cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&window));
     let mut keepalive = crate::contract::KeepAlive::default();

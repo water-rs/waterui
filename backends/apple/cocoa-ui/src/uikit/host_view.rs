@@ -250,6 +250,12 @@ define_class!(
                     // `WaterUI` view that reaches it; hosts read it and
                     // only mark.
                     let _ = crate::uikit::keyboard::region_for(&window);
+                    // Re-entering a window whose regions moved while the
+                    // host was out of the tree — a popped page — needs
+                    // one pass to re-derive its children's placements.
+                    if self.has_layout_handler() {
+                        self.setNeedsLayout();
+                    }
                 }
                 let handler = self.ivars().window.borrow().clone();
                 if let Some(handler) = handler {

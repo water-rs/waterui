@@ -31,7 +31,6 @@
 //! documents as typed, and stores the region as a retained associated
 //! object on the window.
 
-use core::ffi::c_void;
 use std::cell::{Cell, OnceCell, RefCell};
 
 use block2::RcBlock;
@@ -39,9 +38,9 @@ use objc2::ffi::{
     OBJC_ASSOCIATION_RETAIN_NONATOMIC, objc_getAssociatedObject, objc_setAssociatedObject,
 };
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CGPoint, CGRect};
 use objc2_foundation::{NSNotification, NSNumber, NSObject, NSObjectProtocol, NSString, NSValue};
 use objc2_ui_kit::{
     UICoordinateSpace, UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
@@ -52,6 +51,8 @@ use objc2_ui_kit::{
 
 use crate::notification::{NotificationName, NotificationObserver, observe_with_notification};
 use crate::uikit::host_view::HostView;
+use crate::uikit::scroll::ScrollView;
+use crate::uikit::table::TableView;
 
 /// The frame and animation a keyboard notification reports, resolved
 /// into the window's coordinate space.
@@ -169,6 +170,20 @@ impl KeyboardRegion {
             .window
             .set(Weak::new(window))
             .expect("a fresh region has no window yet");
+        // A window whose keyboard is already docked when the first
+        // `WaterUI` view arrives — an app-owned window — seeds the
+        // region from the keyboard's own layout guide, reported in the
+        // owning view's (the window's) coordinates; a zero-height or
+        // offscreen guide means no keyboard.
+        let guide = <UIWindow as AsRef<UIView>>::as_ref(window).keyboardLayoutGuide();
+        let seed = guide.layoutFrame();
+        let bounds = window.bounds();
+        if seed.size.height > 0.0
+            && seed.origin.y < bounds.size.height
+            && seed.origin.y + seed.size.height > 0.0
+        {
+            this.ivars().frame.set(seed);
+        }
         let weak = Weak::new(&*this);
         // SAFETY: `UIKit` exports the notification name as a constant for
         // the process's lifetime.
@@ -203,9 +218,12 @@ impl KeyboardRegion {
     /// `UIView` animation parameters a consumer mirrors, so every region
     /// reader lands its new frame with the keyboard's motion.
     fn apply(&self, note: &NSNotification) {
-        let Some(window) = self.ivars().window.get().and_then(Weak::load) else {
-            return;
-        };
+        let window = self
+            .ivars()
+            .window
+            .get()
+            .and_then(Weak::load)
+            .expect("the window retains its region — a live region means a live window");
         let change = change(note, &window);
         let block = RcBlock::new({
             let region: Retained<Self> = Retained::from(self);
@@ -228,15 +246,6 @@ impl KeyboardRegion {
     }
 }
 
-/// The associated-object key under `window` — a registered selector
-/// string, the same storage key idiom `dynamic_range` uses.
-fn association_key() -> *const c_void {
-    let selector = Sel::register(c"dev.cocoaui.keyboardRegion");
-    // SAFETY: `Sel` is `repr(transparent)` over the selector pointer the
-    // associated-object API expects as the key.
-    unsafe { core::mem::transmute::<Sel, *const c_void>(selector) }
-}
-
 /// The keyboard region attached to `window`, created and associated on
 /// first lookup.
 ///
@@ -246,8 +255,8 @@ fn association_key() -> *const c_void {
 ///
 /// # Panics
 ///
-/// Off the main thread — the region is a main-thread object, like the
-/// window it attaches to.
+/// Never in practice: the associated object was checked non-null before
+/// it is retained.
 #[must_use]
 pub fn region_for(window: &UIWindow) -> Retained<KeyboardRegion> {
     // SAFETY: `window` is a live object on the main thread; the returned
@@ -255,7 +264,7 @@ pub fn region_for(window: &UIWindow) -> Retained<KeyboardRegion> {
     let existing = unsafe {
         objc_getAssociatedObject(
             core::ptr::from_ref::<UIWindow>(window).cast::<AnyObject>(),
-            association_key(),
+            crate::view::association_key(c"dev.cocoaui.keyboardRegion"),
         )
     };
     if !existing.is_null() {
@@ -264,9 +273,7 @@ pub fn region_for(window: &UIWindow) -> Retained<KeyboardRegion> {
         return unsafe { Retained::retain(existing.cast_mut().cast::<KeyboardRegion>()) }
             .expect("the window's associated region is a live object");
     }
-    let mtm =
-        MainThreadMarker::new().expect("a window's keyboard region attaches on the main thread");
-    let region = KeyboardRegion::new(mtm, window);
+    let region = KeyboardRegion::new(window.mtm(), window);
     // SAFETY: `window` and `region` are live objects on the main thread;
     // the runtime retains `region` for the association's lifetime.
     unsafe {
@@ -274,7 +281,7 @@ pub fn region_for(window: &UIWindow) -> Retained<KeyboardRegion> {
             core::ptr::from_ref::<UIWindow>(window)
                 .cast_mut()
                 .cast::<AnyObject>(),
-            association_key(),
+            crate::view::association_key(c"dev.cocoaui.keyboardRegion"),
             Retained::as_ptr(&region).cast_mut().cast::<AnyObject>(),
             OBJC_ASSOCIATION_RETAIN_NONATOMIC,
         );
@@ -306,10 +313,12 @@ pub fn window_keyboard(view: &UIView) -> Option<(CGRect, f64)> {
 /// owns the safe-area contract inside itself and nothing under it reads
 /// the regions.
 fn mark_region_readers(view: &UIView) {
-    if crate::view::is_scroll_surface(view) {
-        // SAFETY: every view answering `cocoaUiIsScrollSurface` is a kit
-        // surface, which also implements `cocoaUiMarkKeyboard`.
-        let _: () = unsafe { msg_send![view, cocoaUiMarkKeyboard] };
+    if let Some(scroll) = view.downcast_ref::<ScrollView>() {
+        scroll.mark_keyboard();
+        return;
+    }
+    if let Some(table) = view.downcast_ref::<TableView>() {
+        table.mark_keyboard();
         return;
     }
     if let Some(host) = view.downcast_ref::<HostView>()
@@ -345,9 +354,13 @@ pub struct KeyboardTracking {
     /// `contentInset.bottom` — kept so the next pass shifts the inset by
     /// the delta instead of clobbering other bottom-inset terms.
     applied_inset: Cell<f64>,
-    /// The bounds size the last contribution computed against — a
-    /// resize re-derives the covered band with no notification at all.
-    applied_size: Cell<CGSize>,
+    /// The window-space frame and bottom safe-area inset the last
+    /// contribution computed against — a move or a safe-area change
+    /// re-derives the covered band with no notification at all, while a
+    /// content-offset pass recomputes nothing.
+    applied_frame: Cell<CGRect>,
+    /// See `applied_frame`.
+    applied_safe: Cell<f64>,
     /// The mark the window's notification walk left — the next pass
     /// recomputes whatever the size did.
     marked: Cell<bool>,
@@ -374,7 +387,8 @@ impl KeyboardTracking {
     pub const fn new() -> Self {
         Self {
             applied_inset: Cell::new(0.0),
-            applied_size: Cell::new(CGSize::ZERO),
+            applied_frame: Cell::new(CGRect::ZERO),
+            applied_safe: Cell::new(0.0),
             marked: Cell::new(false),
             observers: RefCell::new(Vec::new()),
         }
@@ -425,25 +439,32 @@ impl KeyboardTracking {
 
     /// Recomputes the keyboard contribution in `scroll`'s own layout
     /// pass — only when the window's notification marked the surface or
-    /// its bounds size changed; a pass `UIKit` runs for any other
-    /// reason (a content-offset change) recomputes nothing. The covered
+    /// what the cover reads changed: the surface's frame in window
+    /// coordinates — a banner pushing the surface down into the band
+    /// counts, a content-offset scroll does not — and the bottom
+    /// `safeAreaInsets` the covered band already carries. The covered
     /// band depth becomes the bottom content inset — shifted by the
     /// delta from the last applied value so other `contentInset.bottom`
     /// terms survive. The focused field is scrolled clear only when the
     /// contribution itself grows; a pass that re-runs because the user
     /// scrolled must leave the offset alone.
     pub fn apply_layout(&self, scroll: &UIScrollView) {
-        let size = scroll.bounds().size;
-        if !self.marked.replace(false) && self.applied_size.get() == size {
+        let frame = scroll.convertRect_toView(scroll.bounds(), None);
+        let safe_bottom = scroll.safeAreaInsets().bottom;
+        if !self.marked.replace(false)
+            && self.applied_frame.get() == frame
+            && (self.applied_safe.get() - safe_bottom).abs() <= f64::EPSILON
+        {
             return;
         }
         let contribution = if Self::nested_in_scroll(scroll) {
             0.0
         } else {
-            Self::keyboard_cover(scroll)
+            Self::keyboard_cover(scroll, frame, safe_bottom)
         };
         let previous = self.applied_inset.replace(contribution);
-        self.applied_size.set(size);
+        self.applied_frame.set(frame);
+        self.applied_safe.set(safe_bottom);
         if (contribution - previous).abs() > f64::EPSILON {
             let mut inset = scroll.contentInset();
             inset.bottom += contribution - previous;
@@ -473,25 +494,24 @@ impl KeyboardTracking {
 
     /// The depth of the keyboard band inside `scroll`'s window frame on
     /// the bottom edge — the inset the content needs to scroll the tail
-    /// clear of the keyboard region.
-    fn keyboard_cover(scroll: &UIScrollView) -> f64 {
+    /// clear of the keyboard region. `frame` is the window-space frame
+    /// the pass already read; `safe_bottom` the `safeAreaInsets` term
+    /// `adjustedContentInset` already carries, so the inset only needs
+    /// the covered depth beyond it.
+    fn keyboard_cover(scroll: &UIScrollView, frame: CGRect, safe_bottom: f64) -> f64 {
         let Some((keyboard, _)) = window_keyboard(scroll) else {
             return 0.0;
         };
         if keyboard.size.width <= 0.0 || keyboard.size.height <= 0.0 {
             return 0.0;
         }
-        let frame = scroll.convertRect_toView(scroll.bounds(), None);
         let bottom = frame.origin.y + frame.size.height;
         let horizontal = keyboard.origin.x < frame.origin.x + frame.size.width
             && keyboard.origin.x + keyboard.size.width > frame.origin.x;
         if !horizontal || keyboard.origin.y + keyboard.size.height < bottom - 0.5 {
             return 0.0;
         }
-        // The covered band beyond the surface's own `safeAreaInsets` —
-        // `adjustedContentInset` already carries those, so the content
-        // inset only needs the rest.
-        (bottom - keyboard.origin.y - scroll.safeAreaInsets().bottom).clamp(0.0, frame.size.height)
+        (bottom - keyboard.origin.y - safe_bottom).clamp(0.0, frame.size.height)
     }
 
     /// Scrolls the current first responder inside `scroll` the minimum
