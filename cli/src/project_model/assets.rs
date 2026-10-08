@@ -327,9 +327,10 @@ fn manifest_font_declarations(
 pub async fn scan_fonts(
     project: &Project,
     build_manifest: &Path,
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<Vec<FontDeclaration>> {
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())?;
-    declarations.extend(scan_crate_font_declarations(project, build_manifest).await?);
+    declarations.extend(scan_crate_font_declarations(project, build_manifest, resolved).await?);
     Ok(declarations)
 }
 
@@ -354,6 +355,7 @@ pub async fn scan_fonts(
 pub async fn seed_managed_crate_lock(
     project: &Project,
     build_manifest: &Path,
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<bool> {
     let Some(dir) = build_manifest.parent().filter(|dir| *dir != project.root()) else {
         return Ok(false);
@@ -367,15 +369,22 @@ pub async fn seed_managed_crate_lock(
     // `resolved_framework`, not `manifest().framework`: a `waterui_path`
     // project persists no framework record (the path is the record), but its
     // checkout's own `Cargo.lock` is still the canonical pin for the
-    // transitive packages only the managed crate reaches.
+    // transitive packages only the managed crate reaches. `resolved` is the
+    // caller's own resolution when the surrounding build already made one —
+    // a caller without one resolves on demand exactly as before.
     let has_framework =
         project.manifest().framework.is_some() || project.manifest().waterui_path.is_some();
     let canonical = if has_framework {
-        project
-            .resolved_framework()
-            .await?
-            .canonical_lock(project.root())
-            .await?
+        match resolved {
+            Some(resolved) => resolved.canonical_lock(project.root()).await?,
+            None => {
+                project
+                    .resolved_framework()
+                    .await?
+                    .canonical_lock(project.root())
+                    .await?
+            }
+        }
     } else {
         None
     };
@@ -464,13 +473,14 @@ fn parse_waterui_metadata(
 async fn scan_crate_font_declarations(
     project: &Project,
     build_manifest: &Path,
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<Vec<FontDeclaration>> {
     debug!(
         "Scanning fonts from dependencies via cargo metadata on {}",
         build_manifest.display()
     );
 
-    let managed = seed_managed_crate_lock(project, build_manifest).await?;
+    let managed = seed_managed_crate_lock(project, build_manifest, resolved).await?;
 
     let metadata = crate_metadata(project.host(), build_manifest, &[])
         .await
@@ -562,8 +572,9 @@ pub async fn scan_android_declarations(
     project: &Project,
     build_manifest: &Path,
     features: &[String],
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<AndroidDeclarations> {
-    seed_managed_crate_lock(project, build_manifest).await?;
+    seed_managed_crate_lock(project, build_manifest, resolved).await?;
     let metadata = crate_metadata(project.host(), build_manifest, features)
         .await
         .wrap_err_with(|| {
@@ -686,8 +697,9 @@ pub async fn scan_apple_declarations(
     project: &Project,
     build_manifest: &Path,
     features: &[String],
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<AppleDeclarations> {
-    seed_managed_crate_lock(project, build_manifest).await?;
+    seed_managed_crate_lock(project, build_manifest, resolved).await?;
     let metadata = crate_metadata(project.host(), build_manifest, features)
         .await
         .wrap_err_with(|| {
@@ -797,8 +809,10 @@ pub async fn stage_android_declarations(
     module_dir: &Path,
     scope: AndroidDependencyScope,
     features: &[String],
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<()> {
-    let declarations = scan_android_declarations(project, build_manifest, features).await?;
+    let declarations =
+        scan_android_declarations(project, build_manifest, features, resolved).await?;
     stage_classpath_files(&declarations.classpath, module_dir, scope).await?;
     android_manifest::write_manifest_components(module_dir, &declarations.manifest).await?;
     app_values::stage_android_app_values(
@@ -1452,7 +1466,7 @@ async fn seed_font_cache_scoped(
         .map_err(SeedFontCacheError::Scaffold)?;
     for manifest in manifests {
         declarations.extend(
-            scan_crate_font_declarations(project, &manifest)
+            scan_crate_font_declarations(project, &manifest, None)
                 .await
                 .map_err(SeedFontCacheError::Fonts)?,
         );
@@ -1509,8 +1523,11 @@ async fn ensure_font_scan_manifests(
         // drops the Apple pieces on hosts an Apple build cannot run.
         let apple_selected =
             scope.is_none_or(|backend| matches!(backend, crate::platform::TargetBackend::Apple));
+        let framework = project.resolved_framework().await.map_err(|error| {
+            eyre::eyre!("could not scaffold the Apple/Android FFI companion crate: {error}")
+        })?;
         project
-            .scaffold_ffi_companion(apple_selected)
+            .scaffold_ffi_companion(apple_selected, &framework)
             .await
             .map_err(|error| {
                 eyre::eyre!("could not scaffold the Apple/Android FFI companion crate: {error}")
@@ -2108,7 +2125,7 @@ pub async fn stage_hydrolysis_web_fonts(
 ) -> eyre::Result<()> {
     let mut resolved_fonts = resolve_fonts(
         project.host(),
-        scan_fonts(project, &backend_path.join("Cargo.toml")).await?,
+        scan_fonts(project, &backend_path.join("Cargo.toml"), None).await?,
     )
     .await?;
     resolved_fonts.sort_by(|left, right| left.name.cmp(&right.name));
@@ -2314,6 +2331,7 @@ pub async fn capability_enabled(
     project: &Project,
     build_manifest: &Path,
     capability: &str,
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<bool> {
     let capability = OPTIONAL_CAPABILITIES
         .iter()
@@ -2321,7 +2339,7 @@ pub async fn capability_enabled(
         .unwrap_or_else(|| panic!("unknown WaterUI capability: {capability}"));
     match capability.feature {
         Some(feature) => {
-            seed_managed_crate_lock(project, build_manifest).await?;
+            seed_managed_crate_lock(project, build_manifest, resolved).await?;
             package_feature_enabled(project.host(), build_manifest, capability.package, feature)
                 .await
         }
@@ -2352,10 +2370,11 @@ pub async fn capability_enabled(
 pub async fn capability_ffi_features(
     project: &Project,
     build_manifest: &Path,
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
     for capability in OPTIONAL_CAPABILITIES {
-        if capability_enabled(project, build_manifest, capability.name).await? {
+        if capability_enabled(project, build_manifest, capability.name, resolved).await? {
             features.push(capability.name.to_string());
         }
     }
@@ -2389,9 +2408,10 @@ pub async fn capability_ffi_features(
 pub async fn self_drawn_realization_features(
     project: &Project,
     build_manifest: &Path,
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
-    seed_managed_crate_lock(project, build_manifest).await?;
+    seed_managed_crate_lock(project, build_manifest, resolved).await?;
     let opted_in = package_feature_enabled(project.host(), build_manifest, "waterui", "video-gpu")
         .await?
         || project.links_runtime_package("waterui-video-gpu").await?;

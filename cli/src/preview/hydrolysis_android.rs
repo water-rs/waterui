@@ -336,9 +336,15 @@ async fn stage_device_payload(
     if let Some(progress) = request.progress.clone() {
         options = options.with_progress(progress);
     }
-    let build =
-        hydrolysis_android::build_with_features(project, abi, options, &["waterui-preview-mode"])
-            .await?;
+    let resolved = project.resolved_framework().await?;
+    let build = hydrolysis_android::build_with_features(
+        project,
+        &resolved,
+        abi,
+        options,
+        &["waterui-preview-mode"],
+    )
+    .await?;
 
     // Strip debug info in place: the cdylib carries a full desktop-sized
     // symbol set that only bloats the push. The build hands back the

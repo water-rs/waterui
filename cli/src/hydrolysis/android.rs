@@ -196,7 +196,7 @@ async fn materialize_android_host(
         return Ok(host_dir);
     }
 
-    if host_dir.exists() {
+    if fs::metadata(&host_dir).await.is_ok() {
         fs::remove_dir_all(&host_dir).await?;
     }
     fs::create_dir_all(&host_dir).await?;
@@ -263,19 +263,26 @@ async fn materialize_android_host(
 /// explicit selection error, never a runtime fallback.
 async fn require_painter_module(
     project: &Project,
+    resolved: &ResolvedFramework,
     painter: HydrolysisAndroidPainter,
 ) -> eyre::Result<PathBuf> {
-    let resolved = project.resolved_framework().await?;
-    let host_root = materialize_android_host(project, &resolved).await?;
+    let host_root = materialize_android_host(project, resolved).await?;
     let subdirectory = resolved.hydrolysis_android_host_subdirectory()?;
     let host_project_dir = host_root.join(subdirectory);
     let module_dir = host_project_dir.join(painter.host_module());
-    if !module_dir.is_dir() {
-        bail!(
-            "the hydrolysis android host at {} ships no `{}` painter: {} does not exist; \
+    let metadata = fs::metadata(&module_dir).await.wrap_err_with(|| {
+        format!(
+            "the hydrolysis android host at {} ships no `{painter}` painter: {} does not exist; \
              painter selection is explicit and never falls back",
             host_root.display(),
-            painter,
+            module_dir.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!(
+            "the hydrolysis android host at {} ships no `{painter}` painter: {} is not a directory; \
+             painter selection is explicit and never falls back",
+            host_root.display(),
             module_dir.display()
         );
     }
@@ -283,8 +290,9 @@ async fn require_painter_module(
 }
 
 /// The template entry the generated `android/` Gradle project renders with.
-async fn template_entry(
+fn template_entry(
     project: &Project,
+    resolved: &ResolvedFramework,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<HydrolysisAndroidTemplateEntry> {
@@ -306,10 +314,7 @@ async fn template_entry(
         )
     })?;
 
-    let framework_min = project
-        .resolved_framework()
-        .await?
-        .android_min_api_level()?;
+    let framework_min = resolved.android_min_api_level()?;
     Ok(HydrolysisAndroidTemplateEntry {
         native_library_name: templates::hydrolysis::hydrolysis_library_target_name(
             &project.hydrolysis_backend_crate_name(),
@@ -329,6 +334,7 @@ async fn template_entry(
 /// enabled Android permissions.
 async fn android_template_context(
     project: &Project,
+    resolved: &ResolvedFramework,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<crate::templates::TemplateContext> {
@@ -338,12 +344,15 @@ async fn android_template_context(
         .bundle_identifier()
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
-    Ok(
-        HydrolysisBackend::template_context(project, &project.resolved_framework().await?)
-            .await?
-            .with_hydrolysis_android(template_entry(project, painter, host_project_dir).await?)
-            .with_android_permissions(manifest_permissions(project.manifest())),
-    )
+    Ok(HydrolysisBackend::template_context(project, resolved)
+        .await?
+        .with_hydrolysis_android(template_entry(
+            project,
+            resolved,
+            painter,
+            host_project_dir,
+        )?)
+        .with_android_permissions(manifest_permissions(project.manifest())))
 }
 
 /// Render the generated Gradle app into `<backend>/android` for `painter`.
@@ -361,12 +370,13 @@ async fn android_template_context(
 /// Returns an error when template rendering or file writing fails.
 pub async fn scaffold_android_project(
     project: &Project,
+    resolved: &ResolvedFramework,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<()> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    project.scaffold_ffi_companion(false).await?;
-    let ctx = android_template_context(project, painter, host_project_dir).await?;
+    project.scaffold_ffi_companion(false, resolved).await?;
+    let ctx = android_template_context(project, resolved, painter, host_project_dir).await?;
     templates::hydrolysis_android::scaffold(project.host(), &android_dir(&backend_path), &ctx)
         .await?;
     Ok(())
@@ -380,22 +390,27 @@ pub async fn scaffold_android_project(
 /// Returns an error when the template context or rendering fails.
 pub async fn rendered_android_outputs(
     project: &Project,
+    resolved: &ResolvedFramework,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<Vec<(PathBuf, Vec<u8>)>> {
-    let ctx = android_template_context(project, painter, host_project_dir).await?;
+    let ctx = android_template_context(project, resolved, painter, host_project_dir).await?;
     Ok(templates::hydrolysis_android::rendered_outputs(&ctx)?)
 }
 
 /// The `waterui_android` Gradle project needs these before `cargo build`:
 /// `icons.json` and the other fetched font metadata the icon crates' build
 /// scripts read.
-async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
+async fn resolve_declared_fonts(
+    project: &Project,
+    resolved: &ResolvedFramework,
+) -> eyre::Result<()> {
     let declarations = assets::scan_fonts(
         project,
         &project
             .backend_path::<HydrolysisBackend>()
             .join("Cargo.toml"),
+        Some(resolved),
     )
     .await?;
     let _resolved = assets::resolve_fonts(project.host(), declarations).await?;
@@ -432,10 +447,13 @@ pub struct HydrolysisAndroidBuild {
 /// staging fails.
 pub async fn build(
     project: &Project,
+    resolved: &ResolvedFramework,
     abi: AndroidAbi,
     options: BuildOptions,
 ) -> eyre::Result<BuiltTarget> {
-    Ok(build_with_features(project, abi, options, &[]).await?.built)
+    Ok(build_with_features(project, resolved, abi, options, &[])
+        .await?
+        .built)
 }
 
 /// [`build`] with extra Cargo features — the preview entry compiles the
@@ -447,6 +465,7 @@ pub async fn build(
 /// staging fails.
 pub async fn build_with_features(
     project: &Project,
+    resolved: &ResolvedFramework,
     abi: AndroidAbi,
     options: BuildOptions,
     features: &[&str],
@@ -458,21 +477,22 @@ pub async fn build_with_features(
     let options = options.with_static_runtime();
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    if !backend_path.join("Cargo.toml").is_file() {
+    let backend_manifest = backend_path.join("Cargo.toml");
+    if !fs::metadata(&backend_manifest)
+        .await
+        .is_ok_and(|metadata| metadata.is_file())
+    {
         bail!(
             "Hydrolysis backend not found at {}. Run `water run --platform android --backend hydrolysis` to initialize it.",
             backend_path.display()
         );
     }
 
-    resolve_declared_fonts(project).await?;
+    resolve_declared_fonts(project, resolved).await?;
 
     let platform = AndroidPlatform::new(abi);
     let triple = platform.triple();
-    let min_api_level = project
-        .resolved_framework()
-        .await?
-        .android_min_api_level()?;
+    let min_api_level = resolved.android_min_api_level()?;
     let context = resolve_android_build_context(host, abi, &triple, min_api_level).await?;
 
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
@@ -580,6 +600,7 @@ async fn copy_assets(
 /// or the Gradle build fails.
 pub async fn package_with_abis(
     project: &Project,
+    resolved: &ResolvedFramework,
     painter: HydrolysisAndroidPainter,
     options: &PackageOptions,
     abis: &[AndroidAbi],
@@ -600,8 +621,8 @@ pub async fn package_with_abis(
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
 
-    let host_project_dir = require_painter_module(project, painter).await?;
-    scaffold_android_project(project, painter, &host_project_dir).await?;
+    let host_project_dir = require_painter_module(project, resolved, painter).await?;
+    scaffold_android_project(project, resolved, painter, &host_project_dir).await?;
 
     copy_assets(project, &built.app_symbols()?, options.uses_dev_server()).await?;
 
@@ -617,7 +638,8 @@ pub async fn package_with_abis(
         &project.ffi_crate_path().join("Cargo.toml"),
         &android_dir.join("app"),
         crate::assets::AndroidDependencyScope::Implementation,
-        &android_ffi_dependency_features(project).await?,
+        &android_ffi_dependency_features(project, Some(resolved)).await?,
+        Some(resolved),
     )
     .await?;
 
@@ -699,16 +721,25 @@ pub async fn run_on_device<D: Device + AndroidAbiProvider>(
     let prepared = crate::android::signing::PreparedSigning::resolve(project, &package_options)
         .map_err(FailToRun::Package)?;
 
+    // One framework resolution serves the whole build: the Rust build's
+    // API floor, the host checkout and the rendered scaffold all read the
+    // same `resolved`, so a build never observes the resolution disagree
+    // with itself.
+    let resolved = project
+        .resolved_framework()
+        .await
+        .map_err(FailToRun::Build)?;
     let build_options = match progress {
         Some(progress) => build_options.with_progress(progress),
         None => build_options,
     };
-    let built = build(project, abi, build_options)
+    let built = build(project, &resolved, abi, build_options)
         .await
         .map_err(FailToRun::Build)?;
 
     let artifact = package_with_abis(
         project,
+        &resolved,
         painter,
         &package_options,
         &[abi],
@@ -730,7 +761,7 @@ pub async fn run_on_device<D: Device + AndroidAbiProvider>(
 pub async fn clean_jni_libs(project: &Project) -> eyre::Result<()> {
     let jni_libs_dir =
         android_dir(&project.backend_path::<HydrolysisBackend>()).join("app/src/main/jniLibs");
-    if jni_libs_dir.exists() {
+    if fs::metadata(&jni_libs_dir).await.is_ok() {
         fs::remove_dir_all(&jni_libs_dir).await?;
     }
     Ok(())
@@ -1243,13 +1274,18 @@ mod tests {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
             let (_temporary, project) = fixture_project(&host, "").await;
-
-            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+            let resolved = project
+                .resolved_framework()
                 .await
-                .expect("gpu module exists");
+                .expect("framework resolves");
+
+            let host_project_dir =
+                require_painter_module(&project, &resolved, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("gpu module exists");
             assert_eq!(host_project_dir.file_name().unwrap(), "android");
 
-            let error = require_painter_module(&project, HydrolysisAndroidPainter::Hwui)
+            let error = require_painter_module(&project, &resolved, HydrolysisAndroidPainter::Hwui)
                 .await
                 .expect_err("hwui module is absent")
                 .to_string();
@@ -1282,13 +1318,19 @@ mod tests {
                 "\n[permissions]\ninternet = { enable = true, description = \"fixture\" }\n",
             )
             .await;
-            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+            let resolved = project
+                .resolved_framework()
                 .await
-                .expect("host project dir");
+                .expect("framework resolves");
+            let host_project_dir =
+                require_painter_module(&project, &resolved, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("host project dir");
 
             let files = rendered_files(
                 rendered_android_outputs(
                     &project,
+                    &resolved,
                     HydrolysisAndroidPainter::Gpu,
                     &host_project_dir,
                 )
@@ -1393,13 +1435,19 @@ mod tests {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
             let (_temporary, project) = fixture_project(&host, "").await;
-            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+            let resolved = project
+                .resolved_framework()
                 .await
-                .expect("host project dir");
+                .expect("framework resolves");
+            let host_project_dir =
+                require_painter_module(&project, &resolved, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("host project dir");
 
             let files = rendered_files(
                 rendered_android_outputs(
                     &project,
+                    &resolved,
                     HydrolysisAndroidPainter::Gpu,
                     &host_project_dir,
                 )
@@ -1433,10 +1481,18 @@ mod tests {
             let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
             std::fs::create_dir_all(&android_dir).expect("android dir");
             let host_project_dir = project.root().join("android-host");
-
-            let entry = template_entry(&project, HydrolysisAndroidPainter::Gpu, &host_project_dir)
+            let framework = project
+                .resolved_framework()
                 .await
-                .expect("template entry");
+                .expect("framework resolves");
+
+            let entry = template_entry(
+                &project,
+                &framework,
+                HydrolysisAndroidPainter::Gpu,
+                &host_project_dir,
+            )
+            .expect("template entry");
             let resolved = android_dir
                 .join(&entry.project_root)
                 .canonicalize()
@@ -1450,6 +1506,7 @@ mod tests {
             let files = rendered_files(
                 rendered_android_outputs(
                     &project,
+                    &framework,
                     HydrolysisAndroidPainter::Gpu,
                     &host_project_dir,
                 )
@@ -1477,13 +1534,23 @@ mod tests {
                 !project.ffi_crate_path().join("Cargo.toml").exists(),
                 "fixture opened with no managed backends: no companion scaffolded"
             );
-            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+            let resolved = project
+                .resolved_framework()
                 .await
-                .expect("host project dir");
+                .expect("framework resolves");
+            let host_project_dir =
+                require_painter_module(&project, &resolved, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("host project dir");
 
-            scaffold_android_project(&project, HydrolysisAndroidPainter::Gpu, &host_project_dir)
-                .await
-                .expect("android scaffold renders");
+            scaffold_android_project(
+                &project,
+                &resolved,
+                HydrolysisAndroidPainter::Gpu,
+                &host_project_dir,
+            )
+            .await
+            .expect("android scaffold renders");
 
             assert!(
                 project.ffi_crate_path().join("Cargo.toml").exists(),
@@ -1500,13 +1567,19 @@ mod tests {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["hwui"]);
             let (_temporary, project) = fixture_project(&host, "").await;
-            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Hwui)
+            let resolved = project
+                .resolved_framework()
                 .await
-                .expect("host project dir");
+                .expect("framework resolves");
+            let host_project_dir =
+                require_painter_module(&project, &resolved, HydrolysisAndroidPainter::Hwui)
+                    .await
+                    .expect("host project dir");
 
             let files = rendered_files(
                 rendered_android_outputs(
                     &project,
+                    &resolved,
                     HydrolysisAndroidPainter::Hwui,
                     &host_project_dir,
                 )
@@ -1536,6 +1609,50 @@ mod tests {
             assert!(
                 !activity.contains("HydrolysisGpuBand"),
                 "no GPU band view exists in the hwui build: {activity}"
+            );
+        });
+    }
+
+    /// One Android build performs exactly one framework resolution: the
+    /// caller resolves once and the host probe, the ffi companion render and
+    /// the scaffold context all read that answer — no layer re-resolves
+    /// (#2280, where the packaging path resolved three times over).
+    #[test]
+    fn the_android_build_resolves_the_framework_once() {
+        smol::block_on(async {
+            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let (_temporary, project) = fixture_project(&host, "").await;
+
+            let before = project.resolved_framework_calls();
+            let resolved = project
+                .resolved_framework()
+                .await
+                .expect("framework resolves");
+            let host_project_dir =
+                require_painter_module(&project, &resolved, HydrolysisAndroidPainter::Gpu)
+                    .await
+                    .expect("gpu module exists");
+            scaffold_android_project(
+                &project,
+                &resolved,
+                HydrolysisAndroidPainter::Gpu,
+                &host_project_dir,
+            )
+            .await
+            .expect("android scaffold renders");
+            let _outputs = rendered_android_outputs(
+                &project,
+                &resolved,
+                HydrolysisAndroidPainter::Gpu,
+                &host_project_dir,
+            )
+            .await
+            .expect("scaffold renders");
+
+            assert_eq!(
+                project.resolved_framework_calls() - before,
+                1,
+                "one Android build performs exactly one framework resolution"
             );
         });
     }

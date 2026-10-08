@@ -474,7 +474,7 @@ impl AndroidPlatform {
         // Resolve fonts BEFORE cargo build - this ensures icons.json is present
         // for crates like fontawesome7 that need it during build.rs
         let font_declarations =
-            crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml"))
+            crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml"), None)
                 .await?;
         let _resolved_fonts =
             crate::assets::resolve_fonts(project.host(), font_declarations).await?;
@@ -580,7 +580,8 @@ impl AndroidPlatform {
             &project.ffi_crate_path().join("Cargo.toml"),
             &backend_path.join("app"),
             crate::assets::AndroidDependencyScope::Implementation,
-            &android_ffi_dependency_features(project).await?,
+            &android_ffi_dependency_features(project, None).await?,
+            None,
         )
         .await?;
 
@@ -773,16 +774,22 @@ async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBu
 /// Returns an error when the project's enabled capabilities cannot be resolved.
 pub(crate) async fn android_ffi_dependency_features(
     project: &Project,
+    resolved: Option<&crate::framework::ResolvedFramework>,
 ) -> eyre::Result<Vec<String>> {
     let build_manifest = project.ffi_crate_path().join("Cargo.toml");
     let mut features = vec!["android-jni".to_string()];
     features.extend(
-        crate::project_model::assets::capability_ffi_features(project, &build_manifest).await?,
+        crate::project_model::assets::capability_ffi_features(project, &build_manifest, resolved)
+            .await?,
     );
     // Android has no player or map WaterUI bridges, so it draws both itself.
     features.extend(
-        crate::project_model::assets::self_drawn_realization_features(project, &build_manifest)
-            .await?,
+        crate::project_model::assets::self_drawn_realization_features(
+            project,
+            &build_manifest,
+            resolved,
+        )
+        .await?,
     );
     Ok(features)
 }
@@ -797,7 +804,7 @@ async fn configure_android_rust_build(
     // Android loads the JNI shared object and nothing else, so build only that crate
     // type instead of also archiving the whole dependency graph into a staticlib.
     let mut build = RustBuild::for_project(project, project.ffi_crate_path(), triple.clone())
-        .with_features(android_ffi_dependency_features(project).await?)
+        .with_features(android_ffi_dependency_features(project, None).await?)
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG);
     if let Some(sccache_path) = options.sccache_path() {
@@ -1117,7 +1124,7 @@ async fn copy_assets_and_fonts(
 
     // Scan and resolve dependency fonts
     let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml"), None).await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

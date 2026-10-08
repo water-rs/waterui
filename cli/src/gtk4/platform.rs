@@ -231,7 +231,8 @@ async fn copy_assets_and_fonts(
     assets::stage_hicolor_icons(project, &resources_dir.join("icons")).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations = assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
+    let font_declarations =
+        assets::scan_fonts(project, &backend_path.join("Cargo.toml"), None).await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
