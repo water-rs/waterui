@@ -344,6 +344,10 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 ///
 /// # Errors
 /// Returns an error if packaging prerequisites are missing, assets cannot be staged, or output artifacts cannot be produced.
+#[expect(
+    clippy::too_many_lines,
+    reason = "packaging is one linear sequence of staging steps per platform; the macOS bundle already has its own function"
+)]
 pub async fn package_hydrolysis(
     project: &Project,
     platform: TargetPlatform,
