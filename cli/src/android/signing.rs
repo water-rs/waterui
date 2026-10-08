@@ -236,7 +236,7 @@ impl PreparedSigning {
                 resolve_release_signing(
                     project.manifest(),
                     project.root(),
-                    &Host::current(),
+                    project.host(),
                     options.device_signing(),
                 )
             })
@@ -600,6 +600,7 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
         let project = smol::block_on(crate::project::Project::create(
+            &crate::toolchain::Host::current(),
             &root,
             crate::project::CreateOptions {
                 name: "Water Example".to_string(),
@@ -641,6 +642,7 @@ mod tests {
         let other_dir = tempdir().expect("temp dir");
         let other_root = other_dir.path().join("other-app");
         let other = smol::block_on(crate::project::Project::create(
+            &crate::toolchain::Host::current(),
             &other_root,
             crate::project::CreateOptions {
                 name: "Other App".to_string(),

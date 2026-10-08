@@ -204,6 +204,35 @@ impl TestMachine {
         K: AsRef<std::ffi::OsStr>,
         V: AsRef<std::ffi::OsStr>,
     {
+        self.host_on_path([self.bin()], vars)
+    }
+
+    /// [`Self::host`] with the Rust toolchain that compiled this test binary
+    /// on `PATH` after the fake tools, for a check that drives a real `cargo`
+    /// (opening a project runs `cargo metadata`) while every other tool it
+    /// spawns stays fake. The toolchain's own `bin/` is named directly, not a
+    /// `rustup` proxy, so no `RUSTUP_HOME` leaks in from the real machine.
+    pub fn host_with_rust_toolchain<K, V>(&self, vars: impl IntoIterator<Item = (K, V)>) -> Host
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
+        let toolchain_bin = Path::new(env!("CARGO"))
+            .parent()
+            .expect("the cargo that built this test lives in a toolchain bin directory")
+            .to_path_buf();
+        self.host_on_path([self.bin(), toolchain_bin], vars)
+    }
+
+    fn host_on_path<K, V>(
+        &self,
+        path_dirs: impl IntoIterator<Item = PathBuf>,
+        vars: impl IntoIterator<Item = (K, V)>,
+    ) -> Host
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
         let mut declared: Vec<(OsString, OsString)> = vec![
             (
                 OsString::from("WATERUI_FAKE_RESPONSES"),
@@ -216,7 +245,7 @@ impl TestMachine {
             vars.into_iter()
                 .map(|(k, v)| (k.as_ref().to_os_string(), v.as_ref().to_os_string())),
         );
-        Host::new([self.bin()], declared).with_cwd(self.root.path().to_path_buf())
+        Host::new(path_dirs, declared).with_cwd(self.root.path().to_path_buf())
     }
 
     fn script(path: PathBuf) -> PathBuf {
@@ -260,7 +289,10 @@ fn dispatcher_source() -> PathBuf {
     let (_, path) = SOURCE.get_or_init(|| {
         let dir = tempfile::tempdir().expect("create fake-tool source dir");
         let canonical = dir.path().join("fake_tools.sh");
-        let status = std::process::Command::new("cp")
+        // A child `cp`, never an in-process copy: see above. The real
+        // machine runs it, since the scratch machine has no `cp`.
+        let status = Host::current()
+            .std_command("cp")
             .arg(FAKE_TOOL_SOURCE)
             .arg(&canonical)
             .status()

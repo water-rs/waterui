@@ -4,9 +4,10 @@
 //! records use the same `DoctorItemRecord` schema the command serializes, so
 //! a schema drift fails to deserialize rather than string-matching.
 
-use std::process::Command;
-
-use waterui_cli::toolchain::doctor::{DoctorGroup, DoctorItemRecord, ids};
+use waterui_cli::toolchain::{
+    Host,
+    doctor::{DoctorGroup, DoctorItemRecord, ids},
+};
 
 /// Status vocabulary, diagnostic presence, group label, and scope of one
 /// record. The run is inside a project, which can build with every backend,
@@ -48,16 +49,17 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
         "[package]\nname = \"Doctor Fixture\"\nbundle_identifier = \"dev.waterui.doctor_fixture\"\n\n[web]\npackage_manager = \"bun\"\n",
     )
     .expect("write fixture manifest");
-    let output = Command::new(env!("CARGO_BIN_EXE_water"))
+    // Redirect the child's home so `ensure_global_config` never writes
+    // `~/.water/config.toml` on the machine running the tests. (dirs'
+    // Windows backend consults the known-folder API, so this is only
+    // effective on Unix; the write itself is a small config file the CLI
+    // owns anyway.)
+    let output = Host::current()
+        .with_env("HOME", home.path())
+        .with_env("USERPROFILE", home.path())
+        .with_cwd(project.path())
+        .std_command(env!("CARGO_BIN_EXE_water"))
         .args(["--json", "doctor"])
-        .current_dir(project.path())
-        // Redirect the child's home so `ensure_global_config` never writes
-        // `~/.water/config.toml` on the machine running the tests. (dirs'
-        // Windows backend consults the known-folder API, so this is only
-        // effective on Unix; the write itself is a small config file the CLI
-        // owns anyway.)
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env_remove("RUST_LOG")
         .output()
         .expect("spawn `water doctor --json`");

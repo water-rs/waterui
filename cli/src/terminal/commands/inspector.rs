@@ -92,6 +92,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     note!(shell, "Session token: {}", token);
 
     let mut session = launch_inspector_session(
+        &waterui_cli::toolchain::Host::current(),
         &project_path,
         platform,
         InspectorLaunchOptions {

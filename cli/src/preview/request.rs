@@ -349,30 +349,32 @@ pub fn resolve_hydrolysis_preview_theme(
 ///
 /// # Errors
 /// Returns an error if a required toolchain component is missing.
-pub async fn check_toolchain_for_backend(backend: ResolvedPreviewBackend) -> Result<()> {
-    let host = crate::toolchain::Host::current();
+pub async fn check_toolchain_for_backend(
+    host: &crate::toolchain::Host,
+    backend: ResolvedPreviewBackend,
+) -> Result<()> {
     match backend {
         ResolvedPreviewBackend::Apple => {
             // The generated preview binary is a host Apple executable —
             // the same toolchain `water run` needs.
-            toolchain_checks::check_apple(&host, AppleSdk::Macos).await?;
+            toolchain_checks::check_apple(host, AppleSdk::Macos).await?;
         }
         ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => {
-            toolchain_checks::check_android_run(&host).await?;
+            toolchain_checks::check_android_run(host).await?;
         }
         ResolvedPreviewBackend::SupportApp(platform) => match platform {
             PreviewPlatform::Ios => {
-                toolchain_checks::check_apple(&host, AppleSdk::Ios).await?;
+                toolchain_checks::check_apple(host, AppleSdk::Ios).await?;
             }
             PreviewPlatform::IosSimulator => {
-                toolchain_checks::check_apple(&host, AppleSdk::IosSimulator).await?;
+                toolchain_checks::check_apple(host, AppleSdk::IosSimulator).await?;
             }
             PreviewPlatform::Macos => {
-                toolchain_checks::check_apple(&host, AppleSdk::Macos).await?;
+                toolchain_checks::check_apple(host, AppleSdk::Macos).await?;
             }
         },
         ResolvedPreviewBackend::Hydrolysis(_) => {
-            toolchain_checks::check_hydrolysis(&host).await?;
+            toolchain_checks::check_hydrolysis(host).await?;
         }
     }
     Ok(())

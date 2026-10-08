@@ -435,7 +435,7 @@ pub async fn build_manifest(
             if dev_server {
                 continue;
             }
-            crate::web::build_frontend(package_manager, &meta).await?;
+            crate::web::build_frontend(project.host(), package_manager, &meta).await?;
         }
         assets.extend(plan_mount(&meta.path, &meta.mount)?);
         mounts.push(BundleMount {
@@ -1118,9 +1118,13 @@ mod tests {
             std::fs::write(root.join("assets/README.md"), "# Assets\n").expect("readme");
             std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
 
-            let project = Project::open(&root, ManagedBackends::NONE)
-                .await
-                .expect("fixture project opens");
+            let project = Project::open(
+                &crate::toolchain::Host::current(),
+                &root,
+                ManagedBackends::NONE,
+            )
+            .await
+            .expect("fixture project opens");
             let assets = plan_main_assets(&project).expect("assets plan");
             assert_eq!(
                 assets
