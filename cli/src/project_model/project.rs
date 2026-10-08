@@ -1396,7 +1396,7 @@ impl CreateOptions {
             return Ok((ResolvedFramework::for_local_checkout(&root).await?, None));
         }
         if let Some(path) = &self.framework_manifest {
-            return ResolvedFramework::resolve_manifest(path).await;
+            return ResolvedFramework::resolve_manifest(host, path).await;
         }
         if let Some(framework) = &self.framework {
             return Ok((framework.clone(), self.framework_lock.take()));
@@ -2062,10 +2062,12 @@ impl Project {
         // 1. Running inside Xcode's sandboxed build script phase (WATERUI_SKIP_RUST_BUILD=1)
         // 2. Running inside any sandbox (sandbox-exec sets __XCODE_BUILT_PRODUCTS_DIR_PATHS or similar)
         // 3. Xcode is the current build tool (ACTION env var is set by Xcode)
-        let skip_backend_init = std::env::var("WATERUI_SKIP_RUST_BUILD")
-            .is_ok_and(|value| value == "1")
-            || std::env::var("ACTION").is_ok() // Xcode sets this during builds
-            || std::env::var("XCODE_PRODUCT_BUILD_VERSION").is_ok();
+        let skip_backend_init = project
+            .host()
+            .env("WATERUI_SKIP_RUST_BUILD")
+            .is_some_and(|value| value == "1")
+            || project.host().env("ACTION").is_some() // Xcode sets this during builds
+            || project.host().env("XCODE_PRODUCT_BUILD_VERSION").is_some();
 
         if !skip_backend_init && open_mode == OpenMode::Full {
             // The ffi companion is rendered for THIS invocation's selection
@@ -4092,8 +4094,8 @@ mod scaffold_tests {
             &crate::toolchain::Host::current(),
             &root,
         ))
-            .expect("build cache dir")
-            .join("ffi");
+        .expect("build cache dir")
+        .join("ffi");
 
         // The stale companion an earlier apple-selected open left behind: a
         // manifest carrying a `waterui-apple` path dependency that no longer
