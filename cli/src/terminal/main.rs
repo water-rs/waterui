@@ -147,7 +147,7 @@ fn main() -> Result<()> {
         .display_env_section(false)
         .install()?;
 
-    init_cli_tracing();
+    init_cli_tracing(&waterui_cli::toolchain::Host::current());
 
     let cli = Cli::parse();
 
@@ -267,16 +267,15 @@ pub(crate) async fn until_interrupt<T>(
     }
 }
 
-fn init_cli_tracing() {
-    if waterui_cli::toolchain::Host::current()
-        .env("RUST_LOG")
-        .is_none()
-    {
+/// Install the stderr subscriber when `host` sets `RUST_LOG`, filtered by
+/// its directives.
+fn init_cli_tracing(host: &waterui_cli::toolchain::Host) {
+    let Some(directives) = host.env("RUST_LOG") else {
         return;
-    }
+    };
 
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(EnvFilter::builder().parse_lossy(directives.to_string_lossy()))
         .with_target(false)
         .with_writer(std::io::stderr)
         .try_init();
