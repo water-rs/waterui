@@ -228,7 +228,7 @@ impl PreparedSigning {
     /// here at the same single validation.
     ///
     /// # Errors
-    /// Whatever [`resolve_release_signing`] rejects: no declared
+    /// Whatever `resolve_release_signing` rejects: no declared
     /// configuration, a missing keystore, or an unset password variable.
     pub fn resolve(project: &Project, options: &PackageOptions) -> Result<Self> {
         let release_signing = (!options.is_debug())

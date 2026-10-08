@@ -555,7 +555,8 @@ impl AndroidPlatform {
     /// `built` is the build's target result — its `app_symbols()` carry the
     /// `waterui_meta_bundle_*` statics that declare the asset mounts.
     ///
-    /// `prepared` is the release-signing decision [`PreparedSigning::resolve`]
+    /// `prepared` is the release-signing decision
+    /// [`PreparedSigning::resolve`](crate::android::signing::PreparedSigning::resolve)
     /// produced for this project and these options — before the Rust builds
     /// when the caller sequences them (`water package`, `water run`), or at
     /// the single in-package resolution otherwise. It is re-checked against
