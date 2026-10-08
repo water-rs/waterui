@@ -205,28 +205,11 @@ fn load_project_icon(manifest: &BundleManifest) -> eyre::Result<IconSource> {
     )
 }
 
-/// The theme parent a generated Android app builds on: Material3 for the
-/// native View runtime's appcompat dependency closure, the platform's own
-/// Material theme for the Hydrolysis host, which ships neither library.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AndroidThemeParent {
-    /// `Theme.Material3.DayNight.NoActionBar` — appcompat/Material color
-    /// attributes, only valid with `com.google.android.material` linked.
-    Material3,
-    /// `@android:style/Theme.Material.NoActionBar` — framework attributes
-    /// only; the Hydrolysis host declares no appcompat or Material dep.
-    Platform,
-}
-
-/// Stage the project's assets under the Android backend's `res`/`assets`
-/// tree. `symbols` is the target build's app library — see
-/// [`stage_for_apple`].
 pub async fn stage_for_android(
     project: &Project,
     backend_path: &Path,
     symbols: &ArtifactSymbols,
     dev_server: bool,
-    theme_parent: AndroidThemeParent,
 ) -> eyre::Result<BundleManifest> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
     let assets_dest = backend_path
@@ -244,7 +227,7 @@ pub async fn stage_for_android(
     let launch = launch_assets_from(project, &manifest)?;
 
     let theme = project.manifest().theme.as_ref();
-    write_android_theme_files(theme, icon_background, &launch, backend_path, theme_parent).await?;
+    write_android_theme_files(theme, icon_background, &launch, backend_path).await?;
 
     // Older CLI versions staged the foreground as a vector drawable; a PNG
     // and an XML with the same resource name cannot coexist.
@@ -255,8 +238,8 @@ pub async fn stage_for_android(
     Ok(manifest)
 }
 
-/// Stage the project's assets under an embedded-mode Android library
-/// module's `assets` tree. A host mounts `waterui_assets` out of the AAR's
+/// Stage the project's assets under the Hydrolysis Android preview library
+/// module's `assets` tree. The preview host mounts `waterui_assets` out of the
 /// merged assets, so only the raw asset files and their sync stamp ship —
 /// the app-level `res`/`theme`/launcher artwork belongs to the host.
 /// `symbols` is the target build's app library — see [`stage_for_apple`].
@@ -275,16 +258,14 @@ pub async fn stage_for_android_library(
     copy_manifest_assets(&manifest, &bundle).await?;
     write_manifest_stamp(&manifest, &bundle).await?;
 
-    Ok((manifest, StagedAndroidAssets { root, bundle }))
+    Ok((manifest, StagedAndroidAssets { bundle }))
 }
 
 /// Where [`stage_for_android_library`] staged a library's assets.
 #[derive(Debug, Clone)]
 pub struct StagedAndroidAssets {
-    /// The module's `src/main/assets/` root.
-    pub root: PathBuf,
-    /// The staged bundle itself, the [`ASSET_ROOT_DIR`] directory in
-    /// `root` — always present once staging returns.
+    /// The staged bundle itself, the [`ASSET_ROOT_DIR`] directory under the
+    /// module's `src/main/assets/` root — always present once staging returns.
     pub bundle: PathBuf,
 }
 
@@ -916,40 +897,6 @@ struct AndroidThemesTemplate {
 )]
 struct AndroidLaunchArtworkTemplate;
 
-/// The theme slots and the resources they bind to, in the order the
-/// generated `colors.xml` and `themes.xml` list them, under the Material3
-/// attribute namespace appcompat supplies.
-const fn android_theme_slots(
-    theme: &ThemeConfig,
-) -> [(&'static str, &'static str, Option<HexColor>); 8] {
-    [
-        (
-            "android:colorBackground",
-            "waterui_background",
-            theme.background,
-        ),
-        ("colorSurface", "waterui_surface", theme.surface),
-        (
-            "colorSurfaceVariant",
-            "waterui_surface_variant",
-            theme.surface_variant,
-        ),
-        ("colorOutline", "waterui_border", theme.border),
-        ("colorOnSurface", "waterui_foreground", theme.foreground),
-        (
-            "colorOnSurfaceVariant",
-            "waterui_muted_foreground",
-            theme.muted_foreground,
-        ),
-        ("colorPrimary", "waterui_accent", theme.accent),
-        (
-            "colorOnPrimary",
-            "waterui_accent_foreground",
-            theme.accent_foreground,
-        ),
-    ]
-}
-
 /// The same theme tokens as framework attributes: what a generated app
 /// without appcompat or the Material components library — the Hydrolysis
 /// host — can bind against `Theme.Material`.
@@ -983,7 +930,6 @@ async fn write_android_theme_files(
     icon_background: Option<[u8; 3]>,
     launch: &LaunchAssets,
     backend_path: &Path,
-    theme_parent: AndroidThemeParent,
 ) -> eyre::Result<()> {
     let values_dir = backend_path.join(ANDROID_VALUES_DIR);
     let values_night_dir = backend_path.join(ANDROID_VALUES_NIGHT_DIR);
@@ -1009,18 +955,9 @@ async fn write_android_theme_files(
 
     let plan = launch.plan();
     let themes = AndroidThemesTemplate {
-        theme_parent: match theme_parent {
-            AndroidThemeParent::Material3 => "Theme.Material3.DayNight.NoActionBar",
-            AndroidThemeParent::Platform => "@android:style/Theme.Material.NoActionBar",
-        },
+        theme_parent: "@android:style/Theme.Material.NoActionBar",
         theme_items: theme.map_or_else(Vec::new, |theme| {
-            let slots: Vec<_> = match theme_parent {
-                AndroidThemeParent::Material3 => android_theme_slots(theme).into_iter().collect(),
-                AndroidThemeParent::Platform => {
-                    android_platform_theme_slots(theme).into_iter().collect()
-                }
-            };
-            slots
+            android_platform_theme_slots(theme)
                 .into_iter()
                 .filter(|(_, _, value)| value.is_some())
                 .map(|(attr, color_name, _)| AndroidThemeItem { attr, color_name })
@@ -1068,7 +1005,7 @@ fn android_colors(
     }];
     if let Some(theme) = theme {
         colors.extend(
-            android_theme_slots(theme)
+            android_platform_theme_slots(theme)
                 .into_iter()
                 .filter_map(|(_, name, value)| value.map(|value| AndroidColor { name, value })),
         );
@@ -1343,7 +1280,7 @@ mod tests {
     #[test]
     fn android_themes_bind_only_configured_slots_and_the_launch_theme() {
         let xml = AndroidThemesTemplate {
-            theme_parent: "Theme.Material3.DayNight.NoActionBar",
+            theme_parent: "@android:style/Theme.Material.NoActionBar",
             theme_items: vec![AndroidThemeItem {
                 attr: "colorPrimary",
                 color_name: "waterui_accent",
@@ -1363,7 +1300,7 @@ mod tests {
         assert!(!xml.contains("windowSplashScreenAnimatedIcon"));
 
         let xml = AndroidThemesTemplate {
-            theme_parent: "Theme.Material3.DayNight.NoActionBar",
+            theme_parent: "@android:style/Theme.Material.NoActionBar",
             theme_items: Vec::new(),
             launch_background: false,
             launch_artwork: true,

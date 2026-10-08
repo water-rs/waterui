@@ -153,7 +153,7 @@ impl AppleBackend {
     /// Whether the generated Apple project differs from what the current
     /// templates and manifest would render — a `waterui_path` checkout,
     /// `branch` or `revision` change rewrites the backend
-    /// dependency the ffi crate's manifest pins.
+    /// dependency the companion crate's manifest pins.
     ///
     /// # Errors
     ///
@@ -250,39 +250,22 @@ mod tests {
         project_types::BundleIdentifier,
     };
 
-    /// The channel's pins resolve without a network: `waterui` and
-    /// `waterui-ffi` ride `[patch.crates-io]` onto vendor stubs (the only
-    /// source `[patch]` can redirect offline), and `waterui-apple` is the
-    /// canonical `backends/apple` slot in the stub checkout `waterui_path`
-    /// names — a path dependency — so the ffi companion's feature-table
-    /// probe resolves entirely locally.
+    /// The channel's pins resolve without a network: `waterui` rides
+    /// `[patch.crates-io]` onto a vendor stub (the only source `[patch]`
+    /// can redirect offline), and `waterui-apple` is the canonical
+    /// `backends/apple` slot in the stub checkout `waterui_path` names — a
+    /// path dependency — so the Apple companion's feature-table probe
+    /// resolves entirely locally.
     fn vendor_offline_resolution(root: &Path, vendor_dir: &Path) {
         // The vendored checkout mirrors the real framework layout: the
-        // `waterui` facade is the root package, `waterui-ffi` lives at
-        // `ffi`, and the Apple backend is the canonical `backends/apple`
-        // slot the generated manifest resolves as a path dependency.
+        // `waterui` facade is the root package and the Apple backend is the
+        // canonical `backends/apple` slot the generated manifest resolves as
+        // a path dependency.
         let stubs = [
             (
                 "waterui",
                 vendor_dir.to_path_buf(),
                 &["dynamic_linking", "media"][..],
-            ),
-            (
-                "waterui-ffi",
-                vendor_dir.join("ffi"),
-                &[
-                    "android-jni",
-                    "c-api",
-                    "chromium",
-                    "dev",
-                    "gpu",
-                    "inspector",
-                    "map",
-                    "media",
-                    "video",
-                    "webview",
-                    "webview-cef",
-                ][..],
             ),
             (
                 "waterui-apple",
@@ -301,7 +284,7 @@ mod tests {
             }
             if name == "waterui" {
                 stub_manifest["workspace"]["members"] =
-                    toml_edit::value(toml_edit::Array::from_iter(["ffi", "backends/apple"]));
+                    toml_edit::value(toml_edit::Array::from_iter(["backends/apple"]));
             }
             std::fs::write(stub.join("Cargo.toml"), stub_manifest.to_string())
                 .expect("stub manifest");
@@ -312,13 +295,8 @@ mod tests {
             .expect("project Cargo.toml exists")
             .parse()
             .expect("project Cargo.toml parses");
-        for (name, dir) in [
-            ("waterui", vendor_dir.to_path_buf()),
-            ("waterui-ffi", vendor_dir.join("ffi")),
-        ] {
-            document["patch"]["crates-io"][name]["path"] =
-                toml_edit::value(dir.to_string_lossy().as_ref());
-        }
+        document["patch"]["crates-io"]["waterui"]["path"] =
+            toml_edit::value(vendor_dir.to_string_lossy().as_ref());
         std::fs::write(&manifest_path, document.to_string()).expect("write the patch table");
         let water_toml = root.join("Water.toml");
         let mut water_document: toml_edit::DocumentMut = std::fs::read_to_string(&water_toml)

@@ -1,8 +1,12 @@
 //! CLI command implementations.
 
-use std::path::PathBuf;
+use std::{ffi::OsStr, marker::PhantomData, path::PathBuf};
 
-use clap::ValueEnum;
+use clap::{
+    Arg, Command, Error, ValueEnum,
+    builder::{EnumValueParser, PossibleValue, TypedValueParser},
+    error::ErrorKind,
+};
 use dialoguer::{Confirm, theme::ColorfulTheme};
 
 use crate::shell::Shell;
@@ -29,8 +33,6 @@ use waterui_cli::{
 pub enum TargetBackend {
     /// Apple backend (UIKit/AppKit).
     Apple,
-    /// Android backend (Android Views).
-    Android,
     /// GTK4 backend (Linux only, experimental).
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer).
@@ -40,6 +42,45 @@ pub enum TargetBackend {
     WinUi,
     /// Dew backend (ESP32 firmware).
     Dew,
+}
+
+#[derive(Clone)]
+pub struct RemovedAndroidBackendParser<T>(PhantomData<T>);
+
+impl<T> RemovedAndroidBackendParser<T> {
+    pub(super) const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<T> TypedValueParser for RemovedAndroidBackendParser<T>
+where
+    T: ValueEnum + Clone + Send + Sync + 'static,
+{
+    type Value = T;
+
+    fn parse_ref(
+        &self,
+        command: &Command,
+        arg: Option<&Arg>,
+        value: &OsStr,
+    ) -> Result<Self::Value, Error> {
+        if value == OsStr::new("android") {
+            return Err(Error::raw(
+                ErrorKind::ValueValidation,
+                "`--backend android` was removed with the Kotlin runtime; use `--backend hydrolysis`.",
+            ));
+        }
+        EnumValueParser::<T>::new().parse_ref(command, arg, value)
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(
+            T::value_variants()
+                .iter()
+                .filter_map(ValueEnum::to_possible_value),
+        ))
+    }
 }
 
 impl TargetBackend {
@@ -53,7 +94,6 @@ impl TargetBackend {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Apple => "Apple",
-            Self::Android => "Android",
             Self::Gtk4 => "GTK4",
             Self::Hydrolysis => "Hydrolysis",
             Self::WinUi => "WinUI",
@@ -65,12 +105,37 @@ impl TargetBackend {
     pub const fn lib_backend(self) -> LibTargetBackend {
         match self {
             Self::Apple => LibTargetBackend::Apple,
-            Self::Android => LibTargetBackend::Android,
             Self::Gtk4 => LibTargetBackend::Gtk4,
             Self::Hydrolysis => LibTargetBackend::Hydrolysis,
             Self::WinUi => LibTargetBackend::WinUi,
             Self::Dew => LibTargetBackend::Dew,
         }
+    }
+}
+
+#[cfg(test)]
+mod backend_parser_tests {
+    use super::{RemovedAndroidBackendParser, TargetBackend};
+    use clap::{Arg, Command, builder::TypedValueParser};
+
+    #[test]
+    fn removed_android_backend_error_names_hydrolysis_and_keeps_supported_choices() {
+        let parser = RemovedAndroidBackendParser::<TargetBackend>::new();
+        let error = Command::new("water")
+            .arg(Arg::new("backend").long("backend").value_parser(parser.clone()))
+            .try_get_matches_from(["water", "--backend", "android"])
+            .expect_err("the removed backend must be rejected")
+            .to_string();
+        assert!(error.contains("removed with the Kotlin runtime"), "{error}");
+        assert!(error.contains("hydrolysis"), "{error}");
+
+        let choices: Vec<_> = parser
+            .possible_values()
+            .expect("ValueEnum choices are available")
+            .map(|value| value.get_name().to_owned())
+            .collect();
+        assert!(choices.contains(&"hydrolysis".to_owned()));
+        assert!(!choices.contains(&"android".to_owned()));
     }
 }
 
@@ -129,7 +194,6 @@ async fn ensure_generated_backend(
             project.apple_backend().is_some()
                 && AppleBackend::requires_regeneration(&project).await?
         }
-        TargetBackend::Android => false,
         TargetBackend::Gtk4 => Gtk4Backend::requires_regeneration(&project).await?,
         TargetBackend::Hydrolysis => HydrolysisBackend::requires_regeneration(&project).await?,
         TargetBackend::WinUi => WinUiBackend::requires_regeneration(&project).await?,
@@ -148,7 +212,6 @@ async fn ensure_generated_backend(
         TargetBackend::Apple => {
             reinit_backend::<AppleBackend>(&project).await?;
         }
-        TargetBackend::Android => {}
         TargetBackend::Gtk4 => {
             reinit_backend::<Gtk4Backend>(&project).await?;
         }

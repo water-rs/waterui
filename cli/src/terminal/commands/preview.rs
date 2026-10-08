@@ -101,7 +101,10 @@ pub struct Args {
     platform: Option<CliPreviewPlatform>,
 
     /// Rendering backend.
-    #[arg(long, value_enum)]
+    #[arg(
+        long,
+        value_parser = super::RemovedAndroidBackendParser::<CliPreviewBackend>::new()
+    )]
     backend: Option<CliPreviewBackend>,
 
     /// Theme package for Hydrolysis preview.

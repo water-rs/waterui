@@ -8,7 +8,7 @@
 //! crate metadata, which a bare archive input would drop.
 
 #[cfg(target_vendor = "apple")]
-use {{ ctx.ffi_crate_ident() }}::waterui_apple_main;
+use {{ ctx.apple_companion_ident() }}::waterui_apple_main;
 
 #[cfg(target_vendor = "apple")]
 fn main() -> ! {

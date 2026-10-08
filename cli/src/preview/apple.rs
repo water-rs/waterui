@@ -70,7 +70,7 @@ async fn stage_apple_preview_resources(project: &Project, symbols: &ArtifactSymb
         assets::stage_project_assets_for_apple(project, &resources_dir, symbols, false).await?;
 
     let mut resolved_fonts = {
-        let font_manifest = project.ffi_crate_path().join("Cargo.toml");
+        let font_manifest = project.apple_crate_path().join("Cargo.toml");
         let font_declarations = assets::scan_fonts(project, &font_manifest).await?;
         assets::resolve_fonts(font_declarations).await?
     };
@@ -116,11 +116,11 @@ pub async fn render_preview_with_apple(
 ) -> Result<()> {
     let output_path = absolute_output_path(output_path)?;
     let project = Project::open_for_preview_build(request.project_path).await?;
-    // The FFI companion is scaffolded too: its manifest owns the shared
+    // The Apple companion is scaffolded too: its manifest owns the shared
     // runtime's feature forwards and the font declarations the resources
     // scan reads, and its build already lives in the shared target
     // directory.
-    project.scaffold_ffi_companion(true).await?;
+    project.scaffold_apple_companion(true).await?;
     ensure_project_dev_feature_for_preview(&project).await?;
     project.scaffold_apple_preview_companion().await?;
     write_apple_preview_target(&project, &request.source).await?;

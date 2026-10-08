@@ -187,15 +187,6 @@ impl GradlePlugins {
         Ok(())
     }
 
-    /// Each declared plugin as `(declaring crate, id, version)`, by id.
-    pub(super) fn iter(
-        &self,
-    ) -> impl Iterator<Item = (&str, &GradlePluginId, &GradlePluginVersion)> {
-        self.plugins
-            .iter()
-            .map(|(id, declared)| (declared.crate_name.as_str(), id, &declared.version))
-    }
-
     fn rendered(&self) -> Vec<RenderedPlugin<'_>> {
         self.plugins
             .iter()
@@ -415,7 +406,7 @@ mod tests {
     #[test]
     fn identical_declarations_merge_into_one() {
         let plugins = merged(&[("a", GOOGLE_SERVICES), ("b", GOOGLE_SERVICES)]).expect("merge");
-        assert_eq!(plugins.iter().count(), 1);
+        assert_eq!(plugins.plugins.len(), 1);
     }
 
     #[test]

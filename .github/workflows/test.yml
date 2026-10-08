@@ -249,7 +249,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-ffi \
             --exclude waterui-browser-cef \
             --exclude filtrate \
             --exclude cherenkov-bench \
@@ -260,14 +259,6 @@ jobs:
       - name: Clippy (waterui-core, every stable feature)
         if: inputs.full
         run: cargo clippy --locked --profile ci-check -p waterui-core --all-targets --features std,serde -- -D warnings
-      # `waterui-ffi` selects its ABI with mutually exclusive features and
-      # `ffi/src/lib.rs` turns `c-api` + `android-jni` into a `compile_error!`.
-      # This is the `c-api` half with every optional C surface a runtime build
-      # can carry; the `android-jni` half is the `Android FFI` job in ci.yml,
-      # and the compile-only `cef-header` shape is the `cef` job below.
-      - name: Clippy (waterui-ffi, C ABI surfaces)
-        if: inputs.full
-        run: cargo clippy --locked --profile ci-check -p waterui-ffi --all-targets --features map,chromium,webview-cef -- -D warnings
       # `compile-only` swaps in CEF's `dox` stubs and stops the build script
       # downloading the distribution that `cef-runtime` — and the `real_engine`
       # test target — need, so the two can never be enabled together. This is
@@ -608,7 +599,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-ffi \
             --exclude waterui-browser-cef \
             --exclude skill_snippets \
             --exclude filtrate \
@@ -621,10 +611,6 @@ jobs:
       # nextest cannot enumerate doc tests, so this is a `cargo test` pass.
       - name: Test (hydrolysis doc tests)
         run: cargo test --locked --doc -p hydrolysis --features accessibility,inspector-signals,testing,web,winit
-      # The `c-api` half with every optional C surface a runtime build can
-      # carry; `android-jni` is the `Android FFI` job in ci.yml.
-      - name: Test (waterui-ffi, C ABI surfaces)
-        run: cargo nextest run --locked -p waterui-ffi --features map,chromium,webview-cef --profile ci
       # The CEF runtime shape; `compile-only` and `real-engine` exclude it.
       - name: Test (waterui-browser-cef, CEF runtime)
         run: cargo nextest run --locked -p waterui-browser-cef --features chromium,webview --profile ci
@@ -677,8 +663,8 @@ jobs:
         with:
           mode: full
       # Of the excluded crates, `waterui-core`'s stable feature shape runs
-      # below; the FFI C surfaces and the CEF runtime shape are
-      # host-independent and the Linux job covers them, and the compile-only
+      # below; the CEF runtime shape is
+      # host-independent and the Linux job covers it, and the compile-only
       # `cef-header` shape is the `cef` job. The `trybuild_*` macro contract
       # tests ran already in `test` on this OS; see there. `filtrate` is
       # excluded for `webgl`'s off-wasm `compile_error!` — the wasm job
@@ -691,7 +677,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-ffi \
             --exclude waterui-browser-cef \
             --exclude skill_snippets \
             --exclude filtrate \
@@ -738,17 +723,11 @@ jobs:
       # gate's rust job (apple.yml); read-only lanes never save.
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      # The same step also lints the FFI crate's compile-only CEF C ABI, which
-      # no other leg reaches: the Linux all-features passes exclude
-      # `waterui-ffi` for its ABI `compile_error!` and lint the `cef-runtime`
-      # shape instead, and `cef-header` is the mutually exclusive
-      # `compile-only` one. macOS is also the only leg that sees its
-      # `#[cfg(target_os = "macos")]` entry points at all, and the compile-only
-      # feature set buys the lint without a CEF runtime download.
+      # `real-engine` is the runtime shape the Linux all-features passes
+      # exclude, and its `#[cfg(target_os = "macos")]` entry points are only
+      # visible on this leg.
       - name: Lint the CEF targets
-        run: |
-          cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
-          cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
       # The clippy in `macos-lint` compiles waterui-cli's `#[cfg(test)]`
       # modules, which `include_bytes!` the generated Roboto fixture — and
       # the real-engine run resolves the installed test fonts by family

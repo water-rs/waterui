@@ -111,16 +111,16 @@ mod tests {
             .args
     }
 
-    /// `--backend android` must reach the scoped scan: the fetch seeds the
+    /// `--backend hydrolysis` must reach the scoped scan: the fetch seeds the
     /// cache for one backend's builds instead of scaffolding every backend
     /// the host could manage — which is what made the unscoped fetch fail on
     /// hosts where another backend's crate graph does not resolve.
     #[test]
     fn backend_scope_parses_to_the_shared_target_enum() {
-        let args = fetch_args(&["--backend", "android"]);
+        let args = fetch_args(&["--backend", "hydrolysis"]);
         assert_eq!(
             args.backend.map(TargetBackend::lib_backend),
-            Some(waterui_cli::platform::TargetBackend::Android)
+            Some(waterui_cli::platform::TargetBackend::Hydrolysis)
         );
     }
 

@@ -70,13 +70,12 @@ env:
 jobs:
   # Which checks this change can reach. `code` is any changed file that is
   # not prose or repository metadata, so a docs-only change runs the typo
-  # check and nothing else; `ffi` is the C ABI and the root manifest whose
-  # metadata names its Android floor; `deps` is what the audit, license and
+  # check and nothing else; `deps` is what the audit, license and
   # unused-dependency checks read. A workflow change runs the whole gate, because a
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
-  # every filter it evaluates: `ffi`/`deps`/`workflows` match any pattern,
+  # every filter it evaluates: `deps`/`workflows` match any pattern,
   # while `code` matches a file outside every prose pattern. The second
   # step combines negated patterns with `predicate-quantifier: every`. For a
   # `pull_request` event the action reads the changed files from the API; a
@@ -92,7 +91,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
-      ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
@@ -105,9 +103,6 @@ jobs:
         with:
           base: ${{ github.ref_name }}
           filters: |
-            ffi:
-              - "ffi/**"
-              - "Cargo.toml"
             deps:
               - "**/Cargo.toml"
               - "**/Cargo.lock"
@@ -286,43 +281,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/msrv
-
-  android-ffi:
-    name: Android FFI
-    needs: changes
-    if: needs.changes.outputs.ffi == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # `waterui-ffi` selects its ABI with mutually exclusive features, and
-    # `ffi/src/lib.rs` turns "both" into a `compile_error!`. Every other leg
-    # therefore builds the `c-api` half, and nothing at all compiled
-    # `ffi/src/jni/` or the `cfg(target_os = "android")` bodies it reaches — a
-    # compile error there used to arrive on a device rather than in CI.
-    steps:
-      - uses: actions/checkout@v4
-      # Its own key: this is the only leg that compiles the dependency graph
-      # for an Android target, so it shares no artifacts with the others and
-      # storing it under theirs would evict a tarball nothing else can use.
-      - uses: ./.github/actions/setup-rust
-        with:
-          targets: aarch64-linux-android
-          components: clippy
-          cache: "false"
-      # Reads the shared `cargo-sources` archive owned by this OS's single
-      # writer job; read-only lanes never save, so they cannot evict caches.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-      # `--all-targets` reaches the crate's dev-dependency graph, part of which
-      # is built for the host: without this the Linux-only `cros-libva` build
-      # script fails on the missing `libva-dev`, long before anything Android
-      # is compiled.
-      - uses: ./.github/actions/setup-linux-deps
-      # The version the action installs is the one the CLI's toolchain check
-      # installs and `water build` uses; keeping CI on it means CI compiles
-      # against the same sysroot a developer's Android build does.
-      - uses: ./.github/actions/setup-android-ndk
-      - name: Clippy (aarch64-linux-android)
-        run: cargo clippy --profile ci-check -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
 
   test:
     name: Test

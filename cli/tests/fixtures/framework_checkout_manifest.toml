@@ -17,8 +17,6 @@ apple-backend-path = "backends/apple"
 # The self-drawn Hydrolysis backend resolves the same way through
 # `hydrolysis-path` (#1635): an in-tree member, never a scaffold package.
 hydrolysis-path = "backends/hydrolysis"
-android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "cccccccccccccccccccccccccccccccccccccccc"
 # The Kotlin Android host lives in the same tree as the `hydrolysis` crate —
 # `subdirectory` names the Gradle composite root inside the framework
 # checkout the selected revision materializes.

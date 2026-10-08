@@ -446,6 +446,7 @@ fn packaged_binary_finds_every_shared_library_it_records() {
         );
 
         let built = BuiltTarget {
+            features: Vec::new(),
             profile_dir: profile_dir.clone(),
             artifact: executable.clone(),
             executable: Some(SharedExecutable::unlocked(executable.clone())),

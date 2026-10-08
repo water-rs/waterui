@@ -215,7 +215,7 @@ jobs:
 
   # The cli's `#[ignore]`d suite (water-rs/cli's nightly `ignored` job,
   # #1446): the tests that build real framework source or hit the network —
-  # the android-backend pin fetch, the workspace-resolved example graphs,
+  # the workspace-resolved example graphs,
   # the inspector app layout, the Xcode drives on macOS. The checkout the
   # tests resolve is this tree itself, so the signal is "the cli matches the
   # framework it ships with".

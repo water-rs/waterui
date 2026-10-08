@@ -34,9 +34,6 @@ use askama::Template;
 use eyre::Context;
 use serde::{Deserialize, Serialize};
 use smol::fs;
-use tracing::warn;
-
-use super::AndroidDependencyScope;
 
 /// The Android string resource carrying the app's Cast receiver ID.
 pub const CAST_RECEIVER_APP_ID_RESOURCE: &str = "waterui_cast_receiver_app_id";
@@ -272,9 +269,10 @@ struct AppValuesResourceTemplate<'a> {
 /// resolve against `project_root`.
 ///
 /// Both destinations are managed: a value no crate requests any longer is
-/// removed. The embedded AAR is a library, so the Firebase configuration —
-/// which the host application's `google-services` plugin reads — is the
-/// host's to carry, and the stage names the requesting crates instead.
+/// removed. The Hydrolysis preview library does not own the Firebase
+/// configuration — the preview host application's `google-services` plugin
+/// reads it, so the host must carry it; the stage names the requesting crates
+/// instead.
 ///
 /// # Errors
 ///
@@ -285,23 +283,10 @@ pub(super) async fn stage_android_app_values(
     project_root: &Path,
     required: &RequiredAppValues,
     config: &AppValuesConfig,
-    scope: AndroidDependencyScope,
 ) -> eyre::Result<()> {
     let firebase_destination = module_dir.join(FIREBASE_CONFIG_FILE);
-    let firebase = match scope {
-        AndroidDependencyScope::Implementation => {
-            required.resolve(AppValueKey::FirebaseConfig, config.firebase_config.as_ref())?
-        }
-        AndroidDependencyScope::Api => {
-            if let Some(crates) = required.requesters(AppValueKey::FirebaseConfig) {
-                warn!(
-                    "crate `{}` needs the Firebase configuration; the embedded library cannot carry it, so the host application module must hold its own `{FIREBASE_CONFIG_FILE}`",
-                    crates.join("`, `")
-                );
-            }
-            None
-        }
-    };
+    let firebase =
+        required.resolve(AppValueKey::FirebaseConfig, config.firebase_config.as_ref())?;
     match firebase {
         Some(path) => {
             let source = project_root.join(path);
@@ -378,11 +363,8 @@ mod tests {
         project: &Path,
         required: &RequiredAppValues,
         config: &AppValuesConfig,
-        scope: AndroidDependencyScope,
     ) -> eyre::Result<()> {
-        smol::block_on(stage_android_app_values(
-            module, project, required, config, scope,
-        ))
+        smol::block_on(stage_android_app_values(module, project, required, config))
     }
 
     #[test]
@@ -395,7 +377,6 @@ mod tests {
                 project.path(),
                 &requiring(&[key]),
                 &AppValuesConfig::default(),
-                AndroidDependencyScope::Implementation,
             )
             .expect_err("a requested value the app omits must fail")
             .to_string();
@@ -421,7 +402,6 @@ mod tests {
             project.path(),
             &requiring(&[AppValueKey::FirebaseConfig, AppValueKey::CastReceiverAppId]),
             &supplied,
-            AndroidDependencyScope::Implementation,
         )
         .expect("supplied values stage");
         assert_eq!(
@@ -443,26 +423,10 @@ mod tests {
             project.path(),
             &RequiredAppValues::default(),
             &supplied,
-            AndroidDependencyScope::Implementation,
         )
         .expect("an unrequested value stages nothing");
         assert!(!module.path().join(FIREBASE_CONFIG_FILE).exists());
         assert!(!module.path().join(APP_VALUES_RESOURCE_FILE).exists());
-    }
-
-    #[test]
-    fn the_embedded_library_leaves_firebase_to_its_host() {
-        let module = tempfile::tempdir().expect("module dir");
-        let project = tempfile::tempdir().expect("project dir");
-        stage(
-            module.path(),
-            project.path(),
-            &requiring(&[AppValueKey::FirebaseConfig]),
-            &AppValuesConfig::default(),
-            AndroidDependencyScope::Api,
-        )
-        .expect("the host carries the Firebase configuration");
-        assert!(!module.path().join(FIREBASE_CONFIG_FILE).exists());
     }
 
     #[test]
@@ -471,14 +435,8 @@ mod tests {
         let project = tempfile::tempdir().expect("project dir");
         let required = requiring(&[AppValueKey::FirebaseConfig]);
         let supplied = config("firebase_config = \"google-services.json\"\n");
-        let missing = stage(
-            module.path(),
-            project.path(),
-            &required,
-            &supplied,
-            AndroidDependencyScope::Implementation,
-        )
-        .expect_err("a named file that does not exist must fail");
+        let missing = stage(module.path(), project.path(), &required, &supplied)
+            .expect_err("a named file that does not exist must fail");
         assert!(
             format!("{missing:#}").contains("google-services.json"),
             "{missing:#}"
@@ -486,14 +444,8 @@ mod tests {
 
         std::fs::write(project.path().join("google-services.json"), "not json")
             .expect("malformed fixture");
-        let malformed = stage(
-            module.path(),
-            project.path(),
-            &required,
-            &supplied,
-            AndroidDependencyScope::Implementation,
-        )
-        .expect_err("a file that is not JSON must fail");
+        let malformed = stage(module.path(), project.path(), &required, &supplied)
+            .expect_err("a file that is not JSON must fail");
         assert!(malformed.to_string().contains("is not JSON"), "{malformed}");
     }
 

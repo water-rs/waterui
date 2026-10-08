@@ -71,7 +71,7 @@ use std::time::{Duration, Instant};
 
 /// The environment variable that carries the log level to the launched application.
 ///
-/// `waterui_ffi` reads it when it installs `tracing`: the CLI names the level
+/// the generated crate reads it when it installs `tracing`: the CLI names the level
 /// here and the runtime composes its own filter around it.
 const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
 

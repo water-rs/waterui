@@ -7,9 +7,8 @@
 //! selected revision for a channel project, the `waterui_path` checkout
 //! itself for a local one. It renders the generated Gradle app against the
 //! host inside it, and drives the same NDK/Gradle/ABI/signing/asset
-//! machinery the Android platform backend uses — the launcher crate
-//! `templates::hydrolysis` already produces is the cdylib the Kotlin
-//! activity loads. Nothing here routes through the widget FFI companion.
+//! machinery every Android build shares — the launcher crate
+//! `templates::hydrolysis` produces is the cdylib the host activity loads.
 
 use std::path::{Path, PathBuf};
 
@@ -19,17 +18,17 @@ use smol::fs;
 use tracing::info;
 
 use crate::{
-    android::device::AndroidAbiProvider,
     android::{
-        backend::manifest_permissions,
+        device::AndroidAbiProvider,
+        manifest_permissions,
         output_metadata::{OutputKind, packaged_artifact},
         platform::{
             ANDROID_MAX_PAGE_SIZE_LINK_ARG, AndroidAbi, AndroidBuildContext, AndroidPlatform,
-            android_cargo_envs, android_ffi_dependency_features, android_path_env, ndk_libcxx_path,
-            resolve_android_build_context, run_gradle_tasks, staged_libs_need_libcxx,
+            android_cargo_envs, android_path_env, ndk_libcxx_path, resolve_android_build_context,
+            run_gradle_tasks, staged_libs_need_libcxx,
         },
     },
-    assets::{self, AndroidThemeParent},
+    assets,
     build::{BuildOptions, BuildProgress, BuiltTarget, RustBuild},
     device::{Artifact, Device, FailToRun, RunOptions, Running},
     framework::ResolvedFramework,
@@ -40,7 +39,10 @@ use crate::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
         TemplateContext,
     },
-    toolchain::Host,
+    toolchain::{
+        Host, ToolchainError,
+        windows_arm64_llvm::WindowsArm64LlvmToolchain,
+    },
 };
 
 /// The painter the Hydrolysis Android host draws with.
@@ -350,13 +352,9 @@ async fn android_template_context(
 
 /// Render the generated Gradle app into `<backend>/android` for `painter`.
 ///
-/// The ffi companion is rendered for this invocation first: it is not a
-/// managed native backend, so `Project::open` never produces one for a
-/// hydrolysis selection, yet `package_with_abis` reads its manifest to
-/// mirror the app's feature selection onto the Gradle classpath. A
-/// companion left over from a different selection must not be the one it
-/// sees, so this renders it unconditionally — never an Apple one, this
-/// backend has no Apple entry.
+/// The Hydrolysis launcher's generated manifest is the feature mirror
+/// `package_with_abis` reads to place the app's selection onto the Gradle
+/// classpath — the launcher is what the host build compiles.
 ///
 /// # Errors
 ///
@@ -367,7 +365,6 @@ pub async fn scaffold_android_project(
     host_project_dir: &Path,
 ) -> eyre::Result<()> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    project.scaffold_ffi_companion(false).await?;
     let ctx = android_template_context(project, painter, host_project_dir).await?;
     templates::hydrolysis_android::scaffold(&android_dir(&backend_path), &ctx).await?;
     Ok(())
@@ -485,7 +482,15 @@ pub async fn build_with_features(
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(features.iter().copied())
-        .with_envs(options.cargo_envs().iter().cloned());
+        .with_envs(options.cargo_envs().iter().cloned())
+        .with_envs(resolve_windows_arm64_llvm_envs(host).await?);
+    let launcher_manifest = backend_path.join("Cargo.toml");
+    assets::seed_managed_crate_lock(project, &launcher_manifest).await?;
+    let required_permissions =
+        assets::scan_required_permissions(&launcher_manifest, rust_build.features()).await?;
+    assets::warn_missing_permissions(project, &required_permissions, |key| {
+        key.android_permission_name().is_some()
+    });
     let rust_build = rust_build
         .with_envs(android_cargo_envs(&context, &triple))
         .with_env("PATH", android_path_env(host, &context).await?);
@@ -501,6 +506,22 @@ pub async fn build_with_features(
         context,
         staged_libraries,
     })
+}
+
+async fn resolve_windows_arm64_llvm_envs(
+    host: &Host,
+) -> eyre::Result<Vec<(String, std::ffi::OsString)>> {
+    WindowsArm64LlvmToolchain
+        .cargo_envs(host)
+        .await
+        .map_err(|error| match error {
+            ToolchainError::Fixable(_) => eyre::eyre!(
+                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
+            ),
+            ToolchainError::Unfixable(unfixable) => {
+                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
+            }
+        })
 }
 
 /// Stage the built cdylib where the generated Gradle project packages it:
@@ -561,14 +582,7 @@ async fn copy_assets(
     dev_server: bool,
 ) -> eyre::Result<()> {
     let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
-    assets::stage_project_assets_for_android(
-        project,
-        &android_dir,
-        symbols,
-        dev_server,
-        AndroidThemeParent::Platform,
-    )
-    .await?;
+    assets::stage_project_assets_for_android(project, &android_dir, symbols, dev_server).await?;
     Ok(())
 }
 
@@ -615,14 +629,16 @@ pub async fn package_with_abis(
     // Kotlin helpers and Maven coordinates declared by the dependency graph go
     // on the app module's classpath so Gradle compiles them into the dex, and
     // its manifest components into the app manifest. The scan mirrors the
-    // Rust build's feature selection so helpers behind optional features are
-    // not missed.
+    // exact feature selection used to compile the launcher, not the names of
+    // capabilities enabled on its dependencies.
+    let launcher_manifest = project
+        .backend_path::<HydrolysisBackend>()
+        .join("Cargo.toml");
     crate::assets::stage_android_declarations(
         project,
-        &project.ffi_crate_path().join("Cargo.toml"),
+        &launcher_manifest,
         &android_dir.join("app"),
-        crate::assets::AndroidDependencyScope::Implementation,
-        &android_ffi_dependency_features(project).await?,
+        &built.features,
     )
     .await?;
 
@@ -1069,7 +1085,7 @@ mod tests {
         .expect("Cargo.lock");
         std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
 
-        // The ffi companion's feature-table probe resolves the generated
+        // The launcher's feature-table probe resolves the generated
         // manifest's registry pins through `cargo metadata`; the workspace
         // `[patch.crates-io]` table the scaffold propagates redirects them to
         // local stubs — the only source `[patch]` can redirect without a
@@ -1081,32 +1097,13 @@ mod tests {
             "waterui",
             &["dynamic_linking", "media"],
         );
-        crate::framework::test_fixtures::write_vendor_stub(
-            &vendor_dir.join("waterui-ffi"),
-            "waterui-ffi",
-            &[
-                "android-jni",
-                "c-api",
-                "chromium",
-                "dev",
-                "gpu",
-                "inspector",
-                "map",
-                "media",
-                "video",
-                "webview",
-                "webview-cef",
-            ],
-        );
         let manifest_path = root.join("Cargo.toml");
         let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
             .expect("project Cargo.toml exists")
             .parse()
             .expect("project Cargo.toml parses");
-        for name in ["waterui", "waterui-ffi"] {
-            document["patch"]["crates-io"][name]["path"] =
-                toml_edit::value(vendor_dir.join(name).to_string_lossy().as_ref());
-        }
+        document["patch"]["crates-io"]["waterui"]["path"] =
+            toml_edit::value(vendor_dir.join("waterui").to_string_lossy().as_ref());
         std::fs::write(&manifest_path, document.to_string()).expect("write the patch table");
 
         // `Project::open` resolves the project's layout with `cargo metadata
@@ -1458,35 +1455,6 @@ mod tests {
             assert!(
                 gradle.contains(&format!("resolve(\"{}\")", entry.project_root)),
                 "the rendered projectRoot uses the android-dir-relative path: {gradle}"
-            );
-        });
-    }
-
-    /// A cold managed-backend cache: opening with `ManagedBackends::NONE`
-    /// leaves no ffi companion, and the Gradle packaging step reads its
-    /// manifest for the classpath staging. The Android scaffold step must
-    /// render it rather than rely on a prior native-Android open.
-    #[test]
-    fn the_android_scaffold_renders_the_ffi_companion_on_a_cold_cache() {
-        smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
-            assert!(
-                !project.ffi_crate_path().join("Cargo.toml").exists(),
-                "fixture opened with no managed backends: no companion scaffolded"
-            );
-            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("host project dir");
-
-            scaffold_android_project(&project, HydrolysisAndroidPainter::Gpu, &host_project_dir)
-                .await
-                .expect("android scaffold renders");
-
-            assert!(
-                project.ffi_crate_path().join("Cargo.toml").exists(),
-                "the packaging path rendered the companion manifest it reads"
             );
         });
     }

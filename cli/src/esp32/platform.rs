@@ -308,6 +308,7 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
         )
     })?;
     Ok(BuiltTarget {
+        features: Vec::new(),
         profile_dir: profile_dir.to_path_buf(),
         artifact: artifact.clone(),
         executable: Some(SharedExecutable::unlocked(artifact)),

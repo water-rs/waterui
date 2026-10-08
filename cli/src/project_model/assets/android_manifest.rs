@@ -5,7 +5,7 @@
 //! A crate whose platform code needs an entry inside `<application>` —
 //! an `Activity`, a `ContentProvider`, a `Service`, a
 //! `BroadcastReceiver`, or an application-level `<meta-data>` flag —
-//! declares it beside its Kotlin sources:
+//! declares it for the Android host:
 //!
 //! ```toml
 //! [[package.metadata.waterui.android.provider]]
@@ -19,7 +19,7 @@
 //! misspelt attribute fails the scan instead of silently dropping out of the
 //! manifest. Values are written verbatim — Gradle's manifest merger resolves
 //! placeholders such as `${applicationId}` against the module that consumes
-//! the manifest, which for the embedded AAR is the host application.
+//! the manifest, which for the Hydrolysis preview library is the preview host application.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
