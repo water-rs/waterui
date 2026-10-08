@@ -19,6 +19,7 @@ use waterui::FilterViewExt as _;
 use waterui::ViewExt as _;
 use waterui::gesture::TapGesture;
 use waterui::graphics::Color;
+use waterui::interaction::InteractionState;
 use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
@@ -1006,8 +1007,13 @@ fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
 }
 
 /// Two members of one shared group carry different uniforms; a display-scale
-/// rebuild rebinds each member's own effect onto the new group — never the
-/// joining member's.
+/// Two members of one shared group carry different uniforms; a commit at
+/// the new display scale that re-lowers neither member — the members of
+/// one group live in the one program cell their `record_layered` wrote,
+/// so a no-new-program commit is the partial commit where neither
+/// member's fresh payload reaches `join` — rebuilds the group and
+/// rebinds each member's own stored payload, never the joiner's
+/// (water-rs/waterui#1788).
 #[test]
 fn a_scale_rebuild_keeps_each_members_own_effect() {
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
@@ -1017,13 +1023,16 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
         ]),
         ..Default::default()
     });
-    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, grouped_pair()(), DISPLAY_SCALE);
     let members = mirror_chrome_layers(&renderer);
-    assert_eq!(members.len(), 2, "the two draws mounted two members");
+    assert_eq!(members.len(), 4, "the pair mounts both draws per member");
 
-    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE * 2.0);
+    // A commit at the new scale with no new program: neither member
+    // re-lowers, so the rebuild itself is what binds each member's own
+    // stored payload.
+    renderer.commit_mirror_at(DISPLAY_SCALE * 2.0);
+
     let rebuilt = mirror_chrome_layers(&renderer);
-    assert_eq!(members, rebuilt, "the rebuild kept the member layers");
     let uniforms: Vec<Vec<f32>> = rebuilt
         .iter()
         .map(|member| {
@@ -1037,24 +1046,90 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
         .collect();
     assert_eq!(
         uniforms,
-        [vec![1.0, 0.0], vec![0.0, 1.0]],
+        [
+            vec![1.0, 0.0],
+            vec![0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![0.0, 1.0]
+        ],
         "each member kept its own uniforms across the rebuild",
     );
 }
 
-/// A theme whose uniforms depend on `WidgetInteractionState`: a press
-/// re-records the chrome with new uniforms, and the member's rebound
-/// sample carries them — the re-record rebinds the new effect, not just
-/// the clip. (`stateful_draws` is how such a theme resolves its uniforms
-/// per draw from the live state; the flag stands in for the press.)
+/// A signal-driven effect changed after recording: the next commit with
+/// no new program, and a commit at a new display scale, must both leave
+/// the member bound to the signal's current value — the rebind reads a
+/// fresh snapshot (`Live::rebound`), never the recording's
+/// (water-rs/waterui#1788).
 #[test]
-fn a_re_record_rebinds_the_members_new_effect() {
-    let uniforms = std::rc::Rc::new(std::cell::Cell::new(0.0_f32));
-    let read = std::rc::Rc::clone(&uniforms);
+fn a_rebound_member_tracks_the_signals_value_after_recording() {
+    let signal = nami::binding(1.0_f32);
+    let effect = Live::from(signal.clone()).map(|v: f32| MaterialEffect::new(vec![v]));
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+        chrome: glass_plan(vec![ChromeDraw {
+            effect,
+            ..chrome_draw(GLASS, GLASS_SHADER, vec![])
+        }]),
+        ..Default::default()
+    });
+    mirror_frame(&mut renderer, tap_view());
+    let member = mirror_chrome_layers(&renderer)[0];
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer| {
+        let node = mirrored_node(renderer, member);
+        let Some(BackdropEffect::Shader(effect)) = node
+            .backdrop
+            .as_ref()
+            .expect("the member binds a sample")
+            .effect()
+        else {
+            panic!("the member's effect is its shader effect")
+        };
+        effect.uniforms.clone()
+    };
+    assert_eq!(bound(&renderer), [1.0]);
+
+    // The change after recording: already delivered once — a rebind must
+    // not restart from 1.
+    signal.set(2.0);
+    assert_eq!(bound(&renderer), [2.0], "the live binding landed it");
+
+    // A commit with no new program: membership is unchanged, no rebind —
+    // and the kept binding still reads 2.
+    renderer.commit_mirror();
+    assert_eq!(
+        bound(&renderer),
+        [2.0],
+        "an unchanged commit keeps the current value",
+    );
+
+    // A display-scale rebuild: the member's stored payload rebinds from
+    // the signal's value now.
+    renderer.commit_mirror_at(DISPLAY_SCALE * 2.0);
+    assert_eq!(
+        bound(&renderer),
+        [2.0],
+        "the rebuild's rebind starts from the signal's value now",
+    );
+}
+
+/// A theme whose uniforms depend on `WidgetInteractionState`: a real
+/// press — the pointer-down input dispatch `InputEvent::PointerDown`
+/// takes — re-records the chrome with the pressed uniforms, and the
+/// member's rebound sample carries them (water-rs/waterui#1788).
+#[test]
+fn a_press_rebinds_the_members_new_effect() {
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
         chrome: ChromePlan {
-            stateful_draws: Some(std::rc::Rc::new(move |_state| {
-                vec![chrome_draw(GLASS, GLASS_SHADER, vec![read.get()])]
+            stateful_draws: Some(std::rc::Rc::new(|state| {
+                vec![chrome_draw(
+                    GLASS,
+                    GLASS_SHADER,
+                    vec![if state.state.contains(InteractionState::PRESSED) {
+                        1.0
+                    } else {
+                        0.0
+                    }],
+                )]
             })),
             ..glass_plan(vec![])
         },
@@ -1076,17 +1151,17 @@ fn a_re_record_rebinds_the_members_new_effect() {
     };
     assert_eq!(bound(&renderer), [0.0]);
 
-    // The press re-record: the same key, a new effect.
-    uniforms.set(1.0);
+    // The dispatch `InputEvent::PointerDown` reaches.
+    renderer.handle_pointer_down(80.0, 60.0, PointerButton::Primary, &chrome_env());
     mirror_frame(&mut renderer, tap_view());
     assert_eq!(
         bound(&renderer),
         [1.0],
-        "the re-record rebound the member's new effect, not the old bind",
+        "the press re-record rebound the member's new effect",
     );
     assert_eq!(
         mirror_chrome_layers(&renderer),
         [member],
-        "the re-record kept the member layer",
+        "the press re-record kept the member layer",
     );
 }
