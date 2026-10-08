@@ -3,6 +3,10 @@
 
 use super::*;
 use crate::platform::GpuSurfaceWindow;
+use crate::renderer::material::{Blending, WithinWindowLevel};
+use waterui::theme::color::Background;
+use waterui::window::ResolvedWindowBackground;
+use waterui_graphics::{Color, color::WorkingColor};
 
 /// The work scheduled for the next pump of a window.
 ///
@@ -63,6 +67,20 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
         Option<waterui_core::layout::Size>,
         Option<waterui_core::layout::Size>,
     )>,
+    /// Subscriptions on every reactive input of the window declaration,
+    /// installed once by `new` through `subscribe_window_declaration_signals`
+    /// and held for the window's lifetime: `title`, `frame`, `state`,
+    /// `level`, `attention`, `style`, `background`, and `resize_increments`,
+    /// `min_size` and `max_size` when present. A write while the pump is
+    /// parked requests a refresh through the renderer's frame signals, so
+    /// the next pump applies it.
+    ///
+    /// Declared last so the guards drop after `renderer` — the subscriptions
+    /// outlive every frame-scoped watch the core holds, the same tail
+    /// position the frame-level `lifecycle` teardown takes inside a flush
+    /// (water-rs/waterui#1213). Never read again — the `Retain`s exist only
+    /// to keep the subscriptions alive.
+    _declaration_watches: Vec<Retain>,
 }
 
 // `RuntimeWindow` is generic over the host-services contract; the GPU
@@ -79,6 +97,7 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
         if let Some(handle) = platform.gpu_surface_redraw_handle() {
             renderer.set_host_redraw_handle(handle);
         }
+        let declaration_watches = subscribe_window_declaration_signals(&window, &renderer);
         Self {
             window,
             platform,
@@ -90,6 +109,7 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
             refresh_rate_hz: None,
             applied_size_limits: None,
+            _declaration_watches: declaration_watches,
         }
     }
 }
@@ -185,8 +205,9 @@ pub(super) const fn reports_ui_idle(
 }
 
 /// Applies the window's effective inner-size limits to the platform window:
-/// the explicit `Window::min_size`/`max_size` signals when set (read through
-/// the renderer so a change schedules a frame). The minimum defaults to the
+/// the explicit `Window::min_size`/`max_size` signals when set (read by
+/// snapshot — the declaration's lifetime subscriptions on the window are
+/// what schedule the frame a change needs). The minimum defaults to the
 /// content's measured minimum; the maximum stays unbounded unless the app
 /// pins one — content never contributes one, since content that does not
 /// stretch on an axis is laid out inside a larger offer per the layout spec
@@ -205,13 +226,13 @@ pub(super) fn apply_window_size_limits<P: PlatformWindow>(
     let explicit_min = runtime
         .window
         .min_size
-        .clone()
-        .map(|signal| validated_min_size(runtime.renderer.read_signal(&signal)));
+        .as_ref()
+        .map(|signal| validated_min_size(signal.snapshot()));
     let explicit_max = runtime
         .window
         .max_size
-        .clone()
-        .map(|signal| validated_max_size(runtime.renderer.read_signal(&signal)));
+        .as_ref()
+        .map(|signal| validated_max_size(signal.snapshot()));
     let min = match explicit_min {
         Some(min) => Some(min),
         None => runtime.renderer.measure_content_minimum(env),
@@ -487,27 +508,90 @@ pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo
     )
 }
 
+/// How the presentation path realizes a window's resolved background: whether
+/// the window is transparent, the colour the surface clears to, and the
+/// within-window material the root is mounted over.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct SurfaceBackground(ResolvedWindowBackground);
+
+impl SurfaceBackground {
+    /// `window`'s background as it resolves now.
+    pub(super) fn of(window: &Window, env: &Environment) -> Self {
+        Self(window.resolved_background(env).snapshot())
+    }
+
+    /// Whether the window must be transparent: a colour with alpha, or a
+    /// behind-window material, whatever its tint — the level's blending
+    /// alone decides, so no colour scheme is consulted.
+    pub(super) fn transparent(self) -> bool {
+        match self.0 {
+            ResolvedWindowBackground::Color(color) => color.components[3] < 1.0,
+            ResolvedWindowBackground::Material(material) => {
+                matches!(Blending::of(material), Blending::BehindWindow(_))
+            }
+        }
+    }
+
+    /// The within-window material the window's root is mounted over.
+    pub(super) const fn backdrop(self) -> Option<WithinWindowLevel> {
+        match self.0 {
+            ResolvedWindowBackground::Material(material) => match Blending::of(material) {
+                Blending::WithinWindow(level) => Some(level),
+                Blending::BehindWindow(_) => None,
+            },
+            ResolvedWindowBackground::Color(_) => None,
+        }
+    }
+
+    /// The colour the surface clears to, straight alpha in encoded sRGB.
+    ///
+    /// - A colour is the clear colour; `Opaque` resolved it to the theme
+    ///   background.
+    /// - A within-window material keeps the surface opaque, cleared to the
+    ///   theme background, which the material's backdrop treatment covers.
+    /// - A behind-window material clears the transparent surface to the
+    ///   level's [`Tint`](crate::renderer::material::Tint) in `env`'s colour
+    ///   scheme under the content: clearing to the tint is compositing it
+    ///   source-over onto a cleared-transparent surface, which leaves it
+    ///   unchanged. The compositor then blends the window over the desktop
+    ///   it blurs.
+    pub(super) fn clear(self, env: &Environment) -> peniko::Color {
+        let srgb = |color: WorkingColor| {
+            let srgb = waterui_graphics::color::working::to_srgb(color);
+            peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.components[3]])
+        };
+        match self.0 {
+            ResolvedWindowBackground::Color(color) => srgb(color),
+            ResolvedWindowBackground::Material(material) => match Blending::of(material) {
+                Blending::WithinWindow(_) => srgb(Color::new(Background).resolve(env).snapshot()),
+                Blending::BehindWindow(level) => level
+                    .tint(waterui::theme::current_color_scheme(env).snapshot())
+                    .srgb(),
+            },
+        }
+    }
+}
+
 /// Realizes the window's reactive background for the frame about to be
-/// painted: resolves it, hands the platform whether the window must be
+/// flushed and painted: hands the platform whether the window must be
 /// transparent — the composite alpha mode and the native window's
-/// transparency follow a switch between opaque and translucent — and returns
-/// the clear colour. This is the one place the background reaches the
+/// transparency follow a switch between opaque and translucent — hands the
+/// renderer the within-window material the root mounts over, and returns the
+/// clear colour. This is the one place the background reaches the
 /// presentation path.
 pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> peniko::Color {
-    let resolved = runtime.window.resolved_background(env).snapshot();
-    runtime
-        .platform
-        .set_transparent(resolved.components[3] < 1.0);
-    let srgb = waterui_graphics::color::working::to_srgb(resolved);
-    peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.components[3]])
+    let background = SurfaceBackground::of(&runtime.window, env);
+    runtime.platform.set_transparent(background.transparent());
+    runtime.renderer.set_window_backdrop(background.backdrop());
+    background.clear(env)
 }
 
 #[cfg(hydrolysis_winit)]
 pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
-    window.resolved_background(env).snapshot().components[3] < 1.0
+    SurfaceBackground::of(window, env).transparent()
 }
 
 crate::engine::cfg_async_fn! {
@@ -738,21 +822,10 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> bool {
-    // `frame`, `state`, `level`, `attention`, `resize_increments` and
-    // `style` drive `apply_properties` below: keep them subscribed so an
-    // app write to any of these bindings schedules a pump instead of
-    // needing an unrelated event to wake the loop.
-    let _ = runtime.renderer.read_signal(&runtime.window.frame);
-    let _ = runtime.renderer.read_signal(&runtime.window.state);
-    let _ = runtime.renderer.read_signal(&runtime.window.level);
-    let _ = runtime.renderer.read_signal(&runtime.window.attention);
-    if let Some(increments) = runtime.window.resize_increments.as_ref() {
-        let _ = runtime.renderer.read_signal(increments);
-    }
-    let _ = runtime.renderer.read_signal(&runtime.window.style);
-    // A replaced background repaints with a new clear colour and may switch
-    // the surface between opaque and translucent.
-    let _ = runtime.renderer.read_signal(&runtime.window.background);
+    // The declaration's reactive inputs — `title`, `frame`, `state`,
+    // `level`, `attention`, `style`, `background`, and `resize_increments`,
+    // `min_size`/`max_size` when present — are subscribed once on the
+    // `RuntimeWindow` for its lifetime; the pump only consumes the values.
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
@@ -988,13 +1061,6 @@ crate::engine::cfg_async_fn! {
         drain_local_tasks: &mut dyn FnMut() -> bool,
     ) -> RenderWindowResult {
     let capture_snapshot = reader.captures();
-    let _ = runtime.renderer.read_signal(&runtime.window.frame);
-    let _ = runtime.renderer.read_signal(&runtime.window.state);
-    let _ = runtime.renderer.read_signal(&runtime.window.level);
-    let _ = runtime.renderer.read_signal(&runtime.window.attention);
-    if let Some(increments) = runtime.window.resize_increments.as_ref() {
-        let _ = runtime.renderer.read_signal(increments);
-    }
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
@@ -1016,11 +1082,13 @@ crate::engine::cfg_async_fn! {
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
+        // The background applies before the pump: the flush mounts the
+        // root over a within-window material backdrop.
+        let clear_color = apply_window_background(runtime, env);
         let pump_outcome = pump_window_scene(runtime, env, drain_local_tasks);
         let rebuild_phases = pump_outcome.phases;
         rebuilt |= pump_outcome.built;
         apply_window_size_limits(runtime, env);
-        let clear_color = apply_window_background(runtime, env);
 
         let root_transform = kurbo::Affine::scale(runtime.platform.scale_factor());
         #[cfg(hydrolysis_macos_system_webview)]
@@ -1446,11 +1514,18 @@ where
         }
         match event {
             InputEvent::CloseRequested => {
-                runtime
-                    .window
-                    .state
-                    .set(waterui::window::WindowState::Closed);
-                should_close = true;
+                // The one close path every request takes — the title-bar
+                // button, which X11 and Wayland keep enabled whatever
+                // `closable` says, a window-manager close and a `WM_CLOSE`
+                // sent straight to a Windows window: a non-closable window
+                // ignores them all.
+                if runtime.window.closable {
+                    runtime
+                        .window
+                        .state
+                        .set(waterui::window::WindowState::Closed);
+                    should_close = true;
+                }
             }
             InputEvent::Moved { x, y } => {
                 let frame =

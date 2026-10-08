@@ -2153,7 +2153,6 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-text",
  "objc2-foundation 0.3.2",
- "objc2-io-surface",
  "objc2-map-kit",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -12817,6 +12816,7 @@ dependencies = [
 name = "waterui-assets-planner"
 version = "0.5.1"
 dependencies = [
+ "cargo_metadata",
  "heck",
  "serde",
  "serde_json",
@@ -13056,6 +13056,7 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.13+spec-1.1.0",
  "tracing",
+ "tracing-oslog",
  "tracing-subscriber",
  "ttf-parser",
  "unicode-ident",
@@ -13701,15 +13702,18 @@ dependencies = [
  "accesskit",
  "async-io",
  "bitflags 2.13.2",
+ "cargo_metadata",
  "executor-core",
  "hydrolysis",
  "hydrolysis-m3",
  "image",
  "kurbo 0.13.1",
  "pollster 1.0.1",
+ "serde",
  "serde_json",
  "sysinfo",
  "waterui",
+ "waterui-assets-planner",
  "waterui-backend-core",
  "waterui-canvas",
  "waterui-core",
@@ -14289,17 +14293,21 @@ dependencies = [
 
 [[package]]
 name = "wgpu-external-frame"
-version = "0.1.0"
-source = "git+https://github.com/water-rs/wgpu-external-frame?rev=d047b57e6fd8930f95c78b3e4fba7b06cd056b68#d047b57e6fd8930f95c78b3e4fba7b06cd056b68"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "911f341938a2bacb3a3f270082e8cd52d3ae51e667a1a9abe8367ea530a317d5"
 dependencies = [
  "ash",
  "glow",
  "libc",
  "libloading 0.9.0",
+ "ndk",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
+ "sync_wrapper",
+ "thiserror 2.0.21",
  "wgpu 30.0.1",
  "windows 0.62.2",
 ]

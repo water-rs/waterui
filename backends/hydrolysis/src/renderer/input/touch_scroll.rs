@@ -57,6 +57,11 @@ pub struct TouchScrollPending {
 pub struct TouchScrollDrag {
     /// The claimed scroll view's offset handle.
     pub(crate) handle: crate::scroll::ScrollHandle,
+    /// The claim the gesture took on the offset when the drag was
+    /// recognised: every move writes through it, the release hands it to
+    /// the fling, and only a newer claim — never a `rebind` for rows
+    /// measured mid-drag — takes the offset from it.
+    pub(crate) claim: crate::scroll::GestureClaim,
     /// The point the last applied delta ended at, in window hit-test space.
     pub(crate) last: kurbo::Point,
     /// The motion samples the release's fling is fit over.
@@ -139,25 +144,26 @@ impl VelocityTracker {
 #[derive(Debug)]
 pub struct TouchFling {
     handle: crate::scroll::ScrollHandle,
-    /// The claim the fling holds on the offset — the ownership record: its
-    /// mint already claimed the offset from any live run or wheel glide, it
+    /// The drag's claim, carried into the fling — the ownership record: it
     /// keeps writing while it is still the newest claim, and its first
     /// refused write — a request, a jump, user input — ends it rather than
     /// overwriting its successor. A `rebind` — shifted by a membership
-    /// anchor or for rows measured mid-fling — never touches it.
-    claim: crate::scroll::FlingClaim,
+    /// anchor or for rows measured mid-gesture — never touches it.
+    claim: crate::scroll::GestureClaim,
     x: Option<SplineFling>,
     y: Option<SplineFling>,
 }
 
 impl TouchFling {
     /// Starts a fling on `handle` from the fitted pointer velocity, in
-    /// logical units per second: the offset's velocity is the finger's
-    /// negated, clamped to the host's maximum, and an axis under the
-    /// minimum — or already at the edge it heads toward — does not fling.
-    /// `None` when no axis earns a fling.
+    /// logical units per second, on the released drag's `claim`: the
+    /// offset's velocity is the finger's negated, clamped to the host's
+    /// maximum, and an axis under the minimum — or already at the edge it
+    /// heads toward — does not fling. `None` when no axis earns a fling or
+    /// a newer claim already owns the offset.
     pub(crate) fn start(
         handle: crate::scroll::ScrollHandle,
+        claim: crate::scroll::GestureClaim,
         finger_velocity: kurbo::Vec2,
         config: &TouchScrollConfig,
         at: Instant,
@@ -190,11 +196,9 @@ impl TouchFling {
         let y = matches!(handle.axis(), Axis::Vertical | Axis::All)
             .then(|| axis_fling(finger_velocity.y, metrics.offset_y, metrics.max_y))
             .flatten();
-        // The mint itself claims the offset — ending a live run or wheel
-        // glide — so it must wait until a fling is known to exist.
-        (x.is_some() || y.is_some()).then(|| Self {
-            claim: handle.begin_fling(),
+        ((x.is_some() || y.is_some()) && handle.begin_fling(&claim)).then_some(Self {
             handle,
+            claim,
             x,
             y,
         })

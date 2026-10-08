@@ -20,6 +20,51 @@ pub use cocoa_ui::native_test::pump_main_until;
 /// answers within a few run-loop turns.
 pub const MAIN_QUEUE_DEADLINE: f64 = 5.0;
 
+/// Drives a `!Send` future to completion on the main thread while
+/// pumping the run loop.
+///
+/// A bare `block_on` parks the thread it polls on; the central
+/// capture's completions and wakes land on `DispatchQueue::main()`,
+/// which only a turning run loop services — so the future's polls
+/// interleave with short `pump_main_until` turns, re-polling on the
+/// wake flag as soon as a callback delivers. Bounded at `seconds`
+/// overall: a future that never settles panics naming the bound
+/// instead of hanging the case.
+///
+/// # Panics
+///
+/// When `future` is not ready within `seconds`.
+pub fn block_on_main<F: core::future::Future>(seconds: f64, future: F) -> F::Output {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::time::Instant;
+
+    struct Flag(Arc<AtomicBool>);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let woken = Arc::new(AtomicBool::new(false));
+    let waker = Waker::from(Arc::new(Flag(Arc::clone(&woken))));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = core::pin::pin!(future);
+    let start = Instant::now();
+    loop {
+        woken.store(false, Ordering::Release);
+        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        assert!(
+            start.elapsed().as_secs_f64() < seconds,
+            "a main-thread future did not settle within {seconds}s"
+        );
+        pump_main_until(0.05, || woken.load(Ordering::Acquire));
+    }
+}
+
 /// The least wall-clock time a native `Animation::Default` scroll takes.
 ///
 /// Measured from the request to the landing, it is well under `AppKit`'s
@@ -210,6 +255,28 @@ pub fn manager_installs_into_the_environment(_mtm: MainThreadMarker) {
     assert!(env.get::<WindowManager>().is_some());
 }
 
+/// The environment `embedding` prepares for a window's mount on macOS.
+///
+/// `create_root` installs the dispatcher and the embedding services and
+/// then the platform theme, resolved from the shared application's
+/// current scheme — a window background resolves the theme's
+/// `Background` token through the environment, so a bare
+/// `Environment::new()` cannot drive a window binding. Answers the
+/// environment plus the theme signals: keep them alive for the window's
+/// lifetime, the way a real mount's keepalive does.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::ThemeSignals) {
+    let mut env = Environment::new();
+    crate::dispatch::install(&mut env);
+    crate::embedding::install_services(&mut env);
+    let theme = crate::theme::install(
+        &mut env,
+        cocoa_ui::appkit::Application::shared(mtm).color_scheme(),
+    );
+    (env, theme)
+}
+
 /// Checks two-way bindings on a real native root window.
 ///
 /// `bind_root_window` adopts a window the host already created: the
@@ -228,9 +295,7 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
         cocoa_ui::appkit::WindowStyle::TITLED,
     );
 
-    let mut env = Environment::new();
-    crate::dispatch::install(&mut env);
-    crate::embedding::install_services(&mut env);
+    let (env, _theme) = window_environment(mtm);
     let title: Computed<Str> = binding(Str::from("Bind Root")).computed();
     let frame: Binding<Rect> = binding(Rect::new(Point::new(0.0, 0.0), Size::new(0.0, 0.0)));
     let state: Binding<WindowState> = binding(WindowState::Normal);
@@ -246,8 +311,19 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
         Retained::retain(std::ptr::from_ref(window.native()).cast_mut())
             .expect("a live NSWindow retains")
     };
+    // The embedding's WaterUI-owned root inside the host's content view —
+    // the view a material background fills.
+    let root = cocoa_ui::appkit::HostView::new(mtm, window.content_rect());
+    cocoa_ui::view::add_subview(
+        &window
+            .native()
+            .contentView()
+            .expect("a new window has a content view"),
+        &root,
+    );
     let binding = crate::windows::bind_root_window(
         native,
+        &root,
         &env,
         &title,
         &frame,
@@ -312,17 +388,94 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
 /// completion settlement paths on it.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod gpu_surface {
-    pub use crate::components::gpu_surface::native_test::{MountedSceneSurface, WakeProbe};
+    pub use crate::components::gpu_surface::native_test::{
+        MountedSceneSurface, WakeProbe, fixture_env, fixture_scene_view,
+    };
+
+    /// Performs the once-per-process `startup::initialize` — called
+    /// once from the `Tests/native.rs` harness's true main thread
+    /// before any trial runs; fixture mounts rely on that explicit
+    /// harness setup.
+    pub fn initialize_process() {
+        let _ = crate::startup::initialize();
+    }
 }
 
-/// Performs the once-per-process `startup::initialize`.
+/// Re-exports the pieces a `ViewRenderer::render` trial needs.
 ///
-/// Called once from the `Tests/native.rs` harness's true main thread
-/// before any trial runs; the fixture mounts rely on that explicit
-/// harness setup.
-#[cfg(target_os = "macos")]
-pub fn initialize_process() {
-    let _ = crate::startup::initialize();
+/// The service installer, the shared-runtime handles a sealed generation
+/// is reached through, and the failure carriers the cause chain asserts
+/// on.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+pub mod view_renderer {
+    pub use crate::components::view_renderer::install_service;
+    pub use crate::gpu_runtime::{EngineGeneration, SceneEngine, scene_engine};
+    pub use waterui_graphics::gpu::GpuRuntime;
+    pub use waterui_graphics::gpu::runtime::HostedLayerError;
+}
+
+/// Re-exports the filtered mounted-surface fixtures.
+///
+/// The `native_test` module inside `components::filtered` mounts a filtered
+/// leaf over a real `SceneView` GPU-surface child through the production
+/// `build_filtered_parts` construction, for the settle-contract trials.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+pub mod filtered {
+    pub use crate::components::filtered::native_test::{MountedFilteredSurface, WakeProbe};
+}
+
+/// Counts `tracing` ERROR events one module emits — a settle contract
+/// that must log exactly once per failure asserts on the count.
+///
+/// Used as a `tracing::Subscriber` inside `with_default`, so only the
+/// events the wrapped closure raises are observed.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+#[derive(Debug)]
+pub struct ErrorLog {
+    target: &'static str,
+    count: alloc::sync::Arc<core::sync::atomic::AtomicU32>,
+}
+
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+impl ErrorLog {
+    /// An ERROR counter for events whose target is `target` (the
+    /// emitting module path, e.g.
+    /// `"waterui_apple::components::gpu_surface"`).
+    #[must_use]
+    pub fn new(target: &'static str) -> (Self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) {
+        let count = alloc::sync::Arc::new(core::sync::atomic::AtomicU32::new(0));
+        (
+            Self {
+                target,
+                count: count.clone(),
+            },
+            count,
+        )
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+impl tracing::Subscriber for ErrorLog {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        *metadata.level() == tracing::Level::ERROR && metadata.target() == self.target
+    }
+    fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+    fn register_callsite(
+        &self,
+        _meta: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::always()
+    }
+    fn event(&self, _event: &tracing::Event<'_>) {
+        self.count
+            .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+    }
+    fn enter(&self, _span: &tracing::span::Id) {}
+    fn exit(&self, _span: &tracing::span::Id) {}
 }
 
 /// The minimum environment a real render needs.

@@ -25,7 +25,7 @@ pub mod color_picker;
 pub mod container;
 #[cfg(feature = "context_menu")]
 pub mod context_menu;
-#[cfg(any(test, feature = "button", feature = "slider"))]
+#[cfg(any(test, feature = "slider", all(target_os = "macos", feature = "button")))]
 pub mod control_size;
 #[cfg(feature = "cursor")]
 pub mod cursor;
@@ -58,7 +58,7 @@ pub mod hittable;
 pub mod ignore_safe_area;
 #[cfg(feature = "image")]
 pub mod image;
-#[cfg(all(feature = "layer_transform", target_os = "macos"))]
+#[cfg(macos_layer_transform)]
 pub mod layer_transform;
 #[cfg(feature = "layout_priority")]
 pub mod layout_priority;

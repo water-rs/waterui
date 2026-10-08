@@ -1212,6 +1212,190 @@ fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid()
 }
 }
 
+/// The `backdrop staging` grow events `sink` accumulated, in order, as
+/// `(old, new)` byte pairs.
+fn staging_grows(sink: &cherenkov_gpu::diag::Sink) -> Vec<(u64, u64)> {
+    sink.take()
+        .iter()
+        .filter_map(|event| match event.kind {
+            cherenkov_gpu::diag::EventKind::Grow {
+                label: "backdrop staging",
+                old,
+                new,
+                ..
+            } => Some((old, new)),
+            _ => None,
+        })
+        .collect()
+}
+
+split_test! {
+/// Reduced captures under translucent ancestors on one surface share the
+/// surface's one staging texture per capture format, grown to the
+/// largest staged device rect and reused across frames:
+/// `backdrop_captures` counts only the captures (#1994). A capture under
+/// a fading ancestor that painted nothing below the member adds no
+/// composite to its pass — it resolves straight from its source,
+/// unstaged (#2009).
+fn staged_resolves_share_the_surface_staging_texture() -> Result<(), Box<dyn std::error::Error>> {
+    let sink = cherenkov_gpu::diag::Sink::new();
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        alloc_diag: Some(sink.clone()),
+        ..Default::default()
+    }))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let half = cherenkov::CaptureScale::new(0.5)?;
+    // Each painted group's filter swaps the capture's red and blue
+    // channels, so a missing composite or a zeroed staging changes the
+    // member's output.
+    let swap_rb = || {
+        filtrate::filters::ColorMatrix([
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, 0.0,
+        ])
+    };
+    let big = surface.backdrop_group(swap_rb(), half);
+    let small = surface.backdrop_group(swap_rb(), half);
+    let empty = surface.backdrop_group_unfiltered(half);
+    let big_parent = surface.layer();
+    let big_member = surface.layer();
+    let small_parent = surface.layer();
+    let small_member = surface.layer();
+    let empty_parent = surface.layer();
+    let empty_member = surface.layer();
+    // The empty ancestor alone: its member still captures reduced, but
+    // nothing below it was painted, so no staging texture grows at all.
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&empty_parent);
+        tx[&empty_parent].opacity(0.5f32);
+        tx[&empty_parent].push(&empty_member);
+        tx[&empty_member]
+            .clip(Rect::new(0.0, 0.0, 64.0, 64.0))
+            .backdrop(empty.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the frame drew");
+    assert_eq!(staging_grows(&sink), Vec::<(u64, u64)>::new());
+    // Add the small painted group: its capture covers texels [3, 13)² —
+    // a 22² device rect with the shader margin — and its staged resolve
+    // grows the staging once, proving the capture is staged. The member
+    // samples its parent's blue; the group's filter turns it red — a
+    // missing composite or a zeroed staging would read (0.5, 0, 0.5).
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&small_parent);
+        tx[&small_parent].opacity(0.5f32).content(surface.record(|r| {
+            r.fill(
+                Rect::new(10.0, 10.0, 20.0, 20.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[&small_parent].push(&small_member);
+        tx[&small_member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(small.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the frame drew");
+    assert_eq!(staging_grows(&sink), vec![(0, 22 * 22 * 8)]);
+    let readback = wait!(surface.readback())?;
+    assert_pixel(pixel(&readback, 15, 15), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    // Add the large painted group: the staging grows to its 62² device
+    // rect — the `old` half of the pair can only be the small capture's
+    // texture if the big capture replaced it — which the small resolve
+    // then reuses without a second grow. `MemoryUsage::gpu` counts the
+    // staging: its growth lands there on top of the new captures (the
+    // depth-0 scratch has covered the surface since phase 1 — a capture
+    // inside an isolation forces it — so nothing else grows).
+    let before = wait!(engine.memory());
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&big_parent);
+        tx[&big_parent].opacity(0.5f32).content(surface.record(|r| {
+            r.fill(
+                Rect::new(30.0, 30.0, 50.0, 50.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[&big_parent].push(&big_member);
+        tx[&big_member]
+            .clip(Rect::new(4.0, 4.0, 60.0, 60.0))
+            .backdrop(big.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the frame drew");
+    assert_eq!(staging_grows(&sink), vec![(22 * 22 * 8, 62 * 62 * 8)]);
+    // Each painted member shows what its capture saw, permuted by the
+    // group's red/blue swap. The big member sits above the small one: at
+    // (15,15) its capture holds the small composite's red and the filter
+    // turns it blue — a missing filter would read (1,0,0); at (40,40) it
+    // holds the parent's own blue fill, permuted to red — a missing
+    // composite or a zeroed staging would read (0.5,0,0.5).
+    let readback = wait!(surface.readback())?;
+    assert_pixel(pixel(&readback, 15, 15), [0.5, 0.0, 0.5, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 40, 40), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    // Only the captures count: 30² + 10² + 32² f16 texels — the empty
+    // ancestor's member still captures (clamped to the 32-texel extent).
+    let memory = wait!(engine.memory());
+    assert_eq!(
+        memory.backdrop_captures,
+        Bytes(30 * 30 * 8 + 10 * 10 * 8 + 32 * 32 * 8)
+    );
+    assert!(
+        memory.gpu.0 - before.gpu.0 - (memory.backdrop_captures.0 - before.backdrop_captures.0)
+            >= (62 * 62 - 22 * 22) * 8,
+        "MemoryUsage::gpu counts the staging's regrowth"
+    );
+    // The shared texture is kept across frames: a re-committed frame
+    // grows nothing.
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the frame drew");
+    assert_eq!(staging_grows(&sink), Vec::<(u64, u64)>::new());
+    // A painted sibling at the empty ancestor's depth before it: a
+    // painted-set scan that ignored `passes_start` would credit the
+    // empty ancestor with the sibling's draws and stage the member's
+    // 64² rect — a grow.
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&empty_parent);
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the frame drew");
+    assert_eq!(staging_grows(&sink), Vec::<(u64, u64)>::new());
+    Ok(())
+}
+}
+
 split_test! {
 /// A WGSL member effect reading the capture pyramid at a fractional
 /// level: `backdrop_sample_level(p, 1.5)` is the trilinear mix of the
@@ -1273,6 +1457,104 @@ fn sample_level_mixes_the_pyramid_trilinearly() -> Result<(), Box<dyn std::error
         Bytes((32 * 32 + 16 * 16 + 8 * 8) * 8)
     );
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
+    Ok(())
+}
+}
+
+split_test! {
+/// Under `ScratchFormat::Rgba8Unorm` the two staging slots serve
+/// different copy sources in one frame: a staged capture copying a part
+/// uses the surface-format staging, one copying a semantic isolation's
+/// scratch uses the scratch-format staging (#1994).
+fn staged_resolves_use_one_staging_per_format() -> Result<(), Box<dyn std::error::Error>> {
+    let sink = cherenkov_gpu::diag::Sink::new();
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        scratch_format: cherenkov_gpu::ScratchFormat::Rgba8Unorm,
+        alloc_diag: Some(sink.clone()),
+        ..Default::default()
+    }))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let identity = engine.filter(filtrate::filters::ColorMatrix([
+        1.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+    ]));
+    let half = cherenkov::CaptureScale::new(0.5)?;
+    // The group filters permute the captures' channels, so a missing
+    // composite or a zeroed staging changes each member's output.
+    let part_group = surface.backdrop_group(
+        filtrate::filters::ColorMatrix([
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            1.0, 0.0, 0.0, 0.0,
+        ]),
+        half,
+    );
+    let scratch_group = surface.backdrop_group(
+        filtrate::filters::ColorMatrix([
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0,
+        ]),
+        half,
+    );
+    let part_parent = surface.layer();
+    let part_member = surface.layer();
+    let semantic = surface.layer();
+    let fading = surface.layer();
+    let scratch_member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        // A member under a fading ancestor: its capture copies the
+        // surface target — the part format.
+        tx[surface.root()].push(&part_parent);
+        tx[&part_parent].opacity(0.5f32).content(surface.record(|r| {
+            r.fill(
+                Rect::new(10.0, 10.0, 20.0, 20.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[&part_parent].push(&part_member);
+        tx[&part_member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(part_group.sample());
+        // A member under a semantic (filtered) isolation, through a
+        // painted fading level: its capture copies the isolation's
+        // scratch — the scratch format.
+        tx[surface.root()].push(&semantic);
+        tx[&semantic]
+            .clip(Rect::new(32.0, 32.0, 64.0, 64.0))
+            .filter(identity.id());
+        tx[&semantic].push(&fading);
+        tx[&fading].opacity(0.5f32).content(surface.record(|r| {
+            r.fill(
+                Rect::new(40.0, 40.0, 56.0, 56.0),
+                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+            );
+        }));
+        tx[&fading].push(&scratch_member);
+        tx[&scratch_member]
+            .clip(Rect::new(36.0, 36.0, 60.0, 60.0))
+            .backdrop(scratch_group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    assert!(engine.stats().frame.is_some(), "the frame drew");
+    // One grow per slot: the part-copying capture's f16 staging at
+    // its 22² device rect, then the scratch-copying capture's rgba8
+    // staging at its 30² device rect.
+    assert_eq!(staging_grows(&sink), vec![(0, 22 * 22 * 8), (0, 30 * 30 * 4)]);
+    let readback = wait!(surface.readback())?;
+    // The part member's permuted sample: the parent's blue over red
+    // reads red — a missing composite or a zeroed staging gives
+    // (0.5, 0, 0.5).
+    assert_pixel(pixel(&readback, 15, 15), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    // The scratch member's permuted sample: its fading parent's green
+    // becomes the member's blue paint, faded to (0.5, 0, 0.5) — a
+    // missing composite gives (0.5, 0.5, 0).
+    assert_pixel(pixel(&readback, 48, 48), [0.5, 0.0, 0.5, 1.0], 2e-2);
     Ok(())
 }
 }

@@ -9,25 +9,19 @@ use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{
     android::adb::Adb,
     android::platform::AndroidAbi,
     android::toolchain::AndroidSdk,
     device::{
-        ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running,
+        ApplicationExit, Artifact, Crash, CrashCause, Device, DeviceEvent, FailToRun, LogLevel,
+        PanicInfo, RunOptions, Running, STOPPED_EXIT_DEADLINE, StopRequest, report_monitor_error,
     },
     toolchain::Host,
     utils::{CommandError, parse_whitespace_separated_u32s},
 };
-
-/// Panic information extracted from logcat.
-#[derive(Debug, Clone)]
-struct PanicInfo {
-    payload: String,
-    location: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 enum AndroidRuntimeEvent {
@@ -37,6 +31,7 @@ enum AndroidRuntimeEvent {
 }
 
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
 const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 
 /// The launch-intent extra carrying the `--logs` level to a Hydrolysis
@@ -297,19 +292,7 @@ async fn run_on_android(
     // Wait for the process to start and get its PID
     let pid = wait_for_app_pid(host, &adb, device_id, artifact.bundle_id()).await?;
 
-    let host_for_kill = host.clone();
-    let adb_for_kill = adb.clone();
-    let device_id_for_kill = device_id.to_string();
-    let bundle_id_for_kill = artifact.bundle_id().to_string();
-
-    let (mut running, sender) = Running::new(move || {
-        spawn_android_force_stop(
-            &host_for_kill,
-            adb_for_kill,
-            device_id_for_kill,
-            bundle_id_for_kill,
-        );
-    });
+    let (mut running, sender, control) = Running::new();
     if !options.forward_tcp_ports().is_empty() {
         running.retain(RemoveForwardsOnDrop {
             host: host.clone(),
@@ -327,6 +310,7 @@ async fn run_on_android(
         pid,
         log_level: options.log_level(),
         sender,
+        control,
     });
     if let Some(logcat) = logcat {
         running.retain(logcat);
@@ -554,36 +538,6 @@ async fn launch_android_app(
     )))
 }
 
-fn spawn_android_force_stop(host: &Host, adb: Adb, device_id: String, bundle_id: String) {
-    let host = host.clone();
-    let spawn_result = std::thread::Builder::new()
-        .name("waterui-android-force-stop".to_string())
-        .spawn(move || {
-            let result = host
-                .std_command(adb.path())
-                .args(["-s", &device_id, "shell", "am", "force-stop", &bundle_id])
-                .output();
-
-            match result {
-                Ok(output) => {
-                    tracing::debug!(
-                        "Force-stop command executed: status={}, stdout={}, stderr={}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
-                Err(error) => {
-                    error!("Failed to stop app {}: {}", bundle_id, error);
-                }
-            }
-        });
-
-    if let Err(error) = spawn_result {
-        error!("Failed to spawn force-stop worker thread: {error}");
-    }
-}
-
 struct AndroidRuntimeTaskContext<'a> {
     host: &'a Host,
     adb: &'a Adb,
@@ -592,6 +546,7 @@ struct AndroidRuntimeTaskContext<'a> {
     pid: u32,
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
+    control: Receiver<StopRequest>,
 }
 
 fn spawn_android_runtime_tasks(
@@ -605,6 +560,7 @@ fn spawn_android_runtime_tasks(
         pid,
         log_level,
         sender,
+        control,
     } = context;
     let sender_for_monitor = sender.clone();
     let sender_for_runtime_event = sender.clone();
@@ -622,6 +578,7 @@ fn spawn_android_runtime_tasks(
             &bundle_id_for_monitor,
             pid,
             sender_for_monitor,
+            control,
         )
         .await;
     })
@@ -634,14 +591,14 @@ fn spawn_android_runtime_tasks(
             match event {
                 AndroidRuntimeEvent::Panic(info) => {
                     let _ = sender_for_runtime_event
-                        .send(DeviceEvent::Crashed(format_android_panic(&info)))
+                        .send(DeviceEvent::Crashed(Crash::new(CrashCause::Panic(info))))
                         .await;
                 }
                 AndroidRuntimeEvent::NativeCrash(log) => {
                     let _ = sender_for_runtime_event
-                        .send(DeviceEvent::Crashed(format!(
-                            "Android process crashed.\n\n=== Crash Log ===\n{log}"
-                        )))
+                        .send(DeviceEvent::Crashed(Crash::new(CrashCause::Native(
+                            format!("Android process crashed.\n\n=== Crash Log ===\n{log}"),
+                        ))))
                         .await;
                 }
                 AndroidRuntimeEvent::ActivityFinished => {
@@ -655,16 +612,6 @@ fn spawn_android_runtime_tasks(
     .detach();
 
     logcat
-}
-
-fn format_android_panic(info: &PanicInfo) -> String {
-    let mut msg = format!("Panic: {}", info.payload);
-    if let Some(location) = &info.location {
-        msg.push('\n');
-        msg.push_str("  at ");
-        msg.push_str(location);
-    }
-    msg
 }
 
 /// Wait for an app to start and return its PID.
@@ -883,10 +830,27 @@ async fn monitor_android_process(
     bundle_id: &str,
     pid: u32,
     sender: smol::channel::Sender<DeviceEvent>,
+    control: Receiver<StopRequest>,
 ) {
-    // Check process status periodically
+    let mut control = Some(control);
+    let mut stop_deadline = None;
     loop {
-        smol::Timer::after(std::time::Duration::from_secs(1)).await;
+        if wait_for_android_stop_request(&mut control).await.is_some() {
+            stop_deadline.get_or_insert_with(|| Instant::now() + STOPPED_EXIT_DEADLINE);
+            force_stop_android_app(&host, &adb, device_id, bundle_id, &sender).await;
+        }
+        if stop_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            report_monitor_error(
+                &sender,
+                format!(
+                    "The Android app did not exit within {STOPPED_EXIT_DEADLINE:?} of the stop request"
+                ),
+            );
+            let _ = sender
+                .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                .await;
+            break;
+        }
 
         // Check if process is still running using pidof
         // Note: We use pidof instead of kill -0 because kill -0 returns "Operation not permitted"
@@ -917,62 +881,121 @@ async fn monitor_android_process(
         let still_running = pids.contains(&pid);
 
         if !still_running {
-            // Try to fetch logs for this PID (best signal for distinguishing crash vs normal exit).
-            let pid_arg = format!("--pid={pid}");
-            let pid_log_args = vec![
-                "-s".to_string(),
-                device_id.to_string(),
-                "logcat".to_string(),
-                "-v".to_string(),
-                "threadtime".to_string(),
-                "-d".to_string(),
-                "-t".to_string(),
-                "200".to_string(),
-                pid_arg,
-                "*:V".to_string(),
-            ];
-            let pid_log = run_bounded_adb_output(
-                &host,
-                &adb,
-                pid_log_args
-                    .iter()
-                    .map(|s| std::ffi::OsStr::new(s.as_str())),
-                "collecting Android process exit logs",
-            )
-            .await
-            .map_or_else(
-                |err| {
-                    debug!("Failed to fetch PID-filtered logcat: {err}");
-                    String::new()
-                },
-                |output| {
-                    if output.status.success() {
-                        String::from_utf8_lossy(&output.stdout).to_string()
-                    } else {
-                        debug!("PID-filtered logcat exited with status {}", output.status);
-                        String::new()
-                    }
-                },
-            );
-
-            if android_log_looks_like_crash(&pid_log, bundle_id, pid) {
-                let crash_log = pid_log;
-
-                let error_msg = if crash_log.trim().is_empty() {
-                    format!("Process {bundle_id} crashed.")
-                } else {
-                    format!("Process {bundle_id} crashed.\n\n=== Crash Log ===\n{crash_log}")
-                };
-
-                let _ = sender.send(DeviceEvent::Crashed(error_msg)).await;
-            } else {
-                let _ = sender
-                    .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
-                    .await;
-            }
+            report_android_process_exit(&host, &adb, device_id, bundle_id, pid, &sender).await;
             break;
         }
     }
+}
+
+async fn wait_for_android_stop_request(
+    control: &mut Option<Receiver<StopRequest>>,
+) -> Option<StopRequest> {
+    use futures_util::future::{Either, select};
+
+    let delay = std::pin::pin!(smol::Timer::after(Duration::from_secs(1)));
+    let result = if let Some(control_receiver) = control.as_ref() {
+        let request = std::pin::pin!(control_receiver.recv());
+        match select(delay, request).await {
+            Either::Left(_) => None,
+            Either::Right((result, _)) => Some(result),
+        }
+    } else {
+        delay.await;
+        None
+    };
+    match result {
+        Some(Ok(request)) => Some(request),
+        Some(Err(_)) => {
+            *control = None;
+            None
+        }
+        None => None,
+    }
+}
+
+async fn force_stop_android_app(
+    host: &Host,
+    adb: &Adb,
+    device_id: &str,
+    bundle_id: &str,
+    sender: &Sender<DeviceEvent>,
+) {
+    let args = [
+        OsStr::new("-s"),
+        OsStr::new(device_id),
+        OsStr::new("shell"),
+        OsStr::new("am"),
+        OsStr::new("force-stop"),
+        OsStr::new(bundle_id),
+    ];
+    match run_bounded_adb_output(host, adb, args, "stopping the Android application").await {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => report_monitor_error(
+            sender,
+            format!(
+                "Android force-stop failed with status {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        ),
+        Err(error) => report_monitor_error(sender, format!("Android force-stop failed: {error}")),
+    }
+}
+
+async fn report_android_process_exit(
+    host: &Host,
+    adb: &Adb,
+    device_id: &str,
+    bundle_id: &str,
+    pid: u32,
+    sender: &smol::channel::Sender<DeviceEvent>,
+) {
+    let pid_arg = format!("--pid={pid}");
+    let pid_log_args = [
+        OsStr::new("-s"),
+        OsStr::new(device_id),
+        OsStr::new("logcat"),
+        OsStr::new("-v"),
+        OsStr::new("threadtime"),
+        OsStr::new("-d"),
+        OsStr::new("-t"),
+        OsStr::new("200"),
+        OsStr::new(&pid_arg),
+        OsStr::new("*:V"),
+    ];
+    let pid_log = run_bounded_adb_output(
+        host,
+        adb,
+        pid_log_args,
+        "collecting Android process exit logs",
+    )
+    .await
+    .map_or_else(
+        |error| {
+            debug!("Failed to fetch PID-filtered logcat: {error}");
+            String::new()
+        },
+        |output| {
+            if output.status.success() {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            } else {
+                debug!("PID-filtered logcat exited with status {}", output.status);
+                String::new()
+            }
+        },
+    );
+
+    let event = if android_log_looks_like_crash(&pid_log, bundle_id, pid) {
+        let error_msg = if pid_log.trim().is_empty() {
+            format!("Process {bundle_id} crashed.")
+        } else {
+            format!("Process {bundle_id} crashed.\n\n=== Crash Log ===\n{pid_log}")
+        };
+        DeviceEvent::Crashed(Crash::new(CrashCause::Native(error_msg)))
+    } else {
+        DeviceEvent::Exited(ApplicationExit::user_closed())
+    };
+    let _ = sender.send(event).await;
 }
 
 async fn query_android_process_pids(
@@ -1094,6 +1117,9 @@ fn start_android_log_stream(
 
     // Build logcat command with PID filter and minimum priority
     let pid_arg = format!("--pid={pid}");
+    #[cfg(unix)]
+    let mut cmd = host.command_in_own_process_group(adb.path());
+    #[cfg(not(unix))]
     let mut cmd = host.command(adb.path());
     cmd.args(["-s", device_id, "logcat", "-v", "threadtime"])
         .arg(pid_arg)

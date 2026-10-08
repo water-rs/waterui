@@ -915,6 +915,18 @@ pub fn validated_window_frame(frame: waterui_core::layout::Rect) -> waterui_core
     frame
 }
 
+/// Resolves the title-bar buttons `Window::closable` leaves enabled.
+///
+/// Only the close button toggles: minimize and maximize are always enabled.
+#[cfg(hydrolysis_winit)]
+pub fn enabled_window_buttons(closable: bool) -> winit::window::WindowButtons {
+    if closable {
+        winit::window::WindowButtons::all()
+    } else {
+        winit::window::WindowButtons::MINIMIZE | winit::window::WindowButtons::MAXIMIZE
+    }
+}
+
 /// Window host-services contract consumed by hydrolysis runner: window
 /// metrics, property application, input delivery, redraw wakeup, IME state
 /// sync and cursor chrome.
@@ -2252,8 +2264,8 @@ mod winit_impl {
     use super::{
         CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
         PlatformWindow, PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame,
-        SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, reclaim_device,
-        validated_window_frame,
+        SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, enabled_window_buttons,
+        reclaim_device, validated_window_frame,
     };
 
     #[derive(Clone, Debug)]
@@ -3273,6 +3285,7 @@ mod winit_impl {
     struct AppliedWindowProperties {
         title: waterui::Str,
         resizable: bool,
+        closable: bool,
         decorations: bool,
         /// Whether the key went down (`Pressed`) or came up (`Released`).
         state: WindowState,
@@ -4198,6 +4211,7 @@ mod winit_impl {
             let properties = AppliedWindowProperties {
                 title,
                 resizable: window.resizable,
+                closable: window.closable,
                 decorations,
                 state,
                 frame,
@@ -4215,6 +4229,10 @@ mod winit_impl {
             }
             if applied.is_none_or(|p| p.resizable != properties.resizable) {
                 self.window.set_resizable(properties.resizable);
+            }
+            if applied.is_none_or(|p| p.closable != properties.closable) {
+                self.window
+                    .set_enabled_buttons(enabled_window_buttons(properties.closable));
             }
             if applied.is_none_or(|p| p.decorations != properties.decorations) {
                 self.window.set_decorations(properties.decorations);
@@ -5043,6 +5061,49 @@ mod winit_impl {
                 ),
                 Mode::Opaque
             );
+        }
+
+        /// A behind-window material window is transparent, so its surface
+        /// takes a multiplied composite alpha mode — premultiplied first, the
+        /// postmultiplied mode Metal offers otherwise — while a within-window
+        /// material window keeps the opaque surface every other window has.
+        #[test]
+        fn a_behind_window_material_window_gets_a_multiplied_alpha_mode() {
+            use waterui::background::Material;
+            use waterui::window::{Window, WindowState};
+            use wgpu::CompositeAlphaMode as Mode;
+
+            let env = waterui_core::Environment::new();
+            let window = |material| {
+                Window::new("", waterui_core::binding(WindowState::Normal), || ())
+                    .background(material)
+            };
+            let select = |material, modes: &[Mode]| {
+                super::WinitSurface::select_alpha_mode(
+                    &caps_with_alpha_modes(modes),
+                    crate::runner::window_requires_transparency(&window(material), &env),
+                    &fake_adapter_info(),
+                )
+            };
+            for level in [Material::UltraThin, Material::Thin] {
+                assert_eq!(
+                    select(
+                        level,
+                        &[Mode::Opaque, Mode::PostMultiplied, Mode::PreMultiplied]
+                    ),
+                    Mode::PreMultiplied
+                );
+                assert_eq!(
+                    select(level, &[Mode::Opaque, Mode::PostMultiplied]),
+                    Mode::PostMultiplied
+                );
+            }
+            for level in [Material::Regular, Material::Thick, Material::UltraThick] {
+                assert_eq!(
+                    select(level, &[Mode::Opaque, Mode::PreMultiplied]),
+                    Mode::Opaque
+                );
+            }
         }
 
         /// water-rs/hydrolysis#118: a depth-32 X11 window on a Mesa

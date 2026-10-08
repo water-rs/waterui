@@ -5,7 +5,13 @@
 //! quarter of device resolution and runs through the level's colour stage
 //! and then its blur. Under a fully transparent ancestry the mount holds no
 //! group, so the engine captures nothing for it.
+//!
+//! A window whose background is a material realizes it at the window: a
+//! within-window level mounts the root over the same backdrop group, and a
+//! behind-window level clears the transparent window to the level's tint
+//! under the content.
 
+use nami::Signal as _;
 use waterui::ViewExt as _;
 use waterui::background::Material;
 use waterui::graphics::Color;
@@ -14,11 +20,12 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::filtrate::{
     ColorStage, Filter as _, OperatingSpace, Placed, SpatialStage, StageCollector,
 };
-use waterui_layout::stack::zstack;
+use waterui_layout::stack::{vstack, zstack};
 
 use super::{MinimalTestTheme, capture_bytes, material_layers, mounts, pumped_test_environment};
 use crate::HeadlessRuntime;
-use crate::renderer::MaterialLayer;
+use crate::renderer::material::BehindWindowLevel;
+use crate::renderer::{MaterialLayer, RenderLayer};
 
 /// The window, in points; the material fills it.
 const WIDTH: u32 = 160;
@@ -157,4 +164,117 @@ fn a_material_under_a_transparent_ancestry_captures_nothing() {
     let (scale, bytes, _) = installed(&runtime);
     assert_eq!(scale, None, "a hidden material holds no backdrop group");
     assert_eq!(bytes, 0, "a hidden material costs no capture");
+}
+
+/// A window of `WIDTH`×`HEIGHT` points with `background`, whose only content
+/// is an opaque 40×40 pt red box, after one rendered frame.
+fn window_with_background(background: Material) -> HeadlessRuntime {
+    let content = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(vstack((
+            ().size(40.0, 40.0).background(Color::srgb(255, 0, 0)),
+        )))
+    });
+    let window = waterui::window::Window::new(
+        "",
+        waterui_core::binding(waterui::window::WindowState::Normal),
+        move || content.build(),
+    )
+    .background(background);
+    let mut runtime = HeadlessRuntime::new_for_tests_with_window(
+        pumped_test_environment(),
+        window,
+        WIDTH,
+        HEIGHT,
+        MinimalTestTheme::default(),
+    )
+    .with_scale_factor(DISPLAY_SCALE);
+    let _ = runtime.pump_snapshot();
+    runtime
+}
+
+#[test]
+fn a_within_window_material_window_mounts_its_root_over_the_backdrop_group() {
+    let runtime = window_with_background(Material::Regular);
+
+    // The backdrop is presented first, over the whole window, under no
+    // ancestry: the root's content draws above it.
+    let first = runtime
+        .renderer()
+        .compositor
+        .render_layers
+        .first()
+        .expect("the frame presents layers");
+    let RenderLayer::Material(backdrop) = first else {
+        panic!("the window's backdrop is the bottom layer");
+    };
+    assert_eq!(
+        backdrop.bounds,
+        kurbo::Rect::new(0.0, 0.0, f64::from(WIDTH_PT), f64::from(HEIGHT_PT)),
+        "the backdrop covers the window"
+    );
+    assert!(backdrop.active_layers.is_empty());
+    assert_eq!(
+        material_layer(&runtime).key,
+        backdrop.key,
+        "the window's backdrop is the frame's only material"
+    );
+
+    // The mount holds the level's group, captured at a quarter of the
+    // 320×240 device pixels.
+    let (scale, bytes, _) = installed(&runtime);
+    assert_eq!(
+        scale,
+        Some(DISPLAY_SCALE),
+        "the mount holds a backdrop group"
+    );
+    assert_eq!(bytes, 80 * 60 * 8, "the capture is a quarter of the window");
+}
+
+#[test]
+fn a_behind_window_material_window_clears_transparent_to_its_tint_under_the_content() {
+    let mut runtime = window_with_background(Material::UltraThin);
+    // The tint the frame cleared to is the one in the runtime's own colour
+    // scheme.
+    let scheme = waterui::theme::current_color_scheme(runtime.env()).snapshot();
+    let tint = BehindWindowLevel::UltraThin.tint(scheme);
+    assert!(
+        runtime
+            .renderer()
+            .compositor
+            .render_layers
+            .iter()
+            .all(|layer| !matches!(layer, RenderLayer::Material(_))),
+        "a behind-window material builds no backdrop of the window's content"
+    );
+
+    let snapshot = runtime
+        .pump_snapshot()
+        .snapshot
+        .expect("a captured frame must carry pixels");
+    // Offscreen targets store straight alpha: every pixel the box leaves
+    // uncovered reads as the tint's grey at the tint's coverage, and the box
+    // draws opaquely over it.
+    let level = |value: f32| (value * 255.0).round();
+    let (mut tinted, mut content) = (0_u32, 0_u32);
+    for pixel in snapshot.rgba8.as_chunks::<4>().0 {
+        let [r, g, b, a] = *pixel;
+        if a == 255 {
+            assert!(
+                r >= 200 && g <= 60 && b <= 60,
+                "an opaque pixel is the box's red, got {pixel:?}"
+            );
+            content += 1;
+        } else {
+            assert!(
+                (f32::from(a) - level(tint.alpha)).abs() <= 1.0
+                    && [r, g, b]
+                        .iter()
+                        .all(|&channel| (f32::from(channel) - level(tint.color)).abs() <= 2.0),
+                "an uncovered pixel {pixel:?} is the tint {tint:?}"
+            );
+            tinted += 1;
+        }
+    }
+    assert!(content > 0, "the content was drawn");
+    assert!(tinted > content, "the tint shows around the content");
 }

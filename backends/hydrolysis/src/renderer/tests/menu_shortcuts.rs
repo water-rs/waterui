@@ -857,3 +857,99 @@ fn a_bare_named_key_chord_leaves_the_focused_field_its_key() {
         "with no editor focused, the bare Delete chord fires"
     );
 }
+
+/// A character chord without Control, Alt or Super is typing only while a
+/// text field holds focus (water-rs/waterui#2118): `j` and `Shift+J` fire
+/// their commands with nothing editable focused, go to the field as typed
+/// text while it holds focus, and fire again once focus leaves.
+#[test]
+fn a_bare_character_chord_fires_only_without_a_focused_field() {
+    let next = Binding::container(0_i32);
+    let shifted = Binding::container(0_i32);
+    let draft = Binding::container(waterui_core::Str::from(""));
+    let view = {
+        let next = next.clone();
+        let shifted = shifted.clone();
+        let draft = draft.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let next = next.clone();
+            let shifted = shifted.clone();
+            let draft = draft.clone();
+            AnyView::new(vstack((
+                Frame::new(field("Draft", &draft)).width(200.0).height(40.0),
+                Menu::new(
+                    "Actions",
+                    vec![
+                        MenuItem::from(
+                            "Next"
+                                .action(move || next.set(next.snapshot() + 1))
+                                .shortcut(Shortcut::new('j')),
+                        ),
+                        MenuItem::from(
+                            "Shifted"
+                                .action(move || shifted.set(shifted.snapshot() + 1))
+                                .shortcut(Shortcut::new('j').shift()),
+                        ),
+                    ],
+                ),
+            )))
+        })
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        view,
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let _ = pump_until_settled(&mut runtime);
+
+    key_chord(&mut runtime, "j", Modifiers::default());
+    assert_eq!(next.snapshot(), 1, "a bare J fires its chord");
+    assert_eq!(shifted.snapshot(), 0, "a bare J is not the Shift+J chord");
+
+    // A Shift+J press reports the uppercase character with shift held; the
+    // chord's letter matches case-insensitively and takes the modifier.
+    key_chord(
+        &mut runtime,
+        "J",
+        Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+    );
+    assert_eq!(shifted.snapshot(), 1, "Shift+J fires the shifted chord");
+    assert_eq!(next.snapshot(), 1, "Shift+J is not the bare chord");
+
+    click_label(
+        &mut runtime,
+        Role::TextInput,
+        "Draft",
+        PointerButton::Primary,
+    );
+    key_chord(&mut runtime, "j", Modifiers::default());
+    assert_eq!(
+        draft.snapshot().to_string(),
+        "j",
+        "J into the focused field types J"
+    );
+    assert_eq!(
+        (next.snapshot(), shifted.snapshot()),
+        (1, 1),
+        "the focused field's J fires neither chord"
+    );
+
+    // A press landing outside the field ends editing; the freed chord
+    // reaches the registry again.
+    for event in click(10.0, 230.0, PointerButton::Primary) {
+        runtime.push_input_event(event);
+    }
+    let _ = pump_until_settled(&mut runtime);
+    key_chord(&mut runtime, "j", Modifiers::default());
+    assert_eq!(next.snapshot(), 2, "with no editor focused, J fires again");
+    assert_eq!(
+        draft.snapshot().to_string(),
+        "j",
+        "the chord's J types nothing"
+    );
+}

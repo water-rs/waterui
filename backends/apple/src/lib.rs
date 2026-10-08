@@ -25,6 +25,8 @@ pub mod resources;
 
 #[cfg(any(platform_timing, frame_progress))]
 mod animation;
+#[cfg(feature = "gpu_surface")]
+pub(crate) mod capture_image;
 pub(crate) mod components;
 pub(crate) mod first_paint;
 pub(crate) mod fonts;
@@ -60,6 +62,7 @@ mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;
+pub(crate) mod window_background;
 pub(crate) mod windows;
 
 /// Harness-only internals for `Tests/native.rs`: private `windows` and

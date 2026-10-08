@@ -15,14 +15,15 @@ use std::rc::Rc;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::sel;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol};
 use objc2_ui_kit::{
     UIEdgeInsets, UIEvent, UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress,
-    UIPressesEvent, UITraitEnvironment, UIView,
+    UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
 };
 
+use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
@@ -91,6 +92,10 @@ pub struct HostViewIvars {
     /// target stays alive and a replacement can detach it.
     hover_recognizer: RefCell<Option<Retained<UIHoverGestureRecognizer>>>,
     key: RefCell<Option<KeyHandler>>,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
+    /// The display-scale registration serving backing-scale subscribers.
+    backing_changed: RefCell<Option<TraitChangeObservation>>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -124,6 +129,7 @@ impl fmt::Debug for HostViewIvars {
                 &self.hover_recognizer.borrow().is_some(),
             )
             .field("key", &self.key.borrow().is_some())
+            .field("backing_changed", &self.backing_changed.borrow().is_some())
             .finish_non_exhaustive()
     }
 }
@@ -431,6 +437,17 @@ impl HostView {
         self.ivars().layout.replace(Some(Rc::new(handler)));
     }
 
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
+    }
+
     /// Calls `handler` with the new size every time the view's size changes,
     /// replacing any handler set before.
     pub fn set_resize_handler(&self, handler: impl Fn(&Self, Size) + 'static) {
@@ -451,6 +468,16 @@ impl HostView {
     /// or is lost.
     pub fn set_window_handler(&self, handler: impl Fn(&Self) + 'static) {
         self.ivars().window.replace(Some(Rc::new(handler)));
+    }
+
+    /// Calls `handler` when the view's display scale changes — the
+    /// `UITraitDisplayScale` trait, which a backing-scale change rides on.
+    /// The handler decides whether the change matters to it. Replaces any
+    /// handler set before.
+    pub fn set_backing_changed_handler(&self, handler: impl Fn(&Self) + 'static) {
+        let registration =
+            register_trait_change(self, UITraitDisplayScale::class().as_ref(), handler);
+        self.ivars().backing_changed.replace(Some(registration));
     }
 
     /// Sends the hover recognizer's state change to the pointer handler
@@ -562,10 +589,10 @@ impl HostView {
     /// Each `set_*_handler` slot answers `None` afterwards, so a callback
     /// `UIKit` delivers to this view does nothing by construction rather
     /// than reaching state the owner released, and the handlers no longer
-    /// keep that state alive: layout, resize, hit-test, window, superview,
-    /// measure, primary content, scroll surface, pointer and key. The
-    /// hover recognizer is removed as well, since it exists only to serve
-    /// the pointer handler.
+    /// keep that state alive: layout, resize, hit-test, backing-changed,
+    /// window, superview, measure, primary content, scroll surface, pointer
+    /// and key. The hover recognizer is removed as well, since it exists
+    /// only to serve the pointer handler.
     pub fn clear_handlers(&self) {
         let ivars = self.ivars();
         ivars.layout.replace(None);
@@ -583,6 +610,7 @@ impl HostView {
             self.removeGestureRecognizer(&recognizer);
         }
         ivars.key.replace(None);
+        ivars.backing_changed.replace(None);
     }
 
     /// Whether the intrinsic content size reports the height the current

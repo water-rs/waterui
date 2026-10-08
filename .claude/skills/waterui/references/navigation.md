@@ -263,14 +263,16 @@ The `Window` builder, precisely:
   `window.handle().set_style(..)`) re-applies it to the open window, e.g. to toggle
   decorations. "Frosted" and "transparent" are **not** styles — they are backgrounds:
 - `.background(..)` accepts a `Color` (a translucent one gives a transparent window), a
-  `WindowBackground` (`Opaque` is the theme background) or a `Binding<WindowBackground>`,
-  or a `Material` (frosted glass applied to the window's content: `Regular`, `Thick`
-  and `UltraThick` are a backdrop treatment of the window's own content on every
-  backend; `UltraThin` and `Thin` blur what is behind the window through the
-  platform's blur-behind protocol and panic, naming the level and platform, where
-  there is none). The background is reactive: setting the binding (or
-  `window.handle().set_background(..)`) re-applies it to the open window, e.g. to toggle
-  between opaque and translucent.
+  `Material` (the window's material), a `WindowBackground` (`Opaque` is the theme
+  background; `Color(..)` and `Material(..)` are the other two) or a
+  `Binding<WindowBackground>`. A material window background is realized at the window,
+  not on the content: `Regular`, `Thick` and `UltraThick` frost the window's own opaque
+  background behind the content; `UltraThin` and `Thin` make the window translucent so
+  the desktop shows through — blurred on macOS, tinted with the level's colour but not
+  yet blurred on Hydrolysis desktops. The Kotlin Android runtime realizes no material
+  and draws a material window background as the opaque theme background. The background is reactive:
+  setting the binding (or `window.handle().set_background(..)`) re-applies it to the
+  open window, e.g. to switch between opaque, a translucent colour and a material.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
   take one `impl IntoComputed<Size>` (a `Size` or a signal of one, not two floats);
   without a min, the backend derives one by measuring content at a zero proposal.

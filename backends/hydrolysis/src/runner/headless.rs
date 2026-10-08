@@ -454,9 +454,7 @@ impl HeadlessRuntime {
         // Every window's renderer is seeded from this collection, and a
         // self-drawn component that typesets text itself reads it out of the
         // environment instead of enumerating the system's fonts for itself.
-        let fonts = crate::text::fonts::native_collection(
-            waterui_core::ResourceContext::from_environment(&env),
-        );
+        let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install
@@ -855,6 +853,13 @@ impl HeadlessRuntime {
         self.runtime.platform.set_touch_scroll_config(config);
     }
 
+    /// The environment the runtime renders its windows in, for tests that
+    /// read what a frame resolved against — its colour scheme, say.
+    #[cfg(test)]
+    pub(crate) const fn env(&self) -> &Environment {
+        &self.env
+    }
+
     /// The main window's renderer, for tests that assert on frame internals.
     #[cfg(test)]
     pub(crate) const fn renderer(&self) -> &HydrolysisRenderer {
@@ -965,8 +970,8 @@ impl HeadlessRuntime {
             let _ = advance_runtime(popup, &self.env, at);
         }
         // A popup whose state flipped `Closed` — its menu group dismissed it
-        // or a close request arrived — leaves the merged tree. Flag the main
-        // window so the update re-emits without it.
+        // — leaves the merged tree. Flag the main window so the update
+        // re-emits without it.
         if self
             .popup_windows
             .iter()

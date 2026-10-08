@@ -2488,15 +2488,15 @@ impl SemanticCore {
         // into every window's environment — a missing one is a bug in the
         // runner, not an absent table. Chords match the press's W3C
         // `logical_key`. Without Control, Alt or Super a press is typing
-        // while it names a character — the space bar included — and it
-        // belongs to a focused text editor on any key: a bare `Delete`
-        // chord does not steal the field's own delete.
+        // only while a text editor holds focus: J into a focused field
+        // types J, while J with nothing editable focused fires its chord —
+        // the space bar included — and a bare `Delete` chord does not
+        // steal the field's own delete either (water-rs/waterui#2118).
         let registry = env
             .get::<MenuShortcutRegistry>()
             .expect(MISSING_MENU_SHORTCUT_REGISTRY);
         let typing = !(modifiers.control || modifiers.alt || modifiers.super_key)
-            && (matches!(logical_key, keyboard_types::Key::Character(_))
-                || self.text_editing.has_focus());
+            && self.text_editing.has_focus();
         if !typing && registry.dispatch(self.window_id, logical_key, modifiers, env) {
             return true;
         }
@@ -3090,10 +3090,12 @@ impl HydrolysisRenderer {
         match gesture {
             TouchScrollGesture::Dragging(mut drag) => {
                 drag.tracker.record(at, point);
-                let changed = drag.handle.apply_scroll_delta(
-                    crate::num_cast::f64_as_f32(point.x - drag.last.x),
-                    crate::num_cast::f64_as_f32(point.y - drag.last.y),
-                    false,
+                // The offset moves opposite the finger: a drag up pushes it
+                // down into the content.
+                let changed = drag.handle.apply_gesture_delta(
+                    &drag.claim,
+                    drag.last.x - point.x,
+                    drag.last.y - point.y,
                 );
                 drag.last = point;
                 self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
@@ -3142,13 +3144,12 @@ impl HydrolysisRenderer {
                 } else {
                     kurbo::Point::new(pending.origin.x, pending.origin.y + slop.copysign(dominant))
                 };
-                let changed = handle.apply_scroll_delta(
-                    crate::num_cast::f64_as_f32(point.x - anchor.x),
-                    crate::num_cast::f64_as_f32(point.y - anchor.y),
-                    false,
-                );
+                let claim = handle.begin_gesture();
+                let changed =
+                    handle.apply_gesture_delta(&claim, anchor.x - point.x, anchor.y - point.y);
                 self.hit_test.touch_scroll = TouchScrollGesture::Dragging(TouchScrollDrag {
                     handle,
+                    claim,
                     last: point,
                     tracker: pending.tracker,
                 });
@@ -3219,7 +3220,13 @@ impl HydrolysisRenderer {
         let Some(config) = self.hit_test.touch_scroll_config else {
             return false;
         };
-        let fling = TouchFling::start(drag.handle, drag.tracker.velocity(at), &config, at);
+        let fling = TouchFling::start(
+            drag.handle,
+            drag.claim,
+            drag.tracker.velocity(at),
+            &config,
+            at,
+        );
         self.hit_test.touch_fling = fling;
         self.hit_test.touch_fling.is_some()
     }
