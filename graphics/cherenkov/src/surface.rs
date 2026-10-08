@@ -431,9 +431,11 @@ impl<B: Backend> Drop for Surface<B> {
 }
 
 impl<B: Backdrop> Surface<B> {
-    /// Allocates a group id and queues its registration with `op`.
+    /// Allocates a group id for `spec` and queues its registration
+    /// with `op`.
     fn new_backdrop_group(
         &self,
+        spec: crate::BackdropSpec,
         op: impl FnOnce(&mut B::Renderer, SurfaceId, crate::BackdropId)
         + crate::RenderTransfer
         + 'static,
@@ -444,15 +446,11 @@ impl<B: Backdrop> Surface<B> {
             op(r, surface, id);
         })));
         let tx = self.tx.clone();
-        crate::BackdropGroup::new(
-            id,
-            crate::BackdropSpec::new(crate::CaptureScale::FULL, crate::CaptureLevels::ONE),
-            move || {
-                let _ = tx.send(Message::Resource(Box::new(move |r| {
-                    B::remove_backdrop_group(r, surface, id);
-                })));
-            },
-        )
+        crate::BackdropGroup::new(id, spec, move || {
+            let _ = tx.send(Message::Resource(Box::new(move |r| {
+                B::remove_backdrop_group(r, surface, id);
+            })));
+        })
     }
 
     /// Creates a backdrop group on this surface whose members sample the
@@ -463,11 +461,9 @@ impl<B: Backdrop> Surface<B> {
         spec: impl Into<crate::BackdropSpec>,
     ) -> crate::BackdropGroup {
         let spec = spec.into();
-        let mut group = self.new_backdrop_group(move |r, surface, id| {
+        self.new_backdrop_group(spec, move |r, surface, id| {
             B::add_backdrop_group(r, surface, id, spec);
-        });
-        group.spec = spec;
-        group
+        })
     }
 
     /// Creates a backdrop group whose capture, taken per `spec`
@@ -486,10 +482,8 @@ impl<B: Backdrop> Surface<B> {
         B: BackdropRuns<K, F>,
     {
         let spec = spec.into();
-        let mut group = self.new_backdrop_group(move |r, surface, id| {
+        self.new_backdrop_group(spec, move |r, surface, id| {
             B::add_filtered_backdrop_group(r, surface, id, filter, spec);
-        });
-        group.spec = spec;
-        group
+        })
     }
 }

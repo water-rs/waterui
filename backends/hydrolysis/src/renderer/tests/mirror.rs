@@ -252,6 +252,17 @@ impl MirrorWindow {
     pub fn backdrops(&self) -> Vec<(LayerId, f64)> {
         self.mount.groups().member_scales()
     }
+
+    /// The window layer's child list, in paint order — a test-facing
+    /// answer: stale anchor layers would show here as extra children.
+    pub fn window_children(&self) -> Vec<LayerId> {
+        let mirrored = self.mirrored.borrow();
+        mirrored
+            .tree
+            .layer(self.mount.window().id())
+            .children
+            .clone()
+    }
 }
 
 /// Flattens every committed run into one window-space recording.

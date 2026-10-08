@@ -1173,12 +1173,7 @@ fn build_layer(
     prep: PrepLayer,
     content_layers: &mut Vec<ContentLayer>,
     filter_handles: &mut Vec<cherenkov::Filter>,
-    pending: &mut Vec<(
-        usize,
-        u32,
-        Option<cherenkov::BackdropEffect>,
-        cherenkov::BackdropOuter,
-    )>,
+    pending: &mut Vec<convert::PendingMember>,
 ) {
     let owned = parent.map(|_| surface.layer());
     let layer = owned.as_ref().unwrap_or_else(|| surface.root());

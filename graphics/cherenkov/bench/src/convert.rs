@@ -1613,15 +1613,20 @@ mod front {
         Ok(backdrop_groups)
     }
 
+    /// A backdrop member deferred to `apply_backdrop_members`: the
+    /// layer's `ContentLayer` index, its group's id, its sample effect
+    /// and outer band.
+    pub type PendingMember = (
+        usize,
+        u32,
+        Option<cherenkov::BackdropEffect>,
+        cherenkov::BackdropOuter,
+    );
+
     /// Points each pending member layer's backdrop at its group.
     pub fn apply_backdrop_members<T, L>(
         surface: &cherenkov::Surface<T>,
-        pending: Vec<(
-            usize,
-            u32,
-            Option<cherenkov::BackdropEffect>,
-            cherenkov::BackdropOuter,
-        )>,
+        pending: Vec<PendingMember>,
         content_layers: &[L],
         backdrop_groups: &HashMap<u32, cherenkov::BackdropGroup>,
     ) where

@@ -63,11 +63,11 @@ fn every_variant_emits_spirv() {
         let (module, info) = composed(variant);
         let mut writer = spv::Writer::new(&spv::Options::default())
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
-        let mut words = Vec::new();
+        let mut words = Vec::<u32>::new();
         writer
             .write(&module, &info, None, &None, &mut words)
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
-        assert_ne!(words, []);
+        assert_ne!(words, [] as [u32; 0]);
     }
 }
 }
@@ -119,11 +119,11 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
         .unwrap_or_else(|e| panic!("{name}: msl: {e}"));
     let mut writer =
         spv::Writer::new(&spv::Options::default()).unwrap_or_else(|e| panic!("{name}: spv: {e}"));
-    let mut words = Vec::new();
+    let mut words = Vec::<u32>::new();
     writer
         .write(module, info, None, &None, &mut words)
         .unwrap_or_else(|e| panic!("{name}: spv: {e}"));
-    assert_ne!(words, []);
+    assert_ne!(words, [] as [u32; 0]);
     let options = hlsl::Options::default();
     let mut out = String::new();
     let pipeline_options = hlsl::PipelineOptions::default();

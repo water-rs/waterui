@@ -1177,3 +1177,100 @@ fn a_member_under_a_projective_descendant_is_unsupported() {
         Ok(_) => panic!("a member under a projective descendant must fail"),
     }
 }
+
+/// An anchor's filtered child is its own canvas: a member inside it is
+/// the anchor's descendant but outside its canvas.
+#[test]
+fn a_member_inside_the_anchors_filtered_child_is_unsupported() {
+    use cherenkov_scene::LayerFilter;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.layer(|f| {
+            f.filter(LayerFilter::GaussianBlur { sigma: 1.0 });
+            f.layer(|inner| {
+                inner.backdrop(1);
+            });
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member inside the anchor's filtered child must fail"),
+    }
+}
+
+/// An anchor's projective child is its own canvas: a clipped member
+/// inside it is rejected.
+#[test]
+fn a_member_inside_the_anchors_projective_child_is_unsupported() {
+    use cherenkov_scene::Projection;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.layer(|p| {
+            p.clip(Shape::Rect(Rect::new(0.0, 0.0, W, H)));
+            p.projection(Projection {
+                matrix: Projection::perspective(100.0),
+                ..Projection::default()
+            });
+            p.layer(|inner| {
+                inner.clip(Shape::Rect(Rect::new(8.0, 8.0, 24.0, 24.0)));
+                inner.backdrop(1);
+            });
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member inside the anchor's projective child must fail"),
+    }
+}
+
+/// A filtered anchor's children paint in the filter's canvas, not the
+/// anchor's — an isolating anchor rejects its own member children.
+#[test]
+fn an_isolating_anchor_rejects_its_member_children() {
+    use cherenkov_scene::LayerFilter;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.filter(LayerFilter::GaussianBlur { sigma: 1.0 });
+        a.layer(|inner| {
+            inner.clip(Shape::Rect(Rect::new(8.0, 8.0, 24.0, 24.0)));
+            inner.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member child of an isolating anchor must fail"),
+    }
+}

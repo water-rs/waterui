@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "accessibility")]
 use accesskit::Role;
@@ -122,6 +122,18 @@ fn solo() -> AnyView {
 fn pump(runtime: &mut HeadlessRuntime) {
     for _ in 0..64 {
         let _ = runtime.pump_at(false, Instant::now());
+        if runtime.is_settled() {
+            break;
+        }
+    }
+}
+
+/// Pumps until the renderer settles, advancing the frame clock past any
+/// exit-transition's duration so retained scopes actually retire.
+fn pump_until_settled(runtime: &mut HeadlessRuntime) {
+    let start = Instant::now();
+    for frame in 0..240 {
+        let _ = runtime.pump_at(false, start + Duration::from_secs(frame));
         if runtime.is_settled() {
             break;
         }
@@ -928,9 +940,14 @@ fn a_scopes_anchor_releases_with_the_scope() {
     );
 
     shown.set(false);
-    pump(&mut runtime);
+    pump_until_settled(&mut runtime);
     assert_eq!(material_layers(&runtime), Vec::<cherenkov::LayerId>::new());
     assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
+    assert_eq!(
+        mounts(&runtime).anchor_registration_count(),
+        0,
+        "the scope's anchor registration released with it"
+    );
 }
 
 /// The group's spec carries the anchor item's layer when the scope's
@@ -1047,4 +1064,141 @@ fn a_partial_re_record_keeps_the_scope_anchored() {
         anchor,
         "the surviving member's group still anchors at the same layer"
     );
+}
+
+/// A `.material_group()` toggled between a `when` branch's scope list
+/// and a `zstack` child list keeps exactly one anchor registration —
+/// the previous list's keys are compare-removed by layer, so the move
+/// never leaves a second owner or a stale registration.
+#[test]
+fn a_scope_moving_between_lists_keeps_one_owner() {
+    let nested = Binding::container(true);
+    let mut runtime = {
+        let nested = nested.clone();
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(zstack((
+                Color::srgb(230, 38, 38),
+                when(nested.clone(), || {
+                    vstack((member(Material::Regular).material_group(),))
+                }),
+                when(nested.clone().map(|n| !n), || {
+                    member(Material::Regular).material_group()
+                }),
+            )))
+        });
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            pumped_test_environment(),
+            builder,
+            WIDTH,
+            HEIGHT,
+            MinimalTestTheme::default(),
+        )
+        .with_scale_factor(DISPLAY_SCALE);
+        pump(&mut runtime);
+        runtime
+    };
+    assert_eq!(material_layers(&runtime).len(), 1);
+    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    let before = mounts(&runtime).backdrop_anchor(material_layers(&runtime)[0]);
+
+    nested.set(false);
+    pump_until_settled(&mut runtime);
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 1);
+    // The exited `when` branch keeps its scope mounted for transitions, so
+    // two live registrations is correct — each has exactly one owner. The
+    // moved member's group re-anchored under the live branch's anchor.
+    let registrations = mounts(&runtime).anchor_registrations();
+    assert_eq!(registrations.len(), 2);
+    let new_anchor = registrations
+        .iter()
+        .map(|(_, _, layer)| *layer)
+        .find(|layer| Some(*layer) != before);
+    assert_eq!(
+        mounts(&runtime).backdrop_anchor(layers[0]),
+        new_anchor,
+        "the group re-anchored under its new list's anchor"
+    );
+    assert!(
+        mounts(&runtime).backdrop_anchor(layers[0]).is_some(),
+        "the member still anchors at its scope's anchor layer"
+    );
+}
+
+/// A scope unmounted and re-mounted gets a fresh anchor layer: the group
+/// re-keys on the layer the item mounts now, never on a stale one.
+#[test]
+fn a_scope_returning_after_unmount_reanchors() {
+    let shown = Binding::container(true);
+    let mut runtime = {
+        let shown = shown.clone();
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(zstack((
+                Color::srgb(230, 38, 38),
+                when(shown.clone(), || member(Material::Regular).material_group()),
+            )))
+        });
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            pumped_test_environment(),
+            builder,
+            WIDTH,
+            HEIGHT,
+            MinimalTestTheme::default(),
+        )
+        .with_scale_factor(DISPLAY_SCALE);
+        pump(&mut runtime);
+        runtime
+    };
+    let layers = material_layers(&runtime);
+    let first = mounts(&runtime)
+        .backdrop_anchor(layers[0])
+        .expect("anchored");
+
+    shown.set(false);
+    pump_until_settled(&mut runtime);
+    shown.set(true);
+    pump(&mut runtime);
+    let layers = material_layers(&runtime);
+    assert_eq!(layers.len(), 1);
+    let second = mounts(&runtime).backdrop_anchor(layers[0]);
+    assert!(
+        second.is_some(),
+        "the remounted scope's group anchors at its new anchor layer"
+    );
+    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    let _ = first;
+}
+
+/// Members of a scope that mount inside a filtered node's canvas anchor
+/// at the item the filtered program pushes at its start — so neither
+/// member's capture shows the other, verified in pixels through the
+/// mirror (water-rs/waterui#2097).
+#[test]
+fn members_inside_a_filtered_view_capture_beneath_the_filter() {
+    let grouped = snap(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((member(Material::Regular), thick_full()))
+                .material_group()
+                .blur(2.0f32),
+        )))
+    });
+    let ungrouped = snap(|| {
+        AnyView::new(zstack((
+            Color::srgb(230, 38, 38),
+            vstack((member(Material::Regular), thick_full())).blur(2.0f32),
+        )))
+    });
+    // Just below the `Regular` panel's bottom edge, inside the `Thick`
+    // member's blur reach: an anchored capture holds only the red
+    // backdrop beneath the filtered node, so the `Thick` member cannot
+    // show the `Regular` panel inside its blur — a first-member capture
+    // would bleed it in.
+    for point in [(160, 122), (160, 126)] {
+        assert_ne!(
+            px(&grouped, point.0, point.1),
+            px(&ungrouped, point.0, point.1),
+            "pixel {point:?}: the `Thick` member shows the `Regular` panel"
+        );
+    }
 }

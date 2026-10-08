@@ -1304,7 +1304,8 @@ impl<'a> Lowering<'a> {
             .filter_map(|info| info.spec.anchor_layer())
             .collect();
         self.plan_order = 0;
-        self.plan_layer(self.start(tree), tree, groups, Affine::IDENTITY, None)?;
+        let start = self.start(tree);
+        self.plan_layer(start, tree, groups, Affine::IDENTITY, None)?;
         // Union-field members need the group's full membership before
         // their footprints and bounds inflate: the union fold's `r(n)`
         // depends on the member count. Rebuild each touched plan's
@@ -1383,7 +1384,7 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        self.plan_anchors()
+        self.plan_anchors(start)
     }
 
     /// Validates every anchored group's member range, then builds each
@@ -1391,9 +1392,10 @@ impl<'a> Lowering<'a> {
     /// `backdrops` is a hash map, so the ids are sorted first for a
     /// deterministic error and emission order. A member of an anchored
     /// group must paint after its anchor in the anchor's compositing
-    /// canvas — its later siblings there; an anchored group never falls
+    /// canvas — the anchor's descendants or its later siblings there; an
+    /// anchored group never falls
     /// back to a capture at the member.
-    fn plan_anchors(&mut self) -> Result<(), RenderError> {
+    fn plan_anchors(&mut self, root: LayerId) -> Result<(), RenderError> {
         let mut gids: Vec<u64> = self
             .backdrops
             .iter()
@@ -1405,6 +1407,9 @@ impl<'a> Lowering<'a> {
             let anchor = {
                 let plan = &self.backdrops[&gid];
                 let anchor = plan.spec.anchor_layer().expect("anchored above");
+                if anchor == root {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
+                }
                 let Some(&(anchor_canvas, anchor_order)) = self.anchor_pos.get(&anchor) else {
                     return Err(RenderError::Unsupported(
                         names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS,

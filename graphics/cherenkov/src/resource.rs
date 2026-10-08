@@ -287,8 +287,8 @@ impl BackdropGroup {
         }
     }
 
-    /// The spec the group was created with — its filters, capture scale,
-    /// levels, union field and anchor layer.
+    /// The spec the group was created with — its capture scale, levels,
+    /// union field and anchor layer.
     #[must_use]
     pub const fn spec(&self) -> crate::BackdropSpec {
         self.spec

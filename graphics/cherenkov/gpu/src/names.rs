@@ -14,6 +14,9 @@ pub const SHADER: &str = "shader-paint";
 pub const BACKDROP_UNCLIPPED: &str = "backdrop-unclipped";
 /// A backdrop filter footprint too large to bound.
 pub const BACKDROP_FOOTPRINT: &str = "backdrop-footprint";
+/// A backdrop group anchored at the walk's root layer: its capture
+/// would run before anything paints — the clear colour.
+pub const BACKDROP_ANCHOR_AT_ROOT: &str = "backdrop-anchor-at-root";
 /// A member of an anchored backdrop group that paints before the anchor.
 pub const BACKDROP_MEMBER_BEFORE_ANCHOR: &str = "backdrop-member-before-anchor";
 /// A member of an anchored backdrop group outside the anchor's canvas.

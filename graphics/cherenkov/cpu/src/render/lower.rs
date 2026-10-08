@@ -1173,8 +1173,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let mut groups = FxHashMap::default();
         self.anchor_refs = filters.backdrop_anchors(surface).collect();
         self.plan_order = 0;
+        let start = self.start(tree);
         self.plan_layer(
-            self.start(tree),
+            start,
             tree,
             &mut groups,
             filters,
@@ -1202,7 +1203,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
             plan.place(footprint, (self.width, h));
         }
-        self.plan_anchors()?;
+        self.plan_anchors(start)?;
         // The apron a scope needs around each band — its own filter's
         // footprint, or `capture apron + reach` for scopes a capture
         // lands directly in.
@@ -1264,12 +1265,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// Validates every anchored group's member range and sets its capture
     /// scope to the anchor's, grouping the anchored groups under their
     /// anchors. A member of an anchored group must paint after its
-    /// anchor in the anchor's compositing canvas — its later siblings
-    /// there; an anchored group never falls back to a capture at the
-    /// member.
+    /// anchor in the anchor's compositing canvas — the anchor's
+    /// descendants or its later siblings there; an anchored group never
+    /// falls back to a capture at the member.
     /// `backdrops` is a hash map: the anchored gids are sorted first so
     /// the validation error and `anchor_groups` order are deterministic.
-    fn plan_anchors(&mut self) -> Result<(), RenderError> {
+    fn plan_anchors(&mut self, root: LayerId) -> Result<(), RenderError> {
         let mut gids: Vec<u64> = self
             .backdrops
             .iter()
@@ -1280,6 +1281,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
         for gid in gids {
             let plan = self.backdrops.get_mut(&gid).expect("listed above");
             let anchor = plan.spec.anchor_layer().expect("anchored above");
+            if anchor == root {
+                return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
+            }
             let Some(&(anchor_canvas, anchor_order, anchor_scope)) = self.anchor_pos.get(&anchor)
             else {
                 return Err(RenderError::Unsupported(

@@ -3,6 +3,8 @@
 //! at the sampler, so a red texel must read back red, and PQ decode carries
 //! an absolute level (a fraction of 10000 nits) into the working space.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use cherenkov::kurbo::Affine;
 use cherenkov::{Engine, EngineError, FrameTime, Offscreen, OffscreenFormat};
 use cherenkov_gpu::{

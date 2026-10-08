@@ -486,14 +486,13 @@ impl SurfaceState {
     }
 
     /// Bytes held by this surface's backdrop captures, summed over all
-    /// regions of all groups plus the anchor copies they share, pyramid
-    /// levels included; the shared staging is counted by
-    /// [`staging_bytes`](Self::staging_bytes).
+    /// regions of all groups, pyramid levels included; the shared
+    /// staging is counted by [`staging_bytes`](Self::staging_bytes).
     fn backdrop_bytes(&self) -> u64 {
         self.backdrop_groups
             .values()
             .map(BackdropGroupState::bytes)
-            .sum::<u64>()
+            .sum()
     }
 
     /// Retained local images whose renderer-side inputs changed since
@@ -7062,9 +7061,6 @@ impl GpuRenderer {
         // format, so the loop also accumulates the largest staged
         // device rect of each.
         let mut staged_max = [None, None];
-        // Anchor copies whose texture this pass-order loop replaces:
-        // their cached-resolve drops land once the loop's `surf.frame`
-        // borrow ends.
         for pass in &surf.frame.passes {
             let Some(capture) = pass.capture else {
                 continue;
@@ -7241,7 +7237,6 @@ impl GpuRenderer {
             .frame
             .passes
             .iter()
-            .filter(|p| matches!(p.target, Target::Backdrop { .. }))
             .filter_map(|p| p.capture.map(|c| (c.group, c.region + 1)))
             .fold(FxHashMap::default(), |mut m, (g, n)| {
                 m.entry(g).and_modify(|e| *e = (*e).max(n)).or_insert(n);
@@ -9738,9 +9733,7 @@ impl GpuRenderer {
                         .target
                         .texture
                         .format(),
-                    Target::Part(_)
-                    | Target::AnchorCopy(_)
-                    | Target::Projected(_)
+                    Target::Part(_) | Target::Projected(_)
                     | Target::Plane(_) => TARGET_FORMAT,
                 };
                 (*id, format)
@@ -9888,7 +9881,7 @@ impl Drop for GpuRenderer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

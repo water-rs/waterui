@@ -1,4 +1,6 @@
 //! Projective layers on the gpu backend.
+#![cfg(not(target_arch = "wasm32"))]
+
 #[path = "../../tests/common/projective.rs"]
 mod common;
 

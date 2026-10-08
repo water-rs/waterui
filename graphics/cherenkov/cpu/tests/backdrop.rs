@@ -2198,3 +2198,145 @@ fn a_member_under_a_projective_descendant_is_unsupported() {
         "unexpected result {result:?}"
     );
 }
+
+/// An anchor's filtered child is its own compositing canvas: a member
+/// inside it is the anchor's descendant but outside its canvas — the
+/// strict rule admits no descendant exemption.
+#[test]
+fn a_member_inside_the_anchors_filtered_child_is_unsupported() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let filtered = surface.layer();
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        tx[&anchor].push(&filtered);
+        let blur = engine.filter(filtrate::filters::GaussianBlur::new(1.0f32));
+        tx[&filtered].filter(blur.id());
+        tx[&filtered].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = engine.render(FrameTime::now());
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(
+                "backdrop-member-outside-anchor-canvas"
+            ))
+        ),
+        "unexpected result {result:?}"
+    );
+}
+
+/// An anchor's projective child is its own canvas: a member inside it is
+/// rejected — the projective subtree admits no descendant exemption.
+#[test]
+fn a_member_inside_the_anchors_projective_child_is_unsupported() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let projected = surface.layer();
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        tx[&anchor].push(&projected);
+        tx[&projected]
+            .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+            .projection(cherenkov::Projective::perspective(100.0).expect("projection"));
+        tx[&projected].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = engine.render(FrameTime::now());
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(
+                "backdrop-member-outside-anchor-canvas"
+            ))
+        ),
+        "unexpected result {result:?}"
+    );
+}
+
+/// A filtered anchor's children paint in the filter's own canvas, not
+/// the anchor's — an isolating anchor rejects its own member children.
+#[test]
+fn an_isolating_anchor_rejects_its_member_children() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        let blur = engine.filter(filtrate::filters::GaussianBlur::new(1.0f32));
+        tx[&anchor].filter(blur.id());
+        tx[&anchor].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = engine.render(FrameTime::now());
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(
+                "backdrop-member-outside-anchor-canvas"
+            ))
+        ),
+        "unexpected result {result:?}"
+    );
+}
+
+/// An anchor at the surface's root layer has nothing beneath it — the
+/// capture would be the clear colour. The engine rejects it by name,
+/// matching the scene format's `backdrop-anchor-at-root` error.
+#[test]
+fn an_anchor_at_the_root_is_unsupported() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let root = surface.root();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(root.id()),
+    );
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = engine.render(FrameTime::now());
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported("backdrop-anchor-at-root"))
+        ),
+        "unexpected result {result:?}"
+    );
+}

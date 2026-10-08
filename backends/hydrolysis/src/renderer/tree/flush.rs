@@ -648,9 +648,14 @@ impl RenderNode {
                 // them in a second time. Drain the ops above the filter, then
                 // unwind the paint stack for the child flush and re-open the
                 // scopes for what flushes after.
-                {
-                    let program = renderer.program().program_mut();
-                    program.filter = Some(Rc::clone(&node.runtime));
+                renderer.program().program_mut().filter = Some(Rc::clone(&node.runtime));
+                // Members of an enclosing `.material_group()` scope that
+                // mount inside this node's filtered canvas anchor on it:
+                // an anchor item at the start of the filtered program for
+                // each enclosing scope, so their `(scope, canvas)` groups
+                // capture beneath the filtered content (water-rs/waterui#2097).
+                for cell in renderer.material_group_scopes.clone() {
+                    renderer.program().push_anchor(cell);
                 }
                 node.child
                     .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);

@@ -134,10 +134,13 @@ pub struct ScopeLayer {
     props: LayerProps,
     runs: Vec<RunLayer>,
     /// The anchor layers the scope's items lower — the same retention
-    /// and registration contract the node's own list has.
-    anchors: Vec<(usize, Layer)>,
-    /// The `(scope, canvas)` keys the scope's items' anchors registered.
-    anchor_keys: Vec<(usize, Option<LayerId>)>,
+    /// and registration contract the node's own list has. The `Rc`
+    /// pins the scope's cell, so its `BackdropScope::Scoped` address
+    /// can never be reused while an anchor layer stands.
+    anchors: Vec<(Rc<NodeCell>, Layer)>,
+    /// The `(scope, canvas, layer)` keys the scope's items' anchors
+    /// registered; each entry compare-removes on the layer it installed.
+    anchor_keys: Vec<(usize, Option<LayerId>, LayerId)>,
     committed: Committed,
 }
 
@@ -170,12 +173,16 @@ pub struct NodeLayers {
     /// ends the membership at the next sweep.
     material: Option<MaterialMembership>,
     /// The `.material_group()` anchor layers this node's items lower:
-    /// one plain, empty child of the frame per anchor item, keyed by
-    /// the scope cell's address (water-rs/waterui#2097).
-    anchors: Vec<(usize, Layer)>,
-    /// The `(scope, install canvas)` keys this node's items' anchors
-    /// registered in the group table — dropped when the layers retire.
-    anchor_keys: Vec<(usize, Option<LayerId>)>,
+    /// one plain, empty child of the frame per anchor item. The `Rc`
+    /// pins the scope's cell, so its `BackdropScope::Scoped` address
+    /// can never be reused while an anchor layer stands
+    /// (water-rs/waterui#2097).
+    anchors: Vec<(Rc<NodeCell>, Layer)>,
+    /// The `(scope, install canvas, layer)` keys this node's items'
+    /// anchors registered in the group table — each entry
+    /// compare-removes on the layer it installed — dropped when the
+    /// layers retire.
+    anchor_keys: Vec<(usize, Option<LayerId>, LayerId)>,
     /// The layer the frame is attached under.
     attached: Cell<Option<LayerId>>,
 }
@@ -280,8 +287,8 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
     }
 
     fn retire_scope(&mut self, scope: ScopeLayer) {
-        for (scope_key, canvas) in scope.anchor_keys {
-            self.groups.remove_anchor(scope_key, canvas);
+        for (scope_key, canvas, layer) in scope.anchor_keys {
+            self.groups.remove_anchor(scope_key, canvas, layer);
         }
         for (_, layer) in scope.anchors {
             self.retire_layer(layer);
@@ -306,8 +313,8 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             material,
             ..
         } = layers;
-        for (scope, canvas) in anchor_keys {
-            self.groups.remove_anchor(scope, canvas);
+        for (scope, canvas, layer) in anchor_keys {
+            self.groups.remove_anchor(scope, canvas, layer);
         }
         for (_, layer) in anchors {
             self.retire_layer(layer);
@@ -739,13 +746,6 @@ fn lower_program<T: LayerTarget>(
     // boundaries — otherwise the canvas the frame itself mounts under.
     let child_canvas = filter.is_some().then(|| layers.frame.id()).or(canvas);
 
-    // The last lowering's anchor registrations release before the
-    // items' anchors re-register — this list is the only owner of its
-    // `(scope, canvas)` keys.
-    for (scope, anchor_canvas) in std::mem::take(&mut layers.anchor_keys) {
-        cx.groups.remove_anchor(scope, anchor_canvas);
-    }
-
     let mut scopes_old = std::mem::take(&mut layers.scopes);
     let mut scopes_new = Vec::new();
     lower_inner(
@@ -1056,20 +1056,21 @@ enum Slot {
 /// The `anchors` slot of `cell`'s scope anchor layer: a plain, empty
 /// layer at the scope's paint position, kept across commits, that every
 /// member of the scope's groups captures beneath — registered before the
-/// items after it commit (water-rs/waterui#2097).
+/// items after it commit (water-rs/waterui#2097). The layer is reused
+/// from the last lowering's `old_anchors` when the same scope re-lowers,
+/// so the registration — and the group key carrying it — stays stable.
 fn anchor_slot<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
     cell: &Rc<NodeCell>,
-    anchors: &mut Vec<(usize, Layer)>,
+    old_anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
+    anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
 ) -> usize {
-    let scope = Rc::as_ptr(cell) as usize;
-    anchors
-        .iter()
-        .position(|&(s, _)| s == scope)
-        .unwrap_or_else(|| {
-            anchors.push((scope, cx.layer()));
-            anchors.len() - 1
-        })
+    if let Some(at) = old_anchors.iter().position(|(s, _)| Rc::ptr_eq(s, cell)) {
+        anchors.push(old_anchors.swap_remove(at));
+        return anchors.len() - 1;
+    }
+    anchors.push((Rc::clone(cell), cx.layer()));
+    anchors.len() - 1
 }
 
 #[expect(
@@ -1081,8 +1082,8 @@ fn lower_list<T: LayerTarget>(
     parent: &Layer,
     leading: &[(LayerId, &Layer)],
     items: &[Item],
-    anchors: &mut Vec<(usize, Layer)>,
-    anchor_keys: &mut Vec<(usize, Option<LayerId>)>,
+    anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
+    anchor_keys: &mut Vec<(usize, Option<LayerId>, LayerId)>,
     runs: &mut Vec<RunLayer>,
     scopes_old: &mut Vec<ScopeLayer>,
     scopes_new: &mut Vec<ScopeLayer>,
@@ -1090,6 +1091,15 @@ fn lower_list<T: LayerTarget>(
     token: &Rc<LayerToken>,
     canvas: Option<LayerId>,
 ) {
+    // The last lowering's anchor registrations release before the
+    // items' anchors re-register — this list is the only owner of the
+    // keys its items registered. Its anchor layers rebuild like `runs`:
+    // matched entries keep their layer — a stable `LayerId` keeps the
+    // group's key stable — and the rest retire below.
+    for (scope, key_canvas, layer) in std::mem::take(anchor_keys) {
+        cx.groups.remove_anchor(scope, key_canvas, layer);
+    }
+    let mut old_anchors = std::mem::take(anchors);
     let mut old_runs = std::mem::take(runs);
     let had_own = old_runs.iter().any(|run| run.layer.is_none());
     let mut own_used = false;
@@ -1120,10 +1130,11 @@ fn lower_list<T: LayerTarget>(
                 // kept across commits — that every member of the scope's
                 // groups captures beneath, registered before the items
                 // after it commit (water-rs/waterui#2097).
-                let at = anchor_slot(cx, cell, anchors);
+                let at = anchor_slot(cx, cell, &mut old_anchors, anchors);
+                let layer = anchors[at].1.id();
                 cx.groups
-                    .set_scope_anchor(Rc::as_ptr(cell) as usize, canvas, anchors[at].1.id());
-                anchor_keys.push((Rc::as_ptr(cell) as usize, canvas));
+                    .set_scope_anchor(Rc::as_ptr(cell) as usize, canvas, layer);
+                anchor_keys.push((Rc::as_ptr(cell) as usize, canvas, layer));
                 slots.push(Slot::Anchor(at));
             }
             Item::Scope {
@@ -1150,6 +1161,13 @@ fn lower_list<T: LayerTarget>(
     for run in old_runs {
         cx.retire_run(run);
     }
+    // Anchor items the last lowering carried but this one does not:
+    // their registrations released at the top, and their layers leave
+    // `wants` — the reconcile detaches them from the parent's child
+    // list, keeping the engine's order in step with `committed`.
+    for (_, layer) in old_anchors {
+        cx.retire_layer(layer);
+    }
 
     commit_list_slots(
         cx, parent, leading, &slots, anchors, runs, scopes_new, committed, token,
@@ -1168,7 +1186,7 @@ fn commit_list_slots<T: LayerTarget>(
     parent: &Layer,
     leading: &[(LayerId, &Layer)],
     slots: &[Slot],
-    anchors: &[(usize, Layer)],
+    anchors: &[(Rc<NodeCell>, Layer)],
     runs: &[RunLayer],
     scopes_new: &[ScopeLayer],
     committed: &mut Committed,

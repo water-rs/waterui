@@ -1873,7 +1873,7 @@ fn anchored_groups_sample_the_anchors_frozen_copy() -> Result<(), Box<dyn std::e
 split_test! {
 /// The anchored groups of `anchored_groups_sample_the_anchors_frozen_copy`
 /// cost one shared copy beneath the anchor plus each group's own capture.
-fn anchored_groups_share_one_copy_beneath_the_anchor() -> Result<(), Box<dyn std::error::Error>> {
+fn anchored_groups_capture_beneath_the_anchor() -> Result<(), Box<dyn std::error::Error>> {
     let sink = cherenkov_gpu::diag::Sink::new();
     let engine = wait!(Engine::<Gpu>::new(GpuConfig {
         alloc_diag: Some(sink.clone()),
@@ -1916,8 +1916,9 @@ fn anchored_groups_share_one_copy_beneath_the_anchor() -> Result<(), Box<dyn std
     let _ = sink.take();
     wait!(engine.render(FrameTime::now()))?;
     // Both groups capture straight from the semantic target at the
-    // anchor's position — there is no shared copy texture.
-    assert_eq!(anchor_grows(&sink.take(), "backdrop anchor copy"), Vec::<u64>::new());
+    // anchor's position — there is no shared copy texture: the memory
+    // accounting below is exactly the groups' own captures.
+    let _ = sink.take();
     let memory = wait!(engine.memory());
     // Each group keeps only its own capture: A's 24×24 member union
     // and B's 16×24 member rect.
@@ -2067,6 +2068,7 @@ fn unanchored_groups_keep_the_first_member_rule() -> Result<(), Box<dyn std::err
 // here vs a fresh sync `Engine<Raster>` in the CPU file).
 use cherenkov::testing::{circle_field, cover, ownership, rect_field, rect_sdf, smin};
 
+split_fn! {
 /// Two bridge members 6 px apart on the shared field (`k = 20` joins a
 /// gap below `k/2`), rendered with the given member opacities and paint
 /// order.
@@ -2105,12 +2107,13 @@ fn union_bridge(
     wait!(engine.render(FrameTime::now()))?;
     Ok(wait!(surface.readback())?)
 }
+}
 
 split_test! {
 fn union_members_composite_identically_in_any_order() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let ab = union_bridge(&engine, 0.5, 0.5, false)?;
-    let ba = union_bridge(&engine, 0.5, 0.5, true)?;
+    let ab = wait!(union_bridge(&engine, 0.5, 0.5, false))?;
+    let ba = wait!(union_bridge(&engine, 0.5, 0.5, true))?;
     assert_eq!(
         ab.pixels, ba.pixels,
         "the union composite depends on member order"
@@ -2126,9 +2129,9 @@ fn union_members_partition_the_bridge_alpha() -> Result<(), Box<dyn std::error::
     // weights sum to 1, so the deposits sum to `0.25 · c` — exactly
     // what one member covering the field deposits.
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let only_a = union_bridge(&engine, 0.5, 0.0, false)?;
-    let only_b = union_bridge(&engine, 0.0, 0.5, false)?;
-    let both = union_bridge(&engine, 0.5, 0.5, false)?;
+    let only_a = wait!(union_bridge(&engine, 0.5, 0.0, false))?;
+    let only_b = wait!(union_bridge(&engine, 0.0, 0.5, false))?;
+    let both = wait!(union_bridge(&engine, 0.5, 0.5, false))?;
     let a_clip = Rect::new(4.0, 8.0, 20.0, 24.0);
     let b_clip = Rect::new(26.0, 8.0, 42.0, 24.0);
     let bg = 0.5;
@@ -2174,6 +2177,7 @@ fn union_members_partition_the_bridge_alpha() -> Result<(), Box<dyn std::error::
 }
 }
 
+split_fn! {
 /// Circle members of a union group at the given opacities — `circles` is
 /// `(cx, cy, r)` in paint order. The `union_bridge` counterpart for the
 /// ownership-boundary tests, where non-parallel member normals give the
@@ -2209,6 +2213,7 @@ fn union_circles(
     wait!(engine.render(FrameTime::now()))?;
     Ok(wait!(surface.readback())?)
 }
+}
 
 split_test! {
 /// The two ownership weights on a seam ramp across one pixel and sum to
@@ -2218,8 +2223,8 @@ split_test! {
 fn the_seam_weights_ramp_across_one_pixel() -> Result<(), Box<dyn std::error::Error>> {
     const CIRCLES: &[(f64, f64, f64)] = &[(12.3, 16.0, 16.0), (32.3, 16.0, 16.0)];
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let only_a = union_circles(&engine, CIRCLES, &[0.5, 0.0])?;
-    let only_b = union_circles(&engine, CIRCLES, &[0.0, 0.5])?;
+    let only_a = wait!(union_circles(&engine, CIRCLES, &[0.5, 0.0]))?;
+    let only_b = wait!(union_circles(&engine, CIRCLES, &[0.0, 0.5]))?;
     #[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
     let fields = |col: usize, row: usize| {
         let px = col as f32 + 0.5;
@@ -2294,7 +2299,7 @@ fn the_three_weights_sum_to_one_near_a_triple_point() -> Result<(), Box<dyn std:
     for i in 0..3 {
         let mut opacities = [0.0f32; 3];
         opacities[i] = 0.5;
-        alones.push(union_circles(&engine, CIRCLES, &opacities)?);
+        alones.push(wait!(union_circles(&engine, CIRCLES, &opacities))?);
     }
     #[expect(
         clippy::cast_precision_loss,
@@ -2526,6 +2531,7 @@ fn bridge_pixel_reads_the_union_field() -> Result<(), Box<dyn std::error::Error>
 }
 }
 
+split_fn! {
 /// `union_circles` with a per-member blend mode — an isolating member
 /// must still reach the union zone outside its own clip.
 fn union_circles_blended(
@@ -2562,6 +2568,7 @@ fn union_circles_blended(
     wait!(engine.render(FrameTime::now()))?;
     Ok(wait!(surface.readback())?)
 }
+}
 
 split_test! {
 /// An isolating union member — here blending `Screen` — must still
@@ -2570,12 +2577,12 @@ split_test! {
 fn a_screen_member_bridges_outside_its_clip() -> Result<(), Box<dyn std::error::Error>> {
     const CIRCLES: &[(f64, f64, f64)] = &[(12.3, 16.0, 16.0), (32.3, 16.0, 16.0)];
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let only_a = union_circles_blended(
+    let only_a = wait!(union_circles_blended(
         &engine,
         CIRCLES,
         &[0.5, 0.0],
         &[cherenkov::BlendMode::Screen, cherenkov::BlendMode::Normal],
-    )?;
+    ))?;
     #[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
     let members_at = |col: usize, row: usize| {
         let px = col as f32 + 0.5;
@@ -2865,6 +2872,24 @@ fn masked_ancestor_isolation(
 }
 }
 
+split_fn! {
+fn member_render(
+    surface: &cherenkov::Surface<Gpu>,
+    members: &[cherenkov::Layer],
+    opacities: &[f32],
+    engine: &Engine<Gpu>,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    surface.update(|tx| {
+        for (member, &opacity) in members.iter().zip(opacities.iter()) {
+            tx[member].opacity(opacity);
+        }
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+
 split_test! {
 /// A union member compositing through a layer-level isolation — a
 /// destructive blend, a non-destructive blend, opacity over overlapping
@@ -2877,8 +2902,8 @@ split_test! {
 /// triangle does not sit at texel (0, 0).
 fn isolated_members_under_a_masked_ancestor_match_unclipped() -> Result<(), Box<dyn std::error::Error>> {
     for mode in 0..4 {
-        let plain = masked_ancestor_isolation(false, mode)?;
-        let masked = masked_ancestor_isolation(true, mode)?;
+        let plain = wait!(masked_ancestor_isolation(false, mode))?;
+        let masked = wait!(masked_ancestor_isolation(true, mode))?;
         // Deep inside the triangle the ancestor's coverage is 1, so the
         // masked render must read like the unclipped one — a stale
         // ancestor clip on the sample shows up as missing or doubled
@@ -2938,17 +2963,9 @@ fn the_seam_weights_sum_to_one_at_the_outer_edge() -> Result<(), Box<dyn std::er
                 );
         }
     });
-    let render = |opacities: &[f32]| {
-        surface.update(|tx| {
-            for (member, &opacity) in members.iter().zip(opacities.iter()) {
-                tx[member].opacity(opacity);
-            }
-        });
-        wait!(engine.render(FrameTime::now()))?;
-        Ok::<_, Box<dyn std::error::Error>>(wait!(surface.readback())?)
-    };
-    let only_a = render(&[0.5, 0.0])?;
-    let only_b = render(&[0.0, 0.5])?;
+
+    let only_a = wait!(member_render(&surface, &members, &[0.5, 0.0], &engine))?;
+    let only_b = wait!(member_render(&surface, &members, &[0.0, 0.5], &engine))?;
     let mut edge_pixels = 0usize;
     let mut pad_pixels = 0usize;
     #[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
@@ -3127,6 +3144,144 @@ fn a_member_under_a_projective_descendant_is_unsupported() -> Result<(), Box<dyn
         matches!(
             result,
             Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-member-outside-anchor-canvas"
+        ),
+        "unexpected result {result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// An anchor's filtered child is its own compositing canvas: a member
+/// inside it is the anchor's descendant but outside its canvas — the
+/// strict rule admits no descendant exemption.
+fn a_member_inside_the_anchors_filtered_child_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let filtered = surface.layer();
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        // `filtered` is the anchor's own child; the filter still makes
+        // the member's canvas the filter's, not the anchor's.
+        tx[&anchor].push(&filtered);
+        let blur = engine.filter(filtrate::filters::GaussianBlur::new(1.0f32));
+        tx[&filtered].filter(blur.id());
+        tx[&filtered].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-member-outside-anchor-canvas"
+        ),
+        "unexpected result {result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// An anchor's projective child is its own canvas: a member inside it is
+/// rejected — the projective subtree admits no descendant exemption.
+fn a_member_inside_the_anchors_projective_child_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let projected = surface.layer();
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        tx[&anchor].push(&projected);
+        tx[&projected]
+            .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+            .projection(cherenkov::Projective::perspective(100.0).expect("projection"));
+        tx[&projected].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-member-outside-anchor-canvas"
+        ),
+        "unexpected result {result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// A filtered anchor's children paint in the filter's own canvas, not
+/// the anchor's — an isolating anchor rejects its own member children.
+fn an_isolating_anchor_rejects_its_member_children() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let anchor = surface.layer();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(anchor.id()),
+    );
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&anchor);
+        let blur = engine.filter(filtrate::filters::GaussianBlur::new(1.0f32));
+        tx[&anchor].filter(blur.id());
+        tx[&anchor].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-member-outside-anchor-canvas"
+        ),
+        "unexpected result {result:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// An anchor at the surface's root layer has nothing beneath it — the
+/// capture would be the clear colour. The engine rejects it by name,
+/// matching the scene format's `backdrop-anchor-at-root` error.
+fn an_anchor_at_the_root_is_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+    let root = surface.root();
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::new(cherenkov::CaptureScale::FULL, cherenkov::CaptureLevels::ONE)
+            .anchor(root.id()),
+    );
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 24.0, 24.0))
+            .backdrop(group.sample());
+    });
+    let result = wait!(engine.render(FrameTime::now()));
+    assert!(
+        matches!(
+            result,
+            Err(cherenkov::RenderError::Unsupported(name)) if name == "backdrop-anchor-at-root"
         ),
         "unexpected result {result:?}"
     );
