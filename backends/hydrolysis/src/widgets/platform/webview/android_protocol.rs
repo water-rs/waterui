@@ -271,9 +271,6 @@ pub struct PendingCalls {
 }
 
 impl PendingCalls {
-    /// Register `call` under `id` before the Kotlin call that answers it is
-    /// issued — the reply may land on the same call.
-    ///
     /// Whether `release` ran — the Kotlin view's `nativeReleased` landed
     /// and every further call must settle without a dispatch. The Android
     /// handle gates every Kotlin-bound command on it (`begin` itself
@@ -284,8 +281,10 @@ impl PendingCalls {
         self.dead
     }
 
-    /// On a dead view the call settles at once and `false` is returned, so
-    /// the caller skips issuing the Kotlin call it could never answer.
+    /// Register `call` under `id` before the Kotlin call that answers it is
+    /// issued — the reply may land on the same call. On a dead view the
+    /// call settles at once and `false` is returned, so the caller skips
+    /// issuing the Kotlin call it could never answer.
     pub fn begin(&mut self, id: u64, call: PendingCall) -> bool {
         if self.dead {
             call.abandon("the web view was closed");
@@ -685,10 +684,11 @@ mod tests {
     /// `JSON.stringify` in `async_call.js` posts back every field the
     /// literal carried, so a token or id that loses precision inside a JS
     /// number — anything past 2^53 — shows up here as a never-settling
-    /// call. Skipped when no JS engine is installed.
+    /// call. The CI job that runs ignored tests installs `bun`.
     #[test]
+    #[ignore = "needs bun"]
     fn the_composed_async_call_survives_a_real_js_round_trip() {
-        let bun = std::process::Command::new("bun")
+        let engine = std::process::Command::new("bun")
             .arg("--version")
             .output()
             .map(|_| "bun")
@@ -697,29 +697,28 @@ mod tests {
                     .arg("--version")
                     .output()
                     .map(|_| "node")
-            });
-        let Ok(engine) = bun else {
-            tracing::warn!("no JS engine on PATH; the round-trip test skips");
-            return;
-        };
+            })
+            .expect("the JS round-trip test needs bun or node on PATH");
 
         let mut pending = PendingCalls::default();
         let (results, settle) = collect();
         let token = begin_async(&mut pending, 7, settle);
         let call = compose_async_call(7, pending.generation(), &token, r#"return "resolved";"#);
         // `call` evaluates to the started sentinel; the envelope arrives on
-        // `__wateruiAsyncResult.postMessage` a task later.
+        // `__wateruiAsyncResult.postMessage` a task later. The script embeds
+        // as a JSON string, so a quoting slip fails here, not in the page.
         let driver = format!(
-            r#"var __posted = null;
-var __wateruiAsyncResult = {{ postMessage: function (m) {{ __posted = m; }} }};
-if (eval({call:?}) !== "{ASYNC_CALL_SENTINEL}") {{ throw new Error("the call did not start"); }}
-setTimeout(function () {{ console.log(__posted); }}, 0);
-"#
+            "var __posted = null;\n\
+             var __wateruiAsyncResult = {{ postMessage: function (m) {{ __posted = m; }} }};\n\
+             if (eval({script}) !== {sentinel}) {{ throw new Error(\"the call did not start\"); }}\n\
+             setTimeout(function () {{ console.log(__posted); }}, 0);\n",
+            script = serde_json::to_string(&call).expect("a script serializes to JSON"),
+            sentinel =
+                serde_json::to_string(ASYNC_CALL_SENTINEL).expect("a string serializes to JSON"),
         );
-        let driver_path = std::env::temp_dir().join("waterui-async-call-driver.js");
-        std::fs::write(&driver_path, &driver).expect("the JS driver writes to the temp dir");
         let output = std::process::Command::new(engine)
-            .arg(&driver_path)
+            .arg("-e")
+            .arg(&driver)
             .output()
             .expect("the JS engine runs the driver");
         assert!(

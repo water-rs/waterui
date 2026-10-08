@@ -279,13 +279,6 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         let vm = env
             .get_java_vm()
             .expect("a JNIEnv always yields its JavaVM");
-        // `JavaVM` is not `Clone`; `from_raw` re-wraps the same process-wide
-        // pointer `vm` holds — it owns nothing, so the copy is free and
-        // lives as long as the VM itself.
-        // SAFETY: the pointer comes from the live `JavaVM` fetched off the
-        // env above; `from_raw` is the documented way to share it.
-        let vm_again =
-            unsafe { JavaVM::from_raw(vm.get_java_vm_pointer()) }.expect("a live JavaVM pointer");
         let shared = Rc::new(SharedState {
             vm,
             wrapper: RefCell::new(None),
@@ -325,7 +318,6 @@ impl CustomWebViewController for AndroidSystemWebViewController {
 
         AndroidSystemWebViewHandle {
             inner: Rc::new(HandleInner {
-                vm: vm_again,
                 wrapper,
                 methods: self.methods.clone(),
                 shared,
@@ -383,7 +375,6 @@ const ANDROID_ASSET_HOST: &str = "waterui.localhost";
 
 /// The live wrapper and the bookkeeping around it.
 struct HandleInner {
-    vm: JavaVM,
     wrapper: GlobalRef,
     methods: WebViewMethods,
     shared: Rc<SharedState>,
@@ -407,13 +398,27 @@ impl HandleInner {
     /// `locals`: the calls the handle makes run inside executor tasks on the
     /// `ALooper` fd callback, which supplies no JNI frame, so locals would
     /// otherwise leak.
+    ///
+    /// Every Rust-called command funnels through here: `nativeReleased`
+    /// already marked the registry dead, and forwarding would dispatch a
+    /// setter or an evaluation onto a `WebView` whose `destroy()` ran —
+    /// Chromium keeps answering `setDocumentStartScripts`/`loadUrl` on a
+    /// destroyed view and `onHostRebound` would re-observe a dead page's
+    /// lifecycle. A dead view answers `dead_value` without dispatching;
+    /// the Kotlin `release` call itself bypasses `call` (it flips `dead`),
+    /// so teardown still reaches Kotlin.
     fn jni<T>(
         &self,
         locals: i32,
+        dead_value: T,
         f: impl FnOnce(&mut JNIEnv<'_>) -> Result<T, jni::errors::Error>,
         context: &str,
     ) -> T {
+        if self.shared.pending.borrow().dead() {
+            return dead_value;
+        }
         let mut env = self
+            .shared
             .vm
             .get_env()
             .expect("webview calls run on the UI thread, which is attached");
@@ -424,19 +429,9 @@ impl HandleInner {
     /// `call_method_unchecked` on the wrapper through the cached table.
     fn call(&self, method: WebViewMethodId, args: &[JValue]) {
         let id = self.methods.id(method);
-        // Every Rust-called command funnels through `call*`: `nativeReleased`
-        // already marked the registry dead, and forwarding would dispatch a
-        // setter or an evaluation onto a WebView whose `destroy()` ran —
-        // Chromium keeps answering `setDocumentStartScripts`/`loadUrl` on a
-        // destroyed view and `onHostRebound` would re-observe a dead page's
-        // lifecycle. One gate covers every method; the Kotlin `release`
-        // call itself bypasses `call` (it flips `dead`), so teardown still
-        // reaches Kotlin.
-        if self.shared.pending.borrow().dead() {
-            return;
-        }
         self.jni(
             LOCAL_FRAME_CAPACITY,
+            (),
             |env| unsafe {
                 // SAFETY: `id` was resolved for the wrapper class and the
                 // table entry's signature declares void.
@@ -454,19 +449,14 @@ impl HandleInner {
 
     fn call_bool(&self, method: WebViewMethodId, args: &[JValue]) -> bool {
         let id = self.methods.id(method);
-        // Every Rust-called command funnels through `call*`: `nativeReleased`
-        // already marked the registry dead, and forwarding would dispatch a
-        // setter or an evaluation onto a WebView whose `destroy()` ran —
-        // Chromium keeps answering `setDocumentStartScripts`/`loadUrl` on a
-        // destroyed view and `onHostRebound` would re-observe a dead page's
-        // lifecycle. One gate covers every method; the Kotlin `release`
-        // call itself bypasses `call` (it flips `dead`), so teardown still
-        // reaches Kotlin.
+        // A dead view answers `false` itself, ahead of `jni`'s `dead_value`
+        // — the caller cannot tell a dead-view `false` from the call's own.
         if self.shared.pending.borrow().dead() {
             return false;
         }
         self.jni(
             LOCAL_FRAME_CAPACITY,
+            false,
             |env| unsafe {
                 // SAFETY: `id` was resolved for the wrapper class and the
                 // table entry's signature declares a boolean return.
@@ -485,19 +475,9 @@ impl HandleInner {
     /// One string argument — `loadUrl`, `setUserAgent`, `evaluate`.
     fn call_str(&self, method: WebViewMethodId, value: &str, tail: &[JValue]) {
         let id = self.methods.id(method);
-        // Every Rust-called command funnels through `call*`: `nativeReleased`
-        // already marked the registry dead, and forwarding would dispatch a
-        // setter or an evaluation onto a WebView whose `destroy()` ran —
-        // Chromium keeps answering `setDocumentStartScripts`/`loadUrl` on a
-        // destroyed view and `onHostRebound` would re-observe a dead page's
-        // lifecycle. One gate covers every method; the Kotlin `release`
-        // call itself bypasses `call` (it flips `dead`), so teardown still
-        // reaches Kotlin.
-        if self.shared.pending.borrow().dead() {
-            return;
-        }
         self.jni(
             LOCAL_FRAME_CAPACITY,
+            (),
             |env| {
                 let value = env
                     .new_string(value)
@@ -527,21 +507,11 @@ impl HandleInner {
     /// unbounded, so a fixed capacity would overflow on enough scripts.
     fn call_str_array(&self, method: WebViewMethodId, values: &[String]) {
         let id = self.methods.id(method);
-        // Every Rust-called command funnels through `call*`: `nativeReleased`
-        // already marked the registry dead, and forwarding would dispatch a
-        // setter or an evaluation onto a WebView whose `destroy()` ran —
-        // Chromium keeps answering `setDocumentStartScripts`/`loadUrl` on a
-        // destroyed view and `onHostRebound` would re-observe a dead page's
-        // lifecycle. One gate covers every method; the Kotlin `release`
-        // call itself bypasses `call` (it flips `dead`), so teardown still
-        // reaches Kotlin.
-        if self.shared.pending.borrow().dead() {
-            return;
-        }
         let locals = LOCAL_FRAME_CAPACITY
             .saturating_add(i32::try_from(values.len()).expect("a script list fits a jint"));
         self.jni(
             locals,
+            (),
             |env| {
                 let array = env
                     .new_object_array(
@@ -633,6 +603,7 @@ impl Drop for HandleInner {
         // here, then the Weak box can be freed: no native call can arrive
         // afterwards.
         let mut env = self
+            .shared
             .vm
             .get_env()
             .expect("webview calls run on the UI thread, which is attached");
@@ -777,6 +748,7 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
         let id = self.inner.methods.id(WebViewMethodId::SetCookie);
         self.inner.jni(
             LOCAL_FRAME_CAPACITY,
+            (),
             |env| {
                 let url = env.new_string(url).expect("Java-safe UTF-8");
                 let header = env.new_string(cookie.to_string()).expect("Java-safe UTF-8");

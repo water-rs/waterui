@@ -38,10 +38,10 @@ waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { workspace = true, features = ["std"] }
-# The Android WebView bridge's per-call result token — drawn here because
-# the protocol module (and its tests) builds on every target, not only
-# Android.
-getrandom.workspace = true
+# The Android WebView bridge's per-call result token. Only the
+# `webview-system` protocol uses it; the test build repeats it as a
+# dev-dependency.
+getrandom = { workspace = true, optional = true }
 cherenkov.workspace = true
 cherenkov-gpu.workspace = true
 kurbo.workspace = true
@@ -324,6 +324,9 @@ aither-mcp = { workspace = true, features = ["server"] }
 futures-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# The protocol tests compose the async-call script on the host too —
+# repeats the optional `webview-system` edge above.
+getrandom.workspace = true
 toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -384,6 +387,7 @@ webview-system = [
     "dep:block2",
     "dep:cookie",
     "dep:futures",
+    "dep:getrandom",
     "dep:objc2-web-kit",
     "dep:serde_json",
 ]
