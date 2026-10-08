@@ -233,6 +233,21 @@ impl AndroidSession {
     /// the cursor anchor info. Both pushes are change-gated: an unchanged
     /// frame sends nothing.
     pub(crate) fn editing_sync(&mut self) {
+        // A platform-view child taking UI focus — tapping a field inside the
+        // system WebView — owns the IME now: clear the renderer's stale
+        // `WaterUI` text-input claim on the gain edge so the state never
+        // reports a Hydrolysis field focused while the page holds focus.
+        // Only the edge clears: a claim set during the hold is the user's
+        // hand-off tap on a Hydrolysis field and must survive to the show.
+        // Either edge refreshes and redraws — a released claim has to reach
+        // the frame too, not only the gain.
+        if self.runtime.platform.platform_view_focus.take_changed() {
+            if self.runtime.platform.platform_view_focus.is_holding() {
+                let _ = self.runtime.renderer.clear_ui_focus();
+            }
+            self.runtime.request_refresh();
+            self.runtime.platform.request_redraw();
+        }
         let snapshot = self.runtime.renderer.focused_editor_snapshot();
         self.ime.session.sync_from_renderer(snapshot.as_ref());
         if self.ime.session.is_dirty() {

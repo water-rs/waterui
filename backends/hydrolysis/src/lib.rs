@@ -75,7 +75,9 @@ pub use platform::{
     TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, WindowKeyboardArea,
     WindowSafeArea,
 };
-pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
+pub use platform_view::{
+    PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
+};
 pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(feature = "accessibility")]
 pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};

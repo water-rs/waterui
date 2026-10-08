@@ -18,30 +18,78 @@ use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 
 use crate::platform_view::{
-    PlatformView, PlatformViewPlacement, PlatformViewSink, next_platform_view_id,
+    PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
+    next_platform_view_id,
 };
 use crate::renderer::{
     HydroNativeView, HydroState, WidgetRenderContext, graphics_dimensions_from_proposal,
 };
 
-/// The retained state of one platform-view leaf: the factory key, the stable
-/// placement id and the sink the runner installed.
+/// Where a leaf's mounted view comes from — and, for an instance, the
+/// object whose lifetime keeps it alive: the invariant lives in the type.
+pub enum PlacementSource {
+    /// A host-side factory resolves `kind` into a fresh child view.
+    Factory(Box<str>),
+    /// The host already holds the native view under `id`; `_owner` is what
+    /// keeps the peer alive — dropping the leaf drops it, which releases
+    /// the native view. The Android system-WebView bridge mounts this way.
+    #[cfg(hydrolysis_android_system_webview)]
+    Instance {
+        id: u64,
+        _owner: Rc<dyn core::any::Any>,
+    },
+}
+
+impl PlacementSource {
+    /// The serialized source carried in the published placement.
+    fn wire(&self) -> PlatformViewSource {
+        match self {
+            Self::Factory(kind) => PlatformViewSource::Factory { kind: kind.clone() },
+            #[cfg(hydrolysis_android_system_webview)]
+            Self::Instance { id, .. } => PlatformViewSource::Instance { instance: *id },
+        }
+    }
+}
+
+/// The retained state of one platform-view leaf: what the host mounts, the
+/// stable placement id and the sink the runner installed.
 pub struct PlatformViewRenderState {
     id: u64,
-    kind: Box<str>,
+    source: PlacementSource,
     sink: PlatformViewSink,
 }
 
 impl PlatformViewRenderState {
-    pub fn from_config(view: &PlatformView, env: &Environment) -> Self {
-        let sink = env
-            .get::<PlatformViewSink>()
+    /// The sink the runner installed, or the unsupported-realization panic
+    /// the missing-realization contract demands.
+    fn sink_from(env: &Environment) -> PlatformViewSink {
+        env.get::<PlatformViewSink>()
             .cloned()
-            .unwrap_or_else(|| crate::renderer::unsupported_platform_view());
+            .unwrap_or_else(|| crate::renderer::unsupported_platform_view())
+    }
+
+    pub fn from_config(view: &PlatformView, env: &Environment) -> Self {
         Self {
             id: next_platform_view_id(),
-            kind: view.kind().into(),
-            sink,
+            source: PlacementSource::Factory(view.kind().into()),
+            sink: Self::sink_from(env),
+        }
+    }
+
+    /// A leaf whose placement mounts the native view the host registered
+    /// under `instance`. `owner` is the object the leaf keeps alive while
+    /// mounted — dropping it releases the native view.
+    ///
+    /// Only the Android system-WebView bridge creates these today.
+    #[cfg(hydrolysis_android_system_webview)]
+    pub fn from_instance(instance: u64, owner: Rc<dyn core::any::Any>, env: &Environment) -> Self {
+        Self {
+            id: next_platform_view_id(),
+            source: PlacementSource::Instance {
+                id: instance,
+                _owner: owner,
+            },
+            sink: Self::sink_from(env),
         }
     }
 }
@@ -101,7 +149,7 @@ pub fn render_platform_view_node(
         Rc::clone(&state.sink.table),
         PlatformViewPlacement {
             id: state.id,
-            kind: state.kind.clone(),
+            source: state.source.wire(),
             x: 0.0,
             y: 0.0,
             width: 0.0,

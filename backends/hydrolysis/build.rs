@@ -42,6 +42,13 @@ fn main() {
         hydrolysis_macos_system_webview: {
             all(feature = "winit", target_os = "macos", feature = "webview-system")
         },
+        // The Android `WebView` bridge needs no window of its own: the view is
+        // a child of the Kotlin host's platform-view overlay, so the feature
+        // alone is enough here — the winit gate that shapes the macOS alias
+        // simply does not exist on Android.
+        hydrolysis_android_system_webview: {
+            all(target_os = "android", feature = "webview-system")
+        },
         // The persistent pipeline cache serialises through `std::fs` into a
         // platform cache directory; targets without that filesystem contract
         // (wasm, espidf, redox) compile the renderer without it.

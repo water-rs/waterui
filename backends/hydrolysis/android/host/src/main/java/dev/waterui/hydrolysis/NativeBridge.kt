@@ -34,9 +34,13 @@ object NativeBridge {
      * `WindowInsetsAnimationCompat` progress pushes each IME animation frame;
      * 11 = [nativeUiThreadServices] creates the one executor per UI thread
      * at load time, and [nativeCreateSession] takes its handle so every
-     * session shares it.
+     * session shares it; 12 = a platform-view placement names either a
+     * factory `kind` or a registered `instance`, and the
+     * `HydrolysisWebView` natives join the edge; 13 =
+     * [nativePlatformViewFocus] reports whether a mounted platform-view
+     * child holds UI focus.
      */
-    private const val SCHEMA: Int = 11
+    private const val SCHEMA: Int = 13
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -260,4 +264,11 @@ object NativeBridge {
 
     /** Platform-view placement frame set, or null when unchanged. */
     @JvmStatic external fun nativePlatformViewFrames(sessionPtr: Long): String?
+
+    /**
+     * The platform-view registry's focus report: `focused` is "a mounted
+     * child inside the registry's container holds UI focus", so the runner
+     * drops the `WaterUI` text-input claim while a page field owns the IME.
+     */
+    @JvmStatic external fun nativePlatformViewFocus(sessionPtr: Long, focused: Boolean)
 }

@@ -44,8 +44,12 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// layout-spec.md §7.1, and the host's `WindowInsetsAnimationCompat` progress
 /// pushes each IME animation frame; 11 = `nativeUiThreadServices` creates
 /// the one executor per UI thread at load time, and `nativeCreateSession`
-/// takes its handle so every session shares it.
-pub const JNI_SCHEMA: jint = 11;
+/// takes its handle so every session shares it; 12 = a platform-view
+/// placement names either a factory `kind` or a registered `instance`, and
+/// the `HydrolysisWebView` natives join the edge; 13 =
+/// `nativePlatformViewFocus` reports whether a mounted platform-view child
+/// holds UI focus.
+pub const JNI_SCHEMA: jint = 13;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -165,7 +169,7 @@ fn services(ptr: jlong) -> &'static UiThreadServices {
 
 /// Runs `f` on the session, mapping `JniError` → `IllegalStateException` and a
 /// panic → `IllegalStateException` (with the panic payload in the message).
-pub(super) fn guard<F>(env: &mut JNIEnv, f: F)
+pub fn guard<F>(env: &mut JNIEnv, f: F)
 where
     F: FnOnce(&mut JNIEnv) -> Result<(), JniError>,
 {
@@ -190,7 +194,7 @@ where
 
 /// `guard` for calls returning a value — the error path throws and returns
 /// `default`.
-pub(super) fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
+pub fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
 where
     F: FnOnce(&mut JNIEnv) -> Result<T, JniError>,
 {
@@ -204,7 +208,7 @@ where
 
 /// `guard` for calls returning a value the caller converts first — throws
 /// and returns `default` on failure.
-fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
+pub fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
 where
     F: FnOnce(&mut JNIEnv) -> Result<Option<String>, JniError>,
 {
@@ -816,4 +820,29 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
             session_ptr,
         ))?))
     })
+}
+
+/// The `PlatformViewRegistry`'s focus report — "a mounted child inside the
+/// registry's container holds UI focus" as one session-wide boolean, so a
+/// removed view's focus move reports itself and no per-view count can leak.
+/// A change requests the frame that consumes the edge.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformViewFocus(
+    mut env: JNIEnv,
+    _class: JClass,
+    session_ptr: jlong,
+    focused: jboolean,
+) {
+    guard(&mut env, |_env| {
+        let session = session(session_ptr);
+        if session
+            .runtime
+            .platform
+            .platform_view_focus
+            .set(focused != 0)
+        {
+            session.runtime.platform.bridge.request_frame();
+        }
+        Ok(())
+    });
 }

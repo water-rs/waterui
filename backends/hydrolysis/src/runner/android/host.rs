@@ -318,6 +318,10 @@ pub struct AndroidHostWindow {
     /// for; `None` while no field holds focus. The runner syncs text-input
     /// state on every frame, and only a change here reaches the IME.
     soft_input: Option<u64>,
+    /// The session-wide counter platform-view children (the system `WebView`)
+    /// report UI focus into; while it is held the IME channel belongs to the
+    /// child and a stale cleared claim must not hide its keyboard.
+    pub(crate) platform_view_focus: crate::platform_view::PlatformViewFocus,
 }
 
 impl AndroidHostWindow {
@@ -469,6 +473,14 @@ impl PlatformWindow for AndroidHostWindow {
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
+        // While a platform-view child holds the IME, a renderer claim that
+        // was cleared on the focus-gain edge must not reach the host as a
+        // hide request — it would drop the web field's keyboard. A claim set
+        // during the hold is the hand-off itself: the Kotlin show path
+        // re-requests this view's focus, which ends the hold.
+        if self.platform_view_focus.is_holding() && state.is_none() {
+            return;
+        }
         let soft_input = state.map(|state| state.activation);
         if soft_input == self.soft_input {
             return;
@@ -710,6 +722,10 @@ impl AndroidSession {
         services: &'static UiThreadServices,
     ) -> Result<Box<Self>, JniError> {
         let bridge = HostBridge::new(env, vm, host_view)?;
+        // `env` is the `JNIEnv` — `into_parts` shadows it with the app
+        // `Environment` below, so bind it while it is still the JNI one.
+        #[cfg(hydrolysis_android_system_webview)]
+        let jni_env = env;
         let executor = services.executor.clone();
 
         waterui_locale::start_system_locale_listener();
@@ -754,6 +770,12 @@ impl AndroidSession {
         // into; the published table is what `nativePlatformViewFrames` serves.
         let platform_views = crate::platform_view::PlatformViewSink::new();
         env.insert(platform_views.clone());
+        // The session-wide "focus sits inside a platform-view container"
+        // state the Kotlin registry reports through
+        // `nativePlatformViewFocus`: while a mounted child holds the IME,
+        // the renderer must not keep a `WaterUI` text-input claim, and the
+        // window reads the same state to gate its soft-input pushes.
+        let platform_view_focus = crate::platform_view::PlatformViewFocus::default();
 
         let mut windows = VecDeque::from(windows);
         let window = windows
@@ -774,6 +796,7 @@ impl AndroidSession {
             started: false,
             cursor_style: CursorStyle::default(),
             soft_input: None,
+            platform_view_focus,
         };
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
