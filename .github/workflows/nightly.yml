@@ -282,7 +282,9 @@ jobs:
   # smoke-runs the app as the runner (console) user. Linux runs the GTK4 app
   # under `xvfb-run` inside the fresh account; `xvfb` is test harness, not a
   # doctor-managed dependency. Windows launches the whole flow as the fresh
-  # user via `Start-Process -Credential` in the runner's session.
+  # user via `Start-Process -Credential` in the runner's session. The Android
+  # leg on Ubuntu stops at packaging — `water run` needs a device — and
+  # packages both the debug and the release APK (#2290).
   cli-e2e:
     name: CLI fresh user / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -303,6 +305,10 @@ jobs:
             os: ubuntu-latest
             platform: linux
             backend: gtk4
+          - name: Android
+            os: ubuntu-latest
+            platform: android
+            backend: hydrolysis
 
     env:
       E2E_USER: watere2e
@@ -452,13 +458,49 @@ jobs:
           New-Item -ItemType Directory -Force "C:\Users\$env:E2E_USER\.cargo\bin" | Out-Null
           Copy-Item $cliBin "C:\Users\$env:E2E_USER\.cargo\bin\water.exe" -Force
 
+      # The Android leg's toolchain is mostly the hosted image's: the SDK is
+      # system-wide, the JDK and NDK land through actions, and `sdkmanager` —
+      # the remedy doctor's own messages name — installs the platform the
+      # scaffolded app's `compileSdk` requires. What no action provides is
+      # installed inside the e2e script as the fresh user, because outside a
+      # project `doctor` scopes every Android item optional and `--fix`
+      # skips it.
+      - name: Setup Java 21 (Android)
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android NDK (Android)
+        if: matrix.platform == 'android'
+        uses: ./.github/actions/setup-android-ndk
+
+      - name: Install the scaffolded compileSdk platform (Android)
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          compile_sdk="$(grep -oP 'compileSdk = \K[0-9]+' cli/src/templates/hydrolysis_android/app/build.gradle.kts.tpl)"
+          sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | sudo "$sdkm" --licenses >/dev/null || true
+          # Platform packages carry a minor suffix (`android-37.0`), so the
+          # newest package matching the compileSdk major is installed.
+          platform_pkg="$("$sdkm" --list 2>/dev/null | grep -oE "platforms;android-$compile_sdk(\.[0-9]+)?" | sort -uV | tail -1)"
+          [ -n "$platform_pkg" ] || { echo "::error::no SDK platform package matching compileSdk $compile_sdk"; exit 1; }
+          sudo "$sdkm" "$platform_pkg"
+
       - name: Doctor, scaffold, build and package as the fresh user (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           sudo -u "$E2E_USER" -H env E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
-            WATERUI_SRC="$GITHUB_WORKSPACE" bash -s <<'SCRIPT'
+            WATERUI_SRC="$GITHUB_WORKSPACE" \
+            ANDROID_HOME="${ANDROID_HOME:-}" ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-}" \
+            ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-}" ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-}" \
+            JAVA_HOME="${JAVA_HOME:-}" \
+            bash -s <<'SCRIPT'
           set -uo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           mkdir -p "$HOME/e2e-logs"
@@ -493,6 +535,26 @@ jobs:
           # refuses to read the submodule pins `water create` resolves
           # through.
           git config --global --add safe.directory '*'
+
+          if [ "$E2E_PLATFORM" = "android" ]; then
+            # The Android toolchain pieces no image or action gives this
+            # account: the aarch64 rustup target and the Kotlin the
+            # toolchain check wants, fetched into the CLI-managed location
+            # `doctor --fix` would produce on a developer machine.
+            export PATH="$JAVA_HOME/bin:$PATH"
+            rustup target add aarch64-linux-android 2>&1 | tee e2e-logs/rustup-target.log
+            kotlin_version="$(cargo metadata --format-version 1 --no-deps --manifest-path "$WATERUI_SRC/Cargo.toml" \
+              | jq -r '.packages[] | select(.name == "waterui-cli") | .metadata["waterui-scaffold"]["android-kotlin-version"]')"
+            kotlin_home="$HOME/.water/toolchains/kotlin/$kotlin_version"
+            mkdir -p "$kotlin_home"
+            curl -fsSL "https://github.com/JetBrains/kotlin/releases/download/v$kotlin_version/kotlin-compiler-$kotlin_version.zip" \
+              -o "$HOME/kotlinc.zip"
+            unzip -q -o "$HOME/kotlinc.zip" -d "$HOME/kotlinc-extract"
+            cp -R "$HOME/kotlinc-extract/kotlinc/." "$kotlin_home/"
+            rm -rf "$HOME/kotlinc.zip" "$HOME/kotlinc-extract"
+            "$kotlin_home/bin/kotlinc" -version 2>&1 | tee e2e-logs/kotlinc-version.log
+          fi
+
           phase "water create e2eapp"
           water create e2eapp --waterui-path "$WATERUI_SRC" \
             2>&1 | tee e2e-logs/create-app.log || fail "water create failed"
@@ -501,11 +563,27 @@ jobs:
           phase "water build e2eapp"
           (cd e2eapp && water build --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
             2>&1 | tee ../e2e-logs/build-app.log) || fail "water build failed"
-          phase "water package e2eapp"
-          (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
-            2>&1 | tee ../e2e-logs/package-app.log) || fail "water package failed"
-          grep -q 'Packaged at' e2e-logs/package-app.log \
-            || fail "water package produced no artifact line"
+          if [ "$E2E_PLATFORM" = "android" ]; then
+            # Both APK profiles: debug signs with the generated debug
+            # keystore, release goes unsigned — a fresh project carries no
+            # [signing.android] config.
+            phase "water package e2eapp (debug)"
+            (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --arch arm64 --debug --yes \
+              2>&1 | tee ../e2e-logs/package-debug.log) || fail "water package (debug) failed"
+            grep -q 'Packaged at' e2e-logs/package-debug.log \
+              || fail "water package produced no artifact line"
+            phase "water package e2eapp (release, unsigned)"
+            (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --arch arm64 --release --unsigned --yes \
+              2>&1 | tee ../e2e-logs/package-release.log) || fail "water package (release) failed"
+            grep -q 'Packaged at' e2e-logs/package-release.log \
+              || fail "water package produced no artifact line"
+          else
+            phase "water package e2eapp"
+            (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
+              2>&1 | tee ../e2e-logs/package-app.log) || fail "water package failed"
+            grep -q 'Packaged at' e2e-logs/package-app.log \
+              || fail "water package produced no artifact line"
+          fi
 
           # `water preview` compiles a crate the CLI generates from its own
           # templates against the framework the project resolves, which no
@@ -772,8 +850,10 @@ jobs:
           fi
           [ "$started" -eq 0 ] || exit 1
 
+      # The Android leg has no launchable target — `water run` needs a
+      # device or emulator — so the Xvfb run belongs to the Linux leg alone.
       - name: Run the app (Ubuntu, fresh user under Xvfb)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.platform == 'linux'
         shell: bash
         run: |
           set -euo pipefail
