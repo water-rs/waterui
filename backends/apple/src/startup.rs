@@ -25,18 +25,14 @@ pub fn initialize() -> Option<InspectorRuntime> {
 /// [`crate::preview`]'s contract is that a panic message and any error
 /// reach stderr without it.
 ///
-/// Once per process: the first call performs the bring-up and returns the
-/// inspector runtime; later calls skip it — the panic hook, the stderr
-/// layer and the executors are already installed process-wide. The
-/// preview suite is the only caller that repeats `run`.
+/// Exactly once per process: a `preview::run` performs the whole
+/// bring-up and returns the inspector runtime; a second call in one
+/// process is a bug, and the panic hook, subscriber and executor
+/// installs inside make it fail the same loud way a repeated
+/// [`initialize`] does.
 #[cfg(all(target_os = "macos", feature = "preview"))]
 pub fn initialize_for_preview() -> Option<InspectorRuntime> {
-    static BRING_UP: std::sync::Once = std::sync::Once::new();
-    let mut inspector = None;
-    BRING_UP.call_once(|| {
-        inspector = initialize_inner(true);
-    });
-    inspector
+    initialize_inner(true)
 }
 
 /// One-time process startup. Returns the inspector runtime when the

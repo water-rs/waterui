@@ -342,7 +342,7 @@ fn a_factory_label_survives_debug_ivar_checks() {
 fn a_label_at_a_fractional_origin_rasters_text_on_pixel_bounds() {
     let mtm = marker();
     let (host_w, host_h) = (140.0, 170.0);
-    let window = bitmap::make_offscreen_window(mtm, Size::new(host_w, host_h));
+    let window = bitmap::capture_window(mtm, Size::new(host_w, host_h));
     let host = window
         .contentView()
         .expect("the offscreen window's content");

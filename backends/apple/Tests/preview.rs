@@ -1,18 +1,15 @@
-//! The `AppKit` preview entry's own suite — `preview::run` end to end in
-//! a process no other suite shares.
+//! The `AppKit` preview entry's own suite — `preview::run` end to end, one
+//! run per child process.
 //!
-//! `native`'s scroll cases order real windows on screen, so a suite that
-//! must prove the process never does cannot live there. Every run trial
-//! drives `preview::run` against a real run-configuration file, so
-//! `compose`, the `CFRunLoop` stop, the PNG write and the error path are
-//! all exercised. The windowless proof is live: a self-re-arming
-//! main-queue probe samples the pid's `CGWindowList` and `NSApp.windows`
-//! — while the capture window is alive — and the workspace's frontmost
-//! application is compared before and after the run.
-//!
-//! `run` is once per process — `startup` installs the panic hook, the
-//! tracing subscriber and the executors once — so every run trial owns a
-//! process: the one-case-per-process runner provides that.
+//! `run` initializes the process exactly once — startup installs the panic
+//! hook, the tracing subscriber and the executors, and a second call fails
+//! loudly — so every trial launches this executable again
+//! (`std::env::current_exe()`) as a child that performs exactly one
+//! `preview::run`, selected by `--preview-child <slug>`. The parent samples
+//! the child's `CGWindowList` for the child's whole lifetime — no window it
+//! owns may ever be on screen — compares the workspace's frontmost
+//! application before and after, and checks the child's exit status, its
+//! stderr and the PNG it wrote.
 
 // The suite only exists on `AppKit` — the preview entry does too. A
 // target must still own a `main` on every other OS, so the whole suite
@@ -20,19 +17,18 @@
 #[cfg(target_os = "macos")]
 mod suite {
 
-    use std::cell::{Cell, RefCell};
     use std::ffi::c_void;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::rc::Rc;
+    use std::time::{Duration, Instant};
 
+    use cocoa_ui::MainThreadMarker;
     use cocoa_ui::objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWorkspace};
     use cocoa_ui::objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFNumberType};
     use cocoa_ui::objc2_core_graphics::{
         CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID, kCGWindowIsOnscreen,
         kCGWindowNumber, kCGWindowOwnerPID,
     };
-    use cocoa_ui::{MainThreadMarker, main_queue};
     use libtest_mimic::{Arguments, Trial};
     use waterui::prelude::*;
     use waterui::{AnyView, ResourceContext};
@@ -41,8 +37,31 @@ mod suite {
         PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode, RunConfigError,
     };
 
+    /// The argument that turns a spawned copy of this binary into a
+    /// one-trial child — intercepted in `run` before `libtest_mimic`
+    /// parses the command line.
+    const CHILD_FLAG: &str = "--preview-child";
+
+    /// The parent's bound on one child: a preview run answers in seconds,
+    /// so a child alive past this is hung, not slow.
+    const CHILD_DEADLINE: Duration = Duration::from_secs(60);
+
+    /// How often the parent samples the child's window list — the only
+    /// sleep the wait takes.
+    const SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
+
     /// The mimic entry — `main` below dispatches here on `AppKit`.
     pub fn run() {
+        // The child role intercepts before `libtest_mimic` parses: one
+        // spawned copy performs exactly one trial's `preview::run`.
+        let mut args = std::env::args();
+        let _ = args.next();
+        if args.next().is_some_and(|flag| flag == CHILD_FLAG) {
+            let slug = args
+                .next()
+                .expect("a spawned child names its trial after --preview-child");
+            std::process::exit(child(&slug));
+        }
         let mut args = Arguments::from_args();
         // `AppKit` objects may only be built on the real main thread; `run`
         // executes sequentially in the calling thread at one thread.
@@ -55,108 +74,66 @@ mod suite {
         MainThreadMarker::new().expect("the suite runs on the process's main thread")
     }
 
-    /// The registered trials — one PNG per image run, written under
-    /// `target/native-test-preview/` for visual review.
+    /// The registered trials — one PNG per image run, written to
+    /// `target/preview-captures/<trial>.png` for visual review.
     fn trials() -> Vec<Trial> {
         vec![
             Trial::test("preview::captures_the_issue_view_set_windowless", || {
-                let assets = output_dir("view_set").join("assets");
-                capture_run("view_set", 390.0, 760.0, move || {
-                    issue_view_set(&assets)
-                });
-                assert_asset_rendered(&output_dir("view_set").join("view_set.png"));
+                run_trial("view_set", Expect::Png);
                 Ok(())
             }),
             #[cfg(feature = "gpu_surface")]
             Trial::test("preview::captures_gpu_surfaces_windowless", || {
-                capture_run("gpu_set", 390.0, 760.0, gpu_set);
+                run_trial("gpu_set", Expect::Png);
                 Ok(())
             }),
             Trial::test("preview::rejects_a_scenario_run", || {
-                let dir = output_dir("scenario");
-                let result = run_with_config(
-                    &dir,
-                    &PreviewRunConfig {
-                        width: 848.0,
-                        height: 120.0,
-                        mode: PreviewRunMode::Scenario {
-                            output_dir: dir.clone(),
-                            captures_ms: vec![0],
-                            events: vec![],
-                        },
-                    },
-                    {
-                        let assets = dir.join("assets");
-                        move || issue_view_set(&assets)
-                    },
-                );
-                assert!(
-                    matches!(result, Err(PreviewError::UnsupportedMode("scenario"))),
-                    "a scenario run answers UnsupportedMode, got {result:?}"
+                run_trial(
+                    "scenario",
+                    Expect::Failure("apple preview supports image captures only"),
                 );
                 Ok(())
             }),
             Trial::test("preview::rejects_a_semantic_run", || {
-                let dir = output_dir("semantic");
-                let result = run_with_config(
-                    &dir,
-                    &PreviewRunConfig {
-                        width: 848.0,
-                        height: 120.0,
-                        mode: PreviewRunMode::Semantic,
-                    },
-                    {
-                        let assets = dir.join("assets");
-                        move || issue_view_set(&assets)
-                    },
-                );
-                assert!(
-                    matches!(result, Err(PreviewError::UnsupportedMode("semantic"))),
-                    "a semantic run answers UnsupportedMode, got {result:?}"
+                run_trial(
+                    "semantic",
+                    Expect::Failure("apple preview supports image captures only"),
                 );
                 Ok(())
             }),
             Trial::test("preview::errors_when_the_run_config_is_missing", || {
-                // SAFETY: the trial owns its process on `main` — nothing else
-                // reads the environment while the variable changes.
-                unsafe { std::env::remove_var(PREVIEW_RUN_CONFIG_ENV) };
-                let error = PreviewRunConfig::load_from_env()
-                    .expect_err("a missing variable answers a typed error");
-                assert!(
-                    matches!(error, RunConfigError::MissingEnvVar),
-                    "the missing variable reports MissingEnvVar, got {error}"
+                run_trial(
+                    "missing_config",
+                    Expect::Failure("WATERUI_PREVIEW_RUN_CONFIG is not set"),
                 );
                 Ok(())
             }),
             Trial::test("preview::errors_when_the_run_config_is_malformed", || {
-                let dir = output_dir("malformed");
-                fs::create_dir_all(&dir).expect("the preview output directory is creatable");
-                let config_path = dir.join("run-config.json");
-                fs::write(&config_path, "{ not json").expect("the malformed file writes");
-                // SAFETY: the trial owns its process on `main`.
-                unsafe { std::env::set_var(PREVIEW_RUN_CONFIG_ENV, &config_path) };
-                let error = PreviewRunConfig::load_from_env()
-                    .expect_err("malformed JSON answers a typed error");
-                assert!(
-                    matches!(error, RunConfigError::Json { .. }),
-                    "the malformed file reports Json, got {error}"
+                run_trial(
+                    "malformed_config",
+                    Expect::Failure("cannot parse preview run configuration"),
                 );
                 Ok(())
             }),
         ]
     }
 
-    /// One image run, end to end: writes the run-configuration file `run`
-    /// would be handed, lets `run` reload it through `PREVIEW_RUN_CONFIG_ENV`,
-    /// arms the live windowless probe around the whole run, then asserts the
-    /// window, focus and output contracts.
-    fn capture_run(
-        slug: &str,
-        width: f32,
-        height: f32,
-        view: impl FnOnce() -> AnyView + 'static,
-    ) {
-        let mtm = mtm();
+    /// What the parent checks after the child exits.
+    #[derive(Clone, Copy)]
+    enum Expect {
+        /// Exit status 0 and `target/preview-captures/<slug>.png` written
+        /// non-empty.
+        Png,
+        /// A non-zero exit status and this error text on the child's
+        /// stderr — the contract a generated preview binary keeps.
+        Failure(&'static str),
+    }
+
+    /// One trial end to end: launch the child that performs the trial's
+    /// `preview::run`, sample the child's window list for its whole
+    /// lifetime on a bounded deadline, then check the windowless, focus
+    /// and outcome contracts.
+    fn run_trial(slug: &str, expect: Expect) {
         let frontmost = frontmost_application();
         assert_ne!(
             frontmost,
@@ -164,62 +141,216 @@ mod suite {
             "the suite must not already be the frontmost application"
         );
 
-        let dir = output_dir(slug);
-        let output = dir.join(format!("{slug}.png"));
-        let probe = WindowProbe::arm(mtm);
-        let result = run_with_config(
-            &dir,
-            &PreviewRunConfig {
-                width,
-                height,
-                mode: PreviewRunMode::Image {
-                    output: output.clone(),
-                },
-            },
-            view,
-        );
-        probe.stop();
-        assert!(result.is_ok(), "the preview run succeeds, got {result:?}");
-        probe.assert_windowless();
-        let application = NSApplication::sharedApplication(mtm);
-        assert_eq!(
-            application.activationPolicy(),
-            NSApplicationActivationPolicy::Prohibited,
-            "the capture process must hold the Prohibited activation policy"
-        );
+        let dir = output_dir();
+        fs::create_dir_all(&dir).expect("the preview capture directory is creatable");
+        let stderr_path = dir.join(format!("{slug}.stderr"));
+        let stderr_file = fs::File::create(&stderr_path).expect("the child's stderr file writes");
+        let exe = std::env::current_exe().expect("the test executable resolves");
+        // `WATERUI_LOG` at info turns the child's stderr file into a
+        // readable run log — the written PNG's path lands there through
+        // `tracing`.
+        let mut child = std::process::Command::new(exe)
+            .args([CHILD_FLAG, slug])
+            .env("WATERUI_LOG", "info")
+            .stderr(std::process::Stdio::from(stderr_file))
+            .spawn()
+            .expect("the trial child spawns");
+        let child_pid = i64::from(child.id().cast_signed());
+
+        let mut onscreen = Vec::new();
+        let deadline = Instant::now() + CHILD_DEADLINE;
+        let status = loop {
+            onscreen.extend(onscreen_window_numbers(child_pid));
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    panic!("waiting for the {slug} child failed: {error}");
+                }
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!(
+                    "the {slug} child outlived its {}-second deadline",
+                    CHILD_DEADLINE.as_secs()
+                );
+            }
+            std::thread::sleep(SAMPLE_INTERVAL);
+        };
         assert!(
-            !application.isActive(),
-            "the capture process must never take focus"
+            onscreen.is_empty(),
+            "the {slug} child ordered windows on screen: {onscreen:?}"
         );
         assert_eq!(
             frontmost_application(),
             frontmost,
-            "the preview run must never change the frontmost application"
+            "the {slug} trial must never change the frontmost application"
         );
-        let bytes = fs::metadata(&output)
-            .unwrap_or_else(|e| panic!("the capture PNG exists at {}: {e}", output.display()))
-            .len();
-        assert!(bytes > 0, "the capture PNG is not empty");
+
+        let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+        match expect {
+            Expect::Png => {
+                assert!(
+                    status.success(),
+                    "the {slug} child exits 0, got {status:?}; stderr:\n{stderr}"
+                );
+                let output = dir.join(format!("{slug}.png"));
+                let bytes = fs::metadata(&output)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "the capture PNG exists at {}: {error}; stderr:\n{stderr}",
+                            output.display()
+                        )
+                    })
+                    .len();
+                assert!(
+                    bytes > 0,
+                    "the capture PNG at {} is not empty",
+                    output.display()
+                );
+            }
+            Expect::Failure(text) => {
+                assert!(
+                    !status.success(),
+                    "the {slug} child exits non-zero, got {status:?}"
+                );
+                assert!(
+                    stderr.contains(text),
+                    "the {slug} child's stderr carries the error — stderr:\n{stderr}"
+                );
+            }
+        }
     }
 
-    /// Drives `preview::run` once against `config`, written to a real
-    /// run-configuration file and reloaded through `PREVIEW_RUN_CONFIG_ENV` —
-    /// the path a generated preview binary takes. Also materializes the image
-    /// asset's directory: the suite's `ImageAsset` resolves `image.png`
-    /// against the `ResourceContext` `resources` gives the run.
-    fn run_with_config(
-        dir: &Path,
-        config: &PreviewRunConfig,
+    /// Runs one trial's work inside a child process — returns its exit
+    /// code: 0 on success; on an error the message reaches stderr and the
+    /// process exits non-zero, the way a generated preview binary's
+    /// `main` reports it.
+    fn child(slug: &str) -> i32 {
+        let result: Result<(), Box<dyn std::error::Error>> = match slug {
+            "view_set" => image_run("view_set", 390.0, 760.0, issue_view_set).map_err(Into::into),
+            #[cfg(feature = "gpu_surface")]
+            "gpu_set" => image_run("gpu_set", 390.0, 760.0, gpu_set).map_err(Into::into),
+            "scenario" => error_run("scenario", |dir| PreviewRunMode::Scenario {
+                output_dir: dir.clone(),
+                captures_ms: vec![0],
+                events: vec![],
+            })
+            .map_err(Into::into),
+            "semantic" => {
+                error_run("semantic", |_dir| PreviewRunMode::Semantic).map_err(Into::into)
+            }
+            "missing_config" => missing_config_run().map_err(Into::into),
+            "malformed_config" => malformed_config_run().map_err(Into::into),
+            other => panic!("unknown preview child trial {other}"),
+        };
+        match result {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("{error}");
+                1
+            }
+        }
+    }
+
+    /// One image run, end to end: writes the run-configuration file `run`
+    /// would be handed, lets `run` reload it through `PREVIEW_RUN_CONFIG_ENV`,
+    /// then checks the captured process's activation contract and names the
+    /// written PNG through `tracing`.
+    fn image_run(
+        slug: &str,
+        width: f32,
+        height: f32,
         view: impl FnOnce() -> AnyView + 'static,
     ) -> Result<(), PreviewError> {
-        fs::create_dir_all(dir).expect("the preview output directory is creatable");
-        let config_path = dir.join("run-config.json");
+        let output = output_dir().join(format!("{slug}.png"));
+        let result = run_with_config(
+            slug,
+            PreviewRunMode::Image {
+                output: output.clone(),
+            },
+            width,
+            height,
+            view,
+        );
+        if result.is_ok() {
+            tracing::info!("preview capture written to {}", output.display());
+            let mtm = mtm();
+            let application = NSApplication::sharedApplication(mtm);
+            assert_eq!(
+                application.activationPolicy(),
+                NSApplicationActivationPolicy::Prohibited,
+                "the capture process must hold the Prohibited activation policy"
+            );
+            assert!(
+                !application.isActive(),
+                "the capture process must never take focus"
+            );
+        }
+        result
+    }
+
+    /// A run that must fail: `mode` is written to a real run-configuration
+    /// file like an image run's, and `preview::run`'s `Err` propagates to
+    /// the child's stderr and exit status. The view builder never runs —
+    /// an unsupported mode answers before the mount.
+    fn error_run(
+        slug: &str,
+        mode: impl FnOnce(&PathBuf) -> PreviewRunMode,
+    ) -> Result<(), PreviewError> {
+        let dir = output_dir();
+        run_with_config(slug, mode(&dir), 848.0, 120.0, issue_view_set)
+    }
+
+    /// `load_from_env` with the variable removed — the missing-config path
+    /// a generated binary fails on.
+    fn missing_config_run() -> Result<(), RunConfigError> {
+        // SAFETY: the child owns its process on `main` — nothing else
+        // reads the environment while the variable changes.
+        unsafe { std::env::remove_var(PREVIEW_RUN_CONFIG_ENV) };
+        PreviewRunConfig::load_from_env().map(|_| ())
+    }
+
+    /// `load_from_env` over a malformed file — the parse-error path a
+    /// generated binary fails on.
+    fn malformed_config_run() -> Result<(), RunConfigError> {
+        let dir = output_dir();
+        fs::create_dir_all(&dir).expect("the preview capture directory is creatable");
+        let config_path = dir.join("malformed_config.run-config.json");
+        fs::write(&config_path, "{ not json").expect("the malformed file writes");
+        // SAFETY: the child owns its process on `main`.
+        unsafe { std::env::set_var(PREVIEW_RUN_CONFIG_ENV, &config_path) };
+        PreviewRunConfig::load_from_env().map(|_| ())
+    }
+
+    /// Drives `preview::run` once against a `mode`/`size` configuration,
+    /// written to a real run-configuration file and reloaded through
+    /// `PREVIEW_RUN_CONFIG_ENV` — the path a generated preview binary
+    /// takes. Also materializes the image asset's directory: the suite's
+    /// `ImageAsset` resolves `image.png` against the `ResourceContext`
+    /// `resources` gives the run.
+    fn run_with_config(
+        slug: &str,
+        mode: PreviewRunMode,
+        width: f32,
+        height: f32,
+        view: impl FnOnce() -> AnyView + 'static,
+    ) -> Result<(), PreviewError> {
+        let dir = output_dir();
+        fs::create_dir_all(&dir).expect("the preview capture directory is creatable");
+        let config_path = dir.join(format!("{slug}.run-config.json"));
         fs::write(
             &config_path,
-            serde_json::to_string_pretty(config).expect("a run configuration serializes"),
+            serde_json::to_string_pretty(&PreviewRunConfig {
+                width,
+                height,
+                mode,
+            })
+            .expect("a run configuration serializes"),
         )
         .expect("the run configuration writes");
-        // SAFETY: the trial owns its process on `main` — `run` has not
+        // SAFETY: the child owns its process on `main` — `run` has not
         // brought the executors up yet, so no other thread observes the
         // environment while the variable changes.
         unsafe { std::env::set_var(PREVIEW_RUN_CONFIG_ENV, &config_path) };
@@ -238,12 +369,10 @@ mod suite {
         )
     }
 
-    /// The directory suite artifacts land in — under `target`, so the run's
-    /// own build output is all it leaves behind.
-    fn output_dir(slug: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/native-test-preview")
-            .join(slug)
+    /// The directory suite artifacts land in — `target/preview-captures`,
+    /// so the run's own build output is all it leaves behind.
+    fn output_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/preview-captures")
     }
 
     /// Writes a 16x16 opaque square PNG — generated at run time, so no binary
@@ -258,48 +387,6 @@ mod suite {
         fs::write(path, png).expect("the generated image asset writes");
     }
 
-    /// Asserts the produced PNG contains the generated asset's orange —
-    /// the decoded `Image`'s surface presented real pixels. `ImageAsset`'s
-    /// own `Photo` load is asynchronous and may still be in flight at
-    /// capture time, which is why the row carries both.
-    fn assert_asset_rendered(output: &Path) {
-        use cocoa_ui::objc2_app_kit::{NSBitmapImageRep, NSColorSpace};
-        use cocoa_ui::objc2_foundation::{NSData, NSString};
-
-        let path = NSString::from_str(&output.to_string_lossy());
-        let data = NSData::dataWithContentsOfFile(&path).expect("the capture PNG reads back");
-        let rep = NSBitmapImageRep::imageRepWithData(&data).expect("the capture PNG decodes");
-        let srgb = NSColorSpace::sRGBColorSpace();
-        let mut orange = 0_usize;
-        for y in 0..rep.pixelsHigh() {
-            for x in 0..rep.pixelsWide() {
-                let Some(color) = rep.colorAtX_y(x, y) else {
-                    continue;
-                };
-                let Some(color) = color.colorUsingColorSpace(&srgb) else {
-                    continue;
-                };
-                let (mut red, mut green, mut blue, mut alpha) = (0.0, 0.0, 0.0, 0.0);
-                // SAFETY: every out-pointer names a live `CGFloat`.
-                unsafe {
-                    color.getRed_green_blue_alpha(
-                        &raw mut red,
-                        &raw mut green,
-                        &raw mut blue,
-                        &raw mut alpha,
-                    );
-                }
-                if red > 0.8 && (0.35..0.65).contains(&green) && blue < 0.3 && alpha > 0.9 {
-                    orange += 1;
-                }
-            }
-        }
-        assert!(
-            orange > 500,
-            "the generated image asset renders its orange pixels, found {orange}"
-        );
-    }
-
     /// `pid` of the workspace's frontmost application — `NSWorkspace`'s
     /// answer for "who holds focus".
     fn frontmost_application() -> Option<i64> {
@@ -308,111 +395,9 @@ mod suite {
             .map(|app| i64::from(app.processIdentifier()))
     }
 
-    /// Live evidence the run stays windowless: a self-re-arming main-queue
-    /// probe samples the pid's window state on every drain — the capture
-    /// window is sampled while it is alive — until the run returns and
-    /// [`WindowProbe::stop`] cuts the chain.
-    struct WindowProbe {
-        /// Every sample the probe recorded.
-        samples: Rc<RefCell<Vec<WindowSample>>>,
-        /// Set to make the next queued sample not re-arm.
-        stop: Rc<Cell<bool>>,
-    }
-
-    /// One windowless sample: this pid's onscreen windows and the windows
-    /// `NSApp` tracks at one main-queue drain.
-    struct WindowSample {
-        /// `kCGWindowNumber` of every pid window that is on screen.
-        onscreen: Vec<i64>,
-        /// How many `NSWindow`s `NSApp` tracked at the sample — the capture
-        /// window included while it lives.
-        windows: usize,
-        /// Of `windows`, the count answering `isVisible`.
-        visible: usize,
-    }
-
-    impl WindowProbe {
-        /// Enqueues the first sample on the main queue; each re-arms the next
-        /// until [`Self::stop`].
-        fn arm(mtm: MainThreadMarker) -> Self {
-            let probe = Self {
-                samples: Rc::new(RefCell::new(Vec::new())),
-                stop: Rc::new(Cell::new(false)),
-            };
-            Self::sample(mtm, Rc::clone(&probe.samples), Rc::clone(&probe.stop));
-            probe
-        }
-
-        /// Enqueues one sample on the main queue and re-arms for the next
-        /// drain while the probe lives.
-        fn sample(
-            mtm: MainThreadMarker,
-            samples: Rc<RefCell<Vec<WindowSample>>>,
-            stop: Rc<Cell<bool>>,
-        ) {
-            main_queue::enqueue_local(mtm, move |mtm| {
-                if stop.get() {
-                    return;
-                }
-                samples.borrow_mut().push(WindowSample::now(mtm));
-                Self::sample(mtm, Rc::clone(&samples), Rc::clone(&stop));
-            });
-        }
-
-        /// Ends the probe: anything still queued sees the flag and does not
-        /// re-arm.
-        fn stop(&self) {
-            self.stop.set(true);
-        }
-
-        /// Every sample must show the pid owning no onscreen window and no
-        /// visible `NSWindow`, and the probe must have observed the capture
-        /// window — a run whose samples are empty or windowless proves
-        /// nothing.
-        fn assert_windowless(&self) {
-            let samples = self.samples.borrow();
-            let onscreen: Vec<i64> = samples
-                .iter()
-                .flat_map(|sample| sample.onscreen.iter().copied())
-                .collect();
-            assert!(
-                onscreen.is_empty(),
-                "the capture must never order a window on screen; windows {onscreen:?} of this process are on screen"
-            );
-            let visible: Vec<usize> = samples
-                .iter()
-                .filter(|sample| sample.visible > 0)
-                .map(|sample| sample.visible)
-                .collect();
-            assert!(
-                visible.is_empty(),
-                "no window the process owns may be visible during the run; counts {visible:?}"
-            );
-            assert!(
-                samples.iter().any(|sample| sample.windows > 0),
-                "the live probe must observe the capture window while it is alive"
-            );
-        }
-    }
-
-    impl WindowSample {
-        /// Reads this pid's `CGWindowList` onscreen windows and every
-        /// `NSWindow` `NSApp` tracks — windows that never ordered in are
-        /// tracked there too.
-        fn now(mtm: MainThreadMarker) -> Self {
-            let windows = NSApplication::sharedApplication(mtm).windows();
-            let visible = windows.iter().filter(|window| window.isVisible()).count();
-            Self {
-                onscreen: onscreen_window_numbers(),
-                windows: windows.len(),
-                visible,
-            }
-        }
-    }
-
-    /// `kCGWindowNumber` of every onscreen window this pid owns — empty when
+    /// `kCGWindowNumber` of every onscreen window `pid` owns — empty when
     /// the process holds only windows it never ordered.
-    fn onscreen_window_numbers() -> Vec<i64> {
+    fn onscreen_window_numbers(pid: i64) -> Vec<i64> {
         let windows = CGWindowListCopyWindowInfo(
             CGWindowListOption(
                 CGWindowListOption::OptionAll.0 | CGWindowListOption::ExcludeDesktopElements.0,
@@ -420,7 +405,6 @@ mod suite {
             kCGNullWindowID,
         )
         .expect("the window server answers the window list");
-        let pid = i64::from(std::process::id().cast_signed());
         let mut onscreen = Vec::new();
         for index in 0..windows.count() {
             // SAFETY: the window list holds CFDictionary entries.
@@ -470,23 +454,19 @@ mod suite {
     /// both styles, toggle, slider, stepper, a text field with text, picker,
     /// progress, an image asset, filled shapes and a gradient, a material
     /// background and a scroll view.
-    fn issue_view_set(assets_dir: &Path) -> AnyView {
+    fn issue_view_set() -> AnyView {
         use waterui::form::picker::picker;
         use waterui::gradient::Gradient;
         use waterui::shape::{Circle, Rectangle, RoundedRectangle, ShapeExt};
 
-        // `image.png` is generated into `assets_dir` by `run_with_config`
-        // before `run` mounts this view — the same directory the run's
-        // explicit `ResourceContext` mounts as `Bundle::main()`'s root.
-        // `ImageAsset` resolves there but loads through `Photo`'s
-        // asynchronous decode, which this first-presented-frames capture
-        // does not wait on, so the row also mounts the decoded `Image`:
-        // its `SceneView` presents a real first frame that
-        // `wait_for_presented` covers deterministically.
-        let image = waterui::media::Image::from_encoded(
-            &fs::read(assets_dir.join("image.png")).expect("the generated asset reads"),
-        )
-        .expect("the generated asset decodes");
+        // `image.png` is generated into the run's assets directory by
+        // `run_with_config` before `run` mounts this view — the same
+        // directory the run's explicit `ResourceContext` mounts as
+        // `Bundle::main()`'s root. `ImageAsset` resolves there but loads
+        // through `Photo`'s asynchronous decode, which this
+        // first-presented-frames capture does not wait on — its blank
+        // slot is water-rs/waterui#2149, kept visible here rather than
+        // worked around.
         let wifi = Binding::bool(true);
         let level = Binding::f64(0.6);
         let count = Binding::i32(1);
@@ -506,7 +486,7 @@ mod suite {
         .spacing(12.0),
         toggle("Wi-Fi", &wifi),
         slider("Volume", &level),
-        hstack((text("Count: "), stepper("Count", &count), spacer())),
+        hstack((stepper(text!("Count: {count}"), &count), spacer())),
         field("Email", &email),
         picker(
             "Size",
@@ -521,7 +501,6 @@ mod suite {
         hstack((
             waterui::icon::SystemIcon::new("star.fill").size(48.0, 48.0),
             waterui::ImageAsset::new(waterui::Bundle::main(), "image.png").size(48.0, 48.0),
-            image.resizable().size(48.0, 48.0),
             Circle.fill(Color::srgb_hex("#3B82F6")).size(48.0, 48.0),
             Rectangle.fill(Color::srgb_hex("#10B981")).size(64.0, 48.0),
             RoundedRectangle::new(0.25)

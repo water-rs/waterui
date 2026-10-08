@@ -1,10 +1,9 @@
 //! The offscreen subtree capture `preview` and `view_renderer` share on
-//! macOS: a window that is created but never ordered in hosts the view,
-//! mounted GPU surfaces and filters are driven through their first
-//! presented frames — the occlusion gates the runtime's own path waits
-//! behind never open offscreen — and `AppKit`'s `cacheDisplayInRect:`
-//! rasterizes the whole subtree, private-`AppKit` and `IOSurface` layer
-//! contents alike, into one premultiplied RGBA8 bitmap.
+//! macOS when `gpu_surface` is off: a window that is created but never
+//! ordered in hosts the view, and `AppKit`'s `cacheDisplayInRect:`
+//! rasterizes the whole subtree into one premultiplied RGBA8 bitmap.
+//! `Metal` layer contents never reach that bitmap, so with `gpu_surface`
+//! the readback is `capture_image`'s `ViewCapture` instead.
 
 #[cfg(all(
     target_os = "macos",
@@ -40,17 +39,6 @@ pub enum CaptureError {
         /// The view's logical height.
         height: f64,
     },
-    /// A view refused the capture's presentation drive — the only outcome
-    /// the drive reports besides acceptance and the documented zero-size
-    /// skip. `reason` names the refusal.
-    #[cfg(target_os = "macos")]
-    #[error("the {kind} refused to present for capture: {reason}")]
-    PresentationRefused {
-        /// The view kind that refused.
-        kind: &'static str,
-        /// Why it refused.
-        reason: &'static str,
-    },
     /// No connected window scene can host the offscreen capture window.
     #[cfg(target_os = "ios")]
     #[error("no UIWindowScene is connected to host the capture window")]
@@ -63,9 +51,12 @@ pub enum CaptureError {
 ///
 /// # Errors
 ///
-/// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap or a
-/// view refuses the presentation drive.
-#[cfg(all(target_os = "macos", feature = "view_renderer"))]
+/// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap.
+#[cfg(all(
+    target_os = "macos",
+    feature = "view_renderer",
+    not(feature = "gpu_surface")
+))]
 #[expect(
     clippy::future_not_send,
     reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
@@ -82,20 +73,18 @@ pub async fn capture_view(
 }
 
 /// The shared tail of every `AppKit` capture: `host` is already inside its
-/// never-ordered window and laid out under its proposal. GPU surfaces and
-/// filters are driven to a presented frame — the drive's participation
-/// record decides the wait: skipped zero-size views owe nothing, refused
-/// ones are [`CaptureError::PresentationRefused`], and only the accepted
-/// set is awaited, so every wait ends with a frame or a bounded park —
-/// then the whole subtree is rasterized into premultiplied RGBA8.
+/// never-ordered window and laid out under its proposal; `AppKit`'s
+/// `cacheDisplayInRect:` rasterizes the whole subtree into premultiplied
+/// RGBA8. This path exists only without `gpu_surface`: with it, `Metal`
+/// layer contents never reach the bitmap and `capture_image`'s
+/// `ViewCapture` is the readback.
 ///
 /// # Errors
 ///
-/// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap or a
-/// view refuses the presentation drive.
+/// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap.
 #[cfg(all(
     target_os = "macos",
-    any(feature = "view_renderer", feature = "preview")
+    any(feature = "preview", feature = "view_renderer")
 ))]
 #[expect(
     clippy::future_not_send,
@@ -109,12 +98,9 @@ pub async fn capture_view(
     clippy::cast_sign_loss,
     reason = "the zero-size guard above keeps bounds and scale positive"
 )]
-#[cfg_attr(
-    not(feature = "gpu_surface"),
-    expect(
-        clippy::unused_async,
-        reason = "the presentation drive's awaits live behind `gpu_surface`; the signature stays `async` for every feature set"
-    )
+#[expect(
+    clippy::unused_async,
+    reason = "the signature stays `async` so `async` callers need no feature gating"
 )]
 pub async fn capture_presented(
     host: &cocoa_ui::PlatformView,
@@ -135,39 +121,6 @@ pub async fn capture_presented(
     let scale = cocoa_ui::view::backing_scale_factor(host);
     cocoa_ui::view::prepare_for_capture(host);
     cocoa_ui::bitmap::force_text_fields_display(host);
-
-    #[cfg(feature = "gpu_surface")]
-    {
-        let surfaces = crate::components::gpu_surface::present_first_frames(host, scale);
-        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-        let filters = crate::components::filtered::present_first_frames(host, scale);
-        if let Some(&reason) = surfaces.refused.first() {
-            return Err(CaptureError::PresentationRefused {
-                kind: "GpuSurface",
-                reason,
-            });
-        }
-        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-        if let Some(&reason) = filters.refused.first() {
-            return Err(CaptureError::PresentationRefused {
-                kind: "FilteredView",
-                reason,
-            });
-        }
-        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-        let skipped = surfaces.empty + filters.empty;
-        #[cfg(not(any(feature = "applied_filter", feature = "view_effect")))]
-        let skipped = surfaces.empty;
-        if skipped > 0 {
-            tracing::debug!(
-                skipped,
-                "capture skipped zero-size views that have nothing to draw"
-            );
-        }
-        crate::components::gpu_surface::wait_for_presented(&surfaces.accepted).await;
-        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-        crate::components::filtered::wait_for_presented(&filters.accepted).await;
-    }
 
     let bounds = cocoa_ui::view::bounds(host);
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {

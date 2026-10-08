@@ -30,6 +30,11 @@ pub enum PreviewError {
     #[error("apple preview supports image captures only; {0} runs are not implemented")]
     UnsupportedMode(&'static str),
     /// Mounting, presenting or rasterizing the view failed.
+    #[cfg(feature = "gpu_surface")]
+    #[error(transparent)]
+    Capture(#[from] crate::capture_image::CaptureFailure),
+    /// Mounting, presenting or rasterizing the view failed.
+    #[cfg(not(feature = "gpu_surface"))]
     #[error(transparent)]
     Capture(#[from] crate::capture::CaptureError),
     /// Encoding or writing the capture PNG failed.
@@ -62,9 +67,8 @@ pub enum PreviewError {
 ///
 /// [`PreviewError::UnsupportedMode`] for `Scenario` and `Semantic` runs —
 /// the Apple preview captures images only. [`PreviewError::Capture`] when
-/// `AppKit` cannot mount, present or rasterize the view, or a view refuses
-/// the presentation drive. [`PreviewError::Write`] when the PNG cannot be
-/// encoded or written. [`PreviewError::RunLoopExited`] when the main run
+/// the view cannot be mounted or rasterized. [`PreviewError::Write`]
+/// when the PNG cannot be encoded or written. [`PreviewError::RunLoopExited`] when the main run
 /// loop returns without the capture's result — a return is never success
 /// on its own.
 ///
@@ -74,9 +78,9 @@ pub enum PreviewError {
 /// activation policy before launch — the constraint the entry exists to
 /// keep, so a refusal is fatal rather than a fallback.
 ///
-/// Re-entrant in one process: process bring-up happens on the first call
-/// (`initialize_for_preview` is once-only); every later call re-runs the
-/// environment, mount and capture — the suite's error trials rely on it.
+/// Once per process: process bring-up happens inside the call and a
+/// second `run` in one process is a bug — the bring-up fails loudly, the
+/// way a repeated `initialize` does.
 pub fn run(
     compose: impl FnOnce(Environment) -> Environment + 'static,
     view: impl FnOnce() -> waterui::AnyView + 'static,
@@ -251,12 +255,53 @@ pub(crate) async fn render_and_write(
 ///
 /// # Errors
 ///
-/// Returns [`crate::capture::CaptureError`] when `AppKit` cannot produce
-/// the bitmap.
+/// Returns [`crate::capture_image::CaptureFailure`] or, without
+/// `gpu_surface`, [`crate::capture::CaptureError`] when the subtree
+/// cannot be rasterized.
 #[expect(
     clippy::future_not_send,
     reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
 )]
+#[cfg(feature = "gpu_surface")]
+async fn render(
+    env: &Environment,
+    mtm: MainThreadMarker,
+    view: impl FnOnce() -> waterui::AnyView,
+    size: cocoa_ui::Size,
+) -> Result<waterui_core::view_renderer::RenderResult, crate::capture_image::CaptureFailure> {
+    let window = cocoa_ui::bitmap::capture_window(mtm, size);
+    let root = cocoa_ui::appkit::HostView::new(
+        mtm,
+        cocoa_ui::Rect::new(0.0, 0.0, size.width, size.height),
+    );
+    window.setContentView(Some(&*root));
+    let mut keepalive = crate::contract::KeepAlive::default();
+    let _content = crate::embedding::mount_content(&root, view(), env, &mut keepalive);
+    crate::first_paint::mark(&root, env);
+    // The preview mounts and captures inside one run-loop turn, so the
+    // window's display pass never runs: run it explicitly — it draws the
+    // backing stores and attaches every subview's backing layer into the
+    // root layer tree `ViewCapture`'s `renderInContext` reads.
+    window.displayIfNeeded();
+    let scale = cocoa_ui::view::backing_scale_factor(&root);
+    let result = crate::capture_image::capture_rgba(&root, env, scale, mtm).await?;
+    let result = waterui_core::view_renderer::RenderResult {
+        rgba_data: result.pixels,
+        width: result.width,
+        height: result.height,
+    };
+    drop((keepalive, window));
+    Ok(result)
+}
+
+/// The `gpu_surface`-free preview: every leaf rasterizes through
+/// `AppKit`'s own display path, so the plain bitmap readback covers the
+/// whole subtree.
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
+)]
+#[cfg(not(feature = "gpu_surface"))]
 async fn render(
     env: &Environment,
     mtm: MainThreadMarker,
