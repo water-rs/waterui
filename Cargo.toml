@@ -170,6 +170,7 @@ bitflags = "2.13.2"
 # are one type in the graph.
 color = "0.3.3"
 blocking = "1.7.0"
+cargo_metadata = "0.23.1"
 # FNV-1a that evaluates in a `const` context, which is what the TypeScript
 # props contract hash needs: the same hash is computed by the compiler into the
 # binary and by the CLI from the artifact.
@@ -239,10 +240,7 @@ waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
 waterui-browser-cef = { version = "0.5.1", path = "components/platform/browser-cef", default-features = false }
 waterui-browser-wpe = { version = "0.5.1", path = "components/platform/browser-wpe", default-features = false }
-# Zero-copy import of an externally produced GPU frame into a wgpu texture.
-# Deliberately free of every waterui dependency: it is a general interop layer
-# and lives in its own repository at water-rs/wgpu-external-frame.
-wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", rev = "d047b57e6fd8930f95c78b3e4fba7b06cd056b68" }
+wgpu-external-frame = "0.3.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }
@@ -290,26 +288,24 @@ waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # backend's nami-migration head — the published releases still require the
 # pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and
 # local-checkout scaffolds declare the commit directly while `stable`
-# withholds the packages under `experimental-packages`. The GTK and WinUI
-# heads are on nami 0.12 (water-rs/gtk-backend#144,
-# water-rs/waterui-winui#84); the Dew head is still on nami 0.11 and does not
-# build beside the `nami = "0.12"` requirement above until it moves
-# (water-rs/dew#25).
+# withholds the packages under `experimental-packages`. All three heads are
+# on nami 0.12 (water-rs/gtk-backend#144, water-rs/waterui-winui#84,
+# water-rs/dew#25).
 # Drop the `git`/`rev` half once each backend releases a migrated version.
-waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "4021fd0e9f6acdaa07665a8e465a783a254e714d" }
-waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "73385dd502702f019bebdf691223c40c71570182" }
+waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
+waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }
-waterui-dew = { version = "0.3.0", git = "https://github.com/water-rs/dew", rev = "db709fc0c29fd1b4493c014409406de710f8b915" }
+waterui-dew = { version = "0.3.0", git = "https://github.com/water-rs/dew", rev = "c1ce5d79e34b1bf343f8008f05e43b49acd8d0b5" }
 # default-features lives here, not on members: cargo rejects a member
 # `default-features` override when the workspace entry does not declare
 # one (the MSRV failure in #1551). Members name the features they need.
 waterui = { version = "0.5.2", path = ".", default-features = false }
 waterui-icons-codegen = { version = "0.5.1", path = "components/icon/codegen" }
 # Members opt into `runtime` (links wgpu) and/or `build` (naga, for build scripts).
-shaderloom = { version = "0.1.2", default-features = false }
+shaderloom = { version = "0.2.1", default-features = false }
 hydrolysis-m3 = "0.3.1"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.5.1", path = "macros" }
@@ -679,27 +675,29 @@ waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "f43d
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e0ea3655ad77c09ab1b149a7b8464748105a03d3" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "41bd909642a78c22aed55ba7c4ae362a439db4c6" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
-waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "24ff906aaaaeccfee9b014760372140be0113266" }
-# codec@d266ae57 asks for shaderloom's `runtime` feature, added after the
-# 0.1.2 registry release. This rev is shaderloom's dev with
-# water-rs/shaderloom#24, whose default enables only `runtime`, so no
-# consumer links the build-script code generator into its runtime.
+waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "be9e15dffc6bc229bcd6777f8853079190d7ae9b" }
+# `waterui-particle` and `waterui-video-gpu` still require `shaderloom`
+# ^0.1.2, whose registry release has no `runtime` feature; this rev is the
+# shaderloom dev that carries it in a 0.1.x manifest, so it patches only
+# their edge — the workspace dep and the waterkit graph resolve the
+# registry 0.2.1, which carries the explicit-target fix (water-rs/waterui#2158).
+# Drop the pin once both components move to `shaderloom` 0.2.x.
 shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "b0b6870c8b560d902c1de9a4d039c3a921b18b92" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "d780cf01082d6b24db12535ec6199a5dcbfc6ee5" }
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki dev

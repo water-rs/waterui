@@ -13,7 +13,7 @@
 //!   re-measures, and re-places the subtree, caching each container's child
 //!   frames. A reactive value change that alters a leaf's size therefore reflows
 //!   its ancestors with no `body()` rebuild.
-//! - [`RenderNode::flush`] re-encodes the subtree into the renderer's scene from
+//! - [`RenderNode::flush`] records the subtree into the nodes' programs from
 //!   the cached placements. Steady-state visual animation frames run only this
 //!   step; they do not repeat layout or window-size-limit negotiation.
 //!
@@ -101,11 +101,11 @@ use core::cell::Cell;
 use core::ops::Range;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use waterui_core::MainThreadBound;
 use waterui_core::id::{Id as RawId, SelfId};
 use waterui_core::layout::{LayoutPriority, Point, Rect, Size};
-use waterui_core::views::{AnyViews, AnyViewsSnapshot, Views};
+use waterui_core::views::{AnyViews, AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController, ScrollView, ScrollViewParts};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.
@@ -202,59 +202,43 @@ pub enum RenderNode {
 }
 
 impl RenderNode {
-    /// The render identity of this visual node itself — never looked through
-    /// to a child's. Even a layout-transparent transform/opacity wrapper owns a
-    /// distinct [`RenderId`] (separate visual ownership for engine mounts):
-    /// accessibility ancestry and render ancestry differ on purpose.
-    ///
-    /// A node keeps its id across signal-driven updates — the id is allocated
-    /// once in the node's constructor and only a structural replacement (a
-    /// `Dynamic` rebuild, a collection reconcile removal or rebuild of an
-    /// unchanged id) replaces the node and its id.
-    #[allow(dead_code)]
-    pub(crate) fn render_id(&self) -> RenderId {
+    /// The node's mount core: its cell (marks, parent link), placement
+    /// mirror and signal-guard stores. Every node owns one for its whole
+    /// lifetime — layer-owning or pass-through alike — so a mark or a
+    /// structural edit always has a live owner to attach to.
+    pub(crate) fn core(&self) -> &NodeCore {
         match self {
-            Self::Color(node) => node.render_id,
-            Self::Text(node) => node.render_id,
-            Self::Container(node) => node.render_id,
-            Self::Opacity(node) => node.render_id,
-            Self::Scale(node) => node.render_id,
-            Self::Rotation(node) => node.render_id,
-            Self::Offset(node) => node.render_id,
-            Self::Retain(node) => node.render_id,
-            Self::Env(node) => node.render_id,
-            Self::Scroll(node) => node.render_id,
-            Self::Collection(node) => node.render_id,
-            Self::LazyStack(node) => node.render_id,
-            Self::SceneView(node) => node.render_id,
-            Self::GpuContent(node) => node.render_id,
-            Self::ExternalFrame(node) => node.render_id,
-            Self::Filtered(node) => node.render_id,
-            Self::Dynamic(node) => node.render_id,
-            Self::Wrapper(node) => node.render_id,
-            Self::Fill(node) => node.render_id,
-            Self::Widget(node) => node.render_id,
+            Self::Color(node) => &node.core,
+            Self::Text(node) => &node.core,
+            Self::Container(node) => &node.core,
+            Self::Opacity(node) => &node.core,
+            Self::Scale(node) => &node.core,
+            Self::Rotation(node) => &node.core,
+            Self::Offset(node) => &node.core,
+            Self::Retain(node) => &node.core,
+            Self::Env(node) => &node.core,
+            Self::Scroll(node) => &node.core,
+            Self::Collection(node) => &node.core,
+            Self::LazyStack(node) => &node.core,
+            Self::SceneView(node) => &node.core,
+            Self::GpuContent(node) => &node.core,
+            Self::ExternalFrame(node) => &node.core,
+            Self::Filtered(node) => &node.core,
+            Self::Dynamic(node) => &node.core,
+            Self::Wrapper(node) => &node.core,
+            Self::Fill(node) => &node.core,
+            Self::Widget(node) => &node.core,
         }
     }
 
-    /// This node's mount key in the given presentation placement — ordinary
-    /// content mounts under [`PresentationId::ORDINARY`]; a hosted preview,
-    /// accessory or popup instance mounts under its own `PresentationId` so
-    /// the two can never collide.
-    #[allow(dead_code)]
-    pub(crate) fn render_key(&self, presentation: PresentationId) -> RenderKey {
-        RenderKey {
-            render: self.render_id(),
-            presentation,
-        }
-    }
-
-    /// Pre-order collection of every visual node's [`RenderId`] in the subtree,
-    /// in tree order. Test-only: the acceptance probes compare the whole
-    /// sequence across an update (unchanged nodes keep their position and id).
-    #[cfg(test)]
-    pub(crate) fn collect_render_ids(&self, out: &mut Vec<RenderId>) {
-        out.push(self.render_id());
+    /// Visits this node's direct structural children in paint order: the
+    /// subview nodes it owns inside the render tree (not widget-owned
+    /// `RetainedSubview`s, which attach to their owner's cell at
+    /// `ensure_built`). `f` receives `(attach_parent, child)` — the core the
+    /// child's cell parents to: `self`'s own core for ordinary children, a
+    /// [`CollectionEntry`]'s core for an entry's node.
+    fn for_each_child(&self, f: &mut impl FnMut(&NodeCore, &Self)) {
+        let own = self.core();
         match self {
             Self::Color(_)
             | Self::Text(_)
@@ -264,38 +248,83 @@ impl RenderNode {
             | Self::ExternalFrame(_) => {}
             Self::Container(node) => {
                 for child in &node.children {
-                    child.collect_render_ids(out);
+                    f(own, child);
                 }
             }
             Self::Collection(node) => {
                 for entry in &node.entries {
-                    entry.node.collect_render_ids(out);
+                    f(&entry.core, &entry.node);
                 }
             }
             Self::LazyStack(node) => {
-                // The visible-window cache is id-keyed (unordered); collect then
-                // sort so the sequence is comparable across frames.
-                let mut ids = Vec::new();
-                for subview in node.item_cache.borrow().values() {
-                    if let Some(child) = subview.node() {
-                        child.collect_render_ids(&mut ids);
+                // Visit materialized items in collection index order — the
+                // cache's map order is arbitrary and would scramble both
+                // attach order and the test-time `collect_cells` sequence.
+                let snapshot = node.snapshot.borrow().clone();
+                let cache = node.item_cache.borrow();
+                for index in snapshot.range() {
+                    let Some(id) = snapshot.get_id(index) else {
+                        continue;
+                    };
+                    if let Some(child) = cache.get(&id).and_then(|subview| subview.node()) {
+                        f(own, child);
                     }
                 }
-                ids.sort();
-                out.extend(ids);
             }
-            Self::Opacity(node) => node.child.collect_render_ids(out),
-            Self::Scale(node) => node.child.collect_render_ids(out),
-            Self::Rotation(node) => node.child.collect_render_ids(out),
-            Self::Offset(node) => node.child.collect_render_ids(out),
-            Self::Retain(node) => node.child.collect_render_ids(out),
-            Self::Env(node) => node.child.collect_render_ids(out),
-            Self::Scroll(node) => node.child.collect_render_ids(out),
-            Self::Filtered(node) => node.child.collect_render_ids(out),
-            Self::Dynamic(node) => node.child.borrow().collect_render_ids(out),
-            Self::Wrapper(node) => node.child.collect_render_ids(out),
-            Self::Fill(node) => node.child.collect_render_ids(out),
+            Self::Opacity(node) => f(own, &node.child),
+            Self::Scale(node) => f(own, &node.child),
+            Self::Rotation(node) => f(own, &node.child),
+            Self::Offset(node) => f(own, &node.child),
+            Self::Retain(node) => f(own, &node.child),
+            Self::Env(node) => f(own, &node.child),
+            Self::Scroll(node) => f(own, &node.child),
+            Self::Filtered(node) => f(own, &node.child),
+            Self::Dynamic(node) => {
+                let child = node.child.borrow();
+                f(own, &child);
+            }
+            Self::Wrapper(node) => f(own, &node.child),
+            Self::Fill(node) => f(own, &node.child),
         }
+    }
+
+    /// Re-roots the cell parent links of a freshly built subtree: every
+    /// descendant cell points at its structural attach parent's cell.
+    /// Called on a `RenderNode::build` product at the moment it lands in
+    /// the tree; the node's own parent is set by its caller.
+    pub(crate) fn attach_subtree(&self) {
+        self.for_each_child(&mut |parent, child| {
+            child.core().cell.set_parent(&parent.cell);
+            child.attach_subtree();
+        });
+    }
+
+    /// Unmounts the subtree's engine layers (§F): drops every
+    /// `NodeLayers` below this node and sets `PAINT|COMMIT` on each cell,
+    /// keeping the nodes and their retained state. Decision 3 runs it for
+    /// content leaving the screen, and the engine-window replacement runs
+    /// it on the whole tree before the remount. The cell walk below
+    /// reaches widget-attached `RetainedSubview` roots too — navigation
+    /// pages, lazy items and overlay content — so nothing keeps a stale
+    /// mount.
+    pub(crate) fn unmount(&self) {
+        self.core().cell.unmount_subtree();
+    }
+
+    /// Pre-order collection of every node's cell in the subtree, in tree
+    /// order (a collection entry's own cell precedes its node). Holding the
+    /// `Rc`s keeps retired addresses un-reused across a comparison.
+    /// Test-only: the acceptance probes compare the whole sequence across
+    /// an update (unchanged nodes keep their position and cell).
+    #[cfg(test)]
+    pub(crate) fn collect_cells(&self, out: &mut Vec<Rc<NodeCell>>) {
+        out.push(Rc::clone(&self.core().cell));
+        self.for_each_child(&mut |parent, child| {
+            if !Rc::ptr_eq(&parent.cell, &self.core().cell) {
+                out.push(Rc::clone(&parent.cell));
+            }
+            child.collect_cells(out);
+        });
     }
 
     /// The retained identity marking where this node's view begins, looked

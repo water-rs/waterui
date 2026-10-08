@@ -1,6 +1,6 @@
 # cherenkov-shader
 
-The shader composer shared by [Cherenkov](https://github.com/water-rs/cherenkov)
+The shader composer shared by [Cherenkov](https://github.com/water-rs/waterui/tree/dev/graphics/cherenkov)
 and [`filtrate`](https://crates.io/crates/filtrate).
 
 Every shader fragment is a naga function. A snippet is authored as WGSL, parsed

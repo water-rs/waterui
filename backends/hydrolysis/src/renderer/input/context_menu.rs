@@ -309,6 +309,10 @@ impl HydrolysisRenderer {
         if nodes.is_empty() {
             return false;
         }
+        // The menu's rows carry this window's identity — the menu belongs
+        // to it however it presents — so a Close Window row they fire
+        // targets the owner, not whichever window dispatches.
+        let env = &env.extending(self.window_id);
         // Reopening while a menu is up returns the previous presentation's
         // borrowed sub-views to their nodes first, so the new presentation
         // takes them as before.
@@ -408,7 +412,7 @@ impl HydrolysisRenderer {
                 env: env.clone(),
             });
             self.popup_menu.active_popup_menu_group = Some(group);
-            self.request_refresh();
+            self.context_mark_layout();
         } else {
             let (window, state) =
                 popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, &theme);
@@ -430,47 +434,13 @@ impl HydrolysisRenderer {
     /// accessory flushes unsuppressed — it is the interactive half of the
     /// presentation.
     fn with_preview_targets_suppressed(&mut self, f: impl FnOnce(&mut Self)) {
-        let pointer_start = self.hit_test.pointer_targets.len();
-        let gesture_start = self.gesture_engine.target_count();
-        let gesture_region_start = self.hit_test.gesture_regions.len();
-        let cursor_start = self.hit_test.cursor_targets.len();
-        let hover_start = self.hit_test.hover_targets.len();
-        let drop_start = self.hit_test.drop_targets.len();
-        let scroll_start = self.hit_test.scroll_targets.len();
-        let menu_start = self.hit_test.context_menu_targets.len();
-        let text_start = self.text_editing.text_input_targets.len();
-        let embedded_start = self.hit_test.embedded_input_targets.len();
-        let occlusion_start = self.hit_test.native_view_occlusions.len();
-
+        // The preview's registrations stay in the retained registries under
+        // a preview gate: the kinds dev truncated never materialize.
+        // A stale in-flight drag against the page beneath still clears —
+        // the signature check runs at materialization.
+        self.push_hit_gate_scope(crate::renderer::HitGate::Preview);
         f(self);
-
-        self.hit_test.pointer_targets.truncate(pointer_start);
-        self.ensure_active_pointer_drag_target_is_live();
-        self.gesture_engine.truncate_targets(gesture_start);
-        self.hit_test.gesture_regions.truncate(gesture_region_start);
-        self.hit_test.cursor_targets.truncate(cursor_start);
-        let removed_hover: Vec<_> = self.hit_test.hover_targets[hover_start..]
-            .iter()
-            .map(|target| (target.slot.clone(), target.handles.clone()))
-            .collect();
-        let now = self.frame_instant();
-        for (slot, handles) in removed_hover {
-            self.hit_test.interaction.set_hovering(&slot, false);
-            if let Some(handles) = handles {
-                handles.set_hovering(false, now);
-            }
-        }
-        self.hit_test.hover_targets.truncate(hover_start);
-        self.hit_test.drop_targets.truncate(drop_start);
-        self.hit_test.scroll_targets.truncate(scroll_start);
-        self.hit_test.context_menu_targets.truncate(menu_start);
-        self.text_editing.text_input_targets.truncate(text_start);
-        self.hit_test
-            .embedded_input_targets
-            .truncate(embedded_start);
-        self.hit_test
-            .native_view_occlusions
-            .truncate(occlusion_start);
+        self.pop_placement_scope();
     }
 
     /// Encode the open `.context_menu` presentation into this window's scene —
@@ -566,7 +536,7 @@ impl HydrolysisRenderer {
         // itself). The menu and accessory panels draw opaque over the dim —
         // their corner wedges stay scrim and their elevation shadows land on
         // it, so no square hole is punched for them.
-        self.scene.with_group(
+        self.scene_mut().with_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             1.0,
@@ -619,7 +589,7 @@ impl HydrolysisRenderer {
         // container colour, radius and elevation — the same Material surface
         // the drawn text context menu gets.
         {
-            self.scene.record_picture(transform, |draw| {
+            self.scene_mut().record_picture(transform, |draw| {
                 theme.draw_text_context_menu_panel(&mut *draw, presentation.menu_frame);
                 if let Some(accessory_frame) = presentation.accessory_frame {
                     theme.draw_text_context_menu_panel(&mut *draw, accessory_frame);
@@ -635,9 +605,12 @@ impl HydrolysisRenderer {
             self.register_hit_test_occluder(frame);
         }
 
-        presentation.menu.flush_in_rect(
+        presentation.menu.place_detached(
             self,
-            RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
+            RenderContext {
+                local: transform,
+                bounds: window,
+            },
             &presentation_env,
             bounded_proposal(presentation.menu_frame),
             presentation.menu_frame,
@@ -650,9 +623,12 @@ impl HydrolysisRenderer {
         if let Some(preview) = presentation.preview.as_mut() {
             self.with_suppressed_accessibility(|renderer| {
                 renderer.with_preview_targets_suppressed(|renderer| {
-                    preview.flush_in_rect(
+                    preview.place_detached(
                         renderer,
-                        RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
+                        RenderContext {
+                            local: transform,
+                            bounds: window,
+                        },
                         &presentation_env,
                         bounded_proposal(layout.lift),
                         layout.lift,
@@ -665,9 +641,12 @@ impl HydrolysisRenderer {
         if let Some(accessory) = presentation.accessory.as_mut() {
             let frame = presentation.accessory_frame.unwrap_or(layout.lift);
             let content = inset_rect(frame, metrics.horizontal_padding, metrics.vertical_padding);
-            accessory.flush_in_rect(
+            accessory.place_detached(
                 self,
-                RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
+                RenderContext {
+                    local: transform,
+                    bounds: window,
+                },
                 &presentation_env,
                 bounded_proposal(content),
                 content,

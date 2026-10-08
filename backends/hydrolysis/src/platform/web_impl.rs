@@ -92,18 +92,31 @@ impl BrowserSurface {
 
         // The canvas's (format, colour space) pair comes from the engine's
         // output negotiation, so the configured `colorSpace` and the encoding
-        // the present pass writes always agree.
+        // the present pass writes always agree. The page asks for SDR: an
+        // extended-range canvas puts Apple displays into EDR mode, which dims
+        // every screenshot of the page and draws more power, and no
+        // Hydrolysis host presents HDR. Display P3 keeps the wide gamut where
+        // the browser offers it; sRGB is the space every canvas offers.
         let caps = surface.get_capabilities(&adapter);
-        let selection = cherenkov_gpu::interop::select_output(
-            &caps,
-            wgpu::Backend::BrowserWebGpu,
-            cherenkov_gpu::interop::OutputRequest {
-                transparent: false,
-                color_space: None,
-                sync: cherenkov_gpu::DisplaySync::Synchronized,
-            },
-        )
-        .expect("hydrolysis web surface: the canvas offers no presentable output");
+        let selection = [wgpu::SurfaceColorSpace::DisplayP3, wgpu::SurfaceColorSpace::Srgb]
+            .into_iter()
+            .find_map(|color_space| {
+                cherenkov_gpu::interop::select_output(
+                    &caps,
+                    wgpu::Backend::BrowserWebGpu,
+                    cherenkov_gpu::interop::OutputRequest {
+                        transparent: false,
+                        color_space: Some(color_space),
+                        sync: cherenkov_gpu::DisplaySync::Synchronized,
+                    },
+                )
+                .ok()
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "hydrolysis web surface: the canvas offers neither Display P3 nor sRGB output: {caps:?}"
+                )
+            });
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: selection.format,
@@ -264,7 +277,7 @@ impl BrowserWindow {
             .document()
             .expect("hydrolysis web platform: document unavailable");
         let canvas = find_or_create_canvas(&document);
-        claim_canvas_touches(&canvas);
+        prepare_canvas(&canvas);
         let ime_input = find_or_create_ime_input(&document);
         let safe_area_probe = create_safe_area_probe(&document);
         let safe_area = nami::binding(read_safe_area(&browser_window, &safe_area_probe));
@@ -512,7 +525,6 @@ fn find_or_create_canvas(document: &Document) -> HtmlCanvasElement {
         .dyn_into::<HtmlCanvasElement>()
         .expect("hydrolysis web platform: created node is not a canvas");
     canvas.set_id("waterui-canvas");
-    canvas.set_tab_index(0);
     let style = canvas.style();
     // The layout viewport exactly: `100vh` is taller than the visible area on
     // mobile browsers, which makes the page itself pannable under the canvas.
@@ -535,15 +547,24 @@ fn find_or_create_canvas(document: &Document) -> HtmlCanvasElement {
     canvas
 }
 
-/// Hydrolysis recognizes every gesture itself, so the browser must never
-/// claim a touch on the canvas for panning or zooming: when it does, it
-/// cancels the pointer (`pointercancel` instead of `pointerup`) and a tap
-/// never reaches the view under it.
-fn claim_canvas_touches(canvas: &HtmlCanvasElement) {
-    canvas
-        .style()
-        .set_property("touch-action", "none")
-        .expect("hydrolysis web platform: failed to set the canvas touch-action");
+/// Makes the page's canvas the runtime's input surface, whether the page
+/// supplied it or the runtime created it.
+///
+/// - `touch-action: none`: Hydrolysis recognizes every gesture itself, so
+///   the browser must never claim a touch for panning or zooming; when it
+///   does, it cancels the pointer (`pointercancel` instead of `pointerup`)
+///   and a tap never reaches the view under it.
+/// - `tabindex` 0: the canvas receives the keys, which a focusable element
+///   alone can do.
+/// - `outline: none`: Hydrolysis draws focus itself.
+fn prepare_canvas(canvas: &HtmlCanvasElement) {
+    canvas.set_tab_index(0);
+    let style = canvas.style();
+    for (property, value) in [("touch-action", "none"), ("outline", "none")] {
+        style
+            .set_property(property, value)
+            .expect("hydrolysis web platform: failed to style the canvas");
+    }
 }
 
 /// A hidden element whose padding resolves the page's
@@ -808,6 +829,7 @@ fn register_listeners(
 
     {
         let canvas = canvas.clone();
+        let ime_input = ime_input.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
@@ -819,6 +841,17 @@ fn register_listeners(
                     .dyn_into::<PointerEvent>()
                     .expect("hydrolysis web platform: pointerdown event had unexpected type");
                 event.prevent_default();
+                // Preventing the default also prevents the press from focusing
+                // the canvas, which receives the keys. Text editing owns the
+                // hidden input while it holds focus; anything else returns
+                // focus to the canvas.
+                let editing = canvas
+                    .owner_document()
+                    .and_then(|document| document.active_element())
+                    .is_some_and(|active| active == *ime_input.as_ref());
+                if !editing {
+                    let _ = canvas.focus();
+                }
                 let (x, y) = event_position(
                     &canvas,
                     f64::from(event.client_x()),

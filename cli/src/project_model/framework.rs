@@ -339,6 +339,18 @@ pub(crate) fn rewrite_patch_tables(
 }
 
 impl ResolvedFramework {
+    /// The checkout root a local `waterui_path` framework resolves to —
+    /// `None` for a channel selection, whose packages all have non-path
+    /// sources. The path is the manifest's `waterui_path` joined to the
+    /// project root, so it needs canonicalizing before comparison.
+    #[must_use]
+    pub fn local_checkout_root(&self) -> Option<&Path> {
+        match &self.source {
+            Source::Local { root } => Some(root.as_path()),
+            Source::Stable { .. } | Source::Dev { .. } | Source::Nightly { .. } => None,
+        }
+    }
+
     /// The selected distribution channel — `None` for a local checkout, which
     /// is a filesystem source rather than a channel.
     #[must_use]

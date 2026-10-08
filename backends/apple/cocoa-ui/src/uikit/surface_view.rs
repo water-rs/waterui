@@ -25,7 +25,7 @@ use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::sel;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::NSSet;
-use objc2_quartz_core::CALayer;
+use objc2_quartz_core::CAMetalLayer;
 use objc2_ui_kit::{
     UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
     UIHoverGestureRecognizer, UIPanGestureRecognizer, UIPinchGestureRecognizer, UIScrollView,
@@ -50,9 +50,11 @@ pub struct SurfaceViewIvars {
     on_visibility_changed: RefCell<Option<LifecycleHandler>>,
     on_interaction: RefCell<Option<InteractionHandler>>,
     /// The layer the renderer presents frames into, a sublayer of `layer`.
-    presentation_layer: RefCell<Option<Retained<CALayer>>>,
+    presentation_layer: RefCell<Option<Retained<CAMetalLayer>>>,
     gesture_target: RefCell<Option<Retained<GestureTarget>>>,
     recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
 }
 
 impl fmt::Debug for SurfaceViewIvars {
@@ -367,7 +369,7 @@ impl SurfaceView {
         // The presentation layer is opaque-free and stretched to fit; frames
         // are rendered at device-pixel size, so the layer must not rescale
         // them — `contentsScale` carries that.
-        let presentation = CALayer::new();
+        let presentation = CAMetalLayer::new();
         presentation.setOpaque(false);
         // SAFETY: `kCAGravityResize` is a `CAContentsGravity` constant.
         // SAFETY: `kCAGravityResize` is a `CAContentsGravity` constant.
@@ -438,7 +440,7 @@ impl SurfaceView {
     /// # Panics
     ///
     /// If called before `add_presentation_layer`.
-    pub fn presentation_layer(&self) -> Retained<CALayer> {
+    pub fn presentation_layer(&self) -> Retained<CAMetalLayer> {
         self.ivars()
             .presentation_layer
             .borrow()
@@ -485,6 +487,17 @@ impl SurfaceView {
     #[must_use]
     pub fn as_platform_view(&self) -> &PlatformView {
         self
+    }
+
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
     }
 
     /// Calls `handler` after every layout pass.

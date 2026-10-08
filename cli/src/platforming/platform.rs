@@ -26,6 +26,12 @@ pub enum TargetPlatform {
     IOS,
     /// iOS Simulator (ARM64)
     IOSSimulator,
+    /// Mac Catalyst — the iOS runtime bridged onto macOS
+    /// (`aarch64-apple-ios-macabi`). It compiles against the macOS SDK's
+    /// `System/iOSSupport` frameworks, not the macOS or iOS SDKs directly.
+    /// Internal to the target model for now; no `water` platform flag
+    /// selects it (#2103).
+    MacCatalyst,
     /// tvOS (physical device)
     TvOS,
     /// tvOS Simulator
@@ -200,6 +206,13 @@ impl TargetPlatform {
                 environment: Environment::Sim,
                 binary_format: target_lexicon::BinaryFormat::Macho,
             },
+            Self::MacCatalyst => Triple {
+                architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                vendor: Vendor::Apple,
+                operating_system: OperatingSystem::IOS(None),
+                environment: Environment::Macabi,
+                binary_format: target_lexicon::BinaryFormat::Macho,
+            },
             Self::TvOS => Triple {
                 architecture: Architecture::Aarch64(Aarch64Architecture::Aarch64),
                 vendor: Vendor::Apple,
@@ -268,6 +281,7 @@ impl TargetPlatform {
             Self::MacOS => &[TargetBackend::Apple, TargetBackend::Hydrolysis],
             Self::IOS
             | Self::IOSSimulator
+            | Self::MacCatalyst
             | Self::TvOS
             | Self::TvOSSimulator
             | Self::WatchOS
@@ -289,6 +303,7 @@ impl TargetPlatform {
             Self::MacOS
             | Self::IOS
             | Self::IOSSimulator
+            | Self::MacCatalyst
             | Self::TvOS
             | Self::TvOSSimulator
             | Self::WatchOS
@@ -318,7 +333,9 @@ impl TargetPlatform {
     #[must_use]
     pub const fn sdk_name(&self) -> Option<&'static str> {
         match self {
-            Self::MacOS => Some("macosx"),
+            // Catalyst links the iOS frameworks the macOS SDK ships under
+            // `System/iOSSupport`, so its SDK is macosx too.
+            Self::MacOS | Self::MacCatalyst => Some("macosx"),
             Self::IOS => Some("iphoneos"),
             Self::IOSSimulator => Some("iphonesimulator"),
             Self::TvOS => Some("appletvos"),
@@ -348,7 +365,8 @@ impl TargetPlatform {
             Self::TvOS | Self::TvOSSimulator => Some("tvOS"),
             Self::WatchOS | Self::WatchOSSimulator => Some("watchOS"),
             Self::VisionOS | Self::VisionOSSimulator => Some("visionOS"),
-            Self::Android
+            Self::MacCatalyst
+            | Self::Android
             | Self::Linux
             | Self::Windows
             | Self::Web
@@ -368,7 +386,8 @@ impl TargetPlatform {
             Self::TvOS | Self::TvOSSimulator => Some("3"),
             Self::WatchOS | Self::WatchOSSimulator => Some("4"),
             Self::VisionOS | Self::VisionOSSimulator => Some("7"),
-            Self::MacOS
+            Self::MacCatalyst
+            | Self::MacOS
             | Self::Android
             | Self::Linux
             | Self::Windows
@@ -384,7 +403,9 @@ impl TargetPlatform {
     pub const fn deployment_target_setting(&self) -> Option<&'static str> {
         match self {
             Self::MacOS => Some("MACOSX_DEPLOYMENT_TARGET"),
-            Self::IOS | Self::IOSSimulator => Some("IPHONEOS_DEPLOYMENT_TARGET"),
+            Self::IOS | Self::IOSSimulator | Self::MacCatalyst => {
+                Some("IPHONEOS_DEPLOYMENT_TARGET")
+            }
             Self::TvOS | Self::TvOSSimulator => Some("TVOS_DEPLOYMENT_TARGET"),
             Self::WatchOS | Self::WatchOSSimulator => Some("WATCHOS_DEPLOYMENT_TARGET"),
             Self::VisionOS | Self::VisionOSSimulator => Some("XROS_DEPLOYMENT_TARGET"),
@@ -404,6 +425,7 @@ impl TargetPlatform {
         match self {
             Self::MacOS
             | Self::IOSSimulator
+            | Self::MacCatalyst
             | Self::TvOSSimulator
             | Self::WatchOSSimulator
             | Self::VisionOSSimulator
@@ -669,7 +691,10 @@ impl PackageOptions {
 
 #[cfg(test)]
 mod host_support_tests {
-    use super::{Aarch64Architecture, Architecture, Environment, TargetBackend, TargetPlatform};
+    use super::{
+        Aarch64Architecture, Architecture, Environment, OperatingSystem, TargetBackend,
+        TargetPlatform,
+    };
 
     #[test]
     fn apple_defaults_are_arm64_for_devices_and_simulators() {
@@ -677,6 +702,7 @@ mod host_support_tests {
             TargetPlatform::MacOS,
             TargetPlatform::IOS,
             TargetPlatform::IOSSimulator,
+            TargetPlatform::MacCatalyst,
             TargetPlatform::TvOS,
             TargetPlatform::TvOSSimulator,
             TargetPlatform::WatchOS,
@@ -694,6 +720,24 @@ mod host_support_tests {
             TargetPlatform::IOSSimulator.triple().environment,
             Environment::Sim
         );
+    }
+
+    #[test]
+    fn mac_catalyst_is_the_ios_triple_on_the_macabi_environment() {
+        let triple = TargetPlatform::MacCatalyst.triple();
+        assert_eq!(triple.operating_system, OperatingSystem::IOS(None));
+        assert_eq!(triple.environment, Environment::Macabi);
+        assert_eq!(triple.to_string(), "aarch64-apple-ios-macabi");
+        // Catalyst builds against the macOS SDK's bridged iOS frameworks.
+        assert_eq!(TargetPlatform::MacCatalyst.sdk_name(), Some("macosx"));
+        assert_eq!(
+            TargetPlatform::MacCatalyst.deployment_target_setting(),
+            Some("IPHONEOS_DEPLOYMENT_TARGET")
+        );
+        // Packaging answers stay unanswered — Xcode destinations and device
+        // families are #2103's job, so Catalyst fails fast on both.
+        assert_eq!(TargetPlatform::MacCatalyst.xcode_destination_name(), None);
+        assert_eq!(TargetPlatform::MacCatalyst.targeted_device_family(), None);
     }
 
     #[test]

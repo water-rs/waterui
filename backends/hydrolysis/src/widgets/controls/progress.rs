@@ -235,7 +235,7 @@ pub fn render_progress_parts(
                 let label = &mut progress.label;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label.flush_in_rect(
+                        label.place(
                             renderer,
                             render_ctx,
                             env,
@@ -316,7 +316,7 @@ pub fn render_progress_parts(
                     let value_label = &mut progress.value_label;
                     ctx.renderer_mut()
                         .with_suppressed_accessibility(|renderer| {
-                            value_label.flush_in_rect(
+                            value_label.place(
                                 renderer,
                                 render_ctx,
                                 env,

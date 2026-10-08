@@ -17,21 +17,35 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
 
 /// Resolved menu items as popup-menu nodes. A declared `MenuItem::Quit`
 /// becomes the row of the quit command [`Quit::command`] builds, and is
-/// omitted where `env` carries no application quit.
-pub fn popup_menu_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<PopupMenuNode> {
+/// omitted where `env` carries no application quit; a declared
+/// `MenuItem::CloseWindow` becomes the row [`close_window_command`] builds
+/// — disabled for a non-closable `owner_closable` — and is omitted where
+/// the host's windows cannot be closed.
+pub fn popup_menu_nodes(
+    items: &[ResolvedMenuItem],
+    env: &Environment,
+    owner_closable: bool,
+) -> Vec<PopupMenuNode> {
     items
         .iter()
         .cloned()
-        .filter_map(|item| popup_menu_node(item, env))
+        .filter_map(|item| popup_menu_node(item, env, owner_closable))
         .collect()
 }
 
-fn popup_menu_node(item: ResolvedMenuItem, env: &Environment) -> Option<PopupMenuNode> {
+fn popup_menu_node(
+    item: ResolvedMenuItem,
+    env: &Environment,
+    owner_closable: bool,
+) -> Option<PopupMenuNode> {
     match item {
         ResolvedMenuItem::Command(command) => Some(command_node(command)),
         ResolvedMenuItem::Quit => env
             .get::<Quit>()
             .map(|quit| command_node(quit.command(env))),
+        ResolvedMenuItem::CloseWindow => {
+            close_window_command(env, owner_closable).map(command_node)
+        }
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
             let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");
@@ -47,7 +61,7 @@ fn popup_menu_node(item: ResolvedMenuItem, env: &Environment) -> Option<PopupMen
             Some(PopupMenuNode::Menu {
                 label,
                 plain_label,
-                items: popup_menu_nodes(&menu.items.snapshot(), env),
+                items: popup_menu_nodes(&menu.items.snapshot(), env, owner_closable),
             })
         }
     }
@@ -223,9 +237,9 @@ pub fn render_gradient_parts(
     let width = crate::num_cast::f64_as_f32(bounds.width());
     let height = crate::num_cast::f64_as_f32(bounds.height());
     let paint = gradient_paint_in_bounds(gradient.borrow().paint().clone(), width, height);
-    let transform = ctx.transform;
+    let transform = ctx.local;
     ctx.renderer_mut()
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, paint, &bounds);
 }
 
@@ -271,9 +285,9 @@ pub fn render_shape_parts(
         )
     };
     let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
-    let transform = ctx.transform;
+    let transform = ctx.local;
     ctx.renderer_mut()
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
@@ -314,7 +328,7 @@ pub fn render_morph_shape_parts(
     _env: &Environment,
 ) {
     let bounds = ctx.bounds;
-    let transform = ctx.transform;
+    let transform = ctx.local;
     // Stable identity of this morph node: the retained shape `Rc`'s address keys the
     // time-based morph slot so it survives structural changes (no `render_depth`).
     let node_id = Rc::as_ptr(shape) as usize;
@@ -334,7 +348,7 @@ pub fn render_morph_shape_parts(
         )
     };
     renderer
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
@@ -428,7 +442,7 @@ pub fn render_str_parts(
 ) {
     let styled = StyledStr::plain(text.borrow().clone());
     let render_ctx = ctx.render_context();
-    let (state, scene) = ctx.renderer_mut().state_and_scene_mut();
+    let (state, scene) = ctx.renderer_mut().state_and_run_mut();
     HydrolysisRenderer::render_styled_text(
         state,
         scene,

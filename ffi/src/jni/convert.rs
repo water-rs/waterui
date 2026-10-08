@@ -2182,9 +2182,25 @@ impl ToJavaStruct for crate::WuiMenuItem {
             let shortcut = unsafe { *Box::from_raw(self.shortcut) };
             let modifiers = shortcut.modifiers;
             // SAFETY: the shortcut just reclaimed owns this `WuiStr`, moved out here.
-            let key: waterui::Str = unsafe { crate::IntoRust::into_rust(shortcut.key) };
+            let name: waterui::Str = unsafe { crate::IntoRust::into_rust(shortcut.key.name) };
+            // An Android menu shortcut is one character (`MenuItem.setShortcut`);
+            // `MenuBuilder` matches `'\b'` to the Backspace (`KEYCODE_DEL`) key and
+            // `'\n'` to Enter, the only named keys a shortcut character stands for.
+            let key = match shortcut.key.tag {
+                crate::WuiShortcutKeyTag::Character => char::from_u32(shortcut.key.character)
+                    .expect("a character shortcut key carries a Unicode scalar value"),
+                crate::WuiShortcutKeyTag::Named => match &*name {
+                    "Backspace" => '\u{8}',
+                    "Enter" => '\n',
+                    _ => panic!(
+                        "the shortcut key `{name}` has no Android menu shortcut: an Android \
+                         menu shortcut is a single character, and only Backspace and Enter \
+                         have one"
+                    ),
+                },
+            };
             let key = env
-                .new_string(key.as_str())
+                .new_string(key.encode_utf8(&mut [0; 4]))
                 .expect("Failed to create shortcut key string");
             (
                 JObject::from(key),

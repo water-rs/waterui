@@ -61,12 +61,14 @@ define_class!(
             if let Some(handler) = handler {
                 // The exact frame this tick is producing, readable through
                 // `FrameClock::current_target_timestamp` for the callback's
-                // duration — never an approximation from another clock.
-                self.ivars()
-                    .current_target
-                    .set(Some(link.targetTimestamp()));
+                // duration — never an approximation from another clock. The
+                // cell is cloned out before the callback runs: a callback
+                // that stops the clock drops `state.target` — possibly this
+                // object's last strong ref — so `self` is not touched after.
+                let current_target = self.ivars().current_target.clone();
+                current_target.set(Some(link.targetTimestamp()));
                 guarded("display link frame", move || handler());
-                self.ivars().current_target.set(None);
+                current_target.set(None);
             }
         }
     }

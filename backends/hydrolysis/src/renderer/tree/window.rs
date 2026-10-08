@@ -100,15 +100,19 @@ pub fn window_root_layout(
 /// The [`RenderContext`] the window tree flushes under: `bounds` inset to the
 /// safe area, with the content rect's origin folded into the transforms so
 /// placement, drawing and hit-testing all agree the window begins at (0, 0).
+/// Returns the [`RenderContext`] plus `hit_delta`, the root node's
+/// placement transform in hit space: `hit_transform * shift`, the hit-space
+/// composition of the content-rect origin the paint transform folds in.
 fn safe_area_context(
     content: kurbo::Rect,
-    transform: kurbo::Affine,
     hit_transform: kurbo::Affine,
-) -> RenderContext {
+) -> (RenderContext, kurbo::Affine) {
     let shift = kurbo::Affine::translate((content.x0, content.y0));
-    RenderContext::with_transforms(
-        kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
-        transform * shift,
+    (
+        RenderContext {
+            local: shift,
+            bounds: kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
+        },
         hit_transform * shift,
     )
 }
@@ -304,7 +308,6 @@ impl SemanticCore {
     /// pump runs this after the structural patch, so state the patch orphaned
     /// drops in the renderer's teardown order rather than ahead of it.
     fn reset_semantic_scene(&mut self) {
-        self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
@@ -318,7 +321,6 @@ impl SemanticCore {
     /// clears stay in `reset_semantic_scene`, which the pump runs after the
     /// patch like the rendered path.
     fn begin_semantic_emit_frame(&mut self) {
-        self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
@@ -331,7 +333,6 @@ impl SemanticCore {
     /// `signals.begin_rebuild` stays with the caller — only a build enters one.
     fn begin_semantic_rebuild_frame(&mut self) {
         self.state.measurement.begin_frame();
-        self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
@@ -349,7 +350,6 @@ impl SemanticCore {
     /// `signals.finish_rebuild` stays with the caller — only a build entered
     /// one.
     fn finish_semantic_rebuild_frame(&mut self, live_dynamics: &FxHashSet<usize>) {
-        self.lifecycle.finish_rebuild_frame();
         self.prune_dynamic_measurements(live_dynamics);
         self.validate_focused_text_input_after_flush();
         self.animation_controller
@@ -358,6 +358,7 @@ impl SemanticCore {
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.relocate_dropped_focus();
         self.navigation.finish_rebuild_frame();
+        self.finish_outside_read_frame();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
     }
@@ -370,9 +371,11 @@ impl SemanticCore {
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
     fn finish_semantic_emit_frame(&mut self, tree: &RenderNode, structural_change: bool) {
+        self.registries();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.navigation.finish_rebuild_frame();
+        self.finish_outside_read_frame();
         if structural_change {
             // The emit re-bound every live animation slot; drop the slots and
             // cached Dynamic measurements belonging to subtrees the patch
@@ -381,7 +384,6 @@ impl SemanticCore {
                 .finish_rebuild_frame_with_inactive_slot_retention(false);
             self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
-        self.lifecycle.finish_rebuild_frame();
         self.validate_focused_text_input_after_flush();
         self.relocate_dropped_focus();
         #[cfg(feature = "accessibility")]
@@ -406,16 +408,29 @@ impl SemanticCore {
         // Mirror `build_window_scene`: `reset_scene` runs before the frame
         // opens on the rendered build path.
         self.reset_semantic_scene();
-        self.signals.begin_rebuild();
+        self.begin_rebuild();
         self.begin_semantic_rebuild_frame();
         self.render_depth = 0;
         let tree = RenderNode::build(content, env, self);
+        // Marks on the window tree propagate to the window's root cell,
+        // which the pump polls.
+        tree.core().cell.set_parent(self.root_cell());
+        // The build is the flush for every mark it raised — registration
+        // echoes, initial-content deliveries and read catch-ups were all
+        // recorded by this pass, so only a mark raised after it may
+        // schedule more work.
+        self.clear_all_marks();
+        let _ = self.signals.take_patch_request();
         let live_dynamics = tree.collect_dynamic_identities();
         #[cfg(feature = "accessibility")]
-        tree.emit_accessibility(self, env);
+        {
+            self.begin_emit_pass();
+            tree.emit_accessibility(self, env);
+            self.finish_emit_pass();
+        }
         self.render_tree = Some(tree);
         self.finish_semantic_rebuild_frame(&live_dynamics);
-        self.signals.finish_rebuild();
+        self.finish_rebuild();
     }
 
     /// Apply pending structural changes and re-emit the retained tree's
@@ -434,6 +449,13 @@ impl SemanticCore {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
         };
+        // Producer wakes posted since the last frame mark their owners
+        // before the marks below are cleared.
+        self.drain_producer_wakes();
+        // The marks that brought this frame here are consumed by the flush;
+        // clear them up front so a mark raised mid-flush re-arms the next.
+        self.clear_all_marks();
+        self.begin_outside_read_frame();
         self.begin_semantic_emit_frame();
         let structural_change = self.take_subview_structural_change() | tree.patch(self);
         if structural_change {
@@ -444,10 +466,53 @@ impl SemanticCore {
         // measurement cache before the walk.
         self.state.measurement.begin_frame();
         #[cfg(feature = "accessibility")]
-        tree.emit_accessibility(self, _env);
+        {
+            self.begin_emit_pass();
+            tree.emit_accessibility(self, _env);
+            self.finish_emit_pass();
+        }
         self.finish_semantic_emit_frame(&tree, structural_change);
         self.render_tree = Some(tree);
         true
+    }
+}
+
+impl HydrolysisRenderer {
+    /// Records every presentation under its host cell — the text context
+    /// menu overlay, the open `.context_menu` presentation and the anchored
+    /// overlays — after the window content's flush. Each host's record
+    /// retires what its previous record registered, so a closed
+    /// presentation's occluders and targets leave with it. Every window
+    /// pass — the capture paths included — runs it, so no path leaves a
+    /// host's registrations from an earlier frame behind.
+    fn record_presentation_hosts(
+        &mut self,
+        env: &Environment,
+        transform: kurbo::Affine,
+        safe_area: &SafeAreaLayout,
+    ) {
+        // The overlay-mode text context menu re-encodes with the frame it
+        // floats over; drawing it only on the one-time build path would
+        // leave it visible for a single frame.
+        let host = self.core.presentation_hosts.text_overlay.clone();
+        self.record_host(&host, |renderer| {
+            renderer.render_active_text_context_menu_overlay(env, transform);
+            renderer.prepare_transient_text_input_overlay(env, transform);
+        });
+        // Same for an open `.context_menu` presentation: its dim backdrop,
+        // lifted preview and anchored accessory re-encode per frame and the
+        // pass is where dismiss_requests/menu-close is observed.
+        let host = self.core.presentation_hosts.context_menu.clone();
+        self.record_host(&host, |renderer| {
+            renderer.render_context_menu_presentation(transform, safe_area);
+        });
+        // Anchored overlays (`.anchored_overlay`) draw above all content:
+        // the flush registered each anchor's live bounds, so the placement
+        // contract re-runs per frame and the overlay follows moves/resizes.
+        let host = self.core.presentation_hosts.anchored.clone();
+        self.record_host(&host, |renderer| {
+            renderer.render_anchored_overlays(transform, safe_area);
+        });
     }
 }
 
@@ -463,6 +528,10 @@ impl HydrolysisRenderer {
         self.begin_rebuild_frame();
         self.render_depth = 0;
         let tree = RenderNode::build(content, env, self);
+        tree.core().cell.set_parent(self.root_cell());
+        // Build-time marks are consumed by the build itself.
+        self.clear_all_marks();
+        let _ = self.signals.take_patch_request();
         self.render_tree = Some(tree);
         self.finish_rebuild_frame();
     }
@@ -479,20 +548,6 @@ impl HydrolysisRenderer {
         transform: kurbo::Affine,
         hit_transform: kurbo::Affine,
     ) {
-        self.capture_window_tree_with_root(content, env, bounds, transform, hit_transform);
-    }
-
-    /// `capture_window_tree` returning the frame's root §7.1 context — the
-    /// runner needs it to present context menus against the window's released
-    /// regions, but `SafeAreaLayout` itself is not public surface.
-    pub(crate) fn capture_window_tree_with_root(
-        &mut self,
-        content: AnyView,
-        env: &Environment,
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        hit_transform: kurbo::Affine,
-    ) -> SafeAreaLayout {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
         let (content_rect, size, safe_area) = window_root_layout(self, env, bounds, transform);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
@@ -504,13 +559,16 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let update_started_at = Instant::now();
         self.set_window_viewport(bounds, transform);
-        let ctx = safe_area_context(content_rect, transform, hit_transform);
+        let (ctx, hit_delta) = safe_area_context(content_rect, hit_transform);
         // The tree is built once and persists. A later "rebuild" request reuses
         // it — applying pending Dynamic patches, relaying out, and re-flushing —
         // rather than rebuilding (which would re-connect each `Dynamic`, and a
         // `Dynamic` can only connect once). Called within a begin/finish rebuild
         // frame, so scene/layer flushing is handled by the caller.
         if let Some(mut tree) = self.render_tree.take() {
+            self.drain_producer_wakes();
+            self.clear_all_marks();
+            self.begin_outside_read_frame();
             tree.patch(self);
             #[cfg(feature = "frame-profile")]
             {
@@ -527,14 +585,22 @@ impl HydrolysisRenderer {
             }
             #[cfg(feature = "frame-profile")]
             let encode_started_at = Instant::now();
-            tree.flush(self, ctx, env);
-            self.render_anchored_overlays(transform, &safe_area);
+            self.present_window_backdrop(bounds, env);
+            self.core.begin_emit_pass();
+            // Window-level registrations — payloads emitted with no
+            // enclosing node — record under the root's own record.
+            let root = self.core.root_core.clone();
+            self.record_host(&root, |renderer| {
+                tree.flush(renderer, ctx, env, hit_delta);
+            });
+            self.record_presentation_hosts(env, kurbo::Affine::IDENTITY, &safe_area);
+            self.core.finish_emit_pass();
             #[cfg(feature = "frame-profile")]
             {
                 self.frame_stage_times.encode += encode_started_at.elapsed();
             }
             self.render_tree = Some(tree);
-            return safe_area;
+            return;
         }
         #[cfg(feature = "frame-profile")]
         {
@@ -542,6 +608,12 @@ impl HydrolysisRenderer {
         }
         self.render_depth = 0;
         let mut node = RenderNode::build(content, env, self);
+        node.core().cell.set_parent(self.root_cell());
+        // The build is the flush for every mark it raised (dev's rebuild
+        // generation dropped the same marks): only a mark raised by the
+        // layout/flush passes below may schedule more work.
+        self.clear_all_marks();
+        let _ = self.signals.take_patch_request();
         #[cfg(feature = "frame-profile")]
         let layout_started_at = Instant::now();
         node.prepare_for_measure(self);
@@ -553,14 +625,19 @@ impl HydrolysisRenderer {
         }
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
-        node.flush(self, ctx, env);
-        self.render_anchored_overlays(transform, &safe_area);
+        self.present_window_backdrop(bounds, env);
+        self.core.begin_emit_pass();
+        let root = self.core.root_core.clone();
+        self.record_host(&root, |renderer| {
+            node.flush(renderer, ctx, env, hit_delta);
+        });
+        self.record_presentation_hosts(env, kurbo::Affine::IDENTITY, &safe_area);
+        self.core.finish_emit_pass();
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
         }
         self.render_tree = Some(node);
-        safe_area
     }
 
     /// Apply pending structural changes, run layout, and re-encode the retained
@@ -584,9 +661,15 @@ impl HydrolysisRenderer {
         let update_started_at = Instant::now();
         let update_span = tracing::debug_span!("hydrolysis_frame_update").entered();
         self.set_window_viewport(bounds, transform);
+        // Producer wakes posted since the last frame mark their owners
+        // before the marks below are cleared.
+        self.drain_producer_wakes();
+        // The marks that brought this frame here are consumed by the flush;
+        // clear them up front so a mark raised mid-flush re-arms the next.
+        self.clear_all_marks();
+        self.begin_outside_read_frame();
         // Roll over this frame's Retain watcher guards exactly like the build path:
         // every re-encode re-reads and re-subscribes reactive visual inputs.
-        self.lifecycle.begin_rebuild_frame();
         // Reset frame-bound input registrations. Scroll, list, and table state are
         // owned by their semantic retained nodes.
         self.hit_test.begin_rebuild_frame();
@@ -626,30 +709,31 @@ impl HydrolysisRenderer {
         let encode_span = tracing::debug_span!("hydrolysis_scene_encode").entered();
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
-        let ctx = safe_area_context(content_rect, transform, hit_transform);
-        tree.flush(self, ctx, env);
-        // The overlay-mode text context menu re-encodes with the frame it floats
-        // over; drawing it only on the one-time build path would leave it visible
-        // for a single frame.
-        self.render_active_text_context_menu_overlay(env, transform);
-        // Same for an open `.context_menu` presentation: its dim backdrop,
-        // lifted preview and anchored accessory re-encode per frame and the
-        // pass is where dismiss_requests/menu-close is observed.
-        self.render_context_menu_presentation(transform, &safe_area);
-        // Anchored overlays (`.anchored_overlay`) draw above all content: the
-        // flush registered each anchor's live bounds, so the placement
-        // contract re-runs per frame and the overlay follows moves/resizes.
-        self.render_anchored_overlays(transform, &safe_area);
-        self.flush_scene_layer();
+        let (ctx, hit_delta) = safe_area_context(content_rect, hit_transform);
+        self.present_window_backdrop(bounds, env);
+        self.core.begin_emit_pass();
+        // Window-level registrations — payloads emitted with no
+        // enclosing node — record under the root's own record.
+        let root = self.core.root_core.clone();
+        self.record_host(&root, |renderer| {
+            tree.flush(renderer, ctx, env, hit_delta);
+        });
+        self.record_presentation_hosts(env, kurbo::Affine::IDENTITY, &safe_area);
+        self.core.finish_emit_pass();
         drop(encode_span);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
         }
+        self.core.registries();
+        // The materialized platform-view placements write into their tables
+        // once, here at frame end — never mid-materialization.
+        self.core.record_platform_views();
         self.core
             .hit_test
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
         self.core.navigation.finish_rebuild_frame();
+        self.core.finish_outside_read_frame();
         if structural_change {
             // The flush re-bound every live animation. Drop slots and cached
             // Dynamic measurements belonging to subtrees removed by the patch.
@@ -658,12 +742,12 @@ impl HydrolysisRenderer {
                 .finish_rebuild_frame_with_inactive_slot_retention(false);
             self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
-        self.lifecycle.finish_rebuild_frame();
         // Drop focus or drag targets that are no longer emitted, relocate the
         // focus a dropped view released, then publish the refreshed
         // accessibility tree.
         self.validate_focused_text_input_after_flush();
         self.relocate_dropped_focus();
+        self.clear_focused_fields();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
         self.render_tree = Some(tree);

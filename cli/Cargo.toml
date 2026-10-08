@@ -30,7 +30,7 @@ path = "src/terminal/main.rs"
 # Windows `canonicalize` returns extended-length paths that no other tool
 # reports; `dunce` gives the plain one and is `canonicalize` elsewhere.
 dunce = "1.0"
-cargo_metadata = "0.23.1"
+cargo_metadata.workspace = true
 # Cargo configuration load and resolution — the same hierarchical merge,
 # environment and `target.<triple>`/`target.<cfg>` precedence Cargo applies,
 # resolving the rustflags a build's flag set joins.
@@ -111,7 +111,7 @@ remove_dir_all = "1.0"
 # `version` fields are what `cargo publish` keeps — a release therefore
 # cannot ship until versions carrying those APIs publish.
 waterui-assets-core = { workspace = true, features = ["remote"] }
-waterui-assets-planner.workspace = true
+waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true
@@ -192,6 +192,10 @@ der = "0.7"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 rcgen = "=0.14.8"
+tracing-oslog = "0.3"
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.31", features = ["fs", "process", "signal"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -218,5 +222,4 @@ syn = { version = "2", features = ["full"] }
 
 [package.metadata.cargo-machete]
 ignored = ["roxmltree"]
-
 

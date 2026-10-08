@@ -164,9 +164,10 @@ pub trait TextEngine: Send + Sync + 'static {
 /// skipped for the rest of its CSS list and the generic family answers, the
 /// way a browser resolves `font-family` against whatever the host happens to
 /// carry. A test host resolves strictly: the style package a test mounts
-/// names the families its design assumes, so a missing one means the host
-/// never ran the package's font install script — the shape panics naming the
-/// family instead of silently measuring a substitute face.
+/// names the families its design assumes, so a family that is neither
+/// installed on the host nor provided by a declared font file
+/// ([`crate::DeclaredFonts`]) is a missing declaration — the shape panics
+/// naming the family instead of silently measuring a substitute face.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FontFamilyResolution {
     /// An unresolved named family falls through to the next list entry.

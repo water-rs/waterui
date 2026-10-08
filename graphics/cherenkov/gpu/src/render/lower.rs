@@ -165,8 +165,9 @@ pub struct Capture {
 /// A reduced-scale capture (`resolve.wgsl`): the pass's `region` is on the
 /// capture grid, and the device pixels under it resolve into it. With no
 /// draw ranges the resolve reads `copy_from` directly; with looked-through
-/// composites to apply first, `device` is copied 1:1 into the group's
-/// staging texture, the composites draw there, and the resolve reads it.
+/// composites to apply first, `device` is copied 1:1 into the surface's
+/// shared staging texture, the composites draw there, and the resolve
+/// reads it.
 #[derive(Clone, Copy, Debug)]
 pub struct Resolve {
     /// The capture scale `s`, below 1.
@@ -1069,8 +1070,15 @@ pub struct Lowering<'a> {
     /// `(0, 0)` for the capture's composite.
     capture_isolation: bool,
     /// Scratch depths a backdrop capture looks through — pass-through
-    /// and translucent levels alike — outer first.
-    looked_through_scratches: Vec<usize>,
+    /// and translucent levels alike — outer first, each with
+    /// `passes_start`, the length of `frame.passes` when the level
+    /// opened.
+    looked_through_scratches: Vec<(usize, usize)>,
+    /// The looked-through scratches that hold draws before the current
+    /// capture: a buffer reused across captures instead of a bitmask —
+    /// isolation depth is unbounded, so a fixed-width bitmask could
+    /// lose a level — keeping its capacity between captures.
+    painted_scratches: Vec<usize>,
     /// The nearest semantic isolation's target the capture copies from.
     semantic_target: Target,
     /// The storage space of the enclosing level, innermost last; the
@@ -1136,6 +1144,7 @@ impl<'a> Lowering<'a> {
             backdrop_filters: FxHashMap::default(),
             capture_isolation: false,
             looked_through_scratches: Vec::new(),
+            painted_scratches: Vec::new(),
             semantic_target: Target::Part(0),
             part: 0,
             promoted: Vec::new(),
@@ -1975,7 +1984,7 @@ impl<'a> Lowering<'a> {
             self.semantic_target = Target::Scratch(scratch);
         } else {
             self.looked_through_scratches.clone_from(&saved_scratches);
-            self.looked_through_scratches.push(scratch);
+            self.looked_through_scratches.push((scratch, passes_start));
         }
         self.space_stack.push(storage);
         body(self, glyphs)?;
@@ -2257,10 +2266,10 @@ impl<'a> Lowering<'a> {
 
     /// Emits the group's capture passes at the first member's paint-order
     /// position — one per region: `region` is copied from the semantic
-    /// target, then every looked-through scratch opened since it composes
-    /// over
-    /// that copy. A reduced-scale group composes over the device pixels
-    /// under the region and resolves them onto the capture grid.
+    /// target, then every looked-through scratch opened since it that
+    /// holds draws by then composes over that copy. A reduced-scale group
+    /// composes over the device pixels under the region and resolves them
+    /// onto the capture grid.
     fn emit_capture(&mut self, gid: u64) {
         let plan = &self.backdrops[&gid];
         let regions = plan.regions.clone();
@@ -2274,6 +2283,29 @@ impl<'a> Lowering<'a> {
         // linear space and composites over the copy source-over at full
         // opacity.
         self.capture_space.insert(gid, self.target_space(copy_from));
+        // Only a looked-through level that painted something before the
+        // capture composites over the copy. Whether it did is the
+        // lowering's own record: the scratch's passes since its level
+        // opened carry the instances emitted into them. An empty
+        // ancestor adds no composite — a reduced capture under it
+        // resolves straight from `copy_from`, unstaged. The open pass
+        // holds what the innermost level painted before the member; the
+        // member has not drawn yet. Close it into `frame.passes` first.
+        self.finish_pass();
+        self.painted_scratches.clear();
+        self.painted_scratches
+            .extend(
+                self.looked_through_scratches
+                    .iter()
+                    .filter_map(|&(s, start)| {
+                        self.frame.passes[start..]
+                            .iter()
+                            .any(|pass| {
+                                pass.target == Target::Scratch(s) && !pass.ranges.is_empty()
+                            })
+                            .then_some(s)
+                    }),
+            );
         for (r, region) in regions.iter().enumerate() {
             #[expect(clippy::cast_possible_truncation, reason = "regions fit u32")]
             let r = r as u32;
@@ -2295,8 +2327,8 @@ impl<'a> Lowering<'a> {
                 });
             }
             let covered = resolve.map_or(*region, |resolve| resolve.device);
-            let scratches = std::mem::take(&mut self.looked_through_scratches);
-            for &k in &scratches {
+            for i in 0..self.painted_scratches.len() {
+                let k = self.painted_scratches[i];
                 // Looked-through scratches cover the full surface (see
                 // `isolate`), so their texel origin is (0, 0), and each
                 // is stored in the copy's space — the root's linear
@@ -2310,7 +2342,6 @@ impl<'a> Lowering<'a> {
                     self.target_space(copy_from),
                 );
             }
-            self.looked_through_scratches = scratches;
             self.finish_pass();
             let pass = self.frame.passes.len() - 1;
             if let Some(key) = self.backdrop_filters.get(&gid) {

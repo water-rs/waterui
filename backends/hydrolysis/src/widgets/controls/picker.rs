@@ -3,7 +3,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry, PickerMenuRequest,
     RenderContext, RetainedSubview, WidgetRenderContext, measure_picker_intrinsic,
-    measure_picker_intrinsic_with_label_size, transformed_rect,
+    measure_picker_intrinsic_with_label_size,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -199,11 +199,9 @@ pub fn picker_accessibility(
                             target: item.tag,
                         });
                     let option_id = match option_geometry {
-                        Some((ctx, row_height, popup_rect)) => {
-                            let option_bounds = transformed_rect(
-                                ctx.hit_transform,
-                                menu_picker_option_rect(popup_rect, row_height, index),
-                            );
+                        Some((_ctx, row_height, popup_rect)) => {
+                            let option_bounds =
+                                menu_picker_option_rect(popup_rect, row_height, index);
                             renderer.register_accessibility_child_node_with_key(
                                 i64::from(i32::from(item.tag)),
                                 option,
@@ -240,7 +238,7 @@ pub fn picker_accessibility(
                     let selection = picker.selection.clone();
                     let open = Rc::clone(&menu_open);
                     let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
-                        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                        let bounds = ctx.bounds;
                         let metrics = theme.picker_metrics(PickerStyle::Menu);
                         (
                             waterui_core::layout::Point::new(
@@ -299,7 +297,7 @@ pub fn picker_accessibility(
                 });
                 let trigger_id = match ctx {
                     Some(ctx) => {
-                        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                        let bounds = ctx.bounds;
                         renderer.register_accessibility_node(node, bounds, env, action_target)
                     }
                     None => renderer.register_accessibility_node_semantic(node, env, action_target),
@@ -419,8 +417,7 @@ pub fn picker_accessibility(
                         });
                     let child_id = match row_rect {
                         Some(row_rect) => {
-                            let ctx = ctx.expect("rendered picker emits option bounds");
-                            let row_bounds = transformed_rect(ctx.hit_transform, row_rect);
+                            let row_bounds = row_rect;
                             renderer.register_accessibility_child_node_with_key(
                                 i64::from(i32::from(item.tag)),
                                 option,
@@ -448,7 +445,7 @@ pub fn picker_accessibility(
                 }
                 match ctx {
                     Some(ctx) => {
-                        let group_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                        let group_bounds = ctx.bounds;
                         let _ =
                             renderer.register_accessibility_node(group, group_bounds, env, None);
                     }
@@ -623,12 +620,13 @@ pub fn render_menu_picker(
 
     {
         let bounds = ctx.bounds;
-        let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
+        let hit_bounds = bounds;
         let (interaction, press_slot, _) =
             ctx.renderer_mut()
                 .bind_interaction_target(interaction_key, hit_bounds, env);
         {
-            let interaction = local_interaction_state(interaction, ctx.hit_transform);
+            let interaction =
+                local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
             ctx.draw_context(|draw| {
                 theme.draw_input_field(&mut *draw, bounds, interaction);
                 theme.draw_picker_indicator(&mut *draw, bounds);
@@ -798,7 +796,7 @@ fn flush_picker_label(
     let label_view = &mut state.label_view;
     ctx.renderer_mut()
         .with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_rect(
+            label_view.place(
                 renderer,
                 render_ctx,
                 env,
@@ -889,13 +887,14 @@ pub fn render_radio_picker(
                 inner_opacity: selected_progress,
             }
         };
-        let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
+        let hit_rect = row_rect;
         let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
         let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
         let (interaction, press_slot, _) =
             ctx.renderer_mut()
                 .bind_interaction_target(interaction_key, hit_rect, env);
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let interaction =
+            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         {
             ctx.draw_context(|draw| {
                 theme.draw_radio_indicator(
@@ -977,13 +976,14 @@ pub fn render_segmented_picker(
         let x0 = segment_width.mul_add(crate::num_cast::usize_as_f64(index), row_bounds.x0);
         let segment_rect = kurbo::Rect::new(x0, row_bounds.y0, x0 + segment_width, row_bounds.y1);
         let is_selected = item.tag == selected;
-        let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
+        let hit_rect = segment_rect;
         let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
         let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
         let (interaction, press_slot, _) =
             ctx.renderer_mut()
                 .bind_interaction_target(interaction_key, hit_rect, env);
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let interaction =
+            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         {
             ctx.draw_context(|draw| {
                 theme.draw_segmented_picker_segment(

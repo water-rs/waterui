@@ -362,12 +362,19 @@ impl RenderNode {
     /// build contexts carry no theme — and builds the retained sub-views its
     /// measure path then reads. Called once at each layout or measure entry
     /// point (`RetainedSubview::{measure_intrinsic, patch_and_measure,
-    /// flush_in_rect, flush_in_ctx, render_built_scene}` and the window's
+    /// place, place_in_ctx}` and the window's
     /// layout pump), before any node is measured. A semantic runtime never
     /// runs this pass, so no theme reaches it.
     pub(in crate::renderer) fn prepare_for_measure(&mut self, renderer: &mut HydrolysisRenderer) {
         match self {
-            Self::Widget(node) => node.behavior.prepare(renderer, &node.env),
+            // Prepare builds subviews and reads bindings at measure time:
+            // run it under this widget's cell as the layout reader so its
+            // builds attach to the widget, not the window root.
+            Self::Widget(node) => {
+                renderer.with_reader(&node.core, ReaderPhase::Layout, |renderer| {
+                    node.behavior.prepare(renderer, &node.env);
+                });
+            }
             Self::Opacity(node) => node.child.prepare_for_measure(renderer),
             Self::Scale(node) => node.child.prepare_for_measure(renderer),
             Self::Rotation(node) => node.child.prepare_for_measure(renderer),
@@ -408,11 +415,25 @@ impl RenderNode {
     /// subtree's area ends at — or `None` where there is none: inside a
     /// scroll surface's content and inside widget-owned retained
     /// sub-views.
+    pub(crate) fn layout(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+        proposal: ProposalSize,
+        size: Size,
+    ) {
+        let core = self.core().clone();
+        renderer.with_reader(&core, ReaderPhase::Layout, |renderer| {
+            self.layout_inner(renderer, env, safe_area, proposal, size);
+        });
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
-    pub(crate) fn layout(
+    fn layout_inner(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
@@ -570,6 +591,7 @@ impl RenderNode {
                         viewport_height,
                         content_width,
                         content_height,
+                        (0.0, 0.0),
                     )
                 } else {
                     // `report_offset`: the handle writes the content offset
@@ -587,8 +609,23 @@ impl RenderNode {
                 if let Some(controller) = &node.controller {
                     let generation = renderer.read_signal(&controller.generation());
                     if generation != node.applied_scroll_generation.get() {
-                        let target = renderer.read_signal(&controller.target());
-                        let _ = handle.scroll_to(f64::from(target.x), f64::from(target.y));
+                        let request = renderer.read_signal(&controller.request());
+                        // A request carries an optional animation: `None`
+                        // lands in place; `Some` glides along its curve via
+                        // the smooth-scroll pump this render registers.
+                        if let Some(animation) = request.animation {
+                            let _ = handle.scroll_to_animated(
+                                f64::from(request.target.x),
+                                f64::from(request.target.y),
+                                animation,
+                                renderer.frame_instant(),
+                            );
+                        } else {
+                            let _ = handle.scroll_to(
+                                f64::from(request.target.x),
+                                f64::from(request.target.y),
+                            );
+                        }
                         node.applied_scroll_generation.set(generation);
                     }
                 }

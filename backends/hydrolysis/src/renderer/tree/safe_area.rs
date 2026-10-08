@@ -22,10 +22,13 @@ use super::*;
 use core::cell::{Cell, RefCell};
 use core::ops::Range;
 
+use waterui_core::animation::Animation;
 use waterui_core::layout::{Rect, Size};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui_layout::scroll::Axis as ScrollAxis;
+
+use crate::scroll::ScrollRunOutcome;
 
 /// One of the four edges §7.1's regions sit on.
 #[derive(Clone, Copy)]
@@ -931,11 +934,10 @@ pub fn released_ctx(ctx: RenderContext, released: EdgeOffsets) -> RenderContext 
 /// laid-out frame touched — the transforms unchanged, so nothing else
 /// moves (§7.1: extension is a paint fact, not a layout fact).
 pub fn fill_paint_ctx(ctx: RenderContext, extension: EdgeOffsets) -> RenderContext {
-    RenderContext::with_transforms(
-        grow_rect(ctx.bounds, extension),
-        ctx.transform,
-        ctx.hit_transform,
-    )
+    RenderContext {
+        local: ctx.local,
+        bounds: grow_rect(ctx.bounds, extension),
+    }
 }
 
 /// The §7.1 bookkeeping one scroll surface carries: the facts layout
@@ -1030,34 +1032,65 @@ impl ScrollSurfaceArea {
     /// branch of §7.1's clearance. While the keyboard inset changes, the
     /// offset follows each frame directly — the host's own animation is
     /// the pacing, never an eased chase — using the previous frame's
-    /// stored field rect, so the content paints already clear. Returns the
-    /// text-input target count before the subtree's registrations to hand
-    /// to [`Self::end_flush`].
-    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) -> usize {
-        let targets_start = renderer.text_editing.text_input_targets.len();
+    /// stored field rect, so the content paints already clear.
+    pub fn begin_flush(&self, renderer: &HydrolysisRenderer, handle: &ScrollHandle) {
         let Some(facts) = self.facts.get() else {
-            return targets_start;
+            return;
         };
         let moved = self.keyboard_top.replace(Some(facts.keyboard_top)) != Some(facts.keyboard_top);
         self.keyboard_moved.set(moved);
         if moved && let Some(field) = self.field_window_rect(handle.metrics().offset_y) {
             Self::scroll_field_clear(renderer, handle, facts, field, false);
         }
-        targets_start
     }
 
-    /// Runs after the surface's content flushes: the focus-change branch —
-    /// a field this subtree's own registrations reported gaining focus
+    /// Registers this surface for the frame's post-record focus clearance
+    /// ([`HydrolysisRenderer::clear_focused_fields`]). The registration is
+    /// retained: a clean surface that does not record keeps it, so a field
+    /// gaining focus under it is still scrolled clear.
+    pub fn register_clearance(
+        self: &std::rc::Rc<Self>,
+        renderer: &HydrolysisRenderer,
+        handle: &ScrollHandle,
+    ) {
+        let scope = renderer
+            .reader_cell()
+            .expect("hydrolysis: a surface registers its focus clearance under its own record");
+        let cell = std::rc::Rc::downgrade(&scope);
+        let mut surfaces = renderer.text_editing.clearance_surfaces.borrow_mut();
+        let entry = crate::renderer::input::text_editing::ClearanceSurface {
+            cell,
+            area: std::rc::Rc::downgrade(self),
+            handle: handle.clone(),
+        };
+        match surfaces
+            .iter_mut()
+            .find(|surface| surface.cell.ptr_eq(&entry.cell))
+        {
+            Some(surface) => *surface = entry,
+            None => surfaces.push(entry),
+        }
+    }
+
+    /// The post-record focus-change branch — a field the registrations
+    /// of `scope`'s subtree reported gaining focus
     /// scrolls the minimum distance to `min(keyboard top, surface bottom)`,
     /// eased while the keyboard is settled and directly while it moves.
     /// The cleared field is refreshed for the next frame's early pass, and
     /// dropped when nothing in this subtree holds focus — so a user scroll
     /// afterwards is never fought.
-    pub fn end_flush(
+    ///
+    /// "This subtree's own registrations" is the owner check the retained
+    /// model keeps: dev cut the frame's emission list at the count its
+    /// content began with, and per-owner buckets carry no such boundary —
+    /// [`HydrolysisRenderer::focused_field_frame_in_scope`] reads the
+    /// focused field out of the buckets the cells under this surface's own
+    /// record wrote, so it answers exactly dev's set.
+    fn clear_focused_field(
         &self,
         renderer: &HydrolysisRenderer,
+        scope: &std::rc::Rc<crate::renderer::mount::cell::NodeCell>,
         handle: &ScrollHandle,
-        targets_start: usize,
     ) {
         let Some(facts) = self.facts.get() else {
             self.cleared.replace(None);
@@ -1069,13 +1102,10 @@ impl ScrollSurfaceArea {
         // here is always one it alone covers — nested surfaces clear the
         // same field once through the outer surface.
         let field = renderer
-            .text_editing
-            .focused_index()
-            .filter(|index| *index >= targets_start)
-            .map(|index| renderer.text_editing.text_input_targets[index].clone())
-            .map(|target| ClearedField {
-                key: target.interaction_key,
-                rect: target.frame,
+            .focused_field_frame_in_scope(scope)
+            .map(|(key, rect)| ClearedField {
+                key,
+                rect,
                 offset_y,
             });
         let newly_focused = field.as_ref().is_some_and(|field| {
@@ -1101,7 +1131,7 @@ impl ScrollSurfaceArea {
     /// change since — a user scroll or a previous clearance — translates
     /// it back. This assumes the field did not move inside the content
     /// between frames — a relayout that moves it re-captures through
-    /// `end_flush` before the next keyboard-moving pass reads it.
+    /// `clear_focused_field` before the next keyboard-moving pass reads it.
     fn field_window_rect(&self, offset_y: f64) -> Option<kurbo::Rect> {
         self.cleared
             .borrow()
@@ -1131,7 +1161,16 @@ impl ScrollSurfaceArea {
         let metrics = handle.metrics();
         let target_y = (metrics.offset_y + distance).clamp(0.0, metrics.max_y);
         let scrolled = if animated {
-            handle.scroll_to_animated(metrics.offset_x, target_y)
+            // A glide needs frames while it runs; a request that needed no
+            // travel already landed, so nothing further has to present.
+            handle
+                .scroll_to_animated(
+                    metrics.offset_x,
+                    target_y,
+                    Animation::default(),
+                    renderer.frame_instant(),
+                )
+                .is_some_and(|run| handle.scroll_run_outcome(&run) == ScrollRunOutcome::Running)
         } else {
             handle.scroll_to(metrics.offset_x, target_y)
         };
@@ -1139,7 +1178,7 @@ impl ScrollSurfaceArea {
         // that applies it (a glide also arms the pump through the scroll
         // target the surface registers every flush).
         if scrolled {
-            renderer.request_refresh();
+            renderer.core.signals.request_refresh();
         }
     }
 }
@@ -1155,4 +1194,33 @@ pub fn released_size(size: Size, released: EdgeOffsets) -> Size {
         size.width + (released.horizontal() as f32),
         size.height + (released.vertical() as f32),
     )
+}
+
+impl HydrolysisRenderer {
+    /// The frame's post-record focus clearance (§B step 7): every live
+    /// registered surface clears the focused field its subtree holds,
+    /// reading the retained registrations after recording, so a focus
+    /// change under a surface that did not record still scrolls the field
+    /// clear. Surfaces whose node or area dropped leave the list.
+    pub(crate) fn clear_focused_fields(&self) {
+        let live: Vec<_> = {
+            let mut surfaces = self.text_editing.clearance_surfaces.borrow_mut();
+            surfaces.retain(|surface| {
+                surface.cell.strong_count() > 0 && surface.area.strong_count() > 0
+            });
+            surfaces
+                .iter()
+                .filter_map(|surface| {
+                    Some((
+                        surface.cell.upgrade()?,
+                        surface.area.upgrade()?,
+                        surface.handle.clone(),
+                    ))
+                })
+                .collect()
+        };
+        for (scope, area, handle) in live {
+            area.clear_focused_field(self, &scope, &handle);
+        }
+    }
 }

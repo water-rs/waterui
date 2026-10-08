@@ -4,6 +4,7 @@
 extern crate alloc;
 
 use waterui::Identifiable;
+use waterui::component::text_field::{ContentType, KeyboardType};
 use waterui::prelude::*;
 
 use waterui_icons_lucide as lucide;
@@ -213,6 +214,8 @@ pub fn components_block_09() {
 // components.md § "## Scrolling" — rust block 10/29
 // ---------------------------------------------------------------------------
 pub fn components_block_10() {
+    use core::time::Duration;
+    use waterui::animation::Animation;
     use waterui::layout::scroll::ScrollController;
 
     fn row_view(r: Record) -> ListItem {
@@ -226,11 +229,16 @@ pub fn components_block_10() {
 
     let rows = ScrollController::<usize>::new(0);
     let list = List::for_each(records, row_view).scroll_controller(&rows);
-    rows.scroll_to(50_000); // does not materialize rows 0..50_000
+    rows.scroll_to(50_000); // jump — does not materialize rows 0..50_000
+    rows.animate_to(50_000, Animation::default()); // glide with the platform's smooth scroll
 
     let offset = ScrollController::<Point>::new(Point::zero());
     let view = scroll(content).scroll_controller(&offset);
     offset.scroll_to(Point::new(0.0, 2_400.0));
+    offset.animate_to(
+        Point::new(0.0, 2_400.0),
+        Animation::ease_in_out(Duration::from_millis(400)),
+    );
 
     let _ = (list, view);
 }
@@ -276,6 +284,7 @@ pub fn components_block_12() {
     let address = Binding::container(Str::from(""));
     let query = Binding::container(Str::from(""));
     let name = Binding::container(Str::from(""));
+    let code = Binding::container(Str::from(""));
     let fraction = 0.5_f64;
 
     let _ = {
@@ -327,6 +336,13 @@ pub fn components_block_12() {
     let _ = {
         // placeholder ≠ label
         TextField::new("Username", &name).prompt("Enter your username")
+    };
+    let _ = {
+        // .content_type declares what the field means, for autofill — it is
+        // what makes Apple offer the received SMS code; pair with .keyboard(..)
+        TextField::new("Verification code", &code)
+            .keyboard(KeyboardType::Number)
+            .content_type(ContentType::OneTimeCode)
     };
     let _ = {
         progress(fraction) // impl IntoComputed<f64>
@@ -421,7 +437,7 @@ pub fn components_block_14() -> impl View {
 // builder chain. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_command_builder_prose() {
-    use waterui::component::menu::{Shortcut, ShortcutModifiers};
+    use waterui::component::menu::{NamedKey, Shortcut, ShortcutModifiers};
 
     let flag = Binding::bool(true);
     let value = Binding::i32(0);
@@ -432,7 +448,24 @@ pub fn components_command_builder_prose() {
         .state(&value)
         .disabled(flag.clone())
         .selected(flag)
-        .shortcut(Shortcut::new("c").command());
+        .shortcut(Shortcut::new('c').command());
+    let _ = Shortcut::new('s').command();
+    let _ = Shortcut::new(NamedKey::Delete);
+}
+
+// ---------------------------------------------------------------------------
+// components.md § "## Menus, commands, context menus" (prose): the platform
+// items `MenuItem::Quit` and `MenuItem::CloseWindow` — Close Window's chord
+// is decided once for the application from its menu bar (⌘W, or ⇧⌘W/none
+// when declared commands bind it). Not counted as a rust block.
+// ---------------------------------------------------------------------------
+pub fn components_platform_menu_items_prose(env: Environment) -> waterui::app::App {
+    use waterui::component::menu::MenuItem;
+
+    waterui::app::App::new(move || text("demo"), env).menu_bar(Menu::new(
+        "File",
+        vec![MenuItem::CloseWindow, MenuItem::Divider, MenuItem::Quit],
+    ))
 }
 
 // ---------------------------------------------------------------------------

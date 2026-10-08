@@ -33,6 +33,9 @@
 #   the application: the harness answers it before `UIApplicationMain`,
 #   through `spawn`.
 #
+# Every invocation boots the device if it is shut down, under a boot lock
+# beside the launch lock (see the comment at the boot below).
+#
 # Usage:  nextest-ios-sim.sh <test-binary> [test args…]
 # Env:    WATERUI_IOS_SIM_UDID  REQUIRED — the UDID of the owned iPhone
 #         simulator the runner boots. CI creates the device itself and
@@ -51,11 +54,33 @@ if [[ -z "${WATERUI_IOS_SIM_UDID:-}" ]]; then
     exit 1
 fi
 device="$WATERUI_IOS_SIM_UDID"
+# The runner's lock files live in the device's CoreSimulator data directory
+# (its `dataPath`, also the simulator's HOME); `simctl create` makes it, so
+# it exists before the first boot.
+data="$(xcrun simctl list devices --json \
+    | jq -er --arg u "$device" '.devices[][] | select(.udid == $u) | .dataPath')"
 
 # Boot if needed and wait for it to be ready; a no-op when already booted.
+# Any concurrent invocations — nextest's concurrent listing, `cargo test`,
+# or separate runs sharing the device — race to boot a shut-down device,
+# and the loser fails with "Unable to boot device in current state:
+# Booted". The boot lock makes them converge on one boot: the first holder
+# boots, every later one finds the device booted. A waiter's bound covers
+# another run's whole cold first boot, which can take minutes on a CI
+# runner, so it matches the launch lock's 600 s; lockf exits 75
+# (EX_TEMPFAIL) when that bound passes, and passes the child's status
+# through otherwise.
 # nextest parses this runner's stdout for its list/run protocol, so
 # bootstatus chatter must stay off it.
-xcrun simctl bootstatus "$device" -b >&2
+boot_lock="$data/.waterui-nextest-ios-sim-boot.lock"
+boot_status=0
+lockf -k -t 600 "$boot_lock" xcrun simctl bootstatus "$device" -b >&2 || boot_status=$?
+if [[ "$boot_status" -eq 75 ]]; then
+    echo "nextest-ios-sim: boot lock not acquired within 600 s, or simctl bootstatus exited 75: $boot_lock" >&2
+    exit 1
+elif [[ "$boot_status" -ne 0 ]]; then
+    exit "$boot_status"
+fi
 
 if [[ -n "${WATERUI_REFERENCE_METRICS:-}" ]]; then
     export SIMCTL_CHILD_WATERUI_REFERENCE_METRICS="$WATERUI_REFERENCE_METRICS"
@@ -85,8 +110,7 @@ cp -c "$binary" "$app/$executable"
 mv "$plist" "$app/Info.plist"
 status="$work/status"
 export SIMCTL_CHILD_WATERUI_NATIVE_TEST_STATUS="$status"
-# The simulator's HOME is the device's own CoreSimulator data directory.
-lock="$(xcrun simctl getenv "$device" HOME)/.waterui-nextest-ios-sim.lock"
+lock="$data/.waterui-nextest-ios-sim.lock"
 
 # Installs `app` unless the device already holds the same executable (the
 # manifest is embedded in it), then launches it and blocks until it exits.

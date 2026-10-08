@@ -193,6 +193,18 @@ pub fn add_subview(parent: &PlatformView, child: &PlatformView) {
     parent.addSubview(child);
 }
 
+/// Adds `child` below `parent`'s existing subviews.
+pub fn add_subview_at_bottom(parent: &PlatformView, child: &PlatformView) {
+    #[cfg(target_os = "macos")]
+    parent.addSubview_positioned_relativeTo(
+        child,
+        objc2_app_kit::NSWindowOrderingMode::Below,
+        None,
+    );
+    #[cfg(target_os = "ios")]
+    parent.insertSubview_atIndex(child, 0);
+}
+
 /// Detaches `view` from its superview; does nothing when it has none.
 pub fn remove_from_superview(view: &PlatformView) {
     view.removeFromSuperview();
@@ -323,6 +335,40 @@ pub fn is_hidden_in_hierarchy(view: &PlatformView) -> bool {
         }
         false
     }
+}
+
+/// `hasVisibleAncestry` — this view and every ancestor visible: neither
+/// hidden nor fully transparent.
+///
+/// A hidden or alpha-0 view ancestor parks the surface. On `UIKit` the
+/// terminal ancestor is the `UIWindow` itself (a `UIView`): a *hidden*
+/// window still rejects, but its alpha is outside content visibility —
+/// an ordered, unrevealed window holds `alpha = 0` until first paint and
+/// must not reject the way a transparent view ancestor does. `AppKit`
+/// windows sit outside the `NSView` chain, so behavior is unchanged.
+#[must_use]
+pub fn has_visible_ancestry(view: &PlatformView) -> bool {
+    let mut node = Some(retain_base(view));
+    while let Some(current) = node {
+        if is_hidden(&current) || (!is_window_view(&current) && alpha(&current) <= 0.0) {
+            return false;
+        }
+        node = superview(&current);
+    }
+    true
+}
+
+/// Whether `view` is the window itself. Only `UIKit` keeps the window in
+/// the view-ancestor chain (`UIWindow` is a `UIView`); `AppKit` windows
+/// never appear there.
+#[cfg(target_os = "ios")]
+fn is_window_view(view: &PlatformView) -> bool {
+    use objc2::ClassType;
+    view.isKindOfClass(objc2_ui_kit::UIWindow::class())
+}
+#[cfg(not(target_os = "ios"))]
+const fn is_window_view(_view: &PlatformView) -> bool {
+    false
 }
 
 /// `view`'s opacity (`alphaValue`/`alpha`).

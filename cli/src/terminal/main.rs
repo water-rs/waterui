@@ -10,11 +10,6 @@ mod pinned_framework;
 mod project_path;
 mod shell;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use futures_util::future::{self, Either};
@@ -113,103 +108,113 @@ fn main() -> Result<()> {
 
     let shell = shell::Shell::new(cli.json);
 
-    // Cancel on Ctrl+C, and on SIGTERM/SIGHUP through the same path (the
-    // `termination` feature of `ctrlc`): a plain `kill` then still drops the
-    // running command, which is what stops the app and its log stream.
-    let cancelled = Arc::new(AtomicBool::new(false));
-    {
-        let cancelled = Arc::clone(&cancelled);
-        ctrlc::set_handler(move || {
-            cancelled.store(true, Ordering::SeqCst);
-        })
-        .expect("failed to set Ctrl+C handler");
-    }
-
-    smol::block_on({
-        let cancelled = Arc::clone(&cancelled);
-        async move {
-            waterui_cli::water_dir::ensure_global_config().await?;
-
-            let ctrl_c_future = async {
-                // Poll until cancelled
-                loop {
-                    if cancelled.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
-                }
-            };
-
-            // The passive update check stays off the `build`/`run` hot path,
-            // off machine-consumed output (`mcp`, `completions`), and never
-            // runs inside `update` itself, which checks explicitly.
-            let off_update_hot_path = !matches!(
-                cli.command,
-                Commands::Build(_)
-                    | Commands::Run(_)
-                    | Commands::Update(_)
-                    | Commands::Mcp(_)
-                    | Commands::Completions(_)
-            );
-
-            let command = async {
-                match cli.command {
-                    Commands::Create(args) => create::run(&shell, args).await,
-                    Commands::Init(args) => init::run(&shell, args).await,
-                    Commands::Channel(args) => channel::run(&shell, args).await,
-                    Commands::Run(args) => Box::pin(run::run(&shell, args)).await,
-                    Commands::Bench(args) => bench::run(&shell, args).await,
-                    Commands::Build(args) => Box::pin(build::run(&shell, args)).await,
-
-                    Commands::Package(args) => Box::pin(package::run(&shell, args)).await,
-                    Commands::Clean(args) => clean::run(&shell, args).await,
-                    Commands::Doctor(args) => doctor::run(&shell, args).await,
-                    Commands::Device(args) => device::run(&shell, args).await,
-                    Commands::Devices(args) => devices::run(&shell, args).await,
-                    Commands::Gc(args) => gc::run(&shell, args).await,
-                    Commands::Fetch(args) => fetch::run(&shell, args).await,
-                    Commands::Preview(args) => Box::pin(preview::run(&shell, args)).await,
-                    Commands::Inspector(args) => inspector::run(&shell, args).await,
-                    Commands::Mcp(args) => mcp::run(&shell, args).await,
-                    Commands::Update(args) => update::run(&shell, args).await,
-                    Commands::Completions(args) => completions::run(&args),
-                }
-            };
-
-            // Race between command execution and Ctrl+C
-            let command = std::pin::pin!(command);
-            let cancel = std::pin::pin!(ctrl_c_future);
-
-            let result = match future::select(command, cancel).await {
-                Either::Left((result, _)) => {
-                    // Command completed - check if it failed due to cancellation
-                    if cancelled.load(Ordering::SeqCst) {
-                        // Suppress errors caused by Ctrl+C interruption
-                        Ok(())
-                    } else {
-                        result
-                    }
-                }
-                Either::Right(((), _)) => {
-                    // Ctrl+C pressed - exit gracefully
-                    // The command future is dropped here, triggering cleanup
-                    Ok(())
-                }
-            };
-
-            // Clear progress bars to ensure clean exit
-            shell.clear();
-
-            if result.is_ok()
-                && off_update_hot_path
-                && let Some(notice) = waterui_cli::self_update::passive_update_notice().await
-            {
-                crate::note!(shell, "{notice}");
-            }
-
-            result
-        }
+    // Interrupts travel a channel, not a flag: the `ctrlc` handler fires on
+    // Ctrl+C, and on SIGTERM/SIGHUP through the same path (the `termination`
+    // feature of `ctrlc`). `run` receives the channel and owns its own
+    // shutdown — it must keep running after the first interrupt so its stop
+    // sequence and the app's shutdown output can complete — while every
+    // other command is raced against it and dropped.
+    let (interrupt_tx, interrupt_rx) = async_channel::unbounded();
+    ctrlc::set_handler(move || {
+        let _ = interrupt_tx.try_send(());
     })
+    .expect("failed to set Ctrl+C handler");
+
+    smol::block_on(async move {
+        waterui_cli::water_dir::ensure_global_config().await?;
+
+        // The passive update check stays off the `build`/`run` hot path,
+        // off machine-consumed output (`mcp`, `completions`), and never
+        // runs inside `update` itself, which checks explicitly.
+        let off_update_hot_path = !matches!(
+            cli.command,
+            Commands::Build(_)
+                | Commands::Run(_)
+                | Commands::Update(_)
+                | Commands::Mcp(_)
+                | Commands::Completions(_)
+        );
+
+        let result = match cli.command {
+            Commands::Run(args) => Box::pin(run::run(&shell, args, interrupt_rx))
+                .await
+                .map(Some),
+            Commands::Create(args) => {
+                Box::pin(until_interrupt(create::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Init(args) => {
+                Box::pin(until_interrupt(init::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Channel(args) => {
+                Box::pin(until_interrupt(channel::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Bench(args) => until_interrupt(bench::run(&shell, args), &interrupt_rx).await,
+            Commands::Build(args) => {
+                until_interrupt(Box::pin(build::run(&shell, args)), &interrupt_rx).await
+            }
+            Commands::Package(args) => {
+                until_interrupt(Box::pin(package::run(&shell, args)), &interrupt_rx).await
+            }
+            Commands::Clean(args) => {
+                Box::pin(until_interrupt(clean::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Doctor(args) => {
+                until_interrupt(doctor::run(&shell, args), &interrupt_rx).await
+            }
+            Commands::Device(args) => {
+                until_interrupt(device::run(&shell, args), &interrupt_rx).await
+            }
+            Commands::Devices(args) => {
+                until_interrupt(devices::run(&shell, args), &interrupt_rx).await
+            }
+            Commands::Gc(args) => until_interrupt(gc::run(&shell, args), &interrupt_rx).await,
+            Commands::Fetch(args) => {
+                Box::pin(until_interrupt(fetch::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Preview(args) => {
+                until_interrupt(Box::pin(preview::run(&shell, args)), &interrupt_rx).await
+            }
+            Commands::Inspector(args) => {
+                Box::pin(until_interrupt(inspector::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Mcp(args) => until_interrupt(mcp::run(&shell, args), &interrupt_rx).await,
+            Commands::Update(args) => {
+                until_interrupt(update::run(&shell, args), &interrupt_rx).await
+            }
+            Commands::Completions(args) => {
+                until_interrupt(async { completions::run(&args) }, &interrupt_rx).await
+            }
+        }
+        .map(|_: Option<()>| ());
+
+        // Clear progress bars to ensure clean exit
+        shell.clear();
+
+        if result.is_ok()
+            && off_update_hot_path
+            && let Some(notice) = waterui_cli::self_update::passive_update_notice().await
+        {
+            crate::note!(shell, "{notice}");
+        }
+
+        result
+    })
+}
+
+/// Race `command` against the interrupt channel; an interrupt ends it with
+/// `None`. An error the command returns while another interrupt is already
+/// queued is the interrupt's consequence, so it ends with `None` as well.
+pub(crate) async fn until_interrupt<T>(
+    command: impl std::future::Future<Output = Result<T>>,
+    interrupts: &smol::channel::Receiver<()>,
+) -> Result<Option<T>> {
+    let command = std::pin::pin!(command);
+    let interrupt = std::pin::pin!(interrupts.recv());
+    match future::select(command, interrupt).await {
+        Either::Left((Err(_), _)) if interrupts.try_recv().is_ok() => Ok(None),
+        Either::Left((result, _)) => result.map(Some),
+        Either::Right(_) => Ok(None),
+    }
 }
 
 fn init_cli_tracing() {
