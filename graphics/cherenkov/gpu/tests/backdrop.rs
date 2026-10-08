@@ -1790,7 +1790,7 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
 // `cherenkov::testing`, shared with the CPU suite. `union_bridge` stays
 // per-suite: its engine call shape differs (`wait!`-driven `&Engine<Gpu>`
 // here vs a fresh sync `Engine<Raster>` in the CPU file).
-use cherenkov::testing::{circle_field, cover, ownership, rect_sdf, smin};
+use cherenkov::testing::{circle_field, cover, ownership, rect_field, rect_sdf, smin};
 
 /// Two bridge members 6 px apart on the shared field (`k = 20` joins a
 /// gap below `k/2`), rendered with the given member opacities and paint
@@ -1960,11 +1960,6 @@ fn the_seam_weights_ramp_across_one_pixel() -> Result<(), Box<dyn std::error::Er
             let cov = cover(field);
             let wa = ownership(&members, 0);
             let wb = ownership(&members, 1);
-            assert!(
-                (wa + wb - 1.0).abs() <= 1e-3,
-                "weights at ({col}, {row}) sum to {}",
-                wa + wb
-            );
             let single = 0.125 * cov;
             let deposit_a = pixel(&only_a, col, row)[3] - 0.5;
             let deposit_b = pixel(&only_b, col, row)[3] - 0.5;
@@ -1986,7 +1981,14 @@ fn the_seam_weights_ramp_across_one_pixel() -> Result<(), Box<dyn std::error::Er
     }
     // The ramp is one pixel wide: column 21 saturates to member a and
     // column 23 to member b; the straddling column 22 is fractional.
-    let wa = |col: usize| ownership(&fields(col, 16), 0);
+    // Read the rendered weight — member a's deposit share of the
+    // coverage — not the helper's.
+    let wa = |col: usize| {
+        let members = fields(col, 16);
+        let field = smin(members[0].0.min(members[1].0), members[0].0.max(members[1].0), 20.0);
+        let single = 0.125 * cover(field);
+        (pixel(&only_a, col, 16)[3] - 0.5) / single
+    };
     assert!(wa(21) > 0.95, "w_a at column 21: {}", wa(21));
     assert!(wa(23) < 0.05, "w_a at column 23: {}", wa(23));
     let mid = wa(22);
@@ -2037,19 +2039,19 @@ fn the_three_weights_sum_to_one_near_a_triple_point() -> Result<(), Box<dyn std:
             let field = smin(smin(ds[0], ds[1], 20.0), ds[2], 20.0);
             let cov = cover(field);
             let single = 0.125 * cov;
-            let mut wsum = 0.0f32;
+            let mut dsum = 0.0f32;
             for (i, alone) in alones.iter().enumerate() {
                 let w = ownership(&members, i);
-                wsum += w;
                 let deposit = pixel(alone, col, row)[3] - 0.5;
+                dsum += deposit;
                 assert!(
                     single.mul_add(-w, deposit).abs() <= 3e-3,
                     "pixel ({col}, {row}): member {i}'s deposit {deposit} != {single}·w (w = {w})"
                 );
             }
             assert!(
-                (wsum - 1.0).abs() <= 1e-3,
-                "weights at ({col}, {row}) sum to {wsum}"
+                (dsum - single).abs() <= 3e-3,
+                "deposits at ({col}, {row}) sum to {dsum} != {single}"
             );
         }
     }
@@ -2334,6 +2336,16 @@ fn a_screen_member_bridges_outside_its_clip() -> Result<(), Box<dyn std::error::
                 (got - want).abs() <= 3e-3,
                 "pixel ({col}, {row}): deposit {got} != {want} (w_a = {wa})"
             );
+            // Screen brightens toward the backdrop: premultiplied, the
+            // member's captured red adds `s + d - s·d` — the deposit's
+            // share reaches the red channel too, not just alpha.
+            let rgb = pixel(&only_a, col, row);
+            let want_r = 0.5 + want;
+            assert!(
+                (rgb[0] - want_r).abs() <= 4e-3,
+                "pixel ({col}, {row}): Screen red {} != {want_r}",
+                rgb[0]
+            );
         }
     }
     assert!(
@@ -2346,9 +2358,9 @@ fn a_screen_member_bridges_outside_its_clip() -> Result<(), Box<dyn std::error::
 
 split_test! {
 /// In a backdrop group with no union field, a member carrying an outer
-/// band and a plain member mix: the band member draws its band and the
-/// plain member is not inflated.
-fn a_plain_member_in_a_mixed_group_is_not_inflated() -> Result<(), Box<dyn std::error::Error>> {
+/// band and a plain member mix: lowering must not panic, the band
+/// member draws its band, and the plain member keeps its clip coverage.
+fn a_mixed_group_without_a_union_draws_the_band() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
     let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
@@ -2396,17 +2408,22 @@ fn a_plain_member_in_a_mixed_group_is_not_inflated() -> Result<(), Box<dyn std::
 }
 
 split_test! {
-/// Union members carrying an outer band keep ownership weights summing
-/// to one at the field's outer antialiased edge.
-fn the_seam_weights_sum_to_one_at_the_outer_edge() -> Result<(), Box<dyn std::error::Error>> {
-    const CIRCLES: &[(f64, f64, f64)] = &[(12.3, 16.0, 16.0), (32.3, 16.0, 16.0)];
-    const OUTER: f32 = 4.0;
+/// A destructive-blend union member under a masked ancestor: the member
+/// clip (`RoundedRect`, unmergeable against the ancestor's path mask)
+/// isolates, so the member's sample must composite under the ancestor
+/// clip the scope applies — not under a clip value captured before.
+/// `SrcOut` drops the backdrop under the member, leaving `0.5·src` —
+/// an instance clipped against mask texel (0, 0) would deposit nothing.
+fn a_destructive_member_under_a_masked_ancestor_samples_its_union() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((48, 40), OffscreenFormat::LinearF32), || {}))?;
     let group = surface.backdrop_group_unfiltered(
-        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+        cherenkov::BackdropSpec::FULL
+            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
     );
-    let members: Vec<_> = CIRCLES.iter().map(|_| surface.layer()).collect();
+    let ancestor = surface.layer();
+    let a = surface.layer();
+    let b = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
@@ -2414,10 +2431,70 @@ fn the_seam_weights_sum_to_one_at_the_outer_edge() -> Result<(), Box<dyn std::er
                 WorkingColor::new([1.0, 0.0, 0.0, 0.5]),
             );
         }));
-        for (member, &(cx, cy, radius)) in members.iter().zip(CIRCLES.iter()) {
+        tx[surface.root()].push(&ancestor);
+        // A triangle clip masks: the ancestor's clip has no analytic
+        // edge a member clip could merge with.
+        tx[&ancestor].clip(cherenkov::ShapeData::Path {
+            elements: vec![
+                cherenkov::kurbo::PathEl::MoveTo((0.0, 0.0).into()),
+                cherenkov::kurbo::PathEl::LineTo((48.0, 0.0).into()),
+                cherenkov::kurbo::PathEl::LineTo((48.0, 40.0).into()),
+                cherenkov::kurbo::PathEl::ClosePath,
+            ]
+            .into(),
+            rule: cherenkov::FillRule::NonZero,
+        });
+        tx[&ancestor].push(&a);
+        tx[&ancestor].push(&b);
+        tx[&a]
+            .clip(RoundedRect::new(30.0, 10.0, 40.0, 20.0, 3.0))
+            .backdrop(group.sample())
+            .blend(cherenkov::BlendMode::SrcOut)
+            .opacity(0.5f32);
+        tx[&b]
+            .clip(RoundedRect::new(36.0, 18.0, 46.0, 28.0, 3.0))
+            .backdrop(group.sample())
+            .opacity(0.5f32);
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Deep in member a's zone (w_a = 1, coverage 1) the member's sample
+    // deposits the captured red at strength: over the `0.5`-alpha
+    // backdrop the pixel reads `0.5 + 0.25·0.5 = 0.625`. An instance
+    // clipped against mask texel (0, 0) would deposit nothing here.
+    assert_pixel(pixel(&readback, 32, 14), [0.625, 0.0, 0.0, 0.625], 3e-3);
+    // At the seam midpoint (35.5, 20.5) the weights split: w_a = 0.5.
+    assert_pixel(pixel(&readback, 35, 20), [0.5625, 0.0, 0.0, 0.5625], 4e-3);
+    Ok(())
+}
+}
+
+split_test! {
+/// Union members carrying an outer band keep ownership weights summing
+/// to one at the field's outer antialiased edge. The members are rects:
+/// their bounds hug the shape exactly, so a draw bound one pixel short —
+/// `r(n) + outer + 1` — would clip the outermost sampled pixels a member
+/// still owns.
+fn the_seam_weights_sum_to_one_at_the_outer_edge() -> Result<(), Box<dyn std::error::Error>> {
+    const RECTS: [Rect; 2] = [Rect::new(6.0, 13.5, 24.0, 31.5), Rect::new(24.0, 13.5, 42.0, 31.5)];
+    const OUTER: f32 = 4.0;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 40), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let members: Vec<_> = RECTS.iter().map(|_| surface.layer()).collect();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 40.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 0.5]),
+            );
+        }));
+        for (member, rect) in members.iter().zip(RECTS.iter()) {
             tx[surface.root()].push(member);
             tx[member]
-                .clip(Circle::new((cx, cy), radius))
+                .clip(*rect)
                 .backdrop(
                     group
                         .sample()
@@ -2437,15 +2514,13 @@ fn the_seam_weights_sum_to_one_at_the_outer_edge() -> Result<(), Box<dyn std::er
     let only_a = render(&[0.5, 0.0])?;
     let only_b = render(&[0.0, 0.5])?;
     let mut edge_pixels = 0usize;
+    let mut pad_pixels = 0usize;
     #[expect(clippy::cast_precision_loss, reason = "pixel coords stay small")]
     for row in 4..38usize {
         for col in 4..44usize {
             let px = col as f32 + 0.5;
             let py = row as f32 + 0.5;
-            let members = [
-                circle_field(px, py, 12.3, 16.0, 16.0),
-                circle_field(px, py, 32.3, 16.0, 16.0),
-            ];
+            let members = [rect_field(px, py, RECTS[0]), rect_field(px, py, RECTS[1])];
             let field = smin(
                 members[0].0.min(members[1].0),
                 members[0].0.max(members[1].0),
@@ -2460,11 +2535,6 @@ fn the_seam_weights_sum_to_one_at_the_outer_edge() -> Result<(), Box<dyn std::er
             edge_pixels += 1;
             let wa = ownership(&members, 0);
             let wb = ownership(&members, 1);
-            assert!(
-                (wa + wb - 1.0).abs() <= 1e-3,
-                "weights at ({col}, {row}) sum to {}",
-                wa + wb
-            );
             let deposit_a = pixel(&only_a, col, row)[3] - 0.5;
             let deposit_b = pixel(&only_b, col, row)[3] - 0.5;
             // The ownership weights partition the actual deposit: each
@@ -2487,9 +2557,30 @@ fn the_seam_weights_sum_to_one_at_the_outer_edge() -> Result<(), Box<dyn std::er
                     "pixel ({col}, {row}): no deposit at the outer edge (cov = {cov})"
                 );
             }
+            // The pad's last half pixel: an owner reaches `r(n) + outer +
+            // 1.5` past its bounds — bound-distance in (9, 9.5] — where a
+            // `+1` bound would clip its deposit away.
+            for (i, rect) in RECTS.iter().enumerate() {
+                if ownership(&members, i) < 0.05 {
+                    continue;
+                }
+                let dist = rect_field(px, py, *rect).0.max(0.0);
+                if (9.0..=9.5).contains(&dist) {
+                    let deposit = pixel(if i == 0 { &only_a } else { &only_b }, col, row)[3] - 0.5;
+                    pad_pixels += 1;
+                    assert!(
+                        deposit > 1e-3,
+                        "pixel ({col}, {row}): member {i}'s deposit {deposit} was clipped by the draw bound"
+                    );
+                }
+            }
         }
     }
     assert!(edge_pixels > 0, "the outer antialiased edge had no pixels");
+    assert!(
+        pad_pixels > 0,
+        "no pixel lay in the draw bound's last half pixel"
+    );
     Ok(())
 }
 }

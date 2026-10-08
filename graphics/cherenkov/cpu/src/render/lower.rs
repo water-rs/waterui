@@ -505,13 +505,15 @@ impl BackdropPlan {
 
 /// One backdrop member's plan entry.
 struct Member {
-    /// The member's device-space clip bounds, inflated by the effect's
-    /// sampling reach.
+    /// The member's device-space clip bounds.
     bounds: Rect,
     /// The member's draw bounds: `bounds` further inflated by the
     /// union's `r(n)` and `outer` plus 1.5px of antialiasing, so bridge
     /// pixels between members are captured and painted.
     draw: Rect,
+    /// The member's effect sampling reach — it inflates the capture
+    /// footprint, never the draw bounds.
+    reach: f64,
     /// The member's own clip flattened to device-space edges, when the
     /// group unions its members or the member draws an `outer` band.
     edges: Option<Arc<[Edge]>>,
@@ -1024,7 +1026,6 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 ));
             }
             let (effect, reach) = member_effect(sample.effect(), clip, transform)?;
-            let member = member.inflate(reach, reach);
             // An SDF effect already flattened the same clip; reuse its
             // edges rather than flattening twice.
             let edges = field_member
@@ -1054,7 +1055,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 union_members: Arc::from([]),
                 scope: scopes.last().copied(),
             });
-            plan.union = plan.union.union(member);
+            // The capture footprint inflates the clip bounds by the
+            // effect's reach — the union pad lands in `plan_union`.
+            plan.union = plan.union.union(member.inflate(reach, reach));
             let ord = u32::try_from(plan.order.len())
                 .expect("a group's members never exceed MAX_MEMBERS");
             plan.order.push(id);
@@ -1063,6 +1066,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 Member {
                     bounds: member,
                     draw: member,
+                    reach,
                     edges,
                     outer,
                     ord,
@@ -1237,7 +1241,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 0.0
             };
             member.draw = member.bounds.inflate(pad, pad);
-            union = union.union(member.draw);
+            // The capture footprint carries the effect's reach too;
+            // the draw bounds do not.
+            union = union.union(
+                member
+                    .bounds
+                    .inflate(member.reach + pad, member.reach + pad),
+            );
             if union_spec.is_some() {
                 members.push(
                     member

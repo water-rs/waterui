@@ -3004,6 +3004,36 @@ pub fn circle_field(px: f32, py: f32, cx: f32, cy: f32, r: f32) -> (f32, [f32; 2
     (len - r, [dx / len, dy / len])
 }
 
+/// Signed distance and unit outward normal of an axis-aligned rect's
+/// analytic SDF — the clip's `sdf_sample` result. Shared by the GPU and
+/// CPU backdrop test suites.
+#[must_use]
+#[expect(clippy::cast_possible_truncation, reason = "test coords stay small")]
+pub fn rect_field(px: f32, py: f32, rect: kurbo::Rect) -> (f32, [f32; 2]) {
+    let qx = (f64::from(px) - rect.x0.midpoint(rect.x1)).abs() - (rect.x1 - rect.x0) / 2.0;
+    let qy = (f64::from(py) - rect.y0.midpoint(rect.y1)).abs() - (rect.y1 - rect.y0) / 2.0;
+    let d = (qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0)) as f32;
+    let sx = if px >= rect.x0.midpoint(rect.x1) as f32 {
+        1.0
+    } else {
+        -1.0
+    };
+    let sy = if py >= rect.y0.midpoint(rect.y1) as f32 {
+        1.0
+    } else {
+        -1.0
+    };
+    let (ox, oy) = (qx.max(0.0) as f32 * sx, qy.max(0.0) as f32 * sy);
+    let len = ox.hypot(oy);
+    if len > 1e-6 {
+        (d, [ox / len, oy / len])
+    } else if qx > qy {
+        (d, [sx, 0.0])
+    } else {
+        (d, [0.0, sy])
+    }
+}
+
 /// The ownership weight of `members[member]` under the union contract.
 ///
 /// `a_i = clamp(0.5 + f_i/|∇f_i|, 0, 1)` with `f_i = d₂ − d_i`, `d₂` the

@@ -1,5 +1,10 @@
 //! Deterministic checks for the reference rasterizer and metrics.
 
+/// The shared union member cap — the same definition the oracle's
+/// renderer reads, pulled in without depending on the engine crate.
+#[path = "../../src/union_cap.rs"]
+mod union_cap;
+
 use cherenkov_oracle::color::{linear_srgb_to_linear_p3, to_working};
 use cherenkov_oracle::{Renderer, metrics};
 use cherenkov_scene::{Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape};
@@ -803,6 +808,18 @@ fn refraction_on_a_path_clip_is_the_named_error() {
 // helpers so the oracle's test suite stays independent of the engine.
 
 /// Signed distance and unit outward normal of a circle's analytic SDF.
+/// The smooth-min fold `min − h²·k/4`, mirroring `cherenkov::testing::smin`.
+fn smin(a: f64, b: f64, k: f64) -> f64 {
+    let h = (k - (a - b).abs()).max(0.0) / k;
+    (h * h * k).mul_add(-0.25, a.min(b))
+}
+
+/// Antialiased coverage `clamp(0.5 − field, 0, 1)`, mirroring
+/// `cherenkov::testing::cover`.
+fn cover(field: f64) -> f64 {
+    (0.5 - field).clamp(0.0, 1.0)
+}
+
 fn circle_field(px: f64, py: f64, cx: f64, cy: f64, r: f64) -> (f64, [f64; 2]) {
     let dx = px - cx;
     let dy = py - cy;
@@ -886,11 +903,6 @@ fn the_seam_weights_ramp_across_one_pixel() {
             let members = fields(col, row);
             let wa = ownership(&members, 0);
             let wb = ownership(&members, 1);
-            assert!(
-                (wa + wb - 1.0).abs() <= 1e-3,
-                "weights at ({col}, {row}) sum to {}",
-                wa + wb
-            );
             let deposit_a = f64::from(px(&only_a, col, row)[3]) - 0.5;
             let deposit_b = f64::from(px(&only_b, col, row)[3]) - 0.5;
             // The weights partition the actual deposit.
@@ -903,11 +915,29 @@ fn the_seam_weights_ramp_across_one_pixel() {
                 wb.mul_add(-sum, deposit_b).abs() <= 3e-3,
                 "pixel ({col}, {row}): member b's deposit {deposit_b} != {wb}·{sum}"
             );
+            // The weights sum to one on the render: the deposits add up
+            // to a single member's coverage `0.125·cover(field)`.
+            let field = smin(
+                members[0].0.min(members[1].0),
+                members[0].0.max(members[1].0),
+                20.0,
+            );
+            let single = 0.125 * cover(field);
+            assert!(
+                (sum - single).abs() <= 3e-3,
+                "pixel ({col}, {row}): deposits {deposit_a} + {deposit_b} = {sum} != {single}"
+            );
         }
     }
     // The ramp is one pixel wide: column 21 saturates to member a and
     // column 23 to member b; the straddling column 22 is fractional.
-    let wa = |col: usize| ownership(&fields(col, 16), 0);
+    // Read the rendered weight — member a's deposit share — not the
+    // helper's.
+    let wa = |col: usize| {
+        let a = f64::from(px(&only_a, col, 16)[3]) - 0.5;
+        let b = f64::from(px(&only_b, col, 16)[3]) - 0.5;
+        a / (a + b)
+    };
     assert!(wa(21) > 0.95, "w_a at column 21: {}", wa(21));
     assert!(wa(23) < 0.05, "w_a at column 23: {}", wa(23));
     let mid = wa(22);
@@ -936,7 +966,6 @@ fn the_three_weights_sum_to_one_near_a_triple_point() {
                 let (cx, cy, r) = CIRCLES[i];
                 circle_field(px, py, cx, cy, r)
             });
-            let mut wsum = 0.0f64;
             let mut deposits = Vec::new();
             for alone in &alones {
                 deposits.push(f64::from(alone.pixels[row * 48 + col][3]) - 0.5);
@@ -944,25 +973,30 @@ fn the_three_weights_sum_to_one_near_a_triple_point() {
             let sum: f64 = deposits.iter().sum();
             for (i, &w_deposit) in deposits.iter().enumerate() {
                 let w = ownership(&members, i);
-                wsum += w;
                 assert!(
                     w.mul_add(-sum, w_deposit).abs() <= 3e-3,
                     "pixel ({col}, {row}): member {i}'s deposit {w_deposit} != {w}·{sum}"
                 );
             }
+            // The weights sum to one on the render: the deposits add up
+            // to a single member's coverage `0.125·cover(field)`.
+            let mut ds = members.map(|(d, _)| d);
+            ds.sort_by(f64::total_cmp);
+            let field = smin(smin(ds[0], ds[1], 20.0), ds[2], 20.0);
+            let single = 0.125 * cover(field);
             assert!(
-                (wsum - 1.0).abs() <= 1e-3,
-                "weights at ({col}, {row}) sum to {wsum}"
+                (sum - single).abs() <= 3e-3,
+                "pixel ({col}, {row}): deposits sum to {sum} != {single}"
             );
         }
     }
 }
 
 /// In a backdrop group with no union field, a member carrying an outer
-/// band and a plain member mix: the band member draws its band and the
-/// plain member is not inflated.
+/// band and a plain member mix: rendering must not panic, the band
+/// member draws its band, and the plain member keeps its clip coverage.
 #[test]
-fn a_plain_member_in_a_mixed_group_is_not_inflated() {
+fn a_mixed_group_without_a_union_draws_the_band() {
     let mut b = Scene::builder(48, 32);
     b.backdrop_group(1, vec![], 1.0, 1);
     b.root().fill(
@@ -1046,7 +1080,7 @@ fn a_degenerate_union_member_is_unsupported() {
 fn union_members_past_the_cap_are_unsupported() {
     let mut b = Scene::builder(48, 32);
     b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
-    for _ in 0..=32 {
+    for _ in 0..=union_cap::UNION_MAX_MEMBERS {
         b.root().layer(|m| {
             m.clip(Shape::Rect(Rect::new(4.0, 8.0, 20.0, 24.0)));
             m.backdrop(1);
@@ -1059,6 +1093,6 @@ fn union_members_past_the_cap_are_unsupported() {
             e.to_string().contains("backdrop-union-members"),
             "unexpected error {e}"
         ),
-        Ok(_) => panic!("33 union members exceed the cap and must fail"),
+        Ok(_) => panic!("union members past UNION_MAX_MEMBERS must fail"),
     }
 }

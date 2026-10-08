@@ -35,7 +35,7 @@
 //! into a fresh canvas, so a member sitting inside pass-through or
 //! `opacity < 1` ancestors sees the semantic level's canvas composited
 //! with each ancestor's partial contents in order, at each ancestor's
-//! full opacity (see [`flattened`]): the sample is what lies behind
+//! full opacity (see `flattened`): the sample is what lies behind
 //! them. Every looked-through ancestor's opacity still applies to the
 //! whole result when that ancestor composites, so a fading material
 //! panel fades rather than disappearing. A member that

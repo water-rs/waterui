@@ -1054,6 +1054,15 @@ pub struct Lowering<'a> {
     mask_key: Option<u64>,
     /// The current clip's pending mask raster index, if any.
     mask_pending: Option<u32>,
+    /// The clip in force outside the innermost layer clip of the
+    /// current target — a member layer's ancestors. The layer walk
+    /// refreshes it to `clip` at each layer boundary, `run_clipped`'s
+    /// merge arms set it to the pre-merge clip and its isolate arms to
+    /// `None` (the scratch's composite applies the outer clip itself),
+    /// both restoring it afterwards. A union member's sample instance
+    /// carries it, so the instance's clip mask always matches
+    /// `mask_pending`.
+    member_outer_clip: Option<DeviceClip>,
     /// Atlas writes and cache updates to commit, in lowering order.
     pub(crate) pending: Vec<PendingRaster>,
     /// Path identities admitted during this lowering, before atlas commit.
@@ -1130,6 +1139,7 @@ impl<'a> Lowering<'a> {
             clip: None,
             mask_key: None,
             mask_pending: None,
+            member_outer_clip: None,
             depth: 0,
             glyphs: 0,
             paths: 0,
@@ -2380,8 +2390,9 @@ impl<'a> Lowering<'a> {
     }
 
     /// Whether `member` draws against group `gid`'s union field: its
-    /// sample's instance clip carries the ancestors only, so a
-    /// non-destructive member may emit it outside the member clip scope.
+    /// sample's instance clip carries `member_outer_clip` — the clip in
+    /// force outside the member's own clip scope — so a non-destructive
+    /// member may emit it outside the member clip scope.
     fn union_member(&self, gid: u64, member: LayerId) -> bool {
         self.backdrops
             .get(&gid)
@@ -2402,7 +2413,6 @@ impl<'a> Lowering<'a> {
         gid: u64,
         member: LayerId,
         effect: Option<&cherenkov::BackdropEffect>,
-        ancestors: Option<DeviceClip>,
     ) -> Result<(), RenderError> {
         let Some(plan) = self.backdrops.get(&gid) else {
             return Ok(());
@@ -2436,10 +2446,13 @@ impl<'a> Lowering<'a> {
             return Ok(());
         }
         let mut inst = if entry.union.is_some() {
-            // A union-field member's instance clip carries the ancestors
-            // only: the member's own clip is in its union record, and the
-            // ownership-weighted field replaces its coverage term.
-            Self::base(KIND_SPAN, affine(Affine::IDENTITY), ancestors)
+            // A union-field member's instance clip carries the clip in
+            // force outside the member's own clip scope: the member's
+            // own clip is in its union record, and the ownership-weighted
+            // field replaces its coverage term. The scope tracks it — a
+            // value captured earlier could name a mask `mask_pending`
+            // no longer holds.
+            Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.member_outer_clip)
         } else {
             Self::base(KIND_SPAN, affine(Affine::IDENTITY), self.clip)
         };
@@ -2695,12 +2708,21 @@ impl<'a> Lowering<'a> {
                 if clip.mask.is_none()
                     && let (Some(cr), Some(dr)) = (cur.aligned_rect, clip.aligned_rect)
                 {
+                    // A member's sample inside keeps the pre-merge clip:
+                    // the merged clip's mask is `cur`'s, so its patch
+                    // still resolves through `mask_pending`.
+                    let outer = self.member_outer_clip.replace(cur);
                     self.set_clip(Some(merged_rect(cr, dr, cur.mask)));
-                    body(self, glyphs)?;
+                    let result = body(self, glyphs);
+                    self.member_outer_clip = outer;
                     self.set_clip(Some(cur));
-                    return Ok(());
+                    return result;
                 }
-                self.isolate(
+                // Inside the isolated clip scope the member's sample
+                // clip is `None`: the scratch's composite applies the
+                // outer clip itself.
+                let outer = self.member_outer_clip.take();
+                let result = self.isolate(
                     Some(clip),
                     None,
                     1.0,
@@ -2708,43 +2730,56 @@ impl<'a> Lowering<'a> {
                     cherenkov::BlendSpace::Linear,
                     body,
                     glyphs,
-                )
+                );
+                self.member_outer_clip = outer;
+                result
             }
             Some(cur) => match (clip.mask, cur.aligned_rect, clip.aligned_rect) {
                 // A new masked clip merges with an aligned rect clip (or
                 // attaches to the current clip's analytic shape).
                 (Some(mask), Some(cr), Some(dr)) => {
+                    let outer = self.member_outer_clip.replace(cur);
                     self.set_clip(Some(merged_rect(cr, dr, Some(mask))));
-                    body(self, glyphs)?;
+                    let result = body(self, glyphs);
+                    self.member_outer_clip = outer;
                     self.set_clip(Some(cur));
-                    Ok(())
+                    result
                 }
                 (Some(mask), _, _) => {
+                    let outer = self.member_outer_clip.replace(cur);
                     self.set_clip(Some(DeviceClip {
                         inv: cur.inv,
                         shape: cur.shape,
                         aligned_rect: cur.aligned_rect,
                         mask: Some(mask),
                     }));
-                    body(self, glyphs)?;
+                    let result = body(self, glyphs);
+                    self.member_outer_clip = outer;
                     self.set_clip(Some(cur));
-                    Ok(())
+                    result
                 }
                 (None, Some(cr), Some(dr)) => {
+                    let outer = self.member_outer_clip.replace(cur);
                     self.set_clip(Some(merged_rect(cr, dr, None)));
-                    body(self, glyphs)?;
+                    let result = body(self, glyphs);
+                    self.member_outer_clip = outer;
                     self.set_clip(Some(cur));
-                    Ok(())
+                    result
                 }
-                _ => self.isolate(
-                    Some(clip),
-                    None,
-                    1.0,
-                    cherenkov::BlendMode::Normal,
-                    cherenkov::BlendSpace::Linear,
-                    body,
-                    glyphs,
-                ),
+                _ => {
+                    let outer = self.member_outer_clip.take();
+                    let result = self.isolate(
+                        Some(clip),
+                        None,
+                        1.0,
+                        cherenkov::BlendMode::Normal,
+                        cherenkov::BlendSpace::Linear,
+                        body,
+                        glyphs,
+                    );
+                    self.member_outer_clip = outer;
+                    result
+                }
             },
         }
     }
@@ -2801,6 +2836,7 @@ impl<'a> Lowering<'a> {
                 self.emit_capture(gid);
             }
         }
+        let member_outer = std::mem::replace(&mut self.member_outer_clip, self.clip);
         let result = self.layer_body(
             id,
             node,
@@ -2813,6 +2849,7 @@ impl<'a> Lowering<'a> {
             blend,
             isolates,
         );
+        self.member_outer_clip = member_outer;
         self.transform = saved;
         self.animating = saved_animating;
         result
@@ -2887,7 +2924,6 @@ impl<'a> Lowering<'a> {
                     // in the enclosing level's linear storage.
                     cherenkov::BlendSpace::Linear,
                     |s, glyphs| {
-                        let ancestors = s.clip;
                         // As in the `None` arm below: a union member's
                         // sample composites under the ancestors only, so
                         // it emits before the member clip scope opens —
@@ -2898,12 +2934,7 @@ impl<'a> Lowering<'a> {
                             .as_ref()
                             .is_some_and(|sample| s.union_member(sample.group().raw(), id));
                         if union_member && let Some(sample) = &node.backdrop {
-                            s.emit_backdrop_sample(
-                                sample.group().raw(),
-                                id,
-                                sample.effect(),
-                                ancestors,
-                            )?;
+                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
                         }
                         s.with_clip(
                             clip,
@@ -2916,7 +2947,6 @@ impl<'a> Lowering<'a> {
                                         sample.group().raw(),
                                         id,
                                         sample.effect(),
-                                        ancestors,
                                     )?;
                                 }
                                 s.layer_items(id, node, tree, caches, glyphs)
@@ -2928,7 +2958,6 @@ impl<'a> Lowering<'a> {
                 )
             }
             None => {
-                let ancestors = self.clip;
                 // A union member's sample composites under the ancestors
                 // only — the ownership-weighted union field replaces its
                 // clip coverage — so a non-destructive member emits it
@@ -2943,12 +2972,7 @@ impl<'a> Lowering<'a> {
                     .is_some_and(|sample| self.union_member(sample.group().raw(), id))
                     && !is_destructive(blend);
                 if outside && let Some(sample) = &node.backdrop {
-                    self.emit_backdrop_sample(
-                        sample.group().raw(),
-                        id,
-                        sample.effect(),
-                        ancestors,
-                    )?;
+                    self.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
                 }
                 self.with_clip(
                     clip,
@@ -2962,12 +2986,7 @@ impl<'a> Lowering<'a> {
                             // sample — or one nothing isolates — lands in
                             // the enclosing target at full strength: the
                             // member's filter never covers it.
-                            s.emit_backdrop_sample(
-                                sample.group().raw(),
-                                id,
-                                sample.effect(),
-                                ancestors,
-                            )?;
+                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
                         }
                         if isolates {
                             let inner = s.clip;
@@ -2988,7 +3007,6 @@ impl<'a> Lowering<'a> {
                                             sample.group().raw(),
                                             id,
                                             sample.effect(),
-                                            ancestors,
                                         )?;
                                     }
                                     s.layer_items(id, node, tree, caches, glyphs)
@@ -3036,8 +3054,8 @@ impl<'a> Lowering<'a> {
         // The member scope's contents: the sample at full strength —
         // outside the filter — beside a nested filter scope over the
         // member's items at opacity 1, `Normal` blend.
-        let mut body = |s: &mut Self, glyphs: &GlyphContext<'_>, ancestors: Option<DeviceClip>| {
-            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect(), ancestors)?;
+        let mut body = |s: &mut Self, glyphs: &GlyphContext<'_>| {
+            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
             let inner = s.clip;
             s.isolate(
                 inner,
@@ -3050,7 +3068,6 @@ impl<'a> Lowering<'a> {
             )
         };
         if is_destructive(blend) {
-            let ancestors = self.clip;
             self.with_clip(
                 clip,
                 |s, glyphs| {
@@ -3062,7 +3079,7 @@ impl<'a> Lowering<'a> {
                         opacity,
                         blend,
                         cherenkov::BlendSpace::Linear,
-                        &mut |s: &mut Self, glyphs: &GlyphContext<'_>| body(s, glyphs, ancestors),
+                        &mut body,
                         glyphs,
                     )
                 },
@@ -3076,12 +3093,11 @@ impl<'a> Lowering<'a> {
                 blend,
                 cherenkov::BlendSpace::Linear,
                 |s, glyphs| {
-                    let ancestors = s.clip;
                     s.with_clip(
                         clip,
                         |s, glyphs| {
                             s.transform = content_space;
-                            body(s, glyphs, ancestors)
+                            body(s, glyphs)
                         },
                         glyphs,
                     )
@@ -4685,7 +4701,7 @@ fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), Rend
             .members
             .get_mut(id)
             .expect("an aproned member is planned");
-        // Union-field members inflate by `r(n) + outer + 1`; members
+        // Union-field members inflate by `r(n) + outer + 1.5`; members
         // with no field behind them are not inflated at all.
         let pad = if union_spec.is_some() || entry.outer > 0.0 {
             r + f64::from(entry.outer) + 1.5

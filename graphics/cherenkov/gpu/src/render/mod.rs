@@ -864,8 +864,16 @@ impl SurfaceState {
 /// lazily inside encode on native targets, ahead of encode by
 /// `prepare_union_pipelines` on wasm.
 struct BackdropShaderEntry {
-    union_module: wgpu::ShaderModule,
-    pipelines: [Option<wgpu::RenderPipeline>; 4],
+    /// The union-shaped module text, validated at registration; the
+    /// module is built on the first union use.
+    union_source: std::sync::Arc<str>,
+    /// The union-shaped module, built lazily with the first union slot.
+    union_module: Option<wgpu::ShaderModule>,
+    /// The plain-variant pipelines by format index — built at
+    /// registration, always `Some`.
+    plain: [Option<wgpu::RenderPipeline>; 2],
+    /// The union-shaped pipelines by format index — built on first use.
+    union: [Option<wgpu::RenderPipeline>; 2],
 }
 
 /// All render-thread state.
@@ -4627,13 +4635,16 @@ impl GpuRenderer {
         // The scope covers module creation: invalid WGSL reports at
         // module use, and `create_pipeline` scopes only itself.
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let modules = [false, true].map(|union| {
-            self.device
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("backdrop effect"),
-                    source: wgpu::ShaderSource::Wgsl(backdrop_effect_text(&source.source, union)),
-                })
-        });
+        // The union-shaped text validates now — invalid WGSL still
+        // fails fast — but its module builds on the first union use.
+        let union_source: std::sync::Arc<str> = backdrop_effect_text(&source.source, true).into();
+        shaders::validate_wgsl(&union_source)?;
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("backdrop effect"),
+                source: wgpu::ShaderSource::Wgsl(backdrop_effect_text(&source.source, false)),
+            });
         let make =
             |module: &wgpu::ShaderModule, format| -> Result<wgpu::RenderPipeline, ResourceError> {
                 create_pipeline(
@@ -4648,14 +4659,12 @@ impl GpuRenderer {
                 .map_err(|e| ResourceError::Shader(e.to_string()))
             };
         // One pipeline per distinct target format on the plain variant
-        // — equal formats share the slot-0 pipeline (#170). Slot order is
-        // `format_i + 2 * union`; the union-shaped slots stay empty and
-        // the first union use builds them from the stored module.
-        let mut pipelines = [None, None, None, None];
+        // — equal formats share the slot-0 pipeline (#170).
+        let mut pipelines = [None, None];
         for format in [TARGET_FORMAT, self.scratch_format] {
             let slot = usize::from(format != TARGET_FORMAT);
             if pipelines[slot].is_none() {
-                pipelines[slot] = Some(make(&modules[0], format));
+                pipelines[slot] = Some(make(&module, format));
             }
         }
         let scope_error = pollster::block_on(scope.pop());
@@ -4664,15 +4673,14 @@ impl GpuRenderer {
         if let Some(error) = scope_error {
             return Err(ResourceError::Shader(format!("{error}")));
         }
-        let [a, b, _, _] = pipelines;
+        let [a, b] = pipelines;
         self.backdrop_shaders.insert(
             id.raw(),
             BackdropShaderEntry {
-                union_module: {
-                    let [_, union] = modules;
-                    union
-                },
-                pipelines: [a.transpose()?, b.transpose()?, None, None],
+                union_source,
+                union_module: None,
+                plain: [a.transpose()?, b.transpose()?],
+                union: [None, None],
             },
         );
         Ok(())
@@ -4690,19 +4698,20 @@ impl GpuRenderer {
         source: &cherenkov::BackdropShaderSource,
     ) -> Result<(), ResourceError> {
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let modules = [false, true].map(|union| {
-            self.device
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("backdrop effect"),
-                    source: wgpu::ShaderSource::Wgsl(backdrop_effect_text(&source.source, union)),
-                })
-        });
+        // The union-shaped text validates now — invalid WGSL still
+        // fails fast — but its module builds on the first union use in
+        // `prepare_union_pipelines`.
+        let union_source: std::sync::Arc<str> = backdrop_effect_text(&source.source, true).into();
+        shaders::validate_wgsl(&union_source)?;
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("backdrop effect"),
+                source: wgpu::ShaderSource::Wgsl(backdrop_effect_text(&source.source, false)),
+            });
         // One pipeline per distinct target format on the plain variant
-        // — equal formats share the slot-0 pipeline (#170). Slot order is
-        // `format_i + 2 * union`; the union-shaped slots stay empty and
-        // `prepare_union_pipelines` fills them on the first frame a union
-        // or outer-band member is planned.
-        let mut pipelines = [None, None, None, None];
+        // — equal formats share the slot-0 pipeline (#170).
+        let mut pipelines = [None, None];
         for format in [TARGET_FORMAT, self.scratch_format] {
             let slot = usize::from(format != TARGET_FORMAT);
             if pipelines[slot].is_none() {
@@ -4712,7 +4721,7 @@ impl GpuRenderer {
                         &self.config,
                         &self.pipeline_layout,
                         self.pipeline_cache.as_ref(),
-                        &modules[0],
+                        &module,
                         format,
                         CoveragePass::Painter(false),
                     )
@@ -4729,15 +4738,14 @@ impl GpuRenderer {
         if let Some(error) = scope_error {
             return Err(ResourceError::Shader(format!("{error}")));
         }
-        let [a, b, _, _] = pipelines;
+        let [a, b] = pipelines;
         self.backdrop_shaders.insert(
             id.raw(),
             BackdropShaderEntry {
-                union_module: {
-                    let [_, union] = modules;
-                    union
-                },
-                pipelines: [a.transpose()?, b.transpose()?, None, None],
+                union_source,
+                union_module: None,
+                plain: [a.transpose()?, b.transpose()?],
+                union: [None, None],
             },
         );
         Ok(())
@@ -8448,48 +8456,60 @@ impl GpuRenderer {
                     };
                     let pipe = match kind {
                         PipelineKind::Effect(id) => {
-                            let union = variant == ShaderVariant::Union;
-                            let slot = format_i + 2 * usize::from(union);
                             let entry = self.backdrop_shaders.get_mut(&id).ok_or_else(|| {
                                 RenderError::Render(format!(
                                     "backdrop shader {id} is not registered"
                                 ))
                             })?;
-                            if entry.pipelines[slot].is_none() {
-                                // The union-shaped pipeline builds at the
-                                // first union use — wasm fills it ahead
-                                // of encode in `prepare_union_pipelines`.
-                                #[cfg(not(target_arch = "wasm32"))]
-                                {
-                                    debug_assert!(
-                                        union,
-                                        "plain effect pipelines are built at registration"
-                                    );
-                                    entry.pipelines[slot] = Some(
-                                        create_pipeline(
-                                            &self.device,
-                                            &self.config,
-                                            &self.pipeline_layout,
-                                            self.pipeline_cache.as_ref(),
-                                            &entry.union_module,
-                                            target_format,
-                                            CoveragePass::Painter(false),
-                                        )
-                                        .map_err(|e| {
-                                            RenderError::Render(format!(
-                                                "backdrop shader {id}: {e}"
-                                            ))
-                                        })?,
-                                    );
+                            if variant == ShaderVariant::Union {
+                                if entry.union[format_i].is_none() {
+                                    // The union-shaped module and pipeline
+                                    // build at the first union use — wasm
+                                    // fills them ahead of encode in
+                                    // `prepare_union_pipelines`.
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    {
+                                        let module = entry.union_module.get_or_insert_with(|| {
+                                            self.device.create_shader_module(
+                                                wgpu::ShaderModuleDescriptor {
+                                                    label: Some("backdrop effect (union)"),
+                                                    source: wgpu::ShaderSource::Wgsl(
+                                                        (&*entry.union_source).into(),
+                                                    ),
+                                                },
+                                            )
+                                        });
+                                        entry.union[format_i] =
+                                            Some(
+                                                create_pipeline(
+                                                    &self.device,
+                                                    &self.config,
+                                                    &self.pipeline_layout,
+                                                    self.pipeline_cache.as_ref(),
+                                                    module,
+                                                    target_format,
+                                                    CoveragePass::Painter(false),
+                                                )
+                                                .map_err(|e| {
+                                                    RenderError::Render(format!(
+                                                        "backdrop shader {id}: {e}"
+                                                    ))
+                                                })?,
+                                            );
+                                    }
+                                    #[cfg(target_arch = "wasm32")]
+                                    return Err(RenderError::Render(format!(
+                                        "backdrop shader {id}'s union pipeline was not prepared"
+                                    )));
                                 }
-                                #[cfg(target_arch = "wasm32")]
-                                return Err(RenderError::Render(format!(
-                                    "backdrop shader {id}'s union pipeline was not prepared"
-                                )));
+                                entry.union[format_i]
+                                    .as_ref()
+                                    .expect("union effect pipeline ready")
+                            } else {
+                                entry.plain[format_i]
+                                    .as_ref()
+                                    .expect("plain effect pipelines are built at registration")
                             }
-                            entry.pipelines[slot]
-                                .as_ref()
-                                .expect("effect pipeline ready")
                         }
                         kind => core_pipeline(
                             &mut self.pipelines,
@@ -9670,18 +9690,24 @@ impl GpuRenderer {
             }
         }
         for (id, format_i) in effects {
-            let slot = format_i + 2;
             let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
                 continue;
             };
-            if entry.pipelines[slot].is_none() {
-                entry.pipelines[slot] = Some(
+            if entry.union[format_i].is_none() {
+                let module = entry.union_module.get_or_insert_with(|| {
+                    self.device
+                        .create_shader_module(wgpu::ShaderModuleDescriptor {
+                            label: Some("backdrop effect (union)"),
+                            source: wgpu::ShaderSource::Wgsl((&*entry.union_source).into()),
+                        })
+                });
+                entry.union[format_i] = Some(
                     create_pipeline(
                         &self.device,
                         &self.config,
                         &self.pipeline_layout,
                         self.pipeline_cache.as_ref(),
-                        &entry.union_module,
+                        module,
                         if format_i == 0 {
                             TARGET_FORMAT
                         } else {
