@@ -1722,9 +1722,13 @@ mod tests {
             .exec()
             .expect("offline metadata resolves the fixture project");
 
-        Project::open(root, ManagedBackends::NONE)
-            .await
-            .expect("fixture project opens")
+        Project::open(
+            &crate::toolchain::Host::current(),
+            root,
+            ManagedBackends::NONE,
+        )
+        .await
+        .expect("fixture project opens")
     }
 
     fn write_fake_framework_checkout(root: &Path, apple_features: &[&str]) {
