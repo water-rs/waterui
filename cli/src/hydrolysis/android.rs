@@ -403,8 +403,9 @@ async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
     Ok(())
 }
 
-/// What an Android launcher build leaves behind: the cargo result, the
-/// resolved NDK/SDK context callers reuse for post-build steps like
+/// The artifacts and toolchain context produced by an Android launcher build.
+///
+/// Includes the cargo result, the resolved NDK/SDK context for steps like
 /// `llvm-strip`, and the staged shared libraries in `System.load` order.
 #[derive(Debug)]
 pub struct HydrolysisAndroidBuild {
