@@ -74,11 +74,14 @@ pub struct Shared<T: Target> {
     /// Reusable change-set recycled-picture buffer.
     spare_recycled: Vec<(LayerId, Picture)>,
     /// The open transaction's edit stream sits in `pending` past
-    /// `stream_start`, in program order: every op queued while a
+    /// `stream_start`, in program order: every edit queued while a
     /// transaction is open lands there, and only the outermost commit
     /// applies it, so the last write wins. A nested transaction's edits
     /// join the same stream — interleaved with the outer's in program
-    /// order, each carrying its own transaction's animation.
+    /// order, each carrying its own transaction's animation. Ops the
+    /// body queues directly — layer creates and drops — are not stream
+    /// edits: they wait in `direct_ops` and the outermost commit splices
+    /// them ahead of the stream after the scan.
     /// A content edit enters a `Content(.., None)` placeholder in the
     /// stream: its `LayerContent` waits in `edit_content`, in the same
     /// order, and the commit drains one per placeholder to run the
@@ -388,8 +391,10 @@ impl<T: Target> Shared<T> {
     /// The deferred changes stay queued for an unwinding inner
     /// transaction; an unwinding outermost one resolves them the same
     /// way its commit would — each lands only while its binding is still
-    /// the property's current one. Ops it queued directly — layer
-    /// creates and drops — are truncated with its edits.
+    /// the property's current one. Ops the body queued directly — layer
+    /// creates and drops — survive an unwind: they drained out of
+    /// `direct_ops` to the consumer with the pre-open ops, so a dropped
+    /// handle's `Remove` never names a layer the tree lacks.
     #[expect(clippy::too_many_lines, reason = "one edit-op dispatch per design")]
     pub fn run_transaction(
         this: &Rc<RefCell<Self>>,
@@ -448,19 +453,6 @@ impl<T: Target> Shared<T> {
                     // dropped a layer, so a steady-state commit pays one
                     // `is_empty`, not a hash probe.
                     let check_removed = !state.removed_layers.is_empty();
-                    // The transaction's direct ops — its creates and
-                    // removes — land ahead of the stream: pending is
-                    // [pre-open ops, direct ops, stream edits].
-                    if !state.direct_ops.is_empty() {
-                        let n = state.direct_ops.len();
-                        let start = state.stream_start;
-                        drop(
-                            state
-                                .pending
-                                .splice(start..start, state.direct_ops.drain(..)),
-                        );
-                        state.stream_start += n;
-                    }
                     // The stream's ops already sit in `pending` past
                     // `stream_start`: a commit with no content edits and
                     // no removals touches nothing of it. Otherwise the
@@ -474,13 +466,24 @@ impl<T: Target> Shared<T> {
                         let mut i = start;
                         while i < state.pending.len() {
                             let id = state.pending[i].layer();
-                            // The layer was removed while the transaction
-                            // was open: its `Remove` keeps, but the edit
-                            // would crash the render thread or leak a
-                            // content slot for it. A content placeholder's
-                            // payload goes with it.
+                            // A layer removed while the transaction was
+                            // open drops the edits that name it — its
+                            // `Remove` keeps — and the tree ops that name
+                            // it as the child: a `Push`/`Insert`/`Detach`
+                            // records its *parent* as `layer()`, so the
+                            // child's removal is checked on its own field.
+                            // A content placeholder's payload goes with it.
+                            let child_removed = check_removed
+                                && match &state.pending[i] {
+                                    Op::Layer(
+                                        LayerOp::Push { child, .. }
+                                        | LayerOp::Insert { child, .. }
+                                        | LayerOp::Detach { child, .. },
+                                    ) => state.removed_layers.contains(child),
+                                    _ => false,
+                                };
                             if check_removed
-                                && state.removed_layers.contains(&id)
+                                && (state.removed_layers.contains(&id) || child_removed)
                                 && !matches!(state.pending[i], Op::Layer(LayerOp::Remove(..)))
                             {
                                 if matches!(state.pending[i], Op::Layer(LayerOp::Content(_, None)))
@@ -572,6 +575,22 @@ impl<T: Target> Shared<T> {
                             state.pending.append(&mut tail);
                         }
                     }
+                    // The transaction's direct ops — its creates and
+                    // removes — land ahead of the stream: pending is
+                    // [pre-open ops, direct ops, stream edits]. They move
+                    // in only after the scan above: a panic mid-scan must
+                    // leave them in `direct_ops`, where the unwind keeps
+                    // them, never truncated with the stream.
+                    if !state.direct_ops.is_empty() {
+                        let n = state.direct_ops.len();
+                        let start = state.stream_start;
+                        drop(
+                            state
+                                .pending
+                                .splice(start..start, state.direct_ops.drain(..)),
+                        );
+                        state.stream_start += n;
+                    }
                     state.edit_seqs.clear();
                     state.removed_layers.clear();
                     state.resolve_deferred();
@@ -633,7 +652,8 @@ impl<T: Target> Shared<T> {
         // under, taken before the watch starts: it fires only while the
         // property's current binding is still the one that registered it.
         // A constant binds no watcher, so it does no generation work.
-        let generation = if live.has_signal() {
+        let signal = live.has_signal();
+        let generation = if signal {
             let mut shared = shared.borrow_mut();
             shared.next_generation += 1;
             shared.next_generation
@@ -641,7 +661,7 @@ impl<T: Target> Shared<T> {
             0
         };
         let (target, guard) = live.watch(Self::watcher(shared, layer, kind, generation, op));
-        Self::keep(shared, layer, kind, generation, guard);
+        Self::keep(shared, layer, kind, generation, signal, guard);
         target
     }
 
@@ -695,23 +715,27 @@ impl<T: Target> Shared<T> {
         }
     }
 
-    /// Keeps a binding's `guard` as `layer`'s `kind` subscription,
-    /// replacing the property's previous one. A constant — `None` —
-    /// removes the binding with no generation work; a kept guard inserts
-    /// its [`KeptBinding`] under `generation`. A replaced binding's guard
-    /// drops after the borrow ends: dropping it may run a `Live::map`
-    /// closure that owns a layer of this surface and re-enters it.
+    /// Keeps `layer`'s `kind` binding's `guard` and `generation`,
+    /// replacing the property's previous one. A constant — `signal`
+    /// `false` — removes the binding with no generation work; a signal
+    /// inserts its [`KeptBinding`] under `generation` even when its watch
+    /// guard is zero-sized: the guardless watch still notifies, and the
+    /// entry is what lets the watcher see its change. A replaced
+    /// binding's guard drops after the borrow ends: dropping it may run
+    /// a `Live::map` closure that owns a layer of this surface and
+    /// re-enters it.
     #[inline]
     fn keep(
         shared: &Rc<RefCell<Self>>,
         layer: LayerId,
         kind: PropKind,
         generation: u64,
+        signal: bool,
         guard: Option<Binding>,
     ) {
         let replaced = {
             let mut shared_mut = shared.borrow_mut();
-            if let Some(guard) = guard {
+            if signal {
                 shared_mut.bindings.insert(
                     (layer.raw(), kind),
                     KeptBinding {
@@ -773,11 +797,12 @@ struct DeferredOp<T: Target> {
     generation: u64,
 }
 
-/// A subscription kept in [`Shared::bindings`]: the guard, and the
-/// generation [`Shared::bind`] drew for it before its watch started.
+/// A subscription kept in [`Shared::bindings`]: the guard — `None`
+/// when the signal's guard was zero-sized — and the generation
+/// [`Shared::bind`] drew for it before its watch started.
 struct KeptBinding {
     /// The subscription guard.
-    _guard: Binding,
+    _guard: Option<Binding>,
     /// The binding's generation.
     generation: u64,
 }
@@ -1532,7 +1557,8 @@ impl<T: Target> LayerEdit<T> {
         // The same rule `Shared::bind` applies: only a binding whose
         // signal can fire draws a generation; a constant does no
         // generation work.
-        let generation = if live.has_signal() {
+        let signal = live.has_signal();
+        let generation = if signal {
             let mut shared = self.shared.borrow_mut();
             shared.next_generation += 1;
             shared.next_generation
@@ -1565,6 +1591,7 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::LayoutSize,
             generation,
+            signal,
             guard,
         );
         self
@@ -3095,10 +3122,11 @@ mod tests {
 
         // Dropping the outlived handle queues the remove — for a layer
         // the tree has, not one the truncated stream would have made.
+        let created_id = created.id();
         drop(created);
         let ops = drain_layer_ops(&shared, &mut tree);
         assert!(
-            matches!(ops.as_slice(), [LayerOp::Remove(id)] if *id == ops[0].layer()),
+            matches!(ops.as_slice(), [LayerOp::Remove(id)] if *id == created_id),
             "the remove lands against the created layer: {ops:?}"
         );
     }
@@ -3293,5 +3321,124 @@ mod tests {
             tx[&parent_a].remove(&child);
         });
         drain_layer_ops(&shared, &mut tree);
+    }
+
+    /// A signal whose `watch` returns the `()` guard — nami's collection
+    /// and constant signals do — while still delivering every change:
+    /// the watcher stays registered in the signal itself, so a `None`
+    /// guard means "nothing to drop", never "nothing to keep". The
+    /// record layer's kept binding must keep its generation so the
+    /// change lands (water-rs/waterui#1788).
+    #[derive(Clone)]
+    struct UnguardedSignal {
+        inner: nami::Binding<f32>,
+        kept: Rc<RefCell<Vec<Box<dyn std::any::Any>>>>,
+    }
+
+    impl Signal for UnguardedSignal {
+        type Output = f32;
+        type Guard = ();
+        fn snapshot(&self) -> f32 {
+            self.inner.snapshot()
+        }
+        fn watch(&self, watcher: impl Fn(Context<f32>) + 'static) {
+            let guard = self.inner.watch(watcher);
+            self.kept.borrow_mut().push(Box::new(guard));
+        }
+    }
+
+    #[test]
+    fn a_zero_sized_guards_signal_still_delivers_changes() {
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let layer = layer(&shared);
+        let id = layer.id();
+        let signal = UnguardedSignal {
+            inner: binding(0.25_f32),
+            kept: Rc::new(RefCell::new(Vec::new())),
+        };
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].opacity(signal.clone());
+        });
+        drain_layer_ops(&shared, &mut tree);
+
+        // The `()` guard registers the binding entry even so: the
+        // signal's next change still queues the edit.
+        signal.inner.set(0.75);
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                LayerOp::Opacity(layer, prop)
+                    if *layer == id && prop.target.to_bits() == 0.75_f32.to_bits()
+            )),
+            "the unguarded signal's change lands: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn a_removed_childs_detach_op_drops_with_it() {
+        // `tx[p].remove(&c)` queues the detach; dropping `c`'s handle in
+        // the same body queues its `Remove` — which lands ahead of the
+        // stream. The detach still naming the removed child must drop,
+        // not panic the tree (water-rs/waterui#1788).
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let parent = layer(&shared);
+        let child = layer(&shared);
+        let child_id = child.id();
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&parent].push(&child);
+        });
+        drain_layer_ops(&shared, &mut tree);
+        Shared::run_transaction(&shared, None, None, move |tx| {
+            tx[&parent].remove(&child);
+            drop(child);
+        });
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            ops.iter().all(|op| !matches!(op, LayerOp::Detach { .. })),
+            "the removed child's detach drops: {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                LayerOp::Remove(id) if *id == child_id
+            )),
+            "its remove lands: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn a_layer_created_inserted_and_dropped_in_one_body_only_queues_its_retain() {
+        // A body that creates a layer, inserts it and drops the handle
+        // queues [Create, Insert{p,c}, Remove]: the insert names the
+        // removed child and drops with it — Create + Remove land alone
+        // (water-rs/waterui#1788).
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let parent = layer(&shared);
+        drain_layer_ops(&shared, &mut tree);
+        let child_id = {
+            let child = Shared::layer(&shared);
+            let id = child.id();
+            Shared::run_transaction(&shared, None, None, move |tx| {
+                tx[&parent].insert(0, &child);
+                drop(child);
+            });
+            id
+        };
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            ops.iter().all(|op| !matches!(op, LayerOp::Insert { .. })),
+            "the removed child's insert drops: {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                LayerOp::Remove(id) if *id == child_id
+            )),
+            "its remove lands: {ops:?}"
+        );
     }
 }
