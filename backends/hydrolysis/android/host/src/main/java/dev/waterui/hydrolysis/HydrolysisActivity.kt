@@ -10,13 +10,14 @@ import androidx.activity.enableEdgeToEdge
  * WaterUI session for the app's `waterui_app` cdylib.
  *
  * The session lives in a `ViewModel` under this activity's store
- * ([HydrolysisEmbedding]), so it survives configuration changes; closing the
- * activity finishes it. Subclasses name the library through [nativeLibraryName]
- * and pick the painter through [createContentView].
+ * ([HydrolysisEmbedding]), so it survives configuration changes and ends
+ * only when the owner is cleared; closing the activity finishes it.
+ * Subclasses name the library through [nativeLibraryName] and pick the
+ * painter through [createContentView].
  */
 abstract class HydrolysisActivity : ComponentActivity() {
 
-    companion object {
+    private companion object {
         const val LOG_LEVEL_EXTRA = "waterui.log.level"
     }
 
@@ -28,6 +29,9 @@ abstract class HydrolysisActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // layout-spec.md §7.1: the app owns edge-to-edge presentation — the
+        // system-bar and IME regions reach the renderer as insets the
+        // layout engine reasons about, not as framework-consumed padding.
         enableEdgeToEdge()
         setContentView(
             HydrolysisEmbedding.createView(
