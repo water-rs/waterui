@@ -1330,7 +1330,7 @@ fn preview_support_path(host: &crate::toolchain::Host) -> Result<PathBuf> {
 /// CLI's `~/.water` state dir beside `preview_support/` — stable across the
 /// pooled instances a later `water preview` reuses.
 fn preview_support_log_path(host: &crate::toolchain::Host) -> Result<PathBuf> {
-    Ok(crate::water_dir::water_home_dir_in(host)?
+    Ok(crate::water_dir::water_home_dir(host)?
         .join("logs")
         .join("preview-support.log"))
 }

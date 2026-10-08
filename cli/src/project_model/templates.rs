@@ -337,6 +337,28 @@ fn kotlin_string_literal(value: &str) -> String {
         .replace('$', "\\$")
 }
 
+/// Local checkouts of the experimental backends, the escape hatch for
+/// developing a backend itself: a generated launcher depends on the checkout
+/// in place of the backend's published coordinate.
+#[derive(Debug, Clone, Default)]
+pub struct BackendDevCheckouts {
+    /// `WATERUI_WINUI_PATH`: a `water-rs/waterui-winui` checkout.
+    pub winui: Option<PathBuf>,
+    /// `WATERUI_TUI_PATH`: a `water-rs/tui` checkout.
+    pub tui: Option<PathBuf>,
+}
+
+impl BackendDevCheckouts {
+    /// The checkouts `host`'s environment names.
+    #[must_use]
+    pub fn from_host(host: &crate::toolchain::Host) -> Self {
+        Self {
+            winui: host.env("WATERUI_WINUI_PATH").map(PathBuf::from),
+            tui: host.env("WATERUI_TUI_PATH").map(PathBuf::from),
+        }
+    }
+}
+
 /// Context for rendering templates with type-safe substitutions.
 #[derive(Debug, Clone)]
 pub struct TemplateContext {
@@ -360,10 +382,8 @@ pub struct TemplateContext {
     pub apple_backend_selected: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
-    /// `WATERUI_WINUI_PATH` read from the host (the winui backend dev hatch).
-    pub winui_path: Option<PathBuf>,
-    /// `WATERUI_TUI_PATH` read from the host (the tui backend dev hatch).
-    pub tui_path: Option<PathBuf>,
+    /// Local checkouts of the experimental backends the host points at.
+    pub backend_checkouts: BackendDevCheckouts,
     /// The canonical local backend sources the `waterui_path` checkout
     /// supplies, resolved before the context was built.
     pub local_sources: LocalBackendSources,
@@ -449,8 +469,7 @@ impl TemplateContext {
             author: options.author.clone(),
             apple_backend_selected: false,
             waterui_path,
-            winui_path: host.env("WATERUI_WINUI_PATH").map(PathBuf::from),
-            tui_path: host.env("WATERUI_TUI_PATH").map(PathBuf::from),
+            backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -495,8 +514,7 @@ impl TemplateContext {
             // Selected at invocation, never from declared config.
             apple_backend_selected: false,
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
-            winui_path: host.env("WATERUI_WINUI_PATH").map(PathBuf::from),
-            tui_path: host.env("WATERUI_TUI_PATH").map(PathBuf::from),
+            backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -556,8 +574,7 @@ impl TemplateContext {
             author: String::new(),
             apple_backend_selected: false,
             waterui_path,
-            winui_path: host.env("WATERUI_WINUI_PATH").map(PathBuf::from),
-            tui_path: host.env("WATERUI_TUI_PATH").map(PathBuf::from),
+            backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
@@ -1507,8 +1524,7 @@ mod tests {
             author: String::new(),
             apple_backend_selected: true,
             waterui_path,
-            winui_path: None,
-            tui_path: None,
+            backend_checkouts: super::BackendDevCheckouts::default(),
             local_sources,
             framework: stable_framework(),
             browser: BrowserTemplateContext::default(),
@@ -5821,7 +5837,7 @@ pub mod winui {
     /// it by patching `gpu-allocator` to the same git revision or checkout the
     /// backend dependency itself resolved to, so both come out of one source.
     fn winui_backend_dependency(ctx: &TemplateContext) -> io::Result<(Dependency, Dependency)> {
-        if let Some(path) = ctx.winui_path.as_deref() {
+        if let Some(path) = ctx.backend_checkouts.winui.as_deref() {
             let path = dunce::canonicalize(path)?;
             return Ok((
                 path_dependency(&path),
@@ -6669,7 +6685,7 @@ pub mod tui {
     /// itself), a `water-rs/tui` checkout beside a local `waterui_path`, and
     /// the pinned backend revision otherwise.
     fn tui_backend_dependency(ctx: &TemplateContext) -> io::Result<Dependency> {
-        if let Some(path) = ctx.tui_path.as_deref() {
+        if let Some(path) = ctx.backend_checkouts.tui.as_deref() {
             return Ok(path_dependency(&dunce::canonicalize(path)?));
         }
         if let Some(root) = ctx

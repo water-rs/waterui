@@ -500,7 +500,7 @@ impl PreviewAppClient {
     }
 
     async fn request(&mut self, request: AppRequest) -> Result<AppResponse> {
-        let timeout = request_timeout_for(&self.host.clone(), &request);
+        let timeout = request_timeout_for(&self.host, &request);
         self.request_with_timeout(request, timeout).await
     }
 

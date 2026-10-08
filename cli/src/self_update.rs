@@ -263,7 +263,7 @@ pub fn cli_update_command(host: &Host, fallback: &str) -> String {
 /// when a newer release exists, `None` otherwise.
 #[must_use]
 pub async fn passive_update_notice(host: &Host) -> Option<String> {
-    let water_home = water_dir::water_home_dir_in(host).ok()?;
+    let water_home = water_dir::water_home_dir(host).ok()?;
     let mut config = water_dir::ensure_global_config_in(&water_home).await.ok()?;
     if !passive_check_due(config.last_update_check_unix_seconds, unix_now()) {
         return None;

@@ -1664,7 +1664,7 @@ impl Project {
         // Initialize git repository if not already in one
         Self::ensure_git_init(host, &path).await?;
 
-        let managed_backends_root = crate::water_dir::project_build_cache_dir_on(host, &path)
+        let managed_backends_root = crate::water_dir::project_build_cache_dir(host, &path)
             .await
             .map_err(FailToCreateProject::BuildCache)?;
 

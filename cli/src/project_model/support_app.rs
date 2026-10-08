@@ -10,7 +10,7 @@ use tracing::info;
     reason = "the module is crate-private; the explicit pub(crate) declares the intended crate-wide reach"
 )]
 pub(crate) fn support_app_path(host: &crate::toolchain::Host, name: &str) -> Result<PathBuf> {
-    Ok(crate::water_dir::water_home_dir_in(host)?.join(name))
+    Ok(crate::water_dir::water_home_dir(host)?.join(name))
 }
 
 /// Discards a support application generated against a different `WaterUI`.
