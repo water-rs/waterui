@@ -135,7 +135,6 @@ def test_path_classification():
     assert layout_gate.classification(f"{LAYOUT_SRC}tests/contract.rs") is None
     # Non-Rust files under the frozen root are not in the frozen set.
     assert layout_gate.classification(f"{LAYOUT_SRC}notes.md") is None
-    assert layout_gate.classification("ffi/src/layout.rs") is None
 
 
 def git(repo, *args):

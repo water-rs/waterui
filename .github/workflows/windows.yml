@@ -115,10 +115,7 @@ jobs:
       # runs red here until the Cherenkov pin picks up the upload-staging
       # timeout fix — that is the honest state of the leg.
       #
-      # One full-workspace pass under default features. A workspace-wide
-      # `--all-features` pass is structurally impossible — `waterui-ffi`
-      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
-      # enabling `c-api` and `android-jni` together can never build.
+      # One full-workspace pass under default features.
       - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
       - name: Test (examples that carry tests)
         run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
@@ -210,7 +207,6 @@ jobs:
             --exclude waterui-dylib `
             --exclude '*-example' `
             --exclude waterui-core `
-            --exclude waterui-ffi `
             --exclude waterui-browser-cef `
             --exclude skill_snippets `
             --exclude filtrate `
