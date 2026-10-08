@@ -1967,4 +1967,30 @@ mod tests {
             "every member Rust calls on HydrolysisWebView/AssetResponse needs a matching @CalledFromNative member in HydrolysisWebView.kt, and vice versa"
         );
     }
+
+    #[test]
+    fn webview_render_process_gone_marks_the_registry_dead_before_reporting() {
+        // `releaseAfterRenderProcessGone` must run `nativeReleased` first so
+        // the `Error` `nativeRenderProcessGone` then emits is answered by a
+        // registry already dead: an event handler's `go_to`/`refresh` gets
+        // its dead-view value instead of dispatching `loadUrl`/`reload` onto
+        // the view `tearDown` is about to destroy.
+        let start = WRAPPER_KT
+            .find("private fun releaseAfterRenderProcessGone")
+            .expect("HydrolysisWebView.kt keeps releaseAfterRenderProcessGone");
+        let end = WRAPPER_KT[start..]
+            .find("private fun tearDown")
+            .expect("releaseAfterRenderProcessGone precedes tearDown");
+        let body = &WRAPPER_KT[start..start + end];
+        let released = body
+            .find("nativeReleased(handle)")
+            .expect("releaseAfterRenderProcessGone calls nativeReleased");
+        let reported = body
+            .find("nativeRenderProcessGone(handle, message)")
+            .expect("releaseAfterRenderProcessGone calls nativeRenderProcessGone");
+        assert!(
+            released < reported,
+            "the call registry must be dead before the render-process-gone error is reported"
+        );
+    }
 }

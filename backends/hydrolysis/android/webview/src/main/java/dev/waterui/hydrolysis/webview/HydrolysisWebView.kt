@@ -642,17 +642,20 @@ private constructor(
     /**
      * The render process died: a `WebViewClient` callback the looper
      * delivers, so no Rust frame is under it and the native side is told
-     * here — the death first, then `nativeReleased`, which drains the call
-     * registry (including the async ids Kotlin forgot after the started
-     * sentinel) and marks it dead so a later call answers at once. The Rust
-     * handle that owns the view is dropped afterwards all the same.
+     * here — `nativeReleased` first, which drains the call registry
+     * (including the async ids Kotlin forgot after the started sentinel)
+     * and marks it dead: an event handler answering the `Error`
+     * `nativeRenderProcessGone` then reports gets the dead-view value back
+     * instead of dispatching `loadUrl`/`reload` onto a view `tearDown`
+     * destroys next. The Rust handle that owns the view is dropped
+     * afterwards all the same.
      */
     private fun releaseAfterRenderProcessGone(message: String) {
         val handle = nativeHandle
         nativeHandle = 0L
         if (handle != 0L) {
-            nativeRenderProcessGone(handle, message)
             nativeReleased(handle)
+            nativeRenderProcessGone(handle, message)
         }
         val server = tearDown()
         if (server != 0L) {
