@@ -137,6 +137,14 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     roots = {}
     for phase, (suffix, crate) in ROOTS.items():
         hits = [line.split()[-1] for line in symbols if line.split()[-1].endswith(suffix) and crate in line]
+        if not hits:
+            # A generic method's symbol keeps the fn name inside its own
+            # path, ahead of the `NC`-delimited instantiation suffix
+            # (`…Shared<Gpu>E15run_transactionNC<closure>`): match the
+            # name there instead.
+            hits = [s for s in (line.split()[-1] for line in symbols)
+                    if suffix in s.split('NC', 1)[0] and crate in s]
+            hits = list(dict.fromkeys(hits))
         assert len(hits) == 1, (tag, phase, hits)
         roots[phase] = hits[0]
     layer_dir = out / 'vk_layer'
