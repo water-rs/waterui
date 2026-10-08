@@ -2902,15 +2902,9 @@ pub(in crate::render) type FrameCommits = Vec<Option<Box<dyn planes::apple::Comm
 #[cfg(not(target_vendor = "apple"))]
 pub(in crate::render) type FrameCommits = Vec<()>;
 
-/// The empty commit a frame that commits nothing off-thread produces —
-/// `None` on Apple.
-#[expect(
-    clippy::default_trait_access,
-    reason = "the commit type is platform-selected; `Default::default` is the only spelling that compiles on every target"
-)]
-fn no_commit() -> <planes::Platform as planes::SystemPlanes>::Commit {
-    Default::default()
-}
+/// One surface's platform commit; its `Default` is the empty commit a
+/// surface that commits nothing off-thread produces (`None` on Apple).
+type PlatformCommit = <planes::Platform as planes::SystemPlanes>::Commit;
 
 impl Renderer for GpuRenderer {
     type Target = GpuTarget;
@@ -5628,7 +5622,7 @@ impl GpuRenderer {
                 #[cfg(not(target_os = "linux"))]
                 let exported = None;
                 let (presentation, commit) = match exported {
-                    Some(presentation) => (presentation, no_commit()),
+                    Some(presentation) => (presentation, PlatformCommit::default()),
                     None => Self::present_surface(
                         self.planes.get_mut(&sf.id),
                         self.plane_only.contains(&sf.id),
@@ -5707,13 +5701,7 @@ impl GpuRenderer {
         surface: &SurfaceState,
         sf: &SurfaceFrame<'_>,
         currents: &FxHashMap<ProducerId, &external::Slot>,
-    ) -> Result<
-        (
-            planes::Presentation,
-            <planes::Platform as planes::SystemPlanes>::Commit,
-        ),
-        RenderError,
-    > {
+    ) -> Result<(planes::Presentation, PlatformCommit), RenderError> {
         let (device, queue, presenter) = present;
         match system {
             Some(system) => {
@@ -5728,7 +5716,7 @@ impl GpuRenderer {
                         system,
                         plane_stack(surface, currents, sf.plane_frames),
                     )?;
-                    Ok((planes::Presentation::Presented, no_commit()))
+                    Ok((planes::Presentation::Presented, PlatformCommit::default()))
                 } else {
                     let parts: Vec<_> = (0..surface.plan.parts())
                         .map(|n| planes::Part {
@@ -5765,7 +5753,7 @@ impl GpuRenderer {
                 } else {
                     planes::Presentation::Retry
                 },
-                no_commit(),
+                PlatformCommit::default(),
             )),
         }
     }
