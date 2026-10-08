@@ -2170,8 +2170,10 @@ pub async fn write_font_manifest(
     Ok(())
 }
 
-/// Returns whether `feature` is enabled on `package` in the resolved
-/// dependency graph of `build_manifest`.
+/// Returns whether `feature` is enabled on `package` in the dependency graph
+/// of `build_manifest` resolved for `target` — `cargo metadata
+/// --filter-platform <target>`, cached per manifest and triple by the
+/// project.
 ///
 /// `build_manifest` is the `Cargo.toml` of the crate the build actually
 /// compiles — the generated FFI crate for Apple and Android, the generated
@@ -2184,14 +2186,6 @@ pub async fn write_font_manifest(
 /// native backends must compile the matching component only when the app turned
 /// that capability on. The resolved graph is the single source of truth for
 /// that, so backends never guess from the manifest text.
-///
-/// # Errors
-///
-/// Returns an error when `cargo metadata` cannot be read.
-/// Whether `package`'s `feature` is enabled in `build_manifest`'s graph
-/// resolved for `target` — `cargo metadata --filter-platform`, cached per
-/// manifest and triple by
-/// [`Project::generated_manifest_features`].
 ///
 /// # Errors
 ///
