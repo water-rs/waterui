@@ -161,7 +161,8 @@ impl PreviewTool {
     async fn run(&self, args: &PreviewArgs) -> Result<(PathBuf, Vec<u8>)> {
         let crate_name = read_project_crate_name(&self.project_path).await?;
         let request = args.resolve(&crate_name)?;
-        request::check_toolchain_for_backend(&self.host, request.backend).await?;
+        let kotlin_toolchain =
+            request::check_toolchain_for_backend(&self.host, request.backend).await?;
         let output_path = self.output_path(&request).await?;
 
         match request.backend {
@@ -184,6 +185,7 @@ impl PreviewTool {
                     },
                     &output_path,
                     None,
+                    kotlin_toolchain.as_ref(),
                 ))
                 .await?;
             }

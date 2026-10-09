@@ -142,7 +142,8 @@ impl Backend for AndroidBackend {
         project
             .browser_runtime_plan(platform, TargetBackend::Android, &abi.triple())
             .await?;
-        abi.build(project, options).await
+        let kotlin = crate::android::platform::require_kotlin(project.host()).await?;
+        abi.build(project, options, &kotlin).await
     }
 
     async fn package(

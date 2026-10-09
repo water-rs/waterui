@@ -228,10 +228,17 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         args.profile(),
         args.distribution,
     );
-    check_packaging_toolchain(shell, args.platform, context.backend, &args.arch).await?;
+    let kotlin_toolchain =
+        check_packaging_toolchain(shell, args.platform, context.backend, &args.arch).await?;
     // The per-backend artifact builds cross clippy's `large_futures` threshold
     // (16 KiB) on Windows, so the future is pinned on the heap.
-    let built = Box::pin(build_packaging_artifacts(shell, &args, &context)).await?;
+    let built = Box::pin(build_packaging_artifacts(
+        shell,
+        &args,
+        &context,
+        kotlin_toolchain.as_ref(),
+    ))
+    .await?;
     // The packaging step's future crosses the same threshold, so it is
     // pinned too.
     Box::pin(package_artifact(shell, &args, &context, built.as_ref())).await
@@ -360,9 +367,9 @@ async fn check_packaging_toolchain(
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(
+    let kotlin_toolchain = check_toolchain_for_backend(
         &waterui_cli::toolchain::Host::current(),
         platform,
         backend,
@@ -373,14 +380,20 @@ async fn check_packaging_toolchain(
         pb.finish_and_clear();
     }
     success!(shell, "Toolchain ready");
-    Ok(())
+    Ok(kotlin_toolchain)
 }
 
 async fn build_packaging_artifacts(
     shell: &Shell,
     args: &Args,
     context: &PackagingContext,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<Option<BuiltTarget>> {
+    let kotlin = || {
+        kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android build has no resolved Kotlin toolchain")
+        })
+    };
     match context.backend {
         TargetBackend::Android => {
             // The per-backend artifact builds cross clippy's `large_futures`
@@ -390,6 +403,7 @@ async fn build_packaging_artifacts(
                 &context.project,
                 &args.arch,
                 context.build_options.clone(),
+                kotlin()?,
             ))
             .await
         }
@@ -413,6 +427,7 @@ async fn build_packaging_artifacts(
                 args.platform,
                 &args.arch,
                 context.build_options.clone(),
+                kotlin_toolchain,
             ))
             .await
         }
@@ -428,6 +443,7 @@ async fn build_android_packaging_artifacts(
     project: &Project,
     arch: &[AndroidArch],
     build_options: BuildOptions,
+    kotlin: &waterui_cli::android::KotlinToolchain,
 ) -> Result<Option<BuiltTarget>> {
     let mut built = None;
     // Every tool the build spawns, the prologue's included, echoes to the
@@ -442,9 +458,12 @@ async fn build_android_packaging_artifacts(
         let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
         // The Android build future crosses clippy's `large_futures` threshold
         // (16 KiB) on Windows, so it is pinned on the heap.
-        let target =
-            Box::pin(AndroidPlatform::new(abi).build_prepared(project, build_options.clone()))
-                .await?;
+        let target = Box::pin(AndroidPlatform::new(abi).build_prepared(
+            project,
+            build_options.clone(),
+            kotlin,
+        ))
+        .await?;
         built = Some(target);
         if let Some(pb) = spinner {
             pb.finish_and_clear();
@@ -516,12 +535,16 @@ async fn build_hydrolysis_packaging_artifacts(
     platform: TargetPlatform,
     arch: &[AndroidArch],
     build_options: BuildOptions,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<Option<BuiltTarget>> {
     if platform == TargetPlatform::Web {
         return Ok(None);
     }
 
     if platform == TargetPlatform::Android {
+        let kotlin = kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android build has no resolved Kotlin toolchain")
+        })?;
         let mut built = None;
         hydrolysis_android::clean_jni_libs(project).await?;
         for arch in arch {
@@ -531,6 +554,7 @@ async fn build_hydrolysis_packaging_artifacts(
                 &project.with_std_output(shell.is_interactive()),
                 abi,
                 build_options.clone(),
+                kotlin,
             )
             .await?;
             built = Some(target);
@@ -787,7 +811,7 @@ async fn check_toolchain_for_backend(
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: &[AndroidArch],
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     match backend {
         TargetBackend::Apple => {
             let sdk = match platform {
@@ -808,7 +832,9 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
             let required_abis = arch.iter().map(|arch| arch.to_abi()).collect::<Vec<_>>();
-            toolchain_checks::check_android_build_or_package_for_abis(host, &required_abis).await?;
+            return toolchain_checks::check_android_build_or_package_for_abis(host, &required_abis)
+                .await
+                .map(Some);
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
@@ -827,9 +853,14 @@ async fn check_toolchain_for_backend(
             }
             if platform == TargetPlatform::Android {
                 let required_abis = arch.iter().map(|arch| arch.to_abi()).collect::<Vec<_>>();
-                toolchain_checks::check_android_build_or_package_for_abis(host, &required_abis)
-                    .await?;
-            } else if platform == TargetPlatform::Web {
+                return toolchain_checks::check_android_build_or_package_for_abis(
+                    host,
+                    &required_abis,
+                )
+                .await
+                .map(Some);
+            }
+            if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
                 toolchain_checks::check_hydrolysis(host).await?;
@@ -842,7 +873,7 @@ async fn check_toolchain_for_backend(
             toolchain_checks::check_winui(host).await?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {

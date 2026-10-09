@@ -19,6 +19,7 @@ use smol::fs;
 use tracing::info;
 
 use crate::{
+    android::KotlinToolchain,
     android::device::AndroidAbiProvider,
     android::{
         backend::manifest_permissions,
@@ -432,6 +433,9 @@ pub struct HydrolysisAndroidBuild {
 /// page-alignment flag and staged under the generated app's `jniLibs` (or
 /// `options.output_dir()` when Gradle delegates back to `water build`).
 ///
+/// `kotlin` is the toolchain the caller's toolchain check resolved — the
+/// build reuses it rather than probing `kotlinc` again.
+///
 /// # Errors
 ///
 /// Returns an error when the NDK or SDK cannot be resolved or the build or
@@ -440,8 +444,11 @@ pub async fn build(
     project: &Project,
     abi: AndroidAbi,
     options: BuildOptions,
+    kotlin: &KotlinToolchain,
 ) -> eyre::Result<BuiltTarget> {
-    Ok(build_with_features(project, abi, options, &[]).await?.built)
+    Ok(build_with_features(project, abi, options, &[], kotlin)
+        .await?
+        .built)
 }
 
 /// [`build`] with extra Cargo features — the preview entry compiles the
@@ -456,6 +463,7 @@ pub async fn build_with_features(
     abi: AndroidAbi,
     options: BuildOptions,
     features: &[&str],
+    kotlin: &KotlinToolchain,
 ) -> eyre::Result<HydrolysisAndroidBuild> {
     let host = project.host();
     // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
@@ -482,7 +490,7 @@ pub async fn build_with_features(
         .resolved_framework()
         .await?
         .android_min_api_level()?;
-    let context = resolve_android_build_context(host, abi, &triple, min_api_level).await?;
+    let context = resolve_android_build_context(host, abi, &triple, min_api_level, kotlin).await?;
 
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
@@ -696,6 +704,7 @@ pub async fn run_on_device<D: Device + AndroidAbiProvider>(
     run_options: RunOptions,
     build_options: BuildOptions,
     progress: Option<BuildProgress>,
+    kotlin: &KotlinToolchain,
 ) -> Result<Running, FailToRun> {
     let host = project.host();
     let abi = device.android_abi();
@@ -716,7 +725,7 @@ pub async fn run_on_device<D: Device + AndroidAbiProvider>(
         Some(progress) => build_options.with_progress(progress),
         None => build_options,
     };
-    let built = build(project, abi, build_options)
+    let built = build(project, abi, build_options, kotlin)
         .await
         .map_err(FailToRun::Build)?;
 

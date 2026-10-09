@@ -24,6 +24,7 @@ use crate::{
         platform::{
             AndroidAbi, AndroidPlatform, android_ffi_dependency_features, run_gradle_tasks,
         },
+        toolchain::KotlinToolchain,
     },
     assets,
     build::{BuildOptions, BuiltTarget},
@@ -59,6 +60,9 @@ pub struct EmbeddedArtifact {
 /// `jniLibs`, stages assets and fonts into it, then has the generated
 /// Gradle project assemble the AAR and publish it to `mavenLocal`.
 ///
+/// `kotlin` is the toolchain the caller's toolchain check resolved —
+/// every ABI's build reuses it rather than probing `kotlinc` again.
+///
 /// # Errors
 /// Fails when any ABI's Rust build, the asset staging, or the Gradle
 /// assemble/publish step fails, or when the generated backend project has
@@ -67,6 +71,7 @@ pub async fn build_aar(
     project: &Project,
     options: &BuildOptions,
     abis: &[AndroidAbi],
+    kotlin: &KotlinToolchain,
 ) -> Result<EmbeddedArtifact> {
     let backend_path = project.backend_path::<AndroidBackend>();
     // The identifier is the Maven `group` the AAR publishes under — a Java
@@ -98,7 +103,7 @@ pub async fn build_aar(
         let abi_options = options.clone().with_output_dir(jni_libs.join(abi.as_str()));
         built = Some(
             AndroidPlatform::new(*abi)
-                .build_prepared(project, abi_options)
+                .build_prepared(project, abi_options, kotlin)
                 .await?,
         );
     }
