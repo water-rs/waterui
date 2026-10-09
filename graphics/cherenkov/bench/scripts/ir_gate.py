@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Callgrind Ir gate for `lower` and `encode` on the five perf scenes.
+"""Callgrind Ir gate for `lower`, `encode` and `run_transaction` on the five
+perf scenes.
 
 Each profile runs `cherenkov-bench measure --pause-at P` under Callgrind with
 instrumentation off. At the pause (a fixed frame index, not wall-clock time)
 instrumentation is switched on and the bench resumes. `--dump-before` and
-`--dump-after` on each root make every dump cover exactly one call of that
-root on its thread. The k-th dump after a root returns is sample k; sample 2
-is the gate's "second steady frame" and sample 3 its stability check.
+`--dump-after` on each root cut a dump at every entry and return. One call of
+a root is the span between consecutive `--dump-after` triggers on its own
+thread; a root nested inside it (`run_transaction` runs inside `encode`)
+writes its own dumps within that span, so a sample sums the root's incoming
+edge and cost over every dump in its span. The k-th call is sample k; sample 2
+is the gate's "second steady frame" and sample 3 its stability check. Only
+the first span may hold no complete call — the call in flight when
+instrumentation switched on — so any later skip is an error, never a silent
+shift of which frame is sampled.
 
 Per sample it reports the root's inclusive Ir; the allocator's share of it
 (the inclusive cost of every call from other code into the Rust allocator
@@ -31,7 +38,8 @@ teardown crashes when another instance layer sits in front of it.
 import argparse, collections, concurrent.futures, ctypes, hashlib, json, os, pathlib, re, selectors, struct, subprocess, sys
 
 SCENES = ['map', 'chart', 'text-page', 'ui-list', 'effects']
-ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad')}
+ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad'),
+         'run_transaction': ('15run_transaction', 'cherenkov_record')}
 PAUSE = 'cherenkov-bench: paused before frame {}'
 ALLOC = re.compile(r"(___rust_(alloc|dealloc|realloc|alloc_zeroed)|___rdl_(alloc|dealloc|realloc|alloc_zeroed)"
                    r"|___rust_no_alloc_shim_is_unstable\w*"
@@ -97,7 +105,8 @@ def measure(path, symbol):
     root = ids[0]
     ncalls = sum(c for (a, b), c in calls.items() if b == root)
     ir = sum(c for (a, b), c in edge.items() if b == root)
-    assert ncalls == 1 and ir > 0, (path, ncalls, ir)
+    if ir == 0:
+        return None
     is_alloc = lambda k: bool(ALLOC.search(names.get(k, '')))
     is_mem = lambda k: bool(MEM.search(names.get(k, '')))
     excluded = lambda k: is_alloc(k) or is_mem(k)
@@ -120,7 +129,7 @@ def measure(path, symbol):
                     counts[kind] += calls[(a, b)]
         elif is_mem(b):
             mem_ir += cost; mem_calls += calls[(a, b)]
-    return {'path': str(path), 'ir': ir, 'alloc_ir': alloc_ir, 'mem_ir': mem_ir, 'mem_calls': mem_calls,
+    return {'path': str(path), 'ir': ir, 'ncalls': ncalls, 'alloc_ir': alloc_ir, 'mem_ir': mem_ir, 'mem_calls': mem_calls,
             'rust_ir': ir - alloc_ir - mem_ir, 'outside_ir': total - ir if total is not None else None, **counts}
 
 
@@ -167,6 +176,14 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     roots = {}
     for phase, (suffix, crate) in ROOTS.items():
         hits = [line.split()[-1] for line in symbols if line.split()[-1].endswith(suffix) and crate in line]
+        if not hits:
+            # A generic method's symbol keeps the fn name inside its own
+            # path, ahead of the `NC`-delimited instantiation suffix
+            # (`…Shared<Gpu>E15run_transactionNC<closure>`): match the
+            # name there instead.
+            hits = [s for s in (line.split()[-1] for line in symbols)
+                    if suffix in s.split('NC', 1)[0] and crate in s]
+            hits = list(dict.fromkeys(hits))
         assert len(hits) == 1, (tag, phase, hits)
         roots[phase] = hits[0]
     layer_dir = out / 'vk_layer'
@@ -197,7 +214,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
         print(tag, scene, 'pid', process.pid, 'running to frame', pause_at, flush=True)
 
         def done():
-            used = max(after[p][2] for p in after) if all(len(v) >= 3 for v in after.values()) else None
+            used = max(v[2][0] for v in after.values()) if all(len(v) >= 3 for v in after.values()) else None
             return used is not None and latest > used
         try:
             while not done():
@@ -228,7 +245,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
                             head = (out / name).read_text().split('\n\nob=', 1)[0]
                             for phase, symbol in roots.items():
                                 if f'desc: Trigger: --dump-after={symbol}\n' in head:
-                                    after[phase].append(number)
+                                    after[phase].append((number, match[2]))
         finally:
             process.terminate()
             try:
@@ -241,11 +258,34 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     result = {'tag': tag, 'scene': scene, 'binary': str(binary), 'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'pause_at': pause_at, 'command': command}
     for phase, symbol in roots.items():
+        # One call of the root is the span between its consecutive
+        # --dump-after triggers on its own thread: nested roots write
+        # their dumps inside that span, so the call's incoming edge and
+        # its cost are spread over several files — a sample merges them.
+        bounds = sorted(after[phase])
         samples = []
-        for number in sorted(after[phase])[:3]:
-            found = [m for m in (measure(p, symbol) for p in dump_files(out, prefix.name, number)) if m]
-            assert len(found) == 1, (tag, scene, phase, number, len(found))
-            samples.append(found[0])
+        prev = 0
+        for index, (number, thread) in enumerate(bounds):
+            span = [p for n in range(prev + 1, number + 1)
+                    for p in dump_files(out, prefix.name, n) if p.name.endswith('-' + thread)]
+            prev = number
+            found = [m for m in (measure(p, symbol) for p in span) if m]
+            if not found or sum(m['ncalls'] for m in found) != 1:
+                # A call in flight when instrumentation switched on has
+                # no incoming edge — not a sample. Only the first span
+                # can be one: skipping a later span would shift every
+                # sample to a later frame.
+                assert index == 0, (tag, scene, phase, number, 'only the first span may be skipped')
+                continue
+            merged = {k: sum(m[k] for m in found)
+                      for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls',
+                                'rust_ir', 'allocs', 'reallocs', 'deallocs')}
+            merged['outside_ir'] = None
+            merged['path'] = str(span[-1])
+            samples.append(merged)
+            if len(samples) == 3:
+                break
+        assert len(samples) == 3, (tag, scene, phase, len(samples))
         second, third = samples[1], samples[2]
         result[phase] = {'root': symbol, 'first': samples[0], 'second': second, 'third': third,
                          'third_delta_percent': 100 * (third['rust_ir'] / second['rust_ir'] - 1)}
@@ -256,7 +296,13 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
 
 
 def load(out, tag, scene):
-    return json.loads((pathlib.Path(out) / f'{tag}-{scene}.result.json').read_text())
+    # `batch` writes each tag into its own subdirectory (--out per tag); a
+    # flat out dir with the files side by side is accepted too.
+    for root in (pathlib.Path(out) / tag, pathlib.Path(out)):
+        candidate = root / f'{tag}-{scene}.result.json'
+        if candidate.exists():
+            return json.loads(candidate.read_text())
+    raise FileNotFoundError(f'no result for {tag}/{scene} under {out}')
 
 
 def batch(args):

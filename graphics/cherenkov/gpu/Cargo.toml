@@ -97,7 +97,7 @@ half = "2"
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
-# `UNION_MAX_MEMBERS` comes from `../src/union_cap.rs` via `#[path]` —
+# `UNION_MAX_MEMBERS` comes from `../record/src/union_cap.rs` via `#[path]` —
 # the same file `cherenkov::BackdropUnion::MAX_MEMBERS` reads — so the
 # build script never depends on the engine crate.
 

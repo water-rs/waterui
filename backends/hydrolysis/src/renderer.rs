@@ -297,6 +297,12 @@ pub struct ProducerWake {
     redraw: Option<RedrawHandle>,
 }
 
+impl std::fmt::Debug for ProducerWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProducerWake").finish_non_exhaustive()
+    }
+}
+
 impl ProducerWake {
     /// Posts the producer key and wakes the host for a frame.
     pub(crate) fn request_redraw(&self) {
@@ -615,6 +621,12 @@ pub struct HydrolysisRenderer {
     /// stack empty, so overlay content never joins a scope the window
     /// tree opened.
     pub(crate) material_group_scopes: Vec<Rc<NodeCell>>,
+    /// The widget theme's material terms (water-rs/waterui#1788), filled
+    /// once here — the renderer calls `register_backdrop_shaders` before
+    /// any chrome draws and keeps the registry. Every engine the window
+    /// attaches registers its shaders from this; a class a chrome member
+    /// names resolves its capture terms here at install.
+    material_registry: Rc<cherenkov_record::MaterialRegistry>,
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -1863,6 +1875,8 @@ impl HydrolysisRenderer {
         text: SessionTextEngine,
     ) -> Self {
         let frame_instant = Instant::now();
+        let mut material_registry = cherenkov_record::MaterialRegistry::default();
+        theme.register_backdrop_shaders(&mut material_registry);
         Self {
             core: SemanticCore::new(frame_instant, text),
             theme,
@@ -1885,6 +1899,7 @@ impl HydrolysisRenderer {
             last_layout_signature: None,
             window_backdrop: None,
             material_group_scopes: Vec::new(),
+            material_registry: Rc::new(material_registry),
         }
     }
 
