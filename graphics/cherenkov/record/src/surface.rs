@@ -3507,7 +3507,7 @@ mod tests {
     }
 
     #[test]
-    fn a_removed_childs_detach_op_drops_with_it() {
+    fn a_removed_child_detach_op_drops_with_it() {
         // `tx[p].remove(&c)` queues the detach; dropping `c`'s handle in
         // the same body queues its `Remove` — which lands ahead of the
         // stream. The detach still naming the removed child must drop,
