@@ -1,5 +1,6 @@
 package dev.waterui.hydrolysis
 
+import android.annotation.SuppressLint
 import android.graphics.Rect
 import android.os.Bundle
 import android.view.MotionEvent
@@ -328,19 +329,9 @@ internal class HydrolysisAccessibilityProvider(
         if (properties != null && properties.optBoolean("selected", false)) {
             info.isSelected = true
         }
-        when (properties?.optString("toggled")) {
-            "true" -> {
-                info.isCheckable = true
-                compat.setChecked(CHECKED_STATE_TRUE)
-            }
-            "false" -> {
-                info.isCheckable = true
-                compat.setChecked(CHECKED_STATE_FALSE)
-            }
-            "mixed" -> {
-                info.isCheckable = true
-                compat.setChecked(CHECKED_STATE_PARTIAL)
-            }
+        checkedState(properties?.optString("toggled"))?.let { state ->
+            info.isCheckable = true
+            compat.setChecked(state)
         }
         if (properties != null && properties.has("expanded")) {
             info.stateDescription =
@@ -485,6 +476,23 @@ internal class HydrolysisAccessibilityProvider(
      * `bounds` arrives in window logical units — the same space input events
      * leave through after `density` division. Services want physical px.
      */
+    /**
+     * Maps accesskit's `toggled` value onto the platform's tri-state checked
+     * contract, or `null` for a node that is not checkable. The
+     * `CHECKED_STATE_*` fields are API 36, above the floor, but they are
+     * compile-time ints copied into this class, and compat `setChecked`
+     * applies them on every API level (below 36 it maps them onto the boolean
+     * checked flag), so InlinedApi's runtime hazard does not exist here.
+     */
+    @SuppressLint("InlinedApi")
+    private fun checkedState(toggled: String?): Int? =
+        when (toggled) {
+            "true" -> AccessibilityNodeInfo.CHECKED_STATE_TRUE
+            "false" -> AccessibilityNodeInfo.CHECKED_STATE_FALSE
+            "mixed" -> AccessibilityNodeInfo.CHECKED_STATE_PARTIAL
+            else -> null
+        }
+
     private fun boundsRect(properties: JSONObject?): Rect {
         val bounds = properties?.optJSONObject("bounds") ?: return Rect()
         val density = host.resources.displayMetrics.density
@@ -877,18 +885,6 @@ internal class HydrolysisAccessibilityProvider(
 
         /** Advertised ids for accesskit custom actions start here. */
         const val CUSTOM_ACTION_BASE = 0x01000000
-
-        /**
-         * The API-36 `AccessibilityNodeInfo.CHECKED_STATE_*` tri-state
-         * contract, named locally because the fields sit above the floor and
-         * lint rejects both inlined field references (InlinedApi) and
-         * compile-time-constant arguments (WrongConstant) at this call.
-         * Non-const `val`s carry the same values without either trip; compat
-         * `setChecked` applies them on every API level.
-         */
-        val CHECKED_STATE_FALSE = 0
-        val CHECKED_STATE_TRUE = 1
-        val CHECKED_STATE_PARTIAL = 2
 
         val CLICKABLE_ROLES =
             setOf(
