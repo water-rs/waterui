@@ -124,8 +124,10 @@ wrapped at the proposal the column was measured with.
   `None` for a lazy stack. A lazy stack that must fill is placed by a parent
   that stretches it (`ScrollView`, `Absolute`, a `Frame` with `max = INFINITY`).
 - `ScrollView` is `Both`; `Spacer` is `MainAxis`; `Divider` is `CrossAxis`;
-  `Color` and shapes are `Both`; text, buttons, toggles and other content
-  controls are `None`; a text field is `Horizontal`.
+  `Color` and shapes are `Both`; text, buttons and other content controls
+  are `None`; a text field is `Horizontal`; a toggle is `Horizontal` when it
+  draws the switch style with a visible label, and `None` otherwise; a stepper
+  is `Horizontal` when its label is visible, and `None` otherwise.
 
 ## 4. Stacks (`HStack`, `VStack`)
 
@@ -365,7 +367,17 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   platform control's intrinsic size, with the platform's own chrome padding
   for the selected style and none for a borderless one; a text field answers
   the proposal width (`Horizontal`) and its intrinsic height — a plain iOS
-  text field is one 22 pt line with no border, fill or vertical floor.
+  text field is one 22 pt line with no border, fill or vertical floor. A
+  switch-style toggle with a visible label answers the proposal width
+  (`Horizontal`) and its intrinsic height, placing the label at the leading
+  edge and the switch at the trailing edge with the free space between; a
+  checkbox-style toggle (box, then label) and a toggle with a hidden label
+  answer the control's intrinsic size. The automatic style resolves to the
+  platform's default style — switch on iOS and Android, checkbox on macOS —
+  before this rule applies. A stepper with a visible label answers the
+  proposal width (`Horizontal`) and its intrinsic height, placing the label at
+  the leading edge and the buttons at the trailing edge with the free space
+  between; a stepper with a hidden label answers its intrinsic size.
 - **ScrollView**: a scroll claims the whole offer — a finite proposal on
   either axis is answered with that proposal; only a `0` proposal measures the
   content, answering its intrinsic extent on the non-scrolling axis and `0` on
@@ -377,8 +389,11 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   it (safe-area extension rule).
 - **Spacer** hosted natively answers its minimum length on the stack's main
   axis and zero on the cross axis, whatever the proposal (§5).
-- **GPU surfaces, images, shapes, colours**: `Both`; an image with an
-  intrinsic size answers it to `None` and fits the proposal otherwise.
+- **GPU surfaces, shapes, colours**: `Both`.
+- **Images**: a non-resizable image answers its intrinsic (natural) size to an
+  unspecified proposal. Under a smaller finite proposal it scales down,
+  preserving its aspect ratio, and never scales up. It claims no leftover space
+  (`None`). `.resizable()` fills the proposal per `content_mode`.
 
 A leaf that answers a probe with the proposal instead of its content on an
 axis it does not stretch is a backend bug: it makes every container above it
@@ -447,7 +462,7 @@ gap; changing one is a contract change.
 | --- | --- | --- |
 | Default stack spacing is a fixed 10 pt. | Platform-dependent, content-dependent default. | One value across backends keeps parity tests meaningful. |
 | Controls are intrinsic-only (`None`) unless they declare an axis. | Some controls stretch by style. | The style attribute, not the widget type, decides; backends declare per style. |
-| Images are `Both` and fit the proposal. | Images are fixed-size unless `.resizable()`. | Fitting is the common case for cross-platform content; an intrinsic size is answered to `None`. |
+| Non-resizable images are `None` and scale down only, preserving their aspect ratio. | Images are fixed-size unless `.resizable()`. | Capped media fits smaller finite proposals without scaling up; an unspecified proposal receives the intrinsic size. |
 | Grid columns at placement use the measurement proposal width. | `Grid` re-resolves columns against bounds. | Keeps a content-sized grid's columns content-sized under the bounds rule. |
 | A finite-width Grid divides the proposal into equal columns and answers the proposal width. | `Grid` columns are intrinsic-sized; only flexible columns share the remainder. | Equal columns keep every backend's grid identical and the answer predictable. |
 | `AspectRatio` reports the resolved ratio box and hands it to the child as its frame. | `aspectRatio` transforms the proposal but reports the child's answer. | The ratio box is the contract; the child receives it resolved, not re-negotiated. |

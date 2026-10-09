@@ -43,6 +43,12 @@ water preview demo --backend hydrolysis --theme material3 --frame 390x844
 water preview --expr 'vstack((text("Hi").title(), button("Go").action(|| {})))'
 ```
 
+CLI and MCP previews honor `[platforms.<platform>] backend = "..."` in `Water.toml`.
+An explicit backend that contradicts the declaration fails before building.
+Linux previews need a `hydrolysis` declaration or, when undeclared, `--backend hydrolysis`;
+the platform default `gtk4` has no preview renderer. See
+[platforms and backends](project.md#platforms-and-backends).
+
 `--expr` compiles the expression into generated preview code with `waterui::prelude::*`
 in scope, so it is a real compile, not a string interpreter. The preview pipeline links
 the app as a dylib, which is why generated projects carry the

@@ -63,7 +63,8 @@ pub enum TargetPlatform {
 }
 
 /// Backend types available for building.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TargetBackend {
     /// Apple backend (Xcode, UIKit/AppKit)
     Apple,

@@ -99,7 +99,24 @@ impl<E: TextEngine> TextService<E> {
         if input.is_empty() {
             return self.engine.empty_layout();
         }
+        self.shape_cached(input, max_width)
+    }
 
+    /// Shape `input` as an editable field's content. Unlike [`Self::shape`],
+    /// an empty input lays out the one empty line a caret in it occupies, in
+    /// the input's default style, so an empty field measures as tall as a
+    /// filled one.
+    pub(crate) fn shape_editable(
+        &self,
+        input: &ResolvedTextLayoutInput,
+        max_width: Option<f32>,
+    ) -> E::Layout {
+        // `shape` answers an empty input without the cache, so an empty
+        // input's key only ever holds its editable line.
+        self.shape_cached(input, max_width)
+    }
+
+    fn shape_cached(&self, input: &ResolvedTextLayoutInput, max_width: Option<f32>) -> E::Layout {
         let cache_key = input.cache_key(max_width);
         if let Some(layout) = self
             .layouts

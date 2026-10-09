@@ -230,17 +230,25 @@ struct BrowserRunner {
 }
 
 impl BrowserRunner {
+    /// Runs the runnables queued when the drain begins, and no others.
+    ///
+    /// A task that yields (`yield_now`, a cooperative loop over a long job)
+    /// re-queues itself while it runs. Running it again in the same drain
+    /// would keep the browser's main thread until the whole job finished, so
+    /// what a drain schedules waits for the next frame, which
+    /// [`needs_next_frame`](Self::needs_next_frame) requests.
     fn drain_runnable_queue(runnable_queue: &RefCell<VecDeque<Runnable>>) -> bool {
-        let mut drained = false;
-        // The pop borrow must end before `run`: running a task can schedule
-        // more runnables, which pushes onto this same queue.
-        loop {
-            let runnable = runnable_queue.borrow_mut().pop_front();
-            let Some(runnable) = runnable else { break };
-            drained = true;
+        let queued = runnable_queue.borrow().len();
+        for _ in 0..queued {
+            // The pop borrow must end before `run`: running a task can
+            // schedule more runnables, which pushes onto this same queue.
+            let runnable = runnable_queue
+                .borrow_mut()
+                .pop_front()
+                .expect("only the drain pops the browser runnable queue");
             runnable.run();
         }
-        drained
+        queued > 0
     }
 
     fn drain_local_executor_queue(&self) -> bool {

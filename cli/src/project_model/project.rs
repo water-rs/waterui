@@ -1,5 +1,7 @@
 //! Project management and build utilities for `WaterUI` CLI.
 
+pub use super::platforms::{PlatformConfig, PlatformName, resolve_backend};
+
 use std::fmt::Write as _;
 
 use cargo_toml::Manifest as CargoManifest;
@@ -113,6 +115,9 @@ struct CargoLayout {
     /// `cargo tree` evaluation passes so the application crate, not the
     /// workspace root, roots the printed graph.
     root_package_id: String,
+    /// The application package's resolved `[package] version`, workspace
+    /// inheritance already applied by Cargo.
+    root_package_version: String,
 }
 
 enum CargoResolution {
@@ -556,6 +561,9 @@ pub struct Project {
     /// The bound [`Self::CARGO_RESOLVE_PERMITS`] states, shared by every
     /// resolution this project's cached answers drive.
     cargo_resolve_permits: Arc<async_lock::Semaphore>,
+    /// The framework selection, resolved once per project and shared by
+    /// every backend, scaffold and asset scan this project drives.
+    framework: Arc<async_lock::OnceCell<Result<ResolvedFramework, String>>>,
     managed_backends_root: PathBuf,
     /// The runtime backends this open generated — project-owned state, never
     /// persisted. Persisted backend-facing configuration lives in the
@@ -743,6 +751,16 @@ impl Project {
     /// Returns an error when Cargo metadata cannot resolve the workspace.
     pub async fn lockfile_path(&self) -> eyre::Result<PathBuf> {
         Ok(self.cargo_layout().await?.workspace_root.join("Cargo.lock"))
+    }
+
+    /// The application crate's `[package] version` as Cargo resolves it —
+    /// a workspace-inherited `version.workspace = true` included.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the package.
+    pub(crate) async fn crate_version(&self) -> eyre::Result<String> {
+        Ok(self.cargo_layout().await?.root_package_version)
     }
 
     async fn cargo_layout(&self) -> eyre::Result<CargoLayout> {
@@ -996,13 +1014,33 @@ impl Project {
     /// channel selection `Water.toml` records, or the checkout `waterui_path`
     /// names.
     ///
+    /// The selection is a function of the manifest and the checkout it
+    /// names, so it is resolved once per project and every caller reads that
+    /// one answer: a build never observes the resolution disagree with
+    /// itself, and no layer pays for it twice.
+    ///
     /// # Errors
     ///
     /// Returns an error when the manifest records no framework source, its
     /// saved selection is invalid, or the local checkout's framework facts
     /// cannot be read.
-    pub async fn resolved_framework(&self) -> eyre::Result<ResolvedFramework> {
-        ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root).await
+    pub async fn resolved_framework(&self) -> eyre::Result<&ResolvedFramework> {
+        let framework = self
+            .framework
+            .get_or_init(|| async {
+                tracing::debug!(
+                    root = %self.root.display(),
+                    "resolving the project's framework selection"
+                );
+                ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root)
+                    .await
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .await;
+        match framework {
+            Ok(framework) => Ok(framework),
+            Err(error) => Err(eyre::eyre!(error.clone())),
+        }
     }
 
     /// Assert the selected framework channel distributes every scaffold
@@ -2073,7 +2111,7 @@ impl Project {
         &self,
         backend_project_path: PathBuf,
         profile_targets: &[Triple],
-    ) -> Result<(TemplateContext, ResolvedFramework), crate::backend::FailToInitBackend> {
+    ) -> Result<(TemplateContext, &ResolvedFramework), crate::backend::FailToInitBackend> {
         let apple_pieces = cfg!(target_os = "macos");
         let manifest = self.manifest();
         let app_name = manifest
@@ -2106,13 +2144,13 @@ impl Project {
             manifest,
             self.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             self.local_sources(),
         )
         .with_backend_project_path(backend_project_path)
         .with_project_root_path(self.root.clone())
         .with_project_packages(
-            self.project_packages(&framework, profile_targets)
+            self.project_packages(framework, profile_targets)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,
         )
@@ -2170,7 +2208,7 @@ impl Project {
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.ffi_crate_path(), &framework)
+        self.seed_managed_crate_lock(&self.ffi_crate_path(), framework)
             .await
     }
 
@@ -2205,7 +2243,7 @@ impl Project {
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.apple_preview_crate_path(), &framework)
+        self.seed_managed_crate_lock(&self.apple_preview_crate_path(), framework)
             .await
     }
 
@@ -2234,7 +2272,7 @@ impl Project {
             manifest,
             self.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             self.local_sources(),
         )
         .with_backend_project_path(self.preview_ffi_crate_path(workspace_root))
@@ -2325,6 +2363,10 @@ impl Project {
             .resolve_framework(host)
             .await
             .map_err(FailToCreateProject::Framework)?;
+        let cargo_config = framework
+            .cargo_config(&path)
+            .await
+            .map_err(FailToCreateProject::Framework)?;
 
         // Framework validation precedes directory creation so a rejected
         // local checkout leaves nothing behind; on `init` the directory
@@ -2358,6 +2400,12 @@ impl Project {
         templates::root::scaffold(&path, &ctx, &assets_path)
             .await
             .map_err(FailToCreateProject::Scaffold)?;
+        write_channel_file(
+            &path.join(".cargo/config.toml"),
+            Some(cargo_config.to_string().as_bytes()),
+        )
+        .await
+        .map_err(FailToCreateProject::Scaffold)?;
 
         // `.mcp.json` lets MCP clients launched in the project root find
         // `water mcp` without any user configuration.
@@ -2417,6 +2465,7 @@ impl Project {
             cargo_resolve_permits: Arc::new(async_lock::Semaphore::new(
                 Self::CARGO_RESOLVE_PERMITS,
             )),
+            framework: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
@@ -2438,6 +2487,7 @@ impl Project {
                 accessory: false,
                 embedded: false,
             },
+            platforms: BTreeMap::new(),
             hydrolysis: None,
             waterui_path: options
                 .waterui_path
@@ -2721,6 +2771,7 @@ impl Project {
             cargo_resolve_permits: Arc::new(async_lock::Semaphore::new(
                 Self::CARGO_RESOLVE_PERMITS,
             )),
+            framework: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
@@ -2789,8 +2840,12 @@ async fn apply_channel_selection(
     host: &Host,
     root: &Path,
     framework: ResolvedFramework,
-    updates: Vec<(PathBuf, Option<Vec<u8>>)>,
+    mut updates: Vec<(PathBuf, Option<Vec<u8>>)>,
 ) -> eyre::Result<()> {
+    updates.push((
+        root.join(".cargo/config.toml"),
+        Some(framework.cargo_config(root).await?.to_string().into_bytes()),
+    ));
     let mut previous = BTreeMap::new();
     for file in updates
         .iter()
@@ -2827,7 +2882,12 @@ async fn apply_channel_selection(
 
 async fn write_channel_file(path: &Path, contents: Option<&[u8]>) -> std::io::Result<()> {
     match contents {
-        Some(contents) => smol::fs::write(path, contents).await,
+        Some(contents) => {
+            if let Some(parent) = path.parent() {
+                smol::fs::create_dir_all(parent).await?;
+            }
+            smol::fs::write(path, contents).await
+        }
         None => match smol::fs::remove_file(path).await {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             result => result,
@@ -2866,14 +2926,15 @@ async fn resolve_cargo_layout(
     // metadata` reports the plain one — comparing the two would never
     // match the application package (part of #152).
     let application_manifest = dunce::canonicalize(current_dir.join("Cargo.toml"))?;
-    let root_package_id = package_at_manifest(&metadata, &application_manifest)?
-        .id
-        .to_string();
+    let root_package = package_at_manifest(&metadata, &application_manifest)?;
+    let root_package_id = root_package.id.to_string();
+    let root_package_version = root_package.version.to_string();
 
     Ok(CargoLayout {
         target_dir: metadata.target_directory.into_std_path_buf(),
         workspace_root: metadata.workspace_root.into_std_path_buf(),
         root_package_id,
+        root_package_version,
     })
 }
 
@@ -3540,6 +3601,13 @@ struct WateruiPatchesRecord<'a> {
 pub struct Manifest {
     /// Package information.
     pub package: Package,
+    /// Per-platform backend declarations (`[platforms.<platform>]`).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "super::platforms::deserialize"
+    )]
+    pub platforms: BTreeMap<PlatformName, PlatformConfig>,
     /// Hydrolysis backend selections (`[hydrolysis]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hydrolysis: Option<crate::backend::HydrolysisConfig>,
@@ -3733,6 +3801,7 @@ impl Manifest {
     pub fn new(package: Package) -> Self {
         Self {
             package,
+            platforms: BTreeMap::new(),
             hydrolysis: None,
             waterui_path: None,
             waterui_patches: cargo_toml::PatchSet::new(),
@@ -4465,9 +4534,15 @@ mod target_graph_tests {
     /// `resolve_cargo_layout` needs plus the root-package row `cargo_tree`
     /// matches by manifest path.
     fn cargo_metadata_json(root: &Path, workspace_root: &Path) -> String {
-        let canonical = dunce::canonicalize(root).expect("fixture root canonicalizes");
-        let workspace_root =
-            dunce::canonicalize(workspace_root).expect("workspace root canonicalizes");
+        let canonicalize = |path: &Path| {
+            dunce::canonicalize(path).unwrap_or_else(|_| {
+                dunce::canonicalize(path.parent().unwrap())
+                    .unwrap()
+                    .join(path.file_name().unwrap())
+            })
+        };
+        let canonical = canonicalize(root);
+        let workspace_root = canonicalize(workspace_root);
         let manifest_path = canonical.join("Cargo.toml");
         let package_id = format!(
             "path+file:///{}#demo_app@0.1.0",
@@ -4518,6 +4593,72 @@ mod target_graph_tests {
             "metadata": null
         })
         .to_string()
+    }
+
+    #[test]
+    fn create_writes_apple_deployment_env_and_channel_updates_preserve_user_config() {
+        smol::block_on(async {
+            let machine = TestMachine::new();
+            machine.install("cargo");
+            machine.install("git");
+            let root = machine.root().join("app");
+            machine.respond("CARGO_METADATA", &cargo_metadata_json(&root, &root));
+            let host = machine.host(std::iter::empty::<(&str, &str)>());
+            let framework = crate::framework::test_fixtures::stable_framework();
+            Project::create(
+                &host,
+                &root,
+                super::CreateOptions {
+                    name: "Demo App".into(),
+                    bundle_identifier: "dev.waterui.demo".try_into().unwrap(),
+                    waterui_path: None,
+                    channel: None,
+                    framework_manifest: None,
+                    framework: Some(framework.clone()),
+                    framework_lock: None,
+                    author: "Test".into(),
+                    web: None,
+                },
+            )
+            .await
+            .unwrap();
+            let config_path = root.join(".cargo/config.toml");
+            let contents = std::fs::read_to_string(&config_path).unwrap();
+            let mut config: toml_edit::DocumentMut = contents.parse().unwrap();
+            for variable in ["MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET"] {
+                assert_eq!(config["env"][variable].as_str(), Some("26.0"));
+            }
+            config["env"]["USER_SETTING"] = toml_edit::value("keep me");
+            config["build"] = toml_edit::Item::Table(toml_edit::Table::new());
+            config["build"]["jobs"] = toml_edit::value(3);
+            config["build"]
+                .as_table_mut()
+                .unwrap()
+                .decor_mut()
+                .set_prefix("# user comment\n");
+            std::fs::write(&config_path, config.to_string()).unwrap();
+            let mut selection = toml::Value::try_from(framework).unwrap();
+            selection["metadata"]["apple-deployment-targets"]["macos"] =
+                toml::Value::String("27.0".into());
+            selection["metadata"]["apple-deployment-targets"]["ios"] =
+                toml::Value::String("28.0".into());
+            super::apply_channel_selection(&host, &root, selection.try_into().unwrap(), Vec::new())
+                .await
+                .unwrap();
+            let updated = std::fs::read_to_string(&config_path).unwrap();
+            assert!(updated.contains("# user comment"));
+            let config: toml::Value = toml::from_str(&updated).unwrap();
+            assert_eq!(
+                config["env"]["MACOSX_DEPLOYMENT_TARGET"].as_str(),
+                Some("27.0")
+            );
+            assert_eq!(
+                config["env"]["IPHONEOS_DEPLOYMENT_TARGET"].as_str(),
+                Some("28.0")
+            );
+            assert_eq!(config["env"]["USER_SETTING"].as_str(), Some("keep me"));
+            assert_eq!(config["build"]["jobs"].as_integer(), Some(3));
+        });
     }
 
     /// A project `Project::open` accepts — real manifests on the scratch

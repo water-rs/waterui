@@ -499,20 +499,11 @@ impl AndroidPlatform {
         // The ffi companion is the crate this builds — render it for the
         // graph its `cfg` tables serve before anything reads its manifest.
         project.scaffold_ffi_companion().await?;
-
-        // Android is where a missing declaration actually breaks things, so
-        // surface anything a dependency needs that the app has not enabled.
-        // The audit resolves the ffi companion's graph — the crate the
-        // Android build compiles — so it runs on the render this build made.
-        let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-        let required =
-            crate::assets::scan_required_permissions(project.host(), &ffi_manifest).await?;
-        crate::assets::warn_missing_permissions(project, &required, |key| {
-            key.android_permission_name().is_some()
-        });
+        audit_android_permissions(project).await?;
 
         // Resolve fonts BEFORE cargo build - this ensures icons.json is present
         // for crates like fontawesome7 that need it during build.rs
+        let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
         let font_declarations = crate::assets::scan_fonts(
             project,
             &ffi_manifest,
@@ -829,6 +820,25 @@ async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBu
         Ok((sdk_path, android_jar))
     })
     .await
+}
+
+/// Warn about every permission the FFI companion's dependency graph needs
+/// that the project has not enabled.
+///
+/// Android is where a missing declaration actually breaks things. The audit
+/// resolves the companion's graph — the crate an Android build compiles and
+/// the one whose declarations reach the Gradle classpath — so it runs after
+/// the build rendered the companion.
+///
+/// # Errors
+/// Returns an error when the companion's graph cannot be resolved.
+pub(crate) async fn audit_android_permissions(project: &Project) -> eyre::Result<()> {
+    let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
+    let required = crate::assets::scan_required_permissions(project.host(), &ffi_manifest).await?;
+    crate::assets::warn_missing_permissions(project, &required, |key| {
+        key.android_permission_name().is_some()
+    });
+    Ok(())
 }
 
 /// The features an Android runtime's generated FFI crate is compiled with,

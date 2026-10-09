@@ -47,7 +47,7 @@ where
             .create_surface(
                 id,
                 Offscreen::new(size, OffscreenFormat::LinearF16).into(),
-                unhosted_waker(),
+                super::unhosted_waker(),
             )
             .expect("surface");
         let _ = renderer.set_content(
@@ -163,7 +163,7 @@ where
             .create_surface(
                 id,
                 Offscreen::new(size, OffscreenFormat::LinearF16).into(),
-                unhosted_waker(),
+                super::unhosted_waker(),
             )
             .expect("surface");
         let _ = renderer.set_content(
@@ -679,12 +679,4 @@ async fn assert_patch_counts<R: Renderer>(
         u32::try_from(list.len()).unwrap(),
         "a glyph-count change must rebuild only its layer"
     );
-}
-
-/// A surface wake-up with no host behind it: the harness drives the
-/// renderer directly and renders on its own schedule.
-fn unhosted_waker() -> crate::CompletionWaker {
-    crate::CompletionWaker::new(&std::sync::Arc::new(crate::engine::SurfaceWaker::new(
-        || {},
-    )))
 }
