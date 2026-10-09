@@ -18,5 +18,5 @@ pub(crate) mod toolchain;
 
 pub use self::toolchain::{
     AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
-    AndroidSdkPlatforms, Java, Kotlin,
+    AndroidSdkPlatforms, Java, Kotlin, KotlinToolchain,
 };

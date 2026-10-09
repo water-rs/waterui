@@ -141,8 +141,15 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         return Box::pin(run_embedded_build(shell, &args, &context)).await;
     }
 
-    check_build_toolchain(shell, args.platform, context.backend, args.arch).await?;
-    let result = Box::pin(execute_build(shell, &args, &context)).await;
+    let kotlin_toolchain =
+        check_build_toolchain(shell, args.platform, context.backend, args.arch).await?;
+    let result = Box::pin(execute_build(
+        shell,
+        &args,
+        &context,
+        kotlin_toolchain.as_ref(),
+    ))
+    .await;
 
     handle_build_result(shell, result, args.output_dir)
 }
@@ -174,7 +181,7 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
     );
 
     let spinner = shell.spinner("Checking toolchain...");
-    toolchain_checks::check_android_build_or_package_for_abis(
+    let kotlin = toolchain_checks::check_android_build_or_package_for_abis(
         &waterui_cli::toolchain::Host::current(),
         &abis,
     )
@@ -190,6 +197,7 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
         hydrolysis::android::resolve_painter(&context.project, None),
         &context.build_options,
         &abis,
+        &kotlin,
     ))
     .await;
     if let Some(pb) = spinner {
@@ -402,9 +410,9 @@ async fn check_build_toolchain(
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: Option<TargetArch>,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(
+    let kotlin_toolchain = check_toolchain_for_backend(
         &waterui_cli::toolchain::Host::current(),
         platform,
         backend,
@@ -415,15 +423,25 @@ async fn check_build_toolchain(
         pb.finish_and_clear();
     }
     success!(shell, "Toolchain ready");
-    Ok(())
+    Ok(kotlin_toolchain)
 }
 
-async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Result<BuiltTarget> {
+async fn execute_build(
+    shell: &Shell,
+    args: &Args,
+    context: &BuildContext,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
+) -> Result<BuiltTarget> {
     let spinner = shell.spinner("Compiling...");
     let result = Box::pin(async {
         // The project clone carries the interactive output policy into every
         // backend's build.
         let project = context.project.with_std_output(shell.is_interactive());
+        let kotlin = || {
+            kotlin_toolchain.ok_or_else(|| {
+                eyre::eyre!("Internal error: Android build has no resolved Kotlin toolchain")
+            })
+        };
         match context.backend {
             TargetBackend::Apple => {
                 build_for_apple(
@@ -435,7 +453,13 @@ async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Re
                 .await
             }
             TargetBackend::Android => {
-                build_for_android(&project, args.arch, context.build_options.clone()).await
+                build_for_android(
+                    &project,
+                    args.arch,
+                    context.build_options.clone(),
+                    kotlin()?,
+                )
+                .await
             }
             TargetBackend::Gtk4 => build_gtk4(&project, context.build_options.clone()).await,
             TargetBackend::Hydrolysis => {
@@ -445,6 +469,7 @@ async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Re
                         &project,
                         abi,
                         context.build_options.clone(),
+                        kotlin()?,
                     )
                     .await
                 } else {
@@ -528,7 +553,7 @@ async fn check_toolchain_for_backend(
     platform: TargetPlatform,
     backend: TargetBackend,
     arch: Option<TargetArch>,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     match backend {
         TargetBackend::Apple => {
             let sdk = match platform {
@@ -551,8 +576,12 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
             let requested_abi = android_abi(arch.unwrap_or(TargetArch::Arm64));
-            toolchain_checks::check_android_build_or_package_for_abis(host, &[requested_abi])
-                .await?;
+            return toolchain_checks::check_android_build_or_package_for_abis(
+                host,
+                &[requested_abi],
+            )
+            .await
+            .map(Some);
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
@@ -563,9 +592,14 @@ async fn check_toolchain_for_backend(
         TargetBackend::Hydrolysis => {
             if platform == TargetPlatform::Android {
                 let requested_abi = android_abi(arch.unwrap_or(TargetArch::Arm64));
-                toolchain_checks::check_android_build_or_package_for_abis(host, &[requested_abi])
-                    .await?;
-            } else if platform != TargetPlatform::Macos
+                return toolchain_checks::check_android_build_or_package_for_abis(
+                    host,
+                    &[requested_abi],
+                )
+                .await
+                .map(Some);
+            }
+            if platform != TargetPlatform::Macos
                 && platform != TargetPlatform::Linux
                 && platform != TargetPlatform::Windows
             {
@@ -579,7 +613,7 @@ async fn check_toolchain_for_backend(
             toolchain_checks::check_winui(host).await?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn build_for_apple(
@@ -631,9 +665,12 @@ async fn build_for_android(
     project: &Project,
     arch: Option<TargetArch>,
     options: BuildOptions,
+    kotlin: &waterui_cli::android::KotlinToolchain,
 ) -> Result<BuiltTarget> {
     let abi = android_abi(arch.unwrap_or(TargetArch::Arm64));
-    AndroidPlatform::new(abi).build(project, options).await
+    AndroidPlatform::new(abi)
+        .build(project, options, kotlin)
+        .await
 }
 
 const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
