@@ -1058,6 +1058,7 @@ impl AndroidSession {
     pub(crate) fn surface_attached_with_generation(
         &mut self,
         native_window: ndk::native_window::NativeWindow,
+        peak_refresh_hz: f32,
         width: u32,
         height: u32,
         generation: u64,
@@ -1070,11 +1071,13 @@ impl AndroidSession {
             height,
             "wake posted: surface attached"
         );
-        let attached =
-            self.runtime
-                .platform
-                .surface
-                .attach(native_window, width, height, generation);
+        let attached = self.runtime.platform.surface.attach(
+            native_window,
+            peak_refresh_hz,
+            width,
+            height,
+            generation,
+        );
         self.runtime.platform.sync_frame_wake_gate();
         attached.map_err(|error| error.to_string())?;
         // A new surface never inherits the old one's presented frame — the
@@ -1132,8 +1135,12 @@ impl AndroidSession {
 
     /// The scheduler's interaction/animation high-refresh demand changed —
     /// routed onto the native window (API 30+).
-    pub(crate) fn set_high_refresh_demand(&mut self, fps: Option<f32>) {
-        self.runtime.platform.surface.set_high_refresh_demand(fps);
+    pub(crate) fn set_high_refresh_demand(&mut self, active: bool) -> Result<(), String> {
+        self.runtime
+            .platform
+            .surface
+            .set_high_refresh_demand(active)
+            .map_err(|error| error.to_string())
     }
 
     /// Whether the window's content asked the host to close.

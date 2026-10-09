@@ -108,7 +108,6 @@ unicode-ident = "1"
 shlex = "2"
 
 # Asset/font downloading dependencies
-dirs = "7"                    # Platform-specific directories (cache, config, etc.)
 hex = "0.4"                   # Hex encoding for hashes
 sha2 = "0.11"                 # SHA256 hashing
 sysinfo = { version = "0.39", default-features = false, features = ["system"] } # Preview support-process discovery
@@ -239,4 +238,3 @@ syn = { version = "2", features = ["full"] }
 
 [package.metadata.cargo-machete]
 ignored = ["roxmltree"]
-
