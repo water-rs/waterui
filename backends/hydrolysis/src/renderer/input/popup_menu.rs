@@ -353,7 +353,7 @@ fn shortcut_hint_styled(
     disabled: bool,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> StyledStr {
-    let mut styled = StyledStr::plain(shortcut_hint_text(shortcut)).foreground({
+    let mut styled = StyledStr::plain(shortcut.to_string()).foreground({
         let color = Color::new(waterui::theme::color::MutedForeground);
         if disabled {
             color.with_opacity(0.38)
