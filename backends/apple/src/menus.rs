@@ -591,10 +591,12 @@ mod imp {
     pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static {
         move |builder| {
             let Some((resolved, env)) = declared.borrow().clone() else {
+                tracing::debug!("main menu built before the application declared its menus");
                 return;
             };
             let mtm = MainThreadMarker::new().expect("build_menus runs on the main thread");
-            for (index, item) in resolved.snapshot().iter().enumerate() {
+            let items = resolved.snapshot();
+            for (index, item) in items.iter().enumerate() {
                 let ResolvedMenuItem::Menu(menu) = item else {
                     panic!("App::menu_bar only accepts top-level Menu values");
                 };
@@ -614,6 +616,10 @@ mod imp {
                     builder.insert_at_root_end(&ui_menu);
                 }
             }
+            tracing::debug!(
+                menus = items.len(),
+                "main menu built with the declared menus"
+            );
         }
     }
 
