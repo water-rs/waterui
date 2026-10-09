@@ -44,7 +44,8 @@ use crate::runner::android_executor::AndroidMainThreadExecutor;
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
 use crate::runner::window::{
-    RuntimeWindow, advance_runtime, handle_input_events, render_window, reports_ui_idle,
+    FrameDemand, FrameTransaction, RuntimeWindow, advance_runtime, handle_input_events,
+    render_window, reports_ui_idle,
 };
 use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
@@ -321,7 +322,9 @@ pub struct AndroidHostWindow {
     metrics: MetricsSnapshot,
     events: Vec<InputEvent>,
     pub(crate) surface: AndroidSurface,
-    pub(crate) bridge: HostBridge,
+    /// Shared with the installed frame wake, which posts its own
+    /// Choreographer request through it.
+    pub(crate) bridge: Rc<HostBridge>,
     /// A redraw the engine asked for that has not yet reached the scheduler;
     /// consumed at the end of the frame transaction as scheduling demand.
     redraw_pending: Cell<bool>,
@@ -333,6 +336,7 @@ pub struct AndroidHostWindow {
     /// for; `None` while no field holds focus. The runner syncs text-input
     /// state on every frame, and only a change here reaches the IME.
     soft_input: Option<u64>,
+    frame_transaction: FrameTransaction,
 }
 
 impl AndroidHostWindow {
@@ -385,6 +389,17 @@ impl AndroidHostWindow {
 
     pub const fn take_redraw_pending(&self) -> bool {
         self.redraw_pending.replace(false)
+    }
+
+    /// Re-derives the installed frame wake's gate: closed while `on_frame`
+    /// runs (a request raised inside the transaction is counted into
+    /// `wants_next_frame` instead of posting) and while the window is
+    /// occluded (the request stays armed for the restore frame). Called
+    /// wherever either input can move — the transaction's edges and every
+    /// occlusion sync — so the wake never carries a second visibility
+    /// report of its own.
+    pub(crate) fn sync_frame_wake_gate(&self) {
+        self.frame_transaction.sync_occlusion(self.is_occluded());
     }
 }
 
@@ -440,6 +455,23 @@ impl PlatformWindow for AndroidHostWindow {
             "wake posted: redraw requested"
         );
         self.bridge.request_frame();
+    }
+
+    /// The wake installed on the window's frame signals: posts the
+    /// Choreographer frame a request raised outside a transaction needs —
+    /// an executor drain, a platform-view callback, an accessibility
+    /// action. The gate suppresses it inside `on_frame` and while
+    /// occluded; Kotlin's `posted` flag coalesces repeated posts, so the
+    /// wake itself posts unconditionally while the gate is open.
+    fn frame_wake(&self) -> Rc<dyn Fn()> {
+        let bridge = Rc::clone(&self.bridge);
+        self.frame_transaction.frame_wake(Rc::new(move || {
+            tracing::debug!(
+                target: "waterui::hydrolysis::android",
+                "wake posted: frame request pending"
+            );
+            bridge.request_frame();
+        }))
     }
 
     fn scale_factor(&self) -> f64 {
@@ -784,11 +816,15 @@ impl AndroidSession {
             metrics,
             events: Vec::new(),
             surface: AndroidSurface::new(gpu.clone()),
-            bridge,
+            bridge: Rc::new(bridge),
             redraw_pending: Cell::new(false),
             started: false,
             cursor_style: CursorStyle::default(),
             soft_input: None,
+            // The session mounts parked — hidden until `onStart` and the
+            // surface attach report it visible — so the wake's gate opens
+            // on the first occlusion sync, not at construction.
+            frame_transaction: FrameTransaction::default(),
         };
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
@@ -806,6 +842,7 @@ impl AndroidSession {
         // The session mounts parked: the activity's `onStart` and the
         // surface band's attach are the reports that unpark it.
         runtime.set_hidden(runtime.platform.is_occluded());
+        runtime.platform.sync_frame_wake_gate();
 
         Ok(Box::new(Self {
             env,
@@ -874,13 +911,13 @@ impl AndroidSession {
                 density = metrics.density,
                 container_insets_px = ?container_insets_px,
                 keyboard_insets_px = ?keyboard_insets_px,
-                "wake posted: metrics changed"
+                "metrics changed"
             );
         }
-        if insets_changed {
-            self.runtime.request_refresh();
-            self.runtime.request_redraw();
-        }
+        // The insets' binding writes above mark their subscribers' nodes —
+        // a `FrameSignals` request whose host wake posts the frame itself
+        // (issue #2286) — so an insets change needs no explicit frame
+        // request, and one nothing subscribes correctly schedules nothing.
     }
 
     /// The hosting Activity crossed `onStart`/`onStop` — Android's
@@ -889,6 +926,7 @@ impl AndroidSession {
     /// can present again.
     pub(crate) fn set_visible(&mut self, started: bool) {
         self.runtime.platform.started = started;
+        self.runtime.platform.sync_frame_wake_gate();
         // Android has no about-to-wait pass to notice an armed mode — the
         // restore frame needs the explicit Choreographer post.
         self.runtime.sync_occlusion_and_post_restore();
@@ -917,15 +955,17 @@ impl AndroidSession {
     /// scheduler whether another frame is owed.
     pub(crate) fn on_frame(&mut self) -> FrameOutcome {
         tracing::debug!(target: "waterui::hydrolysis::android", "frame wake");
+        // The transaction is open: a frame request recorded from now on
+        // fires no wake — its scheduling is counted into `wants_next_frame`
+        // below instead of posting into a frame already running.
+        self.runtime.platform.frame_transaction.begin();
         self.executor.drain();
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
         let now = Instant::now();
         let deadline = advance_runtime(&mut self.runtime, &self.env, now);
         let mut flushed = false;
-        if self.runtime.mode.is_pending()
-            && self.runtime.platform.surface.is_attached()
-            && !self.runtime.is_hidden()
-        {
+        let surface_attached = self.runtime.platform.surface.is_attached();
+        if FrameTransaction::take_render_request(&mut self.runtime, surface_attached) {
             let executor = self.executor.clone();
             let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
             flushed = true;
@@ -961,8 +1001,18 @@ impl AndroidSession {
         // armed for the restore frame, but the scheduler must not keep
         // posting wakes into a parked pump.
         let redraw_pending = self.runtime.platform.take_redraw_pending();
-        let wants_next_frame =
-            !self.runtime.is_hidden() && (self.runtime.mode.is_pending() || redraw_pending);
+        // The signals' pending count covers a frame request raised inside
+        // this transaction after the pump drained the flags: its wake was
+        // suppressed by the gate, so this is its only path to the frame it
+        // needs. One raised while hidden stays armed for the restore frame.
+        let wants_next_frame = self.runtime.platform.frame_transaction.finish(
+            self.runtime.platform.is_occluded(),
+            FrameDemand {
+                mode: self.runtime.mode,
+                redraw_pending,
+                signals_pending: self.runtime.renderer.has_pending_frame_request(),
+            },
+        );
         if reports_ui_idle(
             self.presented_once.get(),
             wants_next_frame,
@@ -1019,11 +1069,13 @@ impl AndroidSession {
             height,
             "wake posted: surface attached"
         );
-        self.runtime
-            .platform
-            .surface
-            .attach(native_window, width, height, generation)
-            .map_err(|error| error.to_string())?;
+        let attached =
+            self.runtime
+                .platform
+                .surface
+                .attach(native_window, width, height, generation);
+        self.runtime.platform.sync_frame_wake_gate();
+        attached.map_err(|error| error.to_string())?;
         // A new surface never inherits the old one's presented frame — the
         // next transaction must re-encode and present. Attaching while
         // `started` can un-hide a session parked on a missing surface; a
@@ -1048,11 +1100,13 @@ impl AndroidSession {
             height,
             "wake posted: surface resized"
         );
-        self.runtime
+        let resized = self
+            .runtime
             .platform
             .surface
-            .resize_for(width, height, generation)
-            .map_err(|error| error.to_string())?;
+            .resize_for(width, height, generation);
+        self.runtime.platform.sync_frame_wake_gate();
+        resized.map_err(|error| error.to_string())?;
         // A surface parked on a zero-size attach configures here — the
         // resize that gave the band a real extent can be its un-hide, and
         // the Choreographer post is the only wake the restore frame gets.
@@ -1071,6 +1125,7 @@ impl AndroidSession {
         self.runtime.platform.surface.detach_for(generation);
         // No surface means nothing to present into: the pump parks until
         // the band re-attaches or the activity's start report unhides it.
+        self.runtime.platform.sync_frame_wake_gate();
         self.runtime.sync_occlusion();
     }
 
