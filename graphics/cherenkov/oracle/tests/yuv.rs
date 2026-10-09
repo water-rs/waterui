@@ -1,7 +1,9 @@
 //! The YUV decode reference against hand-computed values: chroma at and
-//! between its sites, clamping at the frame edges, and whole-pipeline
-//! values for BT.709 SDR, BT.2020 PQ and BT.2020 HLG checked by encoding
-//! the decoded light forward again with the published equations.
+//! between its sites, clamping at the frame edges and on odd frame sizes,
+//! the primaries conversion and full-range decodes against values derived
+//! independently from the published standards, and whole-pipeline values
+//! for BT.709 SDR, BT.2020 PQ and BT.2020 HLG checked by encoding the
+//! decoded light forward again with the published equations.
 
 use cherenkov_oracle::Image;
 use cherenkov_oracle::color::{linear_p3_to_linear_bt2020, linear_p3_to_linear_srgb};
@@ -30,20 +32,17 @@ const CR: [[u8; 3]; 3] = [[60, 100, 180], [90, 200, 120], [150, 70, 210]];
 /// `Cb` codes of the same plane.
 const CB: [[u8; 3]; 3] = [[200, 140, 80], [110, 220, 160], [50, 130, 240]];
 
-/// The 6×6 siting frame decoded with `siting`: luma code 0 throughout,
-/// full range, BT.709 matrix, linear transfer, Display P3 primaries — so
-/// each pixel's red and blue channels are its reconstructed `Cr` and `Cb`
-/// through the matrix alone.
-fn siting_frame(siting: ChromaSiting) -> Image {
-    let luma = [0u8; 36];
-    let chroma: Vec<[u8; 2]> = (0..3)
-        .flat_map(|row| (0..3).map(move |col| [CB[row][col], CR[row][col]]))
-        .collect();
+/// A `width × height` frame of `(Cb, Cr)` chroma `chroma` decoded with
+/// `siting`: luma code 0 throughout, full range, BT.709 matrix, linear
+/// transfer, Display P3 primaries — so each pixel's red and blue channels
+/// are its reconstructed `Cr` and `Cb` through the matrix alone.
+fn chroma_frame(width: u32, height: u32, chroma: &[[u8; 2]], siting: ChromaSiting) -> Image {
+    let luma = vec![0u8; width as usize * height as usize];
     let frame = YuvFrame::<Nv12> {
-        width: 6,
-        height: 6,
+        width,
+        height,
         luma: &luma,
-        chroma: &chroma,
+        chroma,
     };
     let color = YuvColor {
         matrix: Matrix::Bt709,
@@ -52,7 +51,15 @@ fn siting_frame(siting: ChromaSiting) -> Image {
         primaries: Primaries::DisplayP3,
         transfer: Transfer::Linear,
     };
-    decode(&frame, &color).expect("the siting frame decodes")
+    decode(&frame, &color).expect("the chroma frame decodes")
+}
+
+/// The 6×6 siting frame over the 3×3 [`CB`] and [`CR`] plane.
+fn siting_frame(siting: ChromaSiting) -> Image {
+    let chroma: Vec<[u8; 2]> = (0..3)
+        .flat_map(|row| (0..3).map(move |col| [CB[row][col], CR[row][col]]))
+        .collect();
+    chroma_frame(6, 6, &chroma, siting)
 }
 
 /// The `(Cb, Cr)` codes pixel `(x, y)` was decoded with. With `Y' = 0`
@@ -125,6 +132,37 @@ fn edges_clamp_to_the_outermost_chroma_sample() {
     assert_chroma(&top_left, 5, 0, [80.0, 180.0]);
 }
 
+#[test]
+fn an_odd_frame_reads_its_rounded_up_chroma_plane() {
+    // A 3×3 frame has a ⌈3/2⌉ × ⌈3/2⌉ = 2×2 chroma plane. By chroma row
+    // then column: Cb [[200, 60], [90, 230]], Cr [[40, 170], [220, 130]].
+    let chroma: [[u8; 2]; 4] = [[200, 40], [60, 170], [90, 220], [230, 130]];
+    let centered = chroma_frame(3, 3, &chroma, ChromaSiting::CENTERED);
+    // Centred, luma 0 lies at chroma -0.25 (clamped to sample 0), luma 1
+    // at 0.25 (3/4 on sample 0, 1/4 on 1) and the last luma sample, 2, at
+    // 0.75 (1/4 on 0, 3/4 on 1): on an odd axis the last luma sample
+    // stays inside the chroma plane.
+    assert_chroma(&centered, 0, 0, [200.0, 40.0]);
+    // Cb 3/4 · (3/4 · 200 + 1/4 · 60) + 1/4 · (3/4 · 90 + 1/4 · 230)
+    //    = 3/4 · 165 + 1/4 · 125 = 155;
+    // Cr 3/4 · (3/4 · 40 + 1/4 · 170) + 1/4 · (3/4 · 220 + 1/4 · 130)
+    //    = 3/4 · 72.5 + 1/4 · 197.5 = 103.75.
+    assert_chroma(&centered, 1, 1, [155.0, 103.75]);
+    // Cb 1/4 · (1/4 · 200 + 3/4 · 60) + 3/4 · (1/4 · 90 + 3/4 · 230)
+    //    = 1/4 · 95 + 3/4 · 195 = 170;
+    // Cr 1/4 · (1/4 · 40 + 3/4 · 170) + 3/4 · (1/4 · 220 + 3/4 · 130)
+    //    = 1/4 · 137.5 + 3/4 · 152.5 = 148.75.
+    assert_chroma(&centered, 2, 2, [170.0, 148.75]);
+    // Clamped on x, interpolated on y: Cb 1/4 · 200 + 3/4 · 90,
+    // Cr 1/4 · 40 + 3/4 · 220.
+    assert_chroma(&centered, 0, 2, [117.5, 175.0]);
+
+    // Cosited, the last luma sample of an odd axis is on the last chroma
+    // site: luma (2, 2) is chroma (1, 1).
+    let top_left = chroma_frame(3, 3, &chroma, ChromaSiting::TOP_LEFT);
+    assert_chroma(&top_left, 2, 2, [230.0, 130.0]);
+}
+
 /// A 2×2 frame with one chroma sample, so siting cannot matter.
 const fn uniform<'a, L: PlaneLayout>(
     luma: &'a [L::Word; 4],
@@ -152,12 +190,132 @@ fn the_pixel(image: &Image) -> [f64; 3] {
     [first[0], first[1], first[2]]
 }
 
-fn assert_codes(got: [f64; 3], expected: [f64; 3], tolerance: f64) {
+fn assert_near(got: [f64; 3], expected: [f64; 3], tolerance: f64) {
     assert!(
         got.iter()
             .zip(expected)
-            .all(|(code, want)| (code - want).abs() < tolerance),
-        "codes {got:?}, expected {expected:?}"
+            .all(|(value, want)| (value - want).abs() < tolerance),
+        "got {got:?}, expected {expected:?}"
+    );
+}
+
+// The expected values of the next two tests are computed outside the
+// oracle, in exact rational arithmetic (the sRGB power alone in `f64`),
+// from the published definitions:
+//
+// - H.273 full range at bit depth N: `Y' = D / (2^N - 1)`,
+//   `C = (D - 2^(N-1)) / (2^N - 1)`;
+// - the `Y'CbCr` matrices inverted, `R' = Y' + 2(1 - Kr) Cr`,
+//   `B' = Y' + 2(1 - Kb) Cb`, `G' = (Y' - Kr R' - Kb B') / (1 - Kr - Kb)`,
+//   with BT.601 `Kr, Kb = 0.299, 0.114`, BT.709 `0.2126, 0.0722` and
+//   BT.2020 `0.2627, 0.0593`;
+// - RGB to XYZ from the xy chromaticities and the D65 white
+//   `(0.3127, 0.3290)`: BT.709 R (0.64, 0.33) G (0.30, 0.60) B (0.15, 0.06),
+//   BT.2020 R (0.708, 0.292) G (0.170, 0.797) B (0.131, 0.046), Display P3
+//   (SMPTE EG 432-1) R (0.680, 0.320) G (0.265, 0.690) B (0.150, 0.060);
+// - the IEC 61966-2-1 sRGB EOTF, `V / 12.92` up to `V = 0.04045` and
+//   `((V + 0.055) / 1.055)^2.4` above.
+//
+// The derivation, in Python with `from fractions import Fraction as F`:
+//
+//     def rgb_to_xyz(primaries, white):
+//         # Columns (x/y, 1, (1-x-y)/y) per primary, scaled so RGB (1, 1, 1)
+//         # lands on the white's XYZ.
+//         p = [[x / y, F(1), (1 - x - y) / y] for x, y in primaries]
+//         p = [[p[j][i] for j in range(3)] for i in range(3)]
+//         wx, wy = white
+//         s = mat_vec(mat_inv(p), [wx / wy, F(1), (1 - wx - wy) / wy])
+//         return [[p[i][j] * s[j] for j in range(3)] for i in range(3)]
+//
+//     to_p3 = mat_mul(mat_inv(rgb_to_xyz(P3, D65)), rgb_to_xyz(BT2020, D65))
+//     expected = mat_vec(to_p3, ycc_to_rgb(kr, kb, y, cb, cr))
+//
+// with `mat_inv`, `mat_mul` and `mat_vec` the textbook rational 3×3
+// operations. That BT.2020 to Display P3 matrix is
+//
+//     [ 1.343578252584332,    -0.2821796705261357,  -0.06139858205819628 ]
+//     [-0.06529745278911953,   1.0757879158485746,  -0.010490463059454957]
+//     [ 0.0028217872617009514, -0.01959849452449406,  1.0167767072627931 ]
+//
+// and the BT.709 one
+//
+//     [0.8224619687143623,   0.17753803128563775, 0.0               ]
+//     [0.03319419885096162,  0.9668058011490384,  0.0               ]
+//     [0.017082630721120033, 0.07239744066396347, 0.9105199286149165]
+//
+// Both the rational results and the reference's `f64` evaluation are
+// within a few ulps of each other on values of order one, so `1e-12` is
+// a loose bound that still rejects any error in a published constant.
+
+#[test]
+fn primaries_map_into_display_p3_through_the_published_chromaticities() {
+    // BT.2020 red as nearly as 8-bit full range carries it: Y 67, Cb 92,
+    // Cr 255 (`round(255 Kr)`, `128 + round(-255 Kr / 1.8814)`, Cr's
+    // ceiling). Y' = 67/255, Cb = -36/255, Cr = 127/255, so R'G'B' =
+    // (0.9971537254901961, 0.0014198645381456418, -0.002864313725490196)
+    // — out of P3's gamut, so P3 green and blue go negative.
+    let bt2020_red = uniform::<Nv12>(&[67; 4], &[[92, 255]]);
+    let bt2020 = YuvColor {
+        matrix: Matrix::Bt2020,
+        range: Range::Full,
+        siting: ChromaSiting::TOP_LEFT,
+        primaries: Primaries::Bt2020,
+        transfer: Transfer::Linear,
+    };
+    assert_near(
+        the_pixel(&decode(&bt2020_red, &bt2020).expect("decodes")),
+        [
+            1.339_529_267_945_823_5,
+            -0.063_554_077_224_083_8,
+            -0.000_126_439_005_202_033_63,
+        ],
+        1e-12,
+    );
+
+    // BT.709 R'G'B' (0.2, 0.8, 0.3) quantized to full range: Y 162,
+    // Cb 82, Cr 57, which is R'G'B' = (0.19682039215686276,
+    // 0.7994264311093565, 0.300558431372549).
+    let bt709_green = uniform::<Nv12>(&[162; 4], &[[82, 57]]);
+    let bt709 = YuvColor {
+        matrix: Matrix::Bt709,
+        primaries: Primaries::Bt709,
+        ..bt2020
+    };
+    assert_near(
+        the_pixel(&decode(&bt709_green, &bt709).expect("decodes")),
+        [
+            0.303_805_881_953_324_8,
+            0.779_423_406_423_577_1,
+            0.334_903_079_166_99,
+        ],
+        1e-12,
+    );
+}
+
+#[test]
+fn full_range_p010_bt601_srgb_matches_the_published_equations() {
+    // R'G'B' (0.85, 0.40, 0.20) through BT.601 into 10-bit full range:
+    // Y 524, Cb 332, Cr 759 (`round(1023 Y')`, `512 + round(1023 C)`).
+    // Back: Y' = 524/1023, Cb = -180/1023, Cr = 247/1023, so R'G'B' =
+    // (0.8507272727272728, 0.40034493531234755, 0.20043010752688173),
+    // each on the sRGB curve's power segment. Display P3 primaries leave
+    // the sRGB-decoded light as it is.
+    let frame = uniform::<P010>(&[524 << 6; 4], &[[332 << 6, 759 << 6]]);
+    let color = YuvColor {
+        matrix: Matrix::Bt601,
+        range: Range::Full,
+        siting: ChromaSiting::CENTERED,
+        primaries: Primaries::DisplayP3,
+        transfer: Transfer::Srgb,
+    };
+    assert_near(
+        the_pixel(&decode(&frame, &color).expect("decodes")),
+        [
+            0.693_406_590_755_594_7,
+            0.133_110_195_661_414_4,
+            0.033_238_935_271_149_975,
+        ],
+        1e-12,
     );
 }
 
@@ -187,7 +345,7 @@ fn bt709_video_round_trips_through_the_published_equations() {
         224.0f64.mul_add((blue - luma) / 1.8556, 128.0),
         224.0f64.mul_add((red - luma) / 1.5748, 128.0),
     ];
-    assert_codes(codes, [126.0, 100.0, 170.0], 1e-9);
+    assert_near(codes, [126.0, 100.0, 170.0], 1e-9);
 }
 
 /// SMPTE ST 2084 inverse EOTF: absolute luminance as a fraction of
@@ -227,7 +385,7 @@ fn bt2020_pq_round_trips_through_the_published_equations() {
     let p3 = the_pixel(&decode(&frame, &color).expect("decodes"));
     let signal =
         linear_p3_to_linear_bt2020(p3).map(|light| pq_inverse_eotf(light * 203.0 / 10_000.0));
-    assert_codes(bt2020_video_codes(signal), [600.0, 448.0, 576.0], 1e-9);
+    assert_near(bt2020_video_codes(signal), [600.0, 448.0, 576.0], 1e-9);
 }
 
 #[test]
@@ -266,10 +424,13 @@ fn bt2020_hlg_round_trips_through_the_published_equations() {
             HLG_A.mul_add(12.0f64.mul_add(light, -HLG_B).ln(), HLG_C)
         }
     });
-    // The reference takes Ys from the BT.2020 primaries' own luminance
-    // row, which matches Table 5's four-digit coefficients to about 1e-7:
-    // a few 1e-5 of a code here.
-    assert_codes(bt2020_video_codes(signal), [500.0, 448.0, 576.0], 1e-3);
+    // Both directions weigh luminance with Table 5's 0.2627, 0.6780,
+    // 0.0593, so the round trip is exact up to rounding: some forty f64
+    // operations on codes below 1024, each off by at most half an ulp
+    // (~1e-13 of a code), leave the result within ~1e-11 of the input
+    // codes. 1e-9 keeps that margin while rejecting a coefficient error at
+    // the 1e-7 level, which moves these codes by about 2e-5.
+    assert_near(bt2020_video_codes(signal), [500.0, 448.0, 576.0], 1e-9);
 }
 
 #[test]

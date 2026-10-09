@@ -42,7 +42,8 @@
 //!    even-length axis, which lies past the last chroma site.
 //! 3. **Matrix** ([`Matrix`]): the non-constant-luminance inverse
 //!    `R' = Y' + 2(1 - Kr) Cr`, `B' = Y' + 2(1 - Kb) Cb`,
-//!    `G' = (Y' - Kr R' - Kb B') / Kg` with `Kg = 1 - Kr - Kb`.
+//!    `G' = (Y' - Kr R' - Kb B') / Kg`, with the recommendation's published
+//!    `Kr`, `Kg`, `Kb` (`Kg = 1 - Kr - Kb`).
 //! 4. **Transfer** ([`Transfer`]) to white-relative linear light, per
 //!    channel. A signal below `0` decodes as `0` for every non-linear
 //!    transfer: each curve is defined from black up. Above `1` the
@@ -56,8 +57,8 @@
 use std::fmt;
 
 use crate::color::{
-    Mat3, P3_TO_XYZ, REC2020_TO_XYZ, SRGB_TO_XYZ, hlg_inverse_oetf, mat3_inv, mat3_mul,
-    mat3_product, pq_decode, srgb_decode,
+    BT2100_LUMA, Mat3, P3_TO_XYZ, REC2020_TO_XYZ, SRGB_TO_XYZ, hlg_inverse_oetf, mat3_inv,
+    mat3_mul, mat3_product, pq_decode, srgb_decode,
 };
 use crate::image::Image;
 
@@ -73,19 +74,19 @@ pub enum Matrix {
 }
 
 impl Matrix {
-    /// `(Kr, Kb)` as the recommendation publishes them.
-    const fn coefficients(self) -> (f64, f64) {
+    /// `[Kr, Kg, Kb]` as the recommendation publishes them: BT.601's luma
+    /// equation, BT.709-6 item 3.2, BT.2020-2 Table 4.
+    const fn weights(self) -> [f64; 3] {
         match self {
-            Self::Bt601 => (0.299, 0.114),
-            Self::Bt709 => (0.2126, 0.0722),
-            Self::Bt2020 => (0.2627, 0.0593),
+            Self::Bt601 => [0.299, 0.587, 0.114],
+            Self::Bt709 => [0.2126, 0.7152, 0.0722],
+            Self::Bt2020 => BT2100_LUMA,
         }
     }
 
     /// `R'G'B'` of a normalized `Y'`, `Cb`, `Cr`.
     const fn to_rgb(self, luma: f64, [cb, cr]: [f64; 2]) -> [f64; 3] {
-        let (kr, kb) = self.coefficients();
-        let kg = 1.0 - kr - kb;
+        let [kr, kg, kb] = self.weights();
         let red = (2.0 * (1.0 - kr)).mul_add(cr, luma);
         let blue = (2.0 * (1.0 - kb)).mul_add(cb, luma);
         let green = (luma - kr.mul_add(red, kb * blue)) / kg;
@@ -180,7 +181,9 @@ impl ChromaSiting {
         x: ChromaOffset::Cosited,
         y: ChromaOffset::Centered,
     };
-    /// Cosited on both axes (BT.2020 4:2:0, H.273 type 2).
+    /// Cosited on both axes (H.273 chroma location type 2, the siting
+    /// HDR10 specifies for its 4:2:0 BT.2020 video; BT.2020 itself does not
+    /// define 4:2:0 siting).
     pub const TOP_LEFT: Self = Self {
         x: ChromaOffset::Cosited,
         y: ChromaOffset::Cosited,
@@ -208,6 +211,21 @@ impl Primaries {
             Self::Bt2020 => &REC2020_TO_XYZ,
         }
     }
+
+    /// The luminance weights `[Kr, Kg, Kb]` of linear RGB on these
+    /// primaries, as HLG's OOTF takes them. BT.2020 uses BT.2100 Table 5's
+    /// published `0.2627`, `0.6780`, `0.0593` and BT.709 its
+    /// recommendation's `0.2126`, `0.7152`, `0.0722` — in both cases the
+    /// same coefficients as the matching `Y'CbCr` matrix. Display P3 has no
+    /// published rounded set, so it takes the `Y` row of its RGB-to-XYZ
+    /// matrix.
+    const fn luminance(self) -> [f64; 3] {
+        match self {
+            Self::Bt709 => Matrix::Bt709.weights(),
+            Self::DisplayP3 => P3_TO_XYZ[1],
+            Self::Bt2020 => Matrix::Bt2020.weights(),
+        }
+    }
 }
 
 /// The transfer a frame's `R'G'B'` signal is encoded with, and the levels
@@ -229,9 +247,15 @@ pub enum Transfer {
     },
     /// BT.2100 hybrid log-gamma. The inverse OETF gives scene light `E`;
     /// the OOTF `Fd = peak · Ys^(γ - 1) · E` gives display light, with
-    /// `Ys` the luminance of `E` on the frame's primaries and
+    /// `Ys` the luminance of `E` on the frame's primaries (for BT.2020,
+    /// BT.2100's published `0.2627 R + 0.6780 G + 0.0593 B`) and
     /// `γ = 1.2 + 0.42 · log10(peak / 1000)`; `Fd` is divided by
     /// `reference_white`. Scene black (`Ys = 0`) decodes to black.
+    ///
+    /// BT.2100 and BT.2390 specify that system-gamma formula for nominal
+    /// peaks of roughly 400 to 2000 nits; a `peak` outside that span
+    /// evaluates the same formula. The display black level is taken as
+    /// zero (`Lb = 0`), so the OOTF carries no black lift `β`.
     Hlg {
         /// The nits reference white occupies.
         reference_white: f64,
@@ -280,7 +304,7 @@ impl Transfer {
                 peak,
             } => {
                 let scene = signal.map(|c| hlg_inverse_oetf(c.max(0.0)));
-                let [kr, kg, kb] = primaries.to_xyz()[1];
+                let [kr, kg, kb] = primaries.luminance();
                 let ys = kb.mul_add(scene[2], kr.mul_add(scene[0], kg * scene[1]));
                 if ys <= 0.0 {
                     return [0.0; 3];

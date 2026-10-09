@@ -203,6 +203,16 @@ pub(crate) fn hlg_inverse_oetf(e: f64) -> f64 {
     }
 }
 
+/// BT.2100 Table 5's luminance coefficients `[0.2627, 0.6780, 0.0593]`
+/// of linear BT.2020 RGB, the same values as BT.2020's `Kr`, `Kg`, `Kb`.
+pub const BT2100_LUMA: [f64; 3] = [0.262_7, 0.678_0, 0.059_3];
+
+/// The BT.2100 luminance `Ys` of linear BT.2020 RGB.
+fn bt2100_luminance(rgb: [f64; 3]) -> f64 {
+    let [kr, kg, kb] = BT2100_LUMA;
+    kb.mul_add(rgb[2], kr.mul_add(rgb[0], kg * rgb[1]))
+}
+
 /// The BT.2100 reference OOTF's inverse.
 ///
 /// Display-referred linear BT.2020 (in units of the 1000-nit nominal
@@ -210,7 +220,7 @@ pub(crate) fn hlg_inverse_oetf(e: f64) -> f64 {
 /// contract shared with `present.wgsl`'s HLG path (#98).
 #[must_use]
 pub fn hlg_inverse_ootf(rgb: [f64; 3]) -> [f64; 3] {
-    let y = 0.059_3f64.mul_add(rgb[2], 0.262_7f64.mul_add(rgb[0], 0.678_0 * rgb[1]));
+    let y = bt2100_luminance(rgb);
     if y <= 0.0 {
         return [0.0; 3];
     }
@@ -221,7 +231,7 @@ pub fn hlg_inverse_ootf(rgb: [f64; 3]) -> [f64; 3] {
 /// gamma 1.2 — for lifting a presented HLG signal back to linear.
 #[must_use]
 pub fn hlg_ootf(rgb: [f64; 3]) -> [f64; 3] {
-    let y = 0.059_3f64.mul_add(rgb[2], 0.262_7f64.mul_add(rgb[0], 0.678_0 * rgb[1]));
+    let y = bt2100_luminance(rgb);
     if y <= 0.0 {
         return [0.0; 3];
     }
