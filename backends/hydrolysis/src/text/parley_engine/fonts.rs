@@ -138,6 +138,7 @@ impl FontRole {
 /// that script. Every other face — the scripts the visitor does not read, and
 /// the emoji face — loads after the first frame.
 #[cfg(any(test, all(target_arch = "wasm32", feature = "web")))]
+#[must_use]
 pub fn loads_before_first_frame(name: &str, default_family: &str, languages: &[String]) -> bool {
     name == default_family
         || FontRole::of(name).is_none_or(|role| {

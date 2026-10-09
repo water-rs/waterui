@@ -35,6 +35,7 @@ impl WebFonts {
     /// # Panics
     ///
     /// Panics if no face registers under `default_family`.
+    #[must_use]
     pub fn new<'a>(
         default_family: &str,
         fonts: impl IntoIterator<Item = (&'a str, Vec<u8>)>,
