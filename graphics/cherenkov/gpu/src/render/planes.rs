@@ -171,10 +171,11 @@ pub enum Ineligible {
     /// layer.
     #[error("layer {0:?}'s clip is not expressible by the system compositor")]
     Clip(LayerId),
-    /// A clip on the path to the layer nests inside another clip that is not
-    /// a device-aligned rectangle; the engine composites that pair through a
-    /// clip offscreen, which the layer would then sit in.
-    #[error("layer {0:?}'s clip nests inside another non-rectangular clip")]
+    /// An ancestor's clip nests inside the clips already in force in a way
+    /// the engine composites through a clip offscreen
+    /// (`Lowering::run_clipped`), which the layer would then sit in at its
+    /// paint position.
+    #[error("layer {0:?}'s clip nests inside an ancestor clip the engine isolates")]
     NestedClip(LayerId),
     /// The surface's plane budget is spent.
     #[error("the plane budget of {0} per surface is spent")]
@@ -771,20 +772,35 @@ fn invisible<C: Compositor>(
     size: Candidate,
     device: &[VisitDevice],
 ) -> Result<(), Ineligible> {
-    // The engine merges nested clips in place only while at most one of
-    // them is not a device-aligned rectangle (`Lowering::run_clipped`).
-    let mut shaped_clip = false;
+    // `Lowering::run_clipped` merges a clip into the one in force only
+    // where its merge arms accept the pair and isolates it into a clip
+    // offscreen otherwise; model that exactly over the candidate's
+    // ancestors — `(masked, aligned)` is what each merge arm tests. The
+    // candidate's own clip is excluded: the part it opens starts ahead
+    // of that scope, which holds only content painted above the plane.
+    let mut merged: Option<(bool, bool)> = None;
     let mut space = Affine::IDENTITY;
-    for id in path(order, &order[i]) {
+    for &a in &order[i].ancestors {
+        let id = order[a].id;
         let level = tree.layer(id);
         let own = space * level.transform;
-        if let Some(clip) = &level.clip
-            && !(matches!(clip, ShapeData::Rect(_)) && axis_aligned(own))
-        {
-            if shaped_clip {
-                return Err(Ineligible::NestedClip(id));
+        if let Some(clip) = &level.clip {
+            // `with_clip` never reaches `run_clipped` for a shape with no
+            // area; a path clip rasterizes into a mask over a device rect.
+            let new = match clip {
+                ShapeData::Line(_) => None,
+                ShapeData::Circle(c) if c.radius <= 0.0 => None,
+                ShapeData::Ellipse(e) if e.radii().x <= 0.0 || e.radii().y <= 0.0 => None,
+                ShapeData::Path { .. } => Some((true, true)),
+                ShapeData::Rect(_) => Some((false, axis_aligned(own))),
+                _ => Some((false, false)),
+            };
+            if let Some(new) = new {
+                merged = match merged {
+                    None => Some(new),
+                    Some(cur) => Some(merge_clip(cur, new).ok_or(Ineligible::NestedClip(id))?),
+                };
             }
-            shaped_clip = true;
         }
         space = own * Affine::translate(-level.scroll_offset);
     }
@@ -810,6 +826,23 @@ fn invisible<C: Compositor>(
         }
     }
     Ok(())
+}
+
+/// `Lowering::run_clipped`'s merge decision over `(masked, aligned)`
+/// clip summaries: `Some` of the merged clip, `None` when the pair
+/// isolates into a clip offscreen.
+const fn merge_clip(cur: (bool, bool), new: (bool, bool)) -> Option<(bool, bool)> {
+    match (cur, new) {
+        // A masked clip merges only with an unmasked aligned rect,
+        // keeping the mask.
+        ((true, true), (false, true)) => Some((true, true)),
+        ((true, _), _) => None,
+        // A raster mask attaches to the current clip's shape; the merged
+        // clip keeps the current clip's alignment.
+        ((_, aligned), (true, _)) => Some((true, aligned)),
+        ((_, true), (false, true)) => Some((false, true)),
+        _ => None,
+    }
 }
 
 /// The layers from the root to `visit`, root first.
