@@ -1786,7 +1786,8 @@ async fn resolve_preview_metadata(
     );
     Ok(ResolvedPreviewMetadata {
         metadata,
-        framework,
+        // The metadata outlives the project opened above, so it owns a copy.
+        framework: framework.clone(),
         app_crate_name,
         app_path,
         project_packages,
