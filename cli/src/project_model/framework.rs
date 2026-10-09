@@ -2790,6 +2790,24 @@ pub(crate) mod test_fixtures {
         }
     }
 
+    /// The stable resolution [`stable_checkout_framework`] emits, except the
+    /// certified release names `repository` at `revision` — a fixture mirror
+    /// a render that resolves framework members fetches `waterui-apple`'s
+    /// `git` pin from. A `rev`-pinned dependency is a precise source Cargo's
+    /// `[patch]` cannot redirect, so only a real repository and commit make
+    /// the generated manifest resolvable offline.
+    pub fn stable_checkout_framework_at(repository: &str, revision: &str) -> ResolvedFramework {
+        let mut framework = stable_checkout_framework();
+        framework.source = Source::Stable {
+            release: Some(FrameworkRelease {
+                repository: repository.to_owned(),
+                revision: revision.to_owned(),
+                tag: "v0.4.1".to_owned(),
+            }),
+        };
+        framework
+    }
+
     /// A `dev`-channel resolution: the manifest's scaffold facts — including
     /// the git-pinned packages `stable` withholds, which `dev` distributes
     /// through `scaffold`.
@@ -2834,6 +2852,41 @@ pub(crate) mod test_fixtures {
         framework
     }
 
+    /// Commit all of `root`'s content under the fixture identity and return
+    /// the `HEAD` revision — the git bookkeeping every repository fixture
+    /// shares. `root` must already be a worktree.
+    pub fn git_commit_all(root: &Path, message: &str) -> String {
+        let git = |args: &[&str]| -> String {
+            let output = crate::toolchain::Host::current()
+                .std_command("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git must run");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("git output is utf-8")
+                .trim()
+                .to_string()
+        };
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=waterui-test",
+            "-c",
+            "user.email=waterui-test@waterui.dev",
+            "commit",
+            "-qm",
+            message,
+        ]);
+        git(&["rev-parse", "HEAD"])
+    }
+
     /// A local framework checkout fixture: the repository's own root manifest
     /// and a lock naming the workspace crates, inside a git worktree. Like the
     /// repository today it carries no backend gitlink: both backend pins are
@@ -2843,31 +2896,15 @@ pub(crate) mod test_fixtures {
         std::fs::write(root.join("Cargo.toml"), local_checkout_manifest()).expect("manifest");
         let lock = test_lock();
         std::fs::write(root.join("Cargo.lock"), lock.to_string()).expect("lockfile");
-        let git = |args: &[String]| {
-            let status = crate::toolchain::Host::current()
-                .std_command("git")
-                .arg("-C")
-                .arg(root)
-                .args(args)
-                .status()
-                .expect("git must run");
-            assert!(status.success(), "git {args:?} failed");
-        };
-        git(&["init".to_owned(), "-q".to_owned()]);
-        git(&[
-            "add".to_owned(),
-            "Cargo.toml".to_owned(),
-            "Cargo.lock".to_owned(),
-        ]);
-        git(&[
-            "-c".to_owned(),
-            "user.name=waterui-test".to_owned(),
-            "-c".to_owned(),
-            "user.email=waterui-test@waterui.dev".to_owned(),
-            "commit".to_owned(),
-            "-qm".to_owned(),
-            "init".to_owned(),
-        ]);
+        let status = crate::toolchain::Host::current()
+            .std_command("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q"])
+            .status()
+            .expect("git must run");
+        assert!(status.success(), "git init failed");
+        let _ = git_commit_all(root, "init");
     }
 
     /// A checkout whose manifest declares no `apple-backend-path` — a

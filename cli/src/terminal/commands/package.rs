@@ -232,7 +232,9 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     // The per-backend artifact builds cross clippy's `large_futures` threshold
     // (16 KiB) on Windows, so the future is pinned on the heap.
     let built = Box::pin(build_packaging_artifacts(shell, &args, &context)).await?;
-    package_artifact(shell, &args, &context, built.as_ref()).await
+    // The packaging step's future crosses the same threshold, so it is
+    // pinned too.
+    Box::pin(package_artifact(shell, &args, &context, built.as_ref())).await
 }
 
 async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<PackagingContext>> {
@@ -428,17 +430,21 @@ async fn build_android_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let mut built = None;
+    // Every tool the build spawns, the prologue's included, echoes to the
+    // terminal the user is watching.
+    let project = &project.with_std_output(shell.is_interactive());
     AndroidPlatform::clean_jni_libs(project).await?;
+    // The companion render, permission audit and font staging do not
+    // depend on the ABI — run them once for the whole set.
+    AndroidPlatform::prepare_for_build(project).await?;
     for arch in arch {
         let abi = arch.to_abi();
         let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
         // The Android build future crosses clippy's `large_futures` threshold
         // (16 KiB) on Windows, so it is pinned on the heap.
-        let target = Box::pin(AndroidPlatform::new(abi).build(
-            &project.with_std_output(shell.is_interactive()),
-            build_options.clone(),
-        ))
-        .await?;
+        let target =
+            Box::pin(AndroidPlatform::new(abi).build_prepared(project, build_options.clone()))
+                .await?;
         built = Some(target);
         if let Some(pb) = spinner {
             pb.finish_and_clear();

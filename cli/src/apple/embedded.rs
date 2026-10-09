@@ -117,6 +117,9 @@ pub async fn build_xcframework(
     options: &BuildOptions,
     architecture: Option<Architecture>,
 ) -> Result<EmbeddedArtifact> {
+    // The package's dependency table is read from the generated FFI
+    // manifest below — it must render before anything resolves it.
+    project.scaffold_ffi_companion().await?;
     let selected = slices(architecture)?;
     let host = project.host();
     check_toolchain(host, &selected).await?;

@@ -63,9 +63,10 @@ mod tests {
     fn share_tree_carries_desktop_entry_and_hicolor_icons() {
         smol::block_on(async {
             let dir = tempfile::tempdir().expect("temp dir");
+            let host = crate::toolchain::testing::real_toolchain_host(dir.path());
             let root = dir.path().join("share-example");
             let project = Project::create(
-                &crate::toolchain::Host::current(),
+                &host,
                 &root,
                 CreateOptions {
                     name: "Share Example".to_string(),
