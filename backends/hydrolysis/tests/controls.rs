@@ -30,7 +30,7 @@ use waterui::View;
 use waterui::ViewExt as _;
 use waterui::component::{hstack, vstack, zstack};
 use waterui::graphics::color::Srgb;
-use waterui_controls::{Menu, Toggle, ToggleStyle, button, label, slider::slider, toggle};
+use waterui_controls::{Menu, Toggle, ToggleStyle, button, label, slider::slider, stepper, toggle};
 use waterui_testing::{OffscreenApp, Role, Styled, UiBuilder};
 
 /// The role a default-style toggle reports on this host — the platform's
@@ -222,6 +222,69 @@ fn toggle_frames_follow_style_and_label_visibility(
     assert!(
         airdrop_width > 18.0 + 8.0 && airdrop_width < offered - 1.0,
         "visible-label checkbox: width {airdrop_width} must be box, gap and label — not the offer"
+    );
+}
+
+// water-rs/waterui#2364 (layout spec §3, §6): a hidden label contributes no
+// frame — the stepper's reported bounds are the buttons' own, and a tap
+// anywhere inside them steps the value (no dead zone beside the buttons).
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (320, 240))]
+fn hidden_label_stepper_is_button_sized_and_steps_throughout(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let quantity = Binding::i32(0);
+    let quantity_for_view = quantity.clone();
+
+    let mut app = ui.mount_offscreen(move || {
+        control_shell(stepper("Quantity", &quantity_for_view).hide_label())
+    });
+
+    let element = app
+        .query()
+        .role(Role::SPIN_BUTTON)
+        .label("Quantity")
+        .single();
+    let bounds = element.bounds();
+    // Material3 stepper metrics: two 40 pt buttons with 2 pt between them;
+    // the hidden label adds nothing to either axis.
+    assert_close(
+        f64::from(bounds.width()),
+        82.0,
+        0.5,
+        "hidden-label stepper: width must be the buttons' own",
+    );
+    assert_close(
+        f64::from(bounds.height()),
+        40.0,
+        0.5,
+        "hidden-label stepper: height must be the buttons' own",
+    );
+
+    // Every point inside the reported bounds is a button: the leading half
+    // decrements, the trailing half increments.
+    let (_, cy) = bounds.center();
+    app.tap_at(bounds.x() + 1.0, cy);
+    assert_eq!(
+        quantity.snapshot(),
+        -1,
+        "hidden-label stepper: tap inside the decrement button must step down"
+    );
+    app.tap_at(bounds.x() + bounds.width() - 1.0, cy);
+    assert_eq!(
+        quantity.snapshot(),
+        0,
+        "hidden-label stepper: tap inside the increment button must step up"
+    );
+
+    // The accessibility actions still step it too.
+    app.query()
+        .role(Role::SPIN_BUTTON)
+        .label("Quantity")
+        .increment();
+    assert_eq!(
+        quantity.snapshot(),
+        1,
+        "hidden-label stepper: accessibility increment must step up"
     );
 }
 

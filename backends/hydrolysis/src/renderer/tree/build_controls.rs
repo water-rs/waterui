@@ -215,6 +215,12 @@ impl RenderNode {
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on); the cloneable config drives the buttons + accessibility, and its
     /// value/step signals are read through `read_signal` so a change schedules a frame.
+    ///
+    /// The node's stretch is the resolved payload's own axis: a stepper with a
+    /// visible label claims the full row (`label … buttons`), while a hidden
+    /// label is content-sized — a stretched hidden-label stepper would report
+    /// a frame inflated past the buttons that accepts no input
+    /// (water-rs/waterui#2364).
     pub(super) fn build_stepper(
         config: StepperConfig,
         env: &Environment,

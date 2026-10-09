@@ -100,6 +100,7 @@ ash = "0.38"
 libc = "0.2"
 
 [dev-dependencies]
+toml.workspace = true
 cherenkov-oracle = { path = "../oracle" }
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 cherenkov-scene = { path = "../scene" }
