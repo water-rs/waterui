@@ -506,7 +506,7 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
 
     capture_root_window(
         &mut renderer,
-        toggle("Enable Feature", &enabled),
+        toggle("Enable Feature", &enabled).switch(),
         &env,
         bounds,
     );
@@ -645,7 +645,10 @@ fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
 
     capture_root_window(
         &mut renderer,
-        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
         &env,
         bounds,
     );
@@ -662,7 +665,10 @@ fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
     renderer.set_frame_instant(started + Duration::from_millis(50));
     capture_root_window(
         &mut renderer,
-        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
         &env,
         bounds,
     );
@@ -677,7 +683,10 @@ fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
     renderer.set_frame_instant(started + Duration::from_millis(200));
     capture_root_window(
         &mut renderer,
-        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
         &env,
         bounds,
     );

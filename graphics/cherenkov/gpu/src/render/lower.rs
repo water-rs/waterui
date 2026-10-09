@@ -2984,7 +2984,9 @@ impl<'a> Lowering<'a> {
             content_space = cherenkov::snap_animating(content_space);
         }
         let isolates = node.filter.is_some()
-            || opacity < 1.0
+            // A promoted layer draws nothing: its opacity lives on its
+            // system plane (`Placement::opacity`), never in an isolation.
+            || (opacity < 1.0 && !self.promoted.contains(&id))
             || blend != cherenkov::BlendMode::Normal
             // The root already renders into the surface target, and a
             // local root into its image.
@@ -2995,6 +2997,13 @@ impl<'a> Lowering<'a> {
             if plan.first == id && plan.spec.anchor_layer().is_none() && !plan.regions.is_empty() {
                 self.emit_capture(gid, self.semantic_target);
             }
+        }
+        // The part a promoted layer opens starts at its paint position,
+        // ahead of its own clip scope: that scope holds only its children,
+        // which paint above the plane, and may isolate against an
+        // enclosing clip.
+        if self.opens.contains(&id) {
+            self.next_part();
         }
         let member_outer = std::mem::replace(&mut self.member_outer_clip, self.clip);
         let result = self.layer_body(
@@ -3370,9 +3379,6 @@ impl<'a> Lowering<'a> {
             self.frame.content.push((binding.producer(), binding.size));
         }
         if self.promoted.contains(&id) {
-            if self.opens.contains(&id) {
-                self.next_part();
-            }
             for &child in &node.children {
                 self.layer(child, tree, caches, glyphs)?;
             }
@@ -5908,6 +5914,93 @@ mod tests {
                 (Target::Part(1), Some([0.0; 4]), 0),
             ]
         );
+    }
+
+    /// A promoted layer's own clip scopes only its children, so the part it
+    /// opens starts ahead of that scope even when the clip isolates
+    /// against an enclosing one.
+    #[test]
+    fn a_promoted_layer_opens_its_part_outside_its_own_clip() {
+        use cherenkov::testing::LayerOp;
+        use cherenkov::{Draw as _, Picture, SurfaceTree};
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let atlas = Atlas::new(&device, u64::MAX);
+        let rect = ShapeData::Rect(Rect::new(0.0, 0.0, 30.0, 30.0));
+        let round = ShapeData::RoundedRect(kurbo::RoundedRect::new(0.0, 0.0, 30.0, 30.0, 4.0));
+        let (holder, video, above) = (LayerId::new(1), LayerId::new(2), LayerId::new(3));
+        for (outer, inner) in [
+            (rect.clone(), round.clone()),
+            (round.clone(), rect),
+            (round.clone(), round),
+        ] {
+            let mut tree = SurfaceTree::new();
+            for id in [holder, video, above] {
+                tree.apply(LayerOp::Create(id));
+            }
+            tree.apply(LayerOp::Push {
+                parent: tree.root(),
+                child: holder,
+            });
+            tree.apply(LayerOp::Push {
+                parent: holder,
+                child: video,
+            });
+            tree.apply(LayerOp::Push {
+                parent: tree.root(),
+                child: above,
+            });
+            tree.apply(LayerOp::Clip(holder, Some(outer)));
+            tree.apply(LayerOp::Clip(video, Some(inner)));
+            let mut caches: FxHashMap<LayerId, ContentData> = std::iter::once((
+                above,
+                ContentData::new(Picture::record(|c| {
+                    c.fill(Rect::new(16.0, 0.0, 24.0, 8.0), WorkingColor::WHITE);
+                })),
+            ))
+            .collect();
+            let fonts = FxHashMap::default();
+            let images = FxHashMap::default();
+            let bitmaps = FxHashMap::default();
+            let glyphs = GlyphContext {
+                atlas: &atlas,
+                live_stamp: atlas.live_stamp(),
+                fonts: &fonts,
+                images: &images,
+                bitmaps: &bitmaps,
+                content: &FxHashMap::default(),
+            };
+            let mut frame = Frame::default();
+            let mut anchor_scratch = AnchorScratch::default();
+            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            lowering.prepare(&mut caches, &glyphs).expect("prepared");
+            lowering
+                .run(
+                    &tree,
+                    &mut caches,
+                    WorkingColor::BLACK,
+                    &glyphs,
+                    &FxHashMap::default(),
+                    FxHashMap::default(),
+                    &plan(&[video], true),
+                )
+                .expect("lowered");
+            assert_eq!(
+                frame
+                    .passes
+                    .iter()
+                    .map(|p| (p.target, p.clear, p.ranges.len()))
+                    .collect::<Vec<_>>(),
+                // The clip scope over the plane's (absent) children
+                // isolates, comes out empty and resumes part 1.
+                [
+                    (Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 0),
+                    (Target::Part(1), Some([0.0; 4]), 0),
+                    (Target::Part(1), None, 1),
+                ]
+            );
+        }
     }
 
     #[test]

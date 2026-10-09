@@ -918,7 +918,11 @@ pub enum PlaneContent<'a> {
 
 /// The platform object a hosted plane shows
 /// (`cherenkov::HostedLayers::Object`).
-#[cfg(target_vendor = "apple")]
+#[cfg(target_os = "macos")]
+pub type Hosted = crate::interop::apple::HostedView;
+/// The platform object a hosted plane shows
+/// (`cherenkov::HostedLayers::Object`).
+#[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub type Hosted = crate::interop::apple::HostedLayer;
 /// The platform object a hosted plane shows
 /// (`cherenkov::HostedLayers::Object`).
