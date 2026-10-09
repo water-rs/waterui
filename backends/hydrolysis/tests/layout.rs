@@ -499,6 +499,60 @@ fn text_field_fills_wide_container(app: &mut OffscreenApp) {
     );
 }
 
+/// The webview address row from water-rs/waterui#2275. A text field is a
+/// `Horizontal` leaf that answers the proposal width, so typing a URL wider
+/// than the row leaves the field, the `Go` button beside it, and the row
+/// below at the frames the empty field gave them; the text scrolls inside
+/// the field.
+fn wide_url_field_view() -> impl View {
+    let url = Binding::container(Str::from(""));
+    visual_shell(
+        vstack((
+            hstack((field("Address", &url), button("Go").action(|| {}))),
+            hstack((text("Allow redirects"), spacer(), text("100%"))),
+        ))
+        .spacing(12.0),
+    )
+}
+
+#[waterui::test(wide_url_field_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (360, 200))]
+fn wide_field_text_keeps_every_frame(app: &mut OffscreenApp) {
+    // `bounds()` reads the snapshot taken at query time, so each pass
+    // re-queries.
+    let frames = |app: &mut OffscreenApp| {
+        [
+            app.query().role(Role::TEXT_INPUT).label("Address").single(),
+            app.query().role(Role::BUTTON).label("Go").single(),
+            app.query()
+                .role(Role::LABEL)
+                .label("Allow redirects")
+                .single(),
+            app.query().role(Role::LABEL).label("100%").single(),
+        ]
+        .map(|element| {
+            let bounds = element.bounds();
+            (bounds.x(), bounds.width())
+        })
+    };
+    let empty = frames(app);
+
+    app.query()
+        .role(Role::TEXT_INPUT)
+        .label("Address")
+        .single()
+        .set_text(
+            app,
+            "https://example.com/a/path/long/enough/to/overflow/the/address/field",
+        );
+    app.settle();
+
+    assert_eq!(
+        frames(app),
+        empty,
+        "field, Go, and the row below must keep their frames once the field holds wide text"
+    );
+}
+
 /// The conversation row from water-rs/waterui#1219: a one-line preview that
 /// truncates in the second row. The truncated leaf reports the width it
 /// drew — its laid-out line including the ellipsis — so what it declines
