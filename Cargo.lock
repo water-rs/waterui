@@ -3990,6 +3990,10 @@ name = "futures-timer"
 version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+dependencies = [
+ "gloo-timers 0.4.0",
+ "send_wrapper",
+]
 
 [[package]]
 name = "futures-util"
@@ -9841,6 +9845,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "send_wrapper"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13653,12 +13663,12 @@ dependencies = [
 name = "waterui-url"
 version = "0.5.1"
 dependencies = [
- "async-io",
  "base64 0.23.1",
  "blocking",
  "dirs 7.0.0",
  "executor-core",
  "futures-lite",
+ "futures-timer",
  "mime_guess",
  "nami",
  "nami-core",
