@@ -1240,6 +1240,14 @@ fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
         "one scope, one class, one canvas: one group",
     );
     assert_eq!(renderer.mirror().union_log().len(), 1);
+    let group = |renderer: &crate::renderer::HydrolysisRenderer| {
+        *renderer
+            .mirror()
+            .chrome_groups()
+            .chrome_group(members[0])
+            .expect("the member holds a group membership")
+    };
+    let before = group(&renderer);
 
     // Nothing is staged: every cell commits with no program.
     renderer.commit_mirror_at(DISPLAY_SCALE * 2.0);
@@ -1248,17 +1256,24 @@ fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
         2,
         "the scale change rebuilt the shared group",
     );
-    let uniforms: Vec<Vec<f32>> = mirror_chrome_layers(&renderer)
-        .iter()
-        .map(|member| {
-            let node = mirrored_node(&renderer, *member);
-            let sample = node.backdrop.as_ref().expect("the member binds a sample");
-            let Some(BackdropEffect::Shader(effect)) = sample.effect() else {
-                panic!("the member's effect is its shader effect")
-            };
-            effect.uniforms.clone()
-        })
-        .collect();
+    let rebuilt = group(&renderer);
+    assert_ne!(rebuilt, before, "the rebuilt group has a new id");
+    let (groups, uniforms): (Vec<cherenkov::BackdropId>, Vec<Vec<f32>>) =
+        mirror_chrome_layers(&renderer)
+            .iter()
+            .map(|member| {
+                let node = mirrored_node(&renderer, *member);
+                let sample = node.backdrop.as_ref().expect("the member binds a sample");
+                let Some(BackdropEffect::Shader(effect)) = sample.effect() else {
+                    panic!("the member's effect is its shader effect")
+                };
+                (sample.group(), effect.uniforms.clone())
+            })
+            .unzip();
+    assert_eq!(
+        groups, [rebuilt; 4],
+        "every member samples the rebuilt group, none the released one",
+    );
     assert_eq!(
         uniforms,
         [

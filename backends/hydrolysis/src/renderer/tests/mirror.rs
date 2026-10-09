@@ -238,14 +238,16 @@ impl LayerTarget for MirrorTarget {
                 move |params: &cherenkov_record::MaterialCapture, scale| {
                     // The same union conversion the GPU target runs; a
                     // test reads the device-pixel result off the log.
-                    host.union_log
-                        .borrow_mut()
-                        .push(crate::renderer::mount::target::union_of(
-                            params,
-                            scale,
-                            key.class(),
-                        ));
-                    key_id(&key)
+                    let mut log = host.union_log.borrow_mut();
+                    log.push(crate::renderer::mount::target::union_of(
+                        params,
+                        scale,
+                        key.class(),
+                    ));
+                    // Every group built gets an id of its own, as the
+                    // engine's do: a member left on a released group
+                    // carries an id no live group has.
+                    key_id(&(key, log.len()))
                 },
                 |tx: &mut Transaction<'_, Self>,
                  member: &Layer,
