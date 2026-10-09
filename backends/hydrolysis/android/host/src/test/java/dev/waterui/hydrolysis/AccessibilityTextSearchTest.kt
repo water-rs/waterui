@@ -31,7 +31,7 @@ class AccessibilityTextSearchTest {
     @Before
     fun resetNative() {
         ShadowNativeBridge.reset()
-        ShadowNativeBridge.accessibilityTree = TREE_JSON
+        ShadowNativeBridge.treeJson = TREE_JSON
     }
 
     /** A provider mounted over [TREE_JSON], reached the way the platform does. */

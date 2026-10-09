@@ -403,14 +403,14 @@ class ShadowNativeBridge {
         /** Every `nativeBackEvent` phase, in order. */
         val backEvents = mutableListOf<Int>()
 
-        /** The accessibility publish `nativeAccessibilityTree` returns. */
-        var accessibilityTree: String? = null
-
         /** Runs inside `nativeDestroySession`, as the runner's drop does. */
         var onDestroy: () -> Unit = {}
 
         /** Runs inside `nativeOnFrame`; its result is the frame's outcome. */
         var onFrame: () -> Long = { 0L }
+
+        /** The accessibility tree JSON `nativeAccessibilityTree` serves. */
+        var treeJson: String? = null
 
         fun reset() {
             frames = 0
@@ -418,9 +418,9 @@ class ShadowNativeBridge {
             deadlineQueries = 0
             visibilities.clear()
             backEvents.clear()
-            accessibilityTree = null
             onDestroy = {}
             onFrame = { 0L }
+            treeJson = null
         }
 
         private fun assertLive(sessionPtr: Long) {
@@ -500,7 +500,7 @@ class ShadowNativeBridge {
         @Implementation
         fun nativeAccessibilityTree(sessionPtr: Long): String? {
             assertLive(sessionPtr)
-            return accessibilityTree
+            return treeJson
         }
     }
 }

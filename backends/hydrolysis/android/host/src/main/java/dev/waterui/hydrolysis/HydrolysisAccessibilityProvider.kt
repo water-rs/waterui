@@ -522,12 +522,19 @@ internal class HydrolysisAccessibilityProvider(
                     id,
                     AccessibilityEvent.TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY,
                 )
+                // The accessibility-focus ring is the framework's drawable,
+                // painted by the view root's draw pass over the host — not
+                // by the session's GPU frame. The focus event only records
+                // the new bounds; the host's invalidate schedules the
+                // traversal that draws them.
+                host.invalidate()
                 return true
             }
             AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> {
                 if (a11yFocusId == id) {
                     a11yFocusId = INVALID_ID
                     sendNodeEvent(id, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
+                    host.invalidate()
                 }
                 return true
             }
