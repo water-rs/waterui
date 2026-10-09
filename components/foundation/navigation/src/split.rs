@@ -317,6 +317,12 @@ waterui_core::impl_debug!(NavigationSplitView);
 
 impl NavigationSplitView {
     /// Creates a two-column split driven by a caller-owned optional selection.
+    ///
+    /// At compact widths exactly one column is visible: the detail while
+    /// `selection` is `Some`, and the sidebar while it is `None`. The platform
+    /// back control (including a completed back gesture) writes `None` into
+    /// the selection. Start with `None` to open on the sidebar; the binding is
+    /// the single source of truth for the visible compact column.
     pub fn new<T, Sidebar, Detail>(
         selection: &Binding<Option<T>>,
         sidebar: Sidebar,
