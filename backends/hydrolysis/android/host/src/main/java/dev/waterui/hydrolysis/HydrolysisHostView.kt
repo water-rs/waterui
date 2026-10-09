@@ -55,7 +55,18 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         AutofillBridge(this, accessibilityProvider)
 
     private var lastMetricsWidth = -1
-    private val metricsLayoutListener = ViewTreeObserver.OnGlobalLayoutListener { pushMetrics() }
+
+    /**
+     * The window-local inset bands depend on where the view sits in the
+     * window, and a parent can move it without a layout pass — a collapsing
+     * app bar's offset, a scroll, a translation. Every traversal that draws
+     * re-checks; [pushMetrics] forwards only a changed snapshot.
+     */
+    private val metricsPreDrawListener =
+        ViewTreeObserver.OnPreDrawListener {
+            pushMetrics()
+            true
+        }
     private var lastMetricsHeight = -1
     private var lastDensity = Float.NaN
     private var lastFontScale = Float.NaN
@@ -182,12 +193,12 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         session?.bind(this)
-        viewTreeObserver.addOnGlobalLayoutListener(metricsLayoutListener)
+        viewTreeObserver.addOnPreDrawListener(metricsPreDrawListener)
         pushMetrics()
     }
 
     override fun onDetachedFromWindow() {
-        viewTreeObserver.removeOnGlobalLayoutListener(metricsLayoutListener)
+        viewTreeObserver.removeOnPreDrawListener(metricsPreDrawListener)
         // Nothing this view queued may reach the session after the detach:
         // a destroyed session tears down inside `unbind` below. The IMM
         // closes its connections only later, from its own queue — they
