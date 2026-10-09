@@ -132,6 +132,36 @@ jobs:
       - name: Lint target cache writer
         id: writer
         run: echo "sweep=${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.lint-target.outputs.cache-hit != 'true' }}" >> "${GITHUB_OUTPUT}"
+      # The affected set as this Linux leg compiles it. `-p` and `--exclude`
+      # are mutually exclusive, so the Apple-only crates are dropped from the
+      # package arguments here — the macOS legs lint them. An Apple-only
+      # scope therefore compiles nothing on Linux. `compiles` is exactly the
+      # condition under which some cargo step below runs: each one is gated
+      # on the full or workspace sweep, the writer sweep, or a package this
+      # filtered set names.
+      - name: Linux scope
+        id: linux-scope
+        env:
+          PACKAGE_ARGS: ${{ inputs.package-args }}
+          SWEEPS: ${{ inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' }}
+        run: |
+          # `package-args` is affected.py's `-p <name>` pairs.
+          read -ra words <<< "${PACKAGE_ARGS}"
+          args=()
+          for ((i = 0; i < ${#words[@]}; i += 2)); do
+            case "${words[i + 1]}" in
+              waterui-apple | cocoa-ui) ;;
+              *) args+=("${words[i]}" "${words[i + 1]}") ;;
+            esac
+          done
+          compiles=false
+          if [ "${SWEEPS}" = true ] || [ "${#args[@]}" -gt 0 ]; then
+            compiles=true
+          fi
+          {
+            echo "args=${args[*]}"
+            echo "compiles=${compiles}"
+          } >> "${GITHUB_OUTPUT}"
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
       # waterui-cli's `#[cfg(test)]` font-subsetting module `include_bytes!`s
@@ -172,24 +202,21 @@ jobs:
         # waterui-apple / cocoa-ui compile only on Apple hosts; the macOS legs carry them.
         run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets -- -D warnings
       - name: Check and clippy (affected packages)
-        if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && inputs.affected != '' && steps.writer.outputs.sweep != 'true'
+        if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && steps.writer.outputs.sweep != 'true' && steps.linux-scope.outputs.args != ''
+        env:
+          LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
-          # `-p` and `--exclude` are mutually exclusive, so the Apple-only
-          # crates are filtered out of the affected set on this Linux leg —
-          # the macOS legs cover them.
-          read -ra args <<< "$(printf '%s' '${{ inputs.package-args }}' | sed -E 's/(^| )-p (waterui-apple|cocoa-ui)//g')"
-          if [ "${#args[@]}" -gt 0 ]; then
-            cargo check --locked --profile ci-check "${args[@]}" --all-targets
-            cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
-          fi
+          read -ra args <<< "${LINUX_ARGS}"
+          cargo check --locked --profile ci-check "${args[@]}" --all-targets
+          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
       - name: Clippy and rustdoc (comment-only owners)
-        if: inputs.full == false && inputs['comment-only'] == true
+        if: inputs.full == false && inputs['comment-only'] == true && steps.linux-scope.outputs.args != ''
+        env:
+          LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
-          read -ra args <<< "$(printf '%s' '${{ inputs.package-args }}' | sed -E 's/(^| )-p (waterui-apple|cocoa-ui)//g')"
-          if [ "${#args[@]}" -gt 0 ]; then
-            cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
-            RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps "${args[@]}"
-          fi
+          read -ra args <<< "${LINUX_ARGS}"
+          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps "${args[@]}"
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
       # description would otherwise go unnoticed until a non-GPU target built it.
@@ -308,7 +335,10 @@ jobs:
       - name: Skill snippet compile gate
         if: inputs.full
         run: cargo check --locked --profile ci-check -p skill_snippets --all-targets --features compile-gate-tests
+      # Every cargo step above writes `target`, so it exists exactly when
+      # one of them ran; a run that compiled and left none fails here.
       - name: Target size
+        if: steps.linux-scope.outputs.compiles == 'true'
         run: du -sh target
       # Retirement runs after every check has passed and BEFORE the saves:
       # a lockfile bump mints a new key, so the superseded generations of

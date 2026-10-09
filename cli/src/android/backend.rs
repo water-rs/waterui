@@ -100,7 +100,7 @@ impl Backend for AndroidBackend {
             manifest,
             project.crate_name().clone(),
             app_name,
-            &project
+            project
                 .resolved_framework()
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,
