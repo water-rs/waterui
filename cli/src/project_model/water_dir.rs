@@ -644,11 +644,13 @@ async fn exclusive_lock_file(
 }
 
 /// The lock serializing connect-or-start of the per-user sccache server
-/// across `water` processes; `crate::toolchain::sccache` holds it across
-/// the client run and says why. `~/.water/locks/` keeps the lock beside the
-/// socket's Water home; like `.build-lease` the file is never deleted — it
-/// is the thing being locked — so `water clean` dropping the build cache
-/// cannot unlink it under a running startup.
+/// across `water` processes.
+///
+/// `crate::toolchain::sccache` holds it across the client run and says why.
+/// `~/.water/locks/` keeps the lock beside the socket's Water home; like
+/// `.build-lease` the file is never deleted — it is the thing being locked —
+/// so `water clean` dropping the build cache cannot unlink it under a
+/// running startup.
 ///
 /// # Errors
 /// Returns an error if the Water home cannot be resolved, the lock
