@@ -149,6 +149,7 @@ impl SharedState {
     }
 
     fn emit_webview(&self, event: WebViewEvent) {
+        tracing::debug!(?event, "android webview: event");
         self.emit(&BackendEvent::Event(event));
     }
 
