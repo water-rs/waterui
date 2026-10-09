@@ -72,7 +72,7 @@ pub(super) struct RenderPhaseTotals {
 pub(super) struct RenderDiagnostics {
     pub(super) config: RenderDiagnosticsConfig,
     /// Effective slow-frame threshold: the env override if set, otherwise derived from
-    /// the display refresh rate (16ms until known).
+    /// the display refresh rate via [`Self::set_refresh_rate`] (16ms until known).
     slow_frame_threshold: Duration,
     pub(super) report_started_at: Instant,
     pub(super) totals: RenderPhaseTotals,
@@ -96,7 +96,6 @@ impl RenderDiagnostics {
 
     /// Derive the slow-frame threshold from the display refresh rate (one frame budget),
     /// unless the operator pinned an explicit threshold via the env var.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn set_refresh_rate(&mut self, refresh_hz: f64) {
         if self.config.slow_frame_threshold_override.is_some() {
             return;

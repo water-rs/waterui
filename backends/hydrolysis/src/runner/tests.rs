@@ -1,9 +1,9 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    FrameMode, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
-    axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
-    render_window, render_window_with_capture, reports_ui_idle, schedule_animation_update,
-    schedule_redraw_or_refresh, surface_error_requires_reconfigure,
+    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame,
+    advance_runtime, axes_whose_limits_changed, clamp_window_size, handle_input_events,
+    pump_window_semantics, render_window, render_window_with_capture, reports_ui_idle,
+    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
     GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
@@ -872,9 +872,10 @@ fn an_idle_window_repaints_when_its_background_changes() {
         runtime.mode.is_pending(),
         "the binding's update must arm a refresh frame"
     );
-    let snapshot = render_window_with_capture(&mut runtime, &env, &mut || false)
-        .snapshot
-        .expect("the refresh frame captures a snapshot");
+    let snapshot =
+        render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
+            .snapshot
+            .expect("the refresh frame captures a snapshot");
     let pixel = &snapshot.rgba8[0..4];
     assert!(
         pixel[0] > 200 && pixel[1] < 60 && pixel[2] < 60 && pixel[3] == 255,
@@ -1238,7 +1239,7 @@ impl RecoveringSurface {
     }
 }
 
-impl crate::platform::GpuSurface for RecoveringSurface {
+impl crate::platform::PresentationSurface for RecoveringSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         self.inner.adapter()
     }
@@ -1270,7 +1271,7 @@ impl SurfaceProvider for RecoveringSurface {
         self.acquire_count += 1;
         self.first_error
             .take()
-            .map_or_else(|| self.inner.acquire(), Err)
+            .map_or_else(|| Ok(self.inner.acquire()), Err)
     }
 
     fn present(&mut self, frame: SurfaceFrame) {

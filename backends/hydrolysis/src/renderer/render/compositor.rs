@@ -38,7 +38,10 @@ pub struct HydrolysisRenderTarget<'a> {
     pub base_color: waterui_graphics::draw::WorkingColor,
 }
 
-/// Common render inputs shared by texture- and window-presented frames.
+/// The frame description both render paths work on — the texture frame a
+/// host presents and the macOS window frame the engine presents: the
+/// device-creation chain the engine pool keys on, the display's scale, and
+/// the target's size and base colour.
 pub struct FrameRenderTarget<'a> {
     pub adapter: &'a wgpu::Adapter,
     pub device: &'a wgpu::Device,
@@ -80,35 +83,41 @@ impl<'a> HydrolysisRenderTarget<'a> {
 
 impl HydrolysisRenderer {
     crate::engine::cfg_async_fn! {
-        /// Renders into and presents a host-provided texture.
+        /// Renders the frame into `target`'s texture.
+        ///
+        /// Async on wasm32, where the surface render inside awaits the browser
+        /// device.
         ///
         /// # Errors
-        /// Returns the Cherenkov render error when the engine cannot render
-        /// the scene.
+        ///
+        /// Returns the engine's [`cherenkov::RenderError`] when the frame
+        /// fails to render.
         pub fn render_scene_to_texture(
             &mut self,
             target: HydrolysisRenderTarget<'_>,
         ) -> Result<(), cherenkov::RenderError> {
-            let texture = target.texture;
-            let device = target.device;
-            let queue = target.queue;
-            let format = target.format;
-            let target = target.into_frame_target();
+            let (texture, format) = (target.texture, target.format);
+            let (device, queue) = (target.device, target.queue);
             let frame = crate::engine::engine_await!(
-                self.render_texture_frame(target, format, 1.0)
+                self.render_texture_frame(target.into_frame_target(), format, 1.0)
             )?;
             self.present_engine_frame(
                 frame,
                 device,
                 queue,
                 texture,
-                crate::engine::format_output_color(format),
+                crate::engine::format_output_color(texture.format()),
                 cherenkov_gpu::interop::OutputAlpha::Straight,
             );
             Ok(())
         }
     }
 
+    /// Copies the frame [`Self::render_texture_frame`] rendered into
+    /// `texture`. Synchronous on every target, so a host presenting a
+    /// swapchain image acquires it only after the engine render, and the
+    /// image is never held across an await: a browser expires its canvas
+    /// texture when the task that acquired it ends.
     pub(crate) fn present_engine_frame(
         &mut self,
         EngineFrame { headroom }: EngineFrame,
@@ -134,123 +143,148 @@ impl HydrolysisRenderer {
     }
 
     crate::engine::cfg_async_fn! {
+        /// Commits the window's pending node programs through its mount and
+        /// renders the engine frame (§A) into the engine texture a host
+        /// presents as a `format` frame at `headroom`. The window — engine
+        /// surface plus mount — lives per device-creation chain: a new chain
+        /// or a lost device replaces it, and the new mount remounts every
+        /// node.
+        ///
+        /// Async on wasm32, where the engine calls inside await the browser
+        /// device.
+        ///
+        /// # Errors
+        ///
+        /// Returns the engine's [`cherenkov::RenderError`] when the frame
+        /// fails to render.
         pub(crate) fn render_texture_frame(
             &mut self,
             target: FrameRenderTarget<'_>,
             format: wgpu::TextureFormat,
             headroom: f32,
         ) -> Result<EngineFrame, cherenkov::RenderError> {
-            assert!(
-                matches!(
-                    format.remove_srgb_suffix(),
-                    wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
-                ) || matches!(
-                    format,
-                    wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-                ),
-                "hydrolysis renderer: unsupported surface format {format:?}",
-            );
-            let _span = tracing::debug_span!("hydrolysis_render_scene").entered();
-            let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
-                target.gpu_context_id,
-                target.adapter,
-                target.shared_device.clone(),
-            ));
-            let replace = self.cherenkov_window.as_ref().is_none_or(|window| {
-                window.context_id != target.gpu_context_id || window.device_loss.is_lost()
-            });
-            if replace {
-                if self.cherenkov_window.is_some() {
-                    self.unmount_current_tree();
-                }
-                let wake = self.host_redraw_handle.clone();
-                let surface = crate::engine::engine_await!(
-                    crate::engine::TextureCherenkovSurface::new(
-                        Rc::clone(&state.engine),
-                        target.device,
-                        target.adapter.get_info().backend,
-                        (target.width, target.height),
-                        move || {
-                            if let Some(wake) = &wake {
-                                wake.request_redraw();
-                            }
-                        },
-                    )
-                );
-                self.cherenkov_window = Some(CherenkovWindow::from_surface(
-                    surface,
-                    &target,
-                    state,
-                    Arc::clone(&self.applied_filter_metrics),
-                ));
+        assert!(
+            matches!(
+                format.remove_srgb_suffix(),
+                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+            ) || matches!(
+                format,
+                wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+            ),
+            "hydrolysis renderer: unsupported surface format {format:?}"
+        );
+
+        let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
+        let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
+            target.gpu_context_id,
+            target.adapter,
+            target.shared_device.clone(),
+        ));
+        if !self
+            .cherenkov_window
+            .as_ref()
+            .is_some_and(|window| window.renders_on(&target))
+        {
+            if self.cherenkov_window.is_some() {
+                self.unmount_for_window_replacement();
             }
-            let mut window = self.cherenkov_window.take().expect("texture window ensured");
-            let frame_scope = self.prepare_frame(&mut window, &target, headroom);
-            self.applied_filter_metrics.reset();
-            let rendered = crate::engine::engine_await!(window.surface.render());
-            drop(frame_scope);
-            (
-                self.frame_applied_filter_count,
-                self.frame_applied_filter_effect,
-            ) = self.applied_filter_metrics.snapshot();
-            self.cherenkov_window = Some(window);
-            self.engine_next = Some(rendered?);
-            Ok(EngineFrame { headroom })
+            self.cherenkov_window = None;
+            let surface = crate::engine::engine_await!(crate::engine::TextureCherenkovSurface::new(
+                Rc::clone(&state.engine),
+                target.device,
+                target.adapter.get_info().backend,
+                (target.width, target.height),
+                self.host_wake(),
+            ));
+            self.cherenkov_window = Some(CherenkovWindow::new(
+                surface,
+                &target,
+                state,
+                Arc::clone(&self.applied_filter_metrics),
+            ));
         }
+        let mut window = self
+            .cherenkov_window
+            .take()
+            .expect("hydrolysis renderer: the window was just ensured");
+        let _frame = self.commit_window_frame(&mut window, &target, headroom);
+
+        self.applied_filter_metrics.reset();
+        let rendered = crate::engine::engine_await!(window.surface.render());
+        self.take_applied_filter_metrics();
+        self.cherenkov_window = Some(window);
+        self.engine_next = Some(rendered?);
+        Ok(EngineFrame { headroom })
+    }
     }
 
+    /// Commits the window's pending node programs through the macOS winit
+    /// window's mount and renders the engine frame (§A), which the engine
+    /// presents through the window's `WindowTarget`. The engine window
+    /// lives in `engine_target`'s slot per device-creation chain and
+    /// transparency: a new chain, a lost device or a transparency switch
+    /// replaces it, and the new mount remounts every node.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
+    /// to render.
     #[cfg(all(target_os = "macos", hydrolysis_winit))]
     pub(crate) fn render_window_frame(
         &mut self,
         target: &FrameRenderTarget<'_>,
         engine_target: crate::platform::EngineWindowTarget<'_>,
     ) -> Result<(), cherenkov::RenderError> {
+        let crate::platform::EngineWindowTarget {
+            window: native_window,
+            window_slot,
+            transparent,
+            display_moved,
+        } = engine_target;
+        let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
         let state = crate::engine::shared_engine_state(
             target.gpu_context_id,
             target.adapter,
             target.shared_device.clone(),
         );
-        let crate::platform::EngineWindowTarget {
-            window,
-            window_slot,
-            display_moved,
-            redraw,
-        } = engine_target;
-        let replace = window_slot_needs_replacement(window_slot.as_ref(), target.gpu_context_id);
-        if replace {
+        if !window_slot.as_ref().is_some_and(|window| {
+            window.renders_on(target) && window.surface.transparent() == transparent
+        }) {
             if window_slot.is_some() {
-                self.unmount_current_tree();
+                self.unmount_for_window_replacement();
             }
-            let wake = redraw;
-            let target_window =
-                cherenkov_gpu::WindowTarget::new(window, (target.width, target.height))
-                    .transparent(true);
+            *window_slot = None;
             let surface = crate::engine::WindowCherenkovSurface::new(
                 Rc::clone(&state.engine),
-                target_window,
-                move || {
-                    if let Some(wake) = &wake {
-                        wake.request_redraw();
-                    }
-                },
+                Arc::clone(native_window),
+                (target.width, target.height),
+                transparent,
+                self.host_wake(),
             );
-            *window_slot = Some(CherenkovWindow::from_surface(
+            *window_slot = Some(CherenkovWindow::new(
                 surface,
                 target,
                 state,
                 Arc::clone(&self.applied_filter_metrics),
             ));
         }
-        let mut window = window_slot.take().expect("macOS engine window ensured");
+        let mut window = window_slot
+            .take()
+            .expect("hydrolysis renderer: the window was just ensured");
+        let (headroom, _) = window.surface.headroom();
+        let _frame = self.commit_window_frame(&mut window, target, headroom);
         if display_moved {
             window.surface.display_moved();
         }
-        let frame_scope = self.prepare_frame(&mut window, target, 1.0);
+
         self.applied_filter_metrics.reset();
         let rendered = window.surface.render(target.display_scale);
-        drop(frame_scope);
+        self.take_applied_filter_metrics();
+        // The engine presented inside the render: the frame's last marker
+        // and its resolve follow it here, where a host-presented frame
+        // marks after its copy and resolves after its present.
         #[cfg(feature = "frame-profile")]
-        if rendered.is_ok() {
+        {
             self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 2);
             self.finish_gpu_frame_profile_with(
                 window.gpu_profiler.as_ref(),
@@ -258,16 +292,29 @@ impl HydrolysisRenderer {
                 target.queue,
             );
         }
-        (
-            self.frame_applied_filter_count,
-            self.frame_applied_filter_effect,
-        ) = self.applied_filter_metrics.snapshot();
         *window_slot = Some(window);
         self.engine_next = Some(rendered?);
         Ok(())
     }
 
-    fn unmount_current_tree(&self) {
+    /// The host's display-link wake, as an engine surface takes it: called
+    /// from whichever thread the cause lands on when the surface's content
+    /// asks for a frame between the renderer's own.
+    fn host_wake(&self) -> impl Fn() + Send + Sync + 'static {
+        let wake = self.host_redraw_handle.clone();
+        move || {
+            if let Some(wake) = &wake {
+                wake.request_redraw();
+            }
+        }
+    }
+
+    /// §F's remount: the tree's and the hosts' layers were mounted on the
+    /// outgoing engine window's surface — drop them before it is replaced
+    /// (decision 3 applied to the whole window). Each `Layer` drop queues
+    /// its `Remove` on the dead surface's shared state, and the next commit
+    /// remounts every cell on the new mount from its retained program.
+    fn unmount_for_window_replacement(&self) {
         if let Some(tree) = &self.render_tree {
             tree.unmount();
         }
@@ -275,29 +322,29 @@ impl HydrolysisRenderer {
         self.core.root_cell().unmount();
     }
 
-    fn prepare_frame<S: crate::engine::cherenkov::SurfaceCoreAccess>(
+    /// Opens `window`'s frame and commits it: the surface takes the
+    /// target's size, scale, `headroom` and base colour, and the mount
+    /// commits the pending node programs. The returned scope is held
+    /// across the frame's render.
+    fn commit_window_frame<S: crate::engine::EngineSurface>(
         &mut self,
         window: &mut CherenkovWindow<S>,
         target: &FrameRenderTarget<'_>,
         headroom: f32,
     ) -> cherenkov::FrameScope {
-        let frame_scope = window.surface.begin_frame();
+        let frame = window.surface.core().begin_frame();
+
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 0);
-        window.surface.resize((target.width, target.height));
-        window.surface.display(target.display_scale, headroom);
-        window.surface.clear_color(target.base_color);
-        self.commit_mount(window, target.display_scale);
-        #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
-        frame_scope
-    }
 
-    fn commit_mount<S: crate::engine::cherenkov::SurfaceCoreAccess>(
-        &mut self,
-        window: &mut CherenkovWindow<S>,
-        display_scale: f64,
-    ) {
+        let surface = window.surface.core_mut();
+        surface.resize((target.width, target.height));
+        surface.display(cherenkov::Display {
+            scale: target.display_scale,
+            headroom,
+        });
+        surface.clear_color(target.base_color);
+
         let roots = self.mount_roots();
         let host_wake = self.host_redraw_handle.clone();
         let window_material = self.core.window_material;
@@ -306,7 +353,7 @@ impl HydrolysisRenderer {
         window.mount.commit(
             &window.host,
             self.window_display_transform,
-            display_scale,
+            target.display_scale,
             &roots,
             &mut wakes,
             window_material.as_ref(),
@@ -320,6 +367,19 @@ impl HydrolysisRenderer {
         let (fonts, images) = window.state.resources.take_registration_stats();
         self.state.counters.font_registrations += fonts;
         self.state.counters.image_registrations += images;
+
+        #[cfg(feature = "frame-profile")]
+        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
+
+        frame
+    }
+
+    /// Records the applied-filter work the frame's render reported.
+    fn take_applied_filter_metrics(&mut self) {
+        (
+            self.frame_applied_filter_count,
+            self.frame_applied_filter_effect,
+        ) = self.applied_filter_metrics.snapshot();
     }
 }
 
@@ -344,25 +404,34 @@ pub struct CherenkovWindow<S> {
 }
 
 impl<S> CherenkovWindow<S> {
+    /// The device-creation chain this window renders on.
     #[cfg(feature = "frame-profile")]
-    pub const fn context_id(&self) -> u64 {
+    pub(crate) const fn context_id(&self) -> u64 {
         self.context_id
+    }
+
+    /// Whether this window still renders `target`'s frames: the same
+    /// device-creation chain, with its device not reported lost.
+    fn renders_on(&self, target: &FrameRenderTarget<'_>) -> bool {
+        self.context_id == target.gpu_context_id && !self.device_loss.is_lost()
     }
 }
 
-impl<S: crate::engine::cherenkov::SurfaceCoreAccess> CherenkovWindow<S> {
-    fn from_surface(
+impl<S: crate::engine::EngineSurface> CherenkovWindow<S> {
+    /// Wraps `surface` with its window mount.
+    fn new(
         surface: S,
         target: &FrameRenderTarget<'_>,
         state: Rc<crate::engine::SharedEngineState>,
         metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
     ) -> Self {
-        let mount = mount::Mount::new(Rc::clone(&surface.engine_surface().shared));
+        let core = surface.core();
+        let mount = mount::Mount::new(Rc::clone(&core.engine_surface().shared));
         let host = mount::CherenkovHost {
             engine: Rc::clone(&state.engine),
             resources: Rc::clone(&state.resources),
             metrics,
-            surface: surface.engine_surface_weak(),
+            surface: core.engine_surface_weak(),
             device: target.device.clone(),
             queue: target.queue.clone(),
         };
@@ -375,76 +444,6 @@ impl<S: crate::engine::cherenkov::SurfaceCoreAccess> CherenkovWindow<S> {
             device_loss: target.device_loss.clone(),
             #[cfg(feature = "frame-profile")]
             gpu_profiler: GpuFrameProfiler::new(target.device),
-        }
-    }
-}
-
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
-trait WindowSlotLifetime {
-    fn context_id(&self) -> u64;
-    fn device_is_lost(&self) -> bool;
-}
-
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
-impl<S> WindowSlotLifetime for CherenkovWindow<S> {
-    fn context_id(&self) -> u64 {
-        self.context_id
-    }
-
-    fn device_is_lost(&self) -> bool {
-        self.device_loss.is_lost()
-    }
-}
-
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
-fn window_slot_needs_replacement<T: WindowSlotLifetime>(slot: Option<&T>, context_id: u64) -> bool {
-    slot.is_none_or(|window| window.context_id() != context_id || window.device_is_lost())
-}
-
-#[cfg(all(test, target_os = "macos", hydrolysis_winit))]
-mod tests {
-    use std::rc::Rc;
-
-    use super::{WindowSlotLifetime, window_slot_needs_replacement};
-
-    struct WindowState {
-        context_id: u64,
-        device_lost: bool,
-        size: (u32, u32),
-        transparent: bool,
-        mount: Rc<()>,
-    }
-
-    impl WindowSlotLifetime for WindowState {
-        fn context_id(&self) -> u64 {
-            self.context_id
-        }
-
-        fn device_is_lost(&self) -> bool {
-            self.device_lost
-        }
-    }
-
-    #[test]
-    fn resize_and_opacity_changes_keep_engine_window_mount() {
-        let mut slot = Some(WindowState {
-            context_id: 17,
-            device_lost: false,
-            size: (800, 600),
-            transparent: true,
-            mount: Rc::new(()),
-        });
-        let mount = Rc::clone(&slot.as_ref().expect("slot initialized").mount);
-
-        for (size, transparent) in [((900, 600), false), ((900, 700), true)] {
-            let window = slot.as_mut().expect("slot initialized");
-            window.size = size;
-            window.transparent = transparent;
-            assert!(!window_slot_needs_replacement(slot.as_ref(), 17));
-            assert!(Rc::ptr_eq(
-                &mount,
-                &slot.as_ref().expect("slot retained").mount
-            ));
         }
     }
 }

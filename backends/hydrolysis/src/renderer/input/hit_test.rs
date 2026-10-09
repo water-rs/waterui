@@ -970,6 +970,7 @@ impl SemanticCore {
         for chain_snapshot in self.accessibility.focus_key_handlers.values() {
             fold(chain_snapshot);
         }
+        drop(fold);
         self.hit_test.root_key_chain_seen = chain_seen;
         self.hit_test.root_key_handlers = chain;
 

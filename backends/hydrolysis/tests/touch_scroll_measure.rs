@@ -78,11 +78,7 @@ const fn touch_drag(steps: u16) -> DragOptions {
 /// the per-frame offsets of a single gesture.
 fn offset_after_drag_prefix(steps: u16) -> f64 {
     let mut app = mount();
-    assert_eq!(
-        list_offset(&mut app).to_bits(),
-        0.0_f64.to_bits(),
-        "the list starts at the top"
-    );
+    assert_eq!(list_offset(&mut app), 0.0, "the list starts at the top");
     let distance = DRAG_STEP * f32::from(steps);
     app.queue_drag_from_to_with(
         DRAG_X,
@@ -114,11 +110,7 @@ fn a_touch_drag_follows_the_finger_while_rows_measure() {
 #[test]
 fn a_touch_fling_keeps_advancing_while_rows_measure() {
     let mut app = mount();
-    assert_eq!(
-        list_offset(&mut app).to_bits(),
-        0.0_f64.to_bits(),
-        "the list starts at the top"
-    );
+    assert_eq!(list_offset(&mut app), 0.0, "the list starts at the top");
     app.queue_drag_from_to_with(
         DRAG_X,
         DRAG_START_Y,

@@ -207,8 +207,10 @@ impl HydrolysisRenderer {
         self.cherenkov_window = Some(window);
     }
 
-    /// Resolves markers for a typed engine-window slot, whose profiler is
-    /// deliberately separate from the renderer's texture window.
+    /// Resolves `profiler`'s markers into `frame_stage_times`, blocking
+    /// until the GPU drains the frame's submits; a no-op without a profiler.
+    /// The engine-presented macOS window calls it with its own window's
+    /// profiler, which lives outside the renderer.
     pub(crate) fn finish_gpu_frame_profile_with(
         &mut self,
         profiler: Option<&GpuFrameProfiler>,

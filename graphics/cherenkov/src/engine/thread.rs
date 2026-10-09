@@ -852,7 +852,7 @@ fn finish_frame<B: Backend>(
     let mut rate = None;
     // Keyed by surface: one entry per visible surface, so publication
     // stays linear in the surface count instead of rescanning a Vec.
-    let mut surface_next: FxHashMap<SurfaceId, Next> = FxHashMap::default();
+    let mut surface_next = FxHashMap::default();
     for (id, state) in surfaces
         .iter_mut()
         .filter(|(_, state)| state.visibility == Visibility::Visible)

@@ -1,8 +1,6 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
 use super::*;
-#[cfg(feature = "frame-profile")]
-use crate::platform::GpuSurface as _;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -907,7 +905,10 @@ impl HeadlessRuntime {
     #[cfg(test)]
     pub(crate) fn popup_frame(&mut self, index: usize) -> Option<HeadlessSnapshot> {
         let popup = self.popup_windows.get_mut(index)?;
-        render_window_with_capture(popup, &self.env, &mut || self.local_executor.drain()).snapshot
+        render_window_with_capture(popup, &self.env, FrameReader::Snapshot, &mut || {
+            self.local_executor.drain()
+        })
+        .snapshot
     }
 
     /// The mounted popup windows' logical frames — where each transient
@@ -1004,17 +1005,12 @@ impl HeadlessRuntime {
             || self.runtime.mode.is_pending()
             || self.runtime.platform.take_redraw_request();
         let mut render_result = should_render.then(|| {
-            if capture_snapshot {
-                render_window_with_capture(&mut self.runtime, &self.env, &mut || {
-                    self.local_executor.drain()
-                })
-            } else {
-                crate::runner::window::render_window_without_capture(
-                    &mut self.runtime,
-                    &self.env,
-                    &mut || self.local_executor.drain(),
-                )
-            }
+            render_window_with_capture(
+                &mut self.runtime,
+                &self.env,
+                FrameReader::headless(capture_snapshot),
+                &mut || self.local_executor.drain(),
+            )
         });
         // The popup renders below can rebuild too; `rebuilt` reports the OR
         // of every pass this pump ran, not only the main window's render.
@@ -1041,13 +1037,12 @@ impl HeadlessRuntime {
             if !(composite || popup.mode.is_pending() || redraw_requested) {
                 continue;
             }
-            let popup_result = if composite {
-                render_window_with_capture(popup, &self.env, &mut || self.local_executor.drain())
-            } else {
-                crate::runner::window::render_window_without_capture(popup, &self.env, &mut || {
-                    self.local_executor.drain()
-                })
-            };
+            let popup_result = render_window_with_capture(
+                popup,
+                &self.env,
+                FrameReader::headless(composite),
+                &mut || self.local_executor.drain(),
+            );
             rebuilt |= popup_result.rebuilt;
             if let Some(popup_snapshot) = popup_result.snapshot {
                 popup_snapshots.push((

@@ -34,7 +34,7 @@ use super::ime::ImeBridge;
 use super::jni::JniError;
 use crate::engine::WidgetTheme;
 use crate::platform::{
-    GpuSurfaceWindow, InputEvent, PlatformWindow, SurfaceProvider, TextInputState,
+    GpuSurfaceWindow, InputEvent, PlatformWindow, PresentationSurface as _, TextInputState,
     validated_window_frame,
 };
 use crate::renderer::{

@@ -5,7 +5,7 @@ use waterui_core::view_renderer::{CustomViewRenderer, RenderError, RenderResult,
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::scene_view::SceneViewMergeToParent;
 
-use crate::platform::{GpuSurface, OffscreenSurface, SurfaceProvider};
+use crate::platform::{OffscreenSurface, PresentationSurface as _};
 use crate::readback::readback_texture_rgba8;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 
@@ -88,7 +88,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 .as_mut()
                 .expect("hydrolysis view renderer surface must initialize before rendering");
             surface.resize(width, height);
-            let frame = surface.acquire().map_err(gpu_failure)?;
+            let frame = surface.acquire();
             (
                 frame,
                 surface.adapter().clone(),

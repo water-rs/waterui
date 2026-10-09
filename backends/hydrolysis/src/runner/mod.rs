@@ -86,8 +86,8 @@ mod web_accessibility;
 mod web_runner;
 // Bare wasm compiles the module for its profile types (the semantic runtime
 // uses them everywhere) but has no window pump to call the rest.
-// `pub(crate)`: the platform surfaces implement `GpuSurfaceFrame` from outside
-// `runner`.
+// `pub` within the private `runner` module: the platform surfaces name
+// `GpuSurfaceFrame` from outside `runner`.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub mod window;
 #[cfg(hydrolysis_winit)]
@@ -117,7 +117,7 @@ use window::{RuntimeWindow, advance_runtime, handle_input_events};
 use window::render_window;
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
 #[cfg(not(target_arch = "wasm32"))]
-use window::render_window_with_capture;
+use window::{FrameReader, render_window_with_capture};
 // `runtime_window_origin` is reached by the winit runner and by headless's
 // accessibility-action path.
 #[cfg(any(
@@ -154,7 +154,7 @@ use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::readback::readback_texture_rgba8;
+use crate::readback::readback_surface_texture_rgba8;
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
     SemanticCore,

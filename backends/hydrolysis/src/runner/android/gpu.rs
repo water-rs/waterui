@@ -25,7 +25,7 @@ use ndk::native_window::NativeWindow;
 use raw_window_handle::{AndroidDisplayHandle, DisplayHandle, HasDisplayHandle, RawDisplayHandle};
 
 use crate::platform::{
-    SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
+    PresentationSurface, SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
     select_hydrolysis_surface_format,
 };
 
@@ -85,8 +85,6 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
 
 struct AndroidGpuContextInner {
     instance: wgpu::Instance,
-    /// Identity of this device creation chain for the engine pool.
-    context_id: u64,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -188,7 +186,6 @@ impl AndroidGpuContext {
         Ok(Self {
             inner: Arc::new(AndroidGpuContextInner {
                 instance,
-                context_id,
                 adapter,
                 device,
                 queue,
@@ -406,7 +403,7 @@ impl Drop for AndroidSurface {
     }
 }
 
-impl crate::platform::GpuSurface for AndroidSurface {
+impl PresentationSurface for AndroidSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         &self.gpu.inner.adapter
     }
@@ -481,23 +478,5 @@ impl SurfaceProvider for AndroidSurface {
             .map_or(cherenkov_gpu::interop::OutputAlpha::Straight, |config| {
                 cherenkov_gpu::interop::surface_output_alpha(config.alpha_mode)
             })
-    }
-}
-
-/// The Android surface's frame function is [`render_host_acquired_frame`].
-impl crate::runner::window::GpuSurfaceFrame for AndroidSurface {
-    fn render_frame(
-        &mut self,
-        renderer: &mut crate::renderer::HydrolysisRenderer,
-        clear_color: peniko::Color,
-        display_scale: f64,
-    ) -> Result<crate::runner::window::SurfaceRenderResult, crate::platform::SurfaceError> {
-        crate::runner::window::render_host_acquired_frame(
-            renderer,
-            self,
-            clear_color,
-            display_scale,
-            false,
-        )
     }
 }

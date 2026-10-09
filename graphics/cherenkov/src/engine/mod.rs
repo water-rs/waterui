@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use crate::backend::{Backend, Visibility};
 use crate::frame::{FrameTime, Next};
-
 use cherenkov_record::{ChangeSet, Shared, SurfaceId};
 
 /// A live surface's engine-side entry: its shared UI-thread queue state

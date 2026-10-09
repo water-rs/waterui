@@ -194,10 +194,9 @@ impl CaptureLevels {
     }
 }
 
-/// How a backdrop group captures and combines its members.
-///
-/// See [`Surface::backdrop_group`] and
-/// [`Surface::backdrop_group_unfiltered`].
+/// How a backdrop group captures and combines its members
+/// ([`Surface::backdrop_group`](crate::Surface::backdrop_group),
+/// [`Surface::backdrop_group_unfiltered`](crate::Surface::backdrop_group_unfiltered)).
 ///
 /// The spec fixes the group's capture [`scale`](BackdropSpec::scale) and
 /// how many capture [`levels`](BackdropSpec::levels) the group's pyramid

@@ -15,9 +15,9 @@ use web_sys::{
 };
 
 use super::{
-    CursorStyle, GpuSurface as _, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
-    PlatformWindow, PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider,
-    TextInputPurpose, TextInputState, WindowState, WuiWindow,
+    CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
+    PointerButton, PointerKind, PresentationSurface as _, SurfaceError, SurfaceFrame,
+    SurfaceProvider, TextInputPurpose, TextInputState, WindowState, WuiWindow,
 };
 
 #[derive(Clone, Copy)]
@@ -139,7 +139,7 @@ impl BrowserSurface {
     }
 }
 
-impl crate::platform::GpuSurface for BrowserSurface {
+impl crate::platform::PresentationSurface for BrowserSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         &self.adapter
     }

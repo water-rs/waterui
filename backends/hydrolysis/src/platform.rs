@@ -676,7 +676,8 @@ impl core::fmt::Display for SurfaceError {
 
 impl std::error::Error for SurfaceError {}
 
-/// A frame acquired from a `SurfaceProvider`.
+/// A frame acquired from a host-presented surface, such as
+/// [`OffscreenSurface::acquire`].
 #[derive(Debug)]
 pub enum SurfaceFrame {
     /// An offscreen render target: the frame already lives in a texture.
@@ -686,8 +687,9 @@ pub enum SurfaceFrame {
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
-    #[cfg(hydrolysis_winit)]
-    /// A platform surface frame presented through winit.
+    /// A platform surface frame presented through winit. The macOS winit
+    /// window is engine-presented and acquires no frame.
+    #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
     Window {
         /// The surface texture this frame was acquired into; presenting it
         /// queues the frame for display.
@@ -720,7 +722,7 @@ impl SurfaceFrame {
     pub const fn texture(&self) -> &wgpu::Texture {
         match self {
             Self::Offscreen { texture, .. } => texture,
-            #[cfg(hydrolysis_winit)]
+            #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             Self::Window { output, .. } => &output.texture,
             #[cfg(target_os = "android")]
             Self::Android { output, .. } => &output.texture,
@@ -734,7 +736,7 @@ impl SurfaceFrame {
     pub const fn view(&self) -> &wgpu::TextureView {
         match self {
             Self::Offscreen { view, .. } => view,
-            #[cfg(hydrolysis_winit)]
+            #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             Self::Window { view, .. } => view,
             #[cfg(target_os = "android")]
             Self::Android { view, .. } => view,
@@ -814,13 +816,13 @@ pub fn acquire_surface_texture(
     }
 }
 
-/// The GPU handles every presentation surface carries.
+/// The GPU handles and drawable size every presentation surface carries.
 ///
 /// Whichever way a surface's frame reaches the display — a host-acquired
-/// [`SurfaceProvider`] or the macOS winit engine target — the pump, resize
-/// path and engine pool all consume this set;
-/// acquire/copy/present exist only on the host-acquired kind.
-pub trait GpuSurface {
+/// [`SurfaceProvider`] or the macOS winit engine target — the pump, the
+/// resize path and the engine pool consume only this; acquire, copy and
+/// present exist only on the host-acquired kind.
+pub trait PresentationSurface {
     /// The wgpu adapter this surface renders through.
     fn adapter(&self) -> &wgpu::Adapter;
     /// The wgpu device this surface renders through.
@@ -838,7 +840,7 @@ pub trait GpuSurface {
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer:
 /// the host-acquired kind, whose frame the pump acquires, renders into and
 /// presents.
-pub trait SurfaceProvider: GpuSurface {
+pub trait SurfaceProvider: PresentationSurface {
     /// Acquires the next frame, or reports why none could be presented into.
     ///
     /// # Errors
@@ -872,14 +874,21 @@ pub trait SurfaceProvider: GpuSurface {
     }
 }
 
-/// The macOS winit target and lazy typed engine surface slot.
+/// What an engine-presented frame of the macOS winit window renders
+/// through: the window the engine's `cherenkov_gpu::WindowTarget` presents
+/// on, and the window's engine-surface slot, created on the first frame and
+/// replaced when its device chain or transparency no longer matches.
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 pub struct EngineWindowTarget<'a> {
-    pub(crate) window: std::sync::Arc<winit::window::Window>,
+    /// The window the engine presents on.
+    pub(crate) window: &'a std::sync::Arc<winit::window::Window>,
+    /// The window's engine surface and mount, owned by the window's surface.
     pub(crate) window_slot:
         &'a mut Option<crate::renderer::CherenkovWindow<crate::engine::WindowCherenkovSurface>>,
+    /// Whether the window composites with what lies behind it.
+    pub(crate) transparent: bool,
+    /// Whether the window crossed displays since the previous frame.
     pub(crate) display_moved: bool,
-    pub(crate) redraw: Option<RedrawHandle>,
 }
 
 /// The window's platform safe area in logical units.
@@ -950,10 +959,10 @@ pub fn enabled_window_buttons(closable: bool) -> winit::window::WindowButtons {
 ///
 /// This contract carries no GPU objects — a host satisfies it without a
 /// wgpu device, a presentation surface or a render thread. The GPU
-/// painter's presentation attachment is the separate [`GpuSurfaceWindow`]
-/// boundary: only window types that implement it can drive the GPU frame
-/// pump, so a host that stays `PlatformWindow`-only can never hand the
-/// runner a wgpu surface.
+/// painter's presentation attachment is the separate, crate-internal
+/// `GpuSurfaceWindow` boundary: only window types that implement it can
+/// drive the GPU frame pump, so a host that stays `PlatformWindow`-only
+/// can never hand the runner a wgpu surface.
 pub trait PlatformWindow: 'static {
     /// The drawable content area in physical pixels.
     ///
@@ -1069,17 +1078,16 @@ pub trait PlatformWindow: 'static {
 /// attached one. A host implementing only [`PlatformWindow`] has no surface
 /// to give the pump, and the GPU render path is unreachable for it.
 ///
-/// How the frame reaches the display is the associated [`GpuSurface`]
-/// presentation type: [`SurfaceProvider`] — the pump acquires, renders into
-/// and presents each frame — for every surface except the macOS winit
-/// window, whose `cherenkov_gpu::WindowTarget` presents inside
-/// `Engine::render`. The absent
-/// acquire/present calls on that kind are missing from the type, not
-/// asserted away at run time.
+/// How the frame reaches the display is the associated
+/// [`PresentationSurface`] type: a [`SurfaceProvider`] — the pump acquires,
+/// renders into and presents each frame — for every surface except the
+/// macOS winit window, whose `cherenkov_gpu::WindowTarget` presents inside
+/// `Engine::render`. The acquire and present calls that kind lacks are
+/// missing from its type, not asserted away at run time.
 pub trait GpuSurfaceWindow: PlatformWindow {
     /// How this window's GPU surface presents — host-acquired, or
     /// engine-presented on the macOS winit window.
-    type Presentation: GpuSurface + crate::runner::window::GpuSurfaceFrame;
+    type Presentation: PresentationSurface + crate::runner::window::GpuSurfaceFrame;
     /// The GPU surface this window presents into.
     fn surface(&mut self) -> &mut Self::Presentation;
     /// Returns a thread-safe wake bridge for nested GPU surfaces.
@@ -1710,10 +1718,95 @@ impl core::fmt::Debug for OffscreenSurface {
 }
 
 impl OffscreenSurface {
-    /// The surface's current pixel size.
+    /// The surface's current pixel size `(width, height)`.
     #[must_use]
     pub const fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// The wgpu adapter this surface renders through.
+    #[must_use]
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        &self.gpu.inner.adapter
+    }
+
+    /// The wgpu device this surface renders through.
+    #[must_use]
+    pub fn device(&self) -> &wgpu::Device {
+        &self.gpu.inner.device
+    }
+
+    /// The submission queue this surface renders through.
+    #[must_use]
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.gpu.inner.queue
+    }
+
+    /// Reports this surface's device lost; taken when the device was opened.
+    #[must_use]
+    pub fn device_loss(&self) -> &DeviceLoss {
+        &self.gpu.inner.device_loss
+    }
+
+    /// The surface's texture format.
+    #[must_use]
+    pub const fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    /// The next frame to render into: the texture the last [`Self::present`]
+    /// returned, or a fresh one at the surface's current size.
+    pub fn acquire(&mut self) -> SurfaceFrame {
+        let texture = self.last_presented.take().unwrap_or_else(|| {
+            self.gpu
+                .inner
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("hydrolysis-offscreen-frame"),
+                    size: wgpu::Extent3d {
+                        width: self.width,
+                        height: self.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        SurfaceFrame::Offscreen { texture, view }
+    }
+
+    /// Presents an acquired frame: its texture is the one the next
+    /// [`Self::acquire`] hands out again.
+    ///
+    /// # Panics
+    /// Panics when `frame` was acquired from a window surface rather than
+    /// an offscreen one.
+    pub fn present(&mut self, frame: SurfaceFrame) {
+        match frame {
+            SurfaceFrame::Offscreen { texture, .. } => {
+                self.last_presented = Some(texture);
+            }
+            #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
+            SurfaceFrame::Window { .. } => {
+                panic!("hydrolysis offscreen surface received a window frame");
+            }
+            #[cfg(target_os = "android")]
+            SurfaceFrame::Android { .. } => {
+                panic!("hydrolysis offscreen surface received an android frame");
+            }
+            #[cfg(all(target_arch = "wasm32", feature = "web"))]
+            SurfaceFrame::Browser { .. } => {
+                panic!("hydrolysis offscreen surface received a browser frame");
+            }
+        }
     }
 
     #[cfg_attr(
@@ -1812,32 +1905,27 @@ pub fn ensure_compute_capable_adapter(
     );
 }
 
-impl GpuSurface for OffscreenSurface {
-    /// The wgpu adapter this surface renders through.
+impl PresentationSurface for OffscreenSurface {
     fn adapter(&self) -> &wgpu::Adapter {
-        &self.gpu.inner.adapter
+        Self::adapter(self)
     }
 
-    /// The wgpu device this surface renders through.
     fn device(&self) -> &wgpu::Device {
-        &self.gpu.inner.device
+        Self::device(self)
     }
 
-    /// The submission queue this surface renders through.
     fn queue(&self) -> &wgpu::Queue {
-        &self.gpu.inner.queue
+        Self::queue(self)
     }
 
     fn device_loss(&self) -> &DeviceLoss {
-        &self.gpu.inner.device_loss
+        Self::device_loss(self)
     }
 
-    /// The surface's current pixel size `(width, height)`.
     fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
+        Self::size(self)
     }
 
-    /// Reconfigures the surface for a new pixel size.
     fn resize(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
@@ -1851,56 +1939,15 @@ impl GpuSurface for OffscreenSurface {
 
 impl SurfaceProvider for OffscreenSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        let texture = self.last_presented.take().unwrap_or_else(|| {
-            self.gpu
-                .inner
-                .device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("hydrolysis-offscreen-frame"),
-                    size: wgpu::Extent3d {
-                        width: self.width,
-                        height: self.height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: self.format,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC
-                        | wgpu::TextureUsages::STORAGE_BINDING
-                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                })
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Ok(SurfaceFrame::Offscreen { texture, view })
+        Ok(Self::acquire(self))
     }
 
-    /// Presents an acquired frame to the surface.
     fn present(&mut self, frame: SurfaceFrame) {
-        match frame {
-            SurfaceFrame::Offscreen { texture, .. } => {
-                self.last_presented = Some(texture);
-            }
-            #[cfg(hydrolysis_winit)]
-            SurfaceFrame::Window { .. } => {
-                panic!("hydrolysis offscreen surface received a window frame");
-            }
-            #[cfg(target_os = "android")]
-            SurfaceFrame::Android { .. } => {
-                panic!("hydrolysis offscreen surface received an android frame");
-            }
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            SurfaceFrame::Browser { .. } => {
-                panic!("hydrolysis offscreen surface received a browser frame");
-            }
-        }
+        Self::present(self, frame);
     }
 
-    /// The surface's texture format.
     fn format(&self) -> wgpu::TextureFormat {
-        self.format
+        Self::format(self)
     }
 }
 
@@ -2009,7 +2056,7 @@ impl OffscreenSceneSurface {
     /// mounts and transactions route through it.
     #[must_use]
     pub fn surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
-        crate::engine::SurfaceCoreAccess::engine_surface(&self.cherenkov)
+        crate::engine::EngineSurface::core(&self.cherenkov).engine_surface()
     }
 
     /// Presents the last rendered engine frame into the offscreen target and
@@ -2020,15 +2067,11 @@ impl OffscreenSceneSurface {
     /// first texture panics through the surface's presentation contract.
     ///
     /// # Panics
-    /// Panics when the offscreen surface fails to hand back a frame or the
-    /// readback fails.
+    /// Panics when the readback fails.
     #[must_use]
     pub fn readback_rgba8(&mut self) -> Vec<u8> {
         let (width, height) = self.target.size();
-        let frame = self
-            .target
-            .acquire()
-            .expect("hydrolysis offscreen scene surface: acquire failed");
+        let frame = self.target.acquire();
         let texture = frame.texture().clone();
         self.cherenkov.present_into(
             self.target.device(),
@@ -2154,13 +2197,8 @@ impl OffscreenWindow {
         &self.surface
     }
 
-    /// The offscreen presentation attachment, directly on the concrete type.
-    ///
-    /// [`GpuSurfaceWindow::surface`] carries the same entry point on the
-    /// painter-boundary trait; this inherent form exists because downstream
-    /// test hosts (e.g. `waterui-testing`) call `surface()` on the concrete
-    /// window without importing the trait.
-    pub fn surface(&mut self) -> &mut dyn SurfaceProvider {
+    /// The offscreen presentation attachment the window renders into.
+    pub const fn surface(&mut self) -> &mut OffscreenSurface {
         &mut self.surface
     }
 
@@ -2356,20 +2394,21 @@ mod winit_impl {
         gpu: WinitGpuContext,
         #[cfg(not(target_os = "macos"))]
         config: wgpu::SurfaceConfiguration,
-        /// The window this surface presents into — `present` asks it for
-        /// the platform's next-frame pacing (`pre_present_notify`), which
-        /// on Wayland requests the frame callback a compositor withholds
-        /// from a hidden surface. `None` where no winit window owns the
-        /// surface.
-        #[cfg(not(target_os = "macos"))]
-        window: Option<Arc<NativeWindow>>,
-        /// The window the engine presents through (`WindowTarget::new`).
-        #[cfg(target_os = "macos")]
+        /// The window this surface presents into. A host-presented surface
+        /// asks it for the platform's next-frame pacing
+        /// (`pre_present_notify`), which on Wayland requests the frame
+        /// callback a compositor withholds from a hidden surface; on macOS
+        /// the engine's `WindowTarget` presents on it.
         window: Arc<NativeWindow>,
         /// The pixel size reported to the pump; the engine surface resizes
         /// to it through `cherenkov::Surface::resize`.
         #[cfg(target_os = "macos")]
         size: (u32, u32),
+        /// Whether the window composites with what lies behind it: the
+        /// engine target is created transparent or opaque to match, and is
+        /// recreated when the window's background switches.
+        #[cfg(target_os = "macos")]
+        transparent: bool,
         /// Set by the `NSWindowDidChangeScreenNotification` observer when
         /// the window crosses displays; the next render frame announces it
         /// through `cherenkov::Surface::display_moved` exactly once.
@@ -2404,6 +2443,9 @@ mod winit_impl {
     }
 
     impl WinitSurface {
+        /// The frame's render inputs and the engine target it presents
+        /// through. Taking the target consumes a pending display move, so
+        /// the engine hears of each move exactly once.
         #[cfg(target_os = "macos")]
         pub(crate) fn render_targets(
             &mut self,
@@ -2414,8 +2456,6 @@ mod winit_impl {
             super::EngineWindowTarget<'_>,
         ) {
             let context = self.gpu.device_loss.gpu_context();
-            let window = Arc::clone(&self.window);
-            let redraw_window = Arc::clone(&window);
             (
                 crate::renderer::FrameRenderTarget {
                     adapter: &self.gpu.adapter,
@@ -2430,10 +2470,10 @@ mod winit_impl {
                     base_color,
                 },
                 super::EngineWindowTarget {
-                    window,
+                    window: &self.window,
                     window_slot: &mut self.engine_window,
+                    transparent: self.transparent,
                     display_moved: self.display_moved.replace(false),
-                    redraw: Some(RedrawHandle::new(move || redraw_window.request_redraw())),
                 },
             )
         }
@@ -2553,7 +2593,7 @@ mod winit_impl {
             height: u32,
             requires_transparency: bool,
             on_x11: bool,
-            window: Option<Arc<NativeWindow>>,
+            window: Arc<NativeWindow>,
         ) -> Self {
             let caps = surface.get_capabilities(&gpu.adapter);
             let format = super::select_hydrolysis_surface_format(&caps);
@@ -2622,7 +2662,7 @@ mod winit_impl {
                     size.height,
                     requires_transparency,
                     Self::window_is_x11(&window),
-                    Some(window),
+                    window,
                 ),
                 gpu,
             )
@@ -2637,7 +2677,7 @@ mod winit_impl {
         pub async fn new(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
-            _requires_transparency: bool,
+            requires_transparency: bool,
         ) -> (Self, WinitGpuContext) {
             let gpu = if let Some(gpu) = shared_gpu {
                 gpu.clone()
@@ -2660,6 +2700,7 @@ mod winit_impl {
                     gpu: gpu.clone(),
                     window,
                     size: (size.width.max(1), size.height.max(1)),
+                    transparent: requires_transparency,
                     display_moved,
                     engine_window: None,
                     _screen_observer: screen_observer,
@@ -2684,10 +2725,18 @@ mod winit_impl {
                 self.surface.configure(&self.gpu.device, &self.config);
             }
         }
+
+        /// Records the window's new transparency; the next frame recreates
+        /// the engine target with it (the target's composite alpha is fixed
+        /// when it is created).
+        #[cfg(target_os = "macos")]
+        const fn set_transparent(&mut self, transparent: bool) {
+            self.transparent = transparent;
+        }
     }
 
     #[cfg(target_os = "macos")]
-    impl super::GpuSurface for WinitSurface {
+    impl super::PresentationSurface for WinitSurface {
         fn adapter(&self) -> &wgpu::Adapter {
             &self.gpu.adapter
         }
@@ -2714,7 +2763,7 @@ mod winit_impl {
     }
 
     #[cfg(not(target_os = "macos"))]
-    impl super::GpuSurface for WinitSurface {
+    impl super::PresentationSurface for WinitSurface {
         /// The wgpu adapter this surface renders through.
         fn adapter(&self) -> &wgpu::Adapter {
             &self.gpu.adapter
@@ -2767,9 +2816,7 @@ mod winit_impl {
                     // compositor withholds it from a hidden surface, so the
                     // pump parks there without any explicit signal. The
                     // call is a no-op on every other platform.
-                    if let Some(window) = &self.window {
-                        window.pre_present_notify();
-                    }
+                    self.window.pre_present_notify();
                     self.gpu.queue.present(output);
                     reclaim_device(&self.gpu.device);
                 }
@@ -4159,7 +4206,6 @@ mod winit_impl {
                 return;
             }
             self.window.set_transparent(transparent);
-            #[cfg(not(target_os = "macos"))]
             self.surface.set_transparent(transparent);
             self.transparent = transparent;
         }
@@ -4394,7 +4440,7 @@ mod winit_impl {
         type Presentation = WinitSurface;
         fn surface(&mut self) -> &mut WinitSurface {
             if let Some(size) = self.pending_surface_size.take() {
-                super::GpuSurface::resize(&mut self.surface, size.width, size.height);
+                super::PresentationSurface::resize(&mut self.surface, size.width, size.height);
             }
             &mut self.surface
         }
@@ -4799,8 +4845,8 @@ mod winit_impl {
         #[test]
         fn cursor_position_is_converted_to_logical_coordinates() {
             let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
-            assert_eq!(x.to_bits(), 192.25_f32.to_bits());
-            assert_eq!(y.to_bits(), 108.125_f32.to_bits());
+            assert_eq!(x, 192.25);
+            assert_eq!(y, 108.125);
         }
 
         #[test]
@@ -4809,8 +4855,8 @@ mod winit_impl {
                 &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
                 2.0,
             );
-            assert_eq!(dx.to_bits(), 60.0_f32.to_bits());
-            assert_eq!(dy.to_bits(), (-24.25_f32).to_bits());
+            assert_eq!(dx, 60.0);
+            assert_eq!(dy, -24.25);
             assert!(!is_line_delta);
         }
 
@@ -4818,8 +4864,8 @@ mod winit_impl {
         fn line_scroll_delta_is_preserved() {
             let (dx, dy, is_line_delta) =
                 map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
-            assert_eq!(dx.to_bits(), (-2.0_f32).to_bits());
-            assert_eq!(dy.to_bits(), 3.5_f32.to_bits());
+            assert_eq!(dx, -2.0);
+            assert_eq!(dy, 3.5);
             assert!(is_line_delta);
         }
 
