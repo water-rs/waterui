@@ -25,9 +25,47 @@ fn main() {
     // runner keeps every trial on the application's main thread.
     arguments.test_threads = Some(1);
     #[cfg(target_os = "ios")]
-    cocoa_ui::uikit::native_test::run(arguments, scroll_animation::trials);
+    cocoa_ui::uikit::native_test::run(arguments, trials);
     #[cfg(target_os = "macos")]
     libtest_mimic::run(&arguments, Vec::new()).exit();
+}
+
+/// Every `native_app` case: trials that need a running `UIApplication`.
+#[cfg(target_os = "ios")]
+fn trials() -> Vec<libtest_mimic::Trial> {
+    let mut trials = scroll_animation::trials();
+    trials.extend(main_menu::trials());
+    trials
+}
+
+/// The main menu — the iPad menu bar and the keyboard-shortcut list — is
+/// built by `UIKit`'s main menu system inside a running application. The
+/// harness application hands `ApplicationHandlers::build_menus` a handler
+/// that counts the builds it receives.
+#[cfg(target_os = "ios")]
+mod main_menu {
+    use cocoa_ui::uikit::native_test::main_menu_builds;
+    use libtest_mimic::Trial;
+
+    /// The `main_menu::` trials.
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "main_menu::the_main_menu_builds_through_the_build_menus_handler",
+            || {
+                the_main_menu_builds_through_the_build_menus_handler();
+                Ok(())
+            },
+        )]
+    }
+
+    /// `build_menus` is the main menu system's build handler: `UIKit` has
+    /// built the main menu through it by the time the application is up.
+    fn the_main_menu_builds_through_the_build_menus_handler() {
+        assert!(
+            main_menu_builds() > 0,
+            "`UIKit` built the main menu through the handler as the application launched"
+        );
+    }
 }
 
 /// `UIKit`-driven animation (#2000): `setContentOffset(_:animated: true)`

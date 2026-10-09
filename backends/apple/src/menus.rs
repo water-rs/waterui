@@ -4,7 +4,8 @@
 //! `installMenuBar`/`menuBarDidChange` ported: the standard App, Edit (the
 //! responder-chain items keyboard shortcuts route through) and Window menus,
 //! with the declared `menu_bar` content appended — macOS rebuilds the whole
-//! bar on every change, iOS rebuilds through `application:buildMenuWith:`.
+//! bar on every change, iOS rebuilds through the main menu system's build
+//! handler.
 //!
 //! The standard Window menu carries Close unless a declared menu places
 //! `MenuItem::CloseWindow` itself — [`CloseWindowPlacement`] decides which,
@@ -556,8 +557,8 @@ mod imp {
     }
 }
 
-/// iOS: the declared content fills the builder `application:buildMenuWith:`
-/// hands the delegate; a watch on the resolved items requests each rebuild.
+/// iOS: the declared content fills the builder the main menu system hands
+/// its build handler; a watch on the resolved items requests each rebuild.
 #[cfg(target_os = "ios")]
 mod imp {
     use alloc::boxed::Box;
