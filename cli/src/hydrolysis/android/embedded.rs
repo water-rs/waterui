@@ -171,9 +171,7 @@ pub async fn render_library(
 
     let mut gradle_tasks: Vec<String> = modules
         .iter()
-        .map(|module| {
-            format!(":{HOST_BUILD_NAME}:{module}:publishReleasePublicationToMavenLocal")
-        })
+        .map(|module| format!(":{HOST_BUILD_NAME}:{module}:publishReleasePublicationToMavenLocal"))
         .collect();
     gradle_tasks.extend([
         ":waterui:assembleRelease".to_owned(),
@@ -393,7 +391,11 @@ async fn host_version(host_project_dir: &Path, modules: &[&str]) -> Result<Strin
     use sha2::{Digest, Sha256};
 
     let mut files = Vec::new();
-    for root_file in ["settings.gradle.kts", "build.gradle.kts", "gradle.properties"] {
+    for root_file in [
+        "settings.gradle.kts",
+        "build.gradle.kts",
+        "gradle.properties",
+    ] {
         push_if_file(host_project_dir.join(root_file), &mut files).await?;
     }
     collect_tree(&host_project_dir.join("gradle"), &mut files).await?;
@@ -404,7 +406,9 @@ async fn host_version(host_project_dir: &Path, modules: &[&str]) -> Result<Strin
             .map_err(|error| eyre::eyre!("cannot list {}: {error}", module_dir.display()))?;
         while let Some(entry) = entries.try_next().await? {
             let path = entry.path();
-            let is_gradle_input = path.file_name().is_some_and(|name| name == "build.gradle.kts")
+            let is_gradle_input = path
+                .file_name()
+                .is_some_and(|name| name == "build.gradle.kts")
                 || path.extension().is_some_and(|extension| extension == "pro");
             if is_gradle_input && entry.file_type().await?.is_file() {
                 files.push(path);

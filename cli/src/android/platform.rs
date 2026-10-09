@@ -817,19 +817,6 @@ async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBu
     .await
 }
 
-/// The features an Android runtime's generated FFI crate is compiled with,
-/// each forwarded to `waterui-ffi` by the generated manifest.
-///
-/// See [`crate::apple::platform::apple_dependency_features`] for why anything
-/// loaded into that runtime must be compiled with the same set.
-///
-/// # Errors
-///
-/// Returns an error when the project's enabled capabilities cannot be resolved.
-/// `targets` is the serving set of the feature list — the ABI triples the
-/// Gradle package the caller renders embeds. The answers are read from each
-/// triple's own graph and must agree, because the Gradle classpath and the
-/// ABI `cargo build`s they forward to cannot express a per-ABI difference.
 /// Warn about every permission the FFI companion's dependency graph needs
 /// that the project has not enabled.
 ///
@@ -849,6 +836,19 @@ pub(crate) async fn audit_android_permissions(project: &Project) -> eyre::Result
     Ok(())
 }
 
+/// The features an Android runtime's generated FFI crate is compiled with,
+/// each forwarded to `waterui-ffi` by the generated manifest.
+///
+/// See [`crate::apple::platform::apple_dependency_features`] for why anything
+/// loaded into that runtime must be compiled with the same set.
+///
+/// # Errors
+///
+/// Returns an error when the project's enabled capabilities cannot be resolved.
+/// `targets` is the serving set of the feature list — the ABI triples the
+/// Gradle package the caller renders embeds. The answers are read from each
+/// triple's own graph and must agree, because the Gradle classpath and the
+/// ABI `cargo build`s they forward to cannot express a per-ABI difference.
 pub(crate) async fn android_ffi_dependency_features(
     project: &Project,
     targets: &[Triple],

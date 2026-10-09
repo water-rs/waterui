@@ -271,7 +271,7 @@ mod tests {
             &root,
             crate::project::ManagedBackends::NONE,
         ))
-            .expect("project reopens");
+        .expect("project reopens");
 
         let error = smol::block_on(AndroidBackend::init(&project))
             .expect_err("an embedded manifest has no Kotlin scaffold");
