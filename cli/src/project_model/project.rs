@@ -4736,6 +4736,7 @@ mod target_graph_tests {
                     name: "Inter".into(),
                     local_path: None,
                     remote_path: Some("https://example.com/inter.ttf".into()),
+                    platforms: None,
                 }],
             });
             manifest.save(&root).await.unwrap();
@@ -4780,6 +4781,7 @@ mod target_graph_tests {
                             name: "Inter".into(),
                             local_path: None,
                             remote_path: Some(url.into()),
+                            platforms: None,
                         }],
                     });
                     manifest.save(&root).await.unwrap();
