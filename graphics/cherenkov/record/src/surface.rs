@@ -217,6 +217,11 @@ pub struct Shared<T: Target> {
     bindings: Bindings,
     /// The generation counter a kept binding draws from.
     next_generation: u64,
+    /// The generation of the last bind whose watcher was dropped: each
+    /// watcher carries a [`WatcherMark`] that writes its generation here
+    /// when the watcher drops, so a bind learns whether its own signal
+    /// kept the watcher it was handed.
+    dropped_watcher: Rc<Cell<u64>>,
     /// A transaction is open: [`run_transaction`](Self::run_transaction)
     /// sets it on entry, the outermost commit clears it on the normal
     /// path, and the [`Open`] guard restores it on unwind.
@@ -278,6 +283,7 @@ impl<T: Target> Shared<T> {
             next_backdrop: Cell::new(1),
             bindings: Bindings::default(),
             next_generation: 1,
+            dropped_watcher: Rc::new(Cell::new(0)),
             transaction_open: false,
             deferred: Vec::new(),
             queue,
@@ -737,29 +743,34 @@ impl<T: Target> Shared<T> {
         // The watcher carries the generation the binding will be kept
         // under, taken before the watch starts: it fires only while the
         // property's current binding is still the one that registered it.
-        let generation = shared.borrow_mut().draw_generation();
-        let watchers = Rc::weak_count(shared);
-        let (target, guard) = live.watch(Self::watcher(shared, layer, kind, generation, op));
-        let watching = Self::kept_watcher(shared, watchers);
+        let mark = shared.borrow_mut().draw_watcher();
+        let generation = mark.generation();
+        let (target, guard) = live.watch(Self::watcher(shared, layer, kind, mark, op));
+        let watching = Self::kept_watcher(shared, generation);
         Self::keep(shared, layer, kind, generation, watching, guard);
         target
     }
 
-    /// Draws the generation a new binding is kept under.
-    const fn draw_generation(&mut self) -> u64 {
+    /// Draws the generation a new binding is kept under, as the
+    /// [`WatcherMark`] its watcher carries.
+    fn draw_watcher(&mut self) -> WatcherMark {
         self.next_generation += 1;
-        self.next_generation
+        WatcherMark {
+            dropped: Rc::clone(&self.dropped_watcher),
+            generation: self.next_generation,
+        }
     }
 
-    /// Whether the signal kept the watcher a bind just handed it. The
-    /// watcher holds the one `Weak` of `shared` the bind made, so the
-    /// signal kept it exactly when the weak count stays above `before`,
-    /// the count read before the watcher was made. A signal that drops
-    /// its watcher — a constant, `Fixed` or a nami constant alike — can
-    /// never fire: its binding keeps no entry. This asks what the signal
-    /// did with the watcher, not what its guard's type says.
-    fn kept_watcher(shared: &Rc<RefCell<Self>>, before: usize) -> bool {
-        Rc::weak_count(shared) != before
+    /// Whether the signal kept the watcher the bind of `generation` just
+    /// handed it: its [`WatcherMark`] wrote `generation` into
+    /// `dropped_watcher` exactly when the signal dropped it. A signal that
+    /// drops its watcher — a constant, `Fixed` or a nami constant alike —
+    /// can never fire: its binding keeps no entry. This asks what the
+    /// signal did with this one watcher — not what its guard's type
+    /// says, and not a surface-wide count other watchers and handles the
+    /// watch may create or drop also move.
+    fn kept_watcher(shared: &Rc<RefCell<Self>>, generation: u64) -> bool {
+        shared.borrow().dropped_watcher.get() != generation
     }
 
     /// The watcher a binding of `layer` subscribes to its source: each
@@ -775,7 +786,7 @@ impl<T: Target> Shared<T> {
         shared: &Rc<RefCell<Self>>,
         layer: LayerId,
         kind: PropKind,
-        generation: u64,
+        mark: WatcherMark,
         op: F,
     ) -> impl Fn(Context<V>) + 'static
     where
@@ -792,6 +803,10 @@ impl<T: Target> Shared<T> {
                 // the op is built before the surface is borrowed.
                 let op = Op::Layer(op(layer, target, animation, start.map(|s| s.0)));
                 let mut shared = shared.borrow_mut();
+                // `mark.generation()` captures the whole mark: the watcher
+                // owns it, so it drops — and records the drop — with the
+                // watcher.
+                let generation = mark.generation();
                 if shared
                     .bindings
                     .get(layer.raw(), kind)
@@ -893,6 +908,29 @@ struct DeferredOp<T: Target> {
     key: (u64, PropKind),
     /// The generation the binding fired under.
     generation: u64,
+}
+
+/// The generation a bind drew, owned by the watcher it hands its
+/// signal: dropping it — with the watcher — writes the generation into
+/// the surface's `dropped_watcher`, so the bind can tell whether the
+/// signal kept the watcher.
+struct WatcherMark {
+    dropped: Rc<Cell<u64>>,
+    generation: u64,
+}
+
+impl WatcherMark {
+    /// The bind's generation. Reading it through a method makes a
+    /// closure capture the whole mark rather than the copied field.
+    const fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+impl Drop for WatcherMark {
+    fn drop(&mut self) {
+        self.dropped.set(self.generation);
+    }
 }
 
 /// A subscription kept in [`Shared::bindings`]: the guard — `None`
@@ -1652,12 +1690,12 @@ impl<T: Target> LayerEdit<T> {
         let live = size.into();
         // The same rule `Shared::bind` applies: the binding keeps an
         // entry only when its signal kept the watcher.
-        let (generation, target) = {
+        let (mark, target) = {
             let mut shared = self.shared.borrow_mut();
-            (shared.draw_generation(), shared.layout_size(self.layer))
+            (shared.draw_watcher(), shared.layout_size(self.layer))
         };
+        let generation = mark.generation();
         let bound = target.clone();
-        let watchers = Rc::weak_count(&self.shared);
         let weak = Rc::downgrade(&self.shared);
         let layer = self.layer;
         let (value, guard) = live.watch(move |change| {
@@ -1671,12 +1709,12 @@ impl<T: Target> LayerEdit<T> {
                 .borrow()
                 .bindings
                 .get(layer.raw(), PropKind::LayoutSize)
-                .is_some_and(|kept| kept.generation == generation);
+                .is_some_and(|kept| kept.generation == mark.generation());
             if current {
                 bound.set(&change);
             }
         });
-        let watching = Shared::kept_watcher(&self.shared, watchers);
+        let watching = Shared::kept_watcher(&self.shared, generation);
         target.set(&LayoutSize::change(value, self.default_animation));
         Shared::keep(
             &self.shared,
@@ -3535,6 +3573,58 @@ mod tests {
                 [LayerOp::Create(_), LayerOp::Remove(_)]
             ),
             "only the child's create and remove land: {ops:?}"
+        );
+    }
+
+    /// A signal holding a `Weak` of its surface that `watch` does not
+    /// keep — it reads the surface in `snapshot` and forwards `watch` to
+    /// an inner binding. Starting the owned subscription drops the
+    /// `Live`'s copy of the signal, and its `Weak` with it, while the
+    /// inner binding keeps the watcher: the binding must stay kept and
+    /// its changes must land (water-rs/waterui#1788).
+    #[test]
+    fn a_signal_holding_its_surface_keeps_its_binding() {
+        #[derive(Clone)]
+        struct ReadsSurface {
+            surface: Weak<RefCell<Shared<TestTarget>>>,
+            inner: nami::Binding<f32>,
+        }
+
+        impl Signal for ReadsSurface {
+            type Output = f32;
+            type Guard = <nami::Binding<f32> as Signal>::Guard;
+
+            fn snapshot(&self) -> f32 {
+                assert!(self.surface.upgrade().is_some(), "the surface is alive");
+                self.inner.snapshot()
+            }
+
+            fn watch(&self, watcher: impl Fn(Context<f32>) + 'static) -> Self::Guard {
+                self.inner.watch(watcher)
+            }
+        }
+
+        let shared = shared();
+        let mut tree = crate::SurfaceTree::new();
+        let layer = layer(&shared);
+        let id = layer.id();
+        let source = binding(1.0_f32);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].opacity(ReadsSurface {
+                surface: Rc::downgrade(&shared),
+                inner: source.clone(),
+            });
+        });
+        drain_layer_ops(&shared, &mut tree);
+        source.set(0.25);
+        let ops = drain_layer_ops(&shared, &mut tree);
+        assert!(
+            matches!(
+                ops.as_slice(),
+                [LayerOp::Opacity(op, Prop { target, .. })]
+                    if *op == id && target.to_bits() == 0.25_f32.to_bits()
+            ),
+            "the inner binding kept the watcher, so the change lands: {ops:?}"
         );
     }
 }
