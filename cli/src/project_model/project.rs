@@ -115,6 +115,9 @@ struct CargoLayout {
     /// `cargo tree` evaluation passes so the application crate, not the
     /// workspace root, roots the printed graph.
     root_package_id: String,
+    /// The application package's resolved `[package] version`, workspace
+    /// inheritance already applied by Cargo.
+    root_package_version: String,
 }
 
 enum CargoResolution {
@@ -748,6 +751,16 @@ impl Project {
     /// Returns an error when Cargo metadata cannot resolve the workspace.
     pub async fn lockfile_path(&self) -> eyre::Result<PathBuf> {
         Ok(self.cargo_layout().await?.workspace_root.join("Cargo.lock"))
+    }
+
+    /// The application crate's `[package] version` as Cargo resolves it —
+    /// a workspace-inherited `version.workspace = true` included.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the package.
+    pub(crate) async fn crate_version(&self) -> eyre::Result<String> {
+        Ok(self.cargo_layout().await?.root_package_version)
     }
 
     async fn cargo_layout(&self) -> eyre::Result<CargoLayout> {
@@ -2913,14 +2926,15 @@ async fn resolve_cargo_layout(
     // metadata` reports the plain one — comparing the two would never
     // match the application package (part of #152).
     let application_manifest = dunce::canonicalize(current_dir.join("Cargo.toml"))?;
-    let root_package_id = package_at_manifest(&metadata, &application_manifest)?
-        .id
-        .to_string();
+    let root_package = package_at_manifest(&metadata, &application_manifest)?;
+    let root_package_id = root_package.id.to_string();
+    let root_package_version = root_package.version.to_string();
 
     Ok(CargoLayout {
         target_dir: metadata.target_directory.into_std_path_buf(),
         workspace_root: metadata.workspace_root.into_std_path_buf(),
         root_package_id,
+        root_package_version,
     })
 }
 

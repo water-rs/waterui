@@ -379,8 +379,7 @@ impl RenderNode {
                         let scope = renderer
                             .material_group_scopes
                             .last()
-                            .map(Rc::as_ptr)
-                            .map(|cell| cell as usize);
+                            .map(|cell| mount::backdrop::scope_id(cell));
                         // Scope membership must never depend on where a flush
                         // starts: a member with a `.material_group()` cell on
                         // its ancestry that reads an empty stack is a partial
