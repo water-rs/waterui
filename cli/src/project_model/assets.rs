@@ -319,6 +319,19 @@ fn manifest_font_declarations(
     Ok(declarations)
 }
 
+/// Validate the project's own declarations without resolving a Cargo graph.
+pub async fn validate_manifest_fonts(
+    host: &crate::toolchain::Host,
+    manifest: &crate::project::Manifest,
+    root: &Path,
+) -> eyre::Result<()> {
+    let declarations = manifest_font_declarations(manifest, root)?;
+    if !declarations.is_empty() {
+        resolve_fonts(host, declarations).await?;
+    }
+    Ok(())
+}
+
 /// Scans the project manifest and the built crate's dependencies for font
 /// declarations.
 ///
