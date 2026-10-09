@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use cherenkov::kurbo::{Affine, BezPath, PathEl, Point, Rect};
+use cherenkov::kurbo::{Affine, BezPath, PathEl, Point, Rect, RoundedRectRadii};
 use cherenkov::{BlendMode, FillRule, FrameId, GlyphRun, GlyphStyle, ShapeData};
 
 use cherenkov::{LayerId, RenderError, SurfaceId, SurfaceTree};
@@ -170,15 +170,48 @@ pub enum Item {
     },
 }
 
+/// A member clip's analytic box form — the centred rounded box the
+/// GPU's `Shape` instance data and the oracle's `BoxShape` mirror,
+/// plus the device → box-local affine (the GPU's `clip_inv`) that maps
+/// a sample point into it.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxClip {
+    /// Device → box-local affine in kurbo coefficient order
+    /// `(a, b, c, d, e, f)`: `x′ = a·x + c·y + e`,
+    /// `y′ = b·x + d·y + f`.
+    pub inv: [f32; 6],
+    /// Half extents of the centred box.
+    pub half: [f32; 2],
+    /// Corner radius aspect: the y radius over the x radius.
+    pub aspect: f32,
+    /// The corner curve's Lamé exponent; `2.0` for circular corners.
+    pub exponent: f32,
+    /// Corner radii along x: top-left, top-right, bottom-right,
+    /// bottom-left.
+    pub radii: [f32; 4],
+}
+
+/// A member clip in the form an SDF read evaluates: its analytic box
+/// where the clip has one, its flattened boundary edges where it does
+/// not.
+#[derive(Clone, Debug)]
+pub enum MemberClip {
+    /// The clip's analytic box — every non-degenerate primitive shape.
+    Box(BoxClip),
+    /// The clip flattened to device-space boundary edges: a clip with
+    /// no analytic box keeps the polygon distance.
+    Edges(Arc<[Edge]>),
+}
+
 /// The union-field data a member's sample composites against: every
-/// member's clip boundary edges in paint order, the smoothing distance,
+/// member's clip box in paint order, the smoothing distance,
 /// this member's index and its `outer` extent.
 #[derive(Clone, Debug)]
 pub struct UnionSample {
-    /// Each member's clip boundary edges in device space, in paint
+    /// Each member's clip box in device space, in paint
     /// order. A lone `outer`-band member of a non-union group is its
     /// own one-member list with `k == 0`.
-    pub members: Arc<[Arc<[Edge]>]>,
+    pub members: Arc<[BoxClip]>,
     /// The group's smoothing distance `k`; `0` folds to the member's
     /// own distance.
     pub k: f32,
@@ -242,16 +275,16 @@ pub enum SampleEffect {
     /// layout): `dot(row, c)` per channel, alpha passes through.
     Color([f32; 12]),
     /// An effect reading the member clip's signed distance, carried as
-    /// the clip flattened to device-space edges.
+    /// the clip's analytic box (or flattened edges where none exists).
     Sdf(SdfEffect),
 }
 
 /// An SDF-reading member effect and the clip boundary it reads.
 #[derive(Clone, Debug)]
 pub struct SdfEffect {
-    /// The member clip flattened to device-space edges (implicit-close
-    /// applied; only non-`Path` shapes reach this).
-    pub edges: Arc<[Edge]>,
+    /// The member clip the distance and normal are read from (only
+    /// non-`Path` shapes reach this).
+    pub clip: MemberClip,
     /// Which effect the distance and normal feed.
     pub kind: SdfKind,
 }
@@ -384,8 +417,8 @@ struct BackdropPlan {
     /// The group's union smoothing distance; `0` when the group has no
     /// union field.
     union_k: f32,
-    /// Every member's clip edges in `order`, when the group unions.
-    union_members: Arc<[Arc<[Edge]>]>,
+    /// Every member's clip box in `order`, when the group unions.
+    union_members: Arc<[BoxClip]>,
     /// The innermost filter scope the capture item lands in.
     scope: Option<LayerId>,
 }
@@ -514,9 +547,9 @@ struct Member {
     /// The member's effect sampling reach — it inflates the capture
     /// footprint, never the draw bounds.
     reach: f64,
-    /// The member's own clip flattened to device-space edges, when the
-    /// group unions its members or the member draws an `outer` band.
-    edges: Option<Arc<[Edge]>>,
+    /// The member's own clip's analytic box, when the group unions its
+    /// members or the member draws an `outer` band.
+    field: Option<BoxClip>,
     /// The member's `outer` extent.
     outer: f32,
     /// The member's index in the group's paint order.
@@ -650,9 +683,16 @@ fn member_effect(
             return Err(RenderError::Unsupported(names::BACKDROP_SHADER));
         }
     };
-    let edges = clip_edges(clip, transform)?;
+    // A clip with an analytic box gives the distance and normal the
+    // effect reads directly — the same `device_sdf` the GPU and the
+    // oracle evaluate. A clip without one keeps the flattened
+    // boundary, which itself rejects lines and paths.
+    let clip = match box_clip(clip, transform) {
+        Ok(Some(b)) => MemberClip::Box(b),
+        _ => MemberClip::Edges(clip_edges(clip, transform)?),
+    };
     Ok((
-        SampleEffect::Sdf(SdfEffect { edges, kind }),
+        SampleEffect::Sdf(SdfEffect { clip, kind }),
         f64::from(effect.reach()),
     ))
 }
@@ -688,6 +728,111 @@ fn clip_edges(clip: &ShapeData, transform: Affine) -> Result<Arc<[Edge]>, Render
     }
     .ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
     Ok(boundary_edges(transform * path, FLATTEN_TOL).into())
+}
+
+/// Corner radii clamped to the box's smaller half extent — the same
+/// clamp the GPU's `clamped_radii` applies.
+const fn clamped_radii(radii: RoundedRectRadii, half: [f64; 2]) -> [f64; 4] {
+    let limit = half[0].min(half[1]);
+    [
+        radii.top_left.clamp(0.0, limit),
+        radii.top_right.clamp(0.0, limit),
+        radii.bottom_right.clamp(0.0, limit),
+        radii.bottom_left.clamp(0.0, limit),
+    ]
+}
+
+/// The clip as an analytic box: the `ShapeData` mapped to the centred
+/// rounded box every engine evaluates — the same mapping the GPU's
+/// `box_shape` and the oracle's `box_params` apply — with `inv` the
+/// device → box-local affine (the GPU's `clip_inv`). A line and a
+/// degenerate shape (a zero-radius circle or ellipse) have no box; a
+/// path has no analytic boundary and is `backdrop-effect-sdf-path`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the engines evaluate SDF fields in f32"
+)]
+fn box_clip(clip: &ShapeData, transform: Affine) -> Result<Option<BoxClip>, RenderError> {
+    let (extra, half, aspect, exponent, radii) = match clip {
+        ShapeData::Rect(r) => {
+            let half = [r.width() / 2.0, r.height() / 2.0];
+            (
+                Affine::translate(r.center().to_vec2()),
+                half,
+                1.0,
+                2.0,
+                [0.0; 4],
+            )
+        }
+        ShapeData::RoundedRect(rr) => {
+            let r = rr.rect();
+            let half = [r.width() / 2.0, r.height() / 2.0];
+            (
+                Affine::translate(r.center().to_vec2()),
+                half,
+                1.0,
+                2.0,
+                clamped_radii(rr.radii(), half),
+            )
+        }
+        ShapeData::Continuous(c) => {
+            let r = c.rect;
+            let half = [r.width() / 2.0, r.height() / 2.0];
+            (
+                Affine::translate(r.center().to_vec2()),
+                half,
+                1.0,
+                c.smoothing.clamp(0.0, 1.0).mul_add(2.0, 2.0),
+                clamped_radii(c.radii, half),
+            )
+        }
+        ShapeData::Circle(c) => {
+            let r = c.radius;
+            if r <= 0.0 {
+                return Ok(None);
+            }
+            (
+                Affine::translate(c.center.to_vec2()),
+                [r, r],
+                1.0,
+                2.0,
+                [r; 4],
+            )
+        }
+        ShapeData::Ellipse(e) => {
+            let radii_v = e.radii();
+            let (a, b) = (radii_v.x, radii_v.y);
+            if a <= 0.0 || b <= 0.0 {
+                return Ok(None);
+            }
+            (
+                Affine::translate(e.center().to_vec2()) * Affine::rotate(e.rotation()),
+                [a, b],
+                b / a,
+                2.0,
+                [a; 4],
+            )
+        }
+        ShapeData::Line(_) => return Ok(None),
+        ShapeData::Path { .. } => {
+            return Err(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH));
+        }
+    };
+    let inv = (transform * extra).inverse().as_coeffs();
+    Ok(Some(BoxClip {
+        inv: [
+            inv[0] as f32,
+            inv[1] as f32,
+            inv[2] as f32,
+            inv[3] as f32,
+            inv[4] as f32,
+            inv[5] as f32,
+        ],
+        half: [half[0] as f32, half[1] as f32],
+        aspect: aspect as f32,
+        exponent: exponent as f32,
+        radii: radii.map(|v| v as f32),
+    }))
 }
 
 /// The path's flattened boundary edges, implicit-close applied.
@@ -1016,7 +1161,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             let spec = prepared.spec;
             let union_group = spec.union_field().is_some();
             let field_member = union_group || outer > 0.0;
-            // A union member's clip must flatten to analytic edges — it
+            // A union member's clip must have an analytic box — it
             // feeds the fold — and so must a member drawing an `outer`
             // band: its own field covers the band. A degenerate clip has
             // no SDF to fold; the check precedes effect planning.
@@ -1026,12 +1171,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 ));
             }
             let (effect, reach) = member_effect(sample.effect(), clip, transform)?;
-            // An SDF effect already flattened the same clip; reuse its
-            // edges rather than flattening twice.
-            let edges = field_member
-                .then(|| match &effect {
-                    SampleEffect::Sdf(sdf) => Ok(sdf.edges.clone()),
-                    _ => clip_edges(clip, transform),
+            // The field reads the clip's analytic box — a path clip's
+            // `backdrop-effect-sdf-path` error is the same as the
+            // effect's, a degenerate clip's is `degenerate_clip`'s.
+            let field = field_member
+                .then(|| {
+                    box_clip(clip, transform)?.ok_or(RenderError::Unsupported(
+                        names::BACKDROP_UNION_DEGENERATE_MEMBER,
+                    ))
                 })
                 .transpose()?;
             let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
@@ -1067,7 +1214,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     bounds: member,
                     draw: member,
                     reach,
-                    edges,
+                    field,
                     outer,
                     ord,
                     scope: scopes.last().copied(),
@@ -1249,12 +1396,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     .inflate(member.reach + pad, member.reach + pad),
             );
             if union_spec.is_some() {
-                members.push(
-                    member
-                        .edges
-                        .clone()
-                        .expect("union members carry clip edges"),
-                );
+                members.push(member.field.expect("union members carry clip boxes"));
             }
         }
         plan.union = union;
@@ -1326,10 +1468,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             (
                 ancestors.cloned(),
                 Some(UnionSample {
-                    members: Arc::from([entry
-                        .edges
-                        .clone()
-                        .expect("outer members carry clip edges")]),
+                    members: Arc::from([entry.field.expect("outer members carry clip boxes")]),
                     k: 0.0,
                     ord: 0,
                     outer: entry.outer,
