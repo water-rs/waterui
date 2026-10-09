@@ -217,7 +217,6 @@ toml = "1.1.5"
 workspace = true
 
 [dev-dependencies]
-fontcull-skrifa = "0.39.2"
 syn = { version = "2", features = ["full"] }
 
 [package.metadata.cargo-machete]

@@ -3748,35 +3748,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fontcull-font-types"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7187211f698d3144c4278d99cede5f6d67814cd676bbf1d2b8607049b3d76b2"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
-name = "fontcull-read-fonts"
-version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "170928e2d36f9605167b8480acd6e9fc5ef5daaf64fac43d178af9c563adba29"
-dependencies = [
- "bytemuck",
- "fontcull-font-types",
-]
-
-[[package]]
-name = "fontcull-skrifa"
-version = "0.39.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c39120d1806ed11baf0559537bd601c6c60d7bf84ddcc385adea8fb8ff62d35"
-dependencies = [
- "bytemuck",
- "fontcull-read-fonts",
-]
-
-[[package]]
 name = "fontdb"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12897,7 +12868,6 @@ dependencies = [
  "eyre",
  "filetime",
  "flate2",
- "fontcull-skrifa",
  "fs4",
  "fs_extra",
  "futures-lite",
