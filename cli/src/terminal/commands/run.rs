@@ -482,7 +482,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         ManagedBackends::NONE,
@@ -521,7 +521,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         args.backend.map(TargetBackend::lib_backend),
     )?);
     let managed_backends = managed_backends(platform, backend);
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         managed_backends,

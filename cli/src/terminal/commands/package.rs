@@ -272,7 +272,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         } else {
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
-    let project = Project::open(
+    let project = Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         managed_backends,
