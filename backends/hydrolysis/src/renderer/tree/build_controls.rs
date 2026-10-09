@@ -164,26 +164,18 @@ impl RenderNode {
     /// to build on); the cloneable config drives the control + accessibility, and its
     /// `toggle` binding is read through `resolve_toggle_progress` which watches it.
     ///
-    /// The node's stretch follows the resolved label: a visible label claims
-    /// the full row (`label … switch`), while a hidden label draws nothing
-    /// and takes no space, so the toggle is content-sized — just the switch.
-    /// A stretched hidden-label toggle would report a frame the label's dead
-    /// zone inflates past the control, and taps inside it would hit nothing
-    /// (water-rs/waterui#2241).
+    /// The node's stretch is the resolved payload's own axis: a switch with a
+    /// visible label claims the full row (`label … switch`), while a checkbox
+    /// or a hidden label is content-sized. A stretched hidden-label toggle
+    /// would report a frame the label's dead zone inflates past the control,
+    /// and taps inside it would hit nothing (water-rs/waterui#2241).
     pub(super) fn build_toggle(
         config: ToggleConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
     ) -> Self {
         use crate::widgets::controls::toggle::ToggleRenderState;
-        let stretch = if matches!(
-            config.label.effective_display_mode(env),
-            waterui_controls::label::LabelDisplayMode::Hidden
-        ) {
-            StretchAxis::None
-        } else {
-            waterui_core::NativeView::stretch_axis(&config)
-        };
+        let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ToggleRenderState::from_config(config);
         // The prebuild materializes subviews and reads bindings: run it
         // under this widget's cell as the record reader so its reads
