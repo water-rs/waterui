@@ -1,18 +1,14 @@
 //! Utility functions for the CLI.
 
-use std::ffi::OsStr;
 use std::{
     io,
-    path::{Path, PathBuf},
+    path::Path,
     process::{ExitStatus, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
 };
 
 use semver::Version;
 use smol::{process::Command, unblock};
 use thiserror::Error;
-
-use crate::toolchain::Host;
 
 /// An external command could not be executed or exited unsuccessfully.
 #[derive(Debug, Error)]
@@ -36,31 +32,6 @@ pub enum CommandError {
         /// Formatted diagnostic tail of the captured output streams.
         report: String,
     },
-}
-
-/// Locate an executable in the real host's PATH.
-///
-/// Return the path to the executable if found.
-///
-/// # Errors
-/// - If the executable is not found in the PATH.
-pub(crate) async fn which(name: &'static str) -> Result<PathBuf, which::Error> {
-    Host::current().which(name).await
-}
-
-/// Enable or disable standard output for command executions.
-///
-/// By default, standard output is disabled.
-static STD_OUTPUT: AtomicBool = AtomicBool::new(false);
-
-/// Enable or disable standard output for command executions.
-pub fn set_std_output(enabled: bool) {
-    STD_OUTPUT.store(enabled, std::sync::atomic::Ordering::SeqCst);
-}
-
-/// Whether captured command output is also echoed to the terminal.
-pub(crate) fn std_output_enabled() -> bool {
-    STD_OUTPUT.load(Ordering::SeqCst)
 }
 
 /// Returns a platform-appropriate installation hint for sccache.
@@ -93,50 +64,19 @@ pub const fn sccache_upgrade_hint() -> &'static str {
 }
 
 // Warn: You will lose stdout/stderr piping if you modify this function!
-pub(crate) fn command(command: &mut Command) -> &mut Command {
+pub(crate) fn command(command: &mut Command, std_output: bool) -> &mut Command {
     command
         .kill_on_drop(true)
-        .stdout(if std_output_enabled() {
+        .stdout(if std_output {
             Stdio::inherit()
         } else {
             Stdio::piped()
         })
-        .stderr(if std_output_enabled() {
+        .stderr(if std_output {
             Stdio::inherit()
         } else {
             Stdio::piped()
         })
-}
-
-/// Run a command with the specified name and arguments.
-///
-/// Always captures output. When `STD_OUTPUT` is enabled, also prints to terminal.
-///
-/// Return the standard output as a `String` if successful.
-/// # Errors
-/// - [`CommandError::Spawn`] if the command cannot be spawned.
-/// - [`CommandError::Failed`] if the command exits with a non-zero status.
-pub(crate) async fn run_command(
-    name: &str,
-    args: impl IntoIterator<Item = &str>,
-) -> Result<String, CommandError> {
-    run_command_os(name, args).await
-}
-
-/// Run a command with the specified name and arguments.
-///
-/// Like `run_command`, but supports non-UTF8 executable paths and arguments.
-///
-/// # Errors
-/// - [`CommandError::Spawn`] if the command cannot be spawned.
-/// - [`CommandError::Failed`] if the command exits with a non-zero status.
-pub(crate) async fn run_command_os<N, A, S>(name: N, args: A) -> Result<String, CommandError>
-where
-    N: AsRef<OsStr>,
-    A: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Host::current().run(name, args).await
 }
 
 /// Number of trailing lines reported from each captured stream when a command fails.

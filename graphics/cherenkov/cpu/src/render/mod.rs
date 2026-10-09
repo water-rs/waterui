@@ -63,6 +63,7 @@ struct SurfaceState {
     filters: Vec<u64>,
     /// Backdrop groups referenced by the last frame, by group id.
     groups: Vec<u64>,
+    anchor_scratch: lower::AnchorScratch,
     /// The largest live pixel-buffer bytes in any band that ran a
     /// backdrop capture last frame (window, isolation stack and capture
     /// buffers). 0 when no capture ran.
@@ -186,6 +187,7 @@ fn cpu_model() -> Option<String> {
 impl Renderer for RasterRenderer {
     type Target = RasterTarget;
     type Font = font::PreparedFont;
+    type FrameCommit = ();
 
     fn create_surface(
         &mut self,
@@ -240,6 +242,7 @@ impl Renderer for RasterRenderer {
                 layers: FxHashMap::default(),
                 filters: Vec::new(),
                 groups: Vec::new(),
+                anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
@@ -470,8 +473,8 @@ impl Renderer for RasterRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<FrameRedraw, RenderError> {
-        self.render_frame(frame, stats)
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
+        self.render_frame(frame, stats).map(|redraw| (redraw, ()))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -479,8 +482,9 @@ impl Renderer for RasterRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>> {
-        core::future::ready(self.render_frame(frame, stats))
+    ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>
+    {
+        core::future::ready(self.render_frame(frame, stats).map(|redraw| (redraw, ())))
     }
 
     /// Materializes a surface's output buffer into `Readback` pixels.
@@ -537,6 +541,7 @@ impl Renderer for RasterRenderer {
         let mut categories = account::Categories::default();
         for surface in self.surfaces.values() {
             categories.output += surface.output_bytes();
+            categories.retained += surface.anchor_scratch.heap_bytes();
             categories.retained += surface
                 .layers
                 .values()
@@ -815,7 +820,7 @@ impl RasterRenderer {
             };
             let mut caches = std::mem::take(&mut surf.layers);
             let mut lowering = Lowering::new(
-                items,
+                (items, &mut surf.anchor_scratch),
                 size,
                 Some(&mut self.filters),
                 frame,

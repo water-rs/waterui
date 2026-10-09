@@ -9,8 +9,6 @@ use serde::Serialize;
 use crate::shell::Shell;
 use crate::{header, line};
 use smol::future::zip;
-#[cfg(feature = "esp32")]
-use waterui_cli::esp32::platform::{SerialPortSummary, scan_serial_ports};
 use waterui_cli::{
     android::{
         AndroidSdk,
@@ -30,8 +28,6 @@ pub enum TargetPlatform {
     Android,
     /// macOS (current machine).
     Macos,
-    /// ESP32 boards on serial ports.
-    Esp32,
     /// All platforms.
     All,
 }
@@ -65,27 +61,15 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         TargetPlatform::Macos => {
             display_macos_devices(shell);
         }
-        TargetPlatform::Esp32 => {
-            #[cfg(feature = "esp32")]
-            {
-                let ports = scan_serial_ports().await?;
-                display_esp32_devices(shell, &ports);
-            }
-            #[cfg(not(feature = "esp32"))]
-            bail!("ESP32 serial port scanning requires the `esp32` feature of waterui-cli");
-        }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
             let adb = Adb::locate(&host).await?;
             let spinner = shell.spinner("Scanning devices...");
 
-            // Scan iOS, Android, and serial ports in parallel
-            let ((ios_devices, android_result), serial_ports) = zip(
-                zip(
-                    scan_ios_devices(&host),
-                    scan_android_devices(&host, AndroidSdk::emulator_path(&host), adb),
-                ),
-                scan_esp32_ports(),
+            // Scan iOS and Android in parallel
+            let (ios_devices, android_result) = zip(
+                scan_ios_devices(&host),
+                scan_android_devices(&host, AndroidSdk::emulator_path(&host), adb),
             )
             .await;
 
@@ -101,10 +85,6 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 display_android_devices(shell, &avds, &devices, &running_avds);
             }
             display_macos_devices(shell);
-            #[cfg(feature = "esp32")]
-            display_esp32_devices(shell, &serial_ports?);
-            #[cfg(not(feature = "esp32"))]
-            let _ = serial_ports;
         }
     }
 
@@ -122,7 +102,6 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
                 ios: Some(json_ios_devices(&physical, &sims)),
                 android: None,
                 macos: None,
-                esp32: None,
             }
         }
         TargetPlatform::Android => {
@@ -135,7 +114,6 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
                 ios: None,
                 android: Some(json_android_section(&avds, &devices, &running_avds)),
                 macos: None,
-                esp32: None,
             }
         }
         TargetPlatform::Macos => DevicesJsonOutput {
@@ -147,44 +125,17 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
                 id: "local".to_string(),
                 name: "Current Machine".to_string(),
             }]),
-            esp32: None,
         },
-        TargetPlatform::Esp32 => {
-            #[cfg(feature = "esp32")]
-            {
-                let ports = scan_serial_ports().await?;
-                DevicesJsonOutput {
-                    ty: "devices",
-                    platform: "esp32",
-                    ios: None,
-                    android: None,
-                    macos: None,
-                    esp32: Some(json_esp32_devices(&ports)),
-                }
-            }
-            #[cfg(not(feature = "esp32"))]
-            bail!("ESP32 serial port scanning requires the `esp32` feature of waterui-cli");
-        }
         TargetPlatform::All => {
             // Fast-fail only when adb is unavailable.
             let adb = Adb::locate(&host).await?;
-            let ((ios_devices, android_result), serial_ports) = zip(
-                zip(
-                    scan_ios_devices(&host),
-                    scan_android_devices(&host, AndroidSdk::emulator_path(&host), adb),
-                ),
-                scan_esp32_ports(),
+            let (ios_devices, android_result) = zip(
+                scan_ios_devices(&host),
+                scan_android_devices(&host, AndroidSdk::emulator_path(&host), adb),
             )
             .await;
             let (physical, sims) = ios_devices?;
             let (avds, devices, running_avds) = android_result?;
-            #[cfg(feature = "esp32")]
-            let esp32 = Some(json_esp32_devices(&serial_ports?));
-            #[cfg(not(feature = "esp32"))]
-            let esp32: Option<Vec<JsonEsp32Device>> = {
-                let _ = serial_ports;
-                None
-            };
 
             DevicesJsonOutput {
                 ty: "devices",
@@ -195,7 +146,6 @@ async fn run_json(shell: &Shell, args: Args) -> Result<()> {
                     id: "local".to_string(),
                     name: "Current Machine".to_string(),
                 }]),
-                esp32,
             }
         }
     };
@@ -351,50 +301,6 @@ fn display_macos_devices(shell: &Shell) {
     line!(shell, "  ● Current Machine");
 }
 
-#[cfg(feature = "esp32")]
-async fn scan_esp32_ports() -> Result<Vec<SerialPortSummary>> {
-    scan_serial_ports().await
-}
-
-#[cfg(not(feature = "esp32"))]
-#[expect(clippy::unused_async)]
-async fn scan_esp32_ports() -> Result<Vec<()>> {
-    Ok(Vec::new())
-}
-
-/// Display ESP32 serial ports.
-#[cfg(feature = "esp32")]
-fn display_esp32_devices(shell: &Shell, ports: &[SerialPortSummary]) {
-    header!(shell, "ESP32 (serial)");
-
-    for port in ports {
-        let marker = if port.likely_esp { "●" } else { "○" };
-        let usb = port
-            .usb_vid_pid
-            .map(|(vid, pid)| format!(" [USB {vid:04x}:{pid:04x}]"))
-            .unwrap_or_default();
-        let product = port
-            .product
-            .as_deref()
-            .map(|product| format!(" {product}"))
-            .unwrap_or_default();
-        let hint = if port.likely_esp { " (likely ESP)" } else { "" };
-        line!(
-            shell,
-            "  {} {}{}{}{}",
-            marker,
-            port.port_name,
-            usb,
-            product,
-            hint
-        );
-    }
-
-    if ports.is_empty() {
-        line!(shell, "  No serial ports available");
-    }
-}
-
 #[derive(Debug, Serialize)]
 struct DevicesJsonOutput {
     #[serde(rename = "type")]
@@ -406,8 +312,6 @@ struct DevicesJsonOutput {
     android: Option<JsonAndroidSection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     macos: Option<Vec<JsonMacosDevice>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    esp32: Option<Vec<JsonEsp32Device>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -442,18 +346,6 @@ struct JsonAndroidDevice {
 struct JsonMacosDevice {
     id: String,
     name: String,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonEsp32Device {
-    port: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    usb_vid: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    usb_pid: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    product: Option<String>,
-    likely_esp: bool,
 }
 
 fn json_ios_devices(
@@ -502,20 +394,6 @@ fn json_android_section(
         .collect();
 
     JsonAndroidSection { emulators, devices }
-}
-
-#[cfg(feature = "esp32")]
-fn json_esp32_devices(ports: &[SerialPortSummary]) -> Vec<JsonEsp32Device> {
-    ports
-        .iter()
-        .map(|port| JsonEsp32Device {
-            port: port.port_name.clone(),
-            usb_vid: port.usb_vid_pid.map(|(vid, _)| vid),
-            usb_pid: port.usb_vid_pid.map(|(_, pid)| pid),
-            product: port.product.clone(),
-            likely_esp: port.likely_esp,
-        })
-        .collect()
 }
 
 #[cfg(test)]

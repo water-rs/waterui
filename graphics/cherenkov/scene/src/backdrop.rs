@@ -72,6 +72,16 @@ pub struct BackdropGroup {
     /// capture.
     #[serde(default = "default_levels", skip_serializing_if = "is_default_levels")]
     pub levels: u32,
+    /// The [`crate::Layer::id`] of the layer the capture anchors at: the
+    /// capture is taken beneath that layer, at its paint-order position
+    /// before the layer's own content and children. Every member may be
+    /// any layer painting after the anchor in the anchor's
+    /// compositing canvas; any other member fails the render
+    /// (`backdrop-member-before-anchor` /
+    /// `backdrop-member-outside-anchor-canvas`). `None` (the default)
+    /// captures at the first member's paint-order position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<std::num::NonZeroU32>,
     /// The union field's smoothing distance `k` in device pixels
     /// ([`crate::Scene::load`] validates it above 0); `None` composites
     /// every member against its own clip only.
@@ -83,6 +93,20 @@ impl BackdropGroup {
     /// The most pyramid levels a group declares; [`crate::Scene::load`]
     /// rejects a scene file asking for more.
     pub const MAX_LEVELS: u32 = 8;
+
+    /// A plain group description: unanchored, no union field — set
+    /// `anchor` or `union` on the returned value to compose them.
+    #[must_use]
+    pub const fn new(id: u32, filters: Vec<BackdropFilter>, scale: f64, levels: u32) -> Self {
+        Self {
+            id,
+            filters,
+            scale,
+            levels,
+            anchor: None,
+            union: None,
+        }
+    }
 }
 
 const fn default_levels() -> u32 {

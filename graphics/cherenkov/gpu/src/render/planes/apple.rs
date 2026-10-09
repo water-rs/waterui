@@ -159,6 +159,21 @@ impl<T> MainOwned<T> {
         });
     }
 
+    /// Borrows the main-thread value on a thread that is already main —
+    /// the frame's commit applies through it inside its reply window,
+    /// instead of queueing a block the next acquire could outrun.
+    fn with<R>(&self, mtm: MainThreadMarker, f: impl FnOnce(&mut T, MainThreadMarker) -> R) -> R {
+        f(
+            &mut self
+                .0
+                .as_ref()
+                .expect("live main owner")
+                .get(mtm)
+                .borrow_mut(),
+            mtm,
+        )
+    }
+
     /// A weak handle to the same storage, for a callback the scene itself
     /// retains — an observer must not keep its owner alive.
     fn downgrade(&self) -> Weak<MainThreadBound<RefCell<T>>> {
@@ -2516,7 +2531,103 @@ impl Compositor for LayerPlanes {
     }
 }
 
+/// What an Apple window surface's frame commits on the platform main
+/// thread: its `CATransaction` of layer geometry and every part's
+/// drawable present. [`SystemPlanes::compose`] builds one on the render
+/// thread; the engine replies it to the frame's awaiting caller, which
+/// applies it before `render` returns — so a part's drawable always
+/// presents before the next frame's acquire, and no present waits on a
+/// queued main-queue block (#2261). The trait keeps the payload opaque:
+/// the concrete commit names main-thread-only types that must never
+/// become part of the public interface.
+pub trait CommitApply: Send + 'static {
+    /// Runs the commit's `CATransaction` — geometry and every part's
+    /// drawable present — on main.
+    fn apply(self: Box<Self>, mtm: MainThreadMarker);
+}
+
+/// A rendered frame's [`CommitApply`]: the whole `CATransaction` of
+/// raster `contents`, hosted views, layer `placements` and every part's
+/// acquired drawable. Nothing on the render thread may consume one:
+/// dropping it would release the drawables unpresented.
+#[must_use]
+struct MainCommit {
+    /// The layer scene the commit rewrites.
+    scene: MainOwned<LayerScene>,
+    /// New raster `IOSurface` contents, keyed by their promoted layer.
+    contents: Vec<(LayerId, raster::Contents)>,
+    /// The frame's hosted objects.
+    hosted: Vec<(LayerId, super::Hosted, Size)>,
+    /// The frame's plane placements.
+    placements: Vec<Placement>,
+    /// The surface size in device pixels.
+    size: (u32, u32),
+    /// The display scale.
+    scale: f64,
+    /// Every part's acquired drawable, presented in part order.
+    frames: Vec<wgpu::SurfaceTexture>,
+    /// The queue the drawables present through.
+    queue: wgpu::Queue,
+    /// The frame's hit regions.
+    #[cfg(target_os = "macos")]
+    region_packet: RegionPacket,
+    /// The pool `region_packet` returns to once placed.
+    #[cfg(target_os = "macos")]
+    region_packets: Arc<Mutex<Vec<RegionPacket>>>,
+}
+
+impl CommitApply for MainCommit {
+    fn apply(self: Box<Self>, mtm: MainThreadMarker) {
+        let Self {
+            scene,
+            contents,
+            hosted,
+            placements,
+            size,
+            scale,
+            frames,
+            queue,
+            #[cfg(target_os = "macos")]
+            region_packet,
+            #[cfg(target_os = "macos")]
+            region_packets,
+        } = *self;
+        scene.with(mtm, |scene, mtm| {
+            let _tx = Transaction::begin();
+            for (layer, contents) in contents {
+                contents.set(scene.display(layer));
+            }
+            scene.host(hosted, mtm);
+            #[cfg(target_os = "macos")]
+            {
+                scene.place(
+                    &placements,
+                    size,
+                    scale,
+                    frames.len(),
+                    &region_packet.regions,
+                    &region_packet.plane_regions,
+                    mtm,
+                );
+                region_packets
+                    .lock()
+                    .expect("region packet pool is not poisoned")
+                    .push(region_packet);
+            }
+            #[cfg(not(target_os = "macos"))]
+            scene.place(&placements, size, scale, frames.len());
+            for frame in frames {
+                queue.present(frame);
+            }
+        });
+    }
+}
+
 impl SystemPlanes for LayerPlanes {
+    /// `None` for a frame that produced no main-thread work; `Some` of the
+    /// frame's [`CommitApply`] otherwise.
+    type Commit = Option<Box<dyn CommitApply>>;
+
     fn captured_bytes(&self) -> u64 {
         self.buffers.values().map(raster::Buffer::bytes).sum()
     }
@@ -2631,7 +2742,10 @@ impl SystemPlanes for LayerPlanes {
         clippy::too_many_lines,
         reason = "one frame's compose is a single pass over the plan"
     )]
-    fn compose(&mut self, c: Composition<'_>) -> Result<super::Presentation, RenderError> {
+    fn compose(
+        &mut self,
+        c: Composition<'_>,
+    ) -> Result<(super::Presentation, Self::Commit), RenderError> {
         // The immutable IOSurface is published only after the GPU has
         // finished its presentation conversion. Until then the committed
         // scene and all of its old buffers stay visible together.
@@ -2677,12 +2791,12 @@ impl SystemPlanes for LayerPlanes {
             contents.push((layer, raster::Contents(buffer.surface.clone())));
         }
         if !ready {
-            return Ok(super::Presentation::Pending);
+            return Ok((super::Presentation::Pending, None));
         }
         self.collect_parts()?;
         self.request_parts(c.parts.len(), None);
         if self.parts.len() < c.parts.len() {
-            return Ok(super::Presentation::Pending);
+            return Ok((super::Presentation::Pending, None));
         }
         let mut frames = Vec::with_capacity(c.parts.len());
         for (part, target) in c.parts.iter().zip(&self.parts) {
@@ -2690,7 +2804,7 @@ impl SystemPlanes for LayerPlanes {
                 c.presenter
                     .prepare(c.device, c.queue, target, part.view, c.display.headroom)?
             else {
-                return Ok(super::Presentation::Retry);
+                return Ok((super::Presentation::Retry, None));
             };
             frames.push(frame);
         }
@@ -2727,42 +2841,26 @@ impl SystemPlanes for LayerPlanes {
         self.placements.clone_from(&placements);
         self.hosted = next_hosted;
         self.motion.placed(tree_changed);
-        let queue = c.queue.clone();
-        #[cfg(target_os = "macos")]
-        let region_packets = self.region_packets.clone();
-        self.scene.run(move |scene, mtm| {
-            let _tx = Transaction::begin();
-            for (layer, contents) in contents {
-                contents.set(scene.display(layer));
-            }
-            scene.host(hosted, mtm);
+        let commit = MainCommit {
+            scene: self.scene.clone(),
+            contents,
+            hosted,
+            placements,
+            size,
+            scale,
+            frames,
+            queue: c.queue.clone(),
             #[cfg(target_os = "macos")]
-            scene.place(
-                &placements,
-                size,
-                scale,
-                frames.len(),
-                &region_packet.regions,
-                &region_packet.plane_regions,
-                mtm,
-            );
+            region_packet,
             #[cfg(target_os = "macos")]
-            region_packets
-                .lock()
-                .expect("region packet pool is not poisoned")
-                .push(region_packet);
-            #[cfg(not(target_os = "macos"))]
-            scene.place(&placements, size, scale, frames.len());
-            for frame in frames {
-                queue.present(frame);
-            }
-        });
+            region_packets: self.region_packets.clone(),
+        };
         for plane in c.planes {
             if let Some(update) = Update::from_plane(plane) {
                 self.enqueue(update);
             }
         }
-        Ok(super::Presentation::Presented)
+        Ok((super::Presentation::Presented, Some(Box::new(commit) as _)))
     }
 
     fn groom_with_frames(

@@ -9,14 +9,24 @@ use crate::{
     backend::{Backend, reinit_backend},
     build::BuildOptions,
     device::Artifact,
+    framework::ResolvedFramework,
     hydrolysis::platform::{
         build_hydrolysis, clean_hydrolysis, is_hydrolysis_platform, package_hydrolysis,
     },
     platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::{ManagedBackends, Project},
     templates::{self, TemplateContext},
-    toolchain::Host,
 };
+
+/// Every triple the generated launcher crate's manifest serves — the
+/// desktop triples of its native table, the Android ABIs and `wasm32`.
+fn hydrolysis_targets() -> Vec<target_lexicon::Triple> {
+    crate::platform::native_target_triples()
+        .into_iter()
+        .chain(crate::android::platform::android_target_triples())
+        .chain(crate::platform::wasm_target_triples())
+        .collect()
+}
 
 /// Configuration for the hydrolysis backend in a `WaterUI` project.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -59,7 +69,7 @@ impl HydrolysisBackend {
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
     pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
         let backend_dir = project.backend_path::<Self>();
-        let ctx = Self::template_context(project).await?;
+        let ctx = Self::template_context(project, &project.resolved_framework().await?).await?;
         let outputs = templates::hydrolysis::rendered_outputs(
             &ctx,
             &project.hydrolysis_backend_crate_name(),
@@ -82,7 +92,10 @@ impl HydrolysisBackend {
     /// The template context the CLI manages this backend with; regeneration
     /// compares the backend on disk against exactly this rendering, and the
     /// Android app scaffold layers its parameters on top of it.
-    pub(crate) async fn template_context(project: &Project) -> eyre::Result<TemplateContext> {
+    pub(crate) async fn template_context(
+        project: &Project,
+        framework: &ResolvedFramework,
+    ) -> eyre::Result<TemplateContext> {
         let manifest = project.manifest();
         let app_name = manifest
             .package
@@ -90,20 +103,48 @@ impl HydrolysisBackend {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        let framework = project.resolved_framework().await?;
+        let section = |os: crate::platform::NativeOs| crate::project::GraphSection {
+            manifest: "the generated Hydrolysis launcher manifest",
+            table: os.cfg(),
+            remedy: "the dependency graph answers differently per target, so that section \
+                     needs a per-target split inside its own OS — a narrower `cfg` \
+                     separates the disagreeing targets",
+        };
+        // The native table's serving set spans three OSes whose graphs
+        // legitimately differ — `waterui-browser-wpe` enters on Linux —
+        // so each OS's answers resolve from its own serving set while the
+        // engine-independent profile set resolves once for them all.
+        let targets = hydrolysis_targets();
+        let (project_packages, macos, linux, windows) = futures_util::future::try_join4(
+            project.project_packages(framework, &targets),
+            project.native_browser_answers(
+                crate::platform::NativeOs::MacOs,
+                section(crate::platform::NativeOs::MacOs),
+            ),
+            project.native_browser_answers(
+                crate::platform::NativeOs::Linux,
+                section(crate::platform::NativeOs::Linux),
+            ),
+            project.native_browser_answers(
+                crate::platform::NativeOs::Windows,
+                section(crate::platform::NativeOs::Windows),
+            ),
+        )
+        .await?;
         Ok(TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
-        .with_project_packages(project.project_packages(&framework).await?)
-        .with_webview_enabled(project.uses_standard_webview().await?)
-        .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
-        .with_browser_engine(project.linked_browser_engine().await?))
+        .with_project_packages(project_packages)
+        .with_browser(crate::templates::BrowserTemplateContext::desktop(
+            macos, linux, windows,
+        )))
     }
 }
 
@@ -138,7 +179,11 @@ impl Backend for HydrolysisBackend {
 
     async fn init(project: &Project) -> Result<Self, crate::backend::FailToInitBackend> {
         let project_path = default_hydrolysis_project_path();
-        let ctx = Self::template_context(project)
+        let framework = project
+            .resolved_framework()
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let ctx = Self::template_context(project, &framework)
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
 
@@ -167,16 +212,10 @@ impl Backend for HydrolysisBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         if platform == TargetPlatform::Android {
-            return crate::hydrolysis::android::build(
-                project,
-                &Host::current(),
-                AndroidAbi::Arm64V8a,
-                options,
-            )
-            .await;
+            return crate::hydrolysis::android::build(project, AndroidAbi::Arm64V8a, options).await;
         }
         project
-            .browser_runtime_plan(platform, TargetBackend::Hydrolysis)
+            .browser_runtime_plan(platform, TargetBackend::Hydrolysis, &platform.triple())
             .await?;
         build_hydrolysis(project, platform, options).await
     }
@@ -192,7 +231,6 @@ impl Backend for HydrolysisBackend {
             let prepared = crate::android::signing::PreparedSigning::resolve(project, &options)?;
             return crate::hydrolysis::android::package_with_abis(
                 project,
-                &Host::current(),
                 crate::hydrolysis::android::resolve_painter(project, None),
                 &options,
                 &[AndroidAbi::Arm64V8a],
@@ -220,8 +258,12 @@ impl Backend for HydrolysisBackend {
 ///
 /// Returns an error when the project cannot be opened or the backend cannot
 /// be regenerated.
-pub async fn open_ready(project_path: &Path) -> eyre::Result<Project> {
+pub async fn open_ready(
+    host: &crate::toolchain::Host,
+    project_path: &Path,
+) -> eyre::Result<Project> {
     let project = Project::open(
+        host,
         project_path,
         ManagedBackends::for_backend(TargetBackend::Hydrolysis),
     )

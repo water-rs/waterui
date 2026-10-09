@@ -456,7 +456,7 @@ impl FrameColor {
         reference_white: 203.0,
         hlg_peak: 0.0,
     };
-    /// BT.2020 full-range video with PQ transfer on BT.2020 primaries.
+    /// BT.2020 studio-range video with PQ transfer on BT.2020 primaries.
     pub const BT2020_PQ: Self = Self {
         matrix: YuvMatrix::Bt2020,
         range: YuvRange::Video,

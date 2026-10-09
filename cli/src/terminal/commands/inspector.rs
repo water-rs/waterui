@@ -57,6 +57,13 @@ pub struct Args {
     path: PathBuf,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// Run the inspector command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let platform = InspectorPlatform::from(args.platform);
@@ -85,6 +92,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     note!(shell, "Session token: {}", token);
 
     let mut session = launch_inspector_session(
+        &waterui_cli::toolchain::Host::current(),
         &project_path,
         platform,
         InspectorLaunchOptions {

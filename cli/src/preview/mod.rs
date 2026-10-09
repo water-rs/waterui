@@ -12,6 +12,7 @@
 mod app_client;
 pub(crate) mod apple;
 pub(crate) mod hydrolysis;
+pub(crate) mod hydrolysis_android;
 mod inputs;
 mod launcher;
 pub mod protocol;
@@ -28,6 +29,7 @@ pub use hydrolysis::{
     discover_hydrolysis_preview_exports, render_preview_with_hydrolysis,
     test_preview_with_hydrolysis,
 };
+
 pub use launcher::{PreviewSession, launch_preview_session};
 pub use protocol::{PreviewPlatform, Size};
 pub use request::{

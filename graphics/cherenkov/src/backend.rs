@@ -82,6 +82,24 @@ pub trait Renderer: 'static {
     /// A font [`Renderer::prepare_font`] validated, ready for
     /// [`Renderer::add_font`].
     type Font: RenderTransfer + 'static;
+    /// The part of a rendered frame the render thread hands to the
+    /// frame's awaiting caller: on platforms whose system compositor owns
+    /// presentation, the work that must land on the platform's main
+    /// thread for the frame's parts to present (Apple window surfaces:
+    /// the `CATransaction` of layer geometry and drawable presents).
+    /// [`Engine::render`](crate::Engine::render) applies it on the
+    /// awaiting thread right after the reply arrives, so a frame's
+    /// present is ordered before the next frame's acquire. `()` where a
+    /// frame commits nothing off the render thread.
+    type FrameCommit: RenderTransfer + 'static;
+
+    /// Applies the frame's [`Self::FrameCommit`] on the awaiting caller's
+    /// thread. Called by [`Engine::render`](crate::Engine::render) before
+    /// it returns. A backend whose commits are main-thread-bound asserts
+    /// the caller is on that thread here: a render whose surfaces present
+    /// on the platform main thread must be awaited on it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_frame_commit(_commit: Self::FrameCommit) {}
 
     /// Creates the render-side state for surface `id`. `waker` is the
     /// surface's host wake-up: for render-side completions that land after
@@ -201,7 +219,7 @@ pub trait Renderer: 'static {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<FrameRedraw, RenderError>;
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError>;
 
     /// Executes on the owning JS thread, yielding for browser operations.
     ///
@@ -212,7 +230,7 @@ pub trait Renderer: 'static {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>>;
+    ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>;
 
     /// Returns all GPU timings accumulated since the previous call,
     /// oldest first. Timings stay on the renderer rather than being

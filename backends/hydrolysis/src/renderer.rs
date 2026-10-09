@@ -384,6 +384,15 @@ pub struct SemanticCore {
     /// mount, so a menu's Close Window row reads it when the row is built
     /// and needs no signal.
     window_closable: bool,
+    /// The window's declared logical frame — the semantic walk's only
+    /// geometry fact. The semantic runner writes it at mount and on every
+    /// move/resize, so emit paths that resolve a viewport-dependent
+    /// decision (a navigation split's collapsed-column mode) read what a
+    /// layout would have seen. Renderers no runner claimed keep
+    /// `Rect::ZERO` — below every compact threshold, the "smallest window"
+    /// presentation.
+    #[cfg(feature = "accessibility")]
+    window_frame: kurbo::Rect,
     render_depth: usize,
     /// The retained nodes whose subtrees are currently flushing, innermost
     /// last — the ancestry chain input registration reads to tell a gesture
@@ -643,6 +652,22 @@ impl SemanticCore {
         self.window_closable
     }
 
+    /// Assigns the window's declared logical frame — the semantic runner
+    /// writes it at mount and on every move/resize, so emit paths that
+    /// resolve a viewport-dependent decision (a navigation split's
+    /// collapsed-column mode) read what a layout would have seen.
+    #[cfg(feature = "accessibility")]
+    pub(crate) const fn set_window_frame(&mut self, frame: kurbo::Rect) {
+        self.window_frame = frame;
+    }
+
+    /// The window's declared logical frame — `Rect::ZERO` until a runner's
+    /// window declares one.
+    #[cfg(feature = "accessibility")]
+    pub(crate) const fn window_frame(&self) -> kurbo::Rect {
+        self.window_frame
+    }
+
     /// Enters an `OnKeyPress` scope for the subtree now flushing; targets
     /// registered inside snapshot it as their bubble chain.
     pub(crate) fn push_key_handler_scope(
@@ -717,6 +742,8 @@ impl SemanticCore {
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
             window_closable: true,
+            #[cfg(feature = "accessibility")]
+            window_frame: kurbo::Rect::ZERO,
             render_depth: 0,
             owner_stack: Vec::new(),
             root_core,
@@ -828,6 +855,23 @@ impl SemanticCore {
     /// `request_refresh`.
     pub(crate) fn has_patch_request(&self) -> bool {
         self.signals.has_patch_request()
+    }
+
+    /// Installs the window's host wake on the frame signals — the runner
+    /// calls it once at mount from `RuntimeWindow::new` with the closure
+    /// [`crate::platform::PlatformWindow::frame_wake`] supplies. See
+    /// [`FrameSignals::install_host_wake`].
+    pub(crate) fn install_host_wake(&self, wake: Rc<dyn Fn()>) {
+        self.signals.install_host_wake(wake);
+    }
+
+    /// Whether a frame request is still pending on the signals — what a
+    /// host that suppresses its wake inside the frame transaction (the
+    /// Android pump's `wants_next_frame`) counts into the transaction's
+    /// continuation, so a request raised mid-transaction is never lost.
+    #[allow(dead_code)] // read by the Android host and tests; see reports_ui_idle
+    pub(crate) fn has_pending_frame_request(&self) -> bool {
+        self.signals.has_pending_request()
     }
 
     /// Reports whether the root cell carries a `STRUCTURE` mark — the

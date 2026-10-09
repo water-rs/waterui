@@ -173,11 +173,15 @@ impl LayerTarget for cherenkov_gpu::Gpu {
             display_scale,
             membership,
             (
-                |runtime, scale| {
-                    surface.backdrop_group(
-                        runtime.chain(scale),
+                |runtime, scale, anchor| {
+                    let spec = cherenkov::BackdropSpec::new(
                         crate::renderer::material::capture_scale(),
-                    )
+                        cherenkov::CaptureLevels::ONE,
+                    );
+                    // A `.material_group()` scope's groups capture beneath
+                    // its anchor layer (water-rs/waterui#2097).
+                    let spec = anchor.map_or(spec, |anchor| spec.anchor(anchor));
+                    surface.backdrop_group(runtime.chain(scale), spec)
                 },
                 |tx, layer, group| {
                     tx[layer].backdrop(group.sample());

@@ -237,6 +237,10 @@ pub struct BrowserWindow {
     /// The page's safe area, which the window's `WindowSafeArea` installs;
     /// re-read from the probe on every resize.
     safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
+    /// The runner's `requestAnimationFrame` coalescer — handed out as the
+    /// frame-signals wake so a request raised outside a frame schedules
+    /// the one it needs.
+    schedule_frame: Rc<dyn Fn()>,
     current_cursor_style: CursorStyle,
     /// Held for its lifetime: the observer keeps reporting only while
     /// both halves are alive.
@@ -363,6 +367,7 @@ impl BrowserWindow {
             scale_factor,
             pending_resize,
             safe_area,
+            schedule_frame,
             current_cursor_style: CursorStyle::Arrow,
             _intersection_observer: intersection_observer,
             _listeners: listeners,
@@ -461,6 +466,14 @@ impl PlatformWindow for BrowserWindow {
 
     fn request_redraw(&self) {
         self.redraw_requested.set(true);
+    }
+
+    /// The page's `requestAnimationFrame` coalescer — already what every
+    /// browser listener and executor wakeup calls for a frame; a repeated
+    /// request while one is pending is merged by the runner's
+    /// `raf_pending` flag, so frame counts are unchanged.
+    fn frame_wake(&self) -> Rc<dyn Fn()> {
+        Rc::clone(&self.schedule_frame)
     }
 
     fn scale_factor(&self) -> f64 {

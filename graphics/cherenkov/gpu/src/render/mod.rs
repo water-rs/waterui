@@ -334,6 +334,7 @@ struct SurfaceState {
     staging_bind: [Option<resolve::Bind>; 2],
     /// Backdrop groups registered on this surface by raw id.
     backdrop_groups: FxHashMap<u64, BackdropGroupState>,
+    anchor_scratch: lower::AnchorScratch,
     layers: FxHashMap<LayerId, ContentData>,
     /// GPU producer bindings by layer (`cherenkov::GpuContent`): a layer
     /// binds one producer, a producer serves bindings on any surface,
@@ -2902,9 +2903,43 @@ fn plane_frames<'a>(
     frames
 }
 
+/// The frame's per-surface platform commits, in frame order: `()`s
+/// where every present happens on the render thread, the window
+/// surfaces' `CATransaction` payloads on Apple — opaque boxes, so the
+/// public `Renderer::FrameCommit` names no platform type.
+#[cfg(target_vendor = "apple")]
+pub(in crate::render) type FrameCommits = Vec<Option<Box<dyn planes::apple::CommitApply>>>;
+/// See the Apple variant above; no other platform commits off-thread.
+#[cfg(not(target_vendor = "apple"))]
+pub(in crate::render) type FrameCommits = Vec<()>;
+
+/// One surface's platform commit; its `Default` is the empty commit a
+/// surface that commits nothing off-thread produces (`None` on Apple).
+type PlatformCommit = <planes::Platform as planes::SystemPlanes>::Commit;
+
 impl Renderer for GpuRenderer {
     type Target = GpuTarget;
     type Font = PreparedFont;
+    /// The frame's per-surface platform commits, in frame order.
+    type FrameCommit = FrameCommits;
+
+    /// Applies each surface's commit on the awaiting caller. Apple
+    /// window surfaces land their whole `CATransaction` — layer geometry
+    /// and every part's drawable present — inside this call on main, so
+    /// the reply hands it back before the next frame's acquire (#2261).
+    /// The marker is demanded only when the frame carried a commit: a
+    /// caller off-main that awaits a frame covering an Apple window
+    /// surface fails here, while frames with nothing to commit apply to
+    /// nothing.
+    #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
+    fn apply_frame_commit(commit: Self::FrameCommit) {
+        for commit in commit.into_iter().flatten() {
+            let mtm = objc2::MainThreadMarker::new()
+                .expect("an Apple window surface's frame must be awaited on the main thread");
+            commit.apply(mtm);
+        }
+    }
+
     fn create_surface(
         &mut self,
         id: SurfaceId,
@@ -2978,6 +3013,7 @@ impl Renderer for GpuRenderer {
                 staging: [None, None],
                 staging_bind: [None, None],
                 backdrop_groups: FxHashMap::default(),
+                anchor_scratch: lower::AnchorScratch::default(),
                 layers: FxHashMap::default(),
                 bindings: FxHashMap::default(),
                 hosted: FxHashMap::default(),
@@ -3666,6 +3702,11 @@ impl Renderer for GpuRenderer {
             + self
                 .surfaces
                 .values()
+                .map(|surface| surface.anchor_scratch.heap_bytes())
+                .sum::<u64>()
+            + self
+                .surfaces
+                .values()
                 .flat_map(|surface| surface.painter_replays.values())
                 .map(|replay| {
                     (std::mem::size_of::<PainterReplay>()
@@ -3697,7 +3738,7 @@ impl Renderer for GpuRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<FrameRedraw, RenderError> {
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("render");
         diag::frame_boundary(&self.device, frame.id.get(), true, false);
@@ -3715,7 +3756,7 @@ impl Renderer for GpuRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<FrameRedraw, RenderError> {
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("render");
         diag::frame_boundary(&self.device, frame.id.get(), true, false);
@@ -4178,7 +4219,7 @@ impl GpuRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<FrameRedraw, RenderError> {
+    ) -> Result<(FrameRedraw, FrameCommits), RenderError> {
         let origin = *self.origin.get_or_insert(frame.time.0);
         self.frame_count += 1;
         self.drain_timestamps();
@@ -4326,9 +4367,9 @@ impl GpuRenderer {
         }
         result?;
         diag::set_phase("present");
-        let mut redraw = self.present_windows(frame)?;
+        let (mut redraw, commits) = self.present_windows(frame)?;
         self.request_redraw(&mut redraw);
-        Ok(redraw)
+        Ok((redraw, commits))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4340,7 +4381,7 @@ impl GpuRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<FrameRedraw, RenderError> {
+    ) -> Result<(FrameRedraw, FrameCommits), RenderError> {
         let origin = *self.origin.get_or_insert(frame.time.0);
         self.frame_count += 1;
         self.drain_timestamps();
@@ -4482,9 +4523,9 @@ impl GpuRenderer {
         }
         result?;
         diag::set_phase("present");
-        let mut redraw = self.present_windows(frame)?;
+        let (mut redraw, commits) = self.present_windows(frame)?;
         self.request_redraw(&mut redraw);
-        Ok(redraw)
+        Ok((redraw, commits))
     }
 
     fn filter_timing(&mut self, frame: &Frame<'_>, origin: Instant) -> filtrate::EffectFrameTiming {
@@ -5539,10 +5580,14 @@ impl GpuRenderer {
 
     /// Presents every window surface with a pending present, returning
     /// the requests of the surfaces whose present must be retried.
-    fn present_windows(&mut self, frame: &Frame<'_>) -> Result<FrameRedraw, RenderError> {
+    fn present_windows(
+        &mut self,
+        frame: &Frame<'_>,
+    ) -> Result<(FrameRedraw, FrameCommits), RenderError> {
         let mut redraw = FrameRedraw::default();
+        let mut commits = FrameCommits::default();
         if self.presenter.is_none() {
-            return Ok(redraw);
+            return Ok((redraw, commits));
         }
         let currents: FxHashMap<ProducerId, &external::Slot> = self
             .producers
@@ -5594,8 +5639,8 @@ impl GpuRenderer {
                     .transpose()?;
                 #[cfg(not(target_os = "linux"))]
                 let exported = None;
-                let presentation = match exported {
-                    Some(presentation) => presentation,
+                let (presentation, commit) = match exported {
+                    Some(presentation) => (presentation, PlatformCommit::default()),
                     None => Self::present_surface(
                         self.planes.get_mut(&sf.id),
                         self.plane_only.contains(&sf.id),
@@ -5609,6 +5654,7 @@ impl GpuRenderer {
                         &currents,
                     )?,
                 };
+                commits.push(commit);
                 surface.present_pending = presentation != planes::Presentation::Presented;
                 if presentation == planes::Presentation::Presented {
                     for capture in surface
@@ -5634,7 +5680,7 @@ impl GpuRenderer {
                 planes::SystemPlanes::animate(system, sf.tree, &surface.plan);
             }
         }
-        Ok(redraw)
+        Ok((redraw, commits))
     }
 
     /// A display move or a scale change re-runs the window's output
@@ -5673,7 +5719,7 @@ impl GpuRenderer {
         surface: &SurfaceState,
         sf: &SurfaceFrame<'_>,
         currents: &FxHashMap<ProducerId, &external::Slot>,
-    ) -> Result<planes::Presentation, RenderError> {
+    ) -> Result<(planes::Presentation, PlatformCommit), RenderError> {
         let (device, queue, presenter) = present;
         match system {
             Some(system) => {
@@ -5688,7 +5734,7 @@ impl GpuRenderer {
                         system,
                         plane_stack(surface, currents, sf.plane_frames),
                     )?;
-                    Ok(planes::Presentation::Presented)
+                    Ok((planes::Presentation::Presented, PlatformCommit::default()))
                 } else {
                     let parts: Vec<_> = (0..surface.plan.parts())
                         .map(|n| planes::Part {
@@ -5715,7 +5761,7 @@ impl GpuRenderer {
                     )
                 }
             }
-            None => Ok(
+            None => Ok((
                 if presenter.present(
                     device,
                     queue,
@@ -5727,7 +5773,8 @@ impl GpuRenderer {
                 } else {
                     planes::Presentation::Retry
                 },
-            ),
+                PlatformCommit::default(),
+            )),
         }
     }
 
@@ -6259,7 +6306,7 @@ impl GpuRenderer {
                 bitmaps: resources.bitmaps,
                 content: &surf.bindings,
             };
-            let mut lowering = Lowering::new(&mut surf.frame, surf.size);
+            let mut lowering = Lowering::new(&mut surf.frame, surf.size, &mut surf.anchor_scratch);
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 if surf.promotes {
                     lower::refresh_paint_bounds(&mut layers, glyphs.fonts)?;

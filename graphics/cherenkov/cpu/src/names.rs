@@ -13,6 +13,19 @@ pub const FILTER_GPU_IMAGE: &str = "filter-gpu-image";
 pub const BACKDROP_UNCLIPPED: &str = "backdrop-unclipped";
 /// A backdrop group whose filter footprint cannot be bounded.
 pub const BACKDROP_FOOTPRINT: &str = "backdrop-footprint";
+/// A backdrop group anchored at the walk's root layer: its capture
+/// would run before anything paints — the clear colour.
+pub const BACKDROP_ANCHOR_AT_ROOT: &str = "backdrop-anchor-at-root";
+/// A backdrop group anchored at a projective layer: the layer is a
+/// flattening boundary, so the anchor's canvas is not the member's.
+pub const BACKDROP_ANCHOR_PROJECTIVE: &str = "backdrop-anchor-projective";
+/// A backdrop group anchored at a `Layer::id` no layer in the scene
+/// carries.
+pub const BACKDROP_UNKNOWN_ANCHOR: &str = "backdrop-unknown-anchor";
+/// A member of an anchored backdrop group that paints before the anchor.
+pub const BACKDROP_MEMBER_BEFORE_ANCHOR: &str = "backdrop-member-before-anchor";
+/// A member of an anchored backdrop group outside the anchor's canvas.
+pub const BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS: &str = "backdrop-member-outside-anchor-canvas";
 /// A per-member backdrop effect that reads the clip's signed distance
 /// on a clip without an analytic boundary (`Path`/`Line`).
 pub const BACKDROP_EFFECT_SDF_PATH: &str = "backdrop-effect-sdf-path";
