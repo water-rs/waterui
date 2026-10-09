@@ -602,14 +602,7 @@ impl SemanticCore {
         selected: bool,
         motion: &RadioSelectionMotion,
     ) -> RadioIndicatorState {
-        self.animation_owner_pins.pin(owner);
-        // `waterui-backend-core` builds radio-indicator keys only from a
-        // `SignalIdentity`; the owner's allocation stands in for one, pinned
-        // like every other owner key.
-        let key = AnimationKey::radio_indicator_with_discriminator(
-            nami::SignalIdentity::from_rc(owner),
-            option,
-        );
+        let key = AnimationKey::radio_indicator(self.animation_owner_pins.pin(owner), option);
         self.animation_controller
             .bind_radio_indicator(key, selected, motion, self.frame_instant)
     }

@@ -36,6 +36,33 @@ pub use request::{
     CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewRequest, PreviewTarget,
 };
 
+/// The cache root preview support assets live under on `host`:
+/// `WATER_CACHE_DIR` when set, the host's cache directory joined with
+/// `waterui`, else `waterui-cache` in the host's temporary directory. The
+/// spawned support app is handed this root through `WATER_CACHE_DIR`, so it
+/// registers where the CLI watches, whatever its own default would be.
+fn water_cache_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
+    if let Some(dir) = host.env("WATER_CACHE_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    if let Some(cache_dir) = host.cache_dir() {
+        return cache_dir.join("waterui");
+    }
+    host.temp_dir().join("waterui-cache")
+}
+
+/// Root of the preview support assets on `host`.
+fn preview_cache_root_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
+    waterui_preview_protocol::registry::preview_cache_root_dir_in(&water_cache_dir(host))
+}
+
+/// Directory the CLI watches for preview support app registrations on `host`.
+pub(crate) fn preview_instance_registry_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
+    waterui_preview_protocol::registry::preview_instance_registry_dir_in(&preview_cache_root_dir(
+        host,
+    ))
+}
+
 /// Source used to produce a preview view — an existing `#[preview]` export
 /// or an inline `WaterUI` expression. Shared by every preview backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

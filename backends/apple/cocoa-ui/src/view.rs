@@ -116,6 +116,28 @@ pub fn frame(view: &PlatformView) -> Rect {
     view.frame().into()
 }
 
+/// The alignment rectangle `view`'s frame maps to.
+///
+/// This is the edge Auto Layout pins when it solves the view's anchors. A
+/// control's frame can overshoot it: a `UISwitch` frame runs 2 pt past its
+/// pinned trailing edge.
+#[must_use]
+pub fn alignment_frame(view: &PlatformView) -> Rect {
+    #[cfg(target_os = "ios")]
+    {
+        view.alignmentRectForFrame(view.frame()).into()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `view` is a live `NSView`; `alignmentRectForFrame:` is a
+        // documented `NSView` method the `objc2-app-kit` bindings do not
+        // generate.
+        let rect: objc2_core_foundation::CGRect =
+            unsafe { objc2::msg_send![view, alignmentRectForFrame: view.frame()] };
+        rect.into()
+    }
+}
+
 /// The bounds in the view's own coordinate space.
 #[must_use]
 pub fn bounds(view: &PlatformView) -> Rect {

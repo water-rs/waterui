@@ -8,6 +8,7 @@ use accesskit::{
 };
 use hydrolysis::AccessibilityContentTypes;
 use waterui::component::text_field::ContentType;
+use waterui::component::toggle::ToggleStyle;
 
 use crate::selector::{ScopeRelation, Selector};
 
@@ -119,6 +120,26 @@ impl Role {
     #[must_use]
     pub const fn new(role: AccessibilityRole) -> Self {
         Self(role)
+    }
+
+    /// The role a toggle of `style` reports: [`Self::SWITCH`] for a switch,
+    /// [`Self::CHECKBOX`] for a checkbox.
+    ///
+    /// [`ToggleStyle::Automatic`] is the target's default style — a checkbox
+    /// on macOS, a switch elsewhere — so a query for a default-style toggle
+    /// that must hold on every host asks for
+    /// `Role::toggle(ToggleStyle::Automatic)`.
+    ///
+    /// # Panics
+    ///
+    /// When `style` is a variant this testing crate does not know.
+    #[must_use]
+    pub const fn toggle(style: ToggleStyle) -> Self {
+        match style.resolved() {
+            ToggleStyle::Switch => Self::SWITCH,
+            ToggleStyle::Checkbox => Self::CHECKBOX,
+            _ => panic!("waterui-testing has no role for this ToggleStyle"),
+        }
     }
 
     /// The underlying AccessKit role.
