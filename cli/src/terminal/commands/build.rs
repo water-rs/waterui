@@ -17,7 +17,6 @@ use waterui_cli::{
     },
     apple::{platform::build_rust_lib, toolchain::AppleSdk},
     build::{BuildOptions, BuildProfile, BuiltTarget},
-    esp32::platform::build_esp32,
     gtk4::platform::build_gtk4,
     hydrolysis::platform::build_hydrolysis,
     platform::TargetPlatform as LibTargetPlatform,
@@ -40,25 +39,12 @@ pub enum TargetPlatform {
     Linux,
     /// Windows.
     Windows,
-    /// ESP32-S3 (Xtensa firmware).
+    /// ESP32-S3 (Xtensa); unsupported until #1601.
     Esp32s3,
-    /// ESP32-C3 (RISC-V firmware).
+    /// ESP32-C3 (RISC-V); unsupported until #1601.
     Esp32c3,
-    /// ESP32-P4 (RISC-V firmware, hardware FPU).
+    /// ESP32-P4 (RISC-V, hardware FPU); unsupported until #1601.
     Esp32p4,
-}
-
-impl TargetPlatform {
-    /// The ESP32 chip a platform selects, if it is an ESP32 platform.
-    const fn esp32_chip(self) -> Option<waterui_cli::esp32::chip::Esp32Chip> {
-        use waterui_cli::esp32::chip::Esp32Chip;
-        match self {
-            Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
-            Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
-            Self::Esp32p4 => Some(Esp32Chip::Esp32P4),
-            _ => None,
-        }
-    }
 }
 
 /// Target architecture for building.
@@ -289,7 +275,7 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         } else {
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
-    let mut project = Project::open(
+    let project = Project::open(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         managed_backends,
@@ -300,12 +286,6 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         && !super::confirm_experimental_backend(shell, backend_name(backend), args.yes)?
     {
         return Ok(None);
-    }
-
-    // Selecting an ESP32 platform pins the chip so the generated harness and
-    // build target follow the platform.
-    if let Some(chip) = args.platform.esp32_chip() {
-        project.set_esp32_chip(chip).await?;
     }
 
     let project = super::ensure_generated_backend(shell, project, backend).await?;
@@ -454,7 +434,6 @@ async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Re
                 }
             }
             TargetBackend::WinUi => build_winui(&project, context.build_options.clone()).await,
-            TargetBackend::Dew => build_esp32(&project, context.build_options.clone()).await,
         }
     })
     .await;
@@ -497,8 +476,10 @@ fn resolve_backend(
         TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
             TargetBackend::Hydrolysis
         }
+        // No backend serves ESP32 targets yet: Dew is archived and
+        // Hydrolysis's embedded host lands with #1601.
         TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
-            TargetBackend::Dew
+            bail!("{}", super::ESP32_UNSUPPORTED)
         }
     };
     let backend = backend_override.unwrap_or(default_backend);
@@ -520,9 +501,6 @@ fn resolve_backend(
         ) | (
             TargetPlatform::Windows,
             TargetBackend::Hydrolysis | TargetBackend::WinUi
-        ) | (
-            TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
-            TargetBackend::Dew
         )
     );
     if !supported {
@@ -533,10 +511,7 @@ fn resolve_backend(
              - Android: hydrolysis, android\n  \
              - macOS: apple, hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis, winui\n  \
-             - ESP32-S3: dew\n  \
-             - ESP32-C3: dew\n  \
-             - ESP32-P4: dew",
+             - Windows: hydrolysis, winui",
             backend,
             platform
         );
@@ -556,13 +531,10 @@ fn validate_arch_args(
     }
     // Hydrolysis on Android takes --arch like the Android backend; on its
     // desktop platforms the triple is the host's.
-    let arch_free_backend = matches!(
-        backend,
-        TargetBackend::Gtk4 | TargetBackend::WinUi | TargetBackend::Dew
-    ) || (backend == TargetBackend::Hydrolysis
-        && platform != TargetPlatform::Android);
+    let arch_free_backend = matches!(backend, TargetBackend::Gtk4 | TargetBackend::WinUi)
+        || (backend == TargetBackend::Hydrolysis && platform != TargetPlatform::Android);
     if arch_free_backend && arch.is_some() {
-        bail!("--arch is not supported for gtk4/hydrolysis/winui/dew backends");
+        bail!("--arch is not supported for gtk4/hydrolysis/winui backends");
     }
     Ok(())
 }
@@ -636,11 +608,6 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: WinUI backend is not supported on {platform:?}");
             }
             toolchain_checks::check_winui(host).await?;
-        }
-        TargetBackend::Dew => {
-            if platform.esp32_chip().is_none() {
-                bail!("Internal error: dew backend is not supported on {platform:?}");
-            }
         }
     }
     Ok(())
@@ -744,7 +711,6 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
         TargetBackend::WinUi => "WinUI",
-        TargetBackend::Dew => "Dew",
     }
 }
 

@@ -14,7 +14,6 @@ use nami::{Binding, Signal};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::ViewExt as _;
-use waterui_backend_core::widget::RadioIndicatorState;
 use waterui_controls::label::Label;
 use waterui_core::AnyView;
 use waterui_core::Environment;
@@ -811,14 +810,6 @@ fn flush_picker_label(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
 pub fn render_radio_picker(
     ctx: &mut WidgetRenderContext<'_>,
     owner: &Rc<RefCell<PickerRenderState>>,
@@ -829,7 +820,6 @@ pub fn render_radio_picker(
     let theme = ctx.theme();
     let metrics = theme.picker_metrics(PickerStyle::Radio);
     let radio_motion = theme.radio_selection_motion();
-    let selection_identity = selection.identity();
     let selected = ctx.renderer_mut().read_signal(&selection);
     let bounds = ctx.bounds;
     // The group heading sits in the top inset band; the option rows begin
@@ -872,21 +862,12 @@ pub fn render_radio_picker(
         );
         let indicator_radius = metrics.radio_indicator_size / 2.0;
         let is_selected = item.tag == selected;
-        let radio_indicator_state = if let Some(identity) = selection_identity {
-            ctx.renderer_mut().sample_radio_indicator_state(
-                AnimationKey::radio_indicator_with_discriminator(identity, row_index),
-                is_selected,
-                &radio_motion,
-            )
-        } else {
-            let selected_progress = if is_selected { 1.0 } else { 0.0 };
-            RadioIndicatorState {
-                selected: is_selected,
-                outer_selected_progress: selected_progress,
-                inner_scale: 1.0,
-                inner_opacity: selected_progress,
-            }
-        };
+        let radio_indicator_state = ctx.renderer_mut().sample_radio_indicator_state(
+            owner,
+            row_index,
+            is_selected,
+            &radio_motion,
+        );
         let hit_rect = row_rect;
         let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
         let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
@@ -1054,7 +1035,6 @@ fn segmented_label_rect(
     let y0 = (segment_rect.height() - height).mul_add(0.5, segment_rect.y0);
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
-use crate::animation::AnimationKey;
 
 /// Emits a retained picker's accessibility tree for the semantic walk — the
 /// same nodes `picker_accessibility` registers, with no bounds.

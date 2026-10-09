@@ -404,6 +404,9 @@ pub struct SemanticCore {
     /// Frame triggers shared with reactive closures; see [`FrameSignals`].
     signals: FrameSignals,
     animation_controller: AnimationController,
+    /// Reserves the address of every owner keying a live renderer-local
+    /// slot in `animation_controller`; begins and retires with it.
+    animation_owner_pins: AnimationOwnerPins,
     frame_instant: Instant,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
@@ -573,7 +576,8 @@ pub struct HydrolysisRenderer {
     /// the stable mounts under it and the resource registrations its content
     /// names. Entries whose device was reported lost are pruned at the next
     /// presented frame.
-    cherenkov_window: Option<crate::renderer::render::CherenkovWindow>,
+    cherenkov_window:
+        Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface>>,
     /// The engine work the last commit did, with the live mounted counts.
     last_mount_stats: mount::MountStats,
     /// The tests' [`MirrorTarget`](tests::mirror::MirrorTarget) mount.
@@ -751,6 +755,7 @@ impl SemanticCore {
             materialized_platform_views: Vec::new(),
             signals,
             animation_controller: AnimationController::default(),
+            animation_owner_pins: AnimationOwnerPins::default(),
             frame_instant,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
@@ -855,6 +860,23 @@ impl SemanticCore {
     /// `request_refresh`.
     pub(crate) fn has_patch_request(&self) -> bool {
         self.signals.has_patch_request()
+    }
+
+    /// Installs the window's host wake on the frame signals — the runner
+    /// calls it once at mount from `RuntimeWindow::new` with the closure
+    /// [`crate::platform::PlatformWindow::frame_wake`] supplies. See
+    /// [`FrameSignals::install_host_wake`].
+    pub(crate) fn install_host_wake(&self, wake: Rc<dyn Fn()>) {
+        self.signals.install_host_wake(wake);
+    }
+
+    /// Whether a frame request is still pending on the signals — what a
+    /// host that suppresses its wake inside the frame transaction (the
+    /// Android pump's `wants_next_frame`) counts into the transaction's
+    /// continuation, so a request raised mid-transaction is never lost.
+    #[allow(dead_code)] // read by the Android host and tests; see reports_ui_idle
+    pub(crate) fn has_pending_frame_request(&self) -> bool {
+        self.signals.has_pending_request()
     }
 
     /// Reports whether the root cell carries a `STRUCTURE` mark — the
