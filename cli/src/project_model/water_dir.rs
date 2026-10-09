@@ -863,6 +863,7 @@ pub async fn ensure_project_build_cache(
     let project_root = canonicalize_project_root(project_root)?;
     let water_home = water_home_dir(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
+
     ensure_project_build_cache_in(&project_root, &cache_root, &config).await
 }
 

@@ -87,7 +87,11 @@ impl WinUiBackend {
         )
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
-        .with_project_packages(project.project_packages(framework).await?))
+        .with_project_packages(
+            project
+                .project_packages(framework, &crate::platform::windows_target_triples())
+                .await?,
+        ))
     }
 }
 

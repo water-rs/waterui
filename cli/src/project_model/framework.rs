@@ -469,6 +469,7 @@ impl ResolvedFramework {
     fn validated(mut self) -> Result<Self> {
         require_framework_members(&self.metadata, &self.origin())?;
         self.android_min_api_level()?;
+        self.android_gradle_version()?;
         // The stable split is an invariant of the source, not of the writer:
         // a selection persisted before `experimental-packages` existed keeps
         // the withheld set inside `scaffold`, so re-derive it on load —
@@ -691,6 +692,27 @@ impl ResolvedFramework {
         value
             .as_integer()
             .and_then(|level| u32::try_from(level).ok())
+            .ok_or_else(|| eyre!("{} declares an invalid {KEY}: {value}", self.origin()))
+    }
+
+    /// The Gradle release every project this framework assembles runs — the
+    /// `android-gradle-version` its `[package.metadata.waterui]` table
+    /// declares. The scaffolded `gradle-wrapper.properties` renders it and
+    /// the in-tree Hydrolysis host pins the same release, so the version CI
+    /// exercises is the one a generated project's `./gradlew` downloads.
+    ///
+    /// # Errors
+    /// Returns an error when the resolved framework's metadata does not
+    /// declare a non-empty `android-gradle-version` string.
+    pub(crate) fn android_gradle_version(&self) -> Result<&str> {
+        const KEY: &str = "package.metadata.waterui.android-gradle-version";
+        let value = self
+            .metadata
+            .get("android-gradle-version")
+            .ok_or_else(|| eyre!("{} does not declare {KEY}", self.origin()))?;
+        value
+            .as_str()
+            .filter(|version| !version.trim().is_empty())
             .ok_or_else(|| eyre!("{} declares an invalid {KEY}: {value}", self.origin()))
     }
 
@@ -2383,11 +2405,11 @@ fn resolve_packages(
         }
         let package = match candidates.as_slice() {
             [package] => *package,
-            // An extracted crate the framework no longer builds never enters
-            // its lock — `waterui-dew` releases from water-rs/dew (#614) — so
-            // the scaffold's declared requirement is the resolution, the same
-            // `=<version>` the registry-source arm below produces for a crate
-            // the framework still carries.
+            // An extracted crate the framework does not build never enters
+            // its lock, so the scaffold's declared registry version is the
+            // resolution — the same `=<version>` the registry-source arm
+            // below produces for a crate the framework still carries. (A
+            // declared git pin took the branch above.)
             [] => {
                 packages.insert(
                     name.to_owned(),
@@ -2675,6 +2697,7 @@ pub(crate) mod test_fixtures {
             rust_version: None,
             metadata: toml::toml! {
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -2701,7 +2724,7 @@ pub(crate) mod test_fixtures {
     }
 
     /// The git-pinned scaffold packages the checkout fixture's
-    /// `[workspace.dependencies]` declares — `waterui-dew`, `waterui-gtk` and
+    /// `[workspace.dependencies]` declares — `waterui-gtk` and
     /// `waterui-winui` are git pins, so `stable` withholds them
     /// under `experimental-packages` while `dev`/`nightly` distribute the
     /// pins through `scaffold`.
@@ -2712,10 +2735,6 @@ pub(crate) mod test_fixtures {
             rev: seed.to_string().repeat(40),
         };
         BTreeMap::from([
-            (
-                "waterui-dew".to_owned(),
-                experimental("0.2.1", "https://github.com/water-rs/dew", 'b'),
-            ),
             (
                 "waterui-gtk".to_owned(),
                 experimental("0.2.0", "https://github.com/water-rs/gtk-backend", 'g'),
@@ -2746,7 +2765,7 @@ pub(crate) mod test_fixtures {
         let mut emitted =
             framework_scaffold(&manifest).expect("the checkout fixture emits its scaffold");
         let mut experimental_packages = BTreeMap::new();
-        for name in ["waterui-dew", "waterui-gtk", "waterui-winui"] {
+        for name in ["waterui-gtk", "waterui-winui"] {
             experimental_packages.insert(
                 name.to_owned(),
                 ExperimentalPackage {
@@ -2779,6 +2798,7 @@ pub(crate) mod test_fixtures {
             rust_version: None,
             metadata: toml::toml! {
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -2788,6 +2808,24 @@ pub(crate) mod test_fixtures {
             patches: PatchSet::default(),
             locked_versions: fixture_locked_versions(),
         }
+    }
+
+    /// The stable resolution [`stable_checkout_framework`] emits, except the
+    /// certified release names `repository` at `revision` — a fixture mirror
+    /// a render that resolves framework members fetches `waterui-apple`'s
+    /// `git` pin from. A `rev`-pinned dependency is a precise source Cargo's
+    /// `[patch]` cannot redirect, so only a real repository and commit make
+    /// the generated manifest resolvable offline.
+    pub fn stable_checkout_framework_at(repository: &str, revision: &str) -> ResolvedFramework {
+        let mut framework = stable_checkout_framework();
+        framework.source = Source::Stable {
+            release: Some(FrameworkRelease {
+                repository: repository.to_owned(),
+                revision: revision.to_owned(),
+                tag: "v0.4.1".to_owned(),
+            }),
+        };
+        framework
     }
 
     /// A `dev`-channel resolution: the manifest's scaffold facts — including
@@ -2834,6 +2872,41 @@ pub(crate) mod test_fixtures {
         framework
     }
 
+    /// Commit all of `root`'s content under the fixture identity and return
+    /// the `HEAD` revision — the git bookkeeping every repository fixture
+    /// shares. `root` must already be a worktree.
+    pub fn git_commit_all(root: &Path, message: &str) -> String {
+        let git = |args: &[&str]| -> String {
+            let output = crate::toolchain::Host::current()
+                .std_command("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .expect("git must run");
+            assert!(
+                output.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout)
+                .expect("git output is utf-8")
+                .trim()
+                .to_string()
+        };
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=waterui-test",
+            "-c",
+            "user.email=waterui-test@waterui.dev",
+            "commit",
+            "-qm",
+            message,
+        ]);
+        git(&["rev-parse", "HEAD"])
+    }
+
     /// A local framework checkout fixture: the repository's own root manifest
     /// and a lock naming the workspace crates, inside a git worktree. Like the
     /// repository today it carries no backend gitlink: both backend pins are
@@ -2843,31 +2916,15 @@ pub(crate) mod test_fixtures {
         std::fs::write(root.join("Cargo.toml"), local_checkout_manifest()).expect("manifest");
         let lock = test_lock();
         std::fs::write(root.join("Cargo.lock"), lock.to_string()).expect("lockfile");
-        let git = |args: &[String]| {
-            let status = crate::toolchain::Host::current()
-                .std_command("git")
-                .arg("-C")
-                .arg(root)
-                .args(args)
-                .status()
-                .expect("git must run");
-            assert!(status.success(), "git {args:?} failed");
-        };
-        git(&["init".to_owned(), "-q".to_owned()]);
-        git(&[
-            "add".to_owned(),
-            "Cargo.toml".to_owned(),
-            "Cargo.lock".to_owned(),
-        ]);
-        git(&[
-            "-c".to_owned(),
-            "user.name=waterui-test".to_owned(),
-            "-c".to_owned(),
-            "user.email=waterui-test@waterui.dev".to_owned(),
-            "commit".to_owned(),
-            "-qm".to_owned(),
-            "init".to_owned(),
-        ]);
+        let status = crate::toolchain::Host::current()
+            .std_command("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q"])
+            .status()
+            .expect("git must run");
+        assert!(status.success(), "git init failed");
+        let _ = git_commit_all(root, "init");
     }
 
     /// A checkout whose manifest declares no `apple-backend-path` — a
@@ -4353,6 +4410,7 @@ mod tests {
             rust_version: None,
             metadata: toml::toml! {
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -4419,6 +4477,25 @@ mod tests {
         invalid.metadata["android-min-api-level"] = toml::Value::String("31".to_owned());
         let error = invalid.android_min_api_level().unwrap_err().to_string();
         assert!(error.contains("android-min-api-level"), "{error}");
+    }
+
+    #[test]
+    fn android_gradle_version_is_required_framework_metadata() {
+        assert_eq!(
+            stable_framework().android_gradle_version().unwrap(),
+            "9.7.1"
+        );
+
+        let mut missing = stable_framework();
+        missing.metadata.remove("android-gradle-version");
+        let error = missing.android_gradle_version().unwrap_err().to_string();
+        assert!(error.contains("android-gradle-version"), "{error}");
+        assert!(error.contains("v0.4.1"), "{error}");
+
+        let mut invalid = stable_framework();
+        invalid.metadata["android-gradle-version"] = toml::Value::Integer(97);
+        let error = invalid.android_gradle_version().unwrap_err().to_string();
+        assert!(error.contains("android-gradle-version"), "{error}");
     }
 
     #[test]
@@ -4524,7 +4601,7 @@ mod tests {
         let gtk_revision = "b".repeat(40);
         let scaffold = BTreeMap::from([
             ("waterui-version".to_string(), "0.3.0".to_string()),
-            ("waterui-dew-version".to_string(), "0.2.1".to_string()),
+            ("hydrolysis-m3-version".to_string(), "0.2.1".to_string()),
             ("waterui-gtk-version".to_string(), "0.2.0".to_string()),
             (
                 "waterui-gtk-git".to_string(),
@@ -4535,9 +4612,9 @@ mod tests {
         let packages =
             resolve_packages(&scaffold, &lock, framework_repository(), &"a".repeat(40)).unwrap();
         assert!(packages["waterui"].git.is_some());
-        let dew = &packages["waterui-dew"];
-        assert!(dew.git.is_none());
-        assert_eq!(dew.version.as_ref().unwrap().to_string(), "=0.2.1");
+        let m3 = &packages["hydrolysis-m3"];
+        assert!(m3.git.is_none());
+        assert_eq!(m3.version.as_ref().unwrap().to_string(), "=0.2.1");
         let gtk = &packages["waterui-gtk"];
         assert_eq!(
             gtk.git.as_deref(),
@@ -4639,9 +4716,6 @@ mod tests {
         framework
             .scaffold
             .insert("waterui-gtk-rev".to_owned(), revision.clone());
-        framework
-            .scaffold
-            .insert("waterui-dew-version".to_owned(), "0.2.1".to_owned());
         let gtk = framework.dependency("waterui-gtk");
         assert_eq!(
             gtk.git.as_deref(),
@@ -4651,19 +4725,19 @@ mod tests {
         assert_eq!(gtk.version.as_ref().unwrap().to_string(), "^0.1.2");
         // A scaffold package declared by version alone still resolves the
         // registry pin.
-        let dew = framework.dependency("waterui-dew");
-        assert!(dew.git.is_none());
-        assert_eq!(dew.version.as_ref().unwrap().to_string(), "=0.2.1");
+        let m3 = framework.dependency("hydrolysis-m3");
+        assert!(m3.git.is_none());
+        assert_eq!(m3.version.as_ref().unwrap().to_string(), "=0.2.0");
     }
 
     #[test]
     fn stable_withholds_the_git_pinned_scaffold_packages() {
-        // `waterui-dew`, `waterui-gtk` and `waterui-winui` are git pins, so a
+        // `waterui-gtk` and `waterui-winui` are git pins, so a
         // stable manifest withholds them — recorded under
         // `experimental-packages`, absent from `scaffold` — and scaffolding
         // one fails naming the package, the channel and the fix.
         let framework = stable_framework();
-        for name in ["waterui-dew", "waterui-gtk", "waterui-winui"] {
+        for name in ["waterui-gtk", "waterui-winui"] {
             let package = &framework.experimental_packages[name];
             assert_eq!(package.rev.len(), 40);
             assert!(!framework.scaffold.contains_key(&format!("{name}-version")));
@@ -4694,7 +4768,7 @@ mod tests {
     #[test]
     fn dev_and_nightly_distribute_the_experimental_packages() {
         for framework in [dev_framework(), nightly_framework()] {
-            for name in ["waterui-dew", "waterui-gtk", "waterui-winui"] {
+            for name in ["waterui-gtk", "waterui-winui"] {
                 framework
                     .require_distributable(name)
                     .unwrap_or_else(|error| panic!("{name} must scaffold off stable: {error}"));
@@ -4728,7 +4802,7 @@ mod tests {
         framework.experimental_packages.clear();
 
         let framework = framework.validated().expect("fixture validates");
-        assert_eq!(framework.experimental_packages.len(), 3);
+        assert_eq!(framework.experimental_packages.len(), 2);
         assert!(
             framework.require_distributable("waterui-winui").is_err(),
             "a stale `waterui-winui-git` entry must not resurrect the package"
@@ -4740,7 +4814,7 @@ mod tests {
         let repository = framework_repository();
         let revision = "a".repeat(40);
         let lock_sha256 = "f".repeat(64);
-        let metadata = toml::toml! { android-min-api-level = 31 };
+        let metadata = toml::toml! { android-min-api-level = 31 android-gradle-version = "9.7.1" };
         let mut scaffold = BTreeMap::from([
             ("waterui-version".to_owned(), "0.4.1".to_owned()),
             ("waterui-winui-version".to_owned(), "0.1.0".to_owned()),
@@ -4825,7 +4899,7 @@ mod tests {
             },
         );
         framework.packages.insert(
-            "waterui-dew".to_owned(),
+            "hydrolysis-m3".to_owned(),
             DependencyDetail {
                 version: Some("=0.2.1".parse().unwrap()),
                 ..Default::default()
@@ -4859,8 +4933,8 @@ mod tests {
         )));
         // The registry pin holds only its exact version.
         let registry = || "registry+https://github.com/rust-lang/crates.io-index".to_owned();
-        assert!(framework.sanctioned_source(&identity("waterui-dew", "0.2.1", registry())));
-        assert!(!framework.sanctioned_source(&identity("waterui-dew", "0.2.2", registry())));
+        assert!(framework.sanctioned_source(&identity("hydrolysis-m3", "0.2.1", registry())));
+        assert!(!framework.sanctioned_source(&identity("hydrolysis-m3", "0.2.2", registry())));
     }
 
     /// The exact requirement a stable channel writes for one scaffold entry.
@@ -5533,6 +5607,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             experimental_packages: BTreeMap::new(),
             metadata: toml::toml! {
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -5648,7 +5723,6 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             "scaffold": {
                 "hydrolysis-path": "backends/hydrolysis",
                 "hydrolysis-m3-version": "0.2.0",
-                "waterui-dew-version": "0.2.1",
                 "waterui-gtk-version": "0.1.2",
                 "apple-backend-path": "backends/apple",
                 "android-backend-url": "https://github.com/water-rs/android-backend.git",
@@ -5656,6 +5730,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             "metadata": {
                 "minimum-cli-version": "0.1.0",
                 "android-min-api-level": 31,
+                "android-gradle-version": "9.7.1",
                 "apple-backend-path": "backends/apple",
                 "hydrolysis-path": "backends/hydrolysis",
             },
@@ -5708,15 +5783,6 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 (
                     "hydrolysis-m3-version".to_owned(),
                     workspace("hydrolysis-m3")
-                ),
-                ("waterui-dew-version".to_owned(), workspace("waterui-dew")),
-                (
-                    "waterui-dew-git".to_owned(),
-                    "https://github.com/water-rs/dew".to_owned()
-                ),
-                (
-                    "waterui-dew-rev".to_owned(),
-                    "b64f6759a3ebe7ac621bad84be00fe431f978119".to_owned()
                 ),
                 ("waterui-gtk-version".to_owned(), workspace("waterui-gtk")),
                 (
