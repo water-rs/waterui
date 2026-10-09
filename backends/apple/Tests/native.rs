@@ -171,6 +171,10 @@ fn base_trials() -> Vec<Trial> {
             resolve::toggle_leaves_follow_the_stretch_rule();
             Ok(())
         }),
+        Trial::test("resolve::stepper_leaves_follow_the_stretch_rule", || {
+            resolve::stepper_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
         Trial::test("resolve::toggle_rows_place_the_control_by_kind", || {
             resolve::toggle_rows_place_the_control_by_kind();
             Ok(())
@@ -722,6 +726,7 @@ mod resolve {
     use waterui::component::form::picker::{PickerItem, picker};
     use waterui::component::form::secure::{Secure, SecureField};
     use waterui::component::slider::slider;
+    use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
     use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
@@ -950,6 +955,55 @@ mod resolve {
         ];
         for (name, toggle, axis) in cases {
             let leaf = render(toggle);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 400.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(400.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                400.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 400 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
+    /// `docs/layout-spec.md` §3 and §6 over label visibility: a stepper is
+    /// `Horizontal` and answers the proposed width only while its label is
+    /// visible; a hidden label answers the buttons' intrinsic size
+    /// (water-rs/waterui#2364).
+    pub fn stepper_leaves_follow_the_stretch_rule() {
+        let quantity = binding(3_i32);
+        let cases = [
+            (
+                "visible label",
+                stepper("Quantity", &quantity),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "hidden label",
+                stepper("Quantity", &quantity).hide_label(),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, stepper, axis) in cases {
+            let leaf = render(stepper);
             assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
             let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
             assert!(
