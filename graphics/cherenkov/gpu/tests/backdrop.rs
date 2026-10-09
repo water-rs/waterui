@@ -1,6 +1,6 @@
 //! Backdrop groups: bounded f16 captures sampled by member layers.
 
-use cherenkov::kurbo::{Circle, Ellipse, Rect, RoundedRect};
+use cherenkov::kurbo::{Affine, Circle, Ellipse, Rect, RoundedRect};
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
     BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
@@ -728,7 +728,7 @@ fn logical_rim_band(
             );
         }));
         tx[surface.root()].push(&recording);
-        tx[&recording].transform(cherenkov::kurbo::Affine::scale(s));
+        tx[&recording].transform(Affine::scale(s));
         tx[&recording].push(&member);
         tx[&member].clip(Rect::new(8.0, 8.0, 40.0, 40.0)).backdrop(
             group
@@ -2644,6 +2644,151 @@ fn bridge_pixel_reads_the_union_field() -> Result<(), Box<dyn std::error::Error>
     assert!((sdf - -2.0125).abs() <= 0.05, "px.sdf {sdf}, expected −2.0125");
     assert!((own - 2.5).abs() <= 0.05, "px.own_sdf {own}, expected 2.5");
     assert!((nx - 1.0).abs() <= 0.05, "px.normal.x {nx}, expected +1");
+    Ok(())
+}
+}
+
+split_test! {
+/// `backdrop_field` at a displaced point of a union member: from (16.5,
+/// 16.5), deep inside `a`, the read at (22.75, 16.5) lands in the bridge
+/// — `d_a = 2.75`, `d_b = 3.25`, folded `m = 2.75 − (19.5/20)²·5`, the
+/// gradient `0.5125·∇a + 0.4875·∇b` pointing +x, and `a`'s ownership
+/// `0.75 / (0.75 + 0.25)` from `a_i = clamp(0.5 + f_i / 2, 0, 1)`.
+fn backdrop_field_reads_the_union_at_a_displaced_point() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            let f = backdrop_field(px.p + vec2<f32>(6.25, 0.0));
+            return vec4<f32>(
+                (f.sdf + 10.0) / 20.0,
+                f.normal.x * 0.5 + 0.5,
+                f.normal.y * 0.5 + 0.5,
+                f.weight
+            );
+        }",
+    ))?;
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL
+            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 0.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[&a]
+            .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+            .backdrop(group.sample_with(shader.effect(Vec::new())));
+        tx[surface.root()].push(&b);
+        tx[&b]
+            .clip(Rect::new(26.0, 8.0, 42.0, 24.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // `a` owns (16.5, 16.5) outright at coverage 1 over a transparent
+    // canvas, so the encoding lands verbatim.
+    let px = pixel(&readback, 16, 16);
+    let (sdf, nx, ny, weight) = (
+        px[0].mul_add(20.0, -10.0),
+        px[1].mul_add(2.0, -1.0),
+        px[2].mul_add(2.0, -1.0),
+        px[3],
+    );
+    assert!((sdf - -2.003_125).abs() <= 0.01, "field sdf {sdf}, expected −2.003125");
+    assert!((nx - 1.0).abs() <= 0.01, "field normal.x {nx}, expected +1");
+    assert!(ny.abs() <= 0.01, "field normal.y {ny}, expected 0");
+    assert!((weight - 0.75).abs() <= 0.01, "ownership {weight}, expected 0.75");
+    Ok(())
+}
+}
+
+split_fn! {
+/// A solo member under `translate(10, 6) · scale(2)` clipped to the
+/// rounded rect `(0, 0)–(12, 10)` with radius 3 — `(10, 6)–(34, 26)`
+/// with radius 6 in device pixels — painted by `shader` over a
+/// transparent canvas.
+fn transformed_rounded_member(
+    engine: &Engine<Gpu>,
+    shader: &cherenkov::BackdropShader,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
+    let group = surface.backdrop_group_unfiltered(cherenkov::BackdropSpec::FULL);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 0.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .transform(Affine::translate((10.0, 6.0)) * Affine::scale(2.0))
+            .clip(RoundedRect::new(0.0, 0.0, 12.0, 10.0, 3.0))
+            .backdrop(group.sample_with(shader.effect(Vec::new())));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+split_test! {
+/// A solo member's `backdrop_field` read at a displaced point is its own
+/// clip field there, exact in a corner where `d(p) − n·shift` is not:
+/// from (28.5, 21.5) the read at (31.5, 24.5) lies `(3.5, 4.5)` from the
+/// bottom-right corner centre (28, 20), so the distance is `√32.5 − 6`,
+/// the normal `(3.5, 4.5) / √32.5`, the ownership 1.
+fn backdrop_field_reads_a_solo_corner_at_a_displaced_point() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            let f = backdrop_field(px.p + vec2<f32>(3.0, 3.0));
+            return vec4<f32>(
+                (f.sdf + 10.0) / 20.0,
+                f.normal.x * 0.5 + 0.5,
+                f.normal.y * 0.5 + 0.5,
+                f.weight
+            );
+        }",
+    ))?;
+    let readback = wait!(transformed_rounded_member(&engine, &shader))?;
+    let px = pixel(&readback, 28, 21);
+    let (sdf, nx, ny, weight) = (
+        px[0].mul_add(20.0, -10.0),
+        px[1].mul_add(2.0, -1.0),
+        px[2].mul_add(2.0, -1.0),
+        px[3],
+    );
+    let len = 32.5f32.sqrt();
+    assert!((sdf - (len - 6.0)).abs() <= 0.01, "field sdf {sdf}, expected {}", len - 6.0);
+    assert!((nx - 3.5 / len).abs() <= 0.01, "field normal.x {nx}, expected {}", 3.5 / len);
+    assert!((ny - 4.5 / len).abs() <= 0.01, "field normal.y {ny}, expected {}", 4.5 / len);
+    assert!((weight - 1.0).abs() <= 1e-6, "ownership {weight}, expected 1");
+    Ok(())
+}
+}
+
+split_test! {
+/// `px.local` is the member pixel in the member layer's own space: under
+/// `translate(10, 6) · scale(2)`, device (28.5, 21.5) is (9.25, 7.75)
+/// and device (12.5, 8.5) is (1.25, 1.25).
+fn shader_effect_reads_the_member_local_position() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return vec4<f32>(px.local / 16.0, 0.0, 1.0);
+        }",
+    ))?;
+    let readback = wait!(transformed_rounded_member(&engine, &shader))?;
+    assert_pixel(pixel(&readback, 28, 21), [9.25 / 16.0, 7.75 / 16.0, 0.0, 1.0], 1e-4);
+    assert_pixel(pixel(&readback, 12, 8), [1.25 / 16.0, 1.25 / 16.0, 0.0, 1.0], 1e-4);
     Ok(())
 }
 }
