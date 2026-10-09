@@ -469,6 +469,7 @@ impl ResolvedFramework {
     fn validated(mut self) -> Result<Self> {
         require_framework_members(&self.metadata, &self.origin())?;
         self.android_min_api_level()?;
+        self.android_gradle_version()?;
         // The stable split is an invariant of the source, not of the writer:
         // a selection persisted before `experimental-packages` existed keeps
         // the withheld set inside `scaffold`, so re-derive it on load —
@@ -691,6 +692,27 @@ impl ResolvedFramework {
         value
             .as_integer()
             .and_then(|level| u32::try_from(level).ok())
+            .ok_or_else(|| eyre!("{} declares an invalid {KEY}: {value}", self.origin()))
+    }
+
+    /// The Gradle release every project this framework assembles runs — the
+    /// `android-gradle-version` its `[package.metadata.waterui]` table
+    /// declares. The scaffolded `gradle-wrapper.properties` renders it and
+    /// the in-tree Hydrolysis host pins the same release, so the version CI
+    /// exercises is the one a generated project's `./gradlew` downloads.
+    ///
+    /// # Errors
+    /// Returns an error when the resolved framework's metadata does not
+    /// declare a non-empty `android-gradle-version` string.
+    pub(crate) fn android_gradle_version(&self) -> Result<&str> {
+        const KEY: &str = "package.metadata.waterui.android-gradle-version";
+        let value = self
+            .metadata
+            .get("android-gradle-version")
+            .ok_or_else(|| eyre!("{} does not declare {KEY}", self.origin()))?;
+        value
+            .as_str()
+            .filter(|version| !version.trim().is_empty())
             .ok_or_else(|| eyre!("{} declares an invalid {KEY}: {value}", self.origin()))
     }
 
@@ -2675,6 +2697,7 @@ pub(crate) mod test_fixtures {
             rust_version: None,
             metadata: toml::toml! {
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -2779,6 +2802,7 @@ pub(crate) mod test_fixtures {
             rust_version: None,
             metadata: toml::toml! {
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -4390,6 +4414,7 @@ mod tests {
             rust_version: None,
             metadata: toml::toml! {
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -4456,6 +4481,25 @@ mod tests {
         invalid.metadata["android-min-api-level"] = toml::Value::String("31".to_owned());
         let error = invalid.android_min_api_level().unwrap_err().to_string();
         assert!(error.contains("android-min-api-level"), "{error}");
+    }
+
+    #[test]
+    fn android_gradle_version_is_required_framework_metadata() {
+        assert_eq!(
+            stable_framework().android_gradle_version().unwrap(),
+            "9.7.1"
+        );
+
+        let mut missing = stable_framework();
+        missing.metadata.remove("android-gradle-version");
+        let error = missing.android_gradle_version().unwrap_err().to_string();
+        assert!(error.contains("android-gradle-version"), "{error}");
+        assert!(error.contains("v0.4.1"), "{error}");
+
+        let mut invalid = stable_framework();
+        invalid.metadata["android-gradle-version"] = toml::Value::Integer(97);
+        let error = invalid.android_gradle_version().unwrap_err().to_string();
+        assert!(error.contains("android-gradle-version"), "{error}");
     }
 
     #[test]
@@ -4777,7 +4821,7 @@ mod tests {
         let repository = framework_repository();
         let revision = "a".repeat(40);
         let lock_sha256 = "f".repeat(64);
-        let metadata = toml::toml! { android-min-api-level = 31 };
+        let metadata = toml::toml! { android-min-api-level = 31 android-gradle-version = "9.7.1" };
         let mut scaffold = BTreeMap::from([
             ("waterui-version".to_owned(), "0.4.1".to_owned()),
             ("waterui-winui-version".to_owned(), "0.1.0".to_owned()),
@@ -5570,6 +5614,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             experimental_packages: BTreeMap::new(),
             metadata: toml::toml! {
                 android-min-api-level = 31
+                android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
                 hydrolysis-path = "backends/hydrolysis"
             },
@@ -5693,6 +5738,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             "metadata": {
                 "minimum-cli-version": "0.1.0",
                 "android-min-api-level": 31,
+                "android-gradle-version": "9.7.1",
                 "apple-backend-path": "backends/apple",
                 "hydrolysis-path": "backends/hydrolysis",
             },

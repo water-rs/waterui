@@ -1411,6 +1411,16 @@ mod tests {
             assert!(gradle.contains("isShrinkResources = true"), "{gradle}");
             assert!(gradle.contains("proguard-rules.pro"), "{gradle}");
 
+            let wrapper = files["gradle/wrapper/gradle-wrapper.properties"].as_str();
+            let declared = crate::framework::test_fixtures::stable_checkout_framework()
+                .android_gradle_version()
+                .expect("the fixture declares its Gradle release")
+                .to_owned();
+            assert!(
+                wrapper.contains(&format!("gradle-{declared}-bin.zip")),
+                "the scaffolded wrapper pins the declared Gradle release: {wrapper}"
+            );
+
             let manifest = files["app/src/main/AndroidManifest.xml"].as_str();
             assert!(
                 manifest.contains("android:name=\"android.permission.INTERNET\""),
