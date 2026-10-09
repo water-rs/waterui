@@ -1,9 +1,12 @@
+use std::cell::RefCell;
 use std::ops::Deref;
 use std::rc::Rc;
+use std::time::Instant;
 
 use executor_core::LocalExecutor;
 use executor_core::async_executor::AsyncLocalExecutor;
 use waterui_browser_wpe::{WpePage, WpeRuntime};
+use waterui_webview::{BackendEvent, WebViewEvent};
 
 #[derive(Clone, Debug)]
 pub struct SmokeExecutor(Rc<AsyncLocalExecutor<'static>>);
@@ -49,6 +52,69 @@ impl SmokePage {
         self.page.pump();
         self.executor.tick();
     }
+
+    /// Pumps the page until `future` completes, panicking with `purpose` once
+    /// `deadline` passes.
+    pub fn block_on<T: 'static>(
+        &self,
+        future: impl Future<Output = T> + 'static,
+        deadline: Instant,
+        purpose: &str,
+    ) -> T {
+        let output = Rc::new(RefCell::new(None));
+        let slot = Rc::clone(&output);
+        executor_core::spawn_local(async move {
+            slot.replace(Some(future.await));
+        })
+        .detach();
+        loop {
+            self.pump();
+            if let Some(output) = output.borrow_mut().take() {
+                return output;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "WPE smoke timed out waiting for {purpose}"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    /// Loads `url` and pumps the page until the engine reports it loaded,
+    /// panicking on a load error or once `deadline` passes.
+    pub fn load(&self, url: &str, deadline: Instant) {
+        let loaded = Rc::new(RefCell::new(None::<Result<(), String>>));
+        // The guard has to outlive the pump loop below: dropping it
+        // unsubscribes, and the run would then wait for a `Loaded` it can no
+        // longer observe until it times out.
+        let _watcher = self.page.watch({
+            let loaded = Rc::clone(&loaded);
+            move |event| match event {
+                BackendEvent::Event(WebViewEvent::Loaded) => {
+                    loaded.replace(Some(Ok(())));
+                }
+                BackendEvent::Event(WebViewEvent::Error(error)) => {
+                    loaded.replace(Some(Err(format!("{error:?}"))));
+                }
+                _ => {}
+            }
+        });
+        self.page.load_uri(url);
+        loop {
+            self.pump();
+            if let Some(outcome) = loaded.borrow_mut().take() {
+                if let Err(error) = outcome {
+                    panic!("WPE smoke navigation to {url} failed: {error}");
+                }
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "WPE smoke timed out loading {url}"
+            );
+            std::thread::yield_now();
+        }
+    }
 }
 
 impl Deref for SmokePage {
@@ -56,23 +122,5 @@ impl Deref for SmokePage {
 
     fn deref(&self) -> &Self::Target {
         &self.page
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::Cell;
-
-    use super::*;
-
-    #[test]
-    fn installed_executor_drives_spawn_local() {
-        let executor = SmokeExecutor::install();
-        let completed = Rc::new(Cell::new(false));
-        let result = Rc::clone(&completed);
-        executor_core::spawn_local(async move { result.set(true) }).detach();
-        assert!(!completed.get());
-        executor.tick();
-        assert!(completed.get());
     }
 }

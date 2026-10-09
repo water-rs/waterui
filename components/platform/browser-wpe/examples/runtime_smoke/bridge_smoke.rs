@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::rc::Rc;
@@ -12,7 +12,7 @@ use futures::channel::oneshot;
 use suiteki::Str;
 use waterui_browser_wpe::WpeRuntime;
 use waterui_url::Url;
-use waterui_webview::{BackendEvent, BridgeOrigins, JsReply, OriginPolicy, WebViewEvent};
+use waterui_webview::{BridgeOrigins, JsReply, OriginPolicy};
 
 use super::executor::{SmokeExecutor, SmokePage};
 
@@ -235,7 +235,9 @@ fn serve_request(
     let _ = stream.flush();
 }
 
-fn install_bridge(page: &SmokePage) {
+/// Installs the WPE transport and the shared bridge script, as the WPE web view
+/// controller does.
+pub fn install_bridge_scripts(page: &SmokePage) {
     page.add_script(
         "waterui:wpe-transport",
         include_str!("../../src/transport.js"),
@@ -246,6 +248,10 @@ fn install_bridge(page: &SmokePage) {
         waterui_webview::DOCUMENT_START_SCRIPT,
         false,
     );
+}
+
+fn install_bridge(page: &SmokePage) {
+    install_bridge_scripts(page);
     page.add_script(
         "waterui:wpe-smoke-observer",
         r#"
@@ -288,31 +294,16 @@ fn install_probe_handler(page: &SmokePage, calls: Arc<Mutex<Vec<String>>>) {
     );
 }
 
-fn await_page_script(page: &SmokePage, body: &str, deadline: Instant) -> serde_json::Value {
-    let result = Rc::new(RefCell::new(None));
-    let result_slot = Rc::clone(&result);
-    let page_for_future = page.clone();
+/// Runs `body` as an async page function and returns its JSON result.
+pub fn await_page_script(page: &SmokePage, body: &str, deadline: Instant) -> serde_json::Value {
+    let script_page = page.clone();
     let body = body.to_owned();
-    executor_core::spawn_local(async move {
-        result_slot.replace(Some(page_for_future.call_async_javascript(&body).await));
-    })
-    .detach();
-
-    loop {
-        page.pump();
-        if result.borrow().is_some() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "WPE bridge smoke timed out waiting for a page script"
-        );
-        thread::yield_now();
-    }
-    let result = result
-        .borrow_mut()
-        .take()
-        .expect("page script result was set")
+    let result = page
+        .block_on(
+            async move { script_page.call_async_javascript(&body).await },
+            deadline,
+            "a page script",
+        )
         .unwrap_or_else(|error| panic!("WPE page script failed: {error}"));
     serde_json::from_str(result.as_str())
         .unwrap_or_else(|error| panic!("WPE page script returned invalid JSON: {error}"))
@@ -325,58 +316,18 @@ fn await_load(
     expected_marker: &str,
     deadline: Instant,
 ) {
-    let loaded = Rc::new(Cell::new(false));
-    let load_error = Rc::new(RefCell::new(None::<String>));
-    let _watcher = page.watch({
-        let loaded = Rc::clone(&loaded);
-        let load_error = Rc::clone(&load_error);
-        move |event| match event {
-            BackendEvent::Event(WebViewEvent::Loaded) => loaded.set(true),
-            BackendEvent::Event(WebViewEvent::Error(failure)) => {
-                load_error.replace(Some(format!("{failure:?}")));
-            }
-            _ => {}
-        }
-    });
-    page.load_uri(url);
-    while !loaded.get() {
-        page.pump();
-        if let Some(error) = load_error.borrow().as_deref() {
-            panic!("WPE smoke navigation to {url} failed: {error}");
-        }
-        assert!(
-            Instant::now() < deadline,
-            "WPE bridge smoke timed out loading {url}"
-        );
-        thread::yield_now();
-    }
+    page.load(url, deadline);
     server.wait_for_tag(page, expected_marker, deadline);
 }
 
 fn await_process_identifier(page: &SmokePage, deadline: Instant) -> String {
-    let identifier = Rc::new(RefCell::new(None));
-    let identifier_slot = Rc::clone(&identifier);
-    let page_for_future = page.clone();
-    executor_core::spawn_local(async move {
-        identifier_slot.replace(Some(page_for_future.web_process_identifier().await));
-    })
-    .detach();
-    loop {
-        page.pump();
-        if identifier.borrow().is_some() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "WPE bridge smoke timed out querying the WebProcess identifier"
-        );
-        thread::yield_now();
-    }
-    identifier
-        .borrow_mut()
-        .take()
-        .expect("WebProcess identifier result was set")
-        .unwrap_or_else(|error| panic!("WPE process identifier query failed: {error}"))
+    let identified_page = page.clone();
+    page.block_on(
+        async move { identified_page.web_process_identifier().await },
+        deadline,
+        "the WebProcess identifier",
+    )
+    .unwrap_or_else(|error| panic!("WPE process identifier query failed: {error}"))
 }
 
 fn await_channel<T>(
@@ -675,12 +626,16 @@ pub fn run(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
         !calls.iter().any(|tag| tag.starts_with("E-")),
         "an excluded or provisional E request reached a Rust handler: {calls:?}"
     );
-    eprintln!("PASS excluded document: bridge rejection before and after same-document URI change");
-    eprintln!("PASS E->A provisional navigation: E rejected while A response is held");
-    eprintln!("PASS E->A process-swap commit: distinct WebProcess identifiers");
-    eprintln!("PASS admitted-page bridge call and reply after E->A commit");
-    eprintln!("PASS admitted document: bridge call and reply after same-document URI change");
-    eprintln!("PASS A->E navigation: process swap and excluded-document rejection");
-    eprintln!("PASS document-bound reply: delayed A reply cannot invoke E's replacement resolver");
-    eprintln!("PASS handler audit: no excluded-document request reached Rust");
+    tracing::info!(
+        "PASS excluded document: bridge rejection before and after same-document URI change"
+    );
+    tracing::info!("PASS E->A provisional navigation: E rejected while A response is held");
+    tracing::info!("PASS E->A process-swap commit: distinct WebProcess identifiers");
+    tracing::info!("PASS admitted-page bridge call and reply after E->A commit");
+    tracing::info!("PASS admitted document: bridge call and reply after same-document URI change");
+    tracing::info!("PASS A->E navigation: process swap and excluded-document rejection");
+    tracing::info!(
+        "PASS document-bound reply: delayed A reply cannot invoke E's replacement resolver"
+    );
+    tracing::info!("PASS handler audit: no excluded-document request reached Rust");
 }
