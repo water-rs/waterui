@@ -30,8 +30,6 @@
 //! its own. Which content occludes a hosted element for input is the
 //! host's decision, as it is for an `NSView` on macOS.
 
-use std::fmt::Write as _;
-
 use kurbo::{Affine, Size};
 use rustc_hash::FxHashMap;
 use wasm_bindgen::JsCast as _;
@@ -43,6 +41,7 @@ use super::{
     Candidate, Composition, Compositor, Level, Placement, PlaneContent, Presentation, SystemPlanes,
 };
 use crate::interop::ExternalFrame;
+use crate::render::path::shape_path;
 use crate::render::present::{OutputRequest, WindowSurface};
 
 /// The most hosted planes on one surface. Each one opens an engine part
@@ -490,7 +489,7 @@ impl DomPlanes {
                 attributes(
                     &clips[count].shape,
                     &[
-                        ("d", &shape.to_path(CLIP_TOLERANCE).to_svg()),
+                        ("d", &shape_path(shape, CLIP_TOLERANCE).to_svg()),
                         ("clip-rule", clip_rule(shape)),
                         (
                             "transform",
@@ -584,10 +583,8 @@ fn release(node: HostedNode) {
 
 /// The CSS and SVG `matrix()` of `transform`.
 fn css_matrix(transform: Affine) -> String {
-    let [a, b, c, d, e, f] = transform.as_coeffs();
-    let mut text = String::with_capacity(64);
-    write!(text, "matrix({a},{b},{c},{d},{e},{f})").expect("writing to a String succeeds");
-    text
+    let [xx, yx, xy, yy, x, y] = transform.as_coeffs();
+    format!("matrix({xx},{yx},{xy},{yy},{x},{y})")
 }
 
 /// The SVG fill rule a clip shape is filled with.
