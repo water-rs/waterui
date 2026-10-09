@@ -720,6 +720,48 @@ internal class HydrolysisAccessibilityProvider(
         return createAccessibilityNodeInfo(id.toInt())
     }
 
+    /**
+     * `View.findViewsWithText`'s contract for the virtual tree: the nodes
+     * whose served `text` or `contentDescription` contains the query,
+     * case-insensitively, in document order. The host id searches the whole
+     * semantic tree; a virtual id searches only its own subtree. `nodeInfo`
+     * serves `value` (or `label` as its fallback) as `text` and `label` with
+     * `description` joined by a line break as `contentDescription`, so a query
+     * without a line break hits a served field exactly when it hits one of
+     * those three properties — matching them first keeps a miss from building
+     * a node. The matches are built through
+     * [createAccessibilityNodeInfo] like every other served node.
+     */
+    override fun findAccessibilityNodeInfosByText(
+        text: String?,
+        virtualViewId: Int,
+    ): List<AccessibilityNodeInfo> {
+        ensureTree()
+        if (text.isNullOrEmpty()) return emptyList()
+        val out = ArrayList<AccessibilityNodeInfo>()
+        val stack = ArrayDeque<Long>()
+        val subtreeRoot = if (virtualViewId == HOST_ID) rootId else virtualViewId.toLong()
+        if (nodes.containsKey(subtreeRoot)) stack.add(subtreeRoot)
+        while (stack.isNotEmpty()) {
+            val id = stack.removeLast()
+            val node = nodes[id] ?: continue
+            if (matchesTextQuery(node, text) && id <= Int.MAX_VALUE) {
+                createAccessibilityNodeInfo(id.toInt())?.let(out::add)
+            }
+            val children = childrenOf[id].orEmpty()
+            for (i in children.indices.reversed()) stack.add(children[i])
+        }
+        return out
+    }
+
+    /** Whether the query lands in the `value`/`label`/`description` `nodeInfo` serves. */
+    private fun matchesTextQuery(node: JSONObject, query: String): Boolean {
+        val properties = props(node) ?: return false
+        return properties.optString("value").contains(query, ignoreCase = true) ||
+            properties.optString("label").contains(query, ignoreCase = true) ||
+            properties.optString("description").contains(query, ignoreCase = true)
+    }
+
     // ------------------------------------------------------------------
     // Autofill reads the same tree — editable nodes and their geometry in
     // host-view physical px.
