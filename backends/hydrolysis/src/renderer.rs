@@ -576,7 +576,8 @@ pub struct HydrolysisRenderer {
     /// the stable mounts under it and the resource registrations its content
     /// names. Entries whose device was reported lost are pruned at the next
     /// presented frame.
-    cherenkov_window: Option<crate::renderer::render::CherenkovWindow>,
+    cherenkov_window:
+        Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface>>,
     /// The engine work the last commit did, with the live mounted counts.
     last_mount_stats: mount::MountStats,
     /// The tests' [`MirrorTarget`](tests::mirror::MirrorTarget) mount.

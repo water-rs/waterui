@@ -1248,7 +1248,7 @@ impl RecoveringSurface {
     }
 }
 
-impl SurfaceProvider for RecoveringSurface {
+impl crate::platform::PresentationSurface for RecoveringSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         self.inner.adapter()
     }
@@ -1265,36 +1265,30 @@ impl SurfaceProvider for RecoveringSurface {
         self.inner.device_loss()
     }
 
-    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        self.acquire_count += 1;
-        self.first_error
-            .take()
-            .map_or_else(|| self.inner.acquire(), Err)
-    }
-
-    fn present(&mut self, frame: SurfaceFrame) {
-        self.inner.present(frame);
-    }
-
     fn size(&self) -> (u32, u32) {
         self.inner.size()
-    }
-
-    fn format(&self) -> wgpu::TextureFormat {
-        self.inner.format()
     }
 
     fn resize(&mut self, width: u32, height: u32) {
         self.resize_count += 1;
         self.inner.resize(width, height);
     }
+}
 
-    fn gpu_context_id(&self) -> u64 {
-        self.inner.gpu_context_id()
+impl SurfaceProvider for RecoveringSurface {
+    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
+        self.acquire_count += 1;
+        self.first_error
+            .take()
+            .map_or_else(|| Ok(self.inner.acquire()), Err)
     }
 
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        self.inner.shared_device()
+    fn present(&mut self, frame: SurfaceFrame) {
+        self.inner.present(frame);
+    }
+
+    fn format(&self) -> wgpu::TextureFormat {
+        self.inner.format()
     }
 }
 
