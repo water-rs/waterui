@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use waterui_cli::build::{BuildProgress, CompileEvent};
 use waterui_cli::device::PanicInfo;
-use waterui_cli::utils::set_std_output;
 
 /// ANSI styles for output.
 mod styles {
@@ -344,18 +343,6 @@ impl Shell {
         crash_report: Option<&std::path::Path>,
     ) {
         let _ = self.panic_report(&PanicReport::from_panic(panic, extra, crash_report));
-    }
-
-    /// Temporarily forwards child output while running an interactive command.
-    pub async fn display_output<Fut: Future>(&self, fut: Fut) -> Fut::Output {
-        if self.is_interactive() {
-            set_std_output(true);
-            let result = fut.await;
-            set_std_output(false);
-            result
-        } else {
-            fut.await
-        }
     }
 
     /// Clears all progress bars before the command exits.

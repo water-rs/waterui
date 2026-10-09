@@ -18,6 +18,7 @@ use crate::renderer::accessibility::{
     AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
 };
 use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
+use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
@@ -84,8 +85,13 @@ impl SemanticWindow {
         );
         core.set_window_id(window_id);
         core.set_window_closable(window.closable);
+        // The semantic pump is driven explicitly by the harness — a request
+        // recorded on the frame signals is consumed by the next `pump` the
+        // test calls, so the host wake does nothing.
+        core.install_host_wake(Rc::new(|| {}));
         #[cfg(feature = "accessibility")]
         {
+            core.set_window_frame(kurbo_frame(window.frame.snapshot()));
             core.use_semantic_keyboard_activation();
             core.use_semantic_walk();
         }
@@ -494,6 +500,19 @@ impl SemanticRuntime {
     }
 }
 
+/// The window's declared logical frame in `SemanticCore`'s kurbo space — the
+/// one geometry fact the semantic walk keeps so emit paths can resolve
+/// viewport-dependent decisions a layout would have made.
+#[cfg(feature = "accessibility")]
+fn kurbo_frame(frame: waterui_core::layout::Rect) -> kurbo::Rect {
+    kurbo::Rect::new(
+        f64::from(frame.x()),
+        f64::from(frame.y()),
+        f64::from(frame.x() + frame.width()),
+        f64::from(frame.y() + frame.height()),
+    )
+}
+
 /// The window's origin as an environment value — the `input_env` the rendered
 /// runner builds around each event. Kept identical so key dispatch resolves
 /// the same environment in both runtimes.
@@ -539,21 +558,27 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
             }
             InputEvent::Moved { x, y } => {
                 let frame = window.window.frame.snapshot();
-                window.window.frame.set(waterui_core::layout::Rect::new(
+                let frame = waterui_core::layout::Rect::new(
                     waterui_core::layout::Point::new(x, y),
                     *frame.size(),
-                ));
+                );
+                window.window.frame.set(frame);
+                #[cfg(feature = "accessibility")]
+                window.core.set_window_frame(kurbo_frame(frame));
                 false
             }
             InputEvent::Resize { width, height } => {
                 let frame = window.window.frame.snapshot();
-                window.window.frame.set(waterui_core::layout::Rect::new(
+                let frame = waterui_core::layout::Rect::new(
                     frame.origin(),
                     waterui_core::layout::Size::new(
                         crate::num_cast::u32_as_f32(width),
                         crate::num_cast::u32_as_f32(height),
                     ),
-                ));
+                );
+                window.window.frame.set(frame);
+                #[cfg(feature = "accessibility")]
+                window.core.set_window_frame(kurbo_frame(frame));
                 false
             }
             InputEvent::TextInput { text } => {

@@ -153,13 +153,65 @@ async fn fetch_wrapper_jar(
 mod tests {
     use super::distribution;
 
+    /// The `distributionUrl` a committed `gradle-wrapper.properties` carries
+    /// derives from a declaration, never a literal kept in step by hand: the
+    /// in-tree Hydrolysis host follows `[package.metadata.waterui]`'s
+    /// `android-gradle-version` — the release the scaffolded properties
+    /// render — while the bench reference is a frozen import following the
+    /// Gradle its `toolchain-lock.json` provenance recorded. A file that
+    /// drifts off its declaration recreates #2276's divergence.
+    #[test]
+    #[ignore = "reads the enclosing workspace checkout"]
+    fn in_tree_wrappers_pin_their_declared_gradle_version() {
+        let checkout = crate::pinned_framework::checkout();
+        let manifest: toml::Value = toml::from_str(
+            &std::fs::read_to_string(checkout.join("Cargo.toml"))
+                .expect("read the workspace manifest"),
+        )
+        .expect("the workspace manifest parses");
+        let declared = manifest["package"]["metadata"]["waterui"]["android-gradle-version"]
+            .as_str()
+            .expect("the workspace manifest declares android-gradle-version");
+
+        let lock: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                checkout.join("backends/hydrolysis/bench/android/toolchain-lock.json"),
+            )
+            .expect("read the bench toolchain lock"),
+        )
+        .expect("the bench toolchain lock parses");
+        let recorded = lock["ci_environment"]["reference_app"]["gradle"]
+            .as_str()
+            .expect("the toolchain lock records the reference app's Gradle");
+
+        for (properties_path, expected) in [
+            (
+                "backends/hydrolysis/android/gradle/wrapper/gradle-wrapper.properties",
+                declared,
+            ),
+            (
+                "backends/hydrolysis/bench/android/reference/gradle/wrapper/gradle-wrapper.properties",
+                recorded,
+            ),
+        ] {
+            let properties = std::fs::read_to_string(checkout.join(properties_path))
+                .expect("a committed wrapper properties file is readable");
+            let (version, _flavor) = distribution(&properties)
+                .unwrap_or_else(|| panic!("{properties_path} pins no Gradle distribution"));
+            assert_eq!(
+                version, expected,
+                "{properties_path} pins Gradle {version}, not the declared {expected}"
+            );
+        }
+    }
+
     #[test]
     fn parses_the_scaffolded_distribution_url() {
         let properties =
-            "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.6.1-bin.zip\n";
+            "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.7.1-bin.zip\n";
         assert_eq!(
             distribution(properties),
-            Some(("9.6.1".to_string(), "bin".to_string()))
+            Some(("9.7.1".to_string(), "bin".to_string()))
         );
     }
 
