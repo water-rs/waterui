@@ -7,8 +7,8 @@
 //!
 //! This module owns the single script and the single envelope. A backend supplies
 //! only a transport: deliver [`SCRIPT`] at document start, hand
-//! [`Request::parse`] whatever `__wateruiSend` produced, and evaluate
-//! [`Reply::resolve_script`] to complete the call.
+//! [`Request::parse`] whatever `__wateruiSend` produced, and complete the call
+//! with [`Reply::resolve_script`] or [`Reply::to_json`].
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -110,18 +110,24 @@ impl From<JsReply> for Reply {
 
 #[derive(Serialize)]
 #[serde(untagged)]
-enum ReplyPayload<'a> {
+enum ReplyPayload {
     /// Held as a `RawValue` so the handler's own bytes go into the envelope
     /// unchanged, rather than being parsed into a `Value` and printed again.
     Json {
-        json: &'a RawValue,
+        json: Box<RawValue>,
     },
     Bytes {
         b64: String,
     },
     Failure {
-        message: &'a str,
+        message: String,
     },
+}
+
+#[derive(Serialize)]
+struct ReplyEnvelope {
+    ok: bool,
+    payload: ReplyPayload,
 }
 
 impl Reply {
@@ -143,12 +149,32 @@ impl Reply {
     /// `Serialize` implementation, never from the page.
     #[must_use]
     pub fn resolve_script(&self, id: u64) -> String {
-        let json;
-        let (ok, payload) = match self {
+        let (ok, payload) = self.serialized_payload();
+        let payload = serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize");
+        format!("globalThis.__wateruiResolve({id},{ok},{payload});")
+    }
+
+    /// Serializes the reply envelope without binding it to a JavaScript realm.
+    ///
+    /// WPE returns this value through the original script-message reply token;
+    /// other backends keep using [`Self::resolve_script`].
+    ///
+    /// # Panics
+    /// Panics if the reply envelope cannot be serialized.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let (ok, payload) = self.serialized_payload();
+        serde_json::to_string(&ReplyEnvelope { ok, payload })
+            .expect("WaterUI bridge reply must serialize")
+    }
+
+    fn serialized_payload(&self) -> (bool, ReplyPayload) {
+        match self {
             Self::Json(bytes) => {
                 let text = str::from_utf8(bytes).expect("a JSON reply must be UTF-8");
-                json = RawValue::from_string(text.to_owned()).expect("a JSON reply must be JSON");
-                (true, ReplyPayload::Json { json: &json })
+                let json =
+                    RawValue::from_string(text.to_owned()).expect("a JSON reply must be JSON");
+                (true, ReplyPayload::Json { json })
             }
             Self::Bytes(bytes) => (
                 true,
@@ -156,10 +182,13 @@ impl Reply {
                     b64: STANDARD.encode(bytes),
                 },
             ),
-            Self::Failure(message) => (false, ReplyPayload::Failure { message }),
-        };
-        let payload = serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize");
-        format!("globalThis.__wateruiResolve({id},{ok},{payload});")
+            Self::Failure(message) => (
+                false,
+                ReplyPayload::Failure {
+                    message: message.clone(),
+                },
+            ),
+        }
     }
 }
 
@@ -227,6 +256,29 @@ mod tests {
         assert_eq!(
             script,
             r#"globalThis.__wateruiResolve(5,false,{"message":"he said \"}\"; alert(1)"});"#
+        );
+    }
+
+    #[test]
+    fn replies_serialize_as_json_for_realm_bound_transports() {
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &Reply::Json(br#"{"answer":42}"#.to_vec()).to_json()
+            )
+            .unwrap(),
+            serde_json::json!({"ok": true, "payload": {"json": {"answer": 42}}})
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&Reply::Bytes(vec![0, 1, 2]).to_json())
+                .unwrap(),
+            serde_json::json!({"ok": true, "payload": {"b64": "AAEC"}})
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &Reply::failure(r#"failure "message""#).to_json()
+            )
+            .unwrap(),
+            serde_json::json!({"ok": false, "payload": {"message": "failure \"message\""}})
         );
     }
 }

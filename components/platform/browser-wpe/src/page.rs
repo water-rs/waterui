@@ -24,7 +24,9 @@ use waterui_watcher_set::WatcherSet;
 use waterui_webview::{BackendEvent, WebViewError, WebViewEvent, bridge};
 use wgpu_external_frame::dma_buf::DmaBufFrame;
 
-use crate::abi::{WaterWpeAssetResponse, WaterWpeBytes, WaterWpeFrame, WaterWpePage};
+use crate::abi::{
+    WaterWpeAssetResponse, WaterWpeBytes, WaterWpeFrame, WaterWpePage, WaterWpeReply,
+};
 use crate::frame::frame_from_abi;
 use crate::runtime::{RuntimeApi, WpeRuntime, take_error};
 
@@ -57,15 +59,35 @@ impl PageState {
 
 struct ClientContext {
     state: Weak<PageState>,
-    /// The page this context belongs to, so an asynchronous handler can settle
-    /// the page's promise after the transport has already returned.
-    ///
-    /// Weak, and upgraded rather than dereferenced: a handler may await for as
-    /// long as it likes, and the page can be dropped — and its native page freed
-    /// — while it does. Holding the raw pointer across the await called into
-    /// freed memory; holding the strong reference the upgrade produces keeps the
-    /// page alive for exactly the length of the reply.
-    page: RefCell<Weak<PageInner>>,
+    api: std::sync::Arc<RuntimeApi>,
+}
+
+struct PendingReply {
+    api: std::sync::Arc<RuntimeApi>,
+    raw: NonNull<WaterWpeReply>,
+}
+
+impl PendingReply {
+    const fn new(api: std::sync::Arc<RuntimeApi>, raw: *mut WaterWpeReply) -> Self {
+        Self {
+            api,
+            raw: NonNull::new(raw).expect("WPE supplied a null script-message reply"),
+        }
+    }
+
+    fn return_json(&self, json: &str) {
+        // SAFETY: the owned reply token remains alive until this value is dropped.
+        unsafe {
+            (self.api.api.reply_return)(self.raw.as_ptr(), json.as_ptr().cast(), json.len());
+        }
+    }
+}
+
+impl Drop for PendingReply {
+    fn drop(&mut self) {
+        // SAFETY: this object owns the reply token and frees it exactly once.
+        unsafe { (self.api.api.reply_free)(self.raw.as_ptr()) };
+    }
 }
 
 struct PageInner {
@@ -126,10 +148,9 @@ impl WpePage {
             size: Cell::new((1, 1, 1.0)),
             bridge_origins: RefCell::new(None),
         });
-        // The page is filled in below, once it exists.
         let context = Box::new(ClientContext {
             state: Rc::downgrade(&state),
-            page: RefCell::new(Weak::new()),
+            api: std::sync::Arc::clone(runtime.api()),
         });
         let context_ptr = Box::into_raw(context);
         let mut error = std::ptr::null_mut::<c_char>();
@@ -154,22 +175,13 @@ impl WpePage {
             error.is_null(),
             "WPE page creation succeeded while also returning an error"
         );
-        let page = Self {
+        Self {
             inner: Rc::new(PageInner {
                 runtime,
                 raw,
                 state,
             }),
-        };
-        // The client context now knows its page, so an asynchronous handler can
-        // settle the page's promise after the transport has returned — and can
-        // tell whether the page is still there when it does.
-        // SAFETY: `page_new` kept the context pointer and has not freed it; this
-        // is the only write, before any callback can run.
-        unsafe {
-            *(*context_ptr).page.borrow_mut() = Rc::downgrade(&page.inner);
         }
-        page
     }
 
     /// Arms the page's `waterui://localhost` origin, answered by `server`.
@@ -450,7 +462,49 @@ impl WpePage {
 
     /// Chooses which documents may reach the bridge.
     pub fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
+        let wire = Self::string(policy.wire().as_str(), "WPE bridge origin policy");
         self.inner.state.bridge_origins.replace(Some(policy));
+        // SAFETY: the page pointer is owned by `self`; the bridge copies the wire
+        // before this call returns.
+        unsafe {
+            (self.inner.state.api.api.page_set_bridge_origins)(
+                self.inner.raw.as_ptr(),
+                wire.as_ptr(),
+            );
+        }
+    }
+
+    /// Returns the identifier of the `WebProcess` currently serving this page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the native process query fails or returns an invalid
+    /// identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bundled WPE runtime cancels the process identifier request.
+    #[expect(
+        clippy::future_not_send,
+        reason = "WPE WebKit pages and their callbacks are confined to the UI thread"
+    )]
+    pub async fn web_process_identifier(&self) -> Result<u64, String> {
+        let identifier = self
+            .string_result(|callback, context| {
+                // SAFETY: bridge ABI call on the page this type owns; see the module safety
+                // note.
+                unsafe {
+                    (self.inner.state.api.api.page_get_web_process_identifier)(
+                        self.inner.raw.as_ptr(),
+                        callback,
+                        context,
+                    );
+                }
+            })
+            .await?;
+        identifier
+            .parse()
+            .map_err(|error| format!("WPE returned an invalid process identifier: {error}"))
     }
 
     /// Registers a JavaScript message handler.
@@ -675,16 +729,18 @@ unsafe extern "C" fn destroy_response(context: *mut c_void) {
 
 unsafe extern "C" fn message_callback(
     context: *mut c_void,
+    reply: *mut WaterWpeReply,
     origin: *const c_char,
     envelope: *const c_char,
-) -> WaterWpeBytes {
+) {
     // SAFETY: bridge ABI call on the page this type owns; see the module safety
     // note.
     let context = unsafe { &*context.cast::<ClientContext>() };
-    let state = context
-        .state
-        .upgrade()
-        .expect("WPE invoked a message after page destruction");
+    let reply = PendingReply::new(std::sync::Arc::clone(&context.api), reply);
+    let Some(state) = context.state.upgrade() else {
+        reply.return_json(&bridge::Reply::failure("the WPE page is no longer available").to_json());
+        return;
+    };
     // SAFETY: bridge ABI call on the page this type owns; see the module safety
     // note.
     let envelope = unsafe { CStr::from_ptr(envelope) };
@@ -694,93 +750,63 @@ unsafe extern "C" fn message_callback(
 
     // Page script reaches this transport directly, so a malformed envelope or an
     // unknown handler name is rejected back to JavaScript rather than being fatal.
-    let script = match envelope
+    let request = match envelope
         .to_str()
         .map_err(|_| String::from("envelope is not UTF-8"))
         .and_then(|envelope| bridge::Request::parse(envelope).map_err(|error| error.to_string()))
     {
-        Ok(request) => {
-            // Every registered handler is a capability, and `webkit.messageHandlers`
-            // is reachable from any frame of the page, so the document that sent
-            // this has to be authenticated before anything is dispatched. No policy
-            // means no handler has been registered either, and denying is what the
-            // other backends do.
-            let allowed = origin.to_str().is_ok_and(|origin| {
-                state
-                    .bridge_origins
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|policy| policy.allows_origin(origin))
-            });
-            if !allowed {
-                tracing::warn!(
-                    origin = %origin.to_string_lossy(),
-                    handler = %request.name,
-                    "a document outside the bridge origin policy tried to call a WaterUI handler"
-                );
-                // Reject rather than drop: the page is awaiting a promise, and one
-                // that never settles is indistinguishable from a handler that
-                // hangs. Like every reply, it is evaluated in the top frame, which
-                // is where the bridge is injected and therefore where the pending
-                // promise lives.
-                let reply = bridge::Reply::failure(
-                    "this document is not allowed to use the WaterUI bridge",
-                );
-                return respond(reply.resolve_script(request.id));
-            }
-
-            // Release the borrow before invoking: a handler may register or remove
-            // handlers on the same page.
-            let handler = state.handlers.borrow().get(&request.name).map(Rc::clone);
-            let Some(handler) = handler else {
-                tracing::warn!(
-                    handler = %request.name,
-                    "page script called a WaterUI handler that is not registered"
-                );
-                let reply =
-                    bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
-                return respond(reply.resolve_script(request.id));
-            };
-
-            // Handlers are asynchronous, so nothing is returned now; the promise
-            // settles when the future completes.
-            let future = handler(&request.payload);
-            let page = context.page.borrow().clone();
-            executor_core::spawn_local(async move {
-                let reply = match future.await {
-                    Ok(reply) => bridge::Reply::from(reply),
-                    Err(message) => bridge::Reply::Failure(message),
-                };
-                // The await may have outlived the web view. Upgrading answers
-                // that, and the strong reference it yields keeps the native page
-                // alive for the call: nothing can free it while this holds one.
-                let Some(page) = page.upgrade() else {
-                    return;
-                };
-                let script = CString::new(reply.resolve_script(request.id))
-                    .expect("a reply script never contains NUL");
-                // SAFETY: `page` is a live `PageInner`, which owns this pointer and
-                // frees it only in its own `Drop`; see the module safety note.
-                unsafe {
-                    (page.state.api.api.page_evaluate)(page.raw.as_ptr(), script.as_ptr());
-                }
-            })
-            .detach();
-            String::new()
-        }
+        Ok(request) => request,
         Err(error) => {
             tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
-            // Without a usable id there is no pending promise to settle.
-            String::new()
+            reply.return_json(&bridge::Reply::failure(&error).to_json());
+            return;
         }
     };
 
-    respond(script)
-}
+    // This Rust check is defense in depth for policy changes; the WebProcess
+    // extension authenticates the captured document origin before dispatch.
+    let allowed = origin.to_str().is_ok_and(|origin| {
+        state
+            .bridge_origins
+            .borrow()
+            .as_ref()
+            .is_some_and(|policy| policy.allows_origin(origin))
+    });
+    if !allowed {
+        tracing::warn!(
+            origin = %origin.to_string_lossy(),
+            handler = %request.name,
+            "a document outside the bridge origin policy tried to call a WaterUI handler"
+        );
+        reply.return_json(
+            &bridge::Reply::failure("this document is not allowed to use the WaterUI bridge")
+                .to_json(),
+        );
+        return;
+    }
 
-/// Hands one script back across the C ABI, transferring ownership of its buffer.
-fn respond(script: String) -> WaterWpeBytes {
-    bytes_response(script.into_bytes())
+    let handler = state.handlers.borrow().get(&request.name).map(Rc::clone);
+    let Some(handler) = handler else {
+        tracing::warn!(
+            handler = %request.name,
+            "page script called a WaterUI handler that is not registered"
+        );
+        reply.return_json(
+            &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                .to_json(),
+        );
+        return;
+    };
+
+    let future = handler(&request.payload);
+    executor_core::spawn_local(async move {
+        let response = match future.await {
+            Ok(reply) => bridge::Reply::from(reply),
+            Err(message) => bridge::Reply::Failure(message),
+        };
+        reply.return_json(&response.to_json());
+    })
+    .detach();
 }
 
 /// Hands `bytes` across the C ABI, transferring ownership of the buffer.

@@ -113,11 +113,7 @@ impl CustomWebViewController for WpeController {
 }
 
 /// Adapts the shared bridge's one-function transport onto WPE's message handler.
-const TRANSPORT_SCRIPT: &str = concat!(
-    "globalThis.__wateruiSend = function (envelope) {",
-    "globalThis.webkit.messageHandlers.__waterui.postMessage(envelope);",
-    "};"
-);
+const TRANSPORT_SCRIPT: &str = include_str!("transport.js");
 
 /// The key the transport adapter is injected under.
 const TRANSPORT_SCRIPT_KEY: &str = "waterui:wpe-transport";
