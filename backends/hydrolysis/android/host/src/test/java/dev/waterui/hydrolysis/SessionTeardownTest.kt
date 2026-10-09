@@ -409,6 +409,9 @@ class ShadowNativeBridge {
         /** Runs inside `nativeOnFrame`; its result is the frame's outcome. */
         var onFrame: () -> Long = { 0L }
 
+        /** The accessibility tree JSON `nativeAccessibilityTree` serves. */
+        var treeJson: String? = null
+
         fun reset() {
             frames = 0
             destroyed = false
@@ -417,6 +420,7 @@ class ShadowNativeBridge {
             backEvents.clear()
             onDestroy = {}
             onFrame = { 0L }
+            treeJson = null
         }
 
         private fun assertLive(sessionPtr: Long) {
@@ -490,6 +494,13 @@ class ShadowNativeBridge {
         @Implementation
         fun nativeSetHighRefresh(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") active: Boolean) {
             assertLive(sessionPtr)
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeAccessibilityTree(sessionPtr: Long): String? {
+            assertLive(sessionPtr)
+            return treeJson
         }
     }
 }
