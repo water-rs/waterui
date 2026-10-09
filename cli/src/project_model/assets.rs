@@ -18,6 +18,7 @@ use eyre::{Context, OptionExt};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use smol::fs;
+use target_lexicon::Triple;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
@@ -347,10 +348,8 @@ pub async fn scan_fonts(
 /// # Errors
 ///
 /// Returns an error naming the path when `build_manifest` does not exist —
-/// every caller resolves a manifest it scaffolded; the one probe that can
-/// run before that (the Android permission audit on a first init) checks for
-/// it itself — and when the certified lock or the seed cannot be read or
-/// written.
+/// every caller resolves a manifest it scaffolded first — and when the
+/// certified lock or the seed cannot be read or written.
 pub async fn seed_managed_crate_lock(
     project: &Project,
     build_manifest: &Path,
@@ -1471,8 +1470,9 @@ async fn seed_font_cache_scoped(
 /// are the generated crates': the theme crate's
 /// `[package.metadata.waterui.assets.font]` entries are reachable only
 /// through the backend manifest that depends on it. Apple and Android builds
-/// scan the FFI companion, which `Project::open` scaffolds whenever either
-/// backend is managed; if it is still absent it is scaffolded here. Each of
+/// scan the FFI companion, which the build itself scaffolds — the Apple
+/// companion render and the Android `prepare_for_build` prologue — so if it
+/// is still absent it is scaffolded here. Each of
 /// the GTK4, Hydrolysis and `WinUI` crates is re-scaffolded with the
 /// current templates when missing or stale, exactly as the build and preview
 /// paths regenerate it. Scaffolding writes template files — nothing
@@ -1501,19 +1501,12 @@ async fn ensure_font_scan_manifests(
     });
     if ffi_scanned {
         let manifest = project.ffi_crate_path().join("Cargo.toml");
-        // Same selection rule `Project::open` applies: the companion on
-        // disk is rendered for this invocation's scope before it is read —
-        // a companion a different selection left behind is not the
-        // manifest this scan resolves. `scaffold_ffi_companion` itself
-        // drops the Apple pieces on hosts an Apple build cannot run.
-        let apple_selected =
-            scope.is_none_or(|backend| matches!(backend, crate::platform::TargetBackend::Apple));
-        project
-            .scaffold_ffi_companion(apple_selected)
-            .await
-            .map_err(|error| {
-                eyre::eyre!("could not scaffold the Apple/Android FFI companion crate: {error}")
-            })?;
+        // The companion on disk is re-rendered for the scan — the manifest
+        // a build produces, so the font declarations the scan sees are the
+        // ones the build's resolve carries.
+        project.scaffold_ffi_companion().await.map_err(|error| {
+            eyre::eyre!("could not scaffold the Apple/Android FFI companion crate: {error}")
+        })?;
         manifests.push(manifest);
     }
 
@@ -2168,8 +2161,10 @@ pub async fn write_font_manifest(
     Ok(())
 }
 
-/// Returns whether `feature` is enabled on `package` in the resolved
-/// dependency graph of `build_manifest`.
+/// Returns whether `feature` is enabled on `package` in the dependency graph
+/// of `build_manifest` resolved for `target` — `cargo metadata
+/// --filter-platform <target>`, cached per manifest and triple by the
+/// project.
 ///
 /// `build_manifest` is the `Cargo.toml` of the crate the build actually
 /// compiles — the generated FFI crate for Apple and Android, the generated
@@ -2185,41 +2180,26 @@ pub async fn write_font_manifest(
 ///
 /// # Errors
 ///
-/// Returns an error when `cargo metadata` cannot be read.
+/// Returns an error when `cargo metadata` cannot resolve the manifest.
 pub async fn package_feature_enabled(
-    host: &crate::toolchain::Host,
+    project: &Project,
     build_manifest: &Path,
     package: &str,
     feature: &str,
+    target: &Triple,
 ) -> eyre::Result<bool> {
-    let metadata = crate_metadata(host, build_manifest, &[])
+    let enabled = project
+        .generated_manifest_features(build_manifest, target)
         .await
         .wrap_err_with(|| {
             format!(
                 "Failed to run cargo metadata on {}",
                 build_manifest.display()
             )
-        })?;
-
-    let Some(resolve) = metadata.resolve.as_ref() else {
-        return Ok(false);
-    };
-    let enabled = metadata
-        .packages
-        .iter()
-        .filter(|candidate| candidate.name.as_str() == package)
-        .any(|candidate| {
-            resolve
-                .nodes
-                .iter()
-                .filter(|node| node.id == candidate.id)
-                .any(|node| {
-                    node.features
-                        .iter()
-                        .any(|enabled| enabled.as_str() == feature)
-                })
-        });
-    debug!("resolved feature {package}/{feature}: {enabled}");
+        })?
+        .get(package)
+        .is_some_and(|features| features.contains(feature));
+    debug!("resolved feature {package}/{feature} for {target}: {enabled}");
     Ok(enabled)
 }
 
@@ -2304,7 +2284,11 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
 /// components whose symbols the dylib does export.
 ///
 /// `build_manifest` is the manifest of the crate being built — the resolved
-/// graph the feature check reads.
+/// graph the feature check reads — and `target` the triple that build
+/// resolves it for: the feature branch runs `cargo metadata
+/// --filter-platform` through the project's host, cached per manifest and
+/// target, and the link branch reads the application's own `cargo tree
+/// --target` evaluation.
 ///
 /// # Errors
 ///
@@ -2313,6 +2297,7 @@ pub async fn capability_enabled(
     project: &Project,
     build_manifest: &Path,
     capability: &str,
+    target: &Triple,
 ) -> eyre::Result<bool> {
     let capability = OPTIONAL_CAPABILITIES
         .iter()
@@ -2321,10 +2306,14 @@ pub async fn capability_enabled(
     match capability.feature {
         Some(feature) => {
             seed_managed_crate_lock(project, build_manifest).await?;
-            package_feature_enabled(project.host(), build_manifest, capability.package, feature)
+            package_feature_enabled(project, build_manifest, capability.package, feature, target)
                 .await
         }
-        None => project.links_runtime_package(capability.package).await,
+        None => {
+            project
+                .links_runtime_package(target, capability.package)
+                .await
+        }
     }
 }
 
@@ -2343,7 +2332,8 @@ pub async fn capability_enabled(
 /// the app's manifest.
 ///
 /// `build_manifest` is the manifest of the crate being built — the FFI
-/// companion for Apple and Android builds.
+/// companion for Apple and Android builds — and `target` the triple that
+/// build resolves its graph for.
 ///
 /// # Errors
 ///
@@ -2351,10 +2341,11 @@ pub async fn capability_enabled(
 pub async fn capability_ffi_features(
     project: &Project,
     build_manifest: &Path,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
     for capability in OPTIONAL_CAPABILITIES {
-        if capability_enabled(project, build_manifest, capability.name).await? {
+        if capability_enabled(project, build_manifest, capability.name, target).await? {
             features.push(capability.name.to_string());
         }
     }
@@ -2380,7 +2371,8 @@ pub async fn capability_ffi_features(
 /// selects it.
 ///
 /// `build_manifest` is the manifest of the crate being built — the FFI
-/// companion whose `video` feature this list feeds.
+/// companion whose `video` feature this list feeds — and `target` the
+/// triple that build resolves its graph for.
 ///
 /// # Errors
 ///
@@ -2388,12 +2380,15 @@ pub async fn capability_ffi_features(
 pub async fn self_drawn_realization_features(
     project: &Project,
     build_manifest: &Path,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
     seed_managed_crate_lock(project, build_manifest).await?;
-    let opted_in = package_feature_enabled(project.host(), build_manifest, "waterui", "video-gpu")
+    let opted_in = package_feature_enabled(project, build_manifest, "waterui", "video-gpu", target)
         .await?
-        || project.links_runtime_package("waterui-video-gpu").await?;
+        || project
+            .links_runtime_package(target, "waterui-video-gpu")
+            .await?;
     if opted_in {
         features.push("video".to_string());
     }
@@ -3205,34 +3200,58 @@ mod permission_audit_tests {
     /// there and absent from the FFI companion's.
     #[test]
     fn a_feature_enabled_in_the_built_crates_graph_is_seen() {
-        let project = tempdir().expect("temp project");
+        let directory = tempdir().expect("temp project");
         write_crate(
-            &project.path().join("theme"),
+            &directory.path().join("theme"),
             "theme",
             "[features]\nextra = []\n",
         );
-        let ffi_manifest = write_crate(&project.path().join("ffi"), "app-ffi", "");
+        let ffi_manifest = write_crate(&directory.path().join("ffi"), "app-ffi", "");
         let backend_manifest = write_crate(
-            &project.path().join("hydrolysis"),
+            &directory.path().join("hydrolysis"),
             "app-hydrolysis",
             "[dependencies]\ntheme = { path = \"../theme\", features = [\"extra\"] }\n",
         );
 
+        // `package_feature_enabled` resolves through the project's
+        // per-triple cache, so the fixture needs a project of its own.
+        std::fs::write(
+            directory.path().join("Water.toml"),
+            "[package]\nname = \"fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
+        )
+        .expect("Water.toml");
+        std::fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::create_dir_all(directory.path().join("src")).expect("src dir");
+        std::fs::write(directory.path().join("src/lib.rs"), "").expect("src lib");
+        let project = smol::block_on(crate::project::Project::open(
+            &crate::toolchain::testing::real_toolchain_host(directory.path()),
+            directory.path(),
+            crate::project::ManagedBackends::NONE,
+        ))
+        .expect("fixture project opens");
+        let target = crate::platform::TargetPlatform::MacOS.triple();
+
         assert!(
             smol::block_on(package_feature_enabled(
-                &crate::toolchain::Host::current(),
+                &project,
                 &backend_manifest,
                 "theme",
                 "extra",
+                &target,
             ))
             .expect("scan the built crate's graph")
         );
         assert!(
             !smol::block_on(package_feature_enabled(
-                &crate::toolchain::Host::current(),
+                &project,
                 &ffi_manifest,
                 "theme",
                 "extra",
+                &target,
             ))
             .expect("scan the ffi crate's graph")
         );
@@ -3601,8 +3620,14 @@ mod permission_audit_tests {
             .to_string();
         assert!(message.contains("`push`"), "{message}");
         assert!(message.contains("`other-push`"), "{message}");
+    }
 
-        // A feature table naming a cargo feature the crate does not declare.
+    /// A `feature.<name>` metadata table naming a cargo feature the crate
+    /// does not declare is a typo the collection must surface, naming both
+    /// the crate and the feature.
+    #[test]
+    fn a_feature_table_for_an_undeclared_feature_fails_naming_both() {
+        let project = tempdir().expect("temp project");
         write_crate(
             &project.path().join("typo"),
             "typo",
@@ -3614,7 +3639,13 @@ mod permission_audit_tests {
             "app-mistyped",
             "[dependencies]\ntypo = { path = \"../typo\" }\n",
         );
-        let message = collect(&mistyped)
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &mistyped,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
+        let message = collect_apple_declarations(&metadata)
             .expect_err("a feature table the crate does not declare must fail")
             .to_string();
         assert!(message.contains("typo"), "{message}");

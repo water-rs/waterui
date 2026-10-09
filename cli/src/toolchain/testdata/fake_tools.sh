@@ -27,6 +27,17 @@ tool=${tool%.cmd}
 tool=${tool%.bat}
 tool=${tool%.exe}
 
+# WATERUI_FAKE_LOG names a file every fake invocation appends itself to —
+# `<tool> <args>` one per line — the seam tests use to assert which tools
+# ran and with which arguments.
+if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+    printf '%s' "$tool" >> "$WATERUI_FAKE_LOG"
+    for _log_arg in "$@"; do
+        printf ' %s' "$_log_arg" >> "$WATERUI_FAKE_LOG"
+    done
+    printf '\n' >> "$WATERUI_FAKE_LOG"
+fi
+
 # print_file <path>: emit a file's contents using only builtins. `|| [ -n ... ]`
 # keeps a final unterminated line.
 print_file() {
@@ -239,6 +250,34 @@ cargo)
         metadata)
             # `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
             respond CARGO_METADATA
+            ;;
+        tree)
+            # The graph is resolved per build target: `cargo tree` answers
+            # `CARGO_TREE_<triple>` for each `--target` flag it is passed —
+            # a multi-target invocation's union is exactly its per-target
+            # answers — and a call naming no `--target` or a triple with no
+            # staged response fails, so a host-graph resolution can never
+            # pass as the target's.
+            _tree_targets=""
+            _tree_prev=""
+            for _tree_arg in "$@"; do
+                if [ "$_tree_prev" = "--target" ]; then
+                    _tree_targets="$_tree_targets $_tree_arg"
+                fi
+                _tree_prev="$_tree_arg"
+            done
+            if [ -z "$_tree_targets" ]; then
+                exit 2
+            fi
+            for _tree_target in $_tree_targets; do
+                if [ ! -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/CARGO_TREE_$_tree_target" ]; then
+                    exit 1
+                fi
+            done
+            for _tree_target in $_tree_targets; do
+                print_file "${WATERUI_FAKE_RESPONSES}/CARGO_TREE_$_tree_target"
+            done
+            exit 0
             ;;
         install | binstall)
             # `cargo install <crate>` drops the crate's binary beside cargo —

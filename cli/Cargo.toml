@@ -22,6 +22,24 @@ categories = ["gui"]
 android-kotlin-version = "2.3.21"
 android-jdk-version = "21"
 
+# The host triples dist builds and ships the CLI for (Rust target-triple
+# syntax). The musl target is what makes Alpine installable: dist offers a
+# `*-linux-musl` archive to `*-linux-musl-dynamic` hosts natively and keeps
+# it as the fallback for `*-linux-gnu` hosts whose glibc is below
+# `min-glibc-version`. The list lives here rather than in
+# dist-workspace.toml because `build.rs` embeds it: the Linux and Windows
+# tables of every generated manifest serve exactly these hosts, and a
+# packaged build still carries its own manifest.
+[package.metadata.dist]
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+]
+
 [[bin]]
 name = "water"
 path = "src/terminal/main.rs"

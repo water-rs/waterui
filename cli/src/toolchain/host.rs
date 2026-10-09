@@ -318,6 +318,18 @@ impl Host {
         host
     }
 
+    /// A host whose home directory is `home`: `HOME` and `USERPROFILE`
+    /// name it in the environment its children inherit, and
+    /// [`Host::home_dir`] answers it — the Water home and every other
+    /// per-user path follow.
+    #[must_use]
+    pub fn with_home(&self, home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        let mut host = self.with_env("HOME", &home).with_env("USERPROFILE", &home);
+        host.home = Some(home);
+        host
+    }
+
     /// Every environment variable on this host, in map order.
     ///
     /// For resolvers that take the whole environment at once rather than

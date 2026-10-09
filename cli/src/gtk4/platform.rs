@@ -147,7 +147,11 @@ pub async fn package_gtk4(
     // The binary name is the GTK4 crate name (project-gtk4)
     let final_binary_path = &built.artifact;
     let runtime_plan = project
-        .browser_runtime_plan(TargetPlatform::Linux, crate::platform::TargetBackend::Gtk4)
+        .browser_runtime_plan(
+            TargetPlatform::Linux,
+            crate::platform::TargetBackend::Gtk4,
+            &TargetPlatform::Linux.triple(),
+        )
         .await?;
 
     // The shipped binary and everything `$ORIGIN` resolves beside it stage

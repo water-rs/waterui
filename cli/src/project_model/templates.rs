@@ -169,6 +169,19 @@ pub struct HydrolysisAndroidTemplateEntry {
     pub painter_band_class: Option<String>,
 }
 
+/// The two `WebView` answers one generated-manifest section gets from the
+/// application's own graphs: whether the standard `WebView` component is
+/// used at all, and which engine crate draws it when it is.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BrowserAnswers {
+    /// The application's `cargo tree --edges features` evaluation enables
+    /// a `webview` feature — the component is used.
+    pub webview_enabled: bool,
+    /// The browser engine crate the application's normal-edge graph
+    /// links, if any.
+    pub engine: Option<ResolvedWebViewBackend>,
+}
+
 /// The Hydrolysis Android preview host scaffold's parameters: the managed
 /// host checkout it `includeBuild`s and the `versionCode` the template's
 /// fingerprint derives.
@@ -184,20 +197,179 @@ pub struct HydrolysisAndroidPreviewTemplateEntry {
     pub version_code: u32,
 }
 
-/// What the application's own dependency graph says about browser components.
+/// What the application's own dependency graph says about browser
+/// components, for exactly the OSes the manifest's sections serve.
 ///
 /// Nothing here is configuration: the engine that draws a `WebView` is a crate
 /// the application links and installs, so the generated backend only has to
 /// know whether it should bridge the platform's own engine, and whether the
-/// package needs a CEF subprocess helper.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BrowserTemplateContext {
-    /// Whether the packaged application links the standard `WebView` component.
-    pub webview_enabled: bool,
-    /// Whether the packaged application links the independent Chromium component.
-    pub chromium_enabled: bool,
-    /// The browser engine crate the application links, if any.
-    pub engine: Option<ResolvedWebViewBackend>,
+/// package needs a CEF subprocess helper. The answers legitimately differ
+/// per OS — `waterui-browser-wpe` enters the graph on Linux only — so every
+/// `cfg(...)` section whose serving set is one OS renders from that OS's
+/// own answers.
+///
+/// Each generated manifest renders answers for a fixed set of OSes, and
+/// each variant carries exactly that set — an OS nobody resolved is
+/// unrepresentable here, so a section can never read answers for a graph
+/// nobody ran.
+#[derive(Debug, Clone)]
+pub enum BrowserTemplateContext {
+    /// The shared native manifest's `cfg` sections — one per desktop OS.
+    Desktop(DesktopBrowserContext),
+    /// The managed Apple crates — the FFI companion and the Apple preview
+    /// package. Their tables read only the macOS engine, so no other
+    /// answer is representable.
+    AppleManaged {
+        /// The engine the macOS table links, if any.
+        macos_engine: Option<ResolvedWebViewBackend>,
+    },
+    /// The GTK4 manifest — one Linux `[dependencies]` table.
+    Linux(BrowserAnswers),
+}
+
+/// The `BrowserAnswers` for each desktop OS — the serving set the shared
+/// native manifest's per-OS sections render.
+#[derive(Debug, Clone, Default)]
+pub struct DesktopBrowserContext {
+    /// macOS's `cfg` section.
+    pub macos: BrowserAnswers,
+    /// Linux's `cfg` section.
+    pub linux: BrowserAnswers,
+    /// Windows's `cfg` section.
+    pub windows: BrowserAnswers,
+}
+
+impl DesktopBrowserContext {
+    /// The answers `os`'s generated-manifest section renders — all three
+    /// fields are recorded, so the lookup is total.
+    pub(crate) const fn for_os(&self, os: crate::platform::NativeOs) -> BrowserAnswers {
+        match os {
+            crate::platform::NativeOs::MacOs => self.macos,
+            crate::platform::NativeOs::Linux => self.linux,
+            crate::platform::NativeOs::Windows => self.windows,
+        }
+    }
+
+    /// The backend feature that bridges `os`'s own web engine.
+    ///
+    /// An application that linked an engine of its own draws through that
+    /// instead, and the bridge would take the component by type before the
+    /// application's realization was ever consulted — so the backend compiles
+    /// no web engine at all.
+    const fn webview_backend_feature(&self, os: crate::platform::NativeOs) -> Option<&'static str> {
+        webview_backend_feature(self.for_os(os))
+    }
+}
+
+/// The backend feature `answers`'s section selects — `webview-system`
+/// when the application enables `WebView` without an engine crate of its
+/// own.
+const fn webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str> {
+    if answers.webview_enabled && answers.engine.is_none() {
+        Some("webview-system")
+    } else {
+        None
+    }
+}
+
+impl Default for BrowserTemplateContext {
+    fn default() -> Self {
+        Self::Desktop(DesktopBrowserContext::default())
+    }
+}
+
+impl BrowserTemplateContext {
+    /// A context for the shared native manifest — every desktop OS's
+    /// section renders its own resolved answers.
+    #[must_use]
+    pub(crate) const fn desktop(
+        macos: BrowserAnswers,
+        linux: BrowserAnswers,
+        windows: BrowserAnswers,
+    ) -> Self {
+        Self::Desktop(DesktopBrowserContext {
+            macos,
+            linux,
+            windows,
+        })
+    }
+
+    /// A context for the managed Apple crates — the only browser input
+    /// their sections read is macOS's engine, so that is all it carries.
+    #[must_use]
+    pub(crate) const fn apple_managed(macos_engine: Option<ResolvedWebViewBackend>) -> Self {
+        Self::AppleManaged { macos_engine }
+    }
+
+    /// A context for the GTK4 manifest — its one section is Linux's.
+    #[must_use]
+    pub(crate) const fn linux(answers: BrowserAnswers) -> Self {
+        Self::Linux(answers)
+    }
+
+    /// The whole desktop set — the shared native manifest's per-OS
+    /// sections require it, and a context that serves fewer OSes is an
+    /// error rather than a partial render.
+    fn desktop_answers(&self) -> io::Result<&DesktopBrowserContext> {
+        match self {
+            Self::Desktop(context) => Ok(context),
+            Self::AppleManaged { .. } | Self::Linux(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the shared native manifest renders one section per desktop OS, \
+                 so its context must carry all three",
+            )),
+        }
+    }
+
+    /// Linux's answers — the GTK4 manifest's `[dependencies]` table
+    /// requires them; a context serving other OSes only is an error.
+    fn linux_answers(&self) -> io::Result<BrowserAnswers> {
+        match self {
+            Self::Linux(answers) => Ok(*answers),
+            Self::Desktop(context) => Ok(context.linux),
+            Self::AppleManaged { .. } => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the GTK4 manifest renders a Linux section, so its context \
+                 must carry Linux's answers",
+            )),
+        }
+    }
+
+    /// The engine this manifest's CEF runtime init gates on — macOS's
+    /// engine for the shared native and managed Apple contexts (the init
+    /// is a macOS-only code path), Linux's own for the GTK4 manifest.
+    const fn cef_engine(&self) -> Option<ResolvedWebViewBackend> {
+        match self {
+            Self::Desktop(context) => context.macos.engine,
+            Self::AppleManaged { macos_engine } => *macos_engine,
+            Self::Linux(answers) => answers.engine,
+        }
+    }
+
+    /// The `(os, engine)` pair for every OS this context serves — the
+    /// CEF helper's `#[cfg]` predicate iterates exactly the set its
+    /// manifest's sections render.
+    fn os_engines(&self) -> Vec<(crate::platform::NativeOs, Option<ResolvedWebViewBackend>)> {
+        match self {
+            Self::Desktop(context) => crate::platform::NativeOs::ALL
+                .iter()
+                .map(|os| (*os, context.for_os(*os).engine))
+                .collect(),
+            Self::AppleManaged { macos_engine } => {
+                vec![(crate::platform::NativeOs::MacOs, *macos_engine)]
+            }
+            Self::Linux(answers) => vec![(crate::platform::NativeOs::Linux, answers.engine)],
+        }
+    }
+
+    /// Whether any served OS links the CEF engine. An OS outside the
+    /// served set contributes nothing — its manifest writes no browser
+    /// table for it either way.
+    fn declares_cef_helper(&self) -> bool {
+        self.os_engines()
+            .into_iter()
+            .any(|(_, engine)| crate::project_model::project_types::declares_cef_helper(engine))
+    }
 }
 
 /// `[signing.android]` rendered into the generated Gradle project: the
@@ -283,11 +455,13 @@ pub struct TemplateContext {
     pub bundle_identifier: BundleIdentifier,
     /// The author name
     pub author: String,
-    /// Whether the project selected the Apple backend for this invocation —
-    /// the ffi companion only depends on `waterui-apple` and declares its
-    /// entry-owning bin when this is set, so an Android-only build never
-    /// resolves the Apple backend crate.
-    pub apple_backend_selected: bool,
+    /// Whether the Apple pieces render — the `waterui-apple` pin and the
+    /// entry-owning bin. This is a host fact, not a backend selection:
+    /// every FFI render on a macOS host carries them whatever backend the
+    /// invocation selected, because macOS is the only host an Apple build
+    /// can run from; a host that cannot produce an Apple build must not
+    /// resolve the backend crate.
+    pub apple_pieces: bool,
     /// Path to local `WaterUI` repository (for dev mode)
     pub waterui_path: Option<PathBuf>,
     /// Local checkouts of the experimental backends the host points at.
@@ -373,7 +547,7 @@ impl TemplateContext {
             crate_version: String::new(),
             bundle_identifier: options.bundle_identifier.clone(),
             author: options.author.clone(),
-            apple_backend_selected: false,
+            apple_pieces: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -417,7 +591,7 @@ impl TemplateContext {
             bundle_identifier: manifest.package.bundle_identifier.clone(),
             author: String::new(),
             // Selected at invocation, never from declared config.
-            apple_backend_selected: false,
+            apple_pieces: false,
             waterui_path: manifest.waterui_path.as_ref().map(PathBuf::from),
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -476,7 +650,7 @@ impl TemplateContext {
             crate_version: String::new(),
             bundle_identifier,
             author: String::new(),
-            apple_backend_selected: false,
+            apple_pieces: false,
             waterui_path,
             backend_checkouts: BackendDevCheckouts::from_host(host),
             local_sources: local_sources.clone(),
@@ -521,52 +695,53 @@ impl TemplateContext {
         self
     }
 
-    /// Set whether the project selected the Apple backend — the ffi
-    /// companion only emits its `waterui-apple` dependency and entry-owning
-    /// bin when this is set.
+    /// Set whether the Apple pieces render — the ffi companion only emits
+    /// its `waterui-apple` dependency and entry-owning bin when this is
+    /// set.
     #[must_use]
-    pub const fn with_apple_backend_selected(mut self, selected: bool) -> Self {
-        self.apple_backend_selected = selected;
+    pub const fn with_apple_pieces(mut self, apple_pieces: bool) -> Self {
+        self.apple_pieces = apple_pieces;
         self
     }
 
-    /// Set whether the application runtime graph links `waterui-webview`.
+    /// Record the `WebView` answers this manifest's sections render — the
+    /// context carries exactly the OS set the manifest serves.
     #[must_use]
-    pub const fn with_webview_enabled(mut self, enabled: bool) -> Self {
-        self.browser.webview_enabled = enabled;
+    pub(crate) const fn with_browser(mut self, browser: BrowserTemplateContext) -> Self {
+        self.browser = browser;
         self
     }
 
-    /// Set whether the application runtime graph links `waterui-chromium`.
-    #[must_use]
-    pub const fn with_chromium_enabled(mut self, enabled: bool) -> Self {
-        self.browser.chromium_enabled = enabled;
-        self
-    }
-
-    /// Set the browser engine crate the application's runtime graph links.
-    #[must_use]
-    pub const fn with_browser_engine(mut self, engine: Option<ResolvedWebViewBackend>) -> Self {
-        self.browser.engine = engine;
-        self
-    }
-
-    /// The backend feature that bridges the platform's own web engine.
-    ///
-    /// An application that linked an engine of its own draws through that
-    /// instead, and the bridge would take the component by type before the
-    /// application's realization was ever consulted — so the backend compiles
-    /// no web engine at all.
-    const fn webview_backend_feature(&self) -> Option<&'static str> {
-        if self.browser.webview_enabled && self.browser.engine.is_none() {
-            Some("webview-system")
-        } else {
-            None
-        }
-    }
-
+    /// Whether this manifest's CEF runtime init compiles — the early-init
+    /// code path the Apple entry points and the Hydrolysis `main` emit
+    /// exists only where the recorded engine is CEF.
     const fn cef_runtime_enabled(&self) -> bool {
-        crate::project_model::project_types::declares_cef_helper(self.browser.engine)
+        crate::project_model::project_types::declares_cef_helper(self.browser.cef_engine())
+    }
+
+    /// Whether any served OS's section links the CEF engine. The
+    /// subprocess helper `[[bin]]` is declared once for the whole
+    /// manifest — it exists wherever any OS's table gives it a crate to
+    /// call — while the dependency itself lives in that OS's table.
+    fn declares_cef_helper(&self) -> bool {
+        self.browser.declares_cef_helper()
+    }
+
+    /// The `cfg` predicate matching the OSes whose tables link the CEF
+    /// engine. The subprocess helper's source compiles its dispatch only
+    /// where an OS's table provides `waterui-browser-cef` — on every other
+    /// target the bin is never spawned and exits rather than missing the
+    /// crate. No OS is CEF: `any()` is false for the empty set, which keeps
+    /// the still-rendered source compiling with an empty dispatch.
+    fn cef_helper_condition(&self) -> String {
+        let oses: Vec<&'static str> = self
+            .browser
+            .os_engines()
+            .into_iter()
+            .filter(|(_, engine)| crate::project_model::project_types::declares_cef_helper(*engine))
+            .map(|(os, _)| os.cfg_predicate())
+            .collect();
+        format!("any({})", oses.join(", "))
     }
 
     /// Set the exact `WaterUI` feature set used by a preview support runtime.
@@ -770,6 +945,17 @@ impl TemplateContext {
     pub fn android_min_api_level(&self) -> u32 {
         self.framework
             .android_min_api_level()
+            .unwrap_or_else(|error| panic!("{error:#}"))
+    }
+
+    /// The Gradle release the scaffolded `gradle-wrapper.properties` pins —
+    /// the `android-gradle-version` the selected framework's metadata
+    /// declares, so a generated project's `./gradlew` downloads the release
+    /// the framework's own Android host builds with.
+    #[must_use]
+    pub fn android_gradle_version(&self) -> &str {
+        self.framework
+            .android_gradle_version()
             .unwrap_or_else(|error| panic!("{error:#}"))
     }
 
@@ -1234,6 +1420,7 @@ define_scaffold_templates! {
     AndroidApplicationTemplate => (Android, "src/templates/android/app/src/main/java/WaterUiApplication.kt.tpl"),
     AndroidStringsTemplate => (Android, "src/templates/android/app/src/main/res/values/strings.xml.tpl"),
     AndroidSettingsTemplate => (Android, "src/templates/android/settings.gradle.kts.tpl"),
+    AndroidSharedGradleWrapperTemplate => (AndroidShared, "src/templates/android_shared/gradle/wrapper/gradle-wrapper.properties.tpl"),
     AndroidEmbeddedSettingsTemplate => (AndroidEmbedded, "src/templates/android_embedded/settings.gradle.kts.tpl"),
     AndroidEmbeddedModuleTemplate => (AndroidEmbedded, "src/templates/android_embedded/waterui/build.gradle.kts.tpl"),
     AndroidEmbeddedManifestTemplate => (AndroidEmbedded, "src/templates/android_embedded/waterui/src/main/AndroidManifest.xml.tpl"),
@@ -1253,6 +1440,7 @@ define_scaffold_templates! {
     HydrolysisAndroidPreviewBuildGradleTemplate => (HydrolysisAndroidPreview, "src/templates/hydrolysis_android_preview/app/build.gradle.kts.tpl"),
     RootWebLibTemplate => (Root, "src/templates/web_lib.rs.tpl"),
     HydrolysisLibTemplate => (Hydrolysis, "src/templates/hydrolysis/src/lib.rs.tpl"),
+    HydrolysisCefHelperTemplate => (Hydrolysis, "src/templates/hydrolysis/src/bin/waterui-cef-helper.rs.tpl"),
     HydrolysisMainTemplate => (Hydrolysis, "src/templates/hydrolysis/src/main.rs.tpl"),
     HydrolysisPreviewRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_runtime.rs.tpl"),
     HydrolysisPreviewTestRuntimeTemplate => (Hydrolysis, "src/templates/hydrolysis/src/preview_test_runtime.rs.tpl"),
@@ -1296,6 +1484,9 @@ mod tests {
                 .unwrap_or_else(|| Path::new("")),
         ))
         .expect("fixture checkout resolves canonical backend sources");
+        // Fixture contexts answer "no webview, no engine" for every desktop
+        // OS — the sections a render writes still need answers recorded.
+        let browser = BrowserTemplateContext::default();
         TemplateContext {
             app_display_name: String::new(),
             app_name: String::new(),
@@ -1304,12 +1495,12 @@ mod tests {
             bundle_identifier: BundleIdentifier::try_from("com.example.test")
                 .expect("test bundle identifier must be valid"),
             author: String::new(),
-            apple_backend_selected: true,
+            apple_pieces: true,
             waterui_path,
             backend_checkouts: super::BackendDevCheckouts::default(),
             local_sources,
             framework: stable_framework(),
-            browser: BrowserTemplateContext::default(),
+            browser,
             backend_project_path,
             project_root_path,
             android_permissions: Vec::new(),
@@ -1331,6 +1522,21 @@ mod tests {
         // Generated crate names tag the project root, so any template that
         // renders one needs a root even when nothing else consumes it.
         ctx(None, None, Some(PathBuf::from("/tmp/test-app")))
+    }
+
+    /// `ctx` with `webview_enabled`/`engine` recorded for every desktop OS
+    /// — the hydrolysis manifest writes a `cfg` section per OS, so all
+    /// three must answer for a render to compute.
+    fn all_os_browser(
+        ctx: TemplateContext,
+        webview_enabled: bool,
+        engine: Option<ResolvedWebViewBackend>,
+    ) -> TemplateContext {
+        let answers = super::BrowserAnswers {
+            webview_enabled,
+            engine,
+        };
+        ctx.with_browser(BrowserTemplateContext::desktop(answers, answers, answers))
     }
 
     /// A fake local framework checkout the generated crate's feature forwards
@@ -2140,6 +2346,42 @@ mod tests {
         assert!(error.contains("backends/apple"), "{error}");
     }
 
+    /// The scaffolded `gradle-wrapper.properties` renders the framework's
+    /// declared `android-gradle-version` — never a template literal — so a
+    /// generated project's `./gradlew` downloads the release the in-tree
+    /// Hydrolysis host and bench wrappers pin (#2276).
+    #[test]
+    fn android_shared_wrapper_renders_the_declared_gradle_version() {
+        let mut ctx = project_ctx();
+        // A sentinel version proves the scaffold renders the resolved
+        // framework's `android-gradle-version`, not a template literal.
+        let mut persisted: toml::Value =
+            toml::from_str(&toml::to_string(&ctx.framework).unwrap()).unwrap();
+        persisted["metadata"]["android-gradle-version"] = toml::Value::String("8.8.8".to_owned());
+        ctx.framework = persisted.try_into().unwrap();
+
+        let template = embedded::ANDROID_SHARED
+            .get_file("gradle/wrapper/gradle-wrapper.properties.tpl")
+            .expect("android shared wrapper template must exist")
+            .contents_utf8()
+            .expect("wrapper template must be utf-8");
+
+        let rendered = render_scaffold_template(
+            TemplateNamespace::AndroidShared,
+            std::path::Path::new("gradle/wrapper/gradle-wrapper.properties.tpl"),
+            template,
+            &ctx,
+        )
+        .expect("wrapper properties render");
+
+        assert!(
+            rendered.contains(
+                "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.8.8-bin.zip"
+            ),
+            "the scaffolded wrapper pins the declared Gradle release: {rendered}"
+        );
+    }
+
     #[test]
     fn android_build_gradle_uses_embedded_remote_backend_revision() {
         let mut ctx = project_ctx();
@@ -2426,12 +2668,16 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "linear enumeration of per-OS engine asserts reads clearest as one list"
+    )]
     #[test]
     fn generated_native_backends_only_bridge_the_platform_engine_when_no_engine_is_linked() {
         // No engine crate in the graph: the backend bridges what the platform
         // gives it. `waterui-gtk` is git-pinned — `stable` withholds it — so
         // the GTK scaffolds render against a `dev` resolution.
-        let mut gtk_ctx = project_ctx().with_webview_enabled(true);
+        let mut gtk_ctx = all_os_browser(project_ctx(), true, None);
         gtk_ctx.framework = dev_framework();
         let tempdir = tempdir().expect("temporary gtk webview scaffold dir");
         smol::block_on(crate::templates::gtk4::scaffold(
@@ -2446,9 +2692,8 @@ mod tests {
 
         // An application that linked its own engine draws through that, so the
         // backend compiles no web engine at all.
-        let mut gtk_wpe_ctx = project_ctx()
-            .with_webview_enabled(true)
-            .with_browser_engine(Some(ResolvedWebViewBackend::Wpe));
+        let mut gtk_wpe_ctx =
+            all_os_browser(project_ctx(), true, Some(ResolvedWebViewBackend::Wpe));
         gtk_wpe_ctx.framework = dev_framework();
         let gtk_wpe_manifest =
             crate::templates::gtk4::rendered_outputs(&gtk_wpe_ctx, "waterui-test-gtk-wpe")
@@ -2461,9 +2706,7 @@ mod tests {
                 .expect("GTK WPE Cargo.toml output should exist");
         assert!(!gtk_wpe_manifest.contains("webview-system"));
 
-        let hydrolysis_ctx = project_ctx()
-            .with_webview_enabled(true)
-            .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
+        let hydrolysis_ctx = all_os_browser(project_ctx(), true, Some(ResolvedWebViewBackend::Cef));
         let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
             &hydrolysis_ctx,
             "waterui-test-hydrolysis",
@@ -2524,19 +2767,28 @@ mod tests {
             native_dependencies["hydrolysis-m3"]["version"].as_str(),
             Some(pinned("hydrolysis-m3-version").as_str()),
         );
-        // The subprocess helper dispatches into Chromium directly, so the
-        // generated crate depends on the engine the application chose.
-        assert_eq!(
-            native_dependencies["waterui-browser-cef"]["version"].as_str(),
-            Some(pinned("waterui-browser-cef-version").as_str()),
-        );
-        let features = native_dependencies["hydrolysis"]["features"]
+        // The engine-dependent pieces never sit in the shared native table:
+        // `webview-system` and `waterui-browser-cef` answer differently per
+        // OS and live in the per-OS `cfg` sections.
+        let shared_hydrolysis_features = native_dependencies["hydrolysis"]["features"]
             .as_array()
-            .expect("hydrolysis dependency features should be an array")
+            .expect("hydrolysis declares features")
             .iter()
             .map(|feature| feature.as_str().expect("feature should be a string"))
             .collect::<Vec<_>>();
-        assert_eq!(features, ["winit"]);
+        assert_eq!(
+            shared_hydrolysis_features,
+            ["winit"],
+            "the shared native table carries no engine-dependent feature"
+        );
+        // The generated crate depends on the engine the application chose —
+        // under the OS section whose graph links it, never the shared one.
+        assert_eq!(
+            manifest["target"]["cfg(target_os = \"macos\")"]["dependencies"]["waterui-browser-cef"]
+                ["version"]
+                .as_str(),
+            Some(pinned("waterui-browser-cef-version").as_str()),
+        );
         assert_eq!(manifest["package"]["autobins"].as_bool(), Some(false));
         let bins = manifest["bin"]
             .as_array()
@@ -2545,6 +2797,99 @@ mod tests {
             bin["name"].as_str() == Some("waterui-test-hydrolysis-cef-helper")
                 && bin["path"].as_str() == Some("src/bin/waterui-cef-helper.rs")
         }));
+    }
+
+    /// The native table's serving set spans three OSes whose graph answers
+    /// legitimately differ — `waterui-browser-wpe` enters on Linux — so the
+    /// manifest writes one `cfg` section per OS, each carrying that OS's
+    /// own answers: Linux's `wpe` engine suppresses the `webview-system`
+    /// bridge that macOS and Windows still bridge, and only macOS's `cef`
+    /// engine pulls `waterui-browser-cef`.
+    #[test]
+    fn the_hydrolysis_manifest_splits_engine_dependent_pieces_per_os() {
+        let ctx = project_ctx().with_browser(BrowserTemplateContext::desktop(
+            super::BrowserAnswers {
+                webview_enabled: true,
+                engine: Some(ResolvedWebViewBackend::Cef),
+            },
+            super::BrowserAnswers {
+                webview_enabled: true,
+                engine: Some(ResolvedWebViewBackend::Wpe),
+            },
+            super::BrowserAnswers {
+                webview_enabled: true,
+                engine: None,
+            },
+        ));
+        let cargo_toml =
+            crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                .expect("hydrolysis outputs should render")
+                .into_iter()
+                .find_map(|(path, content)| {
+                    (path == std::path::Path::new("Cargo.toml"))
+                        .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                })
+                .expect("hydrolysis Cargo.toml output should exist");
+        let manifest = cargo_toml
+            .parse::<toml::Table>()
+            .expect("hydrolysis Cargo.toml should parse");
+        let target = &manifest["target"];
+
+        let features_of = |cfg: &str| -> Vec<String> {
+            target
+                .get(cfg)
+                .and_then(|section| section.get("dependencies"))
+                .and_then(|deps| deps.get("hydrolysis"))
+                .and_then(|dep| dep.get("features"))
+                .and_then(toml::Value::as_array)
+                .map(|features| {
+                    features
+                        .iter()
+                        .filter_map(|feature| feature.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        // Shared native table: `winit` only — the engine pieces moved out.
+        assert_eq!(
+            features_of("cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"),
+            ["winit"],
+        );
+        // macOS answers CEF: the bridge is suppressed for an application
+        // that linked its own engine, and the helper's crate rides the
+        // macOS section.
+        assert!(!features_of("cfg(target_os = \"macos\")").contains(&"webview-system".to_string()),);
+        assert!(
+            target["cfg(target_os = \"macos\")"]
+                .get("dependencies")
+                .and_then(|deps| deps.get("waterui-browser-cef"))
+                .is_some(),
+            "the macOS section carries the CEF engine crate",
+        );
+        // Linux answers `wpe`: no bridge, no CEF — and no other content, so
+        // its section is not written at all.
+        assert!(
+            target.get("cfg(target_os = \"linux\")").is_none(),
+            "an OS section with nothing engine-dependent is not written: {cargo_toml}"
+        );
+        // Windows answers no engine: the bridge renders.
+        assert_eq!(features_of("cfg(windows)"), ["webview-system"],);
+        // The subprocess helper bin is declared once for the manifest, and
+        // its source gates the Chromium dispatch on the macOS section that
+        // provides the crate.
+        let helper =
+            crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                .expect("hydrolysis outputs should render")
+                .into_iter()
+                .find_map(|(path, content)| {
+                    (path == std::path::Path::new("src/bin/waterui-cef-helper.rs"))
+                        .then(|| String::from_utf8(content).expect("helper source must be UTF-8"))
+                })
+                .expect("the helper source renders");
+        assert!(
+            helper.contains("any(target_os = \"macos\")"),
+            "the helper compiles its dispatch where the CEF dep exists: {helper}"
+        );
     }
 
     /// The generated backend's `[lib]` and main `[[bin]]` never share a name:
@@ -3173,20 +3518,7 @@ mod tests {
                 .replace("0.0.0", version);
             std::fs::write(&manifest_path, manifest).expect("fixture manifest");
             probe_git(&dir, &["init", "-b", "fixture"]);
-            probe_git(&dir, &["add", "-A"]);
-            probe_git(
-                &dir,
-                &[
-                    "-c",
-                    "user.name=fixture",
-                    "-c",
-                    "user.email=fixture@localhost",
-                    "commit",
-                    "-m",
-                    "fixture",
-                ],
-            );
-            let rev = probe_git(&dir, &["rev-parse", "HEAD"]);
+            let rev = crate::framework::test_fixtures::git_commit_all(&dir, "fixture");
             (format!("file://{}", dir.display()), rev)
         };
 
@@ -3211,7 +3543,11 @@ mod tests {
 
         // Two distinct resolved revisions — one without `inspector` (the
         // stable shape through 0.5.2), one with — yield their own tables.
-        let host = crate::toolchain::Host::current();
+        // The probe clones the `file://` fixtures like any `git` source, so
+        // it resolves under a per-test `CARGO_HOME` rather than the
+        // developer's real one.
+        let host = crate::toolchain::Host::current()
+            .with_env("CARGO_HOME", tempdir.path().join("cargo-home"));
         for (dir_name, version, features) in [
             ("ffi-0.5.2", "0.5.2", vec!["c-api", "media"]),
             ("ffi-0.6.0", "0.6.0", vec!["c-api", "media", "inspector"]),
@@ -3406,8 +3742,9 @@ mod tests {
             Some(ffi_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
-        .with_chromium_enabled(true)
-        .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
+        .with_browser(BrowserTemplateContext::apple_managed(Some(
+            ResolvedWebViewBackend::Cef,
+        )));
 
         smol::block_on(crate::templates::ffi::scaffold(
             &crate::toolchain::Host::current(),
@@ -3474,7 +3811,7 @@ mod tests {
         // engine. The generated main carries the calls exactly when the
         // application linked `waterui-browser-cef`.
         let main_rs = crate::templates::hydrolysis::rendered_outputs(
-            &project_ctx().with_browser_engine(Some(ResolvedWebViewBackend::Cef)),
+            &all_os_browser(project_ctx(), false, Some(ResolvedWebViewBackend::Cef)),
             "waterui-test-hydrolysis",
         )
         .expect("hydrolysis outputs should render")
@@ -3521,7 +3858,7 @@ mod tests {
     }
 
     #[test]
-    fn ffi_scaffold_without_apple_backend_emits_no_apple_dependency() {
+    fn ffi_scaffold_without_apple_pieces_emits_no_apple_dependency() {
         let tempdir = tempdir().expect("temporary ffi scaffold dir");
         write_fake_framework_checkout(
             &tempdir.path().join("waterui"),
@@ -3533,7 +3870,7 @@ mod tests {
             Some(ffi_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
-        .with_apple_backend_selected(false);
+        .with_apple_pieces(false);
 
         smol::block_on(crate::templates::ffi::scaffold(
             &crate::toolchain::Host::current(),
@@ -4243,10 +4580,10 @@ async fn scaffold_dir(
             let relative_path = file.path();
 
             // The entry-owning Apple binary names a `waterui-apple`
-            // dependency only an apple-selected scaffold declares; nothing
-            // else renders it.
+            // dependency only a render carrying the Apple pieces declares;
+            // nothing else renders it.
             if namespace == TemplateNamespace::Ffi
-                && !ctx.apple_backend_selected
+                && !ctx.apple_pieces
                 && relative_path == Path::new("src/bin/waterui-apple-main.rs.tpl")
             {
                 continue;
@@ -4314,7 +4651,7 @@ fn render_dir_outputs(
         for file in current_dir.files() {
             let relative_path = file.path();
             if namespace == TemplateNamespace::Ffi
-                && !ctx.apple_backend_selected
+                && !ctx.apple_pieces
                 && relative_path == Path::new("src/bin/waterui-apple-main.rs.tpl")
             {
                 continue;
@@ -5123,10 +5460,13 @@ async fn configure_apple_target_tables(
     // `waterui_apple::export_app!`. It does not live in the `WaterUI`
     // workspace, so it resolves against the Apple backend checkout the
     // project already uses — never the framework registry source the
-    // `waterui` edge above applies. Only a project that selected the Apple
-    // backend depends on it: an Android-only build never resolves,
-    // fetches, or compiles `waterui-apple`.
-    if ctx.apple_backend_selected {
+    // `waterui` edge above applies. On a macOS host the Apple pieces
+    // render into every generated crate these tables cover: the render is
+    // a function of the project, not of the invocation that produced it,
+    // and macOS is the only host an Apple build can run from, so the
+    // `waterui-apple` pin resolves there whether or not the build being
+    // scaffolded is an Apple one.
+    if ctx.apple_pieces {
         let mut waterui_apple = ctx.waterui_apple_dependency()?;
         waterui_apple.features.extend(
             waterui_apple_features
@@ -5371,8 +5711,7 @@ pub mod gtk4 {
         package_name: &str,
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let mut outputs = super::render_dir_outputs(TemplateNamespace::Gtk4, &embedded::GTK4, ctx)?;
-        let features = ctx
-            .webview_backend_feature()
+        let features = super::webview_backend_feature(ctx.browser.linux_answers()?)
             .into_iter()
             .collect::<Vec<_>>();
         let dependencies = gtk4_dependencies(&features);
@@ -5390,8 +5729,7 @@ pub mod gtk4 {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        let features = ctx
-            .webview_backend_feature()
+        let features = super::webview_backend_feature(ctx.browser.linux_answers()?)
             .into_iter()
             .collect::<Vec<_>>();
         let dependencies = gtk4_dependencies(&features);
@@ -5763,13 +6101,15 @@ pub mod hydrolysis {
         format!("{}_lib", package_name.replace('-', "_"))
     }
 
-    /// Whether this application's graph links the bundled CEF runtime.
+    /// Whether this application's graph links the bundled CEF runtime for
+    /// any desktop OS — the helper `[[bin]]` is declared once for the
+    /// whole manifest while the dependency lives in each OS's own table.
     ///
     /// A packaged CEF application needs a subprocess helper binary, and the
     /// helper needs the engine crate; both follow the application's own
     /// dependencies, never a manifest setting.
-    const fn requires_cef(ctx: &TemplateContext) -> bool {
-        ctx.cef_runtime_enabled()
+    fn requires_cef(ctx: &TemplateContext) -> bool {
+        ctx.declares_cef_helper()
     }
 
     async fn generate_cargo_toml(
@@ -5845,7 +6185,7 @@ pub mod hydrolysis {
     fn cargo_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedTargetSection<GeneratedDependencyValue>>> {
-        Ok(BTreeMap::from([
+        let mut target = BTreeMap::from([
             (
                 "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))".to_string(),
                 GeneratedTargetSection {
@@ -5864,7 +6204,69 @@ pub mod hydrolysis {
                     dependencies: wasm_target_dependencies(ctx)?,
                 },
             ),
-        ]))
+        ]);
+        target.extend(native_os_target_dependencies(ctx)?);
+        Ok(target)
+    }
+
+    /// The engine-dependent pieces the shared native table cannot hold:
+    /// the `webview-system` Hydrolysis feature and the
+    /// `waterui-browser-cef` dependency legitimately differ per OS —
+    /// `waterui-browser-wpe` enters the application's graph on Linux only —
+    /// so each OS's section renders from that OS's own answers while
+    /// everything engine-independent stays in the shared native table.
+    fn native_os_target_dependencies(
+        ctx: &TemplateContext,
+    ) -> io::Result<BTreeMap<String, GeneratedTargetSection<GeneratedDependencyValue>>> {
+        let browser = ctx.browser.desktop_answers()?;
+        let mut tables = BTreeMap::new();
+        for os in crate::platform::NativeOs::ALL {
+            let mut dependencies = BTreeMap::new();
+            if let Some(feature) = browser.webview_backend_feature(os) {
+                dependencies.insert(
+                    "hydrolysis".to_string(),
+                    GeneratedDependencyValue::detailed(
+                        super::generated_dependency_from_spec(
+                            ctx,
+                            NativeBackendDependencySpec::new(
+                                "hydrolysis",
+                                &[feature],
+                                NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
+                            ),
+                        )?
+                        .with_default_features(false),
+                    ),
+                );
+            }
+            // The CEF subprocess helper is a second binary in this crate,
+            // and it is the one process that must not start WaterUI at
+            // all: it dispatches straight into Chromium. The engine crate
+            // is the application's choice, so this dependency appears only
+            // in the OS section whose graph links it — the helper source
+            // gates its dispatch on the same set.
+            if crate::project_model::project_types::declares_cef_helper(browser.for_os(os).engine) {
+                dependencies.insert(
+                    "waterui-browser-cef".to_string(),
+                    GeneratedDependencyValue::detailed(super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui-browser-cef",
+                            &[],
+                            NativeBackendDependencySource::WorkspaceSubdir(
+                                "components/platform/browser-cef",
+                            ),
+                        ),
+                    )?),
+                );
+            }
+            if !dependencies.is_empty() {
+                tables.insert(
+                    os.cfg().to_string(),
+                    GeneratedTargetSection { dependencies },
+                );
+            }
+        }
+        Ok(tables)
     }
 
     /// The dependencies only the Android launcher compiles: the Hydrolysis
@@ -5941,16 +6343,10 @@ pub mod hydrolysis {
         ]))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "linear enumeration of native target dependencies reads clearest as one list"
-    )]
     fn native_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
-        let mut hydrolysis_features = vec!["winit"];
-        hydrolysis_features.extend(ctx.webview_backend_feature());
-        let mut dependencies: BTreeMap<String, GeneratedDependencyValue> = BTreeMap::from([
+        let dependencies: BTreeMap<String, GeneratedDependencyValue> = BTreeMap::from([
             (
                 "hydrolysis".to_string(),
                 GeneratedDependencyValue::detailed(
@@ -5958,7 +6354,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &hydrolysis_features,
+                            &["winit"],
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
@@ -6035,26 +6431,6 @@ pub mod hydrolysis {
                 ),
             ),
         ]);
-        // The CEF subprocess helper is a second binary in this crate, and it is
-        // the one process that must not start WaterUI at all: it dispatches
-        // straight into Chromium. The engine crate is the application's choice,
-        // so the helper only exists — and this dependency only appears — when
-        // the application's own graph links it.
-        if requires_cef(ctx) {
-            dependencies.insert(
-                "waterui-browser-cef".to_string(),
-                GeneratedDependencyValue::detailed(super::generated_dependency_from_spec(
-                    ctx,
-                    NativeBackendDependencySpec::new(
-                        "waterui-browser-cef",
-                        &[],
-                        NativeBackendDependencySource::WorkspaceSubdir(
-                            "components/platform/browser-cef",
-                        ),
-                    ),
-                )?),
-            );
-        }
         Ok(dependencies)
     }
 
@@ -7528,10 +7904,10 @@ pub mod ffi {
     ) -> io::Result<()> {
         generate_cargo_toml(host, base_dir, ctx, package_name).await?;
         scaffold_dir(TemplateNamespace::Ffi, &embedded::FFI, base_dir, ctx).await?;
-        // A previous apple-selected render leaves the entry binary behind;
-        // a non-apple scaffold must not ship a file naming an undeclared
-        // dependency.
-        if !ctx.apple_backend_selected {
+        // A previous render carrying the Apple pieces leaves the entry
+        // binary behind; a render without them must not ship a file naming
+        // an undeclared dependency.
+        if !ctx.apple_pieces {
             let stale = base_dir.join("src/bin/waterui-apple-main.rs");
             match fs::remove_file(&stale).await {
                 Ok(()) => {}
@@ -7576,9 +7952,9 @@ pub mod ffi {
         // `waterui_apple::export_app!` placed in the companion library, so
         // every `waterui_*` symbol reaches the image from that one artifact
         // rather than from both the staticlib and the bin's own codegen.
-        // The companion is scaffolded for Android projects too, so the bin
-        // only exists when the Apple backend was actually selected.
-        if ctx.apple_backend_selected {
+        // The companion is rendered on hosts that cannot build for Apple
+        // too, so the bin only exists when the Apple pieces render.
+        if ctx.apple_pieces {
             manifest.bin.push(Product {
                 name: Some(crate::apple::platform::APPLE_ENTRY_BINARY_NAME.to_string()),
                 path: Some("src/bin/waterui-apple-main.rs".to_string()),

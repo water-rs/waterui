@@ -468,6 +468,162 @@ impl TargetPlatform {
     }
 }
 
+/// The Apple platforms the generated manifests' `cfg(target_vendor =
+/// "apple")` tables serve — every Apple platform this CLI produces.
+const APPLE_PLATFORMS: &[TargetPlatform] = &[
+    TargetPlatform::MacOS,
+    TargetPlatform::IOS,
+    TargetPlatform::IOSSimulator,
+    TargetPlatform::MacCatalyst,
+    TargetPlatform::TvOS,
+    TargetPlatform::TvOSSimulator,
+    TargetPlatform::WatchOS,
+    TargetPlatform::WatchOSSimulator,
+    TargetPlatform::VisionOS,
+    TargetPlatform::VisionOSSimulator,
+];
+
+/// The Apple triples a `cfg(target_vendor = "apple")` table of a generated
+/// manifest serves — every Apple platform a `water` build can produce,
+/// device and simulator alike.
+#[must_use]
+pub(crate) fn apple_target_triples() -> Vec<Triple> {
+    APPLE_PLATFORMS.iter().map(TargetPlatform::triple).collect()
+}
+
+/// A desktop operating system a generated manifest can answer for
+/// separately. macOS, Linux and Windows graph answers legitimately differ
+/// — `waterui-browser-wpe` enters only on Linux — so a `[target.*]` table
+/// that spans more than one of them may carry only what resolves
+/// identically for all; the OS-dependent pieces get a table per OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum NativeOs {
+    /// `cfg(target_os = "macos")`
+    MacOs,
+    /// `cfg(target_os = "linux")`
+    Linux,
+    /// `cfg(windows)`
+    Windows,
+}
+
+impl NativeOs {
+    /// Every desktop OS, in table order.
+    pub(crate) const ALL: [Self; 3] = [Self::MacOs, Self::Linux, Self::Windows];
+
+    /// The `[target.*]` table key this OS's section is written under.
+    #[must_use]
+    pub(crate) const fn cfg(self) -> &'static str {
+        match self {
+            Self::MacOs => "cfg(target_os = \"macos\")",
+            Self::Linux => "cfg(target_os = \"linux\")",
+            Self::Windows => "cfg(windows)",
+        }
+    }
+
+    /// The `cfg` predicate — inside `#[cfg(...)]` — selecting this OS.
+    #[must_use]
+    pub(crate) const fn cfg_predicate(self) -> &'static str {
+        match self {
+            Self::MacOs => "target_os = \"macos\"",
+            Self::Linux => "target_os = \"linux\"",
+            Self::Windows => "windows",
+        }
+    }
+
+    /// The triples this OS's generated-manifest table serves — every
+    /// target a `water` build produces for it.
+    ///
+    /// macOS builds aarch64 only, so its set is [`TargetPlatform::MacOS`]'s
+    /// own triple. A Linux or Windows build produces the host's own
+    /// triple — the `Triple::host()` [`TargetPlatform::triple`] resolves —
+    /// so the served set is every host triple of that OS the released CLI
+    /// runs on: the `[package.metadata.dist] targets` list `dist` ships the
+    /// CLI for, which `build.rs` embeds, including its
+    /// `x86_64-unknown-linux-musl` build.
+    ///
+    /// The running host's own triple rides along whenever the host's OS is
+    /// the served one: `Triple::host()` names the toolchain this CLI was
+    /// built with, so a `water` built from source on a triple `dist` never
+    /// shipped still checks the table the host itself compiles — it is not
+    /// a `cfg` answer to take at face value.
+    #[must_use]
+    pub(crate) fn serving_triples(self) -> Vec<Triple> {
+        let mut triples = match self {
+            Self::MacOs => vec![TargetPlatform::MacOS.triple()],
+            Self::Linux => released_host_triples(OperatingSystem::Linux),
+            Self::Windows => released_host_triples(OperatingSystem::Windows),
+        };
+        let host = Triple::host();
+        if self == Self::running_host() && !triples.contains(&host) {
+            triples.push(host);
+        }
+        triples
+    }
+
+    /// The `NativeOs` this CLI build runs on — the OS `Triple::host()`
+    /// names.
+    const fn running_host() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
+/// The host triples on `os` the released CLI ships for — the
+/// `[package.metadata.dist] targets` list `build.rs` embeds from the CLI's
+/// manifest, the list `dist` builds from.
+///
+/// # Panics
+/// Panics when an embedded target is not a target triple — `dist` cannot
+/// build such a list either.
+fn released_host_triples(os: OperatingSystem) -> Vec<Triple> {
+    env!("WATERUI_CLI_DIST_TARGETS")
+        .split_whitespace()
+        .map(|target| {
+            target.parse::<Triple>().unwrap_or_else(|error| {
+                panic!("the dist target `{target}` is not a target triple: {error}")
+            })
+        })
+        .filter(|triple| triple.operating_system == os)
+        .collect()
+}
+
+/// The desktop triples a generated manifest's
+/// `cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))`
+/// table serves — the macOS, Linux and Windows triples `water` builds
+/// produce on every host they run on.
+#[must_use]
+pub(crate) fn native_target_triples() -> Vec<Triple> {
+    NativeOs::ALL
+        .into_iter()
+        .flat_map(NativeOs::serving_triples)
+        .collect()
+}
+
+/// The Linux triples the GTK4 backend crate serves — the Linux targets a
+/// `water` build produces on any Linux host.
+#[must_use]
+pub(crate) fn linux_target_triples() -> Vec<Triple> {
+    NativeOs::Linux.serving_triples()
+}
+
+/// The Windows triples the `WinUI` backend crate serves.
+#[must_use]
+pub(crate) fn windows_target_triples() -> Vec<Triple> {
+    NativeOs::Windows.serving_triples()
+}
+
+/// The WebAssembly triple a generated manifest's `cfg(target_arch =
+/// "wasm32")` table serves.
+#[must_use]
+pub(crate) fn wasm_target_triples() -> Vec<Triple> {
+    vec![TargetPlatform::Web.triple()]
+}
+
 /// Reject a desktop platform label that does not name the host OS.
 ///
 /// `macos`, `linux` and `windows` platforms require a matching host OS.
@@ -821,6 +977,29 @@ mod package_options_tests {
             PackageOptions::packaging(super::PackageAudience::Distribution, false),
         ] {
             assert!(!options.uses_shared_rust_runtime());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use target_lexicon::Triple;
+
+    use super::NativeOs;
+
+    /// Every host `dist` ships the CLI for is served by one desktop OS's
+    /// generated-manifest table: a shipped target on an OS no table models
+    /// would run a `water` whose generated manifests no section covers.
+    #[test]
+    fn every_shipped_host_is_served_by_a_native_table() {
+        for target in env!("WATERUI_CLI_DIST_TARGETS").split_whitespace() {
+            let triple: Triple = target.parse().expect("a dist target is a target triple");
+            assert!(
+                NativeOs::ALL
+                    .into_iter()
+                    .any(|os| os.serving_triples().contains(&triple)),
+                "the shipped host {target} is served by no native table"
+            );
         }
     }
 }

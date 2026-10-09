@@ -93,6 +93,16 @@ const fn inspector_target_platform(platform: InspectorPlatform) -> TargetPlatfor
     }
 }
 
+/// Every triple the inspector support app can build for — the serving set
+/// of its manifest's `[profile]` overrides.
+fn inspector_targets() -> Vec<target_lexicon::Triple> {
+    [InspectorPlatform::Macos, InspectorPlatform::IosSimulator]
+        .iter()
+        .map(|platform| inspector_target_platform(*platform).triple())
+        .chain(crate::android::platform::android_target_triples())
+        .collect()
+}
+
 async fn open_inspector_project(
     host: &crate::toolchain::Host,
     inspector_app_path: &Path,
@@ -249,7 +259,9 @@ async fn scaffold_inspector_app(
     manifest.save(project.root()).await?;
 
     let framework = project.resolved_framework().await?;
-    let project_packages = project.project_packages(&framework).await?;
+    let project_packages = project
+        .project_packages(&framework, &inspector_targets())
+        .await?;
     // `inspector_signature` fingerprints the set derived from the display
     // name before the project exists; the manifest must carry that same set,
     // or the stored signature would describe a manifest that was not written.
