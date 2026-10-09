@@ -20,6 +20,9 @@ import android.view.Choreographer
  * Refresh-rate demand is separate: while the scheduler is running continuous
  * frames the session asks the surface for its highest refresh; when the pump
  * goes idle the demand releases.
+ *
+ * The session owns the scheduler and [stop]s it when it is destroyed; a
+ * stopped scheduler is inert for the rest of its life.
  */
 internal class FrameScheduler(private val session: HydrolysisSession) :
     Choreographer.FrameCallback {
@@ -28,6 +31,9 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
     private var posted = false
     private var deadlinePosted = false
     private var pumping = false
+
+    /** [stop] ran: the session is destroyed and nothing posts again. */
+    private var stopped = false
 
     /** Which post queued the pending callback; null when nobody did. */
     private var wakeCause: String? = null
@@ -38,6 +44,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      * request runs at the next vsync instead of waiting for the deadline.
      */
     fun requestFrame(cause: String = "redraw-request") {
+        if (stopped) return
         if (deadlinePosted) {
             choreographer.removeFrameCallback(this)
             deadlinePosted = false
@@ -51,7 +58,29 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
 
     /** The host reports active interaction (touch held, animation running). */
     fun setInteractionActive(active: Boolean) {
-        NativeBridge.nativeSetHighRefresh(session.nativePtr, if (active) -1f else 0f)
+        setHighRefresh(active)
+    }
+
+    /**
+     * Makes the scheduler inert once the session's native state is gone:
+     * the posted callback — a vsync or a deadline frame, including one a
+     * request during teardown queued — is removed, and every later
+     * [requestFrame] posts nothing.
+     */
+    fun stop() {
+        stopped = true
+        if (posted) {
+            choreographer.removeFrameCallback(this)
+            posted = false
+            deadlinePosted = false
+            wakeCause = null
+        }
+    }
+
+    private fun setHighRefresh(active: Boolean) {
+        session.withNativePtr(NativeBridge::nativeSetHighRefresh.name) { ptr ->
+            NativeBridge.nativeSetHighRefresh(ptr, if (active) -1f else 0f)
+        }
     }
 
     override fun doFrame(vsyncNanos: Long) {
@@ -59,11 +88,19 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         deadlinePosted = false
         val cause = wakeCause ?: "external"
         wakeCause = null
-        val outcome = NativeBridge.nativeOnFrame(session.nativePtr, vsyncNanos)
+        val outcome =
+            session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
+                NativeBridge.nativeOnFrame(ptr, vsyncNanos)
+            }
+        // The frame can end the session: a teardown requested inside it ran
+        // as the frame returned and stopped this scheduler.
+        if (stopped) return
         val wantsNext = outcome and WANTS_NEXT_FRAME != 0L
         val deadlineNanos =
             if (outcome and HAS_DEADLINE != 0L) {
-                NativeBridge.nativeFrameDeadlineInNanos(session.nativePtr)
+                session.withNativePtr(NativeBridge::nativeFrameDeadlineInNanos.name) { ptr ->
+                    NativeBridge.nativeFrameDeadlineInNanos(ptr)
+                }
             } else {
                 -1L
             }
@@ -95,7 +132,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
             pumping = nowPumping
             // Continuous pumping asks for high refresh; an idle pump releases
             // the request so the panel can drop to its base rate.
-            NativeBridge.nativeSetHighRefresh(session.nativePtr, if (pumping) -1f else 0f)
+            setHighRefresh(pumping)
         }
     }
 

@@ -28,7 +28,6 @@ use waterui_cli::{
     },
     build::{BuildOptions, BuildProfile, BuildProgress},
     device::{Artifact, CrashCause, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
-    esp32::platform::run_esp32,
     gtk4::platform::{build_gtk4, package_gtk4},
     hydrolysis::{
         android::{self as hydrolysis_android, HydrolysisAndroidPainter},
@@ -133,26 +132,15 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU in browser).
     Web,
-    /// ESP32-S3 board or QEMU (Dew firmware, Xtensa).
+    /// ESP32-S3 (Xtensa); unsupported until #1601.
     Esp32s3,
-    /// ESP32-C3 board or QEMU (Dew firmware, RISC-V).
+    /// ESP32-C3 (RISC-V); unsupported until #1601.
     Esp32c3,
-    /// ESP32-P4 board (Dew firmware, RISC-V with FPU).
+    /// ESP32-P4 (RISC-V with FPU); unsupported until #1601.
     Esp32p4,
 }
 
 impl TargetPlatform {
-    /// The ESP32 chip a platform selects, if it is an ESP32 platform.
-    const fn esp32_chip(self) -> Option<waterui_cli::esp32::chip::Esp32Chip> {
-        use waterui_cli::esp32::chip::Esp32Chip;
-        match self {
-            Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
-            Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
-            Self::Esp32p4 => Some(Esp32Chip::Esp32P4),
-            _ => None,
-        }
-    }
-
     /// The desktop OS this platform runs natively on the host, if it is one.
     ///
     /// Device, web and embedded platforms carry their own target triples;
@@ -314,7 +302,13 @@ fn resolve_backend(
     platform: TargetPlatform,
     backend_override: Option<TargetBackend>,
 ) -> Result<TargetBackend> {
-    let backend = backend_override.unwrap_or_else(|| default_backend(platform));
+    // The ESP32 variants stay selectable so the refusal can name what
+    // replaces their backend: Dew is archived and Hydrolysis's embedded host
+    // lands with #1601.
+    let Some(default_backend) = default_backend(platform) else {
+        bail!("{}", super::ESP32_UNSUPPORTED);
+    };
+    let backend = backend_override.unwrap_or(default_backend);
 
     // Validate backend supports platform
     let supported = matches!(
@@ -337,10 +331,6 @@ fn resolve_backend(
                 TargetBackend::Hydrolysis | TargetBackend::WinUi
             )
             | (TargetPlatform::Web, TargetBackend::Hydrolysis)
-            | (
-                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
-                TargetBackend::Dew
-            )
     );
 
     if !supported {
@@ -352,10 +342,7 @@ fn resolve_backend(
              - Android: hydrolysis, android\n  \
              - Linux: gtk4, hydrolysis\n  \
              - Windows: hydrolysis, winui\n  \
-             - Web: hydrolysis\n  \
-             - ESP32-S3: dew\n  \
-             - ESP32-C3: dew\n  \
-             - ESP32-P4: dew",
+             - Web: hydrolysis",
             backend,
             platform
         );
@@ -364,17 +351,16 @@ fn resolve_backend(
     Ok(backend)
 }
 
-/// The backend a run on `platform` uses when `--backend` is not given.
-const fn default_backend(platform: TargetPlatform) -> TargetBackend {
+/// The backend a run on `platform` uses when `--backend` is not given —
+/// `None` for the ESP32 targets, which no backend serves until #1601.
+const fn default_backend(platform: TargetPlatform) -> Option<TargetBackend> {
     match platform {
-        TargetPlatform::Ios | TargetPlatform::Macos => TargetBackend::Apple,
+        TargetPlatform::Ios | TargetPlatform::Macos => Some(TargetBackend::Apple),
         TargetPlatform::Android
         | TargetPlatform::Linux
         | TargetPlatform::Windows
-        | TargetPlatform::Web => TargetBackend::Hydrolysis,
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
-            TargetBackend::Dew
-        }
+        | TargetPlatform::Web => Some(TargetBackend::Hydrolysis),
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => None,
     }
 }
 
@@ -436,9 +422,9 @@ const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPl
 /// Run the run command.
 ///
 /// `interrupts` is the process's Ctrl-C channel: the supervised run owns
-/// its shutdown through [`Running::supervise`], and the non-supervised
-/// paths (web dev server, esp32) race it so an interrupt ends them the
-/// way the command-level cancel used to.
+/// its shutdown through [`Running::supervise`], and the non-supervised web
+/// dev-server path races it so an interrupt ends it the way the
+/// command-level cancel used to.
 pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<()>) -> Result<()> {
     if args.tui {
         return Box::pin(crate::until_interrupt(
@@ -461,16 +447,6 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             run_web_app(shell, &context.project).await?;
             return Ok(None);
         }
-        if context.platform.esp32_chip().is_some() {
-            Box::pin(run_esp32_app(
-                shell,
-                &context.project,
-                args.device.as_deref(),
-            ))
-            .await?;
-            return Ok(None);
-        }
-
         let selection = Box::pin(select_run_device(
             shell,
             &host,
@@ -497,15 +473,15 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
 
         // The dev-server guard is held for the app's whole run. Cancelling
         // this future drops it and the app's monitor acknowledges the kill.
-        let (running, dev_server) = Box::pin(shell.display_output(build_and_run(
+        let (running, dev_server) = Box::pin(build_and_run(
             shell,
-            &host,
-            &context.project,
+            &host.with_std_output(shell.is_interactive()),
+            &context.project.with_std_output(shell.is_interactive()),
             context.platform,
             context.backend,
             selection,
             config,
-        )))
+        ))
         .await?;
         Ok(Some(RunReady {
             backend: context.backend,
@@ -568,25 +544,29 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Box::pin(Project::open(&project_path, ManagedBackends::NONE)).await?;
+    let project = Box::pin(Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        ManagedBackends::NONE,
+    ))
+    .await?;
     let launcher_dir = Box::pin(waterui_cli::tui::ensure_launcher(&project)).await?;
 
     let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-    let built = shell
-        .display_output(Box::pin(waterui_cli::tui::build(
-            &project,
-            &launcher_dir,
-            sccache_path,
-            Some(shell.build_progress()),
-        )))
-        .await?;
+    let built = Box::pin(waterui_cli::tui::build(
+        &project.with_std_output(shell.is_interactive()),
+        &launcher_dir,
+        sccache_path,
+        Some(shell.build_progress()),
+    ))
+    .await?;
 
     note!(
         shell,
         "The TUI backend replaces this terminal until the app exits"
     );
     shell.clear();
-    waterui_cli::tui::exec(built)
+    waterui_cli::tui::exec(project.host(), built)
 }
 
 async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunContext>> {
@@ -596,12 +576,14 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         platform.desktop_os(),
         std::env::consts::OS,
     )?;
-    let backend = resolve_backend(
-        platform,
-        Some(args.backend.unwrap_or_else(|| default_backend(platform))),
-    )?;
+    let backend = resolve_backend(platform, args.backend)?;
     let managed_backends = managed_backends(platform, backend);
-    let mut project = Box::pin(Project::open(&project_path, managed_backends)).await?;
+    let project = Box::pin(Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    ))
+    .await?;
     if project.manifest().package.embedded {
         bail!(
             "`water run` does not apply to embedded projects: the crate is a library the host app embeds — build the artifact with `water build` and run the host app"
@@ -623,13 +605,6 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         && !super::confirm_experimental_backend(shell, backend_name(backend), args.yes)?
     {
         return Ok(None);
-    }
-
-    // Selecting an ESP32 platform pins the chip so the generated harness and
-    // build target follow the platform (the chip drives the target triple,
-    // QEMU model, and firmware parameters).
-    if let Some(chip) = platform.esp32_chip() {
-        project.set_esp32_chip(chip).await?;
     }
 
     let project = Box::pin(super::ensure_generated_backend(shell, project, backend)).await?;
@@ -681,21 +656,6 @@ async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
     let _server = server;
     futures_util::future::pending::<()>().await;
     unreachable!("web dev server future should be cancelled by Ctrl+C")
-}
-
-async fn run_esp32_app(shell: &Shell, project: &Project, device: Option<&str>) -> Result<()> {
-    let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-    let build_options = sccache_path
-        .map_or_else(
-            || BuildOptions::development(BuildProfile::Debug),
-            |sccache| BuildOptions::development(BuildProfile::Debug).with_sccache(sccache),
-        )
-        .with_progress(shell.build_progress());
-
-    let _ = shell.status(">", "Building ESP32 firmware...");
-    shell
-        .display_output(Box::pin(run_esp32(project, build_options, device)))
-        .await
 }
 
 async fn select_run_device(
@@ -978,7 +938,7 @@ async fn start_web_dev_server(
         .web
         .as_ref()
         .map_or_else(web::PackageManager::default, |web| web.package_manager);
-    if !package_manager.is_installed().await {
+    if !package_manager.is_installed(project.host()).await {
         bail!(
             "`{}` is not installed; run `water doctor`",
             package_manager.binary()
@@ -989,7 +949,14 @@ async fn start_web_dev_server(
         ">",
         format!("Starting `{} run {script}`", package_manager.binary()),
     );
-    let server = web::WebDevServer::spawn(package_manager, root, &script, expose_on_lan).await?;
+    let server = web::WebDevServer::spawn(
+        project.host(),
+        package_manager,
+        root,
+        &script,
+        expose_on_lan,
+    )
+    .await?;
     let _ = shell.status(">", format!("Dev server ready at {}", server.url()));
     Ok(Some(server))
 }
@@ -1116,21 +1083,12 @@ async fn build_for_backend(
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                Box::pin(hydrolysis_android::build(
-                    project,
-                    &waterui_cli::toolchain::Host::current(),
-                    abi,
-                    build_options,
-                ))
-                .await
+                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
             } else {
                 Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
         }
         TargetBackend::WinUi => Box::pin(build_winui(project, build_options)).await,
-        TargetBackend::Dew => {
-            panic!("esp32 run should not enter build_and_run")
-        }
     }
 }
 
@@ -1183,7 +1141,6 @@ async fn package_for_backend(
                 })?;
                 Box::pin(hydrolysis_android::package_with_abis(
                     project,
-                    &waterui_cli::toolchain::Host::current(),
                     painter,
                     &package_options,
                     &[abi],
@@ -1204,7 +1161,6 @@ async fn package_for_backend(
             }
         }
         TargetBackend::WinUi => Box::pin(package_winui(project, package_options, built)).await,
-        TargetBackend::Dew => panic!("esp32 run should not enter build_and_run"),
     }
 }
 
@@ -1293,7 +1249,9 @@ const fn device_memory_key(backend: TargetBackend, platform: TargetPlatform) -> 
 /// The device last used for `key`, if the config records one. A config read
 /// failure is a warning, not a run failure.
 async fn remembered_device(key: &str) -> Option<String> {
-    match waterui_cli::water_dir::ensure_global_config().await {
+    match waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+        .await
+    {
         Ok(config) => config.last_used_device.get(key).cloned(),
         Err(error) => {
             tracing::warn!("could not read the Water config for device memory: {error:#}");
@@ -1305,7 +1263,9 @@ async fn remembered_device(key: &str) -> Option<String> {
 /// Record `id` as the last-used device for `key`. Best-effort: a config
 /// write failure must not break a run.
 async fn persist_device_choice(key: &str, id: &str) {
-    match waterui_cli::water_dir::ensure_global_config().await {
+    match waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+        .await
+    {
         Ok(mut config) => {
             if config.last_used_device.get(key).map(String::as_str) == Some(id) {
                 return;
@@ -1313,7 +1273,12 @@ async fn persist_device_choice(key: &str, id: &str) {
             config
                 .last_used_device
                 .insert(key.to_owned(), id.to_owned());
-            if let Err(error) = waterui_cli::water_dir::write_global_config(&config).await {
+            if let Err(error) = waterui_cli::water_dir::write_global_config(
+                &waterui_cli::toolchain::Host::current(),
+                &config,
+            )
+            .await
+            {
                 tracing::warn!("could not persist the last-used device: {error:#}");
             }
         }
@@ -1451,7 +1416,7 @@ async fn select_ios_device(
             .await;
             return Ok(SelectedDevice::ApplePhysical(device));
         }
-        let sim = AppleSimulator::select_ios(host, project, Some(query)).await?;
+        let sim = AppleSimulator::select_ios(project, Some(query)).await?;
         persist_device_choice(
             device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
             &sim.udid,
@@ -1465,7 +1430,7 @@ async fn select_ios_device(
         // Reuse the simulator path's diagnosis — it lists every simulator and
         // the required runtime.
         return Ok(SelectedDevice::AppleSimulator(
-            AppleSimulator::select_ios(host, project, None).await?,
+            AppleSimulator::select_ios(project, None).await?,
         ));
     }
     choose_device_candidate(
@@ -1658,11 +1623,6 @@ async fn check_toolchain_for_backend(
             }
             toolchain_checks::check_winui(host).await?;
         }
-        TargetBackend::Dew => {
-            if platform.esp32_chip().is_none() {
-                bail!("Internal error: dew backend is not supported on {platform:?}");
-            }
-        }
     }
     Ok(())
 }
@@ -1799,7 +1759,6 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
         TargetBackend::WinUi => "WinUI",
-        TargetBackend::Dew => "Dew",
     }
 }
 
@@ -1835,10 +1794,6 @@ fn validate_log_pipeline_args(
 ) -> Result<()> {
     let log_pipeline_unsupported = match platform {
         TargetPlatform::Web => Some("web"),
-        // The serial monitor streams firmware logs directly.
-        TargetPlatform::Esp32s3 => Some("esp32s3"),
-        TargetPlatform::Esp32c3 => Some("esp32c3"),
-        TargetPlatform::Esp32p4 => Some("esp32p4"),
         _ => None,
     };
     let Some(platform_label) = log_pipeline_unsupported else {
@@ -2269,20 +2224,49 @@ mod tests {
 
     #[test]
     fn default_backend_matches_the_platform() {
-        assert_eq!(default_backend(TargetPlatform::Macos), TargetBackend::Apple);
-        assert_eq!(default_backend(TargetPlatform::Ios), TargetBackend::Apple);
+        assert_eq!(
+            default_backend(TargetPlatform::Macos),
+            Some(TargetBackend::Apple)
+        );
+        assert_eq!(
+            default_backend(TargetPlatform::Ios),
+            Some(TargetBackend::Apple)
+        );
         assert_eq!(
             default_backend(TargetPlatform::Android),
-            TargetBackend::Hydrolysis
+            Some(TargetBackend::Hydrolysis)
         );
         assert_eq!(
             default_backend(TargetPlatform::Linux),
-            TargetBackend::Hydrolysis
+            Some(TargetBackend::Hydrolysis)
         );
         assert_eq!(
             default_backend(TargetPlatform::Windows),
-            TargetBackend::Hydrolysis
+            Some(TargetBackend::Hydrolysis)
         );
+        for platform in [
+            TargetPlatform::Esp32s3,
+            TargetPlatform::Esp32c3,
+            TargetPlatform::Esp32p4,
+        ] {
+            assert_eq!(default_backend(platform), None);
+        }
+    }
+
+    #[test]
+    fn esp32_platforms_fail_naming_the_embedded_host_issue() {
+        // Dew is archived; until Hydrolysis's embedded host lands (#1601),
+        // selecting an ESP32 target refuses with an error naming the issue.
+        for platform in [
+            TargetPlatform::Esp32s3,
+            TargetPlatform::Esp32c3,
+            TargetPlatform::Esp32p4,
+        ] {
+            let error = resolve_backend(platform, None).unwrap_err();
+            assert!(error.to_string().contains("#1601"), "{error}");
+            let error = resolve_backend(platform, Some(TargetBackend::Hydrolysis)).unwrap_err();
+            assert!(error.to_string().contains("#1601"), "{error}");
+        }
     }
 
     #[cfg(target_os = "macos")]

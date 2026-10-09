@@ -21,8 +21,14 @@ fn create_rejects_the_published_stable_manifest_without_backend_members() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/framework_manifest_v0.5.2.json");
     let directory = tempfile::tempdir().expect("scratch directory");
     let project = directory.path().join("stable-probe");
+    // A scratch home keeps the create's build-cache work off the real
+    // `~/.water`.
+    let water_home = directory.path().join("water-home");
+    std::fs::create_dir_all(&water_home).expect("create hermetic home");
+    let host = waterui_cli::toolchain::Host::current().with_home(water_home);
 
     let result = smol::block_on(Project::create(
+        &host,
         &project,
         CreateOptions {
             name: "Stable Probe".to_owned(),

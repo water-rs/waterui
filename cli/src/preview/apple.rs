@@ -27,6 +27,8 @@ use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
 /// Request for Apple in-process preview rendering.
 #[derive(Debug, Clone)]
 pub struct ApplePreviewRequest<'a> {
+    /// The host the preview spawns on.
+    pub host: &'a crate::toolchain::Host,
     /// Path to the project to preview.
     pub project_path: &'a Path,
     /// Source used to produce the preview view.
@@ -72,7 +74,7 @@ async fn stage_apple_preview_resources(project: &Project, symbols: &ArtifactSymb
     let mut resolved_fonts = {
         let font_manifest = project.ffi_crate_path().join("Cargo.toml");
         let font_declarations = assets::scan_fonts(project, &font_manifest).await?;
-        assets::resolve_fonts(font_declarations).await?
+        assets::resolve_fonts(project.host(), font_declarations).await?
     };
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
     if resolved_fonts.is_empty() {
@@ -99,7 +101,14 @@ async fn run_preview_binary(
         },
     };
     let run_config_path = write_run_config(&crate_dir, &run_config).await?;
-    run::run_preview_binary(&crate_dir, binary, &run_config_path, "Apple preview").await?;
+    run::run_preview_binary(
+        project.host(),
+        &crate_dir,
+        binary,
+        &run_config_path,
+        "Apple preview",
+    )
+    .await?;
     Ok(())
 }
 
@@ -114,29 +123,34 @@ pub async fn render_preview_with_apple(
     request: ApplePreviewRequest<'_>,
     output_path: &Path,
 ) -> Result<()> {
-    let output_path = absolute_output_path(output_path)?;
-    let project = Project::open_for_preview_build(request.project_path).await?;
+    let output_path = absolute_output_path(request.host, output_path);
+    let project = Project::open_for_preview_build(request.host, request.project_path).await?;
     // The FFI companion is scaffolded too: its manifest owns the shared
     // runtime's feature forwards and the font declarations the resources
     // scan reads, and its build already lives in the shared target
     // directory.
-    project.scaffold_ffi_companion(true).await?;
+    project.scaffold_ffi_companion().await?;
     ensure_project_dev_feature_for_preview(&project).await?;
     project.scaffold_apple_preview_companion().await?;
     write_apple_preview_target(&project, &request.source).await?;
 
-    let browser_runtime = project
-        .browser_runtime_plan(TargetPlatform::MacOS, TargetBackend::Apple)
-        .await?;
-    let features =
-        apple_build_features(&project, browser_runtime, RustLinkage::SharedRuntime).await?;
     let triple = TargetPlatform::MacOS.triple();
+    let browser_runtime = project
+        .browser_runtime_plan(TargetPlatform::MacOS, TargetBackend::Apple, &triple)
+        .await?;
+    let features = apple_build_features(
+        &project,
+        browser_runtime,
+        RustLinkage::SharedRuntime,
+        &triple,
+    )
+    .await?;
     let target_dir = project.water_target_dir(RustLinkage::SharedRuntime).await?;
-    let mut rust_build = RustBuild::new(project.apple_preview_crate_path(), triple.clone())
-        .with_project(&project)
-        .with_features(features)
-        .with_preferred_dynamic_linking()
-        .with_target_dir(target_dir);
+    let mut rust_build =
+        RustBuild::for_project(&project, project.apple_preview_crate_path(), triple.clone())
+            .with_features(features)
+            .with_preferred_dynamic_linking()
+            .with_target_dir(target_dir);
     if let Some(sccache) = request.sccache_path {
         rust_build = rust_build.with_sccache(sccache);
     }
@@ -158,8 +172,8 @@ pub async fn render_preview_with_apple(
     libraries.stage(&profile_dir).await?;
     let staged_runtime = libraries.stage_apple_canonical(&profile_dir).await?;
     let executable = built.executable()?;
-    dynamic_runtime::retarget_module(executable, &staged_runtime).await?;
-    dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
+    dynamic_runtime::retarget_module(request.host, executable, &staged_runtime).await?;
+    dynamic_runtime::prepare_host_runtime(request.host, &staged_runtime).await?;
 
     let symbols = built.app_symbols().await?;
     stage_apple_preview_resources(&project, &symbols).await?;

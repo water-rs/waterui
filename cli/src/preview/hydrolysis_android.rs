@@ -97,17 +97,17 @@ pub async fn render_preview_with_hydrolysis_android(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
-    let host = Host::current();
-    let project = crate::hydrolysis::backend::open_ready(request.project_path).await?;
+    let host = request.host;
+    let project = crate::hydrolysis::backend::open_ready(host, request.project_path).await?;
 
     // Every run of this project writes its preview bindings and stages its
     // payload into one fixed directory, so a second run of the same project
     // waits until the first finishes; the lease is held for the whole run.
-    let _project_lease = water_dir::android_preview_project_lock(&host, project.root()).await?;
+    let _project_lease = water_dir::android_preview_project_lock(host, project.root()).await?;
 
     let ((), target) = futures_util::try_join!(
         write_preview_bindings(&project, request.source, request.theme, None),
-        AndroidTarget::first_available(&host),
+        AndroidTarget::first_available(host),
     )?;
 
     // Everything local — the host APK and the launcher payload — builds
@@ -117,12 +117,12 @@ pub async fn render_preview_with_hydrolysis_android(
     // builds too.
     let ((device, device_key), (host_apk, version_code), payload) = futures_util::try_join!(
         async {
-            let device = target.launch(&host).await?;
-            let key = device_lock_key(&host, device.adb(), device.identifier()).await?;
+            let device = target.launch(host).await?;
+            let key = device_lock_key(host, device.adb(), device.identifier()).await?;
             eyre::Ok((device, key))
         },
-        hydrolysis_android::ensure_preview_host_apk(&project, &host),
-        DevicePayload::stage(&project, &host, request, target.android_abi()),
+        hydrolysis_android::ensure_preview_host_apk(&project),
+        DevicePayload::stage(&project, host, request, target.android_abi()),
     )?;
     // The device carries the client its scan located, so every command
     // below reuses that one running server.
@@ -148,7 +148,7 @@ pub async fn render_preview_with_hydrolysis_android(
     })?;
 
     render_on_device(
-        &host,
+        host,
         &DeviceRender {
             adb,
             serial,

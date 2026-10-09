@@ -144,7 +144,6 @@ impl DevicePayload {
         }
         let build = hydrolysis_android::build_with_features(
             project,
-            host,
             abi,
             options,
             &["waterui-preview-mode"],

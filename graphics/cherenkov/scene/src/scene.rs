@@ -99,6 +99,9 @@ pub enum Feature {
     BackdropScale,
     /// A backdrop group captures a blur pyramid (`levels > 1`).
     BackdropLevels,
+    /// A backdrop group anchors its capture at a named layer
+    /// ([`BackdropGroup::anchor`]).
+    BackdropAnchor,
     /// A backdrop group composites its members against a shared union
     /// field (`BackdropGroup::union`).
     BackdropUnion,
@@ -200,6 +203,9 @@ impl Scene {
             if group.levels > 1 {
                 f.insert(Feature::BackdropLevels);
             }
+            if group.anchor.is_some() {
+                f.insert(Feature::BackdropAnchor);
+            }
             if group.union.is_some() {
                 f.insert(Feature::BackdropUnion);
             }
@@ -238,10 +244,21 @@ impl Scene {
                 computed: scene.features.iter().cloned().collect(),
             });
         }
-        scene.validate_backdrops()?;
-        scene.validate_projections()?;
-        scene.validate_text()?;
+        scene.validate()?;
         Ok(scene)
+    }
+
+    /// The scene's structural contract: backdrop groups, projections and
+    /// text lowers as [`Scene::load`] checks them. `Scene::builder` output
+    /// is unchecked until this runs.
+    ///
+    /// # Errors
+    /// [`SceneError`] on the first violated rule.
+    pub fn validate(&self) -> Result<(), SceneError> {
+        self.validate_backdrops()?;
+        self.validate_projections()?;
+        self.validate_text()?;
+        Ok(())
     }
 
     /// A text layer's source must name fonts and character-boundary
@@ -354,8 +371,29 @@ impl Scene {
     }
 
     /// Every group's capture scale must be finite and in `(0, 1]`; every
-    /// layer's `backdrop` must name a declared group and carry a clip.
+    /// layer's `backdrop` must name a declared group and carry a clip,
+    /// and every group's `anchor` must name exactly one layer's `id`.
     fn validate_backdrops(&self) -> Result<(), SceneError> {
+        fn ids(
+            layer: &Layer,
+            seen: &mut std::collections::HashSet<u32>,
+            projective: &mut std::collections::HashSet<u32>,
+        ) -> Result<(), SceneError> {
+            if let Some(id) = layer.id {
+                if !seen.insert(id.get()) {
+                    return Err(SceneError::DuplicateBackdropAnchor(id.get()));
+                }
+                if layer.projection.is_some() {
+                    projective.insert(id.get());
+                }
+            }
+            for item in &layer.items {
+                if let Item::Layer(l) = item {
+                    ids(l, seen, projective)?;
+                }
+            }
+            Ok(())
+        }
         fn walk(layer: &Layer, groups: &[BackdropGroup]) -> Result<(), SceneError> {
             if let Some(id) = layer.backdrop {
                 if layer.clip.is_none() {
@@ -396,6 +434,30 @@ impl Scene {
             .find(|g| !(1..=crate::BackdropGroup::MAX_LEVELS).contains(&g.levels))
         {
             return Err(SceneError::InvalidBackdropLevels(group.id));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut projective = std::collections::HashSet::new();
+        ids(&self.root, &mut seen, &mut projective)?;
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| self.root.id == Some(a)))
+        {
+            return Err(SceneError::BackdropAnchorAtRoot(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| projective.contains(&a.get())))
+        {
+            return Err(SceneError::BackdropAnchorProjective(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| !seen.contains(&a.get())))
+        {
+            return Err(SceneError::UnknownBackdropAnchor(group.id));
         }
         if let Some(group) = self
             .backdrop_groups
