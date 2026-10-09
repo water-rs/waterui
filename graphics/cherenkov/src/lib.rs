@@ -21,7 +21,6 @@
 // code is unchanged.
 use cherenkov_record::{animation, color, display_list, glyph, paint, record, shape, size, style};
 
-mod backdrop;
 mod backend;
 mod capability;
 mod config;
@@ -36,7 +35,6 @@ mod message;
 mod resource;
 mod surface;
 mod text;
-mod union_cap;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -53,10 +51,7 @@ pub use crate::animation::{
     Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
     settled, spring_step,
 };
-pub use crate::backdrop::{
-    BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
-    CaptureLevelsError, CaptureScale, CaptureScaleError,
-};
+
 pub use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
@@ -111,10 +106,12 @@ pub use crate::text::{TextLayout, draw_text};
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
     AnimationStart, BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError, BackdropSample,
-    BackdropSampling, BackdropShaderEffect, BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls,
-    ImageLimits, Install, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode,
-    LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop,
-    Queue, Realize, Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree,
-    Target, Transaction, snap_animating,
+    BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
+    BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
+    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
+    LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
+    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
+    Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
+    snap_animating,
 };
 pub use kurbo::Stroke;
