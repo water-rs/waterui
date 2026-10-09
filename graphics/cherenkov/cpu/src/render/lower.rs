@@ -255,7 +255,8 @@ pub struct CaptureItem {
     /// sampled rows.
     pub apron: usize,
     /// Extra rows around each band the capture covers: the deepest
-    /// enclosing filter-scope apron over the group's members.
+    /// enclosing filter-scope apron plus effect sampling reach over the
+    /// group's members.
     pub reach: usize,
     /// The prepared chain, when the group is filtered.
     pub filter: Option<FrameFilter>,
@@ -405,7 +406,8 @@ struct BackdropPlan {
     /// rows: `apron` for a 1:1 capture, the texel window mapped back to
     /// device rows otherwise.
     device_apron: usize,
-    /// Extra rows around each band the capture must cover.
+    /// Extra rows around each band the capture must cover: the deepest
+    /// member scope apron plus effect reach over the members.
     reach: usize,
     /// The prepared chain, when the group is filtered.
     filter: Option<FrameFilter>,
@@ -1241,11 +1243,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// to whole texels.
     ///
     /// A member inside a filter scope samples rows within that scope's
-    /// window (`band ± apron`); each group's `reach` is the deepest such
-    /// apron over its members, and a scope directly containing a capture
-    /// grows its apron to `apron + reach` so the capture's window fits.
-    /// Both bounds are monotone in each other and capped at the surface
-    /// height, so the fixed point is found by iteration.
+    /// window (`band ± apron`), and every member's samples reach its
+    /// effect's `reach` past the sampled pixel; each group's `reach` is
+    /// the deepest `apron + effect reach` over its members, and a scope
+    /// directly containing a capture grows its apron to `apron + reach`
+    /// so the capture's window fits. Both bounds are monotone in each
+    /// other and capped at the surface height, so the fixed point is
+    /// found by iteration.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1322,7 +1326,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 let reach = plan
                     .members
                     .values()
-                    .filter_map(|m| m.scope.map(|s| aprons[&s]))
+                    .map(|m| m.scope.map_or(0, |s| aprons[&s]) + m.reach.ceil() as usize)
                     .fold(0, usize::max);
                 changed |= reach != plan.reach;
                 plan.reach = reach;

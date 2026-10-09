@@ -806,6 +806,64 @@ fn reduced_refraction_samples_the_displaced_point_on_the_capture_grid() {
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
 }
 
+/// A union member's refracted sample follows the union field's gradient,
+/// which inside a member can tilt toward a sibling — landing the displaced
+/// read outside the member's own clip and outside the pixel's raster band.
+/// The capture keeps `apron + reach` extra rows past each band, so the
+/// read does not clamp to the kept window's edge row.
+#[test]
+fn union_refraction_reads_capture_rows_beyond_the_band() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 26.0, 32.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(0.0, 0.0, 32.0, 26.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(0.0, 32.0, 32.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[surface.root()].push(&b);
+        tx[&a]
+            .clip(Rect::new(0.0, 16.0, 16.0, 37.0))
+            .backdrop(group.sample_with(cherenkov::Refraction {
+                depth: 12.0,
+                strength: 6.0,
+            }));
+        tx[&b]
+            .clip(Rect::new(16.0, 30.0, 32.0, 54.0))
+            .backdrop(group.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Pixel (10, 33) is 3.5 inside a's bottom edge; the union field there
+    // blends a's (0, 1) gradient with b's (1, 0) for n ≈ (0.355, 0.935),
+    // displacing the sample to (9.78, 31.60) — two rows above the band
+    // ([32, 48)) the pixel draws in: ~0.9 of the red stripe's row 31 and
+    // ~0.1 of row 32's blue. Kept only to the band, the read clamps to
+    // row 32's blue.
+    let p = pixel(&readback, 10, 33);
+    assert!(
+        p[0] > 0.75 && p[2] < 0.25 && (p[3] - 1.0).abs() < 1e-5,
+        "pixel {p:?}, expected mostly red"
+    );
+}
+
 #[test]
 fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid() {
     let engine = engine();
