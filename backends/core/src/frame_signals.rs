@@ -1,7 +1,6 @@
 //! Frame trigger signals shared between the renderer and reactive closures.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use crate::time::Instant;
@@ -15,8 +14,7 @@ use crate::time::Instant;
 ///
 /// Request kinds, from cheapest to most expensive:
 /// - *redraw*: re-present the existing scene (window expose, re-present glue).
-/// - *patch/refresh*: re-dispatch any dirty `Dynamic` nodes, then run the
-///   always-on full pass — every awake frame re-reads signals, runs layout,
+/// - *patch/refresh*: run the always-on full pass — every awake frame re-reads signals, runs layout,
 ///   and re-encodes the retained tree, so any content change (a reactive
 ///   value, a scroll offset, a scrollbar drag) takes this path.
 ///
@@ -61,13 +59,6 @@ struct FrameSignalsInner {
     /// drives — the explicitly pumped test runners' windows answer a wake
     /// that does nothing instead.
     host_wake: RefCell<Option<HostWake>>,
-    /// Identities of `Dynamic` nodes whose content changed since the last
-    /// frame and must be re-dispatched in isolation on the next patch frame.
-    dirty_dynamic_nodes: RefCell<BTreeSet<usize>>,
-    /// Cache keys of reactive collections whose membership changed since the
-    /// last frame and must be reconciled (new items dispatched, removed items
-    /// evicted) in isolation on the next patch frame.
-    dirty_collections: RefCell<BTreeSet<usize>>,
     /// Monotonic counter of structural rebuilds, used to decide whether a
     /// `Dynamic` content update raced with the rebuild that produced it.
     rebuild_generation: Cell<u64>,
@@ -87,8 +78,6 @@ impl FrameSignals {
                 redraw_requested: Cell::new(false),
                 patch_requested: Cell::new(false),
                 host_wake: RefCell::new(None),
-                dirty_dynamic_nodes: RefCell::new(BTreeSet::new()),
-                dirty_collections: RefCell::new(BTreeSet::new()),
                 rebuild_generation: Cell::new(0),
                 rebuild_in_progress: Cell::new(false),
                 frame_clock: Cell::new(now),
@@ -100,7 +89,7 @@ impl FrameSignals {
     /// per window at mount, on the construction point every runner shares.
     ///
     /// The wake runs on the edge from *no pending request* to *some
-    /// pending request*: the first `request_*`/`mark_*` call to land on an
+    /// pending request*: the first `request_*` call to land on an
     /// idle handle fires it, and the pump draining the state back to empty
     /// re-arms it. A request already pending when the wake is installed
     /// fires it now — the edge it never saw still owes the host a frame.
@@ -130,7 +119,7 @@ impl FrameSignals {
     }
 
     /// Records a request and fires the host wake when it moved the handle
-    /// off idle. Every `request_*`/`mark_*` method routes through here, so
+    /// off idle. Every `request_*` method routes through here, so
     /// the edge is observed exactly once per burst — a request landing on
     /// a handle that already has one pending joins it without re-firing.
     fn record_request(&self, record: impl FnOnce(&FrameSignalsInner)) {
@@ -171,42 +160,24 @@ impl FrameSignals {
     /// the tree structure is unchanged but it must re-read its signals, re-run
     /// layout, and re-encode.
     ///
-    /// Routed through the same window-refresh path as a `Dynamic` patch
-    /// ([`take_patch_request`](Self::take_patch_request) observes it) but with an
-    /// empty dirty-node set, so the patch step is a no-op and the change is reflected
-    /// purely by the always-on relayout + reflush. This is the common reactive
+    /// [`take_patch_request`](Self::take_patch_request) observes it, and the change
+    /// is reflected by the always-on relayout + reflush. This is the common reactive
     /// update — far cheaper than a structural rebuild, which re-runs the whole view
     /// `body()`.
     pub fn request_refresh(&self) {
         self.record_request(|inner| inner.patch_requested.set(true));
     }
 
-    /// Returns whether at least one dirty `Dynamic` node awaits an isolated
-    /// patch, without consuming the request.
+    /// Returns whether a refresh is pending, without consuming the request.
     #[must_use]
     pub fn has_patch_request(&self) -> bool {
         self.inner.patch_requested.get()
     }
 
     /// Consumes the pending patch request, returning whether one was set.
-    ///
-    /// Only the flag is consumed; the dirty-node set is taken separately via
-    /// [`take_dirty_dynamic_nodes`](Self::take_dirty_dynamic_nodes).
     #[must_use]
     pub fn take_patch_request(&self) -> bool {
         self.inner.patch_requested.replace(false)
-    }
-
-    /// Take the set of `Dynamic` nodes awaiting an isolated re-dispatch.
-    #[must_use]
-    pub fn take_dirty_dynamic_nodes(&self) -> BTreeSet<usize> {
-        core::mem::take(&mut *self.inner.dirty_dynamic_nodes.borrow_mut())
-    }
-
-    /// Take the set of reactive collections awaiting an isolated reconcile.
-    #[must_use]
-    pub fn take_dirty_collections(&self) -> BTreeSet<usize> {
-        core::mem::take(&mut *self.inner.dirty_collections.borrow_mut())
     }
 
     /// Whether an initial-content update for a `Dynamic` node dispatched at
@@ -218,43 +189,7 @@ impl FrameSignals {
             && render_generation == self.inner.rebuild_generation.get()
     }
 
-    /// Record a real content change for a `Dynamic` node dispatched at
-    /// `render_generation` as a fine-grained reactive patch, unless a rebuild
-    /// of a newer generation is in progress that will pick the change up
-    /// itself.
-    pub fn mark_dynamic_dirty(&self, identity: usize, render_generation: u64) {
-        if self.inner.rebuild_in_progress.get()
-            && render_generation != self.inner.rebuild_generation.get()
-        {
-            return;
-        }
-        self.record_request(|inner| {
-            inner.dirty_dynamic_nodes.borrow_mut().insert(identity);
-            inner.patch_requested.set(true);
-        });
-    }
-
-    /// Record a membership change for a reactive collection captured at
-    /// `render_generation` as a fine-grained reactive patch, unless a rebuild
-    /// of a newer generation is in progress that will recapture it itself.
-    ///
-    /// Mirrors [`mark_dynamic_dirty`](Self::mark_dynamic_dirty): a collection's
-    /// `Views::watch` fires once immediately on registration (the initial
-    /// snapshot during the capturing rebuild); that fire is ignored by the
-    /// caller, and only later real changes reach this method.
-    pub fn mark_collection_dirty(&self, cache_key: usize, render_generation: u64) {
-        if self.inner.rebuild_in_progress.get()
-            && render_generation != self.inner.rebuild_generation.get()
-        {
-            return;
-        }
-        self.record_request(|inner| {
-            inner.dirty_collections.borrow_mut().insert(cache_key);
-            inner.patch_requested.set(true);
-        });
-    }
-
-    /// Enter a structural rebuild: any pending isolated patch is subsumed by
+    /// Enter a structural rebuild: any pending patch request is subsumed by
     /// the rebuild, and the rebuild generation advances.
     ///
     /// # Panics
@@ -263,8 +198,6 @@ impl FrameSignals {
     pub fn begin_rebuild(&self) {
         self.inner.rebuild_in_progress.set(true);
         self.inner.patch_requested.set(false);
-        self.inner.dirty_dynamic_nodes.borrow_mut().clear();
-        self.inner.dirty_collections.borrow_mut().clear();
         self.inner.rebuild_generation.set(
             self.inner
                 .rebuild_generation
@@ -276,7 +209,8 @@ impl FrameSignals {
 
     /// Leaves the structural rebuild entered by
     /// [`begin_rebuild`](Self::begin_rebuild); generation gating of
-    /// [`mark_dynamic_dirty`](Self::mark_dynamic_dirty) stops applying.
+    /// [`initial_dynamic_content_already_rendered`](Self::initial_dynamic_content_already_rendered)
+    /// stops applying.
     pub fn finish_rebuild(&self) {
         self.inner.rebuild_in_progress.set(false);
     }
@@ -306,7 +240,7 @@ impl FrameSignals {
 
 #[cfg(test)]
 mod tests {
-    use super::{BTreeSet, FrameSignals};
+    use super::FrameSignals;
     use crate::time::Instant;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -352,8 +286,6 @@ mod tests {
 
         signals.request_redraw();
         signals.request_refresh();
-        signals.mark_dynamic_dirty(1, signals.rebuild_generation());
-        signals.mark_collection_dirty(2, signals.rebuild_generation());
         assert_eq!(fires.get(), 1, "the burst's first request fires the wake");
 
         // Redraw drained but the patch request is still pending: no edge.
@@ -367,9 +299,8 @@ mod tests {
         assert_eq!(fires.get(), 2, "drained state re-arms the wake");
     }
 
-    /// A `mark_*` generation-gated out of recording — and non-request
-    /// state changes like the frame clock or a rebuild's begin/finish —
-    /// never fire the wake.
+    /// Non-request state changes like the frame clock or a rebuild's
+    /// begin/finish never fire the wake.
     #[test]
     fn host_wake_never_fires_on_a_no_op() {
         let signals = signals();
@@ -378,9 +309,6 @@ mod tests {
 
         signals.set_frame_clock(Instant::now());
         signals.begin_rebuild();
-        let stale_generation = signals.rebuild_generation() - 1;
-        signals.mark_dynamic_dirty(1, stale_generation);
-        signals.mark_collection_dirty(1, stale_generation);
         signals.finish_rebuild();
         assert_eq!(fires.get(), 0);
     }
@@ -405,66 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_dirty_marking_requests_patch() {
-        let signals = signals();
-        signals.mark_dynamic_dirty(7, signals.rebuild_generation());
-        assert!(signals.has_patch_request());
-        assert_eq!(
-            signals
-                .take_dirty_dynamic_nodes()
-                .into_iter()
-                .collect::<Vec<_>>(),
-            vec![7]
-        );
-        assert!(signals.take_patch_request());
-        assert_eq!(signals.take_dirty_dynamic_nodes(), BTreeSet::new());
-    }
-
-    #[test]
-    fn collection_dirty_marking_requests_patch() {
-        let signals = signals();
-        signals.mark_collection_dirty(42, signals.rebuild_generation());
-        assert!(signals.has_patch_request());
-        assert_eq!(
-            signals
-                .take_dirty_collections()
-                .into_iter()
-                .collect::<Vec<_>>(),
-            vec![42]
-        );
-        assert!(signals.take_patch_request());
-        assert_eq!(signals.take_dirty_collections(), BTreeSet::new());
-    }
-
-    #[test]
-    fn begin_rebuild_subsumes_pending_collection_patch() {
-        let signals = signals();
-        signals.mark_collection_dirty(7, signals.rebuild_generation());
-        signals.begin_rebuild();
-        assert!(!signals.has_patch_request());
-        assert_eq!(signals.take_dirty_collections(), BTreeSet::new());
-    }
-
-    #[test]
-    fn dirty_marking_from_stale_generation_is_ignored_during_rebuild() {
-        let signals = signals();
-        signals.begin_rebuild();
-        let stale_generation = signals.rebuild_generation() - 1;
-        signals.mark_dynamic_dirty(1, stale_generation);
-        assert!(!signals.has_patch_request());
-        assert_eq!(signals.take_dirty_dynamic_nodes(), BTreeSet::new());
-
-        // A node dispatched by the current rebuild may still mark itself dirty.
-        signals.mark_dynamic_dirty(2, signals.rebuild_generation());
-        assert!(signals.has_patch_request());
-
-        // Outside a rebuild, generation no longer gates patching.
-        signals.finish_rebuild();
-        signals.mark_dynamic_dirty(3, stale_generation);
-        assert_eq!(signals.take_dirty_dynamic_nodes().len(), 2);
-    }
-
-    #[test]
     fn initial_dynamic_content_gating_tracks_rebuild_lifetime() {
         let signals = signals();
         signals.begin_rebuild();
@@ -478,9 +346,8 @@ mod tests {
     #[test]
     fn begin_rebuild_subsumes_pending_patch() {
         let signals = signals();
-        signals.mark_dynamic_dirty(9, signals.rebuild_generation());
+        signals.request_refresh();
         signals.begin_rebuild();
         assert!(!signals.has_patch_request());
-        assert_eq!(signals.take_dirty_dynamic_nodes(), BTreeSet::new());
     }
 }
