@@ -1364,15 +1364,7 @@ async fn dom_planes_stack_a_hosted_element_between_parts() {
         .expect("a body")
         .append_child(&host)
         .expect("host appended");
-    let frame: web_sys::HtmlIFrameElement = document
-        .create_element("iframe")
-        .expect("iframe")
-        .unchecked_into();
-    frame.set_srcdoc(
-        "<body style='margin:0;background:#2e7d32;color:#fff;font:600 28px system-ui'>\
-         <p style='margin:24px'>hosted iframe</p></body>",
-    );
-    frame.style().set_css_text("border:0");
+    let frame = hosted_frame(&document);
 
     #[expect(
         clippy::cast_possible_truncation,
@@ -1424,22 +1416,16 @@ async fn dom_planes_stack_a_hosted_element_between_parts() {
     engine.render(FrameTime::now()).await.expect("render");
 
     let root = host.first_element_child().expect("the stacking root");
-    let stacked = |selector: &str| -> Vec<String> {
-        let found = root.query_selector_all(selector).expect("a selector");
-        (0..found.length())
-            .map(|i| {
-                found
-                    .item(i)
-                    .expect("listed")
-                    .unchecked_into::<web_sys::HtmlElement>()
-                    .style()
-                    .get_property_value("z-index")
-                    .expect("z-index")
-            })
-            .collect()
-    };
-    assert_eq!(stacked("canvas"), ["0", "2"], "a part below and one above");
-    assert_eq!(stacked("iframe"), ["1"], "the element between the parts");
+    assert_eq!(
+        stacked(&root, "canvas"),
+        ["0", "2"],
+        "a part below and one above"
+    );
+    assert_eq!(
+        stacked(&root, "iframe"),
+        ["1"],
+        "the element between the parts"
+    );
     let style = frame.style();
     let property = |name: &str| style.get_property_value(name).expect(name);
     assert!(property("transform").starts_with("matrix("));
@@ -1464,4 +1450,36 @@ async fn dom_planes_stack_a_hosted_element_between_parts() {
         "the surface's stacking root leaves with it"
     );
     host.remove();
+}
+
+/// The `<iframe>` a web view would host: a same-document page, so the test
+/// needs no network.
+fn hosted_frame(document: &web_sys::Document) -> web_sys::HtmlIFrameElement {
+    let frame: web_sys::HtmlIFrameElement = document
+        .create_element("iframe")
+        .expect("iframe")
+        .unchecked_into();
+    frame.set_srcdoc(
+        "<body style='margin:0;background:#2e7d32;color:#fff;font:600 28px system-ui'>\
+         <p style='margin:24px'>hosted iframe</p></body>",
+    );
+    frame.style().set_css_text("border:0");
+    frame
+}
+
+/// The `z-index` of each of `root`'s children matching `selector`, in
+/// document order.
+fn stacked(root: &web_sys::Element, selector: &str) -> Vec<String> {
+    let found = root.query_selector_all(selector).expect("a selector");
+    (0..found.length())
+        .map(|i| {
+            found
+                .item(i)
+                .expect("listed")
+                .unchecked_into::<web_sys::HtmlElement>()
+                .style()
+                .get_property_value("z-index")
+                .expect("z-index")
+        })
+        .collect()
 }
