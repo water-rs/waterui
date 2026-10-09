@@ -135,7 +135,7 @@ async fn begin_serialized_server_start(
         return Ok(None);
     };
     let lock = crate::project_model::water_dir::sccache_server_lock(host).await?;
-    remove_dead_server_socket(socket)?;
+    remove_dead_server_socket(socket).await?;
     Ok(Some(lock))
 }
 
@@ -150,13 +150,13 @@ async fn begin_serialized_server_start(
 /// remove; a listener answering, or an error that is not refusal, leaves
 /// it for the client to report.
 #[cfg(unix)]
-fn remove_dead_server_socket(socket: &Path) -> eyre::Result<()> {
+async fn remove_dead_server_socket(socket: &Path) -> eyre::Result<()> {
     use eyre::WrapErr as _;
 
-    match std::os::unix::net::UnixStream::connect(socket) {
+    match smol::net::unix::UnixStream::connect(socket).await {
         Ok(_server) => Ok(()),
         Err(error) if error.kind() != std::io::ErrorKind::ConnectionRefused => Ok(()),
-        Err(_) => match std::fs::remove_file(socket) {
+        Err(_) => match smol::fs::remove_file(socket).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error).wrap_err_with(|| {

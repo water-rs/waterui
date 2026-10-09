@@ -643,17 +643,11 @@ async fn exclusive_lock_file(
     .await
 }
 
-/// The lock serializing connect-or-start of the per-user sccache server.
-///
-/// `SCCACHE_SERVER_UDS` points every build of one user at one socket path,
-/// and every sccache client that finds no listener spawns a server itself —
-/// racing daemons whose binds on the fixed path collide, which reports as
-/// `Server startup failed: File exists` on the hosts that return `EEXIST`
-/// for a colliding create. Held across the client's connect-or-start, the
-/// loser of a process race waits for the winner's server and connects to
-/// it instead of binding over it. `~/.water/locks/` keeps the lock beside
-/// the socket's Water home; like `.build-lease` the file is never deleted —
-/// it is the thing being locked — so `water clean` dropping the build cache
+/// The lock serializing connect-or-start of the per-user sccache server
+/// across `water` processes; `crate::toolchain::sccache` holds it across
+/// the client run and says why. `~/.water/locks/` keeps the lock beside the
+/// socket's Water home; like `.build-lease` the file is never deleted — it
+/// is the thing being locked — so `water clean` dropping the build cache
 /// cannot unlink it under a running startup.
 ///
 /// # Errors
