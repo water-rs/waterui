@@ -55,6 +55,7 @@ pub mod prelude {
         entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
         metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
     };
+    pub use waterui_core::transition::{AnyTransition, Edge, PropertyTransition, Transition};
 
     #[cfg(feature = "flow-markdown")]
     pub use crate::include_markdown;
@@ -213,6 +214,14 @@ pub use waterui_core::{
     resolve::{self, AnyResolvable, Resolvable},
     views,
 };
+
+/// Structural insertion/removal transitions: `Transition` is the trait,
+/// `PropertyTransition` supplies the built-in opacity/scale/`move_in`
+/// constructors, `AnyTransition` is its erased form, and `Edge` names the edge
+/// a `move_in` transition slides from. Pixel transitions live behind the
+/// optional `transition` feature.
+#[doc(inline)]
+pub use waterui_core::transition::{AnyTransition, Edge, PropertyTransition, Transition};
 
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.
 #[cfg(feature = "std")]

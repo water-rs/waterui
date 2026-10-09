@@ -7,19 +7,24 @@
 //! - Toggle state animations
 //! - Different animation curves (linear, ease-in, ease-out, spring)
 //! - Framework-driven GPU morph animation (not expressible as a simple native property transform)
+//! - Structural insertion/removal transitions on `when` branches and `ForEach` items
 //!
 //! Animations in WaterUI are reactive - they automatically apply
 //! when reactive values change, using the `.animated()` or
 //! `.with(Animation::...)` modifiers.
 
 use core::time::Duration;
+use waterui::Identifiable;
 use waterui::animation::Animation;
 use waterui::app::App;
+use waterui::component::lazy::Lazy;
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
+use waterui::reactive::collection::List as ReactiveList;
 use waterui::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
+use waterui::widget::condition::when;
 
 const SCALE_BOX_SIDE: f32 = 80.0;
 const SCALE_STAGE_SIDE: f32 = SCALE_BOX_SIDE * 2.25;
@@ -448,6 +453,90 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
     .padding()
 }
 
+/// A chip in the membership-transition demo; `id` is the stable collection
+/// identity, so reinserting the same chip while its exit is still running
+/// builds a fresh view while the outgoing ghost finishes independently.
+#[derive(Clone, Copy, Identifiable)]
+struct TransitionChip {
+    #[id]
+    id: u32,
+}
+
+/// Collection state for the membership demo: the chips, the next id to hand
+/// out, and the most recently removed chip so it can be reinserted.
+#[state]
+#[derive(Clone)]
+struct ChipTransitions {
+    items: ReactiveList<TransitionChip>,
+    next_id: Binding<u32>,
+    last_removed: Binding<Option<TransitionChip>>,
+}
+
+/// Demo: `when` membership transition — the banner fades and scales in and out
+/// as the toggle inserts and removes it. The condition binding is owned by
+/// `demo`, outside the conditional subtree, and the transition metadata sits
+/// on the banner itself rather than on the `when` container.
+fn conditional_transition_section(visible: &Binding<bool>) -> impl View {
+    vstack((
+        text("Membership Transition: when").headline(),
+        text("Toggling inserts and removes the banner with a fade+scale transition").body(),
+        when(visible.clone(), || {
+            text("Message")
+                .transition(PropertyTransition::opacity().combined(PropertyTransition::scale(0.9)))
+                .animation(Animation::ease_out(Duration::from_millis(300)))
+        }),
+        button("Toggle Message")
+            .action(|State(v): State<Binding<bool>>| v.toggle())
+            .state(visible),
+    ))
+    .padding()
+}
+
+/// Demo: `ForEach` membership transitions — the transition lives on each item
+/// view, so a removed chip leaves the semantic tree at once but keeps its slot
+/// as a non-interactive ghost until the exit completes; the stack then closes
+/// the gap. Tapping "Reinsert" while an exit is still running creates a fresh
+/// view for the same identity — the old ghost finishes on its own.
+fn collection_transition_section(chips: &ChipTransitions) -> impl View {
+    let items = chips.items.clone();
+    vstack((
+        text("Membership Transition: ForEach").headline(),
+        text(
+            "Chips fade and scale on insertion and removal; remove then reinsert quickly to see \
+             the fresh chip appear while the outgoing one still holds its slot",
+        )
+        .body(),
+        Lazy::for_each(items, |chip: TransitionChip| {
+            text!("Chip {id}", id = chip.id)
+                .padding()
+                .background(Blue.with_opacity(0.25))
+                .transition(PropertyTransition::opacity().combined(PropertyTransition::scale(0.9)))
+                .animation(Animation::ease_out(Duration::from_millis(350)))
+        }),
+        hstack((
+            button("Add Chip").action(|s: ChipTransitions| {
+                let id = s.next_id.snapshot();
+                *s.next_id.get_mut() += 1;
+                s.items.push(TransitionChip { id });
+            }),
+            button("Remove Last").action(|s: ChipTransitions| {
+                let snapshot = s.items.snapshot();
+                if let Some(&chip) = snapshot.last() {
+                    let _ = s.items.remove(snapshot.len() - 1);
+                    s.last_removed.set(Some(chip));
+                }
+            }),
+            button("Reinsert").action(|s: ChipTransitions| {
+                if let Some(chip) = s.last_removed.get_mut().take() {
+                    s.items.push(chip);
+                }
+            }),
+        ))
+        .state(chips),
+    ))
+    .padding()
+}
+
 /// Demo: Framework-side custom animation rendered by WaterUI GPU pipeline.
 ///
 /// This is intentionally not a simple native transform animation (scale/rotation/offset).
@@ -490,6 +579,15 @@ pub fn demo() -> impl View {
     let staggered_expanded = Binding::bool(true);
     let size_value = Binding::f64(50.0);
 
+    // State for the structural-transition demos: the `when` condition and the
+    // `ForEach` collection live here, outside the subtrees they drive.
+    let transition_visible = Binding::bool(true);
+    let transition_chips = ChipTransitions {
+        items: ReactiveList::from((0..3).map(|id| TransitionChip { id }).collect::<Vec<_>>()),
+        next_id: Binding::u32(3),
+        last_removed: Binding::default(),
+    };
+
     scroll(
         vstack((
             // Header
@@ -525,6 +623,13 @@ pub fn demo() -> impl View {
                 toggle_animation_section(&toggle_state),
                 Divider,
                 staggered_section(&staggered_expanded),
+            )),
+            // Structural insertion/removal transitions
+            vstack((
+                Divider,
+                conditional_transition_section(&transition_visible),
+                Divider,
+                collection_transition_section(&transition_chips),
             )),
         ))
         .padding(),

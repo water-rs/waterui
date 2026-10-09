@@ -5,7 +5,7 @@
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "## Quick start" — rust block 8/16
+// SKILL.md § "## Quick start" — rust block 8/17
 //
 // At module scope because the skill presents these as the imports later
 // snippets in the same file rely on.
@@ -39,7 +39,7 @@ fn glue_row_view(row: GlueRow) -> ListItem {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/16
+// SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/17
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
 // `fade.snapshot()` is SKILL.md's deliberate broken line — the section teaches that
@@ -69,7 +69,7 @@ pub fn skill_block_01() {
 
 // ---------------------------------------------------------------------------
 // SKILL.md § "### 2. `watch` is not the reactive primitive — it is the escape
-// hatch" — rust block 2/16
+// hatch" — rust block 2/17
 // Listing: three independent replacements for `watch`.
 // ---------------------------------------------------------------------------
 pub fn skill_block_02() {
@@ -91,7 +91,7 @@ pub fn skill_block_02() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 3/16
+// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 3/17
 // ---------------------------------------------------------------------------
 pub fn skill_block_03() -> impl View {
     let count = Binding::i32(0);
@@ -102,7 +102,7 @@ pub fn skill_block_03() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 4/16
+// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 4/17
 // ---------------------------------------------------------------------------
 pub fn skill_block_04() -> impl View {
     let query = Binding::container(Str::from(""));
@@ -119,7 +119,7 @@ pub fn skill_block_04() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 5/16
+// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 5/17
 // ---------------------------------------------------------------------------
 pub mod skill_block_05 {
     use super::{GlueRow as Row, ReactiveList, glue_row_view as row_view};
@@ -155,7 +155,7 @@ pub mod skill_block_05 {
 
 // ---------------------------------------------------------------------------
 // SKILL.md § "### 4. A changing set of views is a collection, not a `watch`"
-// — rust block 6/16
+// — rust block 6/17
 // Prefix is a real statement sequence; the last two lines are a listing.
 // ---------------------------------------------------------------------------
 pub fn skill_block_06() {
@@ -187,7 +187,7 @@ pub fn skill_block_06() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "## Quick start" — rust block 7/16
+// SKILL.md § "## Quick start" — rust block 7/17
 // ---------------------------------------------------------------------------
 pub mod skill_block_07 {
     use waterui::app::App;
@@ -212,7 +212,7 @@ pub mod skill_block_07 {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Views" — rust block 9/16
+// SKILL.md § "### Views" — rust block 9/17
 // ---------------------------------------------------------------------------
 pub fn skill_block_09() -> impl View {
     fn card(title: &'static str) -> impl View {
@@ -223,7 +223,7 @@ pub fn skill_block_09() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Views" — rust block 10/16
+// SKILL.md § "### Views" — rust block 10/17
 // ---------------------------------------------------------------------------
 pub mod skill_block_10 {
     use waterui::prelude::*;
@@ -240,7 +240,7 @@ pub mod skill_block_10 {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### State" — rust block 11/16
+// SKILL.md § "### State" — rust block 11/17
 // ---------------------------------------------------------------------------
 pub fn skill_block_11() {
     use waterui::media::media_picker::Selected;
@@ -269,7 +269,7 @@ pub fn skill_block_11() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Text" — rust block 12/16
+// SKILL.md § "### Text" — rust block 12/17
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
 pub fn skill_block_12() {
@@ -306,7 +306,7 @@ pub fn skill_block_12() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Layout" — rust block 13/16
+// SKILL.md § "### Layout" — rust block 13/17
 // Listing: six one-line examples plus one `let`.
 // ---------------------------------------------------------------------------
 pub fn skill_block_13() {
@@ -338,7 +338,7 @@ pub fn skill_block_13() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Conditionals" — rust block 14/16
+// SKILL.md § "### Conditionals" — rust block 14/17
 // Listing: independent conditional forms.
 // ---------------------------------------------------------------------------
 #[expect(
@@ -395,7 +395,25 @@ pub fn skill_block_14() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Modifiers" — rust block 15/16
+// SKILL.md § "### Structural transitions" — rust block 15/17
+// ---------------------------------------------------------------------------
+pub fn skill_block_15() {
+    use std::time::Duration;
+    use waterui::animation::Animation;
+    use waterui::widget::condition::when;
+
+    let visible = Binding::bool(true);
+    let content = when(visible.clone(), || {
+        text("Message")
+            .transition(PropertyTransition::opacity().combined(PropertyTransition::scale(0.9)))
+            .animation(Animation::ease_out(Duration::from_millis(300)))
+    });
+
+    let _ = content;
+}
+
+// ---------------------------------------------------------------------------
+// SKILL.md § "### Modifiers" — rust block 16/17
 //
 // A signature listing: every line is a `/`-separated set of alternatives, each
 // a bare method fragment. Each fragment is applied to a fresh receiver so the
@@ -405,7 +423,7 @@ pub fn skill_block_14() {
 // (§ "### Text") that `Text::size(..)` is the font size and shadows the
 // two-argument frame `.size(w, h)`.
 // ---------------------------------------------------------------------------
-pub fn skill_block_15() {
+pub fn skill_block_16() {
     use waterui::accessibility::AccessibilityRole;
     use waterui::gesture::Gesture;
     use waterui::layout::EdgeSet;
@@ -552,10 +570,10 @@ pub fn skill_block_15() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### The Environment" — rust block 16/16
+// SKILL.md § "### The Environment" — rust block 17/17
 // Listing: seeding alternatives, then three independent reading examples.
 // ---------------------------------------------------------------------------
-pub mod skill_block_16 {
+pub mod skill_block_17 {
     use waterui::locale::{Locale, locales};
     use waterui::prelude::*;
 

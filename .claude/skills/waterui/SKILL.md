@@ -353,6 +353,42 @@ compile. Reach for `when` or `.visible` there.
 For many branches over a plain (non-reactive) value, a `match` returning `.anyview()` is
 clearer than a long `when` chain.
 
+### Structural transitions
+
+Attach `.transition(...)` to the view whose membership changes. `Transition` is the
+trait; `PropertyTransition` supplies the built-in constructors. Keep state outside
+the conditional or collection item so a fresh insertion receives the intended state.
+
+```rust
+use std::time::Duration;
+use waterui::animation::Animation;
+use waterui::widget::condition::when;
+
+let visible = Binding::bool(true);
+let content = when(visible.clone(), || {
+    text("Message")
+        .transition(
+            PropertyTransition::opacity().combined(PropertyTransition::scale(0.9)),
+        )
+        .animation(Animation::ease_out(Duration::from_millis(300)))
+});
+```
+
+Use the same per-item modifier inside a `ForEach` or `List` item builder. Transitions
+run on structural insertion and removal, including navigation and overlays. Updating
+a text signal or changing `.visible(...)` does not insert or remove a view.
+
+An exiting view immediately leaves accessibility, testing, focus and hit testing.
+Its non-interactive visual keeps the last layout slot until the exit completes;
+then the parent closes the gap using its animation. Reinserting the same collection
+identity creates a new view while the old exit finishes independently. Reduce Motion
+uses the transition's declared `reduced()` mapping, which defaults to opacity.
+
+Enable the `transition` Cargo feature for `waterui::transition` pixel effects:
+`Disintegrate`, `Dissolve`, `Pixelate`, `Burn` and `Shatter`. Their demo belongs to
+the [transition repository](https://github.com/water-rs/transition). Property
+transitions do not require that feature.
+
 ### Modifiers
 
 ```rust
