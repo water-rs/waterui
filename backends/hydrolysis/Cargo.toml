@@ -17,7 +17,7 @@ thiserror.workspace = true
 waterui-assets.workspace = true
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
 png = "0.18"
-waterui = { workspace = true, features = ["gpu", "inspector"] }
+waterui = { workspace = true, features = ["dialog", "gpu", "inspector"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 nami.workspace = true
@@ -324,7 +324,7 @@ serde_json.workspace = true
 toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
-waterui = { workspace = true, features = ["flow-markdown", "gpu", "snackbar", "video-gpu"] }
+waterui = { workspace = true, features = ["dialog", "flow-markdown", "gpu", "snackbar", "video-gpu"] }
 base64 = "0.22"
 # Tolerance assertions for computed geometry and animation values in tests.
 approx = "0.5"

@@ -433,6 +433,24 @@ impl RenderNode {
             }
             Err(view) => view,
         };
+        let view = match view.downcast::<Metadata<waterui::dialog::Dialog>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                let layer = RetainedSubview::new(AnyView::new(value.clone()));
+                return Self::build_wrapper(
+                    WrapperEffect::Dialog(DialogEffect {
+                        content: Rc::new(RefCell::new(Some(layer))),
+                        is_presented: value.is_presented().clone(),
+                        dialog: value,
+                        marker: Rc::new(()),
+                    }),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Metadata<PopupMenuSurface>>() {
             Ok(meta) => {
                 return Self::build_wrapper(

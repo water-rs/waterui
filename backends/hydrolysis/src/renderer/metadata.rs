@@ -745,6 +745,28 @@ impl HydrolysisRenderer {
         render_content(renderer);
     }
 
+    /// Register the dialog's handles for the post-flush render pass, then
+    /// render the node's own content. The registration carries the modal
+    /// environment — the node's environment plus the `ModalInteraction` scope
+    /// that routes Escape to the dialog's cancel path — so the layer presents
+    /// modal the moment it draws.
+    pub(super) fn apply_dialog(
+        renderer: &mut Self,
+        env: &Environment,
+        value: &DialogEffect,
+        render_content: impl FnOnce(&mut Self),
+    ) {
+        let presented = renderer.read_signal(&value.is_presented);
+        renderer.popup_menu.dialogs.push(RegisteredDialog {
+            presented,
+            is_presented: value.is_presented.clone(),
+            env: dialog_modal_environment(env, &value.dialog),
+            content: Rc::clone(&value.content),
+            marker: Rc::clone(&value.marker),
+        });
+        render_content(renderer);
+    }
+
     /// Register the draggable hit-target, then render the given content. Shared by
     /// the dispatch handler and the retained `Wrapper` node. The node owns the
     /// [`Draggable`] in an `Rc`, so the registration clones the handle and the

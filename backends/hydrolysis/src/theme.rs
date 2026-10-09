@@ -51,7 +51,9 @@ pub(crate) fn install_theme_tokens(env: &mut Environment, style: Option<&dyn cra
                 .selection_container(color(0x25_63_EB))
                 .selection_foreground(color(0xFF_FF_FF))
                 .error(color(0xDC_26_26))
-                .error_foreground(color(0xFF_FF_FF)),
+                .error_foreground(color(0xFF_FF_FF))
+                // M3 scrim: black at 32% over the content beneath the dialog.
+                .scrim(Srgb::BLACK.with_opacity(0.32).resolve()),
         )
         .fonts(FontSettings::default_scale())
         .install(&mut defaults);

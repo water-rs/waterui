@@ -433,6 +433,11 @@ impl RenderNode {
                             },
                         );
                     }
+                    WrapperEffect::Dialog(value) => {
+                        HydrolysisRenderer::apply_dialog(renderer, child_env, value, |r| {
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                        });
+                    }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
                         node.child
@@ -947,6 +952,20 @@ impl RenderNode {
                         node.child.emit_accessibility(renderer, child_env);
                         if let Some(hook) = effect.appear.take() {
                             hook.call();
+                        }
+                    }
+                    WrapperEffect::Dialog(effect) => {
+                        // The modal layer replaces what the subtree
+                        // contributes while presented — the nodes beneath are
+                        // inert for accessibility — so the walk emits the
+                        // dialog's own subtree instead of the child's.
+                        if renderer.read_signal(&effect.is_presented) {
+                            let env = dialog_modal_environment(child_env, &effect.dialog);
+                            if let Some(content) = effect.content.borrow_mut().as_mut() {
+                                content.emit_accessibility(renderer, &env);
+                            }
+                        } else {
+                            node.child.emit_accessibility(renderer, child_env);
                         }
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),

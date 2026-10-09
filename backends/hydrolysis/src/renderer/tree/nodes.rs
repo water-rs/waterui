@@ -939,6 +939,9 @@ pub(super) enum WrapperEffect {
     /// for the post-flush `render_anchored_overlays` pass, which measures,
     /// places and draws the open overlay at window level above all content.
     AnchoredOverlay(AnchoredOverlayEffect),
+    /// places and draws the presented dialog in the modal layer above all
+    /// content — its scrim plus the composed card.
+    Dialog(DialogEffect),
 }
 
 impl WrapperEffect {
@@ -956,6 +959,7 @@ impl WrapperEffect {
                 | Self::DropDestination(_)
                 | Self::ContextMenu(_)
                 | Self::AnchoredOverlay(_)
+                | Self::Dialog(_)
                 | Self::LifeCycle(_)
         )
     }
@@ -983,6 +987,27 @@ pub struct AnchoredOverlayEffect {
     /// that stopped registering left the tree.
     pub(crate) marker: Rc<()>,
 }
+
+/// The node-owned state of a `.dialog(...)` wrapper. The content slot is
+/// `Rc`-shared because the post-flush render pass — not this node — measures
+/// and flushes the modal layer, and the node keeps it built across closes.
+pub struct DialogEffect {
+    /// The layer content — the dialog's scrim-plus-card body — lazily built
+    /// on first open.
+    pub(crate) content: Rc<RefCell<Option<RetainedSubview>>>,
+    /// The dialog being presented: its cancel path is what the modal
+    /// environment routes Escape and the Android system back to.
+    pub(crate) dialog: waterui::dialog::Dialog,
+    /// The presentation binding: read every flush (subscribing the frame to
+    /// it), written `false` by the dialog's own dismiss paths and by the
+    /// node leaving the tree.
+    pub(crate) is_presented: nami::Binding<bool>,
+    /// Identity shared with the registration, so the render pass can match a
+    /// presented dialog to the node that emitted it — and tell that a node
+    /// that stopped registering left the tree.
+    pub(crate) marker: Rc<()>,
+}
+
 
 /// The node-owned state of a `.context_menu(...)` wrapper: the resolved menu
 /// plus the lifted preview and interactive accessory as retained sub-views.

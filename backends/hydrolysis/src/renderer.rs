@@ -331,6 +331,8 @@ pub struct PresentationHosts {
     pub(crate) context_menu: NodeCore,
     /// `.anchored_overlay` presentations' host.
     pub(crate) anchored: NodeCore,
+    /// The `.dialog` modal layer's host.
+    pub(crate) dialog: NodeCore,
 }
 
 impl PresentationHosts {
@@ -339,7 +341,12 @@ impl PresentationHosts {
     /// `PAINT|COMMIT` like [`RenderNode::unmount`] leaves the window's own
     /// tree.
     pub(crate) fn unmount(&self) {
-        for host in [&self.text_overlay, &self.context_menu, &self.anchored] {
+        for host in [
+            &self.text_overlay,
+            &self.context_menu,
+            &self.anchored,
+            &self.dialog,
+        ] {
             host.cell.unmount_subtree();
         }
     }
@@ -747,6 +754,7 @@ impl SemanticCore {
             text_overlay: host(),
             context_menu: host(),
             anchored: host(),
+            dialog: host(),
         };
         Self {
             state: HydroState::new(text),
@@ -1810,14 +1818,16 @@ impl HydrolysisRenderer {
     }
 
     /// The window's fixed host frames in paint order: the content root,
-    /// then the context menu, anchored overlay and text overlay hosts.
-    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell>; 4] {
+    /// then the context menu, anchored overlay and text overlay hosts, and
+    /// finally the `.dialog` modal layer so nothing else stacks above it.
+    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell>; 5] {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
             Rc::clone(&hosts.context_menu.cell),
             Rc::clone(&hosts.anchored.cell),
             Rc::clone(&hosts.text_overlay.cell),
+            Rc::clone(&hosts.dialog.cell),
         ]
     }
 
