@@ -725,13 +725,16 @@ impl UiThreadServices {
         // SAFETY: fd >= 0 checked above.
         let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
         let wake = ExecutorWake::register(&executor)?;
-        let _ = executor_core::try_init_local_executor(
+        executor_core::try_init_local_executor(
             waterui::task::monitored_local_executor_with_probes(
                 executor.clone(),
                 waterui::task::RefreshRate::HEADLESS,
                 inspector_probe,
             ),
-        );
+        )
+        .map_err(|_| {
+            JniError("hydrolysis android: the UI thread's executor is already attached".to_owned())
+        })?;
         let mut env = Environment::new();
         waterui::inspector::install(&mut env, inspector);
         Ok(Self {
