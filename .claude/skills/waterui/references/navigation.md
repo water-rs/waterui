@@ -237,6 +237,12 @@ erasure happens below the authoring layer. It adapts to a sliding pane on a phon
 side-by-side columns on a large window. Both closures are re-invoked on rebuild, so state
 they read must be owned outside them.
 
+At compact widths a two-column split shows exactly one column, chosen by the
+selection binding: `Some` shows the detail and `None` shows the sidebar. The
+platform back control, including a completed swipe back, writes `None`. The
+binding is the single source of truth on every backend: start with `None` if the
+app should open on the sidebar. At wider widths the columns remain side by side.
+
 ## Windows
 
 A single-window app needs nothing beyond `App::new(view, env)`. For window chrome,
