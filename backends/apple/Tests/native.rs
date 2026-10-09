@@ -1013,7 +1013,11 @@ mod resolve {
                 "{name}: the row holds the label and the control"
             );
             let label = cocoa_ui::view::frame(&subviews[0]);
-            let control = cocoa_ui::view::frame(&subviews[1]);
+            // The constraints pin the control's alignment rect, not its
+            // frame: a UISwitch frame overshoots the pinned trailing edge
+            // by 2 pt, so the edge Auto Layout placed is the alignment
+            // rect's.
+            let control = cocoa_ui::view::alignment_frame(&subviews[1]);
             let control_trailing = control.origin.x + control.size.width;
             if switch {
                 assert_near(label.origin.x, 0.0_f64, "label leading", name);
