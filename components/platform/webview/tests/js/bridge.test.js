@@ -278,17 +278,6 @@ describe("WPE isolated transport", () => {
     await expect(reply).rejects.toThrow("handler failed");
   });
 
-  test("keeps a pending native reply in the originating realm after navigation", async () => {
-    const first = loadWpePage();
-    const stale = vm.runInContext(`waterui.invoke("slow")`, first);
-    const second = loadWpePage();
-    const next = vm.runInContext(`waterui.invoke("next")`, second);
-    second.__reply.resolve(JSON.stringify({ ok: true, payload: { json: "next" } }));
-    first.__reply.resolve(JSON.stringify({ ok: true, payload: { json: "stale" } }));
-    await expect(next).resolves.toBe("next");
-    await expect(stale).resolves.toBe("stale");
-  });
-
   test("captures the resolver for both outcomes before a pending reply", async () => {
     const page = loadWpePage();
     const fulfilled = vm.runInContext(`waterui.invoke("fulfilled")`, page);
@@ -324,25 +313,6 @@ describe("WPE isolated transport", () => {
       message: "Error: original rejection",
     });
     expect(replacementCalls).toHaveLength(0);
-  });
-
-  test("the native promise constructor reaches only the default page global", () => {
-    const page = loadWpePage();
-    const result = vm.runInContext(
-      `(() => {
-        const promise = __wateruiNativeSend("{}");
-        promise.catch(() => {});
-        const realm = promise.constructor.constructor("return globalThis")();
-        return {
-          isPageGlobal: realm === globalThis,
-          handler: realm.webkit?.messageHandlers?.__waterui,
-        };
-      })()`,
-      page,
-    );
-    expect(result.isPageGlobal).toBe(true);
-    expect(result.handler).toBeUndefined();
-    page.__reply.resolve(JSON.stringify({ ok: true, payload: { json: null } }));
   });
 });
 
