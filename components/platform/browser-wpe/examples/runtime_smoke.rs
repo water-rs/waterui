@@ -5,6 +5,10 @@
 mod bridge_smoke;
 
 #[cfg(target_os = "linux")]
+#[path = "runtime_smoke/executor.rs"]
+mod executor;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use std::cell::{Cell, RefCell};
     use std::ffi::{OsStr, OsString};
@@ -13,7 +17,7 @@ mod linux {
 
     use base64::Engine as _;
     use waterui_browser_wpe::{
-        DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
+        DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpeRuntime, WpeRuntimePaths,
     };
     use waterui_graphics::cherenkov::{Display, FrameTime};
     use waterui_graphics::gpu::{GpuContentRenderer, GpuRuntime};
@@ -22,6 +26,8 @@ mod linux {
     use waterui_webview::{BackendEvent, WebViewEvent};
     use waterui_webview::{BridgeOrigins, DOCUMENT_START_SCRIPT, JsReply, OriginPolicy};
     use wgpu_external_frame::dma_buf::DmaBufFrame;
+
+    use super::executor::{SmokeExecutor, SmokePage};
 
     const WIDTH: u32 = 640;
     const HEIGHT: u32 = 360;
@@ -69,7 +75,7 @@ mod linux {
 
     // Pumps the page until it has loaded the document and produced one fully
     // rendered DMA-BUF frame, or the deadline passes.
-    fn await_rendered_frame(page: &WpePage, deadline: Instant) -> DmaBufFrame {
+    fn await_rendered_frame(page: &SmokePage, deadline: Instant) -> DmaBufFrame {
         let loaded = Rc::new(Cell::new(false));
         let load_error = Rc::new(RefCell::new(None::<String>));
         // The guard has to outlive the pump loop below: dropping it
@@ -217,7 +223,7 @@ mod linux {
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));
     }
 
-    fn await_bridge_smoke(page: &WpePage, deadline: Instant) {
+    fn await_bridge_smoke(page: &SmokePage, deadline: Instant) {
         let result = Rc::new(RefCell::new(None));
         let result_slot = Rc::clone(&result);
         let page_for_future = page.clone();
@@ -294,12 +300,13 @@ mod linux {
     }
 
     pub fn run() {
+        let executor = SmokeExecutor::install();
         let (runtime_root, output_path, timeout) = parse_args();
         let gpu_runtime = pollster::block_on(GpuRuntime::new())
             .unwrap_or_else(|error| panic!("WPE smoke GPU runtime creation failed: {error}"));
         let paths = WpeRuntimePaths::new(runtime_root);
         let runtime = WpeRuntime::initialize(&paths);
-        let page = WpePage::new(runtime.clone());
+        let page = SmokePage::new(runtime.clone(), &executor);
         page.set_bridge_origins(OriginPolicy::new(
             BridgeOrigins::Any,
             &Url::new("https://wpe-smoke.invalid/"),
@@ -326,7 +333,7 @@ mod linux {
         let frame = await_rendered_frame(&page, deadline);
         await_bridge_smoke(&page, deadline);
         render_to_png(&gpu_runtime, frame, &output_path);
-        super::bridge_smoke::run(&runtime, deadline);
+        super::bridge_smoke::run(&runtime, &executor, deadline);
     }
 }
 

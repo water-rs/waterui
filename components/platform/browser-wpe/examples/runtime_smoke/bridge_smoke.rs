@@ -10,9 +10,11 @@ use std::time::{Duration, Instant};
 
 use futures::channel::oneshot;
 use suiteki::Str;
-use waterui_browser_wpe::{WpePage, WpeRuntime};
+use waterui_browser_wpe::WpeRuntime;
 use waterui_url::Url;
 use waterui_webview::{BackendEvent, BridgeOrigins, JsReply, OriginPolicy, WebViewEvent};
+
+use super::executor::{SmokeExecutor, SmokePage};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -135,7 +137,7 @@ impl LocalHttpServer {
 
     fn wait_for(
         &mut self,
-        page: &WpePage,
+        page: &SmokePage,
         predicate: impl Fn(&ServerRequest) -> bool,
         deadline: Instant,
         purpose: &str,
@@ -153,7 +155,7 @@ impl LocalHttpServer {
         }
     }
 
-    fn wait_for_tag(&mut self, page: &WpePage, tag: &str, deadline: Instant) -> ServerRequest {
+    fn wait_for_tag(&mut self, page: &SmokePage, tag: &str, deadline: Instant) -> ServerRequest {
         let tag = tag.to_owned();
         let purpose = format!("marker {tag}");
         self.wait_for(
@@ -245,7 +247,7 @@ fn serve_request(
     let _ = stream.flush();
 }
 
-fn install_bridge(page: &WpePage) {
+fn install_bridge(page: &SmokePage) {
     page.add_script(
         "waterui:wpe-transport",
         include_str!("../../src/transport.js"),
@@ -283,7 +285,7 @@ fn tagged_payload(payload: &[u8]) -> String {
         .unwrap_or_else(|| "invalid".to_owned())
 }
 
-fn install_probe_handler(page: &WpePage, calls: Arc<Mutex<Vec<String>>>) {
+fn install_probe_handler(page: &SmokePage, calls: Arc<Mutex<Vec<String>>>) {
     page.add_handler(
         "probe",
         Box::new(move |payload| {
@@ -298,7 +300,7 @@ fn install_probe_handler(page: &WpePage, calls: Arc<Mutex<Vec<String>>>) {
     );
 }
 
-fn await_page_script(page: &WpePage, body: &str, deadline: Instant) -> serde_json::Value {
+fn await_page_script(page: &SmokePage, body: &str, deadline: Instant) -> serde_json::Value {
     let result = Rc::new(RefCell::new(None));
     let result_slot = Rc::clone(&result);
     let page_for_future = page.clone();
@@ -329,7 +331,7 @@ fn await_page_script(page: &WpePage, body: &str, deadline: Instant) -> serde_jso
 }
 
 fn await_load(
-    page: &WpePage,
+    page: &SmokePage,
     server: &mut LocalHttpServer,
     url: &str,
     expected_marker: &str,
@@ -363,7 +365,7 @@ fn await_load(
     server.wait_for_tag(page, expected_marker, deadline);
 }
 
-fn await_process_identifier(page: &WpePage, deadline: Instant) -> u64 {
+fn await_process_identifier(page: &SmokePage, deadline: Instant) -> u64 {
     let identifier = Rc::new(RefCell::new(None));
     let identifier_slot = Rc::clone(&identifier);
     let page_for_future = page.clone();
@@ -389,7 +391,7 @@ fn await_process_identifier(page: &WpePage, deadline: Instant) -> u64 {
         .unwrap_or_else(|error| panic!("WPE process identifier query failed: {error}"))
 }
 
-fn await_channel<T>(page: &WpePage, receiver: &Receiver<T>, deadline: Instant, purpose: &str) -> T {
+fn await_channel<T>(page: &SmokePage, receiver: &Receiver<T>, deadline: Instant, purpose: &str) -> T {
     loop {
         page.pump();
         match receiver.try_recv() {
@@ -411,7 +413,7 @@ fn await_channel<T>(page: &WpePage, receiver: &Receiver<T>, deadline: Instant, p
     clippy::too_many_lines,
     reason = "keeps the cross-origin security scenario sequence explicit"
 )]
-pub fn run(runtime: &WpeRuntime, deadline: Instant) {
+pub fn run(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
     let mut server = LocalHttpServer::new();
     let port = server.port();
     let admitted_origin = format!("http://127.0.0.1:{port}");
@@ -420,7 +422,7 @@ pub fn run(runtime: &WpeRuntime, deadline: Instant) {
     let initial_url = admitted_url
         .parse::<Url>()
         .expect("parse admitted WPE smoke URL");
-    let page = WpePage::new(runtime.clone());
+    let page = SmokePage::new(runtime.clone(), executor);
     page.set_bridge_origins(OriginPolicy::new(
         BridgeOrigins::Allowed(vec![Str::from(admitted_origin)]),
         &initial_url,
