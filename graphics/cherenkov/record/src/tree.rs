@@ -87,6 +87,10 @@ impl<T: Target> std::fmt::Debug for Realize<T> {
 }
 
 /// One layer's sampled state for the current frame.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent, orthogonal state bit of a sampled layer"
+)]
 pub struct LayerNode {
     /// The local transform.
     pub transform: Affine,
@@ -117,6 +121,9 @@ pub struct LayerNode {
     /// a `GpuContent` or external frame the engine does not record —
     /// counts by the alpha contract the producer declared at install.
     content_translucent: bool,
+    /// Recorded or installed content of its own exists — a pure container,
+    /// which only composites children, has none.
+    has_content: bool,
     parent: Option<LayerId>,
     transform_track: Option<Track<Affine>>,
     components: Option<Box<components::Components>>,
@@ -208,6 +215,7 @@ impl LayerNode {
             blending_children: 0,
             content_blends: false,
             content_translucent: false,
+            has_content: false,
             parent: None,
             transform_track: None,
             components: None,
@@ -243,6 +251,13 @@ impl LayerNode {
     #[must_use]
     pub const fn content_translucent(&self) -> bool {
         self.content_translucent
+    }
+
+    /// Whether the layer has recorded or installed content of its own —
+    /// what distinguishes a layer that paints from a pure container.
+    #[must_use]
+    pub const fn has_content(&self) -> bool {
+        self.has_content
     }
 
     fn classify_rate(&self, scale: f64, components_running: bool) -> Option<RefreshRange> {
@@ -635,6 +650,7 @@ impl SurfaceTree {
     /// or may paint a pixel of alpha below one.
     pub fn note_content(&mut self, id: LayerId, content: Option<&ContentOp>) {
         let node = self.node_mut(id);
+        node.has_content = content.is_some();
         match content {
             Some(ContentOp::Replace(picture) | ContentOp::Picture(picture)) => {
                 let list = picture.display_list();
@@ -676,6 +692,7 @@ impl SurfaceTree {
         let node = self.node_mut(id);
         node.content_blends = false;
         node.content_translucent = !opaque;
+        node.has_content = true;
     }
 
     /// Every layer in the tree. Order is unspecified.
