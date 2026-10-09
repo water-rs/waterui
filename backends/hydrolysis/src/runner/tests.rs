@@ -1500,6 +1500,48 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     assert!(!runtime.renderer.has_pending_frame_request());
 }
 
+/// The cross-thread redraw handle's UI-thread post reads the gate as it
+/// stands when the post runs: one drained inside a transaction must not
+/// post a second frame into the one already running (water-rs/waterui#2287).
+#[test]
+fn frame_transaction_gates_a_ui_thread_wake() {
+    use super::window::{FrameDemand, FrameMode, FrameTransaction};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let transaction = FrameTransaction::default();
+    let posts = Arc::new(AtomicUsize::new(0));
+    let wake = transaction.ui_thread_wake({
+        let posts = Arc::clone(&posts);
+        move || {
+            posts.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let posted = || posts.load(Ordering::Relaxed);
+
+    transaction.sync_occlusion(false);
+    wake();
+    assert_eq!(posted(), 1, "an idle visible window posts the frame");
+
+    transaction.begin();
+    wake();
+    assert_eq!(posted(), 1, "a post inside a transaction joins it");
+    let _ = transaction.finish(
+        false,
+        FrameDemand {
+            mode: FrameMode::Idle,
+            redraw_pending: true,
+            signals_pending: false,
+        },
+    );
+    wake();
+    assert_eq!(posted(), 2, "closing the transaction reopens the gate");
+
+    transaction.sync_occlusion(true);
+    wake();
+    assert_eq!(posted(), 2, "an occluded window posts nothing");
+}
+
 #[test]
 fn frame_transaction_consumes_a_focused_fields_caret_redraw() {
     use super::window::FrameTransaction;

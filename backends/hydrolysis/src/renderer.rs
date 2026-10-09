@@ -297,6 +297,12 @@ pub struct ProducerWake {
     redraw: Option<RedrawHandle>,
 }
 
+impl std::fmt::Debug for ProducerWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProducerWake").finish_non_exhaustive()
+    }
+}
+
 impl ProducerWake {
     /// Posts the producer key and wakes the host for a frame.
     pub(crate) fn request_redraw(&self) {
@@ -481,9 +487,9 @@ pub struct SemanticCore {
     /// Identity-less guards from reads no node owns — fresh each flush,
     /// dropped at the next flush's start.
     outside_frame_retains: Vec<Retain>,
-    /// Mirror of `FrameSignals::rebuild_in_progress` for watch closures: marks
-    /// the rebuild subsumes must not re-arm a frame — the generation gate the
-    /// dirty-collection/dynamic flags already enforce on the flag side.
+    /// Mirror of `FrameSignals::rebuild_in_progress` for watch closures: a
+    /// change a rebuild already covers must not re-arm a frame — the gate the
+    /// rebuild generation applies on the signals side.
     rebuild_active: Rc<Cell<bool>>,
     /// A whole-tree emit pass is in progress — the rendered flush, the
     /// semantic emit walk, or a build-time capture: every a11y-emitting
@@ -615,6 +621,12 @@ pub struct HydrolysisRenderer {
     /// stack empty, so overlay content never joins a scope the window
     /// tree opened.
     pub(crate) material_group_scopes: Vec<Rc<NodeCell>>,
+    /// The widget theme's material terms (water-rs/waterui#1788), filled
+    /// once here — the renderer calls `register_backdrop_shaders` before
+    /// any chrome draws and keeps the registry. Every engine the window
+    /// attaches registers its shaders from this; a class a chrome member
+    /// names resolves its capture terms here at install.
+    material_registry: Rc<cherenkov_record::MaterialRegistry>,
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -798,6 +810,19 @@ impl SemanticCore {
         &self.root
     }
 
+    /// The session's fonts gained faces after text was shaped — a web
+    /// page's faces arriving after its first frame. Every shaping result made
+    /// against the old set is dropped, the font revision every text
+    /// measurement reads advances — so each cached layout that measured text
+    /// is laid out again — and the window relayouts and repaints.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    pub(crate) fn fonts_changed(&self) {
+        self.state.text.fonts_changed();
+        self.state.font_revision.with_mut(|revision| *revision += 1);
+        self.root.mark_layout();
+        self.root.mark(Dirty::PAINT);
+    }
+
     /// Whether any node in the window carries a mark — the pump's
     /// frame-work trigger.
     pub(crate) fn root_is_dirty(&self) -> bool {
@@ -820,10 +845,10 @@ impl SemanticCore {
         core
     }
 
-    /// Whether a structural rebuild is capturing right now — the gate
-    /// [`FrameSignals::mark_collection_dirty`] applies to the dirty flag: a
-    /// `views.watch` fire while a rebuild covers the whole tree must not mark
-    /// its owner's cell either.
+    /// Whether a structural rebuild is capturing right now — the gate a
+    /// `views.watch` or `Dynamic` delivery applies to its cell mark: a change
+    /// fired while a rebuild covers the whole tree must not mark the cell
+    /// whose subtree the build is still writing.
     pub(crate) fn rebuild_active_flag(&self) -> Rc<Cell<bool>> {
         Rc::clone(&self.rebuild_active)
     }
@@ -1863,6 +1888,8 @@ impl HydrolysisRenderer {
         text: SessionTextEngine,
     ) -> Self {
         let frame_instant = Instant::now();
+        let mut material_registry = cherenkov_record::MaterialRegistry::default();
+        theme.register_backdrop_shaders(&mut material_registry);
         Self {
             core: SemanticCore::new(frame_instant, text),
             theme,
@@ -1885,6 +1912,7 @@ impl HydrolysisRenderer {
             last_layout_signature: None,
             window_backdrop: None,
             material_group_scopes: Vec::new(),
+            material_registry: Rc::new(material_registry),
         }
     }
 

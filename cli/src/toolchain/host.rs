@@ -25,20 +25,24 @@ mod detached;
 /// The machine a toolchain check probes.
 ///
 /// A `Host` carries its own environment map (including `PATH`), a working
-/// directory for spawned processes and relative-path lookups, a home
-/// directory, and the roots that hold installed platform applications
-/// (macOS `/Applications`). Detection code must read all of those through
-/// this value so a declared host cannot leak real-machine state into a check.
+/// directory for spawned processes and relative-path lookups, and the
+/// roots that hold installed platform applications (macOS
+/// `/Applications`). The home directory is resolved from that
+/// environment — `HOME`/`USERPROFILE` — so it can never disagree with
+/// what a spawned child sees. Detection code must read all of those
+/// through this value so a declared host cannot leak real-machine state
+/// into a check.
 #[derive(Debug, Clone)]
 pub struct Host {
     env: BTreeMap<OsString, OsString>,
     cwd: PathBuf,
-    home: Option<PathBuf>,
     app_dirs: Vec<PathBuf>,
     /// Whether spawned tools' captured output is also echoed to the
     /// terminal — the policy `crate::utils::command` and [`Host::output`]
     /// apply per invocation.
     std_output: bool,
+    #[cfg(test)]
+    http_responses: Option<std::sync::Arc<std::sync::Mutex<BTreeMap<String, zenwave::Response>>>>,
 }
 
 impl Host {
@@ -52,9 +56,10 @@ impl Host {
         Self {
             env,
             cwd: env::current_dir().expect("process must have a working directory"),
-            home: dirs::home_dir(),
             app_dirs: default_app_dirs(),
             std_output: false,
+            #[cfg(test)]
+            http_responses: None,
         }
     }
 
@@ -62,7 +67,7 @@ impl Host {
     ///
     /// `PATH` is exactly `path_dirs`; the environment contains exactly `vars`
     /// plus that `PATH` entry. The working directory defaults to the process
-    /// cwd — override it with [`Host::with_cwd`]. The home directory is taken
+    /// cwd — override it with [`Host::with_cwd`]. The home directory resolves
     /// from the declared `HOME`/`USERPROFILE`; a host that declares neither
     /// has none. Declared hosts have no [`Host::app_dirs`], so application-
     /// bundle fallbacks (e.g. Android Studio's bundled JBR) cannot fire.
@@ -96,14 +101,49 @@ impl Host {
         for (key, value) in vars {
             env.insert(key.as_ref().to_os_string(), value.as_ref().to_os_string());
         }
-        let home = home_dir_from_env(&env);
         Self {
             env,
             cwd: env::current_dir().expect("process must have a working directory"),
-            home,
             app_dirs: Vec::new(),
             std_output: false,
+            #[cfg(test)]
+            http_responses: Some(std::sync::Arc::default()),
         }
+    }
+
+    /// Fetch a URL using this host's explicitly supplied request headers.
+    pub(crate) async fn http_get(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<zenwave::Response, zenwave::Error> {
+        use zenwave::Client as _;
+
+        #[cfg(test)]
+        if let Some(responses) = &self.http_responses {
+            return Ok(responses
+                .lock()
+                .expect("HTTP fixture lock")
+                .remove(url)
+                .unwrap_or_else(|| panic!("unexpected HTTP request: {url}")));
+        }
+        let mut client = zenwave::client();
+        let mut request = client.method(zenwave::Method::GET, url)?;
+        for (name, value) in headers {
+            request = request.header(*name, *value)?;
+        }
+        request.await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_http_response(self, url: &str, response: zenwave::Response) -> Self {
+        self.http_responses
+            .as_ref()
+            .expect("HTTP fixtures require a declared host")
+            .lock()
+            .expect("HTTP fixture lock")
+            .insert(url.to_owned(), response);
+        self
     }
 
     /// Override the working directory (builder-style).
@@ -179,10 +219,25 @@ impl Host {
         &self.cwd
     }
 
-    /// This host's home directory, when it declares one.
+    /// This host's home directory, resolved from its own environment:
+    /// `HOME` on Unix, `USERPROFILE` on Windows, each falling back to the
+    /// other so a host declared with either variable answers on both
+    /// platforms.
+    ///
+    /// Reading through the environment keeps this in agreement with what a
+    /// spawned child sees: a home bound with [`Host::with_env`] or
+    /// [`Host::with_home`] is honoured, and a host that declares neither
+    /// variable reports `None` — never the real process's home.
     #[must_use]
     pub fn home_dir(&self) -> Option<&Path> {
-        self.home.as_deref()
+        let keys = if cfg!(target_os = "windows") {
+            ["USERPROFILE", "HOME"]
+        } else {
+            ["HOME", "USERPROFILE"]
+        };
+        keys.into_iter()
+            .find_map(|key| self.env(key).filter(|value| !value.is_empty()))
+            .map(Path::new)
     }
 
     /// Per-user cache directory for this host.
@@ -211,10 +266,6 @@ impl Host {
             self.absolute_env_path("XDG_CACHE_HOME")
                 .or_else(|| self.home_dir().map(|home| home.join(".cache")))
         }
-        #[cfg(not(any(unix, target_os = "windows")))]
-        {
-            None
-        }
     }
 
     /// Temporary directory for this host.
@@ -222,9 +273,8 @@ impl Host {
     /// `std::env::temp_dir` rules, with every variable read from this host's
     /// environment and never the process's:
     /// - Unix: `TMPDIR` when set; otherwise the per-user directory
-    ///   `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports on Apple platforms
-    ///   (`/tmp` if it reports none), `/data/local/tmp` on Android, and
-    ///   `/tmp` elsewhere.
+    ///   `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports on macOS (`/tmp` if it
+    ///   reports none), `/data/local/tmp` on Android, and `/tmp` elsewhere.
     /// - Windows (`GetTempPath2W`): the first of `TMP`, `TEMP` and
     ///   `USERPROFILE` that is set and non-empty, else the Windows directory
     ///   (`SystemRoot`, which every host carries as spawn plumbing).
@@ -234,18 +284,25 @@ impl Host {
     /// no `SystemRoot` either — a host no child process could start on.
     #[must_use]
     pub fn temp_dir(&self) -> PathBuf {
-        #[cfg(unix)]
-        {
-            self.env("TMPDIR")
-                .map_or_else(unix_default_temp_dir, PathBuf::from)
-        }
-        #[cfg(windows)]
+        #[cfg(target_os = "windows")]
         {
             ["TMP", "TEMP", "USERPROFILE", "SystemRoot"]
                 .into_iter()
                 .find_map(|key| self.env(key).filter(|value| !value.is_empty()))
                 .map(PathBuf::from)
                 .expect("a Windows host carries SystemRoot, the temp directory of last resort")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.env("TMPDIR").map_or_else(
+                || darwin_user_temp_dir().unwrap_or_else(|| PathBuf::from("/tmp")),
+                PathBuf::from,
+            )
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            self.env("TMPDIR")
+                .map_or_else(unix_default_temp_dir, PathBuf::from)
         }
     }
 
@@ -325,9 +382,7 @@ impl Host {
     #[must_use]
     pub fn with_home(&self, home: impl Into<PathBuf>) -> Self {
         let home = home.into();
-        let mut host = self.with_env("HOME", &home).with_env("USERPROFILE", &home);
-        host.home = Some(home);
-        host
+        self.with_env("HOME", &home).with_env("USERPROFILE", &home)
     }
 
     /// Every environment variable on this host, in map order.
@@ -743,31 +798,14 @@ fn env_get<'a>(env: &'a BTreeMap<OsString, OsString>, key: &OsStr) -> Option<&'a
     }
 }
 
-/// Home directory derived purely from a declared environment map.
-fn home_dir_from_env(env: &BTreeMap<OsString, OsString>) -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        env_get(env, "USERPROFILE".as_ref())
-            .or_else(|| env_get(env, "HOME".as_ref()))
-            .map(PathBuf::from)
-    } else {
-        env_get(env, "HOME".as_ref())
-            .or_else(|| env_get(env, "USERPROFILE".as_ref()))
-            .map(PathBuf::from)
-    }
-}
-
 /// The temp directory `std` uses on Unix when `TMPDIR` is unset.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn unix_default_temp_dir() -> PathBuf {
-    #[cfg(target_vendor = "apple")]
-    {
-        darwin_user_temp_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
-    }
     #[cfg(target_os = "android")]
     {
         PathBuf::from("/data/local/tmp")
     }
-    #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+    #[cfg(not(target_os = "android"))]
     {
         PathBuf::from("/tmp")
     }
@@ -775,7 +813,7 @@ fn unix_default_temp_dir() -> PathBuf {
 
 /// The per-user temp directory Darwin reports through
 /// `confstr(_CS_DARWIN_USER_TEMP_DIR)`, or `None` when it reports none.
-#[cfg(target_vendor = "apple")]
+#[cfg(target_os = "macos")]
 fn darwin_user_temp_dir() -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt as _;
 
@@ -863,6 +901,25 @@ mod tests {
         );
     }
 
+    /// `home_dir` answers through the host's own environment map, so a
+    /// home rebound with `with_env` is the one a spawned child sees, and
+    /// a host that declares neither variable reports none — never the
+    /// test process's real home.
+    #[test]
+    fn home_dir_reads_the_host_environment() {
+        let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let host = Host::current().with_env(key, "/declared/home");
+        assert_eq!(
+            host.home_dir(),
+            Some(std::path::Path::new("/declared/home"))
+        );
+        assert_eq!(
+            declared(&[]).home_dir(),
+            None,
+            "a host declaring no home variable must not see the real one"
+        );
+    }
+
     #[test]
     fn which_resolves_only_the_host_path() {
         let machine = TestMachine::new();
@@ -905,9 +962,8 @@ mod tests {
         let host = machine.host(Vec::<(String, String)>::new());
         smol::block_on(async {
             let mut child = host
-                .command_in_own_process_group("/bin/sh")
-                .arg("-c")
-                .arg("/bin/sleep 60")
+                .command_in_own_process_group("/bin/sleep")
+                .arg("60")
                 .kill_on_drop(true)
                 .spawn()
                 .expect("spawn a child through the process-group seam");

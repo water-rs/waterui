@@ -4,6 +4,11 @@
 use super::*;
 use crate::platform::{GpuSurfaceWindow, PresentationSurface as _};
 use crate::renderer::material::{Blending, WithinWindowLevel};
+#[cfg(any(target_os = "android", test))]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use waterui::theme::color::Background;
 use waterui::window::ResolvedWindowBackground;
 use waterui_graphics::{Color, color::WorkingColor};
@@ -203,7 +208,9 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
 #[derive(Debug, Default)]
 pub(super) struct FrameTransaction {
     open: Cell<bool>,
-    wake_gate: Rc<Cell<bool>>,
+    /// Written only on the UI thread; atomic because the cross-thread wake's
+    /// post carries a share of it onto the UI thread's queue.
+    wake_gate: Arc<AtomicBool>,
 }
 
 #[cfg(any(target_os = "android", test))]
@@ -211,34 +218,55 @@ impl FrameTransaction {
     /// Wraps the host's frame post in the gate: the returned wake posts only
     /// while no transaction is open and the window is not occluded.
     pub(super) fn frame_wake(&self, post: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
-        let gate = Rc::clone(&self.wake_gate);
+        let gate = Arc::clone(&self.wake_gate);
         Rc::new(move || {
-            if gate.get() {
+            if gate.load(Ordering::Relaxed) {
                 post();
             }
         })
     }
 
+    /// [`Self::frame_wake`] for a wake a thread-safe handle queues onto the
+    /// UI thread: the returned post may cross threads, but it must run on
+    /// the UI thread, where it reads the gate as it stands when it runs — a
+    /// post that lands inside a transaction joins its continuation instead
+    /// of posting into the frame already running.
+    pub(super) fn ui_thread_wake(
+        &self,
+        post: impl Fn() + Send + Sync + 'static,
+    ) -> impl Fn() + Send + Sync + 'static {
+        let gate = Arc::clone(&self.wake_gate);
+        move || {
+            if gate.load(Ordering::Relaxed) {
+                post();
+            }
+        }
+    }
+
     /// Re-derives the gate from the host's occlusion report; an open
     /// transaction keeps it closed.
     pub(super) fn sync_occlusion(&self, occluded: bool) {
-        self.wake_gate.set(!self.open.get() && !occluded);
+        self.wake_gate
+            .store(!self.open.get() && !occluded, Ordering::Relaxed);
     }
 
     /// Opens the transaction: requests raised until [`Self::finish`] post no
     /// wake and count toward its continuation instead.
     pub(super) fn begin(&self) {
         self.open.set(true);
-        self.wake_gate.set(false);
+        self.wake_gate.store(false, Ordering::Relaxed);
     }
 
     /// Whether a request raised now may post to the host's scheduler —
     /// `false` while a transaction is open (the request joins its
     /// continuation instead) and while the window is occluded (it stays
     /// armed for the restore frame).
-    #[allow(dead_code)] // read by the Android host's request_redraw
+    #[cfg_attr(
+        not(target_os = "android"),
+        allow(dead_code, reason = "read by the Android host's request_redraw")
+    )]
     pub(super) fn may_post(&self) -> bool {
-        self.wake_gate.get()
+        self.wake_gate.load(Ordering::Relaxed)
     }
 
     /// Whether this transaction renders: armed work, a host redraw request

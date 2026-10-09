@@ -10,6 +10,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.ViewStructure
+import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeProvider
 import android.view.autofill.AutofillValue
@@ -54,6 +55,18 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         AutofillBridge(this, accessibilityProvider)
 
     private var lastMetricsWidth = -1
+
+    /**
+     * The window-local inset bands depend on where the view sits in the
+     * window, and a parent can move it without a layout pass — a collapsing
+     * app bar's offset, a scroll, a translation. Every traversal that draws
+     * re-checks; [pushMetrics] forwards only a changed snapshot.
+     */
+    private val metricsPreDrawListener =
+        ViewTreeObserver.OnPreDrawListener {
+            pushMetrics()
+            true
+        }
     private var lastMetricsHeight = -1
     private var lastDensity = Float.NaN
     private var lastFontScale = Float.NaN
@@ -113,7 +126,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     }
                 if (imeAnimating && imeRunning) {
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-                    pushMetrics(intArrayOf(ime.left, ime.top, ime.right, ime.bottom))
+                    pushMetrics(windowLocalEdges(ime))
                 } else {
                     // A non-IME animation (e.g. a system-bar hide/show)
                     // lands here too and pushes the persisted
@@ -171,16 +184,21 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
         addView(platformViewRegistry.container)
         ViewCompat.setWindowInsetsAnimationCallback(this, insetsAnimationCallback)
-        session?.bind(this)
+        // The session binds only once the view is actually attached — a
+        // created-but-never-attached view must not keep `session.hostView`,
+        // trip the session's single-binding check for the next mount, or
+        // retain its creating Activity.
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         session?.bind(this)
+        viewTreeObserver.addOnPreDrawListener(metricsPreDrawListener)
         pushMetrics()
     }
 
     override fun onDetachedFromWindow() {
+        viewTreeObserver.removeOnPreDrawListener(metricsPreDrawListener)
         // Nothing this view queued may reach the session after the detach:
         // a destroyed session tears down inside `unbind` below. The IMM
         // closes its connections only later, from its own queue — they
@@ -209,6 +227,25 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         return super.onApplyWindowInsets(insets)
     }
 
+    /**
+     * The edges of [insets] that actually touch this view in the window —
+     * the per-side intersection of the window-root inset band with the
+     * view's own rect. A view below a toolbar must not avoid the status bar
+     * a second time, nor one above the keyboard the full IME height;
+     * §7.1 wants the region the view truly overlaps.
+     */
+    private fun windowLocalEdges(insets: androidx.core.graphics.Insets): IntArray {
+        val (x, y) = IntArray(2).also { getLocationInWindow(it) }.let { it[0] to it[1] }
+        val windowWidth = rootView?.width ?: width
+        val windowHeight = rootView?.height ?: height
+        return intArrayOf(
+            (insets.left - x).coerceAtLeast(0),
+            (insets.top - y).coerceAtLeast(0),
+            (insets.right - (windowWidth - x - width)).coerceAtLeast(0),
+            (insets.bottom - (windowHeight - y - height)).coerceAtLeast(0),
+        )
+    }
+
     private fun pushMetrics(keyboardEdgesOverride: IntArray? = null) {
         val session = session ?: return
         val metrics = resources.displayMetrics
@@ -229,13 +266,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             // animation runs, the keyboard region comes only from
             // `onProgress`/`onEnd`; a dispatch carrying the end state
             // leaves the last pushed value in place.
-            containerEdges = intArrayOf(bars.left, bars.top, bars.right, bars.bottom)
+            containerEdges = windowLocalEdges(bars)
             keyboardEdges =
                 keyboardEdgesOverride
                     ?: if (imeAnimating) {
                         lastKeyboardInsets
                     } else {
-                        intArrayOf(ime.left, ime.top, ime.right, ime.bottom)
+                        windowLocalEdges(ime)
                     }
         } else {
             containerEdges = intArrayOf(0, 0, 0, 0)
@@ -320,10 +357,6 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 
     // ------------------------------------------------------------------
     // Close — native asks through the session bridge.
-
-    internal fun closeRequested() {
-        (context as? android.app.Activity)?.finish()
-    }
 
     // ------------------------------------------------------------------
     // Input — decoded MotionEvents become session input events.

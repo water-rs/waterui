@@ -64,7 +64,7 @@ generated, not committed; completion comes from native layout callbacks.
 | ListRowInsetsTests.testRowPitchMatchesHostedSwiftUI | The same test renders red content of height 24 and compares its actual native cell height with live SwiftUI List within 0.5pt. |
 | ListRowInsetsTests.testMinimumRowHeightMatchesHostedSwiftUI | The same test renders height 4 without a minimum override and compares its actual cell height with the live SwiftUI minimum within 0.5pt. |
 | ListCellLayoutTests.testNestedStackTextHasNonZeroFramesInsideCells | `uikit::nested_list_frames` examines every visible cell and every nonempty UILabel; positive width/height, intersection with the cell expanded by 1pt, nonzero cells, and at least three text views. |
-| CompactSplitTests.testCollapsedSplitShowsSidebar | `uikit::compact_split` starts with selection 1, requires a collapsed split and visible primary controller, and asserts an optional secondary controller is not visible without forcing its view to load. |
+| CompactSplitTests.testCollapsedSplitShowsSidebar | `uikit::compact_split` now follows the selection contract: at 393×852, `Some` shows only detail, `None` shows only sidebar, a later `Some` reopens detail, and a native back pop clears the selection. |
 
 `Support.swift` and `DeviceHostedApp.swift` supported the removed test engine;
 neither contained a separate test case. Native UIKit cases use the production

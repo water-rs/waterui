@@ -1064,10 +1064,13 @@ pub mod android {
     }
 }
 
-/// Apple interop: system layers hosted on the engine's planes.
+/// Apple interop: system objects hosted on the engine's planes.
 #[cfg(target_vendor = "apple")]
 pub mod apple {
+    #[cfg(not(target_os = "macos"))]
     pub use crate::render::planes::apple::HostedLayer;
+    #[cfg(target_os = "macos")]
+    pub use crate::render::planes::apple::HostedView;
 }
 
 /// Apple interop: importing Metal resources onto the shared device.
@@ -1162,6 +1165,8 @@ pub mod metal {
 /// same thread, and nothing is boxed behind an unsafe `Send`.
 #[cfg(target_arch = "wasm32")]
 pub mod web {
+    pub use crate::render::planes::web::{DomTarget, HostedElement};
+
     use super::{InvalidFrame, wgpu};
     use wasm_bindgen::JsCast;
     use wgpu::webgpu;

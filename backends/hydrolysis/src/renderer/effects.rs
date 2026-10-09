@@ -18,7 +18,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cherenkov::Filter;
 use waterui_graphics::filter_view::ErasedEffect;
@@ -27,6 +27,8 @@ use waterui_graphics::filtrate::{
     EffectSetupResult,
 };
 use waterui_graphics::{AnyEffect, ParamGuards};
+
+use crate::time::Instant;
 
 /// Per-frame applied-filter telemetry shared between the UI side and the
 /// engine's render thread.
@@ -178,6 +180,12 @@ pub struct FilteredRuntime {
     source: Option<AnyEffect>,
     filter: Option<Filter>,
     _guards: ParamGuards,
+}
+
+impl std::fmt::Debug for FilteredRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilteredRuntime").finish_non_exhaustive()
+    }
 }
 
 impl FilteredRuntime {
