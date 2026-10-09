@@ -1409,6 +1409,40 @@ mod tests {
             .collect()
     }
 
+    /// The generated activity mounts the GPU painter's band through the
+    /// host, takes its environment from intent extras, and leaves the asset
+    /// sync to `HydrolysisEnvironment`.
+    fn assert_gpu_app_activity(activity: &str) {
+        assert!(
+            activity.contains("import dev.waterui.hydrolysis.gpu.HydrolysisGpuBand"),
+            "gpu band mounts on the gpu painter: {activity}"
+        );
+        assert!(activity.contains("HydrolysisHostView"), "{activity}");
+
+        // The environment reaches the app through `waterui.env.*` intent
+        // extras applied by `Os.setenv`; nothing reads system properties.
+        assert!(
+            activity.contains("setupEnvironmentFromIntent(intent)"),
+            "{activity}"
+        );
+        assert!(!activity.contains("SystemProperties"), "{activity}");
+
+        // The host owns the asset sync: `HydrolysisEnvironment.prepare`
+        // runs before `super.onCreate` loads the library, and the
+        // activity carries no sync functions of its own.
+        assert!(
+            activity.contains("HydrolysisEnvironment.prepare(this)"),
+            "{activity}"
+        );
+        assert!(!activity.contains("syncBundledAssets"), "{activity}");
+        // The painter band arrives through the shared content-view
+        // partial the embedded `WaterUi.kt` includes too.
+        assert!(
+            activity.contains("addView(HydrolysisGpuBand(context, session), 0)"),
+            "{activity}"
+        );
+    }
+
     /// The generated Gradle project composites the pinned host checkout:
     /// `includeBuild` + `dependencySubstitution` for `host` and the selected
     /// painter, the painter's API floor, its ABI profile filters, R8 keeps,
@@ -1505,35 +1539,7 @@ mod tests {
                 "{debug_manifest}"
             );
 
-            let activity = files["app/src/main/java/MainActivity.kt"].as_str();
-            assert!(
-                activity.contains("import dev.waterui.hydrolysis.gpu.HydrolysisGpuBand"),
-                "gpu band mounts on the gpu painter: {activity}"
-            );
-            assert!(activity.contains("HydrolysisHostView"), "{activity}");
-
-            // The environment reaches the app through `waterui.env.*` intent
-            // extras applied by `Os.setenv`; nothing reads system properties.
-            assert!(
-                activity.contains("setupEnvironmentFromIntent(intent)"),
-                "{activity}"
-            );
-            assert!(!activity.contains("SystemProperties"), "{activity}");
-
-            // The host owns the asset sync: `HydrolysisEnvironment.prepare`
-            // runs before `super.onCreate` loads the library, and the
-            // activity carries no sync functions of its own.
-            assert!(
-                activity.contains("HydrolysisEnvironment.prepare(this)"),
-                "{activity}"
-            );
-            assert!(!activity.contains("syncBundledAssets"), "{activity}");
-            // The painter band arrives through the shared content-view
-            // partial the embedded `WaterUi.kt` includes too.
-            assert!(
-                activity.contains("addView(HydrolysisGpuBand(context, session), 0)"),
-                "{activity}"
-            );
+            assert_gpu_app_activity(files["app/src/main/java/MainActivity.kt"].as_str());
 
             // The JNI keep travels with the host library: its
             // consumer-rules.pro keeps every @CalledFromNative member, so
@@ -1712,6 +1718,84 @@ mod tests {
         });
     }
 
+    /// The embedded settings include the host checkout as `hydrolysis-host`
+    /// with both substitutions and import that checkout's version catalog.
+    fn assert_embedded_settings(settings: &str, painter: HydrolysisAndroidPainter) {
+        assert!(settings.contains("include(\":waterui\")"), "{settings}");
+        assert!(
+            settings.contains("name = \"hydrolysis-host\""),
+            "{settings}"
+        );
+        assert!(
+            settings.contains(
+                "substitute(module(\"dev.waterui.hydrolysis:host\")).using(project(\":host\"))"
+            ),
+            "{settings}"
+        );
+        assert!(
+            settings.contains(&format!(
+                "substitute(module(\"{}\")).using(project(\":{}\"))",
+                painter.gradle_dependency(),
+                painter.host_module()
+            )),
+            "{settings}"
+        );
+
+        // The build applies its plugins from the catalog of the host
+        // checkout it includes.
+        let included = settings
+            .split("includeBuild(\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the settings include the host build");
+        assert!(
+            settings.contains(&format!(
+                "from(files(\"{included}/gradle/libs.versions.toml\"))"
+            )),
+            "{settings}"
+        );
+    }
+
+    /// The `waterui` module publishes `group:crate:version` against the host
+    /// and painter artifacts at `version`, compiling against the host's
+    /// compileSdk and declaring it as its consumers' minimum.
+    fn assert_embedded_module(module: &str, painter: HydrolysisAndroidPainter, version: &str) {
+        assert!(module.contains("id(\"com.android.library\")"), "{module}");
+        assert!(
+            module.contains("namespace = \"dev.waterui.fixture.waterui\""),
+            "{module}"
+        );
+        assert!(
+            module.contains(&format!("api(\"dev.waterui.hydrolysis:host:{version}\")")),
+            "{module}"
+        );
+        assert!(
+            module.contains(&format!(
+                "api(\"{}:{version}\")",
+                painter.gradle_dependency()
+            )),
+            "{module}"
+        );
+        assert!(
+            module.contains("groupId = \"dev.waterui.fixture\""),
+            "{module}"
+        );
+        assert!(module.contains("artifactId = \"fixture\""), "{module}");
+        assert!(module.contains("version = \"0.1.0\""), "{module}");
+        assert!(
+            module.contains(&format!("compileSdk = {}", embedded::TEST_COMPILE_SDK)),
+            "{module}"
+        );
+        assert!(
+            module.contains(&format!("minCompileSdk = {}", embedded::TEST_COMPILE_SDK)),
+            "{module}"
+        );
+        assert!(module.contains("from(components[\"release\"])"), "{module}");
+        // WaterUi.kt pulls in no androidx.core API — the library
+        // declares no `core-ktx` dependency.
+        assert!(!module.contains("core-ktx"), "{module}");
+    }
+
     /// The embedded library scaffold: `settings.gradle.kts` includes the
     /// host checkout as a build named `hydrolysis-host` with both
     /// substitutions, the `waterui` module publishes `group:crate:version`
@@ -1743,82 +1827,20 @@ mod tests {
                     .expect("embedded scaffold renders"),
                 );
 
-                let settings = files["settings.gradle.kts"].as_str();
-                assert!(settings.contains("include(\":waterui\")"), "{settings}");
-                assert!(
-                    settings.contains("name = \"hydrolysis-host\""),
-                    "{settings}"
-                );
-                assert!(
-                    settings.contains(
-                        "substitute(module(\"dev.waterui.hydrolysis:host\")).using(project(\":host\"))"
-                    ),
-                    "{settings}"
-                );
-                assert!(
-                    settings.contains(&format!(
-                        "substitute(module(\"{}\")).using(project(\":{}\"))",
-                        painter.gradle_dependency(),
-                        painter.host_module()
-                    )),
-                    "{settings}"
-                );
-
+                assert_embedded_settings(files["settings.gradle.kts"].as_str(), painter);
                 // The shared root build declares the library plugin the
-                // `waterui` module applies, from the catalog of the host
-                // checkout the build includes.
-                let included = settings
-                    .split("includeBuild(\"")
-                    .nth(1)
-                    .and_then(|rest| rest.split('"').next())
-                    .expect("the settings include the host build");
-                assert!(
-                    settings.contains(&format!(
-                        "from(files(\"{included}/gradle/libs.versions.toml\"))"
-                    )),
-                    "{settings}"
-                );
+                // `waterui` module applies.
                 let root = files["build.gradle.kts"].as_str();
                 assert!(
                     root.contains("alias(libs.plugins.android.library) apply false"),
                     "{root}"
                 );
 
-                let module = files["waterui/build.gradle.kts"].as_str();
-                assert!(module.contains("id(\"com.android.library\")"), "{module}");
-                assert!(
-                    module.contains("namespace = \"dev.waterui.fixture.waterui\""),
-                    "{module}"
+                assert_embedded_module(
+                    files["waterui/build.gradle.kts"].as_str(),
+                    painter,
+                    VERSION,
                 );
-                assert!(
-                    module.contains(&format!("api(\"dev.waterui.hydrolysis:host:{VERSION}\")")),
-                    "{module}"
-                );
-                assert!(
-                    module.contains(&format!(
-                        "api(\"{}:{VERSION}\")",
-                        painter.gradle_dependency()
-                    )),
-                    "{module}"
-                );
-                assert!(
-                    module.contains("groupId = \"dev.waterui.fixture\""),
-                    "{module}"
-                );
-                assert!(module.contains("artifactId = \"fixture\""), "{module}");
-                assert!(module.contains("version = \"0.1.0\""), "{module}");
-                assert!(
-                    module.contains(&format!("compileSdk = {}", embedded::TEST_COMPILE_SDK)),
-                    "{module}"
-                );
-                assert!(
-                    module.contains(&format!("minCompileSdk = {}", embedded::TEST_COMPILE_SDK)),
-                    "{module}"
-                );
-                assert!(module.contains("from(components[\"release\"])"), "{module}");
-                // WaterUi.kt pulls in no androidx.core API — the library
-                // declares no `core-ktx` dependency.
-                assert!(!module.contains("core-ktx"), "{module}");
 
                 let waterui_kt = files["waterui/src/main/java/WaterUi.kt"].as_str();
                 assert!(

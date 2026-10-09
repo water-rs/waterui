@@ -31,7 +31,7 @@ use crate::{
         },
     },
     assets::{self, AndroidDependencyScope},
-    build::{BuildOptions, BuiltTarget},
+    build::BuildOptions,
     hydrolysis::backend::HydrolysisBackend,
     project::Project,
     templates::{self, HydrolysisAndroidEmbeddedTemplateEntry},
@@ -235,9 +235,9 @@ pub async fn build_aar(
     options: &BuildOptions,
     abis: &[AndroidAbi],
 ) -> Result<EmbeddedArtifact> {
-    if abis.is_empty() {
+    let Some((last_abi, earlier_abis)) = abis.split_last() else {
         bail!("no Android ABIs selected for the embedded build");
-    }
+    };
     let dir = project
         .backend_path::<HydrolysisBackend>()
         .join("android-embedded");
@@ -257,16 +257,16 @@ pub async fn build_aar(
     let module_dir = dir.join("waterui");
     let jni_libs = module_dir.join("src/main/jniLibs");
     super::remove_dir_if_present(&jni_libs).await?;
-    let mut built: Option<BuiltTarget> = None;
-    for abi in abis {
+    let build_abi = |abi: AndroidAbi| {
         let abi_options = options.clone().with_output_dir(jni_libs.join(abi.as_str()));
-        built = Some(
-            super::build_prepared(project, *abi, abi_options, &[])
-                .await?
-                .built,
-        );
+        super::build_prepared(project, abi, abi_options, &[])
+    };
+    for abi in earlier_abis {
+        build_abi(*abi).await?;
     }
-    let built = built.expect("the ABI set was checked non-empty");
+    // Asset staging reads the app symbols of one built library; every ABI
+    // compiles the same crate, so the last one serves.
+    let built = build_abi(*last_abi).await?.built;
 
     // `waterui_assets` ships inside the AAR exactly as it ships inside an
     // APK — `HydrolysisEnvironment.prepare` syncs the same tree at runtime.
