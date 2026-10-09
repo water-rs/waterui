@@ -679,7 +679,7 @@ waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "45db548f
 waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "639957374ed6eac16ac410249b6ba7d9f06c3978" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "1062c5058f488b7edd302ee065ae3a2776847227" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "db9e70ac9b4ff8050b961144566f8866b5bf9abf" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "2772f7fe261e3a1c8b9959bb1ca76292bec3f1ea" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "a36e16c555bd78ade9e28fad947af66a52f8f071" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }

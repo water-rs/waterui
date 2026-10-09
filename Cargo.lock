@@ -13793,7 +13793,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=db9e70ac9b4ff8050b961144566f8866b5bf9abf#db9e70ac9b4ff8050b961144566f8866b5bf9abf"
+source = "git+https://github.com/water-rs/video-gpu?rev=2772f7fe261e3a1c8b9959bb1ca76292bec3f1ea#2772f7fe261e3a1c8b9959bb1ca76292bec3f1ea"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13807,6 +13807,7 @@ dependencies = [
  "uuid",
  "waterkit-audio",
  "waterkit-codec",
+ "waterkit-core",
  "waterkit-fs",
  "waterkit-video",
  "waterui-controls",
