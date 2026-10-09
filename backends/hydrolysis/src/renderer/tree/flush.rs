@@ -375,6 +375,16 @@ impl RenderNode {
                             .last()
                             .map(Rc::as_ptr)
                             .map(|cell| cell as usize);
+                        // Scope membership must never depend on where a flush
+                        // starts: a member with a `.material_group()` cell on
+                        // its ancestry that reads an empty stack is a partial
+                        // descent that did not replay the enclosing scopes
+                        // (#2268) — a bug, not a solo group.
+                        assert!(
+                            scope.is_some()
+                                || node.core.cell.enclosing_material_group_scopes().is_empty(),
+                            "hydrolysis renderer: a material member under a `.material_group()` scope re-recorded with an empty scope stack — the partial descent did not establish the enclosing scopes"
+                        );
                         let program = renderer.program().program_mut();
                         program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
                         program.material = Some(mount::MaterialRequest {

@@ -69,7 +69,7 @@ impl HydrolysisBackend {
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
     pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
         let backend_dir = project.backend_path::<Self>();
-        let ctx = Self::template_context(project, &project.resolved_framework().await?).await?;
+        let ctx = Self::template_context(project, project.resolved_framework().await?).await?;
         let outputs = templates::hydrolysis::rendered_outputs(
             &ctx,
             &project.hydrolysis_backend_crate_name(),
@@ -183,7 +183,7 @@ impl Backend for HydrolysisBackend {
             .resolved_framework()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
-        let ctx = Self::template_context(project, &framework)
+        let ctx = Self::template_context(project, framework)
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
 

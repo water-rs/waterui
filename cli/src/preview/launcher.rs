@@ -1462,7 +1462,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             Some(project.root()),
             Some(
                 &project
-                    .project_packages(&framework, &preview_targets())
+                    .project_packages(framework, &preview_targets())
                     .await?,
             ),
         )
@@ -1789,7 +1789,7 @@ async fn resolve_preview_metadata(
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
     let project_packages = project
-        .project_packages(&framework, &preview_targets())
+        .project_packages(framework, &preview_targets())
         .await?;
     let metadata_start = Instant::now();
     let abi_feature = PreviewLinkMode::for_platform(platform)
@@ -1810,7 +1810,8 @@ async fn resolve_preview_metadata(
     );
     Ok(ResolvedPreviewMetadata {
         metadata,
-        framework,
+        // The metadata outlives the project opened above, so it owns a copy.
+        framework: framework.clone(),
         app_crate_name,
         app_path,
         project_packages,

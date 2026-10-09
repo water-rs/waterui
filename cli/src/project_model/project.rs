@@ -556,6 +556,9 @@ pub struct Project {
     /// The bound [`Self::CARGO_RESOLVE_PERMITS`] states, shared by every
     /// resolution this project's cached answers drive.
     cargo_resolve_permits: Arc<async_lock::Semaphore>,
+    /// The framework selection, resolved once per project and shared by
+    /// every backend, scaffold and asset scan this project drives.
+    framework: Arc<async_lock::OnceCell<Result<ResolvedFramework, String>>>,
     managed_backends_root: PathBuf,
     /// The runtime backends this open generated — project-owned state, never
     /// persisted. Persisted backend-facing configuration lives in the
@@ -996,13 +999,33 @@ impl Project {
     /// channel selection `Water.toml` records, or the checkout `waterui_path`
     /// names.
     ///
+    /// The selection is a function of the manifest and the checkout it
+    /// names, so it is resolved once per project and every caller reads that
+    /// one answer: a build never observes the resolution disagree with
+    /// itself, and no layer pays for it twice.
+    ///
     /// # Errors
     ///
     /// Returns an error when the manifest records no framework source, its
     /// saved selection is invalid, or the local checkout's framework facts
     /// cannot be read.
-    pub async fn resolved_framework(&self) -> eyre::Result<ResolvedFramework> {
-        ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root).await
+    pub async fn resolved_framework(&self) -> eyre::Result<&ResolvedFramework> {
+        let framework = self
+            .framework
+            .get_or_init(|| async {
+                tracing::debug!(
+                    root = %self.root.display(),
+                    "resolving the project's framework selection"
+                );
+                ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root)
+                    .await
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .await;
+        match framework {
+            Ok(framework) => Ok(framework),
+            Err(error) => Err(eyre::eyre!(error.clone())),
+        }
     }
 
     /// Assert the selected framework channel distributes every scaffold
@@ -2073,7 +2096,7 @@ impl Project {
         &self,
         backend_project_path: PathBuf,
         profile_targets: &[Triple],
-    ) -> Result<(TemplateContext, ResolvedFramework), crate::backend::FailToInitBackend> {
+    ) -> Result<(TemplateContext, &ResolvedFramework), crate::backend::FailToInitBackend> {
         let apple_pieces = cfg!(target_os = "macos");
         let manifest = self.manifest();
         let app_name = manifest
@@ -2106,13 +2129,13 @@ impl Project {
             manifest,
             self.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             self.local_sources(),
         )
         .with_backend_project_path(backend_project_path)
         .with_project_root_path(self.root.clone())
         .with_project_packages(
-            self.project_packages(&framework, profile_targets)
+            self.project_packages(framework, profile_targets)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,
         )
@@ -2170,7 +2193,7 @@ impl Project {
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.ffi_crate_path(), &framework)
+        self.seed_managed_crate_lock(&self.ffi_crate_path(), framework)
             .await
     }
 
@@ -2205,7 +2228,7 @@ impl Project {
         .await
         .map_err(crate::backend::FailToInitBackend::Io)?;
 
-        self.seed_managed_crate_lock(&self.apple_preview_crate_path(), &framework)
+        self.seed_managed_crate_lock(&self.apple_preview_crate_path(), framework)
             .await
     }
 
@@ -2234,7 +2257,7 @@ impl Project {
             manifest,
             self.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             self.local_sources(),
         )
         .with_backend_project_path(self.preview_ffi_crate_path(workspace_root))
@@ -2417,6 +2440,7 @@ impl Project {
             cargo_resolve_permits: Arc::new(async_lock::Semaphore::new(
                 Self::CARGO_RESOLVE_PERMITS,
             )),
+            framework: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
@@ -2721,6 +2745,7 @@ impl Project {
             cargo_resolve_permits: Arc::new(async_lock::Semaphore::new(
                 Self::CARGO_RESOLVE_PERMITS,
             )),
+            framework: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
             backends: Backends::default(),
             local_sources,

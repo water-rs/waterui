@@ -39,7 +39,7 @@ use waterui_layout::stack::{VStack, hstack, vstack, zstack};
 
 use super::{
     MinimalTestTheme, capture_bytes, inner_layers, material_layers, mounted_anchor_parent_children,
-    mounts, pumped_test_environment, test_environment, window_mount,
+    mounts, pumped_test_environment, test_environment, test_renderer, window_mount,
 };
 use crate::HeadlessRuntime;
 use crate::engine::WidgetTheme;
@@ -1595,5 +1595,85 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
         px(&member_shot, 80, 60),
         px(&empty_shot, 80, 60),
         "the scrolled member paints its material over the backdrop"
+    );
+}
+
+/// A partial descent — a `RetainedSubview` re-recording below a
+/// `.material_group()` scope — must replay the enclosing scopes from the
+/// subtree root's ancestry, so the member keys into the same shared group
+/// the full flush keyed it to (water-rs/waterui#2268). The sub-view's
+/// cell sits under a group cell and the member re-records with
+/// `material_group_scopes` empty — the shape a partial flush has when its
+/// descent starts below the wrapper.
+#[test]
+fn a_partial_descent_replays_the_enclosing_material_group_scope() {
+    use crate::renderer::mount::ProgramBuilder;
+    use crate::renderer::tree::{RenderNode, RetainedSubview};
+    use crate::renderer::{ReaderPhase, RenderContext};
+    use kurbo::{Affine, Rect as SceneRect};
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    // The retained tree around the sub-view: a real `.material_group()`
+    // wrapper over two members — its cell is the scope the enclosing
+    // members key to — and one intermediate parent; the ancestry a
+    // partial descent replays.
+    let group = RenderNode::build(
+        AnyView::new(vstack((member(Material::Regular), member(Material::Thick))).material_group()),
+        &env,
+        &mut renderer,
+    );
+    let inner = renderer.new_core();
+    inner.cell.set_parent(&group.core().cell);
+    let mut retained = RetainedSubview::new(member(Material::Regular));
+    let rect = SceneRect::new(0.0, 0.0, 160.0, 60.0);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds: rect,
+    };
+    let proposal = ProposalSize::new(Some(160.0), Some(60.0));
+    let root = renderer.core.root_core.clone();
+    renderer
+        .program
+        .push(ProgramBuilder::new(Rc::clone(&root.cell)));
+    renderer.with_reader(&root, ReaderPhase::Record, |renderer| {
+        // First place builds the sub-view; it attaches to the recording
+        // root like any first-place build.
+        retained.place(renderer, ctx, &env, proposal, rect, None);
+        // Reparent the built subtree under the scope cell — the ancestry
+        // it has when its descent starts below `.material_group()`.
+        retained
+            .node()
+            .expect("the sub-view is built")
+            .core()
+            .cell
+            .set_parent(&inner.cell);
+        // The partial re-record: the descent starts at the sub-view root
+        // with an empty scope stack.
+        retained.place(renderer, ctx, &env, proposal, rect, None);
+    });
+    let _ = renderer
+        .program
+        .pop()
+        .expect("the root program this record opened")
+        .finish();
+    let node_retained = retained
+        .node()
+        .expect("the sub-view is built")
+        .core()
+        .cell
+        .retained();
+    let staged = node_retained.pending.borrow();
+    let scope = staged
+        .as_ref()
+        .expect("the member staged its program")
+        .material
+        .expect("the member staged a material request")
+        .scope;
+    assert_eq!(
+        scope,
+        Some(Rc::as_ptr(&group.core().cell) as usize),
+        "the member keys into the enclosing `.material_group()` scope — \
+         the shared group, not a solo fallback"
     );
 }
