@@ -452,10 +452,25 @@ pub fn chrome_sample(
         .map(move |effect| group_sample_with(id, &shader, &effect, scale))
 }
 
+/// The display `scale` the group was built for as the member's
+/// [`RecordingScale`](cherenkov::RecordingScale): the device pixels one
+/// logical pixel of the recording spans.
+///
+/// # Panics
+/// Panics when `scale` is not a valid recording scale: its error is
+/// surfaced, never clamped.
+pub fn recording_scale_of(scale: f64) -> cherenkov::RecordingScale {
+    cherenkov::RecordingScale::new(crate::num_cast::f64_as_f32(scale)).unwrap_or_else(|error| {
+        panic!("hydrolysis materials: display scale {scale} is not a recording scale: {error}")
+    })
+}
+
 /// The live backdrop sample a `ChromeMaterial` member binds: the group's
 /// id and the member's effect mapped through its shader, the effect's
 /// logical outer extent converted to device pixels at `scale` — the
-/// display scale the group was built for.
+/// display scale the group was built for — and `scale` itself as the
+/// member's recording scale, so its shader converts the recipe's
+/// logical lengths.
 pub fn group_sample_with(
     id: cherenkov::BackdropId,
     shader: &cherenkov::BackdropShader,
@@ -465,6 +480,7 @@ pub fn group_sample_with(
     let outer = outer_of(effect.outer_extent(), scale);
     cherenkov::BackdropSample::with_effect(id, shader.effect(effect.uniforms().to_vec()))
         .outer(outer)
+        .scale(recording_scale_of(scale))
 }
 
 fn external_frame_plane_size(frame: &cherenkov_gpu::interop::ExternalFrame) -> (u32, u32) {

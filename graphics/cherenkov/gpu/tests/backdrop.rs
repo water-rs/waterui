@@ -700,6 +700,81 @@ fn shader_effect_size_is_the_unclipped_member_size() -> Result<(), Box<dyn std::
 }
 }
 
+split_fn! {
+/// A 4-logical-pixel rim band — red within 4 logical px inside the
+/// member edge, black deeper in — painted through `px.scale` at
+/// recording `scale`: the member clip is 8..40 logical px in a
+/// `scale`-times device surface, behind a parent layer scaling the
+/// recording to device pixels.
+fn logical_rim_band(
+    engine: &Engine<Gpu>,
+    shader: &cherenkov::BackdropShader,
+    scale: u32,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let side = 64 * scale;
+    let surface =
+        wait!(engine.surface(Offscreen::new((side, side), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let recording = surface.layer();
+    let member = surface.layer();
+    let s = f64::from(scale);
+    #[expect(clippy::cast_precision_loss, reason = "the test scales are tiny")]
+    let recording_scale = cherenkov::RecordingScale::new(scale as f32)?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0 * s, 64.0 * s),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&recording);
+        tx[&recording].transform(cherenkov::kurbo::Affine::scale(s));
+        tx[&recording].push(&member);
+        tx[&member].clip(Rect::new(8.0, 8.0, 40.0, 40.0)).backdrop(
+            group
+                .sample_with(shader.effect(Vec::new()))
+                .scale(recording_scale),
+        );
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+split_test! {
+/// The same logical recipe at recording scale 1 and 2 lands on the same
+/// logical geometry: every device pixel at scale 2 matches the scale-1
+/// pixel whose logical pixel it lies in.
+fn shader_effect_reads_the_recording_scale() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return vec4<f32>(select(0.0, 1.0, px.own_sdf / px.scale > -4.0), 0.0, 0.0, 1.0);
+        }",
+    ))?;
+    let one = wait!(logical_rim_band(&engine, &shader, 1))?;
+    let two = wait!(logical_rim_band(&engine, &shader, 2))?;
+    // The band and the interior are both there at scale 1.
+    assert_pixel(pixel(&one, 11, 20), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&one, 12, 20), [0.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&one, 4, 20), [0.0, 0.0, 1.0, 1.0], 1e-3);
+    for y in 0..64 {
+        for x in 0..64 {
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                assert_eq!(
+                    pixel(&two, 2 * x + dx, 2 * y + dy),
+                    pixel(&one, x, y),
+                    "device pixel ({}, {}) at scale 2 against logical pixel ({x}, {y})",
+                    2 * x + dx,
+                    2 * y + dy,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+}
+
 split_test! {
 fn invalid_backdrop_shader_source_is_a_shader_error() {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default())).expect("engine");

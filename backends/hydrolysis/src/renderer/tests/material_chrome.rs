@@ -1066,8 +1066,8 @@ fn union_members_outside_every_scope_never_share() {
 }
 
 /// A display-scale change rebuilds the union field's smoothing and every
-/// member's outer extent at the new scale — the conversions run at the
-/// scale the group is built for.
+/// member's outer extent and recording scale at the new scale — the
+/// conversions run at the scale the group is built for.
 #[test]
 fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
     let theme = MinimalTestTheme {
@@ -1092,6 +1092,11 @@ fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
         cherenkov::BackdropOuter::new(6.0).expect("in range"),
         "3 logical px at display scale 2 binds as 6 device px",
     );
+    assert_eq!(
+        sample.recording_scale(),
+        cherenkov::RecordingScale::new(2.0).expect("in range"),
+        "the member's shader reads the display scale as `px.scale`",
+    );
     drop(sample);
 
     mirror_frame_at(&mut renderer, tap_view(), 4.0);
@@ -1108,14 +1113,19 @@ fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
         ],
         "the rebuild re-converts the smoothing at the new scale",
     );
+    let sample = mirrored_node(&renderer, member)
+        .backdrop
+        .clone()
+        .expect("the member rebinds its sample");
     assert_eq!(
-        mirrored_node(&renderer, member)
-            .backdrop
-            .clone()
-            .expect("the member rebinds its sample")
-            .outer_extent(),
+        sample.outer_extent(),
         cherenkov::BackdropOuter::new(12.0).expect("in range"),
         "the member's outer extent is re-bound at the new scale",
+    );
+    assert_eq!(
+        sample.recording_scale(),
+        cherenkov::RecordingScale::new(4.0).expect("in range"),
+        "the member's recording scale is re-bound at the new scale",
     );
 }
 
