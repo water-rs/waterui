@@ -226,17 +226,23 @@ mod scroll_animation {
 /// spawn.
 #[cfg(target_os = "ios")]
 mod key_commands {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::ptr::NonNull;
     use std::rc::Rc;
 
+    use block2::StackBlock;
     use cocoa_ui::Rect;
     use cocoa_ui::Retained;
     use cocoa_ui::menu::{Command, KeyModifiers, MenuTreeNode};
+    use cocoa_ui::native_test::pump_main_until;
     use cocoa_ui::objc2_ui_kit::{
-        UIAction, UIApplication, UIButton, UIKeyCommand, UIKeyModifierFlags, UIMenuElement,
-        UIMenuElementAttributes, UIMenuElementState, UITextField, UIViewController,
+        UIAction, UIApplication, UIButton, UIContextMenuInteraction, UIKeyCommand,
+        UIKeyModifierFlags, UIMenu, UIMenuElement, UIMenuElementAttributes, UIMenuElementState,
+        UITextField, UIView, UIViewController, UIWindow,
     };
-    use cocoa_ui::uikit::{self, KeyCommands, MenuAction, native_test};
+    use cocoa_ui::uikit::{
+        self, KeyCommands, Menu, MenuAction, MenuButton, MenuElement, native_test,
+    };
     use libtest_mimic::Trial;
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadMarker, sel};
@@ -269,6 +275,20 @@ mod key_commands {
                 "key_commands::a_chord_from_a_menu_uikit_copied_fires_the_commands_callback",
                 || {
                     a_chord_from_a_menu_uikit_copied_fires_the_commands_callback();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "key_commands::a_rebuild_while_the_menu_is_open_replaces_the_visible_commands",
+                || {
+                    a_rebuild_while_the_menu_is_open_replaces_the_visible_commands();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "key_commands::unmounting_an_open_menu_closes_it_before_its_commands_retire",
+                || {
+                    unmounting_an_open_menu_closes_it_before_its_commands_retire();
                     Ok(())
                 },
             ),
@@ -402,24 +422,18 @@ mod key_commands {
     /// sends the copied key command's action the way a chord does.
     fn a_chord_from_a_menu_uikit_copied_fires_the_commands_callback() {
         let mtm = mtm();
+        let _scene = ChordScene::new(mtm);
         let fired = Rc::new(Cell::new(false));
         let callback = {
             let fired = fired.clone();
             Rc::new(move || fired.set(true))
-        };
-        let command = Command {
-            label: "Fire".into(),
-            enabled: true,
-            key_equivalent: "k".into(),
-            modifiers: KeyModifiers::COMMAND,
-            ..Command::default()
         };
         let key_commands = KeyCommands::new(mtm);
         let menu = uikit::menu(
             mtm,
             &key_commands,
             &Command::default(),
-            &[MenuTreeNode::Command(command, callback)],
+            &[MenuTreeNode::Command(shortcut_command("Fire"), callback)],
         );
         let built = menu.children().objectAtIndex(0);
         let button = UIButton::new(mtm);
@@ -432,35 +446,231 @@ mod key_commands {
             "UIKit holds a copy of the element the builder made"
         );
         drop((menu, built));
-        let key = copied
-            .downcast_ref::<UIKeyCommand>()
-            .expect("a shortcut command builds a `UIKeyCommand`");
-        // SAFETY: `action` only reads the selector the element was built with.
-        let action = unsafe { key.action() }.expect("the key command carries an action");
-        let sender: &AnyObject = key.as_ref();
-        let app = UIApplication::sharedApplication(mtm);
-        // A chord's action travels the real responder chain: a windowed
-        // scene with a first responder — the shape `UIKit` delivers a key
-        // event into — which ends at `AppDelegate`.
-        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 400.0, 400.0));
-        let controller = UIViewController::new(mtm);
-        window.setRootViewController(Some(&controller));
-        window.makeKeyAndVisible();
-        let field = UITextField::new(mtm);
-        controller
-            .view()
-            .expect("the controller's view is loaded")
-            .addSubview(&field);
         assert!(
-            field.becomeFirstResponder(),
-            "the scene's responder leads the chain a chord travels"
+            ChordScene::press(mtm, &copied),
+            "the responder chain takes the command's action"
         );
-        // SAFETY: the application outlives the run; `action` is the
-        // command's own selector and `sender` the command UIKit holds — the
-        // dispatch `UIKit` performs when the chord is pressed.
-        let handled = unsafe { app.sendAction_to_from_forEvent(action, None, Some(sender), None) };
-        assert!(handled, "the responder chain takes the command's action");
         assert!(fired.get(), "the command's callback ran");
-        window.setHidden(true);
+    }
+
+    /// A `Menu` whose items change while its menu is open rebuilds the menu
+    /// and drops the previous menu's `KeyCommands` once the button holds
+    /// the new one. `UIKit` replaces an open menu's rows inside `setMenu:`
+    /// itself, before the call returns and so before any later event can
+    /// pick from it: the open menu shows the rebuilt command, picking it
+    /// runs the rebuilt callback, and no command of the retired scope is
+    /// reachable.
+    fn a_rebuild_while_the_menu_is_open_replaces_the_visible_commands() {
+        let mtm = mtm();
+        let scene = ChordScene::new(mtm);
+        let fired = Rc::new(Cell::new(""));
+        let build = |label: &'static str| {
+            let key_commands = KeyCommands::new(mtm);
+            let fired = fired.clone();
+            let action =
+                MenuAction::command(mtm, &key_commands, &shortcut_command(label), move || {
+                    fired.set(label);
+                });
+            (
+                Menu::new(mtm, "", None, false, &[MenuElement::Action(action)]),
+                key_commands,
+            )
+        };
+        let trigger = MenuButton::new(mtm);
+        scene.add(trigger.view());
+        cocoa_ui::view::set_frame(trigger.view(), TRIGGER_FRAME);
+        let (menu, mut key_commands) = build("Old");
+        trigger.set_menu(&menu);
+        let interaction = open_menu(
+            trigger
+                .view()
+                .downcast_ref::<UIButton>()
+                .expect("a `MenuButton` is a `UIButton`"),
+        );
+        assert_eq!(visible_titles(&interaction), ["Old"]);
+
+        // The `Menu` component's rebuild: the button takes the new menu,
+        // then the previous menu's scope retires.
+        let (menu, rebuilt) = build("New");
+        trigger.set_menu(&menu);
+        drop(std::mem::replace(&mut key_commands, rebuilt));
+        let visible = visible_elements(&interaction);
+        assert_eq!(
+            visible
+                .iter()
+                .map(|element| element.title().to_string())
+                .collect::<Vec<_>>(),
+            ["New"],
+            "the menu stays open and shows the rebuilt command as soon as `setMenu:` returns"
+        );
+        assert!(
+            ChordScene::press(mtm, &visible[0]),
+            "the responder chain takes the visible command's action"
+        );
+        assert_eq!(fired.get(), "New", "picking runs the rebuilt callback");
+        interaction.dismissMenu();
+    }
+
+    /// The `Menu` component's teardown: `Mounted` takes the trigger out of
+    /// its window before the leaf's state, and with it the leaf's
+    /// `KeyCommands`, drops. `UIKit` closes a menu whose presenting view
+    /// leaves the window inside `removeFromSuperview` itself — its rows
+    /// stop taking touches and it no longer reports a visible menu before
+    /// the call returns — so no command the leaf armed can be picked once
+    /// the leaf is gone.
+    fn unmounting_an_open_menu_closes_it_before_its_commands_retire() {
+        use waterui::component::menu::{CommandExt, Menu as MenuView, Shortcut};
+
+        let mtm = mtm();
+        let scene = ChordScene::new(mtm);
+        let leaf = waterui_apple::native_test_support::render(MenuView::new(
+            "Open",
+            "Keys".action(|| {}).shortcut(Shortcut::new('k').command()),
+        ));
+        let mounted = leaf.mount(&scene.root());
+        cocoa_ui::view::set_frame(mounted.view(), TRIGGER_FRAME);
+        scene.window.layoutIfNeeded();
+        let button =
+            descendant_button(mounted.view()).expect("the `Menu` leaf's trigger is a `UIButton`");
+        let interaction = open_menu(&button);
+        assert_eq!(visible_titles(&interaction), ["Keys"]);
+
+        drop(mounted);
+        assert!(
+            visible_elements(&interaction).is_empty(),
+            "the menu closes as its leaf unmounts, before the leaf's commands retire"
+        );
+    }
+
+    /// Where the cases place a menu trigger.
+    const TRIGGER_FRAME: Rect = Rect::new(50.0, 100.0, 200.0, 44.0);
+
+    /// How long a menu may take to open.
+    const MENU_DEADLINE: f64 = 5.0;
+
+    /// A command armed with the ⌘K shortcut.
+    fn shortcut_command(label: &str) -> Command {
+        Command {
+            label: label.into(),
+            enabled: true,
+            key_equivalent: "k".into(),
+            modifiers: KeyModifiers::COMMAND,
+            ..Command::default()
+        }
+    }
+
+    /// Opens `button`'s menu the way a tap does and waits until `UIKit`
+    /// shows it.
+    fn open_menu(button: &UIButton) -> Retained<UIContextMenuInteraction> {
+        button.performPrimaryAction();
+        let interaction = button
+            .contextMenuInteraction()
+            .expect("a button with a menu has a context-menu interaction");
+        assert!(
+            pump_main_until(MENU_DEADLINE, || !visible_elements(&interaction).is_empty()),
+            "the button's primary action opens its menu"
+        );
+        interaction
+    }
+
+    /// The first `UIButton` in `view`'s subtree.
+    fn descendant_button(view: &UIView) -> Option<Retained<UIButton>> {
+        view.subviews().iter().find_map(|child| {
+            child
+                .clone()
+                .downcast::<UIButton>()
+                .ok()
+                .or_else(|| descendant_button(&child))
+        })
+    }
+
+    /// The elements of the menu `interaction` shows; none once the menu
+    /// is closed or closing.
+    fn visible_elements(interaction: &UIContextMenuInteraction) -> Vec<Retained<UIMenuElement>> {
+        let elements = RefCell::new(Vec::new());
+        let block = StackBlock::new(|menu: NonNull<UIMenu>| {
+            // SAFETY: `UIKit` hands the block a live copy of the visible menu.
+            elements
+                .borrow_mut()
+                .extend(unsafe { menu.as_ref() }.children().iter());
+            menu
+        });
+        // SAFETY: the block returns the menu it is given, leaving the
+        // visible menu as it is.
+        unsafe { interaction.updateVisibleMenuWithBlock(&block) };
+        elements.into_inner()
+    }
+
+    /// The titles of the elements `interaction` shows.
+    fn visible_titles(interaction: &UIContextMenuInteraction) -> Vec<String> {
+        visible_elements(interaction)
+            .iter()
+            .map(|element| element.title().to_string())
+            .collect()
+    }
+
+    /// A key, visible window whose text field is first responder — the
+    /// shape `UIKit` delivers a key event into, where an untargeted action
+    /// travels the responder chain to `AppDelegate`.
+    struct ChordScene {
+        window: Retained<UIWindow>,
+        controller: Retained<UIViewController>,
+    }
+
+    impl ChordScene {
+        fn new(mtm: MainThreadMarker) -> Self {
+            let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+            let controller = UIViewController::new(mtm);
+            window.setRootViewController(Some(&controller));
+            window.makeKeyAndVisible();
+            let scene = Self { window, controller };
+            let field = UITextField::new(mtm);
+            scene.add(&field);
+            assert!(
+                field.becomeFirstResponder(),
+                "the scene's responder leads the chain a chord travels"
+            );
+            scene
+        }
+
+        /// The view the scene's content goes in.
+        fn root(&self) -> Retained<UIView> {
+            self.controller
+                .view()
+                .expect("the controller's view is loaded")
+        }
+
+        fn add(&self, view: &UIView) {
+            self.root().addSubview(view);
+            self.window.layoutIfNeeded();
+        }
+
+        /// Sends `element`'s action untargeted, with `element` as the
+        /// sender — the dispatch `UIKit` performs for a pressed chord or a
+        /// picked key command — and answers whether a responder took it.
+        fn press(mtm: MainThreadMarker, element: &UIMenuElement) -> bool {
+            let key = element
+                .downcast_ref::<UIKeyCommand>()
+                .expect("a shortcut command builds a `UIKeyCommand`");
+            // SAFETY: `action` only reads the selector the command carries.
+            let action = unsafe { key.action() }.expect("the key command carries an action");
+            let sender: &AnyObject = key.as_ref();
+            // SAFETY: `action` is the command's own selector and `sender`
+            // the command itself.
+            unsafe {
+                UIApplication::sharedApplication(mtm).sendAction_to_from_forEvent(
+                    action,
+                    None,
+                    Some(sender),
+                    None,
+                )
+            }
+        }
+    }
+
+    impl Drop for ChordScene {
+        fn drop(&mut self) {
+            self.window.setHidden(true);
+        }
     }
 }

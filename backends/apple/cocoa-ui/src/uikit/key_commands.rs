@@ -72,6 +72,14 @@ impl KeyCommandRegistry {
 /// menu arms each shortcut command in the scope it is given, and dropping the
 /// scope retires them, so an owner keeps the scope beside the menu it built
 /// and replaces both together.
+///
+/// A scope is dropped only once `UIKit` can no longer deliver its commands.
+/// `UIKit` replaces an open menu's rows inside `setMenu:`, and closes a menu
+/// whose presenting view leaves the window inside `removeFromSuperview`, its
+/// rows taking no more input; so an owner hands `UIKit` the replacing menu
+/// before it drops the previous scope, and a leaf's view leaves its window
+/// before the leaf's state drops. A command that fires after its scope
+/// retired means an owner broke that order, and the registry panics on it.
 pub struct KeyCommands {
     registry: Rc<KeyCommandRegistry>,
     ids: RefCell<Vec<u64>>,

@@ -181,8 +181,8 @@ fn rebuild_menu(state: &Rc<RefCell<MenuState>>) {
     };
     let key_commands = cocoa_ui::uikit::KeyCommands::new(mtm);
     button.set_menu(&build_menu(mtm, &key_commands, "", None, &items, &env));
-    // The button now holds the new menu: the previous one's commands retire
-    // with its scope.
+    // `setMenu:` has replaced the rows of a menu that is open, so the
+    // previous menu's commands are unreachable and retire with its scope.
     state.borrow_mut().key_commands = Some(key_commands);
 }
 
