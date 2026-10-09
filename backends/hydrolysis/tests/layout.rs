@@ -503,7 +503,8 @@ fn text_field_fills_wide_container(app: &mut OffscreenApp) {
 /// `Horizontal` leaf that answers the proposal width, so typing a URL wider
 /// than the row leaves the field, the `Go` button beside it, and the row
 /// below at the frames the empty field gave them; the text scrolls inside
-/// the field.
+/// the field. Its height is its intrinsic one-line height, which an empty
+/// field measures too, so nothing below moves either.
 fn wide_url_field_view() -> impl View {
     let url = Binding::container(Str::from(""));
     visual_shell(
@@ -529,10 +530,7 @@ fn wide_field_text_keeps_every_frame(app: &mut OffscreenApp) {
                 .single(),
             app.query().role(Role::LABEL).label("100%").single(),
         ]
-        .map(|element| {
-            let bounds = element.bounds();
-            (bounds.x(), bounds.width())
-        })
+        .map(|element| element.bounds())
     };
     let empty = frames(app);
 
