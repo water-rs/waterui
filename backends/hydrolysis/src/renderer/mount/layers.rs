@@ -1864,6 +1864,7 @@ fn lower_chrome<T: LayerTarget>(
             class,
             params.grouping,
             canvas,
+            cx.scope_anchors,
         );
         let membership = member
             .membership
@@ -1951,6 +1952,7 @@ fn commit_chrome<T: LayerTarget>(
             class,
             params.grouping,
             canvas,
+            cx.scope_anchors,
         );
         // A no-program commit binds only a new membership or a rebuilt
         // group — an unchanged member keeps its bind and its stored

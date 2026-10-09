@@ -32,8 +32,10 @@
 //! [`MaterialGrouping::Solo`], every member is a group of its own.
 //! Members in different compositing canvases cannot share a capture.
 //! Every capture parameter comes from the class, so the members of one
-//! group agree on them by construction. A group samples the backdrop as
-//! it stood at its first member in paint order.
+//! group agree on them by construction. A group inside a scope samples
+//! the backdrop as it stood where the scope paints, so no member of the
+//! scope — in any class — sees another; a group of its own samples it as
+//! it stood at its member.
 
 use std::num::NonZeroU64;
 
@@ -203,9 +205,9 @@ pub enum MaterialGrouping {
     /// its own capture.
     Solo,
     /// The class's members within one scope and one compositing canvas
-    /// share one group: one capture of what lies behind the first of
-    /// them in paint order, and one filter chain. Members of one group do
-    /// not see each other.
+    /// share one group: one capture of what lies behind the scope, and
+    /// one filter chain. No member of the scope — of this class or
+    /// another — sees another.
     Shared,
     /// The class's members group like [`Shared`](Self::Shared) and
     /// additionally sample one union field: the smooth minimum of the

@@ -673,6 +673,98 @@ fn members_of_different_classes_never_share() {
     );
 }
 
+/// A second `Shared` class: in one scope its group is a different group
+/// from `GLASS`'s, yet both capture beneath the same scope anchor.
+const LATER_GLASS: CaptureClass = CaptureClass::new(3);
+
+/// Every chrome group a `.material_group()` scope keys captures beneath
+/// the scope's anchor layer (water-rs/waterui#2097), whatever its class:
+/// a `GLASS` member and then a `LATER_GLASS` member at the same bounds
+/// sample what lay behind the scope, so the later member's capture never
+/// holds the earlier one. The earlier member's tint is the probe — it
+/// reaches the later member's output only through the later capture.
+#[test]
+fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
+    let theme = |earlier_tint: f32| {
+        let mut plan = glass_plan(vec![
+            chrome_draw(GLASS, GLASS_SHADER, vec![0.0, earlier_tint, 0.0, 0.0]),
+            chrome_draw(LATER_GLASS, GLASS_SHADER, vec![0.0, 0.0, 0.0, 0.0]),
+        ]);
+        plan.captures.push((
+            LATER_GLASS,
+            MaterialCapture {
+                scale: CaptureScale::FULL,
+                levels: CaptureLevels::ONE,
+                grouping: MaterialGrouping::Shared,
+            },
+        ));
+        MinimalTestTheme {
+            chrome: plan,
+            ..Default::default()
+        }
+    };
+    let scoped = || waterui_core::AnyView::new(tap_view().material_group());
+    // The later member covers the earlier one's whole shape, so a pixel
+    // at the shape's centre is the later member's own output.
+    let centre = |runtime: &mut HeadlessRuntime| {
+        let snap = runtime.pump_snapshot().snapshot.expect("a snapshot");
+        let device = snap.width / WIDTH;
+        let (x, y) = (6 * device, 7 * device);
+        let i = ((y * snap.width + x) * 4) as usize;
+        <[u8; 4]>::try_from(&snap.rgba8[i..i + 4]).expect("one pixel")
+    };
+
+    let mut tinted = rendered(scoped, theme(0.6), DISPLAY_SCALE);
+    let members = chrome_layers(&tinted);
+    assert_eq!(members.len(), 2, "the view draws one member per class");
+    assert_ne!(
+        member_group(&tinted, members[0]),
+        member_group(&tinted, members[1]),
+        "the two classes are two groups",
+    );
+    let anchor = |member| {
+        chrome_mount(&tinted)
+            .chrome_group(member)
+            .expect("the member holds a group membership")
+            .spec()
+            .anchor_layer()
+    };
+    assert!(
+        anchor(members[0]).is_some(),
+        "a scoped chrome group anchors"
+    );
+    assert_eq!(
+        anchor(members[0]),
+        anchor(members[1]),
+        "both classes' groups anchor at the scope's one anchor layer",
+    );
+    let tinted_centre = centre(&mut tinted);
+    let mut plain = rendered(scoped, theme(0.0), DISPLAY_SCALE);
+    assert_eq!(
+        tinted_centre,
+        centre(&mut plain),
+        "the earlier member's tint never enters the later member's capture",
+    );
+
+    // Outside every scope each member captures at itself, so the earlier
+    // member's tint does reach the later capture: the probe is live.
+    let unscoped = || tap_view();
+    let mut tinted = rendered(unscoped, theme(0.6), DISPLAY_SCALE);
+    assert_eq!(
+        chrome_mount(&tinted)
+            .chrome_group(chrome_layers(&tinted)[1])
+            .map(|group| group.spec().anchor_layer()),
+        Some(None)
+    );
+    let tinted_centre = centre(&mut tinted);
+    let mut plain = rendered(unscoped, theme(0.0), DISPLAY_SCALE);
+    assert_ne!(
+        tinted_centre,
+        centre(&mut plain),
+        "a first-member capture holds the earlier member",
+    );
+}
+
 /// Members under different install canvases — one inside a filtered
 /// node's frame layer, one at the surface root — never share a group.
 #[test]

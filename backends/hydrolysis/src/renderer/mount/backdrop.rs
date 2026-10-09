@@ -120,33 +120,52 @@ pub struct ChromeGroupKey {
     /// under the surface root, `Some(frame)` under a filtered node's
     /// frame layer.
     canvas: Option<LayerId>,
+    /// The layer the scope's members capture beneath, resolved from the
+    /// mount's [`ScopeAnchors`] when the key is built: `None` for a group
+    /// of its own, which keeps the first-member rule. Part of the key for
+    /// the same reason as [`BackdropGroupKey`]'s anchor.
+    anchor: Option<LayerId>,
 }
 
 impl ChromeGroupKey {
     /// Keys the group the `member` layer joins under `canvas`: a `Solo`
     /// class or a `SOLO` scope keys the member by its own layer, so it
-    /// never shares; a `Shared` or `Union` class under a scope shares
-    /// it.
+    /// never shares; a `Shared` or `Union` class under a scope shares it
+    /// and anchors at the layer the scope's `(scope, canvas)` pair
+    /// registered in `anchors`, like a material group
+    /// (water-rs/waterui#2097).
     pub(crate) fn new(
         member: LayerId,
         scope: cherenkov_record::MaterialScope,
         class: CaptureClass,
         grouping: MaterialGrouping,
         canvas: Option<LayerId>,
+        anchors: &ScopeAnchors,
     ) -> Self {
+        let (scope, anchor) = match scope.id() {
+            Some(scope) if grouping != MaterialGrouping::Solo => (
+                BackdropScope::Scoped(scope),
+                Some(anchors.anchor(scope, canvas)),
+            ),
+            _ => (BackdropScope::Solo(member), None),
+        };
         Self {
-            scope: match scope.id() {
-                Some(scope) if grouping != MaterialGrouping::Solo => BackdropScope::Scoped(scope),
-                _ => BackdropScope::Solo(member),
-            },
+            scope,
             class,
             canvas,
+            anchor,
         }
     }
 
     /// The members' capture class.
     pub(crate) const fn class(&self) -> CaptureClass {
         self.class
+    }
+
+    /// The layer the group's capture anchors at — `None` under the
+    /// first-member rule.
+    pub(crate) const fn anchor(&self) -> Option<LayerId> {
+        self.anchor
     }
 }
 
@@ -236,17 +255,17 @@ pub enum MemberBind {
 
 /// The `.material_group()` scope anchors a [`Mount`](super::Mount)
 /// registered (water-rs/waterui#2097): the layer id each `(scope,
-/// install canvas)` pair's material groups capture beneath — one plain,
+/// install canvas)` pair's backdrop groups — material and chrome alike —
+/// capture beneath, so no member of a scope sees another — one plain,
 /// empty layer per `Item::Anchor`, the item the `.material_group()` flush
 /// pushes into the enclosing program, and the item a filtered node pushes
 /// at its program's start for the innermost enclosing scope, so members
 /// mounting inside the filter anchor there. The weak side of the scope's
 /// cell rides along: while the entry stands the anchor item pins the
 /// `Rc`, so the address cannot be reused and the weak stays live; a scope
-/// whose tree dropped releases here at the next sweep.
-///
-/// Only material groups anchor: a chrome group captures at its first
-/// member in paint order (water-rs/waterui#1788).
+/// whose tree dropped releases here at the next sweep. A group of its
+/// own — a member outside every scope, or a chrome member of a `Solo`
+/// class — keeps the first-member rule.
 pub struct ScopeAnchors {
     anchors: FxHashMap<(NonZeroU64, Option<LayerId>), AnchorRegistration>,
     epoch: u64,
@@ -311,7 +330,8 @@ impl ScopeAnchors {
         }
     }
 
-    /// The layer a scoped group under `(scope, canvas)` captures beneath.
+    /// The layer a scoped group — material or chrome — under `(scope,
+    /// canvas)` captures beneath.
     ///
     /// # Panics
     /// Panics when no registration stands: the scope's anchor item lowers

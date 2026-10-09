@@ -365,6 +365,12 @@ impl LayerTarget for cherenkov_gpu::Gpu {
             (
                 move |params, scale| {
                     let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels);
+                    // A scoped chrome group captures beneath its scope's
+                    // anchor layer, like a material group
+                    // (water-rs/waterui#2097).
+                    if let Some(anchor) = key.anchor() {
+                        spec = spec.anchor(anchor);
+                    }
                     if let Some(union) = union_of(params, scale, key.class()) {
                         spec = spec.union(union);
                     }
