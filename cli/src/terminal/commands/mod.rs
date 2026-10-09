@@ -39,6 +39,17 @@ pub enum TargetBackend {
 }
 
 impl TargetBackend {
+    /// Convert a resolved library backend to its terminal representation.
+    pub const fn from_lib(backend: LibTargetBackend) -> Self {
+        match backend {
+            LibTargetBackend::Apple => Self::Apple,
+            LibTargetBackend::Android => Self::Android,
+            LibTargetBackend::Gtk4 => Self::Gtk4,
+            LibTargetBackend::Hydrolysis => Self::Hydrolysis,
+            LibTargetBackend::WinUi => Self::WinUi,
+        }
+    }
+
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     pub const fn is_experimental(self) -> bool {
@@ -67,12 +78,6 @@ impl TargetBackend {
         }
     }
 }
-
-/// The refusal selecting an ESP32 target produces at backend resolution:
-/// Dew — the backend the ESP32 variants used — is archived, and
-/// Hydrolysis's embedded host that replaces it lands with #1601.
-const ESP32_UNSUPPORTED: &str = "ESP32 targets are unsupported until Hydrolysis's embedded host lands \
-     (water-rs/waterui#1601): the Dew backend that served them is archived";
 
 /// Whether the host environment permits routing builds through `sccache`.
 fn sccache_allowed(host: &Host) -> bool {
