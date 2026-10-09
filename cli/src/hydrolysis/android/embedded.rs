@@ -184,7 +184,6 @@ pub async fn render_library(
         painter,
         &host_project_dir,
         dir,
-        system_webview,
         EmbeddedHost {
             version: &host_version,
             modules: &modules,
@@ -397,17 +396,18 @@ async fn host_compile_sdk(host_project_dir: &Path) -> Result<u32> {
 /// The template context the generated `android-embedded/` Gradle project
 /// renders with: the shared launcher context `base` plus the crate-version
 /// and permission entries and the embedded entry carrying the published host
-/// version.
+/// version. `base` also answers whether the launcher compiles the
+/// system-WebView bridge, the same predicate [`publish_modules`] was given.
 async fn embedded_template_context(
     project: &Project,
     base: crate::templates::TemplateContext,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
     dir: &Path,
-    system_webview: bool,
     host: EmbeddedHost<'_>,
     crate_version: &str,
 ) -> Result<crate::templates::TemplateContext> {
+    let system_webview = base.webview_backend_feature()?.is_some();
     Ok(base
         .with_crate_version(crate_version)
         .with_android_permissions(manifest_permissions(project.manifest()))
@@ -453,7 +453,6 @@ pub(super) async fn rendered_embedded_outputs(
         painter,
         host_project_dir,
         &dir,
-        system_webview,
         EmbeddedHost {
             version,
             modules: &publish_modules(painter, system_webview),

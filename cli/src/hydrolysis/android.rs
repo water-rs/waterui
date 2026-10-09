@@ -1701,6 +1701,7 @@ mod tests {
                 &project,
                 HydrolysisAndroidPainter::Gpu,
                 &host_project_dir,
+                &android_dir(&project.backend_path::<HydrolysisBackend>()),
             )
             .await
             .expect("android template context builds");
