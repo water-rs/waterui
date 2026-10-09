@@ -416,6 +416,7 @@ async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
         &project
             .backend_path::<HydrolysisBackend>()
             .join("Cargo.toml"),
+        &[waterui_assets_planner::FontPlatform::Android],
     )
     .await?;
     let _resolved = assets::resolve_fonts(project.host(), declarations).await?;
