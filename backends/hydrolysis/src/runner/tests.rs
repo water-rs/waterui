@@ -1629,11 +1629,10 @@ fn a_frame_transaction_serves_redraws_raised_before_its_render() {
     transaction.begin();
     let _ = advance_runtime(&mut runtime, &env, now);
     let surface_attached = !runtime.platform.is_occluded();
-    let redraw_pending = runtime.platform.take_redraw_request();
     assert!(FrameTransaction::take_render_request(
         &mut runtime,
         surface_attached,
-        redraw_pending,
+        HeadlessPlatformWindow::take_redraw_request,
     ));
     assert!(render_window(&mut runtime, &env, &mut || false));
     runtime.request_redraw();
@@ -1662,10 +1661,13 @@ fn pump_frame_transaction(
     let _ = advance_runtime(runtime, env, now);
     let surface_attached = !runtime.platform.is_occluded();
     // The platform's redraw latch drains at the render boundary, the same
-    // place `AndroidSession::on_frame` reads `redraw_pending`: a request
+    // place `AndroidSession::on_frame` drains `redraw_pending`: a request
     // raised before the render is served by it.
-    let redraw_pending = runtime.platform.take_redraw_request();
-    if FrameTransaction::take_render_request(runtime, surface_attached, redraw_pending) {
+    if FrameTransaction::take_render_request(
+        runtime,
+        surface_attached,
+        HeadlessPlatformWindow::take_redraw_request,
+    ) {
         assert!(render_window(runtime, env, &mut || false));
     }
     transaction.finish(

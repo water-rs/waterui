@@ -1023,14 +1023,13 @@ impl AndroidSession {
         let mut flushed = false;
         let surface_attached = self.runtime.platform.surface.is_attached();
         // A redraw request raised before this frame renders is served by
-        // that render — drain it into the render demand here so only a
+        // that render — it drains into the render demand here, so only a
         // request raised from this point on, an animation asking for its
         // next frame, still counts toward the transaction's continuation.
-        let redraw_pending = self.runtime.platform.take_redraw_pending();
         if FrameTransaction::take_render_request(
             &mut self.runtime,
             surface_attached,
-            redraw_pending,
+            AndroidHostWindow::take_redraw_pending,
         ) {
             let executor = self.executor.clone();
             let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());

@@ -280,11 +280,12 @@ impl FrameTransaction {
     pub(super) fn take_render_request<P: PlatformWindow>(
         runtime: &mut RuntimeWindow<P>,
         surface_attached: bool,
-        redraw_pending: bool,
+        take_redraw_pending: impl FnOnce(&P) -> bool,
     ) -> bool {
         if !surface_attached || runtime.is_hidden() {
             return false;
         }
+        let redraw_pending = take_redraw_pending(&runtime.platform);
         let redraw_requested = runtime.renderer.take_redraw_request();
         redraw_pending || runtime.mode.is_pending() || redraw_requested
     }
