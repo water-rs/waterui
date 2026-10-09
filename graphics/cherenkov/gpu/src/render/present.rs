@@ -567,6 +567,29 @@ impl WindowSurface {
         Self::configure(surface, adapter, device, size, request, probe)
     }
 
+    /// Creates and configures the WebGPU context of a canvas the engine
+    /// owns (a DOM plane surface's part).
+    ///
+    /// # Errors
+    /// [`SurfaceError::UnsupportedTarget`] when the browser cannot create
+    /// or the adapter cannot present to the canvas.
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_canvas(
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        canvas: web_sys::HtmlCanvasElement,
+        size: (u32, u32),
+        request: OutputRequest,
+    ) -> Result<Self, SurfaceError> {
+        let surface = SharedSurface::new(
+            instance
+                .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+                .map_err(|e| SurfaceError::UnsupportedTarget(format!("canvas surface: {e}")))?,
+        );
+        Self::configure(surface, adapter, device, size, request, None)
+    }
+
     /// Configures `surface` at `size`: output selection, the swapchain and
     /// the host's display probe.
     fn configure(

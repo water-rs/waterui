@@ -20,6 +20,13 @@ dependencyResolutionManagement {
         maven { url = uri("https://dl.google.com/dl/android/maven2/") }
         mavenCentral()
     }
+    // The host checkout's catalog declares the Android toolchain the
+    // included host build uses; this build applies the same one.
+    versionCatalogs {
+        create("libs") {
+            from(files("{{ ctx.hydrolysis_android_host_project_dir() }}/gradle/libs.versions.toml"))
+        }
+    }
 }
 
 rootProject.name = "{{ ctx.app_name }}"

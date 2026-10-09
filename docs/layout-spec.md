@@ -389,8 +389,11 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   it (safe-area extension rule).
 - **Spacer** hosted natively answers its minimum length on the stack's main
   axis and zero on the cross axis, whatever the proposal (§5).
-- **GPU surfaces, images, shapes, colours**: `Both`; an image with an
-  intrinsic size answers it to `None` and fits the proposal otherwise.
+- **GPU surfaces, shapes, colours**: `Both`.
+- **Images**: a non-resizable image answers its intrinsic (natural) size to an
+  unspecified proposal. Under a smaller finite proposal it scales down,
+  preserving its aspect ratio, and never scales up. It claims no leftover space
+  (`None`). `.resizable()` fills the proposal per `content_mode`.
 
 A leaf that answers a probe with the proposal instead of its content on an
 axis it does not stretch is a backend bug: it makes every container above it
@@ -459,7 +462,7 @@ gap; changing one is a contract change.
 | --- | --- | --- |
 | Default stack spacing is a fixed 10 pt. | Platform-dependent, content-dependent default. | One value across backends keeps parity tests meaningful. |
 | Controls are intrinsic-only (`None`) unless they declare an axis. | Some controls stretch by style. | The style attribute, not the widget type, decides; backends declare per style. |
-| Images are `Both` and fit the proposal. | Images are fixed-size unless `.resizable()`. | Fitting is the common case for cross-platform content; an intrinsic size is answered to `None`. |
+| Non-resizable images are `None` and scale down only, preserving their aspect ratio. | Images are fixed-size unless `.resizable()`. | Capped media fits smaller finite proposals without scaling up; an unspecified proposal receives the intrinsic size. |
 | Grid columns at placement use the measurement proposal width. | `Grid` re-resolves columns against bounds. | Keeps a content-sized grid's columns content-sized under the bounds rule. |
 | A finite-width Grid divides the proposal into equal columns and answers the proposal width. | `Grid` columns are intrinsic-sized; only flexible columns share the remainder. | Equal columns keep every backend's grid identical and the answer predictable. |
 | `AspectRatio` reports the resolved ratio box and hands it to the child as its frame. | `aspectRatio` transforms the proposal but reports the child's answer. | The ratio box is the contract; the child receives it resolved, not re-negotiated. |

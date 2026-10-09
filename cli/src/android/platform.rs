@@ -19,7 +19,9 @@ use crate::{
     android::{
         backend::AndroidBackend,
         output_metadata::{OutputKind, packaged_artifact},
-        toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
+        toolchain::{
+            AndroidNdk, AndroidSdk, Java, Kotlin, KotlinToolchain, java_proxy_properties_from_env,
+        },
     },
     assets,
     build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries},
@@ -474,15 +476,19 @@ impl AndroidPlatform {
 
     /// Build Rust library for this Android platform.
     ///
+    /// `kotlin` is the toolchain the caller's toolchain check resolved —
+    /// the build reuses it rather than probing `kotlinc` again.
+    ///
     /// # Errors
     /// Returns an error if the build fails.
     pub async fn build(
         &self,
         project: &Project,
         options: BuildOptions,
+        kotlin: &KotlinToolchain,
     ) -> eyre::Result<BuiltTarget> {
         Self::prepare_for_build(project).await?;
-        self.build_prepared(project, options).await
+        self.build_prepared(project, options, kotlin).await
     }
 
     /// The shared prologue every Android Rust build needs: render the FFI
@@ -499,21 +505,17 @@ impl AndroidPlatform {
         // The ffi companion is the crate this builds — render it for the
         // graph its `cfg` tables serve before anything reads its manifest.
         project.scaffold_ffi_companion().await?;
-
-        // Android is where a missing declaration actually breaks things, so
-        // surface anything a dependency needs that the app has not enabled.
-        // The audit resolves the ffi companion's graph — the crate the
-        // Android build compiles — so it runs on the render this build made.
-        let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-        let required =
-            crate::assets::scan_required_permissions(project.host(), &ffi_manifest).await?;
-        crate::assets::warn_missing_permissions(project, &required, |key| {
-            key.android_permission_name().is_some()
-        });
+        audit_android_permissions(project).await?;
 
         // Resolve fonts BEFORE cargo build - this ensures icons.json is present
         // for crates like fontawesome7 that need it during build.rs
-        let font_declarations = crate::assets::scan_fonts(project, &ffi_manifest).await?;
+        let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
+        let font_declarations = crate::assets::scan_fonts(
+            project,
+            &ffi_manifest,
+            &[waterui_assets_planner::FontPlatform::Android],
+        )
+        .await?;
         crate::assets::resolve_fonts(project.host(), font_declarations).await?;
         Ok(())
     }
@@ -522,12 +524,16 @@ impl AndroidPlatform {
     /// [`prepare_for_build`](Self::prepare_for_build) — a multi-ABI loop
     /// runs the prologue once, then this per ABI.
     ///
+    /// `kotlin` is the toolchain the caller's toolchain check resolved —
+    /// the build reuses it rather than probing `kotlinc` again.
+    ///
     /// # Errors
     /// Returns an error if the build fails.
     pub async fn build_prepared(
         &self,
         project: &Project,
         options: BuildOptions,
+        kotlin: &KotlinToolchain,
     ) -> eyre::Result<BuiltTarget> {
         // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
         // prebuilt `libstd.so` (its LOAD segments are 4 KB-aligned and
@@ -543,7 +549,7 @@ impl AndroidPlatform {
             .android_min_api_level()?;
         let host = project.host();
         let build_context =
-            resolve_android_build_context(host, abi, &triple, min_api_level).await?;
+            resolve_android_build_context(host, abi, &triple, min_api_level, kotlin).await?;
         let build = configure_android_rust_build(project, &triple, &build_context, &options)
             .await?
             .with_envs(options.cargo_envs().iter().cloned())
@@ -708,6 +714,7 @@ pub(crate) async fn resolve_android_build_context(
     abi: AndroidAbi,
     triple: &Triple,
     api_level: u32,
+    kotlin: &KotlinToolchain,
 ) -> eyre::Result<AndroidBuildContext> {
     let ndk_path = AndroidNdk::detect_path(host).ok_or_else(|| {
         eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
@@ -732,7 +739,7 @@ pub(crate) async fn resolve_android_build_context(
     let target_upper = target_underscore.to_uppercase();
     let llvm_envs = resolve_windows_arm64_llvm_envs(host).await?;
     let (java_home, java_bin_dir) = resolve_java_home(host).await?;
-    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home(host).await?;
+    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = kotlin_context_paths(kotlin)?;
     let (sdk_path, android_jar) = resolve_android_sdk_paths(host).await?;
     let wrapper_toolchain =
         create_android_toolchain_wrapper(host, &ndk_path, abi, api_level).await?;
@@ -784,12 +791,22 @@ async fn resolve_java_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf)> {
     Ok((java_home, java_bin_dir))
 }
 
-async fn resolve_kotlin_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
-    let kotlin_compiler = Kotlin::detect_path(host).await.ok_or_else(|| {
+/// Resolve the Kotlin toolchain on `host` for an Android build entry that
+/// runs no toolchain check of its own to take it from (the `Backend` impls,
+/// the inspector launcher).
+///
+/// # Errors
+/// Fails with the missing-compiler error `kotlinc` consumers report.
+pub(crate) async fn require_kotlin(host: &Host) -> eyre::Result<KotlinToolchain> {
+    Kotlin::resolve(host).await.ok_or_else(|| {
         eyre::eyre!(
             "Kotlin compiler (kotlinc) not found. Install Android Studio or set `KOTLIN_HOME`, then re-run `water doctor`."
         )
-    })?;
+    })
+}
+
+fn kotlin_context_paths(kotlin: &KotlinToolchain) -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
+    let kotlin_compiler = kotlin.compiler().to_path_buf();
     let kotlin_bin_dir = kotlin_compiler.parent().map(PathBuf::from).ok_or_else(|| {
         eyre::eyre!(
             "Failed to determine Kotlin bin directory from `{}`.",
@@ -824,6 +841,25 @@ async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBu
         Ok((sdk_path, android_jar))
     })
     .await
+}
+
+/// Warn about every permission the FFI companion's dependency graph needs
+/// that the project has not enabled.
+///
+/// Android is where a missing declaration actually breaks things. The audit
+/// resolves the companion's graph — the crate an Android build compiles and
+/// the one whose declarations reach the Gradle classpath — so it runs after
+/// the build rendered the companion.
+///
+/// # Errors
+/// Returns an error when the companion's graph cannot be resolved.
+pub(crate) async fn audit_android_permissions(project: &Project) -> eyre::Result<()> {
+    let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
+    let required = crate::assets::scan_required_permissions(project.host(), &ffi_manifest).await?;
+    crate::assets::warn_missing_permissions(project, &required, |key| {
+        key.android_permission_name().is_some()
+    });
+    Ok(())
 }
 
 /// The features an Android runtime's generated FFI crate is compiled with,
@@ -1215,8 +1251,12 @@ async fn copy_assets_and_fonts(
     .await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[waterui_assets_planner::FontPlatform::Android],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

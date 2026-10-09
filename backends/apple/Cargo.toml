@@ -160,8 +160,9 @@ preview = ["dep:waterui-preview-protocol"]
 # `native_test_support` module (private windows + embedding internals),
 # never part of a production build. Forwards cocoa-ui's gate so one
 # invocation selects both crates' `native` suites. `preview` joins the
-# `Tests/preview.rs` binary runs `preview::run` end to end.
-native-test = ["cocoa-ui/native-test", "preview"]
+# `Tests/preview.rs` binary runs `preview::run` end to end; `webview`
+# joins so the suite can drive a real `WKWebView` for the bridge cases.
+native-test = ["cocoa-ui/native-test", "preview", "webview"]
 
 
 [dependencies]
