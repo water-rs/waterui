@@ -491,6 +491,18 @@ git)
         git_prev=$git_arg
     done
     case "$*" in
+        *"rev-parse --is-shallow-repository"*) respond GIT_SHALLOW ;;
+        *"rev-parse --verify refs/remotes/origin/dev"*) respond GIT_HEAD ;;
+        *"rev-parse --verify"*) respond GIT_REVISION ;;
+        *"--unshallow"*) : > .fake-git-unshallowed ;;
+        *"merge-base --is-ancestor"*)
+            if [ -f .fake-git-unshallowed ]; then
+                exit "${WATERUI_FAKE_GIT_ANCESTOR_COMPLETE:-0}"
+            fi
+            exit "${WATERUI_FAKE_GIT_ANCESTOR:-0}"
+            ;;
+        *"ls-tree"*) respond_or_empty GIT_ENTRY ;;
+        "show "*) respond GIT_FILE ;;
         "--version")
             printf 'git version %s\n' "${WATERUI_FAKE_GIT_VERSION:-2.43.0}"
             ;;
