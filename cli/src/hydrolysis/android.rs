@@ -840,8 +840,9 @@ impl std::fmt::Display for PreviewHostFingerprint {
 /// not the fingerprint's own projection), the declared input set of the
 /// pinned host's `preview` module — `src/` plus `build.gradle.kts`, plus
 /// its manifest when it lives outside `src/`, so a `.DS_Store` or IDE file
-/// dropped beside them cannot force a rebuild — and the host's
-/// `settings.gradle.kts` — hashed sorted by relative path, each entry
+/// dropped beside them cannot force a rebuild — and the host's root
+/// `settings.gradle.kts`, `build.gradle.kts` and version catalog — hashed
+/// sorted by relative path, each entry
 /// length-prefixed so no pair of inputs can alias.
 ///
 /// # Errors
@@ -901,16 +902,22 @@ fn preview_host_fingerprint(
                 .wrap_err_with(|| format!("failed to inspect {}", root_manifest.display()));
         }
     }
-    let settings = host_project_dir.join("settings.gradle.kts");
-    fingerprint_inputs.push((
-        "host:settings.gradle.kts".to_string(),
-        std::fs::read(&settings).wrap_err_with(|| {
-            format!(
-                "failed to read the preview host settings {}",
-                settings.display()
-            )
-        })?,
-    ));
+    // The host's root build files configure every module: the settings, the
+    // root script that applies the catalog's compileSdk, and the catalog
+    // that pins the Android Gradle Plugin.
+    for root_file in [
+        "settings.gradle.kts",
+        "build.gradle.kts",
+        "gradle/libs.versions.toml",
+    ] {
+        let path = host_project_dir.join(root_file);
+        fingerprint_inputs.push((
+            format!("host:{root_file}"),
+            std::fs::read(&path).wrap_err_with(|| {
+                format!("failed to read the preview host's {}", path.display())
+            })?,
+        ));
+    }
 
     fingerprint_inputs.sort_by(|(a, _), (b, _)| a.cmp(b));
     let mut hasher = sha2::Sha256::new();
@@ -1758,9 +1765,24 @@ mod tests {
                 );
 
                 // The shared root build declares the library plugin the
-                // `waterui` module applies.
+                // `waterui` module applies, from the catalog of the host
+                // checkout the build includes.
+                let included = settings
+                    .split("includeBuild(\"")
+                    .nth(1)
+                    .and_then(|rest| rest.split('"').next())
+                    .expect("the settings include the host build");
+                assert!(
+                    settings.contains(&format!(
+                        "from(files(\"{included}/gradle/libs.versions.toml\"))"
+                    )),
+                    "{settings}"
+                );
                 let root = files["build.gradle.kts"].as_str();
-                assert!(root.contains("com.android.library"), "{root}");
+                assert!(
+                    root.contains("alias(libs.plugins.android.library) apply false"),
+                    "{root}"
+                );
 
                 let module = files["waterui/build.gradle.kts"].as_str();
                 assert!(module.contains("id(\"com.android.library\")"), "{module}");
@@ -1785,6 +1807,14 @@ mod tests {
                 );
                 assert!(module.contains("artifactId = \"fixture\""), "{module}");
                 assert!(module.contains("version = \"0.1.0\""), "{module}");
+                assert!(
+                    module.contains(&format!("compileSdk = {}", embedded::TEST_COMPILE_SDK)),
+                    "{module}"
+                );
+                assert!(
+                    module.contains(&format!("minCompileSdk = {}", embedded::TEST_COMPILE_SDK)),
+                    "{module}"
+                );
                 assert!(module.contains("from(components[\"release\"])"), "{module}");
                 // WaterUi.kt pulls in no androidx.core API — the library
                 // declares no `core-ktx` dependency.

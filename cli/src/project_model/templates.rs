@@ -544,6 +544,9 @@ pub struct HydrolysisAndroidEmbeddedTemplateEntry {
     /// module, and any further host modules that join through
     /// `embedded::publish_modules`.
     pub host_modules: Vec<String>,
+    /// The `compileSdk` the host modules build against, which the library
+    /// module compiles against too and declares as its consumers' minimum.
+    pub compile_sdk: u32,
 }
 
 impl TemplateContext {
@@ -6352,11 +6355,6 @@ pub mod hydrolysis {
     }
 }
 
-/// The generated Gradle app that runs a `WaterUI` application through the
-/// Hydrolysis Android host: a Kotlin `HydrolysisActivity` subclass, the
-/// painter band, and the Rust cdylib wiring — rendered under
-/// `<backend>/android` beside the launcher crate `templates::hydrolysis`
-/// scaffolds.
 /// The shared embedded trees every Hydrolysis Android composite writes
 /// alongside its own module tree — the Gradle root files and the generic
 /// Android wrapper set — so `scaffold` and `rendered_outputs` for both the
@@ -6404,6 +6402,11 @@ async fn scaffold_hydrolysis_android_project(
     finish_hydrolysis_android_scaffold(host, base_dir).await
 }
 
+/// The generated Gradle app that runs a `WaterUI` application through the
+/// Hydrolysis Android host: a Kotlin `HydrolysisActivity` subclass, the
+/// painter band, and the Rust cdylib wiring — rendered under
+/// `<backend>/android` beside the launcher crate `templates::hydrolysis`
+/// scaffolds.
 pub mod hydrolysis_android {
     use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io};
 

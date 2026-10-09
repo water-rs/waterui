@@ -226,7 +226,8 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
             );
             line!(
                 shell,
-                "The host app needs minSdk {} or higher.",
+                "The host app needs compileSdk {} and minSdk {} or higher.",
+                library.compile_sdk,
                 library.min_sdk
             );
             line!(

@@ -5,12 +5,17 @@ plugins {
 
 android {
     namespace = "{{ ctx.android_package_name() }}.waterui"
-    compileSdk = 37
+    // The Hydrolysis host modules' compileSdk, which every consumer of
+    // this library must reach too.
+    compileSdk = {{ ctx.hydrolysis_android_embedded().compile_sdk }}
 
     defaultConfig {
         minSdk = {{ ctx.hydrolysis_android_embedded().app.min_api_level }}
         // Staged JNI-loaded classes need these consumer rules in every variant.
         consumerProguardFiles("proguard-rules.pro")
+        aarMetadata {
+            minCompileSdk = {{ ctx.hydrolysis_android_embedded().compile_sdk }}
+        }
     }
 
     compileOptions {

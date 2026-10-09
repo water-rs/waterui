@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use eyre::{Result, bail};
 use futures_util::{StreamExt as _, TryStreamExt as _};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use smol::fs;
 use tracing::info;
 
@@ -74,6 +74,10 @@ const HOST_VERSION_ENV: &str = "WATERUI_HYDROLYSIS_HOST_VERSION";
 /// checkout build, which addresses its tasks as `:<name>:<module>:<task>`.
 const HOST_BUILD_NAME: &str = "hydrolysis-host";
 
+/// The host checkout's Gradle version catalog, relative to its root: the one
+/// declaration of the Android toolchain the host modules build with.
+const HOST_CATALOG: &str = "gradle/libs.versions.toml";
+
 /// How many host source files [`host_version`] reads at once.
 const HOST_HASH_READ_CONCURRENCY: usize = 16;
 
@@ -107,6 +111,10 @@ pub struct RenderedLibrary {
     pub version: String,
     /// The library's `minSdk`, which a consuming app's `minSdk` must reach.
     pub min_sdk: u32,
+    /// The library's `compileSdk` — the host modules' — which a consuming
+    /// app's `compileSdk` must reach; the AAR declares it as its
+    /// `minCompileSdk`.
+    pub compile_sdk: u32,
     /// The Gradle tasks that publish the host modules, then assemble and
     /// publish the library to `mavenLocal`, in order.
     pub gradle_tasks: Vec<String>,
@@ -153,18 +161,22 @@ pub async fn render_library(
         .map_err(|error| eyre::eyre!("{error}"))?;
     let host_project_dir = require_painter_module(project, painter).await?;
     let modules = publish_modules(painter);
-    let (host_version, crate_version) = futures_util::try_join!(
+    let (host_version, crate_version, compile_sdk) = futures_util::try_join!(
         host_version(&host_project_dir, &modules),
         project.crate_version(),
+        host_compile_sdk(&host_project_dir),
     )?;
     let ctx = embedded_template_context(
         project,
         painter,
         &host_project_dir,
         dir,
-        &host_version,
+        EmbeddedHost {
+            version: &host_version,
+            modules: &modules,
+            compile_sdk,
+        },
         &crate_version,
-        &modules,
     )
     .await?;
     templates::hydrolysis_android_embedded::scaffold(project.host(), dir, &ctx).await?;
@@ -187,6 +199,7 @@ pub async fn render_library(
         artifact: project.crate_name().to_string(),
         version: crate_version,
         min_sdk: ctx.hydrolysis_android_embedded().app.min_api_level,
+        compile_sdk,
         host_project_dir,
         host_version,
         gradle_tasks,
@@ -321,6 +334,52 @@ pub async fn build_aar(
     Ok(EmbeddedArtifact { aar_path, library })
 }
 
+/// What the embedded library takes from the host checkout it builds over.
+#[derive(Debug, Clone, Copy)]
+struct EmbeddedHost<'a> {
+    /// The version the host modules publish under.
+    version: &'a str,
+    /// The host modules the library substitutes and publishes.
+    modules: &'a [&'a str],
+    /// The host modules' `compileSdk`.
+    compile_sdk: u32,
+}
+
+/// The part of the host's version catalog the CLI reads.
+#[derive(Deserialize)]
+struct HostCatalog {
+    versions: HostCatalogVersions,
+}
+
+#[derive(Deserialize)]
+struct HostCatalogVersions {
+    /// The `compileSdk` every host module builds against.
+    #[serde(rename = "android-compile-sdk")]
+    compile_sdk: String,
+}
+
+/// The `compileSdk` the host checkout's modules build against, as its
+/// version catalog ([`HOST_CATALOG`]) declares it.
+async fn host_compile_sdk(host_project_dir: &Path) -> Result<u32> {
+    let path = host_project_dir.join(HOST_CATALOG);
+    let catalog = fs::read_to_string(&path)
+        .await
+        .map_err(|error| eyre::eyre!("cannot read {}: {error}", path.display()))?;
+    let catalog: HostCatalog = toml::from_str(&catalog).map_err(|error| {
+        eyre::eyre!(
+            "{} must declare versions.android-compile-sdk: {error}",
+            path.display()
+        )
+    })?;
+    let value = catalog.versions.compile_sdk;
+    value.parse().map_err(|error| {
+        eyre::eyre!(
+            "{} declares android-compile-sdk = \"{value}\", not an API level: {error}",
+            path.display()
+        )
+    })
+}
+
 /// The template context the generated `android-embedded/` Gradle project
 /// renders with: the shared launcher context plus the crate-version and
 /// permission entries and the embedded entry carrying the published host
@@ -330,9 +389,8 @@ async fn embedded_template_context(
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
     dir: &Path,
-    version: &str,
+    host: EmbeddedHost<'_>,
     crate_version: &str,
-    modules: &[&str],
 ) -> Result<crate::templates::TemplateContext> {
     Ok(
         HydrolysisBackend::template_context(project, project.resolved_framework().await?)
@@ -341,11 +399,20 @@ async fn embedded_template_context(
             .with_android_permissions(manifest_permissions(project.manifest()))
             .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
                 app: template_entry(project, painter, host_project_dir, dir).await?,
-                host_version: version.to_owned(),
-                host_modules: modules.iter().map(|module| (*module).to_owned()).collect(),
+                host_version: host.version.to_owned(),
+                host_modules: host
+                    .modules
+                    .iter()
+                    .map(|module| (*module).to_owned())
+                    .collect(),
+                compile_sdk: host.compile_sdk,
             }),
     )
 }
+
+/// The host `compileSdk` [`rendered_embedded_outputs`] renders with.
+#[cfg(test)]
+pub(super) const TEST_COMPILE_SDK: u32 = 36;
 
 /// Every file the `android-embedded/` scaffold would write, as
 /// android-embedded-dir-relative path and content, for scaffold tests.
@@ -369,9 +436,12 @@ pub(super) async fn rendered_embedded_outputs(
         painter,
         host_project_dir,
         &dir,
-        version,
+        EmbeddedHost {
+            version,
+            modules: &publish_modules(painter),
+            compile_sdk: TEST_COMPILE_SDK,
+        },
         crate_version,
-        &publish_modules(painter),
     )
     .await?;
     templates::hydrolysis_android_embedded::rendered_outputs(&ctx)
@@ -507,8 +577,8 @@ mod tests {
     use super::*;
 
     /// A minimal pinned-host checkout: `settings.gradle.kts`,
-    /// `gradle.properties`, the Gradle wrapper, plus `host/` and `gpu/`
-    /// module sources.
+    /// `gradle.properties`, the version catalog, the Gradle wrapper, plus
+    /// `host/` and `gpu/` module sources.
     fn stage_fake_host(dir: &Path) -> PathBuf {
         let host = dir.join("hydrolysis-android");
         let write = |path: PathBuf, content: &str| {
@@ -519,7 +589,14 @@ mod tests {
             host.join("settings.gradle.kts"),
             "include(\":host\", \":gpu\")",
         );
-        write(host.join("gradle.properties"), "org.gradle.jvmargs=-Xmx4g");
+        write(
+            host.join("gradle.properties"),
+            "org.gradle.jvmargs=-Xmx4g\n",
+        );
+        write(
+            host.join(HOST_CATALOG),
+            "[versions]\nandroid-gradle-plugin = \"9.3.0\"\nandroid-compile-sdk = \"36\"\n",
+        );
         write(
             host.join("gradle/wrapper/gradle-wrapper.properties"),
             "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.3.0-bin.zip",
@@ -612,6 +689,28 @@ mod tests {
             std::fs::write(host.join("build.gradle.kts"), "plugins { java }").expect("edit");
             let after_root_edit = host_version(&host, &GPU_MODULES).await.expect("hash");
             assert_ne!(after_root_script, after_root_edit);
+        });
+    }
+
+    #[test]
+    fn host_compile_sdk_reads_the_host_catalog() {
+        smol::block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let host = stage_fake_host(dir.path());
+            assert_eq!(host_compile_sdk(&host).await.expect("compileSdk"), 36);
+
+            let before = host_version(&host, &GPU_MODULES).await.expect("hash");
+            std::fs::write(
+                host.join(HOST_CATALOG),
+                "[versions]\nandroid-gradle-plugin = \"9.3.0\"\n",
+            )
+            .expect("edit");
+            let after = host_version(&host, &GPU_MODULES).await.expect("hash");
+            assert_ne!(before, after, "the catalog is a host input");
+            let error = host_compile_sdk(&host)
+                .await
+                .expect_err("a catalog without the compileSdk is an error");
+            assert!(error.to_string().contains("android-compile-sdk"), "{error}");
         });
     }
 }

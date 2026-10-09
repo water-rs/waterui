@@ -5,7 +5,6 @@ plugins {
 
 android {
     namespace = "dev.waterui.hydrolysis"
-    compileSdk = 36
 
     defaultConfig {
         minSdk = 31
