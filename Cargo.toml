@@ -85,6 +85,8 @@ categories = ["gui"]
 # The lowest CLI version that may consume this framework revision.
 # 0.4.4 understands `apple-backend-path` and `hydrolysis-path`.
 minimum-cli-version = "0.4.4"
+# Native Apple deployment targets, carried into every project's Cargo config.
+apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
 android-min-api-level = 31
