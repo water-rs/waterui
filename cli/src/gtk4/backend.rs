@@ -79,7 +79,7 @@ impl Gtk4Backend {
         let framework = project.resolved_framework().await?;
         let linux_triples = crate::platform::linux_target_triples();
         let (project_packages, linux) = futures_util::future::try_join(
-            project.project_packages(&framework, &linux_triples),
+            project.project_packages(framework, &linux_triples),
             project.native_browser_answers(
                 crate::platform::NativeOs::Linux,
                 crate::project::GraphSection {
@@ -97,7 +97,7 @@ impl Gtk4Backend {
             manifest,
             project.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())

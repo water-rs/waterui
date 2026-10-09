@@ -844,14 +844,22 @@ impl RenderNode {
         } else {
             env.clone()
         };
-        Self::Wrapper(Box::new(WrapperNode {
+        let is_material_group = matches!(effect, WrapperEffect::MaterialGroup);
+        let node = Self::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
             effect,
             env,
             released_offsets: Cell::default(),
             child,
-        }))
+        }));
+        if is_material_group {
+            // The marker is a property of the node, not of a record: flag the
+            // cell at build so a partial descent into a descendant subtree can
+            // find every enclosing scope from the ancestry (#2268).
+            node.core().cell.material_group_scope.set(true);
+        }
+        node
     }
 
     /// The environment a metadata-carried callback captures: the one its

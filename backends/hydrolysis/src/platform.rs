@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use nami::Signal;
 use waterui::cursor::CursorStyle;
@@ -989,6 +990,24 @@ pub trait PlatformWindow: 'static {
     fn drain_events(&mut self) -> Vec<InputEvent>;
     /// Requests that the window be repainted.
     fn request_redraw(&self);
+    /// The wake the window's frame signals fire when a frame request lands
+    /// on an idle handle — the mechanism that schedules a frame for a
+    /// state change made outside one (an executor drain, a platform-view
+    /// callback, an accessibility action).
+    ///
+    /// The runner installs the returned closure once at mount; afterwards
+    /// the first `request_*`/`mark_*` that transitions the signals from no
+    /// pending request to some pending request runs it, and the pump's
+    /// `take_*` drains re-arm it. The closure must ask the host's own
+    /// scheduler for a frame of this window — a winit `RedrawWindow` user
+    /// event, a browser rAF request, a Choreographer post — and may
+    /// suppress the post while the window is occluded, where the request
+    /// stays armed for the frame visibility restores.
+    ///
+    /// A runner that is pumped explicitly — headless, the semantic test
+    /// runtime, offscreen capture — returns a closure that does nothing:
+    /// its requests are consumed by the next explicit pump instead.
+    fn frame_wake(&self) -> Rc<dyn Fn()>;
     /// The window's logical-points-per-pixel scale factor.
     fn scale_factor(&self) -> f64;
     /// The refresh rate (Hz) of the display this window is on, if known.
@@ -2200,6 +2219,13 @@ impl PlatformWindow for OffscreenWindow {
     /// Requests that the window be repainted.
     fn request_redraw(&self) {}
 
+    /// An offscreen window is pumped explicitly by its caller — a request
+    /// recorded on the frame signals is consumed by the next explicit
+    /// pump, so the wake does nothing.
+    fn frame_wake(&self) -> Rc<dyn Fn()> {
+        Rc::new(|| {})
+    }
+
     /// The window's logical-points-per-pixel scale factor.
     fn scale_factor(&self) -> f64 {
         self.scale_factor
@@ -2233,6 +2259,7 @@ pub mod native_menu_bar;
 
 #[cfg(hydrolysis_winit)]
 mod winit_impl {
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -3008,6 +3035,23 @@ mod winit_impl {
         #[must_use]
         pub fn native_window(&self) -> &NativeWindow {
             self.window.as_ref()
+        }
+
+        /// The occlusion-gated `RedrawWindow` wake both host-wake surfaces
+        /// hand out — [`GpuSurfaceWindow::gpu_surface_redraw_handle`] for
+        /// GPU content and [`PlatformWindow::frame_wake`] for the frame
+        /// signals. GPU content cannot see the window's pump state, so the
+        /// occlusion report is shared as a flag: a frame request raised
+        /// while the window is hidden posts nothing and stays armed for
+        /// the restore frame.
+        fn redraw_wake(&self) -> impl Fn() + Send + Sync + 'static {
+            let wake = self.wake.clone();
+            let occluded = Arc::clone(&self.occlusion_signal);
+            move || {
+                if !occluded.load(Ordering::Relaxed) {
+                    wake.request_redraw();
+                }
+            }
         }
 
         /// Pushes the requested `WindowLevel` to the window server. Shared by
@@ -4165,6 +4209,14 @@ mod winit_impl {
             }
         }
 
+        /// The frame-signals wake is the same occlusion-gated
+        /// `RedrawWindow` user-event the GPU surface handle posts — winit
+        /// coalesces the `request_redraw` it lands on, so frame counts are
+        /// unchanged.
+        fn frame_wake(&self) -> Rc<dyn Fn()> {
+            Rc::new(self.redraw_wake())
+        }
+
         /// The window's logical-points-per-pixel scale factor.
         fn scale_factor(&self) -> f64 {
             self.window.scale_factor()
@@ -4228,16 +4280,7 @@ mod winit_impl {
         }
 
         fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-            let wake = self.wake.clone();
-            let occluded = Arc::clone(&self.occlusion_signal);
-            Some(RedrawHandle::new(move || {
-                // GPU content cannot see the window's pump state, so the
-                // occlusion report is shared as a flag: a frame produced
-                // while the window is hidden posts no wake.
-                if !occluded.load(Ordering::Relaxed) {
-                    wake.request_redraw();
-                }
-            }))
+            Some(RedrawHandle::new(self.redraw_wake()))
         }
 
         /// Keeps the compositor's blur-behind request in step with the
