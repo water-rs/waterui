@@ -11,7 +11,9 @@
 //! user's staging directory, then one `run-as` copy into private storage
 //! that writes the stamps — and runs `am instrument -w`, whose return is the
 //! completion signal, before reading the produced PNGs back through
-//! `adb shell -T`.
+//! `adb shell -T`. Round trips that do not depend on each other run side by
+//! side: the version check, the clock read and the preparation, and the
+//! render and the staging copy's removal.
 
 mod payload;
 
@@ -19,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use eyre::{Context as _, Result, bail};
+use futures_util::future::OptionFuture;
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use smol::fs;
 use tracing::info;
@@ -180,9 +183,11 @@ struct DeviceRender<'a> {
     scenario: Option<&'a HydrolysisPreviewScenario>,
 }
 
-/// Take the device lease, then install the host if needed, prepare the run
-/// and ship the payload parts the device's copy is stale in, run the
-/// instrumentation and pull its output.
+/// Take the device lease, then prepare the run alongside the host's version
+/// check — installing the host and preparing again when it is not current —
+/// ship the payload parts the device's copy is stale in, run the
+/// instrumentation and pull its output while the push's staging copy is
+/// removed.
 ///
 /// `am instrument` force-stops the host package and an install replaces
 /// it, so a second run's install or instrumentation would kill the render
@@ -206,40 +211,60 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
     // that inherits our pipes.
     adb.start_server(host).await?;
 
-    // The install and the `logcat -T` stamp bounding the crash log to this
-    // run are independent; everything `run-as` does needs the host
-    // installed. `install -r` keeps the host's private files, so a payload
-    // already extracted there survives a host upgrade.
-    let (_installed, since) = futures_util::try_join!(
-        install_host_if_needed(host, adb, serial, host_apk, version_code),
+    // The version query, the `logcat -T` stamp bounding the crash log to
+    // this run and the run's preparation are independent round trips
+    // whenever the host is already installed at this version — every warm
+    // run — so they run side by side. The preparation goes through
+    // `run-as`, which needs the installed host: when the query calls for an
+    // install, the install starts once all three are done, so it never
+    // overlaps a `run-as`, and the preparation runs again against the host
+    // it installed — the speculative one found no host or prepared files
+    // the replacing install may have touched. `install -r` keeps the host's
+    // private files, so a payload already extracted there survives a host
+    // upgrade.
+    let (installed, since, prepared) = futures_util::join!(
+        adb.installed_version_code(host, serial, PREVIEW_HOST_PACKAGE, Duration::from_secs(30)),
         device_time_stamp(host, adb, serial),
-    )?;
-    let held = prepare_run(host, adb, serial, run_config).await?;
+        prepare_run(host, adb, serial, run_config),
+    );
+    let since = since?;
+    let held = if installed? == Some(version_code) {
+        prepared?
+    } else {
+        install_host(host, adb, serial, host_apk, version_code).await?;
+        prepare_run(host, adb, serial, run_config).await?
+    };
+
     let stale = payload.stale_parts(&held);
-    if !stale.is_empty() {
+    let pushed = !stale.is_empty();
+    if pushed {
         info!(?stale, "Pushing the changed preview payload to the device");
         push_payload(host, adb, serial, payload, &stale).await?;
     }
-    run_instrumentation(host, adb, serial, &payload.library_paths(), &since).await?;
-    pull_outputs(host, adb, serial, output_path, scenario).await
+    let render = async {
+        run_instrumentation(host, adb, serial, &payload.library_paths(), &since).await?;
+        pull_outputs(host, adb, serial, output_path, scenario).await
+    };
+    // The staging copy is dead once installed, and nothing the render reads
+    // lives there, so its removal overlaps the render instead of delaying
+    // it. A run that fails before this point leaves it for the next run's
+    // preparation, which clears it first.
+    let remove_staging = OptionFuture::from(pushed.then(|| remove_push_staging(host, adb, serial)));
+    let (rendered, removed) = futures_util::join!(render, remove_staging);
+    rendered?;
+    removed.transpose()?;
+    Ok(())
 }
 
-/// Install `apk` when the device's installed `versionCode` differs from
-/// `version_code` — including a missing install — and skip the round trip
-/// otherwise. Returns whether it installed.
-async fn install_host_if_needed(
+/// Install `apk`, the preview host at `version_code`, over whatever host
+/// the device holds.
+async fn install_host(
     host: &Host,
     adb: &Adb,
     serial: &str,
     apk: &Path,
     version_code: u32,
-) -> Result<bool> {
-    let installed = adb
-        .installed_version_code(host, serial, PREVIEW_HOST_PACKAGE, Duration::from_secs(30))
-        .await?;
-    if installed == Some(version_code) {
-        return Ok(false);
-    }
+) -> Result<()> {
     info!("Installing the hydrolysis preview host ({version_code})");
     adb.install_any_version(host, serial, apk, Duration::from_secs(120))
         .await
@@ -261,7 +286,7 @@ async fn install_host_if_needed(
                  remove it with `adb -s {serial} uninstall {PREVIEW_HOST_PACKAGE}` and retry"
             )
         })?;
-    Ok(true)
+    Ok(())
 }
 
 /// The key one device's preview lease is taken under.
@@ -380,10 +405,10 @@ fn payload_deadline(size: u64) -> Duration {
 /// One `adb push` carries them into [`PUSH_STAGING_DIR`]: the whole local
 /// payload directory when every part is stale, the one stale part's
 /// directory otherwise — the staging directory is absent, so either lands
-/// as the parts' directories inside it. One shell call then runs
-/// [`INSTALL_SCRIPT`] through `run-as`, which replaces each part and writes
-/// its stamp last, and removes the staging directory whatever the copy's
-/// outcome; its exit status is the copy's, so a failure surfaces.
+/// as the parts' directories inside it. One `run-as` call then runs
+/// [`INSTALL_SCRIPT`], which replaces each part and writes its stamp last;
+/// its exit status is the call's, so a failure surfaces. The staging copy
+/// stays for [`remove_push_staging`].
 async fn push_payload(
     host: &Host,
     adb: &Adb,
@@ -404,11 +429,6 @@ async fn push_payload(
         .wrap_err("failed to push the preview payload to the device")?;
 
     let mut words = vec![
-        "sh",
-        "-c",
-        INSTALL_SHELL_SCRIPT,
-        "sh",
-        PUSH_STAGING_DIR,
         "run-as",
         PREVIEW_HOST_PACKAGE,
         "sh",
@@ -428,14 +448,21 @@ async fn push_payload(
     Ok(())
 }
 
-/// The shell user's half of [`push_payload`]'s install: `$1` is
-/// [`PUSH_STAGING_DIR`], the rest the `run-as` command to run. The staging
-/// directory is removed whatever that command's outcome, and its status is
-/// the call's.
-const INSTALL_SHELL_SCRIPT: &str =
-    "staging=$1; shift; \"$@\"; status=$?; rm -rf \"$staging\"; exit $status";
+/// Remove [`PUSH_STAGING_DIR`], the shell user's copy of the payload parts
+/// [`push_payload`] installed.
+async fn remove_push_staging(host: &Host, adb: &Adb, serial: &str) -> Result<()> {
+    adb.shell_run(
+        host,
+        serial,
+        &["rm", "-rf", PUSH_STAGING_DIR],
+        Duration::from_secs(30),
+    )
+    .await
+    .wrap_err("failed to remove the preview payload's push staging")?;
+    Ok(())
+}
 
-/// The `run-as` half of [`push_payload`]'s install: `$1` is the run
+/// The script [`push_payload`]'s install runs through `run-as`: `$1` is the run
 /// directory, `$2` the staging directory, `$3` the payload directory, then
 /// one `<part dir> <stamp file> <stamp>` triple per part to install. Each
 /// part's stamp is removed before its directory is replaced and written
@@ -742,8 +769,8 @@ mod tests {
         }
 
         /// One run's device-side half through the production
-        /// [`render_on_device`]; the installed `versionCode` matches, so it
-        /// never installs.
+        /// [`render_on_device`] at `versionCode` 7, which the device holds
+        /// unless a test answers the version query otherwise.
         async fn run(&self, out: &Path) {
             render_on_device(
                 &self.host,
@@ -832,6 +859,14 @@ mod tests {
             prepare < push && push < install && install < instrument && instrument < pull,
             "prepare -> push -> install -> instrument -> pull: {argv}"
         );
+        let removal = line_of(
+            &lines,
+            "-s serial shell rm -rf /data/local/tmp/waterui-preview",
+        );
+        assert!(
+            install < removal,
+            "the staging copy is removed once installed: {argv}"
+        );
         assert!(
             lines[instrument].contains(
                 "libraries waterui-preview/payload/lib/libx.so -e runConfig \
@@ -855,7 +890,7 @@ mod tests {
     }
 
     /// A device whose stamps match every part's content hash receives
-    /// nothing: no push and no install.
+    /// nothing: no push, no install and no staging removal.
     #[test]
     #[cfg(unix)]
     fn an_unchanged_payload_issues_no_push() {
@@ -869,7 +904,7 @@ mod tests {
 
         let argv = device.argv();
         assert!(
-            !argv.contains(" push ") && !argv.contains("cp -R"),
+            !argv.contains(" push ") && !argv.contains("cp -R") && !argv.contains("rm -rf /data"),
             "an unchanged payload ships nothing: {argv}"
         );
     }
@@ -908,9 +943,9 @@ mod tests {
     }
 
     /// A warm run — host installed, payload current — is the detached
-    /// server start, the version query and the clock read side by side, then
-    /// one preparation, the instrumentation and the pull: six adb
-    /// invocations, no others.
+    /// server start, then the version query, the clock read and the
+    /// preparation side by side, then the instrumentation and the pull: six
+    /// adb invocations, no others.
     #[test]
     #[cfg(unix)]
     fn a_warm_run_issues_the_minimal_adb_sequence() {
@@ -926,20 +961,24 @@ mod tests {
         let all: Vec<&str> = argv.lines().collect();
         assert_eq!(all[0], "start-server", "{argv}");
         let lines = &all[1..];
-        let mut concurrent = lines[..2].to_vec();
-        concurrent.sort_unstable();
-        assert_eq!(
-            concurrent,
-            [
-                "-s serial shell date '+%m-%d %H:%M:%S.000'",
-                "-s serial shell pm list packages --show-versioncode \
-                 dev.waterui.hydrolysis.preview",
-            ],
+        assert_eq!(lines.len(), 5, "{argv}");
+        let concurrent = &lines[..3];
+        assert!(
+            concurrent.contains(&"-s serial shell date '+%m-%d %H:%M:%S.000'"),
             "{argv}"
         );
-        assert_eq!(lines.len(), 5, "{argv}");
         assert!(
-            lines[2].starts_with("-s serial shell -T sh -c") && lines[2].ends_with(PREPARE_ARGS),
+            concurrent.contains(
+                &"-s serial shell pm list packages --show-versioncode \
+                  dev.waterui.hydrolysis.preview"
+            ),
+            "{argv}"
+        );
+        assert!(
+            concurrent
+                .iter()
+                .any(|line| line.starts_with("-s serial shell -T sh -c")
+                    && line.ends_with(PREPARE_ARGS)),
             "{argv}"
         );
         assert!(
@@ -1104,10 +1143,10 @@ mod tests {
     /// The preparation clears a stale push staging directory and whatever
     /// the run directory's layout does not name; a whole push then installs
     /// every part — libraries read-only — and its stamp, which the next
-    /// preparation reads back, and removes the staging directory. A stamp
-    /// lands only after every step before it succeeded: a failing `chmod`
-    /// leaves the part without one, the other part's untouched, and the
-    /// staging directory removed all the same.
+    /// preparation reads back while it clears the staging copy the push
+    /// left. A stamp lands only after every step before it succeeded: a
+    /// failing `chmod` leaves the part without one and the other part's
+    /// untouched.
     #[test]
     #[cfg(unix)]
     fn a_pushed_part_installs_its_stamp_last() {
@@ -1120,10 +1159,6 @@ mod tests {
         std::fs::create_dir_all(device.staging().join("lib")).expect("a stale staging dir");
 
         device.install_whole_payload();
-        assert!(
-            !device.staging().exists(),
-            "the install removes the staging"
-        );
         assert_eq!(
             entry_names(&run_dir),
             [
@@ -1157,10 +1192,18 @@ mod tests {
                 .expect("the asset landed"),
             b"logo-bytes"
         );
+        assert!(
+            device.staging().join("lib/libx.so").exists(),
+            "the push staged the libraries"
+        );
         let held = device.prepare(&device.host(None));
         assert!(
             device.payload.stale_parts(&held).is_empty(),
             "the preparation reads every installed stamp back: {held:?}"
+        );
+        assert!(
+            !device.staging().exists(),
+            "the preparation clears the staging a previous push left"
         );
 
         let failing_chmod = device.shim("chmod", "exit 1");
@@ -1176,10 +1219,6 @@ mod tests {
             device.stamp(PayloadPart::Resources).as_deref(),
             Some(device.payload.stamp(PayloadPart::Resources)),
             "a part not pushed keeps its stamp"
-        );
-        assert!(
-            !device.staging().exists(),
-            "a failed install still removes the staging"
         );
     }
 
@@ -1210,42 +1249,35 @@ mod tests {
         assert_eq!(device.stamp(PayloadPart::Libraries), None);
     }
 
+    /// A host at another version, or none, is installed once the version
+    /// query, the clock read and the speculative preparation are done, and
+    /// the run is prepared again against the installed host before anything
+    /// ships.
     #[test]
     #[cfg(unix)]
-    fn an_equal_installed_version_code_skips_the_reinstall() {
-        let (machine, host, log) = adb_test_machine();
-        machine.respond(
-            "ADB_PM_PACKAGES",
-            "package:dev.waterui.hydrolysis.preview versionCode:7",
-        );
-        let apk = machine.file("host.apk", "apk");
-        let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
-        let installed =
-            smol::block_on(async { install_host_if_needed(&host, &adb, "serial", &apk, 7).await })
-                .expect("version query");
-        assert!(!installed);
-        assert!(!adb_argv(&log).contains("install -r"), "no install ran");
-    }
+    fn a_different_or_absent_version_code_reinstalls_then_prepares_again() {
+        for response in ["package:dev.waterui.hydrolysis.preview versionCode:6", ""] {
+            let device = RenderingDevice::new();
+            device.machine.respond("ADB_PM_PACKAGES", response);
 
-    #[test]
-    #[cfg(unix)]
-    fn a_different_or_absent_version_code_reinstalls() {
-        for (response, version_code) in [
-            ("package:dev.waterui.hydrolysis.preview versionCode:6", 7u32),
-            ("", 7u32),
-        ] {
-            let (machine, host, log) = adb_test_machine();
-            machine.respond("ADB_PM_PACKAGES", response);
-            let apk = machine.file("host.apk", "apk");
-            let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
-            let installed = smol::block_on(async {
-                install_host_if_needed(&host, &adb, "serial", &apk, version_code).await
-            })
-            .expect("install decision");
-            assert!(installed, "expected an install for `{response}`");
+            smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+            let argv = device.argv();
+            let lines: Vec<&str> = argv.lines().collect();
+            let install = line_of(&lines, " install -r ");
+            let prepares: Vec<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.ends_with(PREPARE_ARGS))
+                .map(|(index, _)| index)
+                .collect();
             assert!(
-                adb_argv(&log).contains("install -r"),
-                "an install ran for `{response}`"
+                matches!(prepares.as_slice(), [first, second] if *first < install && install < *second),
+                "one preparation before the install and one after it for `{response}`: {argv}"
+            );
+            assert!(
+                install < line_of(&lines, " push "),
+                "the payload ships to the installed host: {argv}"
             );
         }
     }
@@ -1341,10 +1373,6 @@ mod tests {
     fn a_debug_key_mismatch_names_the_uninstall_command() {
         let (machine, host, _log) = adb_test_machine();
         machine.respond(
-            "ADB_PM_PACKAGES",
-            "package:dev.waterui.hydrolysis.preview versionCode:6",
-        );
-        machine.respond(
             "ADB_INSTALL",
             "Performing Streamed Install\nFailure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]",
         );
@@ -1357,9 +1385,8 @@ mod tests {
             ("WATERUI_FAKE_ADB_INSTALL_STATUS", "1".as_ref()),
         ]);
         let apk = machine.file("host.apk", "apk");
-        let error =
-            smol::block_on(async { install_host_if_needed(&host, &adb, "serial", &apk, 7).await })
-                .expect_err("a debug-key mismatch must fail");
+        let error = smol::block_on(async { install_host(&host, &adb, "serial", &apk, 7).await })
+            .expect_err("a debug-key mismatch must fail");
         let message = format!("{error:#}");
         assert!(
             message.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE"),
