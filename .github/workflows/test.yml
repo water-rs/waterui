@@ -915,8 +915,11 @@ jobs:
   # `backends/hydrolysis/android-preview-host` (never committed), then
   # `:app:assembleDebug` compiles it against the in-tree host checkout —
   # the only place the generated app's Kotlin↔Gradle wiring is checked.
-  # The CLI renders that app, so a CLI-only change runs the job too, but
-  # only the render and the assemble: no CLI change reaches the host's
+  # The embedded-library composite gets the same treatment, rendered by
+  # `render_embedded_library`, published to the runner's mavenLocal and
+  # compiled against by a consumer app.
+  # The CLI renders both, so a CLI-only change runs the job too, but
+  # only the renders and the assembles: no CLI change reaches the host's
   # Kotlin, so the host lint and its Gradle setup run only when the scope
   # reaches Hydrolysis. The wrapper JARs are not committed (the CLI
   # materializes them), so each build installs the distribution its own
@@ -948,9 +951,9 @@ jobs:
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
         with:
           gradle-version: ${{ steps.host-gradle-version.outputs.version }}
-      - name: Lint the host, preview and webview modules
+      - name: Lint the host, gpu, preview and webview modules
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
-        run: gradle :host:lintDebug :preview:lintDebug :webview:lintDebug
+        run: gradle :host:lintDebug :gpu:lintDebug :preview:lintDebug :webview:lintDebug
       - name: Host unit tests
         if: inputs.full
         run: gradle :host:testDebugUnitTest
@@ -984,6 +987,42 @@ jobs:
       - name: Assemble the generated preview-host app
         working-directory: backends/hydrolysis/android-preview-host
         run: gradle :app:assembleDebug
+      # The embedded library: `render_embedded_library` renders the Gradle
+      # composite `water build` assembles for an embedded project (no Rust
+      # build — the AAR carries no native library here) and reports its
+      # coordinates, host version and Gradle tasks as JSON. The tasks
+      # publish the host modules and assemble and publish the library to
+      # this runner's mavenLocal; a consumer app then compiles the mount
+      # call `water build` prints against the published coordinate, which
+      # checks the composite, the substitution, the POM's `api`
+      # dependencies and the generated `WaterUi` signatures together. Both
+      # Gradle builds share the rendered wrapper's distribution set up above.
+      - name: Render the generated embedded library
+        id: embedded-library
+        working-directory: ${{ github.workspace }}
+        run: |
+          library="$(cargo run --locked --profile ci-check -p waterui-cli --no-default-features --example render_embedded_library -- examples/form backends/hydrolysis/android-embedded-library)"
+          {
+            echo "host-version=$(jq -r .host_version <<<"$library")"
+            echo "tasks=$(jq -r '.gradle_tasks | join(" ")' <<<"$library")"
+            echo "coordinate=$(jq -r '"\(.group):\(.artifact):\(.version)"' <<<"$library")"
+            echo "package=$(jq -r .group <<<"$library")"
+            echo "compile-sdk=$(jq -r .compile_sdk <<<"$library")"
+            echo "min-sdk=$(jq -r .min_sdk <<<"$library")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Assemble and publish the generated embedded library
+        working-directory: backends/hydrolysis/android-embedded-library
+        env:
+          WATERUI_HYDROLYSIS_HOST_VERSION: ${{ steps.embedded-library.outputs.host-version }}
+        run: gradle ${{ steps.embedded-library.outputs.tasks }}
+      - name: Compile an app consuming the embedded library
+        working-directory: cli/tests/fixtures/android-embedded-consumer
+        run: >-
+          gradle :app:compileDebugKotlin
+          -PwateruiLibrary=${{ steps.embedded-library.outputs.coordinate }}
+          -PwateruiPackage=${{ steps.embedded-library.outputs.package }}
+          -PwateruiCompileSdk=${{ steps.embedded-library.outputs.compile-sdk }}
+          -PwateruiMinSdk=${{ steps.embedded-library.outputs.min-sdk }}
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,

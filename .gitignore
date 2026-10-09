@@ -18,9 +18,11 @@ bugreport*.zip
 .wrangler/
 node_modules/
 
-# The generated preview-host composite the `hydrolysis-android-host` CI job
-# renders through the CLI's scaffold test (artifact, not source).
+# The generated preview-host and embedded-library composites the
+# `hydrolysis-android-host` CI job renders through the CLI (artifacts, not
+# source).
 backends/hydrolysis/android-preview-host/
+backends/hydrolysis/android-embedded-library/
 
 # Apple e2e / release-metrics scratch directories CI produces at the
 # workspace root (artifacts, not source).

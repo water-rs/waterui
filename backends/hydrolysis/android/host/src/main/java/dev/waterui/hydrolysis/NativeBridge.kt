@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.os.Looper
 import android.view.Surface
 
 /**
@@ -59,7 +60,8 @@ object NativeBridge {
     /** [nativeBackEvent] phase: the gesture committed, or a back button was pressed. */
     const val BACK_INVOKED: Int = 3
 
-    private var initialized = false
+    /** The `System.loadLibrary` name [load] mounted, or null before it. */
+    private var loadedLibraryName: String? = null
 
     /**
      * Opaque handle for the UI-thread services the load hook created once:
@@ -78,7 +80,15 @@ object NativeBridge {
      */
     @Synchronized
     fun load(libraryName: String, logLevel: String?) {
-        if (initialized) return
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "hydrolysis: load must run on the main thread, whose looper the executor registers with"
+        }
+        loadedLibraryName?.let { loaded ->
+            check(loaded == libraryName) {
+                "hydrolysis: the process already mounted '$loaded'; a second library '$libraryName' cannot share it"
+            }
+            return
+        }
         System.loadLibrary(libraryName)
         val nativeSchema = nativeInit(SCHEMA, logLevel)
         check(nativeSchema == SCHEMA) {
@@ -86,7 +96,7 @@ object NativeBridge {
         }
         uiThreadServices = nativeUiThreadServices()
         check(uiThreadServices != 0L) { "hydrolysis: the UI-thread executor was not created" }
-        initialized = true
+        loadedLibraryName = libraryName
     }
 
     @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int

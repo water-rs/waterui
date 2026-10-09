@@ -1,10 +1,10 @@
 plugins {
     id("com.android.library")
+    `maven-publish`
 }
 
 android {
     namespace = "dev.waterui.hydrolysis.webview"
-    compileSdk = 36
 
     defaultConfig {
         minSdk = 31
