@@ -487,6 +487,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         .await?;
         Ok(Some(RunReady {
             backend: context.backend,
+            host: context.project.host().clone(),
             running,
             dev_server,
             #[cfg(target_os = "macos")]
@@ -496,6 +497,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
 
     let Some(Some(RunReady {
         backend,
+        host,
         running,
         dev_server: _dev_server,
         #[cfg(target_os = "macos")]
@@ -511,15 +513,16 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
 
     // Stream device events
     #[cfg(target_os = "macos")]
-    stream_running_events(shell, running, interrupts, backend, &mut crash_ctx).await?;
+    stream_running_events(shell, &host, running, interrupts, backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
-    stream_running_events(shell, running, interrupts, backend).await?;
+    stream_running_events(shell, &host, running, interrupts, backend).await?;
 
     Ok(())
 }
 
 struct RunReady {
     backend: TargetBackend,
+    host: waterui_cli::toolchain::Host,
     running: Running,
     dev_server: Option<web::WebDevServer>,
     #[cfg(target_os = "macos")]
@@ -739,6 +742,7 @@ const fn run_profile(args: &Args, backend: TargetBackend) -> BuildProfile {
 #[cfg(target_os = "macos")]
 async fn stream_running_events(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     running: Running,
     interrupts: smol::channel::Receiver<()>,
     backend: TargetBackend,
@@ -762,7 +766,7 @@ async fn stream_running_events(
             event
         };
 
-        handle_device_event(shell, event, backend_log_name)?;
+        handle_device_event(shell, host, event, backend_log_name)?;
     }
     monitor_errors.into_result()
 }
@@ -772,6 +776,7 @@ async fn stream_running_events(
 #[cfg(not(target_os = "macos"))]
 async fn stream_running_events(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     running: Running,
     interrupts: smol::channel::Receiver<()>,
     backend: TargetBackend,
@@ -782,7 +787,7 @@ async fn stream_running_events(
 
     while let Some(event) = events.next().await {
         monitor_errors.observe(&event);
-        handle_device_event(shell, event, backend_log_name)?;
+        handle_device_event(shell, host, event, backend_log_name)?;
     }
     monitor_errors.into_result()
 }
@@ -1807,7 +1812,12 @@ fn validate_log_pipeline_args(
 
 /// Handle a device event.
 ///
-fn handle_device_event(shell: &Shell, event: DeviceEvent, platform_name: &str) -> Result<()> {
+fn handle_device_event(
+    shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
+    event: DeviceEvent,
+    platform_name: &str,
+) -> Result<()> {
     match event {
         DeviceEvent::Started => {
             let _ = shell.status("*", "Application started");
@@ -1841,6 +1851,7 @@ fn handle_device_event(shell: &Shell, event: DeviceEvent, platform_name: &str) -
             if let CrashCause::Panic(panic) = &crash.cause {
                 let extra = crash.panic_note();
                 shell.panic(
+                    host,
                     panic,
                     extra.as_deref(),
                     crash
@@ -2052,6 +2063,7 @@ mod tests {
         let shell = crate::shell::Shell::new(false);
         handle_device_event(
             &shell,
+            &waterui_cli::toolchain::Host::current(),
             DeviceEvent::Exited(ApplicationExit::completed()),
             "test",
         )
@@ -2090,12 +2102,15 @@ mod tests {
         .detach();
 
         let backend = TargetBackend::Hydrolysis;
+        let host = waterui_cli::toolchain::Host::current();
         #[cfg(target_os = "macos")]
         let result = smol::block_on(stream_running_events(
-            &shell, running, interrupts, backend, &mut None,
+            &shell, &host, running, interrupts, backend, &mut None,
         ));
         #[cfg(not(target_os = "macos"))]
-        let result = smol::block_on(stream_running_events(&shell, running, interrupts, backend));
+        let result = smol::block_on(stream_running_events(
+            &shell, &host, running, interrupts, backend,
+        ));
 
         let request = request_rx.try_recv().ok().flatten();
         (result, request)

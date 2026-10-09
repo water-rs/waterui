@@ -481,9 +481,9 @@ pub struct SemanticCore {
     /// Identity-less guards from reads no node owns — fresh each flush,
     /// dropped at the next flush's start.
     outside_frame_retains: Vec<Retain>,
-    /// Mirror of `FrameSignals::rebuild_in_progress` for watch closures: marks
-    /// the rebuild subsumes must not re-arm a frame — the generation gate the
-    /// dirty-collection/dynamic flags already enforce on the flag side.
+    /// Mirror of `FrameSignals::rebuild_in_progress` for watch closures: a
+    /// change a rebuild already covers must not re-arm a frame — the gate the
+    /// rebuild generation applies on the signals side.
     rebuild_active: Rc<Cell<bool>>,
     /// A whole-tree emit pass is in progress — the rendered flush, the
     /// semantic emit walk, or a build-time capture: every a11y-emitting
@@ -820,10 +820,10 @@ impl SemanticCore {
         core
     }
 
-    /// Whether a structural rebuild is capturing right now — the gate
-    /// [`FrameSignals::mark_collection_dirty`] applies to the dirty flag: a
-    /// `views.watch` fire while a rebuild covers the whole tree must not mark
-    /// its owner's cell either.
+    /// Whether a structural rebuild is capturing right now — the gate a
+    /// `views.watch` or `Dynamic` delivery applies to its cell mark: a change
+    /// fired while a rebuild covers the whole tree must not mark the cell
+    /// whose subtree the build is still writing.
     pub(crate) fn rebuild_active_flag(&self) -> Rc<Cell<bool>> {
         Rc::clone(&self.rebuild_active)
     }

@@ -24,7 +24,7 @@ use nami::{Computed, Signal as _};
 use waterui::app::Quit;
 use waterui::window::WindowState;
 use waterui_controls::menu::{
-    CloseWindowChord, MenuItem, NamedKey, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey,
+    CloseWindowChord, MenuItem, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey,
 };
 use waterui_core::Environment;
 use waterui_core::Str;
@@ -36,100 +36,6 @@ use crate::HydrolysisRenderer;
 use crate::platform::Modifiers;
 use crate::renderer::call_action_discarding_result;
 use crate::widgets::controls::button::MenuRenderState;
-
-/// The label a menu hint draws for a shortcut key: a letter in upper case,
-/// the space bar as `Space`, and a named key in the platform's own notation —
-/// the `⌦`/`↩`/`←` glyphs of macOS menus, the `Del`/`Enter`/`Left` text of
-/// Windows and Linux menus. A named key without a platform abbreviation
-/// shows its W3C name, which is already the label those menus print (`F5`,
-/// `Home`).
-fn shortcut_key_label(key: &ShortcutKey) -> String {
-    match key {
-        ShortcutKey::Character(' ') => String::from("Space"),
-        ShortcutKey::Character(character) => character.to_uppercase().collect(),
-        ShortcutKey::Named(named) => {
-            named_key_label(*named).map_or_else(|| named.to_string(), String::from)
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-const fn named_key_label(key: NamedKey) -> Option<&'static str> {
-    Some(match key {
-        NamedKey::Delete => "⌦",
-        NamedKey::Backspace => "⌫",
-        NamedKey::Enter => "↩",
-        NamedKey::Escape => "⎋",
-        NamedKey::Tab => "⇥",
-        NamedKey::ArrowUp => "↑",
-        NamedKey::ArrowDown => "↓",
-        NamedKey::ArrowLeft => "←",
-        NamedKey::ArrowRight => "→",
-        NamedKey::PageUp => "⇞",
-        NamedKey::PageDown => "⇟",
-        NamedKey::Home => "↖",
-        NamedKey::End => "↘",
-        NamedKey::Clear => "⌧",
-        _ => return None,
-    })
-}
-
-#[cfg(not(target_os = "macos"))]
-const fn named_key_label(key: NamedKey) -> Option<&'static str> {
-    Some(match key {
-        NamedKey::Delete => "Del",
-        NamedKey::Insert => "Ins",
-        NamedKey::Escape => "Esc",
-        NamedKey::PageUp => "PgUp",
-        NamedKey::PageDown => "PgDn",
-        NamedKey::ArrowUp => "Up",
-        NamedKey::ArrowDown => "Down",
-        NamedKey::ArrowLeft => "Left",
-        NamedKey::ArrowRight => "Right",
-        _ => return None,
-    })
-}
-
-/// The trailing hint a menu row draws for a `Command`'s shortcut — `⌃⌥⇧⌘`
-/// symbols on macOS, `Ctrl+Alt+Shift+` text elsewhere (where the command
-/// modifier is control, the platform's menu accelerator).
-pub fn shortcut_hint_text(shortcut: &Shortcut) -> Str {
-    let modifiers = shortcut.modifiers;
-    let key = shortcut_key_label(&shortcut.key);
-    #[cfg(target_os = "macos")]
-    {
-        let mut hint = String::new();
-        if modifiers.control() {
-            hint.push('⌃');
-        }
-        if modifiers.option() {
-            hint.push('⌥');
-        }
-        if modifiers.shift() {
-            hint.push('⇧');
-        }
-        if modifiers.command() {
-            hint.push('⌘');
-        }
-        hint.push_str(&key);
-        Str::from(hint)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let mut hint = String::new();
-        if modifiers.control() || modifiers.command() {
-            hint.push_str("Ctrl+");
-        }
-        if modifiers.option() {
-            hint.push_str("Alt+");
-        }
-        if modifiers.shift() {
-            hint.push_str("Shift+");
-        }
-        hint.push_str(&key);
-        Str::from(hint)
-    }
-}
 
 /// The normalized modifier set of a `Shortcut`: the command modifier is the
 /// platform menu accelerator — super on macOS, control elsewhere.
@@ -193,7 +99,7 @@ impl MenuShortcut {
             action,
             disabled,
             label,
-            hint: shortcut_hint_text(shortcut),
+            hint: shortcut.to_string().into(),
         }
     }
 
