@@ -245,6 +245,24 @@ impl LayerNode {
         self.content_translucent
     }
 
+    /// The tree clock at the last change to what this layer draws in its
+    /// own space: its clip, scroll offset, filter, backdrop, content or
+    /// children, including a step a running scroll track sampled. A target
+    /// that mirrors the tree re-encodes the layer's own state only when
+    /// this moved past the stamp it last encoded.
+    #[must_use]
+    pub const fn inner_stamp(&self) -> u64 {
+        self.inner_stamp
+    }
+
+    /// The tree clock at the last change to how this layer composes into
+    /// its parent: its transform, components, projection, opacity or
+    /// blend, including a step a running track sampled.
+    #[must_use]
+    pub const fn outer_stamp(&self) -> u64 {
+        self.outer_stamp
+    }
+
     fn classify_rate(&self, scale: f64, components_running: bool) -> Option<RefreshRange> {
         if components_running {
             return Some(RATE_FAST);

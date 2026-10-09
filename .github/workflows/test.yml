@@ -37,6 +37,12 @@ on:
       scene-assets:
         type: boolean
         default: true
+      # `true` when the diff touches `backends/hydrolysis/**` or `cli/**`: the
+      # Hydrolysis Android JVM tests and the HWUI launcher dependency gate
+      # run only then (and in the nightly sweep).
+      hwui:
+        type: boolean
+        default: false
 
 # Narrow by default: callers may grant actions:write for the lint job's
 # cache retirement, but every other job in this workflow keeps read-only
@@ -285,9 +291,11 @@ jobs:
       - name: Clippy (hydrolysis, checked feature set)
         if: inputs.full
         run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
-      - name: Check (hydrolysis, no features)
+      # A build needs a render target, so the bare shape is the Cherenkov
+      # target with every other feature off.
+      - name: Check (hydrolysis, cherenkov only)
         if: inputs.full
-        run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib
+        run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --features cherenkov --lib
       # The cli's own CI ran a no-default-features check on every change
       # (water-rs/cli ci.yml): `default` bundles esp32+svg-icons+preview,
       # and nothing else in this workspace compiles the bare shape.
@@ -401,7 +409,7 @@ jobs:
           # third of the backend's `cfg(feature)` surface that `web` never
           # compiles — call sites a feature gates out rot silently otherwise.
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
-            -p hydrolysis --no-default-features \
+            -p hydrolysis --no-default-features --features cherenkov \
             -- -D warnings
       # The wasm32 legs the cherenkov repository's `wasm` job ran
       # (#1449). filtrate's `webgl` feature is a deliberate
@@ -869,8 +877,87 @@ jobs:
       # precompiled SPIR-V with spirv-opt on every non-Apple native target.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
-      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
-      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,hwui,inspector-signals,testing,web,winit -- -D warnings
+      # Each Android render target alone: HWUI without the Cherenkov stack,
+      # and the default Cherenkov build.
+      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features --features hwui -- -D warnings
+      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android -- -D warnings
+
+  # The Android host's and HWUI painter's JVM unit tests. `:hwui`'s test
+  # task first runs the Rust half of the contract test, which encodes the
+  # contract scenes and renders the Kotlin wire constants from the Rust
+  # definitions into `build/`; the JVM half decodes the same bytes.
+  hydrolysis-jvm:
+    name: Hydrolysis Android JVM tests
+    if: inputs.full || inputs.hwui
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+      - uses: astral-sh/setup-uv@v6
+      # The contract scenes register the generated test fonts, and the
+      # repository ships no Gradle wrapper jar: both are pinned fetches.
+      - run: uv run backends/hydrolysis/test-fonts/install.py
+      - run: uv run backends/hydrolysis/scripts/fetch-gradle-wrapper.py
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew --no-daemon :host:testDebugUnitTest :hwui:testDebugUnitTest
+        working-directory: backends/hydrolysis/android
+
+  # The HWUI launcher's dependency gate (#1811): the launcher the CLI
+  # generates for `[hydrolysis] painter = "hwui"` must link none of the
+  # Cherenkov stack on Android, and `filtrate` only without `gpu`.
+  hwui-launcher:
+    name: HWUI launcher dependencies
+    if: inputs.full || inputs.hwui
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      - run: cargo build --locked -p waterui-cli --bin water
+      # `water fetch` scaffolds the managed Hydrolysis launcher without
+      # building it.
+      - name: Generate the HWUI launcher
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          water="$GITHUB_WORKSPACE/target/debug/water"
+          "$water" create "HWUI Gate" --waterui-path "$GITHUB_WORKSPACE"
+          printf '\n[hydrolysis]\npainter = "hwui"\n' >> hwui-gate/Water.toml
+          "$water" fetch --backend hydrolysis --path hwui-gate
+          echo "LAUNCHER=$HOME/.water/build_cache$(realpath hwui-gate)/managed_backends/hydrolysis/Cargo.toml" >> "$GITHUB_ENV"
+      - name: Assert the launcher's Android dependency graph
+        run: |
+          set -euo pipefail
+          tree=(cargo tree --manifest-path "$LAUNCHER" --target aarch64-linux-android --prefix none)
+          graph="$("${tree[@]}" -e normal)"
+          status=0
+          for crate in cherenkov cherenkov-gpu cherenkov-cpu wgpu parley fontique skrifa vello; do
+            if grep -qE "^$crate v" <<<"$graph"; then
+              echo "::error::the HWUI launcher links $crate"
+              "${tree[@]}" -e normal --invert "$crate" | sort -u
+              status=1
+            fi
+          done
+          if grep -qE "^filtrate v" <<<"$graph"; then
+            features="$("${tree[@]}" -e normal,features --invert filtrate)"
+            if grep -q '^filtrate feature "gpu"' <<<"$features"; then
+              echo "::error::the HWUI launcher enables filtrate/gpu"
+              status=1
+            fi
+          fi
+          exit "$status"
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,

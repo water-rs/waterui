@@ -42,8 +42,11 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// and report whether a back target is registered; 10 = `nativeSetMetrics`
 /// splits the window insets into the container and keyboard regions of
 /// layout-spec.md §7.1, and the host's `WindowInsetsAnimationCompat` progress
-/// pushes each IME animation frame.
-pub const JNI_SCHEMA: jint = 10;
+/// pushes each IME animation frame; 11 = the HWUI painter's surface: the
+/// HWUI command buffer v1 the Kotlin `CommandDecoder` replays, the
+/// `RenderNodeSink` resource registrations and the `HwuiTextProvider` call
+/// surface (shaping, caret, hit-test, selection and navigation queries).
+pub const JNI_SCHEMA: jint = 11;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]

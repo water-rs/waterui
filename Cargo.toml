@@ -222,7 +222,9 @@ waterui-url = { version = "0.5.1", path = "utils/url" }
 waterui-watcher-set = { version = "0.5.1", path = "utils/watcher-set" }
 waterui-text = { version = "0.5.1", path = "components/foundation/text", default-features = false }
 waterui-media = { version = "0.5.1", path = "components/multimedia/media" }
-waterui-image = "0.5.0"
+# `gpu` (offscreen rasterizing) is enabled by `waterui-media/gpu`, which
+# `waterui/gpu` turns on; a GPU-free graph links none of it.
+waterui-image = { version = "0.5.0", default-features = false }
 waterui-video = { version = "0.5.1", path = "components/multimedia/video" }
 waterui-video-gpu = "0.4.0"
 waterui-form = { version = "0.5.1", path = "components/foundation/form" }
@@ -598,7 +600,7 @@ waterui-webview = { path = "components/platform/webview" }
 # revision carries the icon-button contract (water-rs/hydrolysis#115). Drop
 # the git pin once a release has the change.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "bc412a1a7e796cedc30d2c62d33fe293634574a8" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "37599060094ec8bb752854d3fe2db76cfa832ed7" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.

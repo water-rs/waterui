@@ -385,6 +385,10 @@ pub struct TemplateContext {
     /// Hydrolysis Android scaffold parameters — set only while the
     /// `hydrolysis_android` templates render.
     pub hydrolysis_android: Option<HydrolysisAndroidTemplateEntry>,
+    /// The Android painter the Hydrolysis launcher crate's Android
+    /// dependencies are selected for: the GPU painter links the Cherenkov
+    /// stack, the HWUI painter links neither it nor `waterui/gpu`.
+    pub hydrolysis_painter: crate::hydrolysis::android::HydrolysisAndroidPainter,
 }
 
 impl TemplateContext {
@@ -428,6 +432,7 @@ impl TemplateContext {
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
+            hydrolysis_painter: crate::hydrolysis::android::HydrolysisAndroidPainter::Gpu,
         }
     }
 
@@ -473,6 +478,11 @@ impl TemplateContext {
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
+            hydrolysis_painter: manifest
+                .hydrolysis
+                .as_ref()
+                .and_then(|config| config.painter)
+                .unwrap_or_default(),
         }
     }
 
@@ -525,6 +535,7 @@ impl TemplateContext {
             esp32: Esp32TemplateEntry::default(),
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
+            hydrolysis_painter: crate::hydrolysis::android::HydrolysisAndroidPainter::Gpu,
         }
     }
 
@@ -643,6 +654,17 @@ impl TemplateContext {
     #[must_use]
     pub fn with_esp32(mut self, esp32: Esp32TemplateEntry) -> Self {
         self.esp32 = esp32;
+        self
+    }
+
+    /// Select the Android painter the Hydrolysis launcher's Android
+    /// dependencies are generated for.
+    #[must_use]
+    pub const fn with_hydrolysis_painter(
+        mut self,
+        painter: crate::hydrolysis::android::HydrolysisAndroidPainter,
+    ) -> Self {
+        self.hydrolysis_painter = painter;
         self
     }
 
@@ -1416,6 +1438,7 @@ mod tests {
             android_signing: None,
             esp32: Esp32TemplateEntry::default(),
             hydrolysis_android: None,
+            hydrolysis_painter: crate::hydrolysis::android::HydrolysisAndroidPainter::Gpu,
             launch: LaunchTemplateEntry::default(),
         }
     }
@@ -2770,6 +2793,66 @@ mod tests {
                 .all(|bin| bin.replace('-', "_") != lib_name),
             "lib {lib_name} collides with a bin in {bin_names:?}"
         );
+    }
+
+    /// The launcher's Android dependencies follow the painter: the GPU
+    /// painter links Hydrolysis with its default (Cherenkov) features and
+    /// `waterui/gpu`; the HWUI painter links Hydrolysis' `hwui` target alone
+    /// and `waterui` with `effects` and without `gpu`.
+    #[test]
+    fn hydrolysis_android_dependencies_follow_the_painter() {
+        use crate::hydrolysis::android::HydrolysisAndroidPainter;
+
+        let android_dependencies = |painter| {
+            let cargo_toml = crate::templates::hydrolysis::rendered_outputs(
+                &project_ctx().with_hydrolysis_painter(painter),
+                "waterui-test-hydrolysis",
+            )
+            .expect("hydrolysis outputs should render")
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+            })
+            .expect("hydrolysis Cargo.toml output should exist");
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("hydrolysis Cargo.toml should parse");
+            manifest["target"]["cfg(target_os = \"android\")"]["dependencies"].clone()
+        };
+        let features = |dependencies: &toml::Value, name: &str| -> (Vec<String>, bool) {
+            let dependency = &dependencies[name];
+            let defaults = dependency
+                .get("default-features")
+                .is_none_or(|defaults| defaults.as_bool() == Some(true));
+            let features = dependency["features"]
+                .as_array()
+                .map(|features| {
+                    features
+                        .iter()
+                        .map(|feature| feature.as_str().expect("feature name").to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            (features, defaults)
+        };
+        let owned = |features: &[&str]| -> Vec<String> {
+            features.iter().map(ToString::to_string).collect()
+        };
+
+        let gpu = android_dependencies(HydrolysisAndroidPainter::Gpu);
+        assert_eq!(
+            features(&gpu, "hydrolysis"),
+            (owned(&["accessibility"]), true)
+        );
+        assert_eq!(features(&gpu, "waterui"), (owned(&["gpu"]), false));
+
+        let hwui = android_dependencies(HydrolysisAndroidPainter::Hwui);
+        assert_eq!(
+            features(&hwui, "hydrolysis"),
+            (owned(&["accessibility", "hwui"]), false)
+        );
+        assert_eq!(features(&hwui, "waterui"), (owned(&["effects"]), false));
     }
 
     #[test]
@@ -5392,7 +5475,13 @@ pub mod hydrolysis {
         ctx.cef_runtime_enabled()
     }
 
-    async fn generate_cargo_toml(
+    /// Write the launcher crate's `Cargo.toml` alone, when its content
+    /// changed — the Android build re-renders it for the painter it builds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if rendering or writing the manifest fails.
+    pub async fn generate_cargo_toml(
         base_dir: &Path,
         ctx: &TemplateContext,
         package_name: &str,
@@ -5474,6 +5563,18 @@ pub mod hydrolysis {
     fn android_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
+        // The GPU painter draws through Hydrolysis' default Cherenkov target,
+        // kept by its default features rather than by name: a published
+        // Hydrolysis without the feature split resolves the same way. The
+        // HWUI painter records `RenderNode`s and lowers filters itself, so it
+        // links neither the Cherenkov stack nor `waterui/gpu`.
+        use crate::hydrolysis::android::HydrolysisAndroidPainter;
+        let (hydrolysis_features, waterui_features): (&[&str], &[&str]) =
+            match ctx.hydrolysis_painter {
+                HydrolysisAndroidPainter::Gpu => (&["accessibility"], &["gpu"]),
+                HydrolysisAndroidPainter::Hwui => (&["accessibility", "hwui"], &["effects"]),
+            };
+        let hydrolysis_defaults = ctx.hydrolysis_painter == HydrolysisAndroidPainter::Gpu;
         Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),
@@ -5482,11 +5583,11 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["accessibility"],
+                            hydrolysis_features,
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
-                    .with_default_features(false),
+                    .with_default_features(hydrolysis_defaults),
                 ),
             ),
             (
@@ -5496,7 +5597,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "waterui",
-                            &["gpu"],
+                            waterui_features,
                             NativeBackendDependencySource::WateruiRoot,
                         ),
                     )?

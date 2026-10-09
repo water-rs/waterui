@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-description = "GPU-required self-drawn backend for WaterUI"
+description = "Self-drawn backend for WaterUI: the Cherenkov GPU target, and the Android HWUI target"
 keywords = ["ui", "graphics", "gpu", "waterui", "cherenkov"]
 categories = ["gui", "graphics"]
 
@@ -17,15 +17,16 @@ thiserror.workspace = true
 waterui-assets.workspace = true
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
 png = "0.18"
-waterui = { workspace = true, features = ["gpu", "inspector"] }
+waterui = { workspace = true, features = ["inspector"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 nami.workspace = true
-waterui-graphics = { workspace = true, features = ["gpu"] }
-# `font-collection` for the one `parley` collection this runner builds and
-# installs into the environment; the faces come from the resource loader and
-# the system source `parley/system` provides, so `system-fonts` is not needed.
-waterui-text = { workspace = true, features = ["font-collection"] }
+waterui-graphics.workspace = true
+# The `cherenkov` feature enables `font-collection` for the one `parley`
+# collection that target builds and installs into the environment; the faces
+# come from the resource loader and the system source `parley/system`
+# provides, so `system-fonts` is not needed.
+waterui-text.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true
@@ -38,8 +39,8 @@ waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { workspace = true, features = ["std"] }
-cherenkov.workspace = true
-cherenkov-gpu.workspace = true
+cherenkov = { workspace = true, optional = true }
+cherenkov-gpu = { workspace = true, optional = true }
 kurbo.workspace = true
 peniko = "0.6"
 # `imageops::resize` fits a decoded image to the engine's image limits
@@ -50,17 +51,20 @@ image = { version = "0.25", default-features = false }
 # Southeast-Asian scripts) inside the one parley build: this runner owns the
 # `LayoutContext`, and without them its word segmenter logs `No segmentation
 # model for complex script` per CJK run on every layout pass.
-parley = { workspace = true, features = ["system", "complex-scripts"] }
+parley = { workspace = true, optional = true, features = ["system", "complex-scripts"] }
 # Glyph outline bounds for the measured-frame-must-cover-ink contract (#237):
 # parley's advance metrics stop at the pen advance, so the measure path reads
 # the real outline extents through the same font stack version parley uses.
-skrifa = "0.44"
+skrifa = { version = "0.44", optional = true }
+# The HWUI target reads a registered font's bounds and variation axes
+# (`head`, `fvar`, `avar`) without the shaping engine skrifa carries.
+read-fonts = { version = "0.44", optional = true }
 # `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
 # route through the `emoji` generic family first.
-icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
-wgpu.workspace = true
+icu_properties = { version = "2.3", optional = true, default-features = false, features = ["compiled_data"] }
+wgpu = { workspace = true, optional = true }
 lru.workspace = true
-pollster.workspace = true
+pollster = { workspace = true, optional = true }
 executor-core.workspace = true
 rustc-hash.workspace = true
 unicode-segmentation = "1.13"
@@ -247,6 +251,11 @@ web-sys = { version = "0.3", optional = true, features = [
 ] }
 
 [dev-dependencies]
+# The HWUI target's unit tests read font metrics on the host as well.
+read-fonts = "0.44"
+# The `hwui::kotlin` test renders the Kotlin wire constants from the Rust
+# definitions.
+askama = "0.16"
 # The renderer itself knows nothing about `Canvas`: it resolves to a
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
@@ -308,7 +317,26 @@ name = "frame_profile"
 required-features = ["frame-profile"]
 
 [features]
-default = []
+default = ["cherenkov"]
+# The Cherenkov render target: the renderer, the GPU attachment, filter
+# execution, and the parley text stack with its font discovery. Every runner
+# (`winit`, `web`, the Android `GpuBand` host) draws through it.
+cherenkov = [
+    "dep:cherenkov",
+    "dep:cherenkov-gpu",
+    "dep:wgpu",
+    "dep:pollster",
+    "dep:parley",
+    "dep:skrifa",
+    "dep:icu_properties",
+    "waterui/gpu",
+    "waterui-graphics/gpu",
+    "waterui-text/font-collection",
+]
+# The HWUI render target (Android only): the layer tree recorded into
+# `RenderNode` display lists through one command buffer per frame, and text
+# laid out and drawn by the platform's `StaticLayout`.
+hwui = ["dep:read-fonts"]
 accessibility = ["dep:accesskit"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
@@ -327,6 +355,7 @@ webview-system = [
     "dep:serde_json",
 ]
 winit = [
+    "cherenkov",
     "accessibility",
     "dep:winit",
     "dep:ui-events-winit",
@@ -343,6 +372,7 @@ winit = [
     "dep:windows-sys",
 ]
 web = [
+    "cherenkov",
     "accessibility",
     "dep:futures",
     "dep:wasm-bindgen",

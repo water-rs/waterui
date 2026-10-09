@@ -4644,6 +4644,7 @@ dependencies = [
  "accesskit_winit",
  "aither-mcp",
  "android_logger",
+ "askama",
  "async-task",
  "base64 0.22.1",
  "block2 0.6.2",
@@ -4683,6 +4684,7 @@ dependencies = [
  "png",
  "pollster 1.0.1",
  "raw-window-handle",
+ "read-fonts 0.44.0",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -4744,7 +4746,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=bc412a1a7e796cedc30d2c62d33fe293634574a8#bc412a1a7e796cedc30d2c62d33fe293634574a8"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=37599060094ec8bb752854d3fe2db76cfa832ed7#37599060094ec8bb752854d3fe2db76cfa832ed7"
 dependencies = [
  "hydrolysis",
  "material-color-utils",

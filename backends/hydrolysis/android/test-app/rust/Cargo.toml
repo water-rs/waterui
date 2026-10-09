@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 name = "hydrolysis_test_app"
 
 [dependencies]
-hydrolysis = { workspace = true, features = ["accessibility"] }
+hydrolysis = { workspace = true, features = ["accessibility", "cherenkov"] }
 waterui = { workspace = true, features = ["gpu"] }
 waterui-core.workspace = true
 hydrolysis-m3.workspace = true

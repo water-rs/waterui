@@ -169,6 +169,7 @@ impl Backend for HydrolysisBackend {
                 project,
                 &Host::current(),
                 AndroidAbi::Arm64V8a,
+                crate::hydrolysis::android::resolve_painter(project, None),
                 options,
             )
             .await;

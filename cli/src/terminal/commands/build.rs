@@ -433,6 +433,10 @@ async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Re
                             &context.project,
                             &waterui_cli::toolchain::Host::current(),
                             abi,
+                            waterui_cli::hydrolysis::android::resolve_painter(
+                                &context.project,
+                                None,
+                            ),
                             context.build_options.clone(),
                         )
                         .await

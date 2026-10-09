@@ -95,6 +95,7 @@ jobs:
       ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
+      hwui: ${{ steps.filter.outputs.hwui == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -115,6 +116,9 @@ jobs:
             scripts:
               - ".github/scripts/**"
               - "Cargo.toml"
+            hwui:
+              - "backends/hydrolysis/**"
+              - "cli/**"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
@@ -341,6 +345,7 @@ jobs:
       comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
       test-assets: ${{ needs.scope.outputs.test-assets == 'true' }}
       scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
+      hwui: ${{ needs.changes.outputs.hwui == 'true' }}
 
   # The one required check for the Test workflow. A pull request that changes
   # no code skips the `test` call above, and a skipped reusable-workflow call

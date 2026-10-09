@@ -2,10 +2,12 @@ package dev.waterui.hydrolysis
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.core.view.isVisible
 import org.json.JSONArray
 
 /**
@@ -37,8 +39,8 @@ class PlatformViewRegistry internal constructor(
     private val session: HydrolysisSession?,
 ) {
     /** The overlay container the host view adds as its topmost child. */
-    internal val container: FrameLayout =
-        FrameLayout(context).apply {
+    internal val container: OverlayContainer =
+        OverlayContainer(context).apply {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             clipChildren = true
         }
@@ -75,7 +77,40 @@ class PlatformViewRegistry internal constructor(
 
     /** Mounted platform views, in `order`, grafted onto the a11y host node. */
     internal fun accessibilityChildren(): List<View> =
-        slots.values.filter { it.view.visibility == View.VISIBLE }.map { it.view }
+        slots.values.filter { it.view.isVisible }.map { it.view }
+
+    /**
+     * Draws the slot of placement `id` on the host's canvas, for an
+     * [OrderedContent] painter interleaving it with session content. A
+     * placement whose view is not mounted yet (its factory has not
+     * registered) draws nothing, as it does in the overlay.
+     */
+    internal fun drawSlot(canvas: Canvas, id: Long) {
+        val view = slots[id]?.view ?: return
+        if (!view.isVisible) return
+        container.drawSlot(canvas, view)
+    }
+
+    /**
+     * The mounted slot of placement `id` when it is visible under host pixel
+     * (`x`, `y`): inside its frame and, when it has clip bounds (in its own
+     * coordinates), inside those.
+     */
+    internal fun slotAt(id: Long, x: Float, y: Float): View? {
+        val view = slots[id]?.view ?: return null
+        if (!view.isVisible) return null
+        val inside = x >= view.left && x < view.right && y >= view.top && y < view.bottom
+        if (!inside) return null
+        if (view.getClipBounds(slotClip)) {
+            val localX = x - view.left
+            val localY = y - view.top
+            val clipped = localX >= slotClip.left && localX < slotClip.right && localY >= slotClip.top && localY < slotClip.bottom
+            if (!clipped) return null
+        }
+        return view
+    }
+
+    private val slotClip = Rect()
 
     /**
      * Whether a point in the container's coordinate space (== host view
@@ -248,4 +283,11 @@ class PlatformViewRegistry internal constructor(
         val order: Long,
         val visible: Boolean,
     )
+}
+
+/** The overlay container; lets the host draw one slot in session order. */
+internal class OverlayContainer(context: Context) : FrameLayout(context) {
+    fun drawSlot(canvas: Canvas, child: View) {
+        drawChild(canvas, child, drawingTime)
+    }
 }

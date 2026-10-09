@@ -31,9 +31,13 @@ object NativeBridge {
      * the navigation stack and report whether a back target is registered;
      * 10 = `nativeSetMetrics` splits the window insets into the container
      * and keyboard regions of layout-spec.md §7.1, and the host's
-     * `WindowInsetsAnimationCompat` progress pushes each IME animation frame.
+     * `WindowInsetsAnimationCompat` progress pushes each IME animation frame;
+     * 11 = the HWUI painter's surface: the HWUI command buffer v1 the
+     * `CommandDecoder` replays, the `RenderNodeSink` resource registrations
+     * and the `HwuiTextProvider` call surface (shaping, caret, hit-test,
+     * selection and navigation queries).
      */
-    private const val SCHEMA: Int = 10
+    private const val SCHEMA: Int = 11
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0

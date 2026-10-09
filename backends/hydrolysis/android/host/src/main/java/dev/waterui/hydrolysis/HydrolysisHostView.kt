@@ -2,6 +2,7 @@ package dev.waterui.hydrolysis
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
 import android.util.SparseArray
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -288,6 +289,82 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             getChildAt(i).layout(0, 0, r - l, b - t)
         }
         platformViewRegistry.publishIfPending()
+    }
+
+    // ------------------------------------------------------------------
+    // Ordered content — a painter that draws in the host's dispatchDraw
+    // (HWUI) interleaves its node runs with the platform views; without one
+    // the children draw as usual, a GPU band at index 0 beneath the overlay.
+
+    private var orderedContent: OrderedContent? = null
+    private var orderedTouchTarget: View? = null
+    private var orderedTouchClaimed = false
+
+    /** Installs (or, with null, removes) the painter drawing in session order. */
+    fun setOrderedContent(content: OrderedContent?) {
+        orderedContent = content
+        orderedTouchTarget = null
+        orderedTouchClaimed = false
+        invalidate()
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        val content = orderedContent ?: return super.dispatchDraw(canvas)
+        content.drawBackground(canvas)
+        val time = drawingTime
+        val overlay = platformViewRegistry.container
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            if (child !== overlay) drawChild(canvas, child, time)
+        }
+        for (index in 0 until content.entryCount) {
+            if (content.isPlatformView(index)) {
+                platformViewRegistry.drawSlot(canvas, content.platformViewId(index))
+            } else {
+                content.drawEntry(canvas, index)
+            }
+        }
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        val content = orderedContent ?: return super.dispatchTouchEvent(event)
+        val action = event.actionMasked
+        if (action == MotionEvent.ACTION_DOWN) {
+            val x = event.x
+            val y = event.y
+            val entry =
+                TouchOrder.topmost(content.entryCount) { index ->
+                    if (content.isPlatformView(index)) {
+                        platformViewRegistry.slotAt(content.platformViewId(index), x, y) != null
+                    } else {
+                        content.covers(index, x, y)
+                    }
+                }
+            orderedTouchTarget =
+                if (entry >= 0 && content.isPlatformView(entry)) {
+                    platformViewRegistry.slotAt(content.platformViewId(entry), x, y)
+                } else {
+                    null
+                }
+            orderedTouchClaimed = true
+        }
+        if (!orderedTouchClaimed) return false
+        val target = orderedTouchTarget
+        val handled =
+            if (target != null) {
+                val local = MotionEvent.obtain(event)
+                local.offsetLocation(-target.left.toFloat(), -target.top.toFloat())
+                val result = target.dispatchTouchEvent(local)
+                local.recycle()
+                result
+            } else {
+                onTouchEvent(event)
+            }
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            orderedTouchTarget = null
+            orderedTouchClaimed = false
+        }
+        return handled
     }
 
     // ------------------------------------------------------------------

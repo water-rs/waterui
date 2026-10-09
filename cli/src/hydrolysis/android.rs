@@ -40,8 +40,9 @@ use crate::{
 
 /// The painter the Hydrolysis Android host draws with.
 ///
-/// `gpu` is the Vello attachment the host's `android/gpu` module ships;
-/// `hwui` is the `RenderNode` painter of the planned `android/hwui` module.
+/// `gpu` is the Cherenkov GPU band (`HydrolysisGpuBand`, a `SurfaceView`)
+/// the host's `android/gpu` module ships; `hwui` is the `RenderNode` painter
+/// of the `android/hwui` module, drawing through the system renderer.
 /// Selection is explicit — `[hydrolysis] painter` in `Water.toml`
 /// or `--painter` — and an absent module in the pinned checkout is an error
 /// at scaffold time, never a substitution.
@@ -53,8 +54,8 @@ pub enum HydrolysisAndroidPainter {
     #[default]
     Gpu,
     /// The `RenderNode` painter drawing through the host view hierarchy.
-    /// Its own minimum is API 29; the generated app uses the maximum of
-    /// that and the framework floor.
+    /// It has no minimum of its own: it is designed against the framework
+    /// floor (`android-min-api-level`), which the generated app uses.
     Hwui,
 }
 
@@ -74,14 +75,15 @@ impl HydrolysisAndroidPainter {
         format!("dev.waterui.hydrolysis:{}", self.host_module())
     }
 
-    /// The Android API level this painter's host module requires.
+    /// The generated app's `minSdk` for this painter, given the framework's
+    /// Android API floor (`android-min-api-level` in its metadata): the GPU
+    /// band's own minimum or the floor, whichever is higher; the HWUI
+    /// painter's is the floor itself.
     #[must_use]
-    pub const fn min_api_level(self) -> u32 {
+    pub const fn min_api_level(self, framework_floor: u32) -> u32 {
         match self {
-            // Painter minimums, not the framework floor. `template_entry`
-            // takes the maximum of these and `android-min-api-level`.
-            Self::Gpu => 26,
-            Self::Hwui => 29,
+            Self::Gpu if framework_floor < 26 => 26,
+            Self::Gpu | Self::Hwui => framework_floor,
         }
     }
 
@@ -310,7 +312,7 @@ async fn template_entry(
         project_root: project_root.to_string_lossy().replace('\\', "/"),
         painter_dependency: painter.gradle_dependency(),
         painter_module: painter.host_module().to_string(),
-        min_api_level: framework_min.max(painter.min_api_level()),
+        min_api_level: painter.min_api_level(framework_min),
         painter_band_import: painter.band_import(),
         painter_band_class: painter.band_class(),
     })
@@ -406,6 +408,7 @@ pub async fn build(
     project: &Project,
     host: &Host,
     abi: AndroidAbi,
+    painter: HydrolysisAndroidPainter,
     options: BuildOptions,
 ) -> eyre::Result<BuiltTarget> {
     // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
@@ -424,6 +427,18 @@ pub async fn build(
             backend_path.display()
         );
     }
+    // The launcher's Android dependencies follow the painter: a `--painter`
+    // override that differs from `[hydrolysis] painter` re-renders them here,
+    // before cargo resolves the graph.
+    templates::hydrolysis::generate_cargo_toml(
+        &backend_path,
+        &HydrolysisBackend::template_context(project)
+            .await?
+            .with_hydrolysis_painter(painter),
+        &project.hydrolysis_backend_crate_name(),
+    )
+    .await
+    .wrap_err("failed to render the hydrolysis launcher manifest")?;
 
     resolve_declared_fonts(project).await?;
 
@@ -1006,8 +1021,8 @@ mod tests {
     }
 
     /// The hwui painter renders its module and dependency coordinates and
-    /// ships no GPU band view. Its own API 29 requirement sits under the
-    /// framework floor, so the generated `minSdk` is the framework's.
+    /// ships no GPU band view. It has no minimum of its own, so the
+    /// generated `minSdk` is the framework floor.
     #[test]
     fn the_hwui_painter_renders_at_the_framework_floor_and_mounts_no_band() {
         smol::block_on(async {

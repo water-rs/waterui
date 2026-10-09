@@ -40,5 +40,9 @@ fn main() {
         // platform cache directory; targets without that filesystem contract
         // (wasm, espidf, redox) compile the renderer without it.
         hydrolysis_pipeline_cache: { any(unix, windows) },
+        // The HWUI render target exists on Android alone: `RenderNode` is an
+        // Android framework class. Off Android the feature means nothing, so
+        // an all-features build elsewhere still compiles the Cherenkov target.
+        hydrolysis_hwui: { all(feature = "hwui", android_platform) },
     }
 }

@@ -53,6 +53,9 @@ video = ["dep:waterui-video"]
 # HTTP client. Off by default so an application showing only bundled media
 # carries no HTTP client.
 remote = ["dep:zenwave", "waterui-url/remote"]
+# Offscreen image rasterizing (`Image::render_offscreen`), which links the GPU
+# stack. `waterui/gpu` enables it.
+gpu = ["waterui-image/gpu"]
 
 [dev-dependencies]
 futures-lite.workspace = true

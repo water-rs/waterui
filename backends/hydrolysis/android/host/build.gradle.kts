@@ -32,4 +32,5 @@ dependencies {
     // HydrolysisActivity exposes ComponentActivity in its public API.
     api("androidx.activity:activity:1.11.0")
     implementation("androidx.core:core:1.17.0")
+    testImplementation("junit:junit:4.13.2")
 }

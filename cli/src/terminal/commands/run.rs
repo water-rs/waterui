@@ -850,6 +850,7 @@ async fn build_and_run(
         backend,
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
+        config.painter,
     )
     .await?;
 
@@ -1032,6 +1033,7 @@ async fn build_for_backend(
     backend: TargetBackend,
     plan: &BuildPlan,
     build_options: BuildOptions,
+    painter: HydrolysisAndroidPainter,
 ) -> Result<waterui_cli::build::BuiltTarget> {
     match backend {
         TargetBackend::Apple => build_rust_lib(project, plan.lib_platform, build_options).await,
@@ -1055,6 +1057,7 @@ async fn build_for_backend(
                     project,
                     &waterui_cli::toolchain::Host::current(),
                     abi,
+                    painter,
                     build_options,
                 )
                 .await

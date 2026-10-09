@@ -16,7 +16,7 @@ dev = ["waterui/dynamic_linking"]
 [dependencies]
 waterui = { workspace = true, features = ["media", "remote", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-icons-material-icon.workspace = true
-hydrolysis.workspace = true
+hydrolysis = { workspace = true, features = ["cherenkov"] }
 hydrolysis-m3.workspace = true
 
 [dev-dependencies]
