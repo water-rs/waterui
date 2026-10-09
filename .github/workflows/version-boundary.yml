@@ -10,7 +10,7 @@ on:
     branches: [main]
     # `labeled`/`unlabeled` are not in the default trigger set; they must be
     # listed so that applying the `release` label re-runs this check.
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
