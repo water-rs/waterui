@@ -336,8 +336,11 @@ pub fn render_morph_shape_parts(
     let (path, fill) = {
         let resolved = shape.borrow();
         let progress = if let Some(progress) = resolved.progress.as_ref() {
-            renderer
-                .resolve_animated_scalar_with_discriminator(progress, MORPH_PROGRESS_ANIMATION_KEY)
+            renderer.resolve_animated_scalar_with_discriminator(
+                progress,
+                &crate::renderer::RetainedIdentity::for_rc(shape),
+                MORPH_PROGRESS_ANIMATION_KEY,
+            )
         } else {
             renderer.sample_morph_progress(resolved.animation, node_id)
         };

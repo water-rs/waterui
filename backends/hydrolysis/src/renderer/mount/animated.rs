@@ -9,22 +9,26 @@ use nami::Signal;
 use super::Dirty;
 use crate::animation::AnimationKey;
 use crate::renderer::signals::SubscribedSnapshot;
-use crate::renderer::{Retain, SemanticCore};
+use crate::renderer::{Retain, RetainedIdentity, SemanticCore};
 
 impl SemanticCore {
+    /// Resolves an animated scalar owned by `owner`, keyed on the owner's
+    /// identity — the same owner keying the interaction engine uses
+    /// (`input/interaction.rs`'s `animation_discriminator`), so two views
+    /// whose signals share a nami call-site identity animate through
+    /// independent slots.
     pub fn resolve_animated_scalar_with_discriminator<S>(
         &mut self,
         signal: &S,
+        owner: &RetainedIdentity,
         discriminator: usize,
     ) -> f32
     where
         S: Signal<Output = f32> + Clone + 'static,
     {
-        let Some(identity) = signal.identity() else {
-            return self.read_signal(signal);
-        };
         let now = self.frame_instant;
-        let key = AnimationKey::scalar_with_discriminator(identity, discriminator);
+        let key =
+            AnimationKey::renderer_local_scalar_with_discriminator(owner.address(), discriminator);
         let (subscription, observed_value) = SubscribedSnapshot::new(signal);
         let handle = self
             .animation_controller

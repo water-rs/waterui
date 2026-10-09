@@ -410,8 +410,9 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
 fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
     let mut renderer = test_renderer();
+    let owner = RetainedIdentity::for_rc(&Rc::new(()));
 
-    let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, usize::MAX);
+    let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, &owner, usize::MAX);
 
     assert_eq!(resolved, 0.25);
     assert!(signal.subscribed.get());
