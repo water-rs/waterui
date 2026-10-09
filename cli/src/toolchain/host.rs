@@ -25,15 +25,17 @@ mod detached;
 /// The machine a toolchain check probes.
 ///
 /// A `Host` carries its own environment map (including `PATH`), a working
-/// directory for spawned processes and relative-path lookups, a home
-/// directory, and the roots that hold installed platform applications
-/// (macOS `/Applications`). Detection code must read all of those through
-/// this value so a declared host cannot leak real-machine state into a check.
+/// directory for spawned processes and relative-path lookups, and the
+/// roots that hold installed platform applications (macOS
+/// `/Applications`). The home directory is resolved from that
+/// environment — `HOME`/`USERPROFILE` — so it can never disagree with
+/// what a spawned child sees. Detection code must read all of those
+/// through this value so a declared host cannot leak real-machine state
+/// into a check.
 #[derive(Debug, Clone)]
 pub struct Host {
     env: BTreeMap<OsString, OsString>,
     cwd: PathBuf,
-    home: Option<PathBuf>,
     app_dirs: Vec<PathBuf>,
     /// Whether spawned tools' captured output is also echoed to the
     /// terminal — the policy `crate::utils::command` and [`Host::output`]
@@ -52,7 +54,6 @@ impl Host {
         Self {
             env,
             cwd: env::current_dir().expect("process must have a working directory"),
-            home: dirs::home_dir(),
             app_dirs: default_app_dirs(),
             std_output: false,
         }
@@ -62,7 +63,7 @@ impl Host {
     ///
     /// `PATH` is exactly `path_dirs`; the environment contains exactly `vars`
     /// plus that `PATH` entry. The working directory defaults to the process
-    /// cwd — override it with [`Host::with_cwd`]. The home directory is taken
+    /// cwd — override it with [`Host::with_cwd`]. The home directory resolves
     /// from the declared `HOME`/`USERPROFILE`; a host that declares neither
     /// has none. Declared hosts have no [`Host::app_dirs`], so application-
     /// bundle fallbacks (e.g. Android Studio's bundled JBR) cannot fire.
@@ -96,11 +97,9 @@ impl Host {
         for (key, value) in vars {
             env.insert(key.as_ref().to_os_string(), value.as_ref().to_os_string());
         }
-        let home = home_dir_from_env(&env);
         Self {
             env,
             cwd: env::current_dir().expect("process must have a working directory"),
-            home,
             app_dirs: Vec::new(),
             std_output: false,
         }
@@ -179,10 +178,25 @@ impl Host {
         &self.cwd
     }
 
-    /// This host's home directory, when it declares one.
+    /// This host's home directory, resolved from its own environment:
+    /// `HOME` on Unix, `USERPROFILE` on Windows, each falling back to the
+    /// other so a host declared with either variable answers on both
+    /// platforms.
+    ///
+    /// Reading through the environment keeps this in agreement with what a
+    /// spawned child sees: a home bound with [`Host::with_env`] or
+    /// [`Host::with_home`] is honoured, and a host that declares neither
+    /// variable reports `None` — never the real process's home.
     #[must_use]
     pub fn home_dir(&self) -> Option<&Path> {
-        self.home.as_deref()
+        let keys = if cfg!(target_os = "windows") {
+            ["USERPROFILE", "HOME"]
+        } else {
+            ["HOME", "USERPROFILE"]
+        };
+        keys.into_iter()
+            .find_map(|key| self.env(key).filter(|value| !value.is_empty()))
+            .map(Path::new)
     }
 
     /// Per-user cache directory for this host.
@@ -327,9 +341,7 @@ impl Host {
     #[must_use]
     pub fn with_home(&self, home: impl Into<PathBuf>) -> Self {
         let home = home.into();
-        let mut host = self.with_env("HOME", &home).with_env("USERPROFILE", &home);
-        host.home = Some(home);
-        host
+        self.with_env("HOME", &home).with_env("USERPROFILE", &home)
     }
 
     /// Every environment variable on this host, in map order.
@@ -745,19 +757,6 @@ fn env_get<'a>(env: &'a BTreeMap<OsString, OsString>, key: &OsStr) -> Option<&'a
     }
 }
 
-/// Home directory derived purely from a declared environment map.
-fn home_dir_from_env(env: &BTreeMap<OsString, OsString>) -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        env_get(env, "USERPROFILE".as_ref())
-            .or_else(|| env_get(env, "HOME".as_ref()))
-            .map(PathBuf::from)
-    } else {
-        env_get(env, "HOME".as_ref())
-            .or_else(|| env_get(env, "USERPROFILE".as_ref()))
-            .map(PathBuf::from)
-    }
-}
-
 /// The temp directory `std` uses on Unix when `TMPDIR` is unset.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn unix_default_temp_dir() -> PathBuf {
@@ -858,6 +857,25 @@ mod tests {
         assert!(
             host.app_dirs().is_empty(),
             "declared hosts never see installed application bundles"
+        );
+    }
+
+    /// `home_dir` answers through the host's own environment map, so a
+    /// home rebound with `with_env` is the one a spawned child sees, and
+    /// a host that declares neither variable reports none — never the
+    /// test process's real home.
+    #[test]
+    fn home_dir_reads_the_host_environment() {
+        let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let host = Host::current().with_env(key, "/declared/home");
+        assert_eq!(
+            host.home_dir(),
+            Some(std::path::Path::new("/declared/home"))
+        );
+        assert_eq!(
+            declared(&[]).home_dir(),
+            None,
+            "a host declaring no home variable must not see the real one"
         );
     }
 
