@@ -294,7 +294,10 @@ mod tests {
         let paint = layer_paint(gradient.paint());
 
         assert_eq!(paint.space, GradientSpace::ExtendedLinearDisplayP3);
-        assert_eq!(paint.stops[0].components, [2.0, -0.25, 0.5, 1.0]);
+        assert_eq!(
+            paint.stops[0].components.map(f64::to_bits),
+            [2.0_f64, -0.25, 0.5, 1.0].map(f64::to_bits)
+        );
         assert_eq!(
             paint
                 .stops
