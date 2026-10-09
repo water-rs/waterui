@@ -378,53 +378,32 @@ adb)
     if [ -n "${WATERUI_FAKE_ADB_HANG-}" ]; then
         while :; do :; done
     fi
-    # A scripted device: a `shell -T run-as <package> <words…>` runs its
-    # words for real inside the scratch private-files directory
-    # `WATERUI_FAKE_DEVICE_DATA` names, with the host's own tools — the one
-    # place this fixture runs external commands, on a PATH of its own:
-    # `WATERUI_FAKE_DEVICE_PATH` (shims a test stages) ahead of the system
-    # directories. The device's `sh` is mksh, which has `pipefail`; bash
-    # stands in for it, since a host `/bin/sh` may be a dash without it.
-    # `WATERUI_FAKE_DEVICE_STDIN_LIMIT` cuts the streamed stdin off after
-    # that many bytes; `WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT` corrupts it
-    # past that many bytes with characters no base64 decoder accepts.
-    # `WATERUI_FAKE_DEVICE_STDIN_REPLACE` (`<from>:<to>`) swaps `<from>`
-    # for `<to>` once on each line holding it; with groups of equal length
-    # from the base64 alphabet the stream stays valid base64.
-    if [ -n "${WATERUI_FAKE_DEVICE_DATA-}" ]; then
+    # A scripted device: every `shell` command line runs for real with the
+    # host's own tools — the one place this fixture runs external commands,
+    # on a PATH of its own: `WATERUI_FAKE_DEVICE_PATH` (the `run-as` shim
+    # and any shims a test stages) ahead of the system directories. The
+    # shell user's `/data/local/tmp` is the host directory
+    # `WATERUI_FAKE_DEVICE_TMP`, and a `push` lands there with adb's own
+    # semantics: an absent target becomes a copy of the source, an existing
+    # directory receives the source inside it.
+    if [ -n "${WATERUI_FAKE_DEVICE_TMP-}" ]; then
+        PATH="${WATERUI_FAKE_DEVICE_PATH:+$WATERUI_FAKE_DEVICE_PATH:}/usr/bin:/bin:/sbin"
+        export PATH
         case "$*" in
-            *" run-as "*)
-                # `$5` is the run-as command, one shell-quoted word.
-                eval "set -- $5"
-                shift 2
-                if [ "$1" = sh ]; then
-                    shift
-                    set -- bash "$@"
+            *" push "*)
+                remote="$WATERUI_FAKE_DEVICE_TMP${5#/data/local/tmp}"
+                mkdir -p "$(dirname "$remote")" || exit 1
+                if [ -d "$remote" ]; then
+                    exec cp -R "$4" "$remote/"
                 fi
-                cd "$WATERUI_FAKE_DEVICE_DATA" || exit 1
-                # `/sbin` carries macOS's `sha256sum`; Linux has it in
-                # `/usr/bin`.
-                PATH="${WATERUI_FAKE_DEVICE_PATH:+$WATERUI_FAKE_DEVICE_PATH:}/usr/bin:/bin:/sbin"
-                export PATH
-                if [ -n "${WATERUI_FAKE_DEVICE_STDIN_LIMIT-}" ]; then
-                    head -c "$WATERUI_FAKE_DEVICE_STDIN_LIMIT" | "$@"
-                    exit $?
-                fi
-                if [ -n "${WATERUI_FAKE_DEVICE_STDIN_REPLACE-}" ]; then
-                    # `|` is outside the base64 alphabet, so it delimits.
-                    sed "s|${WATERUI_FAKE_DEVICE_STDIN_REPLACE%%:*}|${WATERUI_FAKE_DEVICE_STDIN_REPLACE#*:}|" |
-                        "$@"
-                    exit $?
-                fi
-                if [ -n "${WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT-}" ]; then
-                    {
-                        head -c "$WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT"
-                        printf '!!!!\n'
-                        cat
-                    } | "$@"
-                    exit $?
-                fi
-                exec "$@"
+                exec cp -R "$4" "$remote"
+                ;;
+            *" shell "*)
+                # The command line is the last argument.
+                for line; do :; done
+                line=$(printf '%s' "$line" | sed "s#/data/local/tmp#$WATERUI_FAKE_DEVICE_TMP#g")
+                cd / || exit 1
+                exec sh -c "$line"
                 ;;
         esac
     fi
@@ -459,20 +438,12 @@ adb)
         *logcat*)
             respond_or_empty ADB_LOGCAT
             ;;
-        *"run-as"*"tar -xf"*)
-            # A payload stream: the archive arrives on stdin and lands
-            # where `WATERUI_FAKE_ADB_STREAM` points; the stamp the device
-            # then reports installed goes back.
-            /bin/cat > "${WATERUI_FAKE_ADB_STREAM:-/dev/null}"
-            (respond_or_empty ADB_STREAM_STAMP)
-            exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
-            ;;
-        *"run-as"*"payload.stamp"*)
-            # A run preparation: the run config arrives on stdin and lands
-            # where `WATERUI_FAKE_ADB_RUN_CONFIG` points; the device's
-            # payload stamp goes back.
-            /bin/cat > "${WATERUI_FAKE_ADB_RUN_CONFIG:-/dev/null}"
-            (respond_or_empty ADB_PAYLOAD_STAMP)
+        *"run-as"*"cat > "*)
+            # A command that writes its stdin into a file, like a run
+            # preparation: the input lands where `WATERUI_FAKE_ADB_STDIN`
+            # points, and the canned stdout goes back.
+            /bin/cat > "${WATERUI_FAKE_ADB_STDIN:-/dev/null}"
+            (respond_or_empty ADB_RUN_AS_STDOUT)
             exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
             ;;
         *"run-as"*cat*)

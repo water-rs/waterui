@@ -146,6 +146,33 @@ impl Adb {
         Ok((output, invocation))
     }
 
+    /// `adb -s <serial> push <local> <remote>` — adb's sync protocol, which
+    /// carries the bytes unaltered and fails the command on any transfer
+    /// error.
+    ///
+    /// # Errors
+    /// Returns an error if the push fails or exceeds `timeout`.
+    pub(crate) async fn push(
+        &self,
+        host: &Host,
+        serial: &str,
+        local: &Path,
+        remote: &str,
+        timeout: Duration,
+    ) -> Result<(), AdbCommandError> {
+        let operation = "pushing files to the device";
+        let (output, invocation) = self
+            .device_output(
+                host,
+                serial,
+                [OsStr::new("push"), local.as_os_str(), OsStr::new(remote)],
+                operation,
+                timeout,
+            )
+            .await?;
+        check_bounded_output(&output, operation, &invocation)
+    }
+
     /// The shared `shell` argv build-and-run behind [`Self::shell`] and
     /// [`Self::shell_run`]: `words` joined with `shlex` so callers never
     /// hand a pre-quoted line, returning the full output and the rendered
@@ -226,7 +253,7 @@ impl Adb {
         timeout: Duration,
     ) -> eyre::Result<Vec<u8>> {
         let operation = "reading a file from the preview host's private data";
-        let args = run_as_byte_channel_args(serial, package, &["cat", path])?;
+        let args = shell_byte_channel_args(serial, &["run-as", package, "cat", path])?;
         let invocation = command_string(self.path(), &args);
         let output = bounded_adb(
             host.output(self.path(), &args),
@@ -239,28 +266,27 @@ impl Adb {
         Ok(output.stdout)
     }
 
-    /// `adb -s <serial> shell -T run-as <package> <words>` with `input`
-    /// streamed into the remote command's stdin. Returns stdout, failing on
-    /// a non-zero exit.
+    /// `adb -s <serial> shell -T <words>` with `input` streamed into the
+    /// remote command's stdin. Returns stdout, failing on a non-zero exit.
     ///
     /// The shell protocol behind `shell -T` carries the remote exit status
-    /// and signals the end of `input` to the remote command — `exec-in`
-    /// does neither, so a remote failure there would read as success.
+    /// and signals the end of `input` to the remote command; `exec-in`
+    /// does neither, and the device kills its command once the client
+    /// disconnects, so a remote failure there would read as success.
     ///
     /// # Errors
     /// Returns an error if `words` cannot be quoted, `input` cannot be fed,
     /// or the command fails or exceeds `timeout`.
-    pub(crate) async fn run_as_with_input(
+    pub(crate) async fn shell_with_input(
         &self,
         host: &Host,
         serial: &str,
-        package: &str,
         words: &[&str],
         input: impl smol::io::AsyncRead,
         timeout: Duration,
     ) -> eyre::Result<String> {
-        let operation = "running a command with streamed input in an app's private data";
-        let args = run_as_byte_channel_args(serial, package, words)?;
+        let operation = "running a shell command with input on the device";
+        let args = shell_byte_channel_args(serial, words)?;
         let invocation = command_string(self.path(), &args);
         let output = bounded_adb(
             host.output_with_input(self.path(), &args, input),
@@ -416,16 +442,12 @@ async fn bounded_adb(
     }
 }
 
-/// `-s <serial> shell -T run-as <package> <words>`: the run-as command is
-/// one `shlex`-quoted shell word, and `-T` pins the no-PTY byte channel a
-/// binary read or a streamed stdin needs.
-fn run_as_byte_channel_args(
-    serial: &str,
-    package: &str,
-    words: &[&str],
-) -> eyre::Result<Vec<OsString>> {
-    let joined = shlex::try_join(["run-as", package].into_iter().chain(words.iter().copied()))
-        .map_err(|error| eyre::eyre!("cannot quote the run-as words {words:?}: {error}"))?;
+/// `-s <serial> shell -T <words>`: the command is one `shlex`-quoted shell
+/// word, and `-T` pins the no-PTY byte channel a binary read or a fed stdin
+/// needs.
+fn shell_byte_channel_args(serial: &str, words: &[&str]) -> eyre::Result<Vec<OsString>> {
+    let joined = shlex::try_join(words.iter().copied())
+        .map_err(|error| eyre::eyre!("cannot quote the shell words {words:?}: {error}"))?;
     Ok(["-s", serial, "shell", "-T", joined.as_str()]
         .into_iter()
         .map(OsString::from)
@@ -586,6 +608,7 @@ fn parse_installed_version_code(output: &str, package: &str) -> eyre::Result<Opt
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::Path;
     use std::time::Duration;
 
     use super::{Adb, AdbError, parse_installed_version_code};
@@ -684,12 +707,12 @@ mod tests {
         }
     }
 
-    /// The streamed `run-as` and the `shell -T` read-back log their argv
-    /// through the fake — paths with spaces travel inside one quoted shell
-    /// word — and the streamed input reaches the remote command's stdin.
+    /// `push`, the fed `shell -T` and the `shell -T` read-back log their
+    /// argv through the fake — paths with spaces travel inside one quoted
+    /// shell word — and the fed input reaches the remote command's stdin.
     #[test]
     #[cfg(unix)]
-    fn streamed_run_as_and_cat_log_their_invocations() {
+    fn push_fed_shell_and_cat_log_their_invocations() {
         let machine = TestMachine::new();
         let sdk = machine.install_android_sdk();
         machine.install_adb();
@@ -705,27 +728,43 @@ mod tests {
                 log.as_os_str().to_os_string(),
             ),
             (
-                OsString::from("WATERUI_FAKE_ADB_STREAM"),
+                OsString::from("WATERUI_FAKE_ADB_STDIN"),
                 received.as_os_str().to_os_string(),
             ),
         ]);
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
-        // More than one feed chunk, so the stream spans several writes.
+        // More than one feed chunk, so the input spans several writes.
         let input: Vec<u8> = (0..200_000u32)
             .map(|index| index.to_le_bytes()[0])
             .collect();
 
         smol::block_on(async {
-            adb.run_as_with_input(
+            adb.push(
                 &host,
                 "serial",
-                "dev.waterui.hydrolysis.preview",
-                &["sh", "-c", "tar -xf -", "sh", "files/payload with space"],
+                Path::new("dir with space/lib"),
+                "/data/local/tmp/waterui-preview",
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("the fake adb accepts push");
+            adb.shell_with_input(
+                &host,
+                "serial",
+                &[
+                    "run-as",
+                    "dev.waterui.hydrolysis.preview",
+                    "sh",
+                    "-c",
+                    "cat > \"$1\"",
+                    "sh",
+                    "files/payload with space",
+                ],
                 input.as_slice(),
                 Duration::from_secs(5),
             )
             .await
-            .expect("the fake adb accepts the stream");
+            .expect("the fake adb accepts the input");
             std::fs::create_dir_all(machine.responses()).expect("responses dir");
             std::fs::write(
                 machine.responses().join("ADB_CAT"),
@@ -745,11 +784,17 @@ mod tests {
 
         let argv = std::fs::read_to_string(&log).expect("read the argv log");
         assert!(
+            argv.lines()
+                .any(|line| line
+                    == "-s serial push dir with space/lib /data/local/tmp/waterui-preview"),
+            "the push invocation logged: {argv}"
+        );
+        assert!(
             argv.contains(
-                "-s serial shell -T run-as dev.waterui.hydrolysis.preview sh -c 'tar -xf -' sh \
+                "-s serial shell -T run-as dev.waterui.hydrolysis.preview sh -c 'cat > \"$1\"' sh \
                  'files/payload with space'"
             ),
-            "the streamed run-as invocation logged: {argv}"
+            "the fed shell invocation logged: {argv}"
         );
         assert!(
             argv.contains(
@@ -758,7 +803,7 @@ mod tests {
             "the shell -T cat invocation logged: {argv}"
         );
         assert_eq!(
-            std::fs::read(&received).expect("the stream landed"),
+            std::fs::read(&received).expect("the input landed"),
             input,
             "the remote command read the whole input"
         );
@@ -782,12 +827,17 @@ mod tests {
             ),
         ]);
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
-        let error = smol::block_on(adb.run_as_with_input(
+        let error = smol::block_on(adb.shell_with_input(
             &host,
             "serial",
-            "dev.waterui.hydrolysis.preview",
-            &["sh", "-c", "tar -xf -"],
-            &b"archive"[..],
+            &[
+                "run-as",
+                "dev.waterui.hydrolysis.preview",
+                "sh",
+                "-c",
+                "cat > config",
+            ],
+            &b"config"[..],
             Duration::from_secs(5),
         ))
         .expect_err("a non-zero run-as must fail");

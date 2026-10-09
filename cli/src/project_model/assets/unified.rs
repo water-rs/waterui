@@ -160,14 +160,14 @@ pub async fn stage_library_resources(
     Ok(manifest)
 }
 
-/// Write one complete resource plan, including the content stamp.
+/// Write one complete resource plan, including the content stamp, into
+/// `dest_dir`'s [`ASSET_ROOT_DIR`], and answer that stamp — see
+/// [`stage_bundle`].
 pub async fn write_library_resources(
     manifest: &BundleManifest,
     dest_dir: &Path,
-) -> eyre::Result<()> {
-    let assets_dest = dest_dir.join(ASSET_ROOT_DIR);
-    stage_bundle(manifest, &assets_dest, &[]).await?;
-    Ok(())
+) -> eyre::Result<String> {
+    stage_bundle(manifest, &dest_dir.join(ASSET_ROOT_DIR), &[]).await
 }
 
 /// Stage `manifest`'s bundle into `dest_root` and answer its stamp — see
@@ -371,31 +371,17 @@ pub async fn stage_for_android_library(
 ) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
     let root = module_dir.join("src/main/assets");
-    let bundle = root.join(ASSET_ROOT_DIR);
-    let stamp = stage_bundle(&manifest, &bundle, &[]).await?;
+    stage_bundle(&manifest, &root.join(ASSET_ROOT_DIR), &[]).await?;
 
-    Ok((
-        manifest,
-        StagedAndroidAssets {
-            root,
-            bundle,
-            stamp,
-        },
-    ))
+    Ok((manifest, StagedAndroidAssets { root }))
 }
 
 /// Where [`stage_for_android_library`] staged a library's assets.
 #[derive(Debug, Clone)]
 pub struct StagedAndroidAssets {
-    /// The module's `src/main/assets/` root.
+    /// The module's `src/main/assets/` root, holding the staged bundle as
+    /// its [`ASSET_ROOT_DIR`] directory.
     pub root: PathBuf,
-    /// The staged bundle itself, the [`ASSET_ROOT_DIR`] directory in
-    /// `root` — always present once staging returns.
-    pub bundle: PathBuf,
-    /// The bundle's stamp: a digest of everything the staged bytes are a
-    /// function of, so it identifies the bundle's contents without reading
-    /// them back.
-    pub stamp: String,
 }
 
 /// Renders the project's macOS `.icns` app icon for hand-assembled bundles

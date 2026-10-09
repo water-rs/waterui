@@ -1,29 +1,25 @@
 //! The payload an Android preview run ships into the preview host's private
-//! files: the stripped launcher libraries and the project's asset bundle,
-//! identified by one content hash.
+//! files: the stripped launcher libraries and the project's asset bundle.
 //!
-//! On the device the payload lives in [`PAYLOAD_DIR`] under the run
-//! directory, beside [`STAMP_FILE`], which records the content hash of the
-//! payload extracted there. A run whose hash matches the device's stamp
-//! ships nothing; any other run streams the payload as a tar archive whose
-//! last two members are [`MANIFEST_FILE`], the SHA-256 of every payload
-//! file, and the new stamp, written as [`INCOMING_STAMP_FILE`]. The stamp is
-//! renamed into place only after the whole archive extracted and the
-//! extracted files checked out against the manifest, so a stamp on the
-//! device vouches for the bytes beside it.
+//! The payload is two [`PayloadPart`]s, each a directory under
+//! [`PAYLOAD_DIR`] identified by its own content hash. On the device each
+//! part's hash is recorded in the run directory as the part's
+//! [`PayloadPart::stamp_file`], written only once the part's files are in
+//! place, so a stamp vouches for the files beside it. A run ships only the
+//! parts whose hash differs from the device's stamp.
 //!
-//! Locally, `<backend>/android-preview/` holds exactly two directories:
-//! [`LIBRARY_DIR`], the stripped libraries — a cache keyed by the unstripped
-//! cdylib's hash, so `llvm-strip` and the library scans run only when the
-//! compiled artifact changes — and [`STAGE_DIR`], the asset bundle, staged
+//! Locally, `<backend>/android-preview/` holds [`PAYLOAD_DIR`], laid out
+//! exactly as it lands on the device so a changed part is pushed as it is,
+//! and [`STRIP_RECORD_FILE`]. The libraries are a cache keyed by the
+//! unstripped cdylib's hash, so `llvm-strip` and the library scans run only
+//! when the compiled artifact changes; the asset bundle is staged
 //! incrementally against its own stamp. Anything else there is removed.
 
-use std::collections::BTreeSet;
 use std::ffi::OsStr;
-use std::io::{self, BufWriter, Read as _, Write};
-use std::path::{Component, Path, PathBuf};
+use std::io;
+use std::path::{Path, PathBuf};
 
-use eyre::{Context as _, Result};
+use eyre::{Context as _, Result, bail};
 use futures_util::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -39,71 +35,104 @@ use crate::project_model::assets;
 use crate::toolchain::Host;
 use crate::utils::hash_file_into;
 
-/// The payload directory inside the device run directory.
+/// The payload directory: under `<backend>/android-preview/` locally, and
+/// inside the device run directory.
 pub(super) const PAYLOAD_DIR: &str = "payload";
 
-/// The device run directory's record of the payload extracted in
-/// [`PAYLOAD_DIR`]: its content hash, present only once every file of it
-/// landed.
-pub(super) const STAMP_FILE: &str = "payload.stamp";
-
-/// The archive member carrying the new stamp. It is the archive's last
-/// member, so it exists only when every payload file before it extracted.
-pub(super) const INCOMING_STAMP_FILE: &str = "payload.stamp.new";
-
-/// The archive member listing every payload file's SHA-256 in `sha256sum`
-/// format, paths relative to the run directory. It lives in
-/// [`PAYLOAD_DIR`], so the payload's removal removes it.
-pub(super) const MANIFEST_FILE: &str = "payload/SHA256SUMS";
-
-/// The libraries' directory inside the payload, and the local directory
-/// under `<backend>/android-preview/` the stripped libraries are cached in.
-const LIBRARY_DIR: &str = "lib";
-
-/// The local directory under `<backend>/android-preview/` the asset bundle
-/// is staged in.
-const STAGE_DIR: &str = "stage";
-
-/// The directory the asset bundle sits in inside the payload.
-const RESOURCES_DIR: &str = "resources";
-
-/// The record beside the cached stripped libraries naming the artifact they
-/// were made from. It lives inside [`LIBRARY_DIR`], so removing the cache
-/// removes the record with it.
+/// The record beside [`PAYLOAD_DIR`] naming the artifact the cached
+/// stripped libraries were made from. It lives outside the payload, so it
+/// is never pushed.
 const STRIP_RECORD_FILE: &str = "strip-source.json";
 
-/// The buffer the archive writes go through.
-const IO_CHUNK: usize = 64 * 1024;
-
-/// The column the base64-encoded archive wraps at, with LF line endings —
-/// the `base64` tool's own default width.
-const BASE64_LINE: usize = 76;
-
-/// The version of the payload's shape the stamp's content does not cover:
-/// the archive's member layout, the payload's layout inside the device run
-/// directory and the contract the instrumentation reads. It is hashed into
-/// every content stamp, so raising it re-streams every payload; raise it
-/// with any change to those shapes that leaves the hashed paths alone.
+/// The version of the payload's shape its content hashes do not cover:
+/// the parts' layout inside the device run directory and the contract the
+/// instrumentation reads. It is hashed into every part's stamp, so raising
+/// it ships every part again; raise it with any change to those shapes that
+/// leaves the hashed paths alone.
 const PAYLOAD_FORMAT_VERSION: u32 = 1;
 
-/// One file the payload carries.
-#[derive(Debug, Clone)]
-struct PayloadEntry {
-    /// The `/`-separated path inside [`PAYLOAD_DIR`].
-    path: String,
-    /// The local file holding its bytes.
-    source: PathBuf,
+/// One directory of the payload, shipped and stamped on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PayloadPart {
+    /// The stripped launcher libraries.
+    Libraries,
+    /// The project's asset bundle.
+    Resources,
 }
 
-/// A staged preview payload: its files, the libraries in `System.load`
-/// order, the content hash a device stamp is compared with, and the bytes
-/// its files hold.
+impl PayloadPart {
+    /// Every part, in the order the device reports their stamps.
+    pub(super) const ALL: [Self; 2] = [Self::Libraries, Self::Resources];
+
+    /// The part's directory inside [`PAYLOAD_DIR`].
+    pub(super) const fn dir(self) -> &'static str {
+        match self {
+            Self::Libraries => "lib",
+            Self::Resources => "resources",
+        }
+    }
+
+    /// The file in the device run directory recording the hash of the part
+    /// in place there.
+    pub(super) const fn stamp_file(self) -> &'static str {
+        match self {
+            Self::Libraries => "lib.stamp",
+            Self::Resources => "resources.stamp",
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Libraries => 0,
+            Self::Resources => 1,
+        }
+    }
+}
+
+/// The stamps a device holds, one per [`PayloadPart`], `None` for a part it
+/// holds none of.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct HeldStamps([Option<String>; 2]);
+
+impl HeldStamps {
+    /// Read the stamps a run preparation printed: one line per part, in
+    /// [`PayloadPart::ALL`] order, empty for a part without a stamp.
+    ///
+    /// # Errors
+    /// Returns an error when the output is not one line per part.
+    pub(super) fn parse(output: &str) -> Result<Self> {
+        let lines: Vec<&str> = output.lines().collect();
+        let [libraries, resources] = lines.as_slice() else {
+            bail!(
+                "the run preparation printed {} lines where one stamp line per payload part \
+                 was expected: {output:?}",
+                lines.len()
+            );
+        };
+        let held = |line: &str| (!line.is_empty()).then(|| line.to_string());
+        Ok(Self([held(libraries), held(resources)]))
+    }
+
+    /// The stamp the device holds for `part`.
+    fn get(&self, part: PayloadPart) -> Option<&str> {
+        self.0[part.index()].as_deref()
+    }
+}
+
+/// One staged part: its content hash and the bytes its files hold.
 #[derive(Debug)]
-pub(super) struct DevicePayload {
-    entries: Vec<PayloadEntry>,
-    libraries: Vec<String>,
+struct StagedPart {
     stamp: String,
     size: u64,
+}
+
+/// A staged preview payload: its local directory, the libraries in
+/// `System.load` order, and each part's content hash and size.
+#[derive(Debug)]
+pub(super) struct DevicePayload {
+    dir: PathBuf,
+    libraries: Vec<String>,
+    parts: [StagedPart; 2],
 }
 
 /// What the cached stripped libraries were made from, and what they are.
@@ -120,7 +149,7 @@ struct StripRecord {
 impl DevicePayload {
     /// Build the launcher's preview-mode cdylib for `abi`, bring the
     /// stripped-library cache up to date with it, stage the project's
-    /// assets, and hash the result.
+    /// assets, and hash each part.
     ///
     /// # Errors
     /// Returns an error when the build, the strip, the asset staging or the
@@ -134,7 +163,8 @@ impl DevicePayload {
         let root = project
             .backend_path::<HydrolysisBackend>()
             .join("android-preview");
-        prune_to_layout(&root).await?;
+        let dir = root.join(PAYLOAD_DIR);
+        prune_to_layout(&root, &dir).await?;
         let mut options = BuildOptions::development(BuildProfile::Debug);
         if let Some(sccache_path) = request.sccache_path.clone() {
             options = options.with_sccache(sccache_path);
@@ -153,70 +183,85 @@ impl DevicePayload {
         // Asset mounts ship as the library layout's `waterui_assets`
         // directory, staged through the shared planner and read from there.
         let symbols = build.built.app_symbols().await?;
-        let (lib_dir, stage_dir) = (root.join(LIBRARY_DIR), root.join(STAGE_DIR));
-        let (libraries, (_manifest, staged)) = futures_util::try_join!(
+        let resources_dir = dir.join(PayloadPart::Resources.dir());
+        let (libraries, bundle_stamp) = futures_util::try_join!(
             stage_stripped_libraries(project, host, abi, &build, &root),
-            assets::stage_project_assets_for_android_library(project, &stage_dir, &symbols, false),
+            async {
+                let manifest = assets::plan_library_resources(project, &symbols, false).await?;
+                assets::write_library_resources(&manifest, &resources_dir).await
+            },
         )?;
-        Self::from_staged(&lib_dir, libraries, &staged.bundle, &staged.stamp).await
+        Self::from_staged(dir, libraries, bundle_stamp).await
     }
 
-    /// The payload of the libraries `libraries` in `lib_dir` plus the asset
-    /// bundle at `assets_bundle`, whose staging answered `bundle_stamp`,
-    /// hashed.
+    /// The payload in `dir`: the libraries `libraries` in its
+    /// [`PayloadPart::Libraries`] directory and the asset bundle in its
+    /// [`PayloadPart::Resources`] directory, whose staging answered
+    /// `bundle_stamp`, hashed.
     ///
     /// The bundle's stamp already identifies its contents, so only the
-    /// libraries are read: the payload's hash is theirs plus that stamp.
+    /// libraries are read: the resources' hash is that stamp's.
     ///
     /// # Errors
-    /// Returns an error when the bundle cannot be walked or a file cannot be
+    /// Returns an error when a part cannot be walked or a library cannot be
     /// read.
     pub(super) async fn from_staged(
-        lib_dir: &Path,
+        dir: PathBuf,
         libraries: Vec<String>,
-        assets_bundle: &Path,
-        bundle_stamp: &str,
+        bundle_stamp: String,
     ) -> Result<Self> {
-        let lib_dir = lib_dir.to_path_buf();
-        let assets_bundle = assets_bundle.to_path_buf();
-        let bundle_stamp = bundle_stamp.to_string();
         smol::unblock(move || {
-            let library_entries: Vec<PayloadEntry> = libraries
-                .iter()
-                .map(|name| PayloadEntry {
-                    path: format!("{LIBRARY_DIR}/{name}"),
-                    source: lib_dir.join(name),
-                })
-                .collect();
-            let stamp = content_stamp(&library_entries, &bundle_stamp)?;
-            let mut entries = library_entries;
-            entries.extend(bundle_entries(&assets_bundle)?);
-            entries.sort_by(|left, right| left.path.cmp(&right.path));
-            let size = entries
-                .iter()
-                .map(|entry| std::fs::metadata(&entry.source).map(|metadata| metadata.len()))
-                .sum::<io::Result<u64>>()?;
+            let lib_dir = dir.join(PayloadPart::Libraries.dir());
+            let mut hasher = Sha256::new();
+            hasher.update(PAYLOAD_FORMAT_VERSION.to_le_bytes());
+            for name in &libraries {
+                hasher.update(name.as_bytes());
+                hasher.update([0]);
+                hash_file_into(&mut hasher, &lib_dir.join(name))?;
+            }
+            let libraries_part = StagedPart {
+                stamp: hex::encode(hasher.finalize()),
+                size: tree_size(&lib_dir)?,
+            };
+
+            let mut hasher = Sha256::new();
+            hasher.update(PAYLOAD_FORMAT_VERSION.to_le_bytes());
+            hasher.update(bundle_stamp.as_bytes());
+            let resources_part = StagedPart {
+                stamp: hex::encode(hasher.finalize()),
+                size: tree_size(&dir.join(PayloadPart::Resources.dir()))?,
+            };
             Ok(Self {
-                entries,
+                dir,
                 libraries,
-                stamp,
-                size,
+                parts: [libraries_part, resources_part],
             })
         })
         .await
     }
 
-    /// The payload's content hash.
-    pub(super) fn stamp(&self) -> &str {
-        &self.stamp
+    /// The local payload directory, laid out as it lands on the device.
+    pub(super) fn dir(&self) -> &Path {
+        &self.dir
     }
 
-    /// The bytes a stream of the payload carries: its files' bytes,
-    /// base64-encoded and wrapped at [`BASE64_LINE`] — before the archive's
-    /// per-member headers.
-    pub(super) const fn stream_size(&self) -> u64 {
-        let encoded = self.size.div_ceil(3) * 4;
-        encoded + encoded.div_ceil(BASE64_LINE as u64)
+    /// `part`'s content hash.
+    pub(super) fn stamp(&self, part: PayloadPart) -> &str {
+        &self.parts[part.index()].stamp
+    }
+
+    /// The parts whose stamp on the device is missing or differs from
+    /// theirs, in [`PayloadPart::ALL`] order.
+    pub(super) fn stale_parts(&self, held: &HeldStamps) -> Vec<PayloadPart> {
+        PayloadPart::ALL
+            .into_iter()
+            .filter(|part| held.get(*part) != Some(self.stamp(*part)))
+            .collect()
+    }
+
+    /// The bytes `parts`' files hold.
+    pub(super) fn size(&self, parts: &[PayloadPart]) -> u64 {
+        parts.iter().map(|part| self.parts[part.index()].size).sum()
     }
 
     /// The libraries' paths relative to the device run directory, in
@@ -224,69 +269,63 @@ impl DevicePayload {
     pub(super) fn library_paths(&self) -> Vec<String> {
         self.libraries
             .iter()
-            .map(|name| format!("{PAYLOAD_DIR}/{LIBRARY_DIR}/{name}"))
+            .map(|name| format!("{PAYLOAD_DIR}/{}/{name}", PayloadPart::Libraries.dir()))
             .collect()
     }
 
     /// The asset bundle's path relative to the device run directory.
     pub(super) fn assets_root() -> String {
         format!(
-            "{PAYLOAD_DIR}/{RESOURCES_DIR}/{}",
+            "{PAYLOAD_DIR}/{}/{}",
+            PayloadPart::Resources.dir(),
             assets::ANDROID_ASSET_BUNDLE_DIR
         )
     }
-
-    /// Write the payload as a tar archive into `sink`, chunk by chunk,
-    /// base64-encoded in lines of [`BASE64_LINE`] ending in LF: the
-    /// directories, every file under [`PAYLOAD_DIR`], the
-    /// [`MANIFEST_FILE`] of their hashes, then the stamp as
-    /// [`INCOMING_STAMP_FILE`]. The encoding is text that every host's
-    /// `adb` stdin carries unaltered — no CR and no 0x1A byte — and the
-    /// device decodes it with `base64 -d`. Archiving and encoding run on a
-    /// blocking thread; the bounded `sink` paces them to the consumer.
-    ///
-    /// # Errors
-    /// Returns an error when a payload file cannot be read, or a
-    /// `BrokenPipe` when the consumer dropped its end of `sink`.
-    pub(super) async fn write_encoded_archive(
-        &self,
-        sink: async_channel::Sender<Vec<u8>>,
-    ) -> io::Result<()> {
-        let entries = self.entries.clone();
-        let stamp = self.stamp.clone();
-        smol::unblock(move || {
-            let lines = LineWrap {
-                inner: BufWriter::with_capacity(IO_CHUNK, ChunkSink(sink)),
-                column: 0,
-            };
-            let mut encoder = base64::write::EncoderWriter::new(
-                lines,
-                &base64::engine::general_purpose::STANDARD,
-            );
-            write_archive(&entries, &stamp, &mut encoder)?;
-            encoder.finish()?.finish()
-        })
-        .await
-    }
 }
 
-/// Remove every entry of `root` its layout does not name: everything but
-/// [`LIBRARY_DIR`] and [`STAGE_DIR`].
-async fn prune_to_layout(root: &Path) -> Result<()> {
-    let mut entries = match fs::read_dir(root).await {
+/// The bytes the regular files under `dir` hold.
+fn tree_size(dir: &Path) -> io::Result<u64> {
+    let mut size = 0;
+    for entry in walkdir::WalkDir::new(dir) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            size += entry.metadata()?.len();
+        }
+    }
+    Ok(size)
+}
+
+/// Remove every entry of `root` its layout does not name — everything but
+/// `payload` and [`STRIP_RECORD_FILE`] — and every entry of `payload` that
+/// is not a [`PayloadPart`] directory.
+async fn prune_to_layout(root: &Path, payload: &Path) -> Result<()> {
+    let payload_name = payload
+        .file_name()
+        .ok_or_else(|| eyre::eyre!("{} names no directory", payload.display()))?;
+    remove_unlisted(root, &[payload_name, OsStr::new(STRIP_RECORD_FILE)]).await?;
+    remove_unlisted(
+        payload,
+        &PayloadPart::ALL.map(|part| OsStr::new(part.dir())),
+    )
+    .await
+}
+
+/// Remove every entry of `dir` whose name `keep` does not hold; a missing
+/// `dir` holds nothing to remove.
+async fn remove_unlisted(dir: &Path, keep: &[&OsStr]) -> Result<()> {
+    let mut entries = match fs::read_dir(dir).await {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
-            return Err(error).wrap_err_with(|| format!("failed to list {}", root.display()));
+            return Err(error).wrap_err_with(|| format!("failed to list {}", dir.display()));
         }
     };
     while let Some(entry) = entries
         .try_next()
         .await
-        .wrap_err_with(|| format!("failed to list {}", root.display()))?
+        .wrap_err_with(|| format!("failed to list {}", dir.display()))?
     {
-        let name = entry.file_name();
-        if name == LIBRARY_DIR || name == STAGE_DIR {
+        if keep.contains(&entry.file_name().as_os_str()) {
             continue;
         }
         let path = entry.path();
@@ -300,9 +339,18 @@ async fn prune_to_layout(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Bring the stripped-library cache in `root`'s [`LIBRARY_DIR`] up to date
-/// with the build's artifact and answer the staged libraries in
-/// `System.load` order.
+/// Remove the file at `path`, which may not exist.
+async fn remove_if_present(path: &Path) -> Result<()> {
+    match fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).wrap_err_with(|| format!("failed to remove {}", path.display())),
+    }
+}
+
+/// Bring the stripped-library cache — the payload's
+/// [`PayloadPart::Libraries`] directory under `root` — up to date with the
+/// build's artifact and answer the staged libraries in `System.load` order.
 ///
 /// The artifact is hashed in place: a [`StripRecord`] naming its hash and
 /// the build's NDK means the cache already holds the strip of exactly
@@ -324,7 +372,8 @@ async fn stage_stripped_libraries(
     build: &HydrolysisAndroidBuild,
     root: &Path,
 ) -> Result<Vec<String>> {
-    let lib_dir = root.join(LIBRARY_DIR);
+    let lib_dir = root.join(PAYLOAD_DIR).join(PayloadPart::Libraries.dir());
+    let record_path = root.join(STRIP_RECORD_FILE);
     let artifact_sha256 = smol::unblock({
         let artifact = build.built.artifact.clone();
         move || -> Result<String> {
@@ -336,7 +385,6 @@ async fn stage_stripped_libraries(
     })
     .await?;
     let ndk = build.context.ndk_path.clone();
-    let record_path = lib_dir.join(STRIP_RECORD_FILE);
     if let Some(record) = read_strip_record(&record_path).await?
         && record.source_sha256 == artifact_sha256
         && record.ndk == ndk
@@ -373,16 +421,8 @@ async fn stage_stripped_libraries(
         }
     })
     .await?;
-    let libraries = refresh_stripped_libraries(
-        project,
-        host,
-        abi,
-        build,
-        &lib_dir,
-        &snapshot,
-        source_sha256,
-    )
-    .await;
+    let libraries =
+        refresh_stripped_libraries(project, host, abi, build, root, &snapshot, source_sha256).await;
     smol::unblock(move || snapshot_dir.close())
         .await
         .wrap_err("failed to remove the artifact snapshot")?;
@@ -404,21 +444,24 @@ async fn libraries_present(lib_dir: &Path, libraries: &[String]) -> bool {
 }
 
 /// The strip half of [`stage_stripped_libraries`], reached only on a cache
-/// miss: clear `lib_dir`, `llvm-strip` `snapshot` into it and stage the
-/// runtime libraries beside it, then write the [`StripRecord`] naming the
-/// snapshot's hash and the build's NDK.
+/// miss: remove `root`'s [`StripRecord`] and clear the libraries' directory,
+/// `llvm-strip` `snapshot` into it and stage the runtime libraries beside
+/// it, then write the record naming the snapshot's hash and the build's
+/// NDK.
 async fn refresh_stripped_libraries(
     project: &Project,
     host: &Host,
     abi: AndroidAbi,
     build: &HydrolysisAndroidBuild,
-    lib_dir: &Path,
+    root: &Path,
     snapshot: &Path,
     source_sha256: String,
 ) -> Result<Vec<String>> {
     let ndk = build.context.ndk_path.clone();
-    let record_path = lib_dir.join(STRIP_RECORD_FILE);
+    let lib_dir = &root.join(PAYLOAD_DIR).join(PayloadPart::Libraries.dir());
+    let record_path = &root.join(STRIP_RECORD_FILE);
 
+    remove_if_present(record_path).await?;
     match fs::remove_dir_all(lib_dir).await {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -460,7 +503,7 @@ async fn refresh_stripped_libraries(
         libraries: libraries.clone(),
     })
     .wrap_err("failed to serialize the strip record")?;
-    fs::write(&record_path, &record)
+    fs::write(record_path, &record)
         .await
         .wrap_err_with(|| format!("failed to write {}", record_path.display()))?;
     Ok(libraries)
@@ -486,222 +529,4 @@ async fn read_strip_record(path: &Path) -> Result<Option<StripRecord>> {
             );
         })
         .ok())
-}
-
-/// Every regular file of the asset bundle as a payload entry under
-/// `resources/<bundle dir>/`.
-fn bundle_entries(bundle: &Path) -> io::Result<Vec<PayloadEntry>> {
-    let mut entries = Vec::new();
-    for entry in walkdir::WalkDir::new(bundle) {
-        let entry = entry?;
-        if entry.file_type().is_dir() {
-            continue;
-        }
-        if !entry.file_type().is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "the staged asset bundle holds {}, which is not a regular file",
-                    entry.path().display()
-                ),
-            ));
-        }
-        let relative = entry
-            .path()
-            .strip_prefix(bundle)
-            .map_err(io::Error::other)?;
-        entries.push(PayloadEntry {
-            path: format!(
-                "{RESOURCES_DIR}/{}/{}",
-                assets::ANDROID_ASSET_BUNDLE_DIR,
-                slash_path(relative)?
-            ),
-            source: entry.into_path(),
-        });
-    }
-    Ok(entries)
-}
-
-/// `relative` spelled with `/` separators, as the device and the archive
-/// name it.
-fn slash_path(relative: &Path) -> io::Result<String> {
-    let parts = relative
-        .components()
-        .map(|component| match component {
-            Component::Normal(part) => part.to_str().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{} is not valid UTF-8", relative.display()),
-                )
-            }),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{} is not a plain relative path", relative.display()),
-            )),
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    Ok(parts.join("/"))
-}
-
-/// The payload's content hash: [`PAYLOAD_FORMAT_VERSION`], then every
-/// library entry's path, size and bytes, then the asset bundle's own
-/// stamp, which identifies every file the bundle contributes.
-fn content_stamp(libraries: &[PayloadEntry], bundle_stamp: &str) -> io::Result<String> {
-    let mut hasher = Sha256::new();
-    hasher.update(PAYLOAD_FORMAT_VERSION.to_le_bytes());
-    for entry in libraries {
-        hasher.update(entry.path.as_bytes());
-        hasher.update([0]);
-        hash_file_into(&mut hasher, &entry.source)?;
-    }
-    hasher.update(RESOURCES_DIR.as_bytes());
-    hasher.update([0]);
-    hasher.update(bundle_stamp.as_bytes());
-    Ok(hex::encode(hasher.finalize()))
-}
-
-/// Write the archive [`DevicePayload::write_encoded_archive`] describes,
-/// unencoded, into `sink`.
-fn write_archive(entries: &[PayloadEntry], stamp: &str, sink: impl Write) -> io::Result<()> {
-    let mut builder = tar::Builder::new(BufWriter::with_capacity(IO_CHUNK, sink));
-
-    // Parents sort ahead of their children, so every directory exists
-    // before anything lands in it.
-    let directories: BTreeSet<String> = entries
-        .iter()
-        .flat_map(|entry| {
-            let path = format!("{PAYLOAD_DIR}/{}", entry.path);
-            path.match_indices('/')
-                .map(|(index, _)| path[..index].to_string())
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    for directory in directories {
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Directory);
-        header.set_mode(0o755);
-        header.set_size(0);
-        header.set_mtime(0);
-        builder.append_data(&mut header, &directory, io::empty())?;
-    }
-
-    // Each file is hashed as the archive reads it, so the manifest costs no
-    // second read.
-    let mut manifest = String::new();
-    for entry in entries {
-        let path = format!("{PAYLOAD_DIR}/{}", entry.path);
-        // `sha256sum -c` reads one file per line.
-        if path.contains('\n') {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("the payload path {path:?} holds a line break"),
-            ));
-        }
-        let file = std::fs::File::open(&entry.source).map_err(|error| {
-            io::Error::new(error.kind(), format!("{}: {error}", entry.source.display()))
-        })?;
-        let size = file.metadata()?.len();
-        let mut hashed = HashingReader {
-            inner: file.take(size),
-            hasher: Sha256::new(),
-        };
-        builder.append_data(&mut regular_header(size), &path, &mut hashed)?;
-        manifest.push_str(&hex::encode(hashed.hasher.finalize()));
-        manifest.push_str("  ");
-        manifest.push_str(&path);
-        manifest.push('\n');
-    }
-
-    builder.append_data(
-        &mut regular_header(manifest.len() as u64),
-        MANIFEST_FILE,
-        manifest.as_bytes(),
-    )?;
-    builder.append_data(
-        &mut regular_header(stamp.len() as u64),
-        INCOMING_STAMP_FILE,
-        stamp.as_bytes(),
-    )?;
-
-    builder.into_inner()?.flush()
-}
-
-/// The header of a regular, `0644` archive member of `size` bytes.
-fn regular_header(size: u64) -> tar::Header {
-    let mut header = tar::Header::new_gnu();
-    header.set_entry_type(tar::EntryType::Regular);
-    header.set_mode(0o644);
-    header.set_size(size);
-    header.set_mtime(0);
-    header
-}
-
-/// A [`std::io::Read`] that feeds every byte it reads into `hasher`.
-struct HashingReader<R> {
-    inner: R,
-    hasher: Sha256,
-}
-
-impl<R: std::io::Read> std::io::Read for HashingReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let read = self.inner.read(buf)?;
-        self.hasher.update(&buf[..read]);
-        Ok(read)
-    }
-}
-
-/// A [`Write`] that breaks the text written through it into lines of
-/// [`BASE64_LINE`] bytes, each ending in LF.
-struct LineWrap<W: Write> {
-    inner: W,
-    /// Bytes on the current, unfinished line.
-    column: usize,
-}
-
-impl<W: Write> LineWrap<W> {
-    /// End the last line and flush.
-    fn finish(mut self) -> io::Result<()> {
-        if self.column > 0 {
-            self.inner.write_all(b"\n")?;
-        }
-        self.inner.flush()
-    }
-}
-
-impl<W: Write> Write for LineWrap<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut rest = buf;
-        while !rest.is_empty() {
-            let (line, tail) = rest.split_at(rest.len().min(BASE64_LINE - self.column));
-            self.inner.write_all(line)?;
-            self.column += line.len();
-            if self.column == BASE64_LINE {
-                self.inner.write_all(b"\n")?;
-                self.column = 0;
-            }
-            rest = tail;
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-/// A blocking [`Write`] that hands each chunk to an async consumer through
-/// a bounded channel; a dropped consumer reads as `BrokenPipe`.
-struct ChunkSink(async_channel::Sender<Vec<u8>>);
-
-impl Write for ChunkSink {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0
-            .send_blocking(buf.to_vec())
-            .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }

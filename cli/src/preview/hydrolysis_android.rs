@@ -3,17 +3,18 @@
 //! device fonts, device realizations — with no Kotlin runtime involved.
 //!
 //! The CLI builds the launcher's preview-mode cdylib for the device's ABI
-//! and stages it with the project's assets as one content-hashed payload. On
-//! the device everything lives in the host's private files under
+//! and stages it with the project's assets as a payload of content-hashed
+//! parts. On the device everything lives in the host's private files under
 //! `files/waterui-preview`: each run writes its config and clears `out/` there
-//! while reading the payload stamp back, streams the payload straight into
-//! private storage through `run-as` only when its content hash differs from
-//! that stamp, and runs `am instrument -w` — whose return is the completion
-//! signal — before reading the produced PNGs back through `adb shell -T`.
+//! while reading the parts' stamps back, ships only the parts whose content
+//! hash differs from the device's stamp — one `adb push` into the shell
+//! user's staging directory, then one `run-as` copy into private storage
+//! that writes the stamps — and runs `am instrument -w`, whose return is the
+//! completion signal, before reading the produced PNGs back through
+//! `adb shell -T`.
 
 mod payload;
 
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -37,29 +38,30 @@ use crate::preview::run::{RUN_CONFIG_FILE_NAME, run_config_json};
 use crate::project_model::water_dir;
 use crate::toolchain::Host;
 
-use payload::{DevicePayload, INCOMING_STAMP_FILE, MANIFEST_FILE, PAYLOAD_DIR, STAMP_FILE};
+use payload::{DevicePayload, HeldStamps, PAYLOAD_DIR, PayloadPart};
 
 /// `am instrument -w` is the completion signal; this bound is only the
 /// backstop for a wedged instrumentation run, not the render's expected
 /// duration.
 const PREVIEW_RENDER_DEADLINE: Duration = Duration::from_mins(3);
 
-/// The slowest transport a payload stream is given time for, in bytes per
-/// second: a weak wireless `adb connect` link. The stream's deadline is the
-/// payload's size at this rate — see [`payload_stream_deadline`].
-const PAYLOAD_STREAM_MIN_THROUGHPUT: u64 = 1024 * 1024;
+/// The slowest transport a payload push is given time for, in bytes per
+/// second: a weak wireless `adb connect` link. The push's deadline is the
+/// shipped parts' size at this rate — see [`payload_deadline`].
+const PAYLOAD_MIN_THROUGHPUT: u64 = 1024 * 1024;
 
-/// The least time a payload stream is given, whatever its size: the
-/// `run-as` round trip, the previous payload's removal and the extraction
-/// cost this much before the size matters.
-const PAYLOAD_STREAM_DEADLINE_FLOOR: Duration = Duration::from_secs(30);
+/// The least time a payload push or install is given, whatever its size:
+/// the round trip and the previous part's removal cost this much before the
+/// size matters.
+const PAYLOAD_DEADLINE_FLOOR: Duration = Duration::from_secs(30);
 
-/// Where the CLI used to stage a payload in the shell user's temporary
-/// directory before copying it into the host's private files. No layout of
-/// this module names it — payloads now stream straight into private
-/// storage — so a device that holds no payload stamp yet has it removed,
-/// once, alongside its first stream.
-const LEGACY_STAGING_DIR: &str = "/data/local/tmp/waterui-preview";
+/// The shell user's directory a payload push lands in before `run-as`
+/// copies it into the host's private files — the app cannot read a push
+/// target of its own. Every run preparation removes it, so a push always
+/// lands on an absent target and `adb push` copies the source as that
+/// target instead of nesting it inside; the install removes it once the
+/// copy is done.
+const PUSH_STAGING_DIR: &str = "/data/local/tmp/waterui-preview";
 
 /// The run directory inside the preview host's `filesDir` — the
 /// instrumentation extras are paths relative to `filesDir` itself.
@@ -67,11 +69,6 @@ const FILES_PREVIEW_DIR: &str = "waterui-preview";
 
 /// The same run directory as `run-as` sees it from the app's data dir.
 const FILES_RUN_DIR: &str = "files/waterui-preview";
-
-/// Archive chunks in flight between the archive thread and `adb`'s stdin —
-/// bounded so a slow transport paces the archive instead of buffering the
-/// whole payload in memory.
-const ARCHIVE_CHUNKS_IN_FLIGHT: usize = 8;
 
 /// Scenario frame pulls overlap the shell round trips a `run-as cat` spends
 /// per frame — bounded so a wide capture set cannot flood the transport.
@@ -174,7 +171,8 @@ struct DeviceRender<'a> {
     device_key: &'a str,
     host_apk: &'a Path,
     version_code: u32,
-    /// The staged payload, shipped only when the device's stamp differs.
+    /// The staged payload, whose parts ship only when the device's stamp
+    /// for them differs.
     payload: &'a DevicePayload,
     /// This run's config document.
     run_config: &'a [u8],
@@ -183,7 +181,7 @@ struct DeviceRender<'a> {
 }
 
 /// Take the device lease, then install the host if needed, prepare the run
-/// and ship the payload if the device's copy is stale, run the
+/// and ship the payload parts the device's copy is stale in, run the
 /// instrumentation and pull its output.
 ///
 /// `am instrument` force-stops the host package and an install replaces
@@ -216,19 +214,11 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
         install_host_if_needed(host, adb, serial, host_apk, version_code),
         device_time_stamp(host, adb, serial),
     )?;
-    match prepare_run(host, adb, serial, run_config).await? {
-        Some(stamp) if stamp == payload.stamp() => {}
-        Some(_) => {
-            info!("Streaming the preview payload to the device");
-            stream_payload(host, adb, serial, payload).await?;
-        }
-        None => {
-            info!("Streaming the preview payload to the device");
-            futures_util::try_join!(
-                stream_payload(host, adb, serial, payload),
-                remove_legacy_staging(host, adb, serial),
-            )?;
-        }
+    let held = prepare_run(host, adb, serial, run_config).await?;
+    let stale = payload.stale_parts(&held);
+    if !stale.is_empty() {
+        info!(?stale, "Pushing the changed preview payload to the device");
+        push_payload(host, adb, serial, payload, &stale).await?;
     }
     run_instrumentation(host, adb, serial, &payload.library_paths(), &since).await?;
     pull_outputs(host, adb, serial, output_path, scenario).await
@@ -318,151 +308,148 @@ async fn device_time_stamp(host: &Host, adb: &Adb, serial: &str) -> Result<Strin
         .to_string())
 }
 
-/// Remove [`LEGACY_STAGING_DIR`]. It belongs to the shell user, so this is
-/// a plain `adb shell`, not a `run-as`.
-async fn remove_legacy_staging(host: &Host, adb: &Adb, serial: &str) -> Result<()> {
-    adb.shell_run(
-        host,
-        serial,
-        &["rm", "-rf", LEGACY_STAGING_DIR],
-        Duration::from_secs(30),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Prepare the run directory in one `run-as` round trip: remove every entry
-/// the run directory's layout does not name — the payload, its stamp, the
-/// run config and `out/` — clear `out/` so a failed render can never hand
-/// back the previous run's frames, write `run_config` (streamed through
-/// stdin) as the run config, and answer the payload stamp the device holds
-/// — `None` when it holds none.
+/// Prepare the run in one call: as the shell user, remove
+/// [`PUSH_STAGING_DIR`] so this run's push lands on an absent target; then,
+/// through `run-as`, remove every entry of the run directory its layout does
+/// not name — the payload, the part stamps, the run config and `out/` — and
+/// every entry of the payload that is not a part, clear `out/` so a failed
+/// render can never hand back the previous run's frames, write `run_config`
+/// (streamed through stdin) as the run config, and answer the stamps the
+/// device holds.
 async fn prepare_run(
     host: &Host,
     adb: &Adb,
     serial: &str,
     run_config: &[u8],
-) -> Result<Option<String>> {
-    // The script's positions keep the names off the command template: `$1`
-    // is the run directory, `$2` the config file, `$3` the payload stamp,
-    // `$4` the payload directory.
-    let stamp = adb
-        .run_as_with_input(
-            host,
-            serial,
-            PREVIEW_HOST_PACKAGE,
-            &[
-                "sh",
-                "-c",
-                "mkdir -p \"$1\" && cd \"$1\" && \
-                 find . -mindepth 1 -maxdepth 1 ! -name \"$4\" ! -name \"$3\" ! -name \"$2\" \
-                 ! -name out -exec rm -rf {} + && \
-                 rm -rf out && mkdir out && cat > \"$2\" && if [ -f \"$3\" ]; then cat \"$3\"; fi",
-                "sh",
-                FILES_RUN_DIR,
-                RUN_CONFIG_FILE_NAME,
-                STAMP_FILE,
-                PAYLOAD_DIR,
-            ],
-            run_config,
-            Duration::from_secs(30),
-        )
+) -> Result<HeldStamps> {
+    let [libraries, resources] = PayloadPart::ALL;
+    let words = [
+        "sh",
+        "-c",
+        PREPARE_SHELL_SCRIPT,
+        "sh",
+        PUSH_STAGING_DIR,
+        "run-as",
+        PREVIEW_HOST_PACKAGE,
+        "sh",
+        "-c",
+        PREPARE_SCRIPT,
+        "sh",
+        FILES_RUN_DIR,
+        RUN_CONFIG_FILE_NAME,
+        PAYLOAD_DIR,
+        libraries.stamp_file(),
+        resources.stamp_file(),
+        libraries.dir(),
+        resources.dir(),
+    ];
+    let stamps = adb
+        .shell_with_input(host, serial, &words, run_config, Duration::from_secs(30))
         .await
         .wrap_err("failed to prepare the preview run in the host's private files")?;
-    let stamp = stamp.trim();
-    Ok((!stamp.is_empty()).then(|| stamp.to_string()))
+    HeldStamps::parse(&stamps)
 }
 
-/// The deadline for streaming `size` bytes of encoded payload: their
-/// transfer at [`PAYLOAD_STREAM_MIN_THROUGHPUT`], never less than
-/// [`PAYLOAD_STREAM_DEADLINE_FLOOR`].
-fn payload_stream_deadline(size: u64) -> Duration {
-    Duration::from_secs(size.div_ceil(PAYLOAD_STREAM_MIN_THROUGHPUT))
-        .max(PAYLOAD_STREAM_DEADLINE_FLOOR)
+/// The shell user's half of [`prepare_run`]: `$1` is [`PUSH_STAGING_DIR`],
+/// the rest the `run-as` command it then becomes, keeping the stdin the run
+/// config arrives on.
+const PREPARE_SHELL_SCRIPT: &str = "rm -rf \"$1\" && shift && exec \"$@\"";
+
+/// The `run-as` half of [`prepare_run`]: `$1` is the run directory, `$2`
+/// the config file, `$3` the payload directory, `$4` and `$5` the part
+/// stamps and `$6` and `$7` the part directories, in [`PayloadPart::ALL`]
+/// order. It prints one line per part stamp, empty when the device holds
+/// none.
+const PREPARE_SCRIPT: &str = "mkdir -p \"$1\" && cd \"$1\" && \
+     find . -mindepth 1 -maxdepth 1 ! -name \"$2\" ! -name \"$3\" ! -name \"$4\" \
+     ! -name \"$5\" ! -name out -exec rm -rf {} + && \
+     if [ -d \"$3\" ]; then \
+     find \"$3\" -mindepth 1 -maxdepth 1 ! -name \"$6\" ! -name \"$7\" -exec rm -rf {} +; fi && \
+     rm -rf out && mkdir out && cat > \"$2\" && \
+     for stamp in \"$4\" \"$5\"; do if [ -f \"$stamp\" ]; then cat \"$stamp\"; fi; echo; done";
+
+/// The deadline for moving `size` bytes of payload: their transfer at
+/// [`PAYLOAD_MIN_THROUGHPUT`], never less than [`PAYLOAD_DEADLINE_FLOOR`].
+fn payload_deadline(size: u64) -> Duration {
+    Duration::from_secs(size.div_ceil(PAYLOAD_MIN_THROUGHPUT)).max(PAYLOAD_DEADLINE_FLOOR)
 }
 
-/// Stream `payload` as a base64-encoded tar archive straight into the
-/// host's private files. The stamps go first — so no interruption after
-/// that point can leave a stamp naming a payload that is partly deleted or
-/// partly extracted — then the previous payload; the archive is decoded and
-/// extracted in place, every extracted file is checked against the
-/// archive's manifest — so the stamp vouches for the bytes, whatever a
-/// lenient decoder let through — the libraries become read-only — `chmod a-w`
-/// satisfies the linker's read-only `System.load` requirement without
-/// write-protecting `lib/` itself, since unlinking needs write on the
-/// directory, not the file — and the archive's trailing stamp is renamed
-/// into place last, so the device names a payload only once all of it
-/// landed.
+/// Ship `stale` — the payload parts the device's stamps do not match — into
+/// the host's private files in two calls.
 ///
-/// The script's exit status is the first verdict. The second rides in the
-/// same call: the script ends by printing the stamp it installed, which
-/// must be the one sent.
-async fn stream_payload(
+/// One `adb push` carries them into [`PUSH_STAGING_DIR`]: the whole local
+/// payload directory when every part is stale, the one stale part's
+/// directory otherwise — the staging directory is absent, so either lands
+/// as the parts' directories inside it. One shell call then runs
+/// [`INSTALL_SCRIPT`] through `run-as`, which replaces each part and writes
+/// its stamp last, and removes the staging directory whatever the copy's
+/// outcome; its exit status is the copy's, so a failure surfaces.
+async fn push_payload(
     host: &Host,
     adb: &Adb,
     serial: &str,
     payload: &DevicePayload,
+    stale: &[PayloadPart],
 ) -> Result<()> {
-    let (sender, receiver) = async_channel::bounded(ARCHIVE_CHUNKS_IN_FLIGHT);
-    let archive = receiver.map(Ok::<_, io::Error>).into_async_read();
-    let upload = adb.run_as_with_input(
-        host,
-        serial,
-        PREVIEW_HOST_PACKAGE,
-        &STREAM_SCRIPT,
-        archive,
-        payload_stream_deadline(payload.stream_size()),
-    );
-    let (archived, uploaded) = futures_util::join!(payload.write_encoded_archive(sender), upload);
-    let installed = match (archived, uploaded) {
-        // A payload file that could not be read is the cause of whatever
-        // the device then reported about the truncated archive.
-        (Err(error), _) if error.kind() != io::ErrorKind::BrokenPipe => {
-            return Err(eyre::eyre!(error).wrap_err("failed to archive the preview payload"));
-        }
-        (_, Err(error)) => {
-            return Err(error
-                .wrap_err("failed to stream the preview payload into the host's private files"));
-        }
-        // A `BrokenPipe` archive under a successful upload: the device
-        // stopped reading after the stamp member, and the stamp check below
-        // is the verdict on what it installed.
-        (_, Ok(stdout)) => stdout,
+    let (local, remote) = match stale {
+        [part] => (
+            payload.dir().join(part.dir()),
+            format!("{PUSH_STAGING_DIR}/{}", part.dir()),
+        ),
+        _ => (payload.dir().to_path_buf(), PUSH_STAGING_DIR.to_string()),
     };
-    let installed = installed.trim();
-    if installed != payload.stamp() {
-        bail!(
-            "the device installed payload stamp `{installed}` after streaming payload stamp `{}`",
-            payload.stamp()
-        );
+    let deadline = payload_deadline(payload.size(stale));
+    adb.push(host, serial, &local, &remote, deadline)
+        .await
+        .wrap_err("failed to push the preview payload to the device")?;
+
+    let mut words = vec![
+        "sh",
+        "-c",
+        INSTALL_SHELL_SCRIPT,
+        "sh",
+        PUSH_STAGING_DIR,
+        "run-as",
+        PREVIEW_HOST_PACKAGE,
+        "sh",
+        "-c",
+        INSTALL_SCRIPT,
+        "sh",
+        FILES_RUN_DIR,
+        PUSH_STAGING_DIR,
+        PAYLOAD_DIR,
+    ];
+    for part in stale {
+        words.extend([part.dir(), part.stamp_file(), payload.stamp(*part)]);
     }
+    adb.shell_run(host, serial, &words, deadline)
+        .await
+        .wrap_err("failed to copy the preview payload into the host's private files")?;
     Ok(())
 }
 
-/// The `run-as` words [`stream_payload`] runs on the device: `$1` is the
-/// run directory, `$2` the payload directory, `$3` the stamp, `$4` the
-/// archive's incoming stamp and `$5` its manifest.
-///
-/// The device's `/system/bin/sh` is mksh (AOSP `external/mksh`, the
-/// `cc_binary` named `sh`), whose `pipefail` option makes a failing
-/// `base64 -d` fail the pipeline even when `tar` succeeds. Toybox's
-/// `base64 -d` skips characters it cannot decode instead of failing, so the
-/// manifest check is what catches a stream corrupted in transit: toybox
-/// `sha256sum -c` (`toys/lsb/md5sum.c`) exits 1 on any mismatched, missing
-/// or malformed line, and `--status` silences its per-file report.
-const STREAM_SCRIPT: [&str; 9] = [
-    "sh",
-    "-c",
-    "set -o pipefail && cd \"$1\" && rm -f \"$3\" \"$4\" && rm -rf \"$2\" && \
-     base64 -d | tar -xf - && sha256sum --status -c \"$5\" && chmod a-w \"$2\"/lib/* && \
-     mv \"$4\" \"$3\" && cat \"$3\"",
-    "sh",
-    FILES_RUN_DIR,
-    PAYLOAD_DIR,
-    STAMP_FILE,
-    INCOMING_STAMP_FILE,
-    MANIFEST_FILE,
-];
+/// The shell user's half of [`push_payload`]'s install: `$1` is
+/// [`PUSH_STAGING_DIR`], the rest the `run-as` command to run. The staging
+/// directory is removed whatever that command's outcome, and its status is
+/// the call's.
+const INSTALL_SHELL_SCRIPT: &str =
+    "staging=$1; shift; \"$@\"; status=$?; rm -rf \"$staging\"; exit $status";
+
+/// The `run-as` half of [`push_payload`]'s install: `$1` is the run
+/// directory, `$2` the staging directory, `$3` the payload directory, then
+/// one `<part dir> <stamp file> <stamp>` triple per part to install. Each
+/// part's stamp is removed before its directory is replaced and written
+/// only after the copy and the `chmod` succeeded, so an interruption leaves
+/// no stamp naming a part that is partly deleted or partly copied. The
+/// copied files become read-only — `chmod a-w` satisfies the linker's
+/// read-only `System.load` requirement without write-protecting the
+/// directories, since unlinking needs write on the directory, not the file.
+const INSTALL_SCRIPT: &str = "cd \"$1\" && staging=$2 && payload=$3 && shift 3 && \
+     mkdir -p \"$payload\" || exit 1; \
+     while [ $# -gt 0 ]; do \
+     rm -f \"$2\" && rm -rf \"$payload/$1\" && cp -R \"$staging/$1\" \"$payload/$1\" && \
+     find \"$payload/$1\" -type f -exec chmod a-w {} + && printf %s \"$3\" > \"$2\" || exit 1; \
+     shift 3; done";
 
 /// Run the preview instrumentation: `am instrument -w` returns when the run
 /// finishes, and `-r` streams its result bundle. A failure reports the
@@ -654,7 +641,7 @@ mod tests {
     fn adb_argv(log: &Path) -> String {
         match std::fs::read_to_string(log) {
             Ok(argv) => argv,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => panic!("read the fake adb argv log: {error}"),
         }
     }
@@ -662,68 +649,32 @@ mod tests {
     /// A staged payload: one library plus an asset bundle holding a nested
     /// image and the bundle's sync stamp.
     fn staged_payload(machine: &TestMachine) -> DevicePayload {
-        let lib_dir = machine.dir("lib");
+        let dir = machine.dir("payload");
+        let lib_dir = machine.dir("payload/lib");
         std::fs::write(lib_dir.join("libx.so"), b"\x7fELF-library").expect("lib");
-        let bundle = machine.dir("stage/waterui_assets");
+        let bundle = machine.dir("payload/resources/waterui_assets");
         std::fs::write(bundle.join("waterui-sync-stamp"), b"assets-v1").expect("stamp");
         std::fs::create_dir_all(bundle.join("images")).expect("images dir");
         std::fs::write(bundle.join("images/logo.png"), b"logo-bytes").expect("image");
         smol::block_on(DevicePayload::from_staged(
-            &lib_dir,
+            dir,
             vec!["libx.so".to_string()],
-            &bundle,
-            "assets-v1",
+            "assets-v1".to_string(),
         ))
         .expect("the payload stages")
     }
 
-    /// The bytes a base64 stream in LF-ended lines carries.
-    fn base64_decoded(encoded: &[u8]) -> Vec<u8> {
-        use base64::Engine as _;
-
-        let text: Vec<u8> = encoded
-            .iter()
-            .copied()
-            .filter(|byte| *byte != b'\n')
-            .collect();
-        base64::engine::general_purpose::STANDARD
-            .decode(text)
-            .expect("the stream is base64")
-    }
-
-    /// Every member of the tar archive a base64 stream carries, in archive
-    /// order, with its bytes.
-    fn archive_members(encoded: &[u8]) -> Vec<(String, Vec<u8>)> {
-        use std::io::Read as _;
-
-        let archive = base64_decoded(encoded);
-        tar::Archive::new(archive.as_slice())
-            .entries()
-            .expect("the stream is a tar archive")
-            .map(|entry| {
-                let mut entry = entry.expect("a well-formed member");
-                let path = entry
-                    .path()
-                    .expect("a member path")
-                    .to_string_lossy()
-                    .into_owned();
-                let mut bytes = Vec::new();
-                entry.read_to_end(&mut bytes).expect("member bytes");
-                (path, bytes)
-            })
-            .collect()
-    }
-
     /// The positional arguments that end a run preparation's argv.
-    const PREPARE_ARGS: &str = "sh files/waterui-preview preview-run.json payload.stamp payload";
+    const PREPARE_ARGS: &str = "sh files/waterui-preview preview-run.json payload lib.stamp \
+                                resources.stamp lib resources";
 
     /// The run config a test run ships.
     const RUN_CONFIG: &[u8] = br#"{"width":320,"height":240}"#;
 
     /// A fake device whose instrumentation succeeds, whose `cat` answers a
     /// PNG, and whose installed host is already `versionCode` 7 — plus the
-    /// staged payload and host APK a run sends it. The streamed archive and
-    /// the run config the device receives land in files the test reads.
+    /// staged payload and host APK a run sends it. The run config the device
+    /// receives lands in a file the test reads.
     struct RenderingDevice {
         machine: TestMachine,
         host: Host,
@@ -731,7 +682,6 @@ mod tests {
         adb: Adb,
         payload: DevicePayload,
         apk: PathBuf,
-        stream: PathBuf,
         run_config: PathBuf,
     }
 
@@ -755,36 +705,40 @@ mod tests {
             )
             .expect("stage the canned cat");
             let log = machine.root().join("adb-argv.log");
-            let stream = machine.root().join("streamed-payload.tar");
             let run_config = machine.root().join("received-run-config.json");
             let host = machine.host([
                 ("ANDROID_SDK_ROOT", sdk.as_os_str()),
                 ("WATERUI_FAKE_ADB_LOG", log.as_os_str()),
-                ("WATERUI_FAKE_ADB_STREAM", stream.as_os_str()),
-                ("WATERUI_FAKE_ADB_RUN_CONFIG", run_config.as_os_str()),
+                ("WATERUI_FAKE_ADB_STDIN", run_config.as_os_str()),
             ]);
             let payload = staged_payload(&machine);
-            // The stream script ends by printing the stamp it installed.
-            machine.respond("ADB_STREAM_STAMP", payload.stamp());
             let apk = machine.file("host.apk", "apk");
             let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
             // Only the device run's own invocations are under test.
             std::fs::remove_file(&log).expect("clear the locate's argv");
-            Self {
+            let device = Self {
                 machine,
                 host,
                 log,
                 adb,
                 payload,
                 apk,
-                stream,
                 run_config,
-            }
+            };
+            device.holds_stamps(None, None);
+            device
         }
 
-        /// The payload stamp the device answers with.
-        fn holds_stamp(&self, stamp: &str) {
-            self.machine.respond("ADB_PAYLOAD_STAMP", stamp);
+        /// The part stamps the device answers with.
+        fn holds_stamps(&self, libraries: Option<&str>, resources: Option<&str>) {
+            self.machine.respond(
+                "ADB_RUN_AS_STDOUT",
+                &format!(
+                    "{}\n{}\n",
+                    libraries.unwrap_or_default(),
+                    resources.unwrap_or_default()
+                ),
+            );
         }
 
         /// One run's device-side half through the production
@@ -830,14 +784,13 @@ mod tests {
     // `platform-tools/adb.exe` cannot carry the shell dispatcher (see
     // `TestMachine::install_adb`), so the fake adb cannot run there.
 
-    /// A device holding no payload gets it streamed straight into the host's
-    /// private files — no `adb push`, no shell-side staging — after the run
-    /// is prepared and before the instrumentation; the archive carries the
-    /// whole payload and ends with the stamp. The old shell-side staging
-    /// directory is removed alongside, and that is its only mention.
+    /// A device holding no payload gets the whole payload directory in one
+    /// push into the shell user's staging directory, which the preparation
+    /// cleared, then one install call that copies every part and writes its
+    /// stamp — after the run is prepared and before the instrumentation.
     #[test]
     #[cfg(unix)]
-    fn a_device_without_the_payload_receives_it_streamed() {
+    fn a_device_without_the_payload_receives_one_push() {
         let device = RenderingDevice::new();
         let out = device.machine.root().join("preview.png");
 
@@ -845,22 +798,39 @@ mod tests {
 
         let argv = device.argv();
         let lines: Vec<&str> = argv.lines().collect();
+        let prepare = line_of(&lines, PREPARE_ARGS);
         assert!(
-            !argv.contains(" push "),
-            "nothing goes through adb push: {argv}"
+            lines[prepare].contains(
+                "sh /data/local/tmp/waterui-preview run-as dev.waterui.hydrolysis.preview sh -c"
+            ),
+            "the preparation clears the push staging before its run-as: {}",
+            lines[prepare]
         );
-        let legacy = line_of(&lines, "/data/local/tmp");
+        let push = line_of(&lines, " push ");
         assert_eq!(
-            lines[legacy], "-s serial shell rm -rf /data/local/tmp/waterui-preview",
+            lines[push],
+            format!(
+                "-s serial push {} /data/local/tmp/waterui-preview",
+                device.payload.dir().display()
+            ),
             "{argv}"
         );
-        let prepare = line_of(&lines, PREPARE_ARGS);
-        let stream = line_of(&lines, "tar -xf");
+        let install = line_of(&lines, "cp -R");
+        assert!(
+            lines[install].ends_with(&format!(
+                "sh files/waterui-preview /data/local/tmp/waterui-preview payload lib lib.stamp {} \
+                 resources resources.stamp {}",
+                device.payload.stamp(PayloadPart::Libraries),
+                device.payload.stamp(PayloadPart::Resources)
+            )),
+            "the install names every part with its stamp: {}",
+            lines[install]
+        );
         let instrument = line_of(&lines, "am instrument");
         let pull = line_of(&lines, "cat files/waterui-preview/out/preview.png");
         assert!(
-            prepare < stream && stream < instrument && instrument < pull,
-            "prepare -> stream -> instrument -> pull: {argv}"
+            prepare < push && push < install && install < instrument && instrument < pull,
+            "prepare -> push -> install -> instrument -> pull: {argv}"
         );
         assert!(
             lines[instrument].contains(
@@ -868,47 +838,8 @@ mod tests {
                  waterui-preview/preview-run.json -e assetsRoot \
                  waterui-preview/payload/resources/waterui_assets"
             ),
-            "the instrumentation loads the streamed payload: {}",
+            "the instrumentation loads the installed payload: {}",
             lines[instrument]
-        );
-
-        let members = archive_members(&std::fs::read(&device.stream).expect("the stream landed"));
-        let names: Vec<&str> = members.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "payload",
-                "payload/lib",
-                "payload/resources",
-                "payload/resources/waterui_assets",
-                "payload/resources/waterui_assets/images",
-                "payload/lib/libx.so",
-                "payload/resources/waterui_assets/images/logo.png",
-                "payload/resources/waterui_assets/waterui-sync-stamp",
-                "payload/SHA256SUMS",
-                "payload.stamp.new",
-            ],
-            "directories first, then the payload, its manifest, the stamp last"
-        );
-        assert_eq!(members[5].1, b"\x7fELF-library");
-        let mut manifest = String::new();
-        for (path, bytes) in &members[5..8] {
-            use sha2::Digest as _;
-
-            manifest.push_str(&hex::encode(sha2::Sha256::digest(bytes)));
-            manifest.push_str("  ");
-            manifest.push_str(path);
-            manifest.push('\n');
-        }
-        assert_eq!(
-            String::from_utf8_lossy(&members[8].1),
-            manifest,
-            "the manifest is every payload file's `sha256sum` line"
-        );
-        assert_eq!(
-            members[9].1,
-            device.payload.stamp().as_bytes(),
-            "the archive's trailing member is the payload's stamp"
         );
         assert_eq!(
             std::fs::read(&device.run_config).expect("the run config landed"),
@@ -923,42 +854,57 @@ mod tests {
         );
     }
 
-    /// A device whose stamp matches the payload's content hash receives
-    /// nothing: the payload is neither streamed nor pushed.
+    /// A device whose stamps match every part's content hash receives
+    /// nothing: no push and no install.
     #[test]
     #[cfg(unix)]
     fn an_unchanged_payload_issues_no_push() {
         let device = RenderingDevice::new();
-        device.holds_stamp(device.payload.stamp());
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
 
         smol::block_on(device.run(&device.machine.root().join("preview.png")));
 
         let argv = device.argv();
         assert!(
-            !argv.contains("tar -xf") && !argv.contains(" push "),
+            !argv.contains(" push ") && !argv.contains("cp -R"),
             "an unchanged payload ships nothing: {argv}"
-        );
-        assert!(
-            !device.stream.exists(),
-            "no archive reached the device's stdin"
         );
     }
 
-    /// A device holding a different stamp gets the changed payload streamed,
-    /// carrying the new stamp.
+    /// A device whose library stamp differs while its resources are current
+    /// gets only the libraries' directory pushed and installed.
     #[test]
     #[cfg(unix)]
-    fn a_changed_payload_streams() {
+    fn a_changed_library_pushes_only_its_directory() {
         let device = RenderingDevice::new();
-        device.holds_stamp(&"0".repeat(64));
+        device.holds_stamps(
+            Some(&"0".repeat(64)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
 
         smol::block_on(device.run(&device.machine.root().join("preview.png")));
 
-        assert!(device.argv().contains("tar -xf"), "{}", device.argv());
-        let members = archive_members(&std::fs::read(&device.stream).expect("the stream landed"));
-        let (last, stamp) = members.last().expect("the archive has members");
-        assert_eq!(last, "payload.stamp.new");
-        assert_eq!(stamp, device.payload.stamp().as_bytes());
+        let argv = device.argv();
+        let lines: Vec<&str> = argv.lines().collect();
+        assert_eq!(
+            lines[line_of(&lines, " push ")],
+            format!(
+                "-s serial push {} /data/local/tmp/waterui-preview/lib",
+                device.payload.dir().join("lib").display()
+            ),
+            "{argv}"
+        );
+        let install = lines[line_of(&lines, "cp -R")];
+        assert!(
+            install.ends_with(&format!(
+                "payload lib lib.stamp {}",
+                device.payload.stamp(PayloadPart::Libraries)
+            )) && !install.contains("resources"),
+            "only the libraries install: {install}"
+        );
     }
 
     /// A warm run — host installed, payload current — is the detached
@@ -969,7 +915,10 @@ mod tests {
     #[cfg(unix)]
     fn a_warm_run_issues_the_minimal_adb_sequence() {
         let device = RenderingDevice::new();
-        device.holds_stamp(device.payload.stamp());
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
 
         smol::block_on(device.run(&device.machine.root().join("preview.png")));
 
@@ -990,8 +939,7 @@ mod tests {
         );
         assert_eq!(lines.len(), 5, "{argv}");
         assert!(
-            lines[2].starts_with("-s serial shell -T run-as dev.waterui.hydrolysis.preview sh -c")
-                && lines[2].ends_with(PREPARE_ARGS),
+            lines[2].starts_with("-s serial shell -T sh -c") && lines[2].ends_with(PREPARE_ARGS),
             "{argv}"
         );
         assert!(
@@ -1006,17 +954,21 @@ mod tests {
         );
     }
 
-    /// A device whose `run-as` commands run the production scripts for real
-    /// — the host's `sh`, `tar`, `find` — inside a scratch private-files
-    /// directory, so the payload stamp's guarantee is checked against the
-    /// shell sequence the device actually runs.
+    /// A device whose shell commands run the production scripts for real —
+    /// the host's `sh`, `cp`, `find` — with a `run-as` that enters a scratch
+    /// private-files directory and a scratch `/data/local/tmp`, so the part
+    /// stamps' guarantee is checked against the sequence the device runs.
     #[cfg(unix)]
     struct ScriptedDevice {
         machine: TestMachine,
         adb: Adb,
         payload: DevicePayload,
-        /// The scratch private-files directory `run-as` starts in.
+        /// The scratch private-files directory `run-as` enters.
         data: PathBuf,
+        /// The scratch `/data/local/tmp`.
+        tmp: PathBuf,
+        /// The shims every scripted host puts ahead of the system tools.
+        shims: PathBuf,
     }
 
     #[cfg(unix)]
@@ -1026,109 +978,117 @@ mod tests {
             let sdk = machine.install_android_sdk();
             machine.install_adb();
             let data = machine.dir("device-data");
+            let tmp = machine.dir("device-tmp");
             let payload = staged_payload(&machine);
             let adb = smol::block_on(Adb::locate(&machine.host([("ANDROID_SDK_ROOT", &sdk)])))
                 .expect("fake adb must locate");
+            let shims = machine.dir("device-shims");
+            write_shim(
+                &shims,
+                "run-as",
+                "shift\ncd \"$WATERUI_FAKE_DEVICE_DATA\" || exit 1\nexec \"$@\"",
+            );
             Self {
                 machine,
                 adb,
                 payload,
                 data,
+                tmp,
+                shims,
             }
         }
 
-        /// A host reaching the scripted device, with `extra` set as well.
-        fn host(&self, extra: &[(&str, &std::ffi::OsStr)]) -> Host {
+        /// A host reaching the scripted device, with the shims in `extra`
+        /// — a directory — ahead of the device's tools.
+        fn host(&self, extra: Option<&Path>) -> Host {
             let sdk = self.machine.root().join("sdk");
-            self.machine.host(
-                [
-                    ("ANDROID_SDK_ROOT", sdk.as_os_str()),
-                    ("WATERUI_FAKE_DEVICE_DATA", self.data.as_os_str()),
-                ]
-                .into_iter()
-                .chain(extra.iter().copied()),
-            )
+            let path = extra.map_or_else(
+                || self.shims.display().to_string(),
+                |extra| format!("{}:{}", extra.display(), self.shims.display()),
+            );
+            self.machine.host([
+                ("ANDROID_SDK_ROOT", sdk.as_os_str()),
+                ("WATERUI_FAKE_DEVICE_DATA", self.data.as_os_str()),
+                ("WATERUI_FAKE_DEVICE_TMP", self.tmp.as_os_str()),
+                ("WATERUI_FAKE_DEVICE_PATH", std::ffi::OsStr::new(&path)),
+            ])
         }
 
         fn run_dir(&self) -> PathBuf {
             self.data.join(FILES_RUN_DIR)
         }
 
-        /// The payload stamp the device holds, `None` when it holds none.
-        fn stamp(&self) -> Option<String> {
-            match std::fs::read_to_string(self.run_dir().join(STAMP_FILE)) {
+        /// The push staging directory as the scratch `/data/local/tmp`
+        /// holds it.
+        fn staging(&self) -> PathBuf {
+            self.tmp.join("waterui-preview")
+        }
+
+        /// The stamp the device holds for `part`, `None` when it holds none.
+        fn stamp(&self, part: PayloadPart) -> Option<String> {
+            match std::fs::read_to_string(self.run_dir().join(part.stamp_file())) {
                 Ok(stamp) => Some(stamp),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                 Err(error) => panic!("read the device stamp: {error}"),
             }
         }
 
-        /// A directory whose `name` is a shell script running `body`, to put
-        /// ahead of the device's tools.
+        /// A directory of its own whose `name` is a shell script running
+        /// `body`, to put ahead of the device's tools.
         fn shim(&self, name: &str, body: &str) -> PathBuf {
-            use std::os::unix::fs::PermissionsExt as _;
-
-            let dir = self.machine.dir("device-shims");
-            let path = dir.join(name);
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write the shim");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-                .expect("make the shim executable");
+            let dir = self.machine.dir(format!("shim-{name}"));
+            write_shim(&dir, name, body);
             dir
         }
 
-        /// Prepare a run under `host`, answering the stamp it read back.
-        fn prepare(&self, host: &Host) -> Option<String> {
+        /// Prepare a run under `host`, answering the stamps it read back.
+        fn prepare(&self, host: &Host) -> HeldStamps {
             smol::block_on(prepare_run(host, &self.adb, "serial", RUN_CONFIG))
                 .expect("the run prepares")
         }
 
-        /// Stream the payload under `host`.
-        fn stream(&self, host: &Host) -> Result<()> {
-            smol::block_on(stream_payload(host, &self.adb, "serial", &self.payload))
+        /// Push and install `parts` under `host`.
+        fn push(&self, host: &Host, parts: &[PayloadPart]) -> Result<()> {
+            smol::block_on(push_payload(
+                host,
+                &self.adb,
+                "serial",
+                &self.payload,
+                parts,
+            ))
         }
 
-        /// Prepare and stream once with nothing in the way, so the device
-        /// holds the whole payload and its stamp.
+        /// Prepare and push once with nothing in the way, so the device
+        /// holds the whole payload and its stamps.
         fn install_whole_payload(&self) {
-            let host = self.host(&[]);
-            assert_eq!(self.prepare(&host), None, "a fresh device holds no stamp");
-            self.stream(&host).expect("a whole archive streams");
-            assert_eq!(self.stamp().as_deref(), Some(self.payload.stamp()));
+            let host = self.host(None);
+            let held = self.prepare(&host);
+            assert_eq!(
+                self.payload.stale_parts(&held),
+                PayloadPart::ALL,
+                "a fresh device holds no stamp"
+            );
+            self.push(&host, &PayloadPart::ALL)
+                .expect("the whole payload installs");
         }
     }
 
-    /// The encoded archive [`DevicePayload::write_encoded_archive`]
-    /// produces, whole.
+    /// Write an executable shell script `name` running `body` into `dir`.
     #[cfg(unix)]
-    fn encoded_archive(payload: &DevicePayload) -> Vec<u8> {
-        let (sender, receiver) = async_channel::unbounded();
-        smol::block_on(payload.write_encoded_archive(sender)).expect("the archive writes");
-        std::iter::from_fn(|| receiver.try_recv().ok())
-            .flatten()
-            .collect()
+    fn write_shim(dir: &Path, name: &str, body: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write the shim");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make the shim executable");
     }
 
-    /// A whole archive installs the payload — libraries read-only — and its
-    /// stamp, which the next preparation reads back, and the preparation
-    /// removes whatever the run directory's layout does not name. The stamp
-    /// lands only after every step before it succeeded: a failing `chmod`,
-    /// the step right before the rename, leaves none.
-    #[test]
+    /// The sorted entry names of `dir`.
     #[cfg(unix)]
-    fn a_whole_payload_archive_installs_its_stamp_last() {
-        let device = ScriptedDevice::new();
-        let run_dir = device.run_dir();
-        std::fs::create_dir_all(run_dir.join("old-layout/lib")).expect("an old layout");
-        std::fs::write(run_dir.join(INCOMING_STAMP_FILE), "stale").expect("a stale stamp");
-
-        device.install_whole_payload();
-        assert_eq!(
-            device.prepare(&device.host(&[])).as_deref(),
-            Some(device.payload.stamp()),
-            "the preparation reads the installed stamp back"
-        );
-        let mut names: Vec<String> = std::fs::read_dir(&run_dir)
-            .expect("list the run dir")
+    fn entry_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("list the directory")
             .map(|entry| {
                 entry
                     .expect("an entry")
@@ -1138,10 +1098,47 @@ mod tests {
             })
             .collect();
         names.sort_unstable();
+        names
+    }
+
+    /// The preparation clears a stale push staging directory and whatever
+    /// the run directory's layout does not name; a whole push then installs
+    /// every part — libraries read-only — and its stamp, which the next
+    /// preparation reads back, and removes the staging directory. A stamp
+    /// lands only after every step before it succeeded: a failing `chmod`
+    /// leaves the part without one, the other part's untouched, and the
+    /// staging directory removed all the same.
+    #[test]
+    #[cfg(unix)]
+    fn a_pushed_part_installs_its_stamp_last() {
+        let device = ScriptedDevice::new();
+        let run_dir = device.run_dir();
+        std::fs::create_dir_all(run_dir.join("old-layout/lib")).expect("an old layout");
+        std::fs::write(run_dir.join("payload.stamp"), "stale").expect("an old stamp");
+        std::fs::create_dir_all(run_dir.join(PAYLOAD_DIR)).expect("an old payload");
+        std::fs::write(run_dir.join("payload/SHA256SUMS"), "stale").expect("an old manifest");
+        std::fs::create_dir_all(device.staging().join("lib")).expect("a stale staging dir");
+
+        device.install_whole_payload();
+        assert!(
+            !device.staging().exists(),
+            "the install removes the staging"
+        );
         assert_eq!(
-            names,
-            ["out", "payload", "payload.stamp", "preview-run.json"],
+            entry_names(&run_dir),
+            [
+                "lib.stamp",
+                "out",
+                "payload",
+                "preview-run.json",
+                "resources.stamp"
+            ],
             "the run directory holds only what its layout names"
+        );
+        assert_eq!(
+            entry_names(&run_dir.join(PAYLOAD_DIR)),
+            ["lib", "resources"],
+            "the payload holds only its parts"
         );
         let library = run_dir.join("payload/lib/libx.so");
         assert_eq!(
@@ -1155,131 +1152,62 @@ mod tests {
                 .readonly(),
             "the library is read-only for System.load"
         );
-
-        let failing_chmod = device.shim("chmod", "exit 1");
-        let host = device.host(&[("WATERUI_FAKE_DEVICE_PATH", failing_chmod.as_os_str())]);
-        let error = device
-            .stream(&host)
-            .expect_err("a failing chmod fails the stream");
-        assert!(format!("{error:#}").contains("status"), "{error:#}");
-        assert_eq!(device.stamp(), None, "no stamp before the last step");
-    }
-
-    /// An archive cut off before its end — here inside the stamp member's
-    /// header, after every payload file — fails the stream and leaves the
-    /// device holding no stamp.
-    #[test]
-    #[cfg(unix)]
-    fn a_cut_off_payload_archive_installs_no_stamp() {
-        let device = ScriptedDevice::new();
-        device.install_whole_payload();
-
-        // The archive ends with the stamp's 512-byte header, its data padded
-        // to 512 bytes, and the 1024-byte end marker. The cut falls on a
-        // whole base64 group, so the decoder itself sees nothing wrong and
-        // the archive's own end is what is missing.
-        let archive_len = base64_decoded(&encoded_archive(&device.payload)).len();
-        let groups = (archive_len - 1024 - 512 - 256) / 3 * 4;
-        let cut = (groups + groups / 76).to_string();
-        let host = device.host(&[("WATERUI_FAKE_DEVICE_STDIN_LIMIT", cut.as_ref())]);
-        let error = device
-            .stream(&host)
-            .expect_err("a cut-off archive fails the stream");
-        assert!(format!("{error:#}").contains("status"), "{error:#}");
-        assert_eq!(device.stamp(), None);
-    }
-
-    /// A failing decoder fails the script, and leaves the device holding
-    /// no stamp, even when `tar` succeeds — what the test pins is that
-    /// `set -o pipefail` is there, so `base64 -d`'s exit status reaches
-    /// the script. The host's decoder rejects the appended `!!!!`; the
-    /// device's toybox `base64 -d` would skip those bytes and exit 0 —
-    /// the right outcome there, the archive is intact — and on the device
-    /// `sha256sum -c` is what catches corruption.
-    #[test]
-    #[cfg(unix)]
-    fn a_corrupted_base64_stream_installs_no_stamp() {
-        let device = ScriptedDevice::new();
-        device.install_whole_payload();
-
-        let corrupt_at = encoded_archive(&device.payload).len().to_string();
-        let host = device.host(&[("WATERUI_FAKE_DEVICE_STDIN_CORRUPT_AT", corrupt_at.as_ref())]);
-        let error = device
-            .stream(&host)
-            .expect_err("a corrupted stream fails the stream");
-        assert!(format!("{error:#}").contains("status"), "{error:#}");
-        assert_eq!(device.stamp(), None);
-    }
-
-    /// A byte of file data changed in transit — the same length, the
-    /// base64 still valid, so neither the decoder nor `tar` can notice —
-    /// fails the manifest check, and the device holds no stamp.
-    #[test]
-    #[cfg(unix)]
-    fn a_substituted_data_byte_installs_no_stamp() {
-        use base64::Engine as _;
-
-        let device = ScriptedDevice::new();
-        device.install_whole_payload();
-
-        // A 3-byte group inside the library's data encodes to 4 characters
-        // at the same place in the stream; flipping one of its bytes gives
-        // 4 other valid characters.
-        let encoded = encoded_archive(&device.payload);
-        let archive = base64_decoded(&encoded);
-        let data = archive
-            .windows(b"ELF-library".len())
-            .position(|window| window == b"ELF-library")
-            .expect("the library's data is in the archive");
-        let group = data.div_ceil(3) * 3;
-        let original = &archive[group..group + 3];
-        let mut changed = original.to_vec();
-        changed[1] ^= 0x01;
-        let engine = base64::engine::general_purpose::STANDARD;
-        let (from, to) = (engine.encode(original), engine.encode(&changed));
         assert_eq!(
-            encoded
-                .windows(from.len())
-                .filter(|window| *window == from.as_bytes())
-                .count(),
-            1,
-            "`{from}` names exactly one place in the stream"
+            std::fs::read(run_dir.join("payload/resources/waterui_assets/images/logo.png"))
+                .expect("the asset landed"),
+            b"logo-bytes"
+        );
+        let held = device.prepare(&device.host(None));
+        assert!(
+            device.payload.stale_parts(&held).is_empty(),
+            "the preparation reads every installed stamp back: {held:?}"
         );
 
-        let replace = format!("{from}:{to}");
-        let host = device.host(&[("WATERUI_FAKE_DEVICE_STDIN_REPLACE", replace.as_ref())]);
+        let failing_chmod = device.shim("chmod", "exit 1");
         let error = device
-            .stream(&host)
-            .expect_err("a substituted data byte fails the stream");
+            .push(
+                &device.host(Some(&failing_chmod)),
+                &[PayloadPart::Libraries],
+            )
+            .expect_err("a failing chmod fails the install");
         assert!(format!("{error:#}").contains("status"), "{error:#}");
-        assert_eq!(device.stamp(), None);
+        assert_eq!(device.stamp(PayloadPart::Libraries), None);
+        assert_eq!(
+            device.stamp(PayloadPart::Resources).as_deref(),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+            "a part not pushed keeps its stamp"
+        );
+        assert!(
+            !device.staging().exists(),
+            "a failed install still removes the staging"
+        );
     }
 
-    /// A delete of the previous payload that dies part-way — the libraries
-    /// gone, the rest not — leaves no stamp that could name the remains.
+    /// A delete of the previous part that dies part-way — the libraries
+    /// gone, the directory not — leaves no stamp that could name the
+    /// remains.
     #[test]
     #[cfg(unix)]
-    fn an_interrupted_payload_delete_leaves_no_matching_stamp() {
+    fn an_interrupted_part_delete_leaves_no_matching_stamp() {
         let device = ScriptedDevice::new();
         device.install_whole_payload();
 
         let dying_rm = device.shim(
             "rm",
             "for arg; do\n\
-             \x20   if [ \"$arg\" = payload ]; then /bin/rm -f payload/lib/*; exit 1; fi\n\
+             \x20   if [ \"$arg\" = payload/lib ]; then /bin/rm -f payload/lib/*; exit 1; fi\n\
              done\n\
              exec /bin/rm \"$@\"",
         );
-        let host = device.host(&[("WATERUI_FAKE_DEVICE_PATH", dying_rm.as_os_str())]);
         let error = device
-            .stream(&host)
-            .expect_err("an interrupted delete fails the stream");
+            .push(&device.host(Some(&dying_rm)), &[PayloadPart::Libraries])
+            .expect_err("an interrupted delete fails the install");
         assert!(format!("{error:#}").contains("status"), "{error:#}");
         assert!(
             !device.run_dir().join("payload/lib/libx.so").exists(),
             "the delete got part-way"
         );
-        assert_eq!(device.stamp(), None);
+        assert_eq!(device.stamp(PayloadPart::Libraries), None);
     }
 
     #[test]
