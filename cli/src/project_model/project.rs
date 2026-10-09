@@ -1,5 +1,7 @@
 //! Project management and build utilities for `WaterUI` CLI.
 
+pub use super::platforms::{PlatformConfig, PlatformName, resolve_backend};
+
 use std::fmt::Write as _;
 
 use cargo_toml::Manifest as CargoManifest;
@@ -2462,6 +2464,7 @@ impl Project {
                 accessory: false,
                 embedded: false,
             },
+            platforms: BTreeMap::new(),
             hydrolysis: None,
             waterui_path: options
                 .waterui_path
@@ -3565,6 +3568,13 @@ struct WateruiPatchesRecord<'a> {
 pub struct Manifest {
     /// Package information.
     pub package: Package,
+    /// Per-platform backend declarations (`[platforms.<platform>]`).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "super::platforms::deserialize"
+    )]
+    pub platforms: BTreeMap<PlatformName, PlatformConfig>,
     /// Hydrolysis backend selections (`[hydrolysis]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hydrolysis: Option<crate::backend::HydrolysisConfig>,
@@ -3758,6 +3768,7 @@ impl Manifest {
     pub fn new(package: Package) -> Self {
         Self {
             package,
+            platforms: BTreeMap::new(),
             hydrolysis: None,
             waterui_path: None,
             waterui_patches: cargo_toml::PatchSet::new(),
