@@ -69,11 +69,10 @@ pub use platform::BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
 pub use platform::{
-    BackEdge, BackNavigation, FlingDeceleration, GpuSurfaceWindow, InputEvent, KeyCode, KeyState,
+    BackEdge, BackNavigation, DeviceLoss, FlingDeceleration, InputEvent, KeyCode, KeyState,
     Modifiers, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow,
-    PlatformWindow, PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider,
-    TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, WindowKeyboardArea,
-    WindowSafeArea,
+    PlatformWindow, PointerButton, PointerKind, SurfaceError, SurfaceFrame, TextInputPurpose,
+    TextInputState, TouchPhase, TouchScrollConfig, WindowKeyboardArea, WindowSafeArea,
 };
 pub use platform_view::{
     PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,

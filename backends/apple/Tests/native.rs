@@ -100,6 +100,8 @@ fn trials() -> Vec<Trial> {
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
+    #[cfg(feature = "webview")]
+    tests.extend(webview::trials());
     tests
 }
 
@@ -167,6 +169,18 @@ fn base_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test("resolve::toggle_leaves_follow_the_stretch_rule", || {
+            resolve::toggle_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
+        Trial::test("resolve::stepper_leaves_follow_the_stretch_rule", || {
+            resolve::stepper_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
+        Trial::test("resolve::toggle_rows_place_the_control_by_kind", || {
+            resolve::toggle_rows_place_the_control_by_kind();
+            Ok(())
+        }),
         Trial::test(
             "picture::a_laid_out_picture_rasterizes_at_its_bounds",
             || {
@@ -714,7 +728,9 @@ mod resolve {
     use waterui::component::form::picker::{PickerItem, picker};
     use waterui::component::form::secure::{Secure, SecureField};
     use waterui::component::slider::slider;
+    use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
+    use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
@@ -897,6 +913,185 @@ mod resolve {
                 offered.height < 500.0,
                 "{name} must not grow into the offered height"
             );
+        }
+    }
+
+    /// `docs/layout-spec.md` §3 and §6 over the style × label-visibility
+    /// matrix: only a switch with a visible label is `Horizontal` and
+    /// answers the proposed width; a checkbox and a hidden label answer the
+    /// row's intrinsic size. `Automatic` is the platform's default first —
+    /// a switch on iOS, a checkbox on macOS.
+    pub fn toggle_leaves_follow_the_stretch_rule() {
+        let on = binding(false);
+        #[cfg(target_os = "ios")]
+        let automatic = StretchAxis::Horizontal;
+        #[cfg(target_os = "macos")]
+        let automatic = StretchAxis::None;
+        let cases = [
+            (
+                "switch",
+                Toggle::new("Wi-Fi", &on).switch(),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "hidden-label switch",
+                Toggle::new("Wi-Fi", &on).switch().hide_label(),
+                StretchAxis::None,
+            ),
+            (
+                "checkbox",
+                Toggle::new("Wi-Fi", &on).checkbox(),
+                StretchAxis::None,
+            ),
+            (
+                "hidden-label checkbox",
+                Toggle::new("Wi-Fi", &on).checkbox().hide_label(),
+                StretchAxis::None,
+            ),
+            ("automatic", Toggle::new("Wi-Fi", &on), automatic),
+            (
+                "hidden-label automatic",
+                Toggle::new("Wi-Fi", &on).hide_label(),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, toggle, axis) in cases {
+            let leaf = render(toggle);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 400.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(400.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                400.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 400 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
+    /// `docs/layout-spec.md` §3 and §6 over label visibility: a stepper is
+    /// `Horizontal` and answers the proposed width only while its label is
+    /// visible; a hidden label answers the buttons' intrinsic size
+    /// (water-rs/waterui#2364).
+    pub fn stepper_leaves_follow_the_stretch_rule() {
+        let quantity = binding(3_i32);
+        let cases = [
+            (
+                "visible label",
+                stepper("Quantity", &quantity),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "hidden label",
+                stepper("Quantity", &quantity).hide_label(),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, stepper, axis) in cases {
+            let leaf = render(stepper);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 400.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(400.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                400.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 400 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
+    /// A switch row puts the label at the leading edge and the switch at
+    /// the trailing edge of the full width; a checkbox row reads box first,
+    /// then the label `LABEL_SPACING` after it.
+    pub fn toggle_rows_place_the_control_by_kind() {
+        #[cfg(target_os = "macos")]
+        use cocoa_ui::appkit::toggle::LABEL_SPACING;
+        #[cfg(target_os = "ios")]
+        use cocoa_ui::uikit::toggle::LABEL_SPACING;
+
+        // Auto Layout snaps frames to the backing scale's pixel grid.
+        fn assert_near(actual: f64, expected: f64, what: &str, name: &str) {
+            assert!(
+                (actual - expected).abs() < 0.5,
+                "{name}: {what} — expected {expected}, got {actual}"
+            );
+        }
+
+        let on = binding(false);
+        for (name, toggle, switch) in [
+            ("switch", Toggle::new("Wi-Fi", &on).switch(), true),
+            ("checkbox", Toggle::new("Wi-Fi", &on).checkbox(), false),
+        ] {
+            let leaf = render(toggle);
+            let height = f64::from(leaf.layout().measure(ProposalSize::UNSPECIFIED).size.height);
+            let row = leaf.view();
+            cocoa_ui::view::set_frame(row, cocoa_ui::Rect::new(0.0, 0.0, 400.0, height));
+            cocoa_ui::view::layout_immediately(row);
+            let subviews = cocoa_ui::view::subviews(row);
+            assert_eq!(
+                subviews.len(),
+                2,
+                "{name}: the row holds the label and the control"
+            );
+            let label = cocoa_ui::view::frame(&subviews[0]);
+            // The constraints pin the control's alignment rect, not its
+            // frame: a UISwitch frame overshoots the pinned trailing edge
+            // by 2 pt, so the edge Auto Layout placed is the alignment
+            // rect's.
+            let control = cocoa_ui::view::alignment_frame(&subviews[1]);
+            let control_trailing = control.origin.x + control.size.width;
+            if switch {
+                assert_near(label.origin.x, 0.0_f64, "label leading", name);
+                assert_near(
+                    control_trailing,
+                    400.0_f64,
+                    "switch at the trailing edge",
+                    name,
+                );
+            } else {
+                assert_near(control.origin.x, 0.0_f64, "box leading", name);
+                assert_near(
+                    label.origin.x,
+                    control_trailing + LABEL_SPACING,
+                    "label after the box",
+                    name,
+                );
+            }
         }
     }
 }
@@ -7035,6 +7230,125 @@ mod navigation {
         assert!(
             settles_with_bar(&nav, &root, true),
             "the buried page's recorded intent applies when it shows again"
+        );
+    }
+}
+
+/// The web view leaf's real-engine cases.
+///
+/// Bridge admission is decided inside `WebKit` at navigation time, so only
+/// a genuine `WKWebView` proves a non-admitted document never receives the
+/// bridge — a mock of the handle's own bookkeeping would merely restate it.
+#[cfg(feature = "webview")]
+mod webview {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, block_on_main, pump_main_until};
+    use waterui_webview::{
+        AnyWebViewHandle, BackendEvent, BridgeOrigins, JsReply, OriginPolicy, ScriptInjectionTime,
+        Url, WebViewEvent,
+    };
+
+    use super::mtm;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "webview::a_non_admitted_document_gets_no_bridge_globals",
+            || {
+                a_non_admitted_document_gets_no_bridge_globals();
+                Ok(())
+            },
+        )]
+    }
+
+    /// Navigates to `destination` and waits for the engine to report the
+    /// load finished — delegate callbacks arrive on the main run loop,
+    /// which `pump_main_until` turns.
+    fn navigate(handle: &AnyWebViewHandle, destination: &str, loaded: &Rc<Cell<u32>>) {
+        let before = loaded.get();
+        let url: Url = destination
+            .parse()
+            .unwrap_or_else(|error| panic!("{destination} must parse: {error}"));
+        handle.go_to(&url);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || loaded.get() > before),
+            "the engine never finished loading {destination}"
+        );
+    }
+
+    /// The `typeof` of every global the bridge installs, evaluated in the
+    /// document currently loaded — `waterui`, the `__wateruiEval` wrapper
+    /// and the `__wateruiState` store from the document-start script, plus
+    /// the `__wateruiProbe` the case itself injects, riding the same keyed
+    /// `inject_script` the mirrored-state seed does. The probe answers an
+    /// array, whose reply is its JSON encoding on every engine.
+    fn bridge_globals(handle: &AnyWebViewHandle) -> String {
+        block_on_main(
+            MAIN_QUEUE_DEADLINE,
+            handle.run_javascript(
+                "[typeof waterui, typeof __wateruiEval, typeof __wateruiState, typeof __wateruiProbe]",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("the globals probe must evaluate: {error}"))
+        .to_string()
+    }
+
+    /// A document outside the admission policy must receive none of the
+    /// bridge: no `waterui` object, no `__wateruiEval`, no `__wateruiState`,
+    /// and none of the keyed injections the state seed is one of.
+    ///
+    /// The first leg loads under `BridgeOrigins::Any` so the globals are
+    /// expected present — without it, a build that simply never installed
+    /// anything would pass too. Both legs load `data:` documents, so the
+    /// policy is the only difference between them. The first is not
+    /// `about:blank`: a fresh view's first `about:blank` navigation reuses
+    /// the initial empty document, which runs no document-start script.
+    fn a_non_admitted_document_gets_no_bridge_globals() {
+        let webview = waterui_apple::native_test_support::webview::open(mtm());
+        let handle = webview.handle().clone();
+
+        let loaded = Rc::new(Cell::new(0_u32));
+        let _events = handle.watch({
+            let loaded = Rc::clone(&loaded);
+            move |event| {
+                if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
+                    loaded.set(loaded.get() + 1);
+                }
+            }
+        });
+
+        handle.add_handler(
+            "noop",
+            Box::new(|_| -> waterui_webview::HandlerFuture {
+                Box::pin(async { Ok(JsReply::Json(b"null".to_vec())) })
+            }),
+        );
+        handle.inject_script(
+            "waterui:test-probe",
+            "globalThis.__wateruiProbe = true;",
+            ScriptInjectionTime::DocumentStart,
+        );
+
+        let initial: Url = "https://waterui.dev".parse().expect("parses");
+        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Any, &initial));
+        navigate(&handle, "data:text/html,admitted", &loaded);
+        assert_eq!(
+            bridge_globals(&handle),
+            r#"["object","function","object","boolean"]"#,
+            "an admitted document must receive the whole bridge"
+        );
+
+        // The default policy — only the origin the view was opened at —
+        // admits nothing a `data:` document could report, so the next
+        // navigation must leave the page with no bridge at all.
+        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &initial));
+        navigate(&handle, "data:text/plain,elsewhere", &loaded);
+        assert_eq!(
+            bridge_globals(&handle),
+            r#"["undefined","undefined","undefined","undefined"]"#,
+            "a document outside the admission policy must get no bridge globals"
         );
     }
 }

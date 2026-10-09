@@ -94,7 +94,7 @@ pub async fn run_bench_suite(
     } else {
         let temp_dir = tempfile::Builder::new()
             .prefix("waterui-bench-")
-            .tempdir()
+            .tempdir_in(host.temp_dir())
             .wrap_err("failed to create temporary bench report directory")?;
         let path = temp_dir.path().to_path_buf();
         _temp_dir = temp_dir;
@@ -112,14 +112,8 @@ pub async fn run_bench_suite(
         .arg(nextest_filter_expression(options.filter.as_deref()))
         .current_dir(&options.path)
         .env(BENCH_WARMUPS_ENV, options.config.warmups.to_string());
-    // The bench build's `--target`-less compilation is for the host — an
-    // Apple target on macOS — so it carries the same deployment-target floor
-    // the managed builds do.
-    if let Some((key, value)) =
-        crate::apple::platform::apple_deployment_target_env(&target_lexicon::Triple::host())
-    {
-        command.env(key, value);
-    }
+    // Cargo runs in the project and reads its CLI-managed deployment targets
+    // from .cargo/config.toml, just like the user's own cargo commands.
     command
         .env(BENCH_SAMPLES_ENV, options.config.samples.to_string())
         .env(

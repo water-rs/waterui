@@ -1,4 +1,3 @@
-use crate::animation::AnimationKey;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TailMark, TextInputModel,
@@ -9,7 +8,6 @@ use crate::renderer::{
 };
 use crate::text::{TextLayout as _, TextPosition};
 use core::num::NonZeroUsize;
-use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
@@ -189,6 +187,7 @@ pub fn render_text_field_parts(
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let owner = state;
     let theme = ctx.theme();
     let input_metrics = theme.input_field_metrics();
     ctx.renderer_mut()
@@ -310,7 +309,6 @@ pub fn render_text_field_parts(
         });
     }
     let selection_slot = Rc::clone(&state.selection_slot);
-    let value_identity = value_binding.identity();
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
         line_limit,
@@ -367,19 +365,16 @@ pub fn render_text_field_parts(
         0.0
     };
     let interaction_motion = theme.interaction_motion();
-    let label_progress = if let Some(identity) = value_identity {
-        ctx.renderer_mut().sample_widget_scalar_target(
-            AnimationKey::scalar_with_discriminator(identity, TEXT_FIELD_LABEL_ANIMATION_KEY),
-            label_target,
-            if label_target > 0.0 {
-                interaction_motion.focus_enter
-            } else {
-                interaction_motion.focus_exit
-            },
-        )
-    } else {
-        label_target
-    };
+    let label_progress = ctx.renderer_mut().sample_owned_scalar_target(
+        owner,
+        TEXT_FIELD_LABEL_ANIMATION_KEY,
+        label_target,
+        if label_target > 0.0 {
+            interaction_motion.focus_enter
+        } else {
+            interaction_motion.focus_exit
+        },
+    );
     // The prompt-as-label is sized the way a label view is: its own laid-out
     // height floored at the theme's minimum label height. The minimum alone
     // shrinks the Material line box and drops the resting prompt below
@@ -604,6 +599,7 @@ pub fn render_secure_field_parts(
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let owner = state;
     let theme = ctx.theme();
     let input_metrics = theme.input_field_metrics();
     let disabled = {
@@ -692,7 +688,6 @@ pub fn render_secure_field_parts(
         });
     }
     let selection_slot = Rc::clone(&state.selection_slot);
-    let value_identity = value_binding.identity();
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
     };
@@ -719,19 +714,16 @@ pub fn render_secure_field_parts(
         0.0
     };
     let interaction_motion = theme.interaction_motion();
-    let label_progress = if let Some(identity) = value_identity {
-        ctx.renderer_mut().sample_widget_scalar_target(
-            AnimationKey::scalar_with_discriminator(identity, SECURE_FIELD_LABEL_ANIMATION_KEY),
-            label_target,
-            if label_target > 0.0 {
-                interaction_motion.focus_enter
-            } else {
-                interaction_motion.focus_exit
-            },
-        )
-    } else {
-        label_target
-    };
+    let label_progress = ctx.renderer_mut().sample_owned_scalar_target(
+        owner,
+        SECURE_FIELD_LABEL_ANIMATION_KEY,
+        label_target,
+        if label_target > 0.0 {
+            interaction_motion.focus_enter
+        } else {
+            interaction_motion.focus_exit
+        },
+    );
     if label_height > 0.0 {
         flush_material_label(
             ctx,

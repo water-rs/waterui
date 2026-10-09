@@ -470,6 +470,9 @@ impl ResolvedFramework {
         require_framework_members(&self.metadata, &self.origin())?;
         self.android_min_api_level()?;
         self.android_gradle_version()?;
+        for platform in ["macos", "ios", "tvos", "watchos", "visionos"] {
+            self.apple_deployment_target(platform)?;
+        }
         // The stable split is an invariant of the source, not of the writer:
         // a selection persisted before `experimental-packages` existed keeps
         // the withheld set inside `scaffold`, so re-derive it on load —
@@ -714,6 +717,53 @@ impl ResolvedFramework {
             .as_str()
             .filter(|version| !version.trim().is_empty())
             .ok_or_else(|| eyre!("{} declares an invalid {KEY}: {value}", self.origin()))
+    }
+
+    /// The native deployment target declared by the selected framework.
+    pub(crate) fn apple_deployment_target(&self, platform: &str) -> Result<&str> {
+        let key = format!("package.metadata.waterui.apple-deployment-targets.{platform}");
+        let value = self
+            .metadata
+            .get("apple-deployment-targets")
+            .and_then(|targets| targets.get(platform))
+            .ok_or_else(|| eyre!("{} does not declare {key}", self.origin()))?;
+        value
+            .as_str()
+            .filter(|version| {
+                !version.is_empty()
+                    && version.split('.').all(|part| {
+                        !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            })
+            .ok_or_else(|| eyre!("{} declares an invalid {key}: {value}", self.origin()))
+    }
+
+    /// Update only the CLI-owned deployment entries, preserving user config.
+    pub(crate) async fn cargo_config(&self, root: &Path) -> Result<toml_edit::DocumentMut> {
+        let path = root.join(".cargo/config.toml");
+        let mut config = match smol::fs::read_to_string(&path).await {
+            Ok(contents) => contents.parse::<toml_edit::DocumentMut>()?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                toml_edit::DocumentMut::new()
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !config.contains_key("env") {
+            config["env"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let env = config["env"]
+            .as_table_like_mut()
+            .ok_or_else(|| eyre!("{}: env must be a table", path.display()))?;
+        for (platform, variable) in [
+            ("macos", "MACOSX_DEPLOYMENT_TARGET"),
+            ("ios", "IPHONEOS_DEPLOYMENT_TARGET"),
+        ] {
+            env.insert(
+                variable,
+                toml_edit::value(self.apple_deployment_target(platform)?),
+            );
+        }
+        Ok(config)
     }
 
     /// The framework manifest the selection's metadata was read from, as a
@@ -2696,6 +2746,7 @@ pub(crate) mod test_fixtures {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
+                apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
                 android-min-api-level = 31
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
@@ -2797,6 +2848,7 @@ pub(crate) mod test_fixtures {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
+                apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
                 android-min-api-level = 31
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
@@ -4461,6 +4513,31 @@ mod tests {
         metadata["minimum-cli-version"] = toml::Value::String(">=0.1.4".into());
         assert!(minimum_cli_version(&metadata).is_err());
         assert!(minimum_cli_version(&toml::Table::new()).unwrap().is_none());
+    }
+
+    #[test]
+    fn apple_deployment_floor_is_required_and_names_the_revision() {
+        let mut framework = test_fixtures::dev_framework();
+        framework.metadata.remove("apple-deployment-targets");
+        let error = framework.validated().unwrap_err().to_string();
+        assert!(error.contains("apple-deployment-targets.macos"), "{error}");
+        assert!(error.contains(&"a".repeat(40)), "{error}");
+    }
+
+    #[test]
+    fn apple_deployment_env_reads_the_selected_framework() {
+        let mut framework = test_fixtures::dev_framework();
+        framework.metadata["apple-deployment-targets"]["ios"] = toml::Value::String("27.1".into());
+        let triple = "aarch64-apple-ios-macabi".parse().unwrap();
+        assert_eq!(
+            crate::apple::platform::apple_deployment_target_env(&framework, &triple).unwrap(),
+            Some(("IPHONEOS_DEPLOYMENT_TARGET", "27.1"))
+        );
+        for invalid in ["", " 26.0", "26.", "26.a"] {
+            framework.metadata["apple-deployment-targets"]["ios"] =
+                toml::Value::String(invalid.into());
+            assert!(framework.apple_deployment_target("ios").is_err());
+        }
     }
 
     #[test]

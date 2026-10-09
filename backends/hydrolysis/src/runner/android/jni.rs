@@ -44,14 +44,17 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// layout-spec.md §7.1, and the host's `WindowInsetsAnimationCompat` progress
 /// pushes each IME animation frame; 11 = `nativeUiThreadServices` creates
 /// the one executor per UI thread at load time, and `nativeCreateSession`
-/// takes its handle so every session shares it; 12 = a platform-view
+/// takes its handle so every session shares it; 12 = `nativeSetHighRefresh`
+/// takes a typed `active` flag in place of the `-1f` sentinel float the
+/// runner decoded as a release, and `nativeSurfaceAttached` carries the
+/// display's peak refresh rate that flag asks for; 13 = a platform-view
 /// placement names either a factory `kind` or a registered `instance`, and
-/// the `HydrolysisWebView` natives join the edge; 13 =
+/// the `HydrolysisWebView` natives join the edge; 14 =
 /// `nativePlatformViewFocus` reported whether a mounted platform-view child
-/// held UI focus; 14 = the report reads through the frame instead —
+/// held UI focus; 15 = the report reads through the frame instead —
 /// `onNativePlatformViewFocus` / `platform_view_focus_inside` replaces the
 /// pushed native, which left with it.
-pub const JNI_SCHEMA: jint = 14;
+pub const JNI_SCHEMA: jint = 15;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -431,11 +434,18 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
     _class: JClass,
     session_ptr: jlong,
     surface: JObject,
+    peak_refresh_hz: jfloat,
     width: jint,
     height: jint,
     generation: jlong,
 ) -> jboolean {
     guard_val(&mut env, 0, |env| {
+        if !(peak_refresh_hz.is_finite() && peak_refresh_hz > 0.0) {
+            return Err(JniError(format!(
+                "hydrolysis android: surface attached with peak refresh rate {peak_refresh_hz} Hz; \
+                 the host must report its display's positive peak rate"
+            )));
+        }
         let window = unsafe {
             // SAFETY: env is a live JNIEnv and `surface` is the
             // android.view.Surface the band just produced; the call acquires
@@ -453,6 +463,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
         session(session_ptr)
             .surface_attached_with_generation(
                 window,
+                peak_refresh_hz,
                 crate::num_cast::i32_as_u32(width.max(0)),
                 crate::num_cast::i32_as_u32(height.max(0)),
                 crate::num_cast::i64_as_u64(generation),
@@ -510,16 +521,22 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
     });
 }
 
+/// The scheduler's high-refresh demand: `active` asks the surface for its
+/// display's peak rate — reported with the surface attach — for as long as
+/// the pump runs or a touch is held; a cleared flag releases the request.
+/// The session holds the demand across surface generations, so a
+/// re-attached band gets it back without a demand change.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHighRefresh(
     mut env: JNIEnv,
     _class: JClass,
     session_ptr: jlong,
-    fps: jfloat,
+    active: jboolean,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr).set_high_refresh_demand((fps > 0.0).then_some(fps));
-        Ok(())
+        session(session_ptr)
+            .set_high_refresh_demand(active != 0)
+            .map_err(JniError)
     });
 }
 

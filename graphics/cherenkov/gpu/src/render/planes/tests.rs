@@ -77,13 +77,13 @@ unsafe impl GlobalAlloc for ThreadAllocator {
     }
 }
 
-fn start_tracking() {
+pub(super) fn start_tracking() {
     ALLOCATIONS.with(|count| count.set(0));
     REALLOCATIONS.with(|count| count.set(0));
     TRACKING.with(|tracking| tracking.set(true));
 }
 
-fn stop_tracking() -> (usize, usize) {
+pub(super) fn stop_tracking() -> (usize, usize) {
     TRACKING.with(|tracking| tracking.set(false));
     (ALLOCATIONS.with(Cell::get), REALLOCATIONS.with(Cell::get))
 }

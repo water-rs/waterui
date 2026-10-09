@@ -252,7 +252,7 @@ impl RenderNode {
     /// Build a persistent morph-shape node: retain the resolved morph payload and
     /// re-fill its interpolated path every flush. The morph progress is resolved
     /// through the animation controller each frame — an explicit `progress` signal
-    /// is watched via `read_signal`/`resolve_animated_scalar_with_discriminator`, and
+    /// is watched via `read_signal`/`resolve_owned_scalar`, and
     /// a time-based animation drives continuous frames via `sample_morph_progress` —
     /// so the morph stays live. Stretches to fill the proposal (`StretchAxis::Both`).
     pub(super) fn build_morph_shape(

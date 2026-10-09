@@ -196,9 +196,7 @@ async fn materialize_android_host(
         return Ok(host_dir);
     }
 
-    if host_dir.exists() {
-        fs::remove_dir_all(&host_dir).await?;
-    }
+    remove_dir_if_present(&host_dir).await?;
     fs::create_dir_all(&host_dir).await?;
 
     let dir = host_dir.to_string_lossy().into_owned();
@@ -266,31 +264,44 @@ async fn require_painter_module(
     painter: HydrolysisAndroidPainter,
 ) -> eyre::Result<PathBuf> {
     let resolved = project.resolved_framework().await?;
-    let host_root = materialize_android_host(project, &resolved).await?;
+    let host_root = materialize_android_host(project, resolved).await?;
     let subdirectory = resolved.hydrolysis_android_host_subdirectory()?;
     let host_project_dir = host_root.join(subdirectory);
     require_host_module(
         &host_project_dir,
         painter.host_module(),
         "painter selection is explicit and never falls back",
-    )?;
+    )
+    .await?;
     Ok(host_project_dir)
 }
 
 /// The pinned host checkout must ship the Gradle `module` the selection
-/// needs — a painter band (`gpu`) or the system-WebView bridge (`webview`) —
-/// or the scaffold is an error here, never at Gradle's dependency
-/// substitution.
+/// needs — a painter band (`gpu`), the system-WebView bridge (`webview`) or
+/// the preview host (`preview`) — or the scaffold is an error here, never at
+/// Gradle's dependency substitution.
 ///
 /// # Errors
 ///
-/// Returns an error when the checkout ships no `module/` directory.
-fn require_host_module(host_project_dir: &Path, module: &str, reason: &str) -> eyre::Result<()> {
+/// Returns an error when the checkout has no `module/` directory.
+async fn require_host_module(
+    host_project_dir: &Path,
+    module: &str,
+    reason: &str,
+) -> eyre::Result<()> {
     let module_dir = host_project_dir.join(module);
-    if !module_dir.is_dir() {
-        bail!(
+    let metadata = fs::metadata(&module_dir).await.wrap_err_with(|| {
+        format!(
             "the hydrolysis android host at {} ships no `{module}` module: {} does not exist; \
              {reason}",
+            host_project_dir.display(),
+            module_dir.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!(
+            "the hydrolysis android host at {} ships no `{module}` module: {} is not a \
+             directory; {reason}",
             host_project_dir.display(),
             module_dir.display()
         );
@@ -315,7 +326,8 @@ async fn template_entry(
             host_project_dir,
             "webview",
             "the app's `webview` feature selection needs the system-WebView bridge",
-        )?;
+        )
+        .await?;
     }
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
@@ -370,7 +382,7 @@ async fn android_template_context(
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
     let ctx =
-        HydrolysisBackend::template_context(project, &project.resolved_framework().await?).await?;
+        HydrolysisBackend::template_context(project, project.resolved_framework().await?).await?;
     let system_webview = ctx.webview_backend_feature()?.is_some();
     Ok(ctx
         .with_hydrolysis_android(
@@ -511,7 +523,10 @@ pub async fn build_with_features(
     let options = options.with_static_runtime();
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    if !backend_path.join("Cargo.toml").is_file() {
+    if !fs::metadata(backend_path.join("Cargo.toml"))
+        .await
+        .is_ok_and(|metadata| metadata.is_file())
+    {
         bail!(
             "Hydrolysis backend not found at {}. Run `water run --platform android --backend hydrolysis` to initialize it.",
             backend_path.display()
@@ -787,10 +802,17 @@ pub async fn run_on_device<D: Device + AndroidAbiProvider>(
 pub async fn clean_jni_libs(project: &Project) -> eyre::Result<()> {
     let jni_libs_dir =
         android_dir(&project.backend_path::<HydrolysisBackend>()).join("app/src/main/jniLibs");
-    if jni_libs_dir.exists() {
-        fs::remove_dir_all(&jni_libs_dir).await?;
-    }
+    remove_dir_if_present(&jni_libs_dir).await?;
     Ok(())
+}
+
+/// Remove `dir` and everything under it; a directory that is already gone
+/// is the outcome asked for, and every other failure is reported.
+async fn remove_dir_if_present(dir: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(dir).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 /// The preview host APK's application id — also the `run-as` package a
@@ -1021,23 +1043,14 @@ struct PreviewHostComposite {
 impl PreviewHostComposite {
     async fn prepare(project: &Project, out: &Path) -> eyre::Result<Self> {
         let resolved = project.resolved_framework().await?;
-        let host_root = materialize_android_host(project, &resolved).await?;
+        let host_root = materialize_android_host(project, resolved).await?;
         let host_project_dir = host_root.join(resolved.hydrolysis_android_host_subdirectory()?);
-        let preview_module = host_project_dir.join("preview");
-        let metadata = fs::metadata(&preview_module).await.wrap_err_with(|| {
-            format!(
-                "the hydrolysis android host at {} ships no `preview` module: {} does not exist",
-                host_root.display(),
-                preview_module.display()
-            )
-        })?;
-        if !metadata.is_dir() {
-            bail!(
-                "the hydrolysis android host at {} ships no `preview` module: {} is not a directory",
-                host_root.display(),
-                preview_module.display()
-            );
-        }
+        require_host_module(
+            &host_project_dir,
+            "preview",
+            "the preview host composes the generated app against it",
+        )
+        .await?;
         let relative_host = pathdiff::diff_paths(&host_project_dir, out).ok_or_else(|| {
             eyre::eyre!(
                 "cannot express the hydrolysis android host at {} relative to {}",
@@ -1054,7 +1067,7 @@ impl PreviewHostComposite {
             toolchain_host: project.host().clone(),
             out: out.to_path_buf(),
             host_project_dir,
-            context: HydrolysisBackend::template_context(project, &resolved).await?,
+            context: HydrolysisBackend::template_context(project, resolved).await?,
             entry,
         })
     }
@@ -1332,7 +1345,7 @@ mod tests {
                 .resolved_framework()
                 .await
                 .expect("framework resolves");
-            let checkout = materialize_android_host(&project, &resolved)
+            let checkout = materialize_android_host(&project, resolved)
                 .await
                 .expect("host materializes");
             // The checkout clones the framework repository itself at the
@@ -1368,7 +1381,7 @@ mod tests {
             // fake git entirely and the host still resolves.
             std::fs::remove_file(machine.bin().join(tool_file_name("git")))
                 .expect("remove fake git");
-            let again = materialize_android_host(&project, &resolved)
+            let again = materialize_android_host(&project, resolved)
                 .await
                 .expect("stamped checkout needs no git");
             assert_eq!(again, checkout);

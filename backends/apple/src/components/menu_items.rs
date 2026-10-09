@@ -239,6 +239,7 @@ pub(super) fn append_items(
 #[cfg(all(target_os = "ios", feature = "menu"))]
 pub(super) fn build_menu(
     mtm: cocoa_ui::MainThreadMarker,
+    key_commands: &cocoa_ui::uikit::KeyCommands,
     title: &str,
     icon: Option<&str>,
     items: &[ResolvedMenuItem],
@@ -253,7 +254,7 @@ pub(super) fn build_menu(
         groups.push(&[]);
     }
     let children: Vec<platform::MenuElement> = if flat {
-        menu_elements(groups[0], env, mtm)
+        menu_elements(groups[0], env, mtm, key_commands)
     } else {
         groups
             .iter()
@@ -263,7 +264,7 @@ pub(super) fn build_menu(
                     "",
                     None,
                     true,
-                    &menu_elements(group, env, mtm),
+                    &menu_elements(group, env, mtm, key_commands),
                 ))
             })
             .collect()
@@ -271,14 +272,16 @@ pub(super) fn build_menu(
     platform::Menu::new(mtm, title, icon, false, &children)
 }
 
-/// `buildUIKitMenuElements`: one element per item — `UIAction`s for
-/// commands carrying title, subtitle, icon, disabled/destructive
-/// attributes, on-state and handler; nested menus recurse.
+/// `buildUIKitMenuElements`: one element per item — `UIAction`s, or
+/// `UIKeyCommand`s when the command declares a shortcut, carrying title,
+/// subtitle, icon, disabled/destructive attributes, on-state and handler;
+/// nested menus recurse.
 #[cfg(all(target_os = "ios", feature = "menu"))]
 fn menu_elements(
     items: &[ResolvedMenuItem],
     env: &Environment,
     mtm: cocoa_ui::MainThreadMarker,
+    key_commands: &cocoa_ui::uikit::KeyCommands,
 ) -> Vec<platform::MenuElement> {
     items
         .iter()
@@ -293,20 +296,16 @@ fn menu_elements(
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
-                    platform::MenuAction::new(mtm, &kit.label, move || {
+                    platform::MenuAction::command(mtm, key_commands, &kit, move || {
                         action.call(&env);
-                    })
-                    .with_subtitle(kit.subtitle.as_deref())
-                    .with_icon(kit.symbol.as_deref())
-                    .with_disabled(!kit.enabled)
-                    .with_destructive(kit.destructive)
-                    .with_selected(kit.selected),
+                    }),
                 ))
             }
             ResolvedMenuItem::Menu(submenu) => {
                 let title = item_title(&submenu.label.content.snapshot());
                 Some(platform::MenuElement::Submenu(build_menu(
                     mtm,
+                    key_commands,
                     &title,
                     submenu.icon.as_ref().map(|icon| icon.name.as_str()),
                     &submenu.items.snapshot(),

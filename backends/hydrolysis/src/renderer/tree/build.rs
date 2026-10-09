@@ -844,14 +844,22 @@ impl RenderNode {
         } else {
             env.clone()
         };
-        Self::Wrapper(Box::new(WrapperNode {
+        let is_material_group = matches!(effect, WrapperEffect::MaterialGroup);
+        let node = Self::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
             effect,
             env,
             released_offsets: Cell::default(),
             child,
-        }))
+        }));
+        if is_material_group {
+            // The marker is a property of the node, not of a record: flag the
+            // cell at build so a partial descent into a descendant subtree can
+            // find every enclosing scope from the ancestry (#2268).
+            node.core().cell.material_group_scope.set(true);
+        }
+        node
     }
 
     /// The environment a metadata-carried callback captures: the one its
@@ -930,9 +938,6 @@ impl RenderNode {
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
         let dirty = Rc::new(Cell::new(false));
-        let dirty_key = Rc::new(());
-        let key = Rc::as_ptr(&dirty_key) as usize;
-        let signals = renderer.signals.clone();
         let replaced_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_ids);
         // The node retains one immutable row set per applied event: the
@@ -942,7 +947,7 @@ impl RenderNode {
         let applied = Rc::new(RefCell::new(views.snapshot()));
         let applied_for_watch = Rc::clone(&applied);
         // A rebuild in progress already recaptures the whole membership —
-        // the same gate `mark_collection_dirty` applies to its dirty flag.
+        // a fire inside one must not mark the cell the build is writing.
         let rebuild_active = renderer.rebuild_active_flag();
         let guard = views.watch(.., {
             let dirty = Rc::clone(&dirty);
@@ -955,7 +960,6 @@ impl RenderNode {
                     &mut replaced_for_watch.borrow_mut(),
                 );
                 *applied_for_watch.borrow_mut() = event_snapshot;
-                signals.mark_collection_dirty(key, 0);
                 if !rebuild_active.get()
                     && let Some(cell) = cell.upgrade()
                 {
@@ -1013,7 +1017,6 @@ impl RenderNode {
             transition,
             dirty,
             replaced_ids,
-            _dirty_key: dirty_key,
             _guard: guard,
             _layout_guards: layout_guards,
         }))
@@ -1036,10 +1039,7 @@ impl RenderNode {
     ) -> Self {
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
-        let dirty_key = Rc::new(());
         let dirty = Rc::new(Cell::new(true));
-        let key = Rc::as_ptr(&dirty_key) as usize;
-        let signals = renderer.signals.clone();
         let dirty_for_watch = Rc::clone(&dirty);
         let replaced_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_ids);
@@ -1067,7 +1067,6 @@ impl RenderNode {
                     &mut replaced_for_watch.borrow_mut(),
                 );
                 *snapshot_for_watch.borrow_mut() = event_snapshot;
-                signals.mark_collection_dirty(key, 0);
                 if !rebuild_active.get()
                     && let Some(cell) = cell.upgrade()
                 {
@@ -1112,7 +1111,6 @@ impl RenderNode {
             floor_sample: Cell::new(None),
             dirty,
             replaced_ids,
-            _dirty_key: dirty_key,
             _guard: guard,
             _direction_guard: direction_guard,
             _layout_guards: layout_guards,
@@ -1204,8 +1202,7 @@ impl RenderNode {
         let cell = Rc::downgrade(&core.cell);
         // The connect itself delivers the pending initial content through
         // the receiver: the rebuild that produced this node already renders
-        // exactly that view, so it is never a change to mark — the same gate
-        // `mark_dynamic_dirty` applies to the dirty set.
+        // exactly that view, so it is never a change to mark.
         let render_generation = signals.rebuild_generation();
         let rebuild_active = renderer.rebuild_active_flag();
         dynamic.connect_with_pending_view(Rc::clone(&pending), {
@@ -1219,15 +1216,12 @@ impl RenderNode {
                 *pending.borrow_mut() = Some(update.into_value());
                 // A real content change marks the host structure-dirty; the
                 // flush rebuilds only this node's child. A rebuild already in
-                // flight covers it — the generation gate `mark_dynamic_dirty`
-                // applies to its dirty flag.
-                if !is_initial {
-                    signals.mark_dynamic_dirty(identity, 0);
-                    if !rebuild_active.get()
-                        && let Some(cell) = cell.upgrade()
-                    {
-                        cell.mark(Dirty::STRUCTURE);
-                    }
+                // flight covers it, so the mark is gated on one not running.
+                if !is_initial
+                    && !rebuild_active.get()
+                    && let Some(cell) = cell.upgrade()
+                {
+                    cell.mark(Dirty::STRUCTURE);
                 }
             }
         });

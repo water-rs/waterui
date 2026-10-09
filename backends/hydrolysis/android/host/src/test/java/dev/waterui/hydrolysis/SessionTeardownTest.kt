@@ -353,7 +353,7 @@ class ShadowNativeBridge {
 
         @JvmStatic
         @Implementation
-        fun nativeSetHighRefresh(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") fps: Float) {
+        fun nativeSetHighRefresh(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") active: Boolean) {
             assertLive(sessionPtr)
         }
     }

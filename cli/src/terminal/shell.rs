@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use waterui_cli::build::{BuildProgress, CompileEvent};
 use waterui_cli::device::PanicInfo;
+use waterui_cli::toolchain::Host;
 
 /// ANSI styles for output.
 mod styles {
@@ -338,11 +339,12 @@ impl Shell {
     /// crash report the operating system wrote for it, if any.
     pub fn panic(
         &self,
+        host: &Host,
         panic: &PanicInfo,
         extra: Option<&str>,
         crash_report: Option<&std::path::Path>,
     ) {
-        let _ = self.panic_report(&PanicReport::from_panic(panic, extra, crash_report));
+        let _ = self.panic_report(host, &PanicReport::from_panic(panic, extra, crash_report));
     }
 
     /// Clears all progress bars before the command exits.
@@ -370,11 +372,14 @@ fn parse_log_tag(msg: &str) -> Option<(&str, &str)> {
     Some((tag, rest))
 }
 
-/// Find a file by walking up from cwd to find workspace root.
+/// Find a file by walking up from the host's working directory.
 ///
 /// Tries to find the file relative to directories containing Cargo.toml.
-fn find_file_in_workspace(relative_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
+fn find_file_in_workspace(
+    host: &Host,
+    relative_path: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let cwd = host.cwd();
 
     // First try relative to cwd
     let direct = cwd.join(relative_path);
@@ -383,7 +388,7 @@ fn find_file_in_workspace(relative_path: &std::path::Path) -> Option<std::path::
     }
 
     // Walk up the directory tree looking for Cargo.toml (workspace root indicators)
-    let mut current = cwd.as_path();
+    let mut current = cwd;
     while let Some(parent) = current.parent() {
         let candidate = parent.join(relative_path);
         if candidate.exists() {
@@ -456,14 +461,14 @@ impl<'a> PanicReport<'a> {
 
 impl Shell {
     /// Display a panic report with colored output and code context.
-    pub fn panic_report(&self, report: &PanicReport<'_>) -> io::Result<()> {
+    pub fn panic_report(&self, host: &Host, report: &PanicReport<'_>) -> io::Result<()> {
         match &self.output {
-            ShellOut::Human => Self::panic_report_human(report),
+            ShellOut::Human => Self::panic_report_human(host, report),
             ShellOut::Json => Self::panic_report_json(report),
         }
     }
 
-    fn panic_report_human(report: &PanicReport<'_>) -> io::Result<()> {
+    fn panic_report_human(host: &Host, report: &PanicReport<'_>) -> io::Result<()> {
         use std::fs::File;
         use std::io::BufRead;
         use std::path::Path;
@@ -496,8 +501,9 @@ impl Shell {
             let resolved_path = if file_path.is_absolute() {
                 Some(file_path.to_path_buf())
             } else {
-                // Try to find the file by walking up from cwd to find workspace root
-                find_file_in_workspace(file_path)
+                // Try to find the file by walking up from the host's working
+                // directory to find workspace root
+                find_file_in_workspace(host, file_path)
             };
 
             // Try to read and display code context
