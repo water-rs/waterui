@@ -24,6 +24,7 @@ use tracing::info;
 
 use crate::{
     android::{
+        KotlinToolchain,
         backend::manifest_permissions,
         platform::{
             AndroidAbi, android_ffi_dependency_features, audit_android_permissions,
@@ -229,11 +230,15 @@ pub struct EmbeddedArtifact {
 /// # Errors
 /// Fails when no ABI is selected, the library cannot be rendered, any ABI's
 /// Rust build, the asset staging, or the Gradle assemble/publish step fails.
+///
+/// `kotlin` is the toolchain the caller's toolchain check resolved — every
+/// ABI's build reuses it rather than probing `kotlinc` again.
 pub async fn build_aar(
     project: &Project,
     painter: HydrolysisAndroidPainter,
     options: &BuildOptions,
     abis: &[AndroidAbi],
+    kotlin: &KotlinToolchain,
 ) -> Result<EmbeddedArtifact> {
     let Some((last_abi, earlier_abis)) = abis.split_last() else {
         bail!("no Android ABIs selected for the embedded build");
@@ -259,7 +264,7 @@ pub async fn build_aar(
     super::remove_dir_if_present(&jni_libs).await?;
     let build_abi = |abi: AndroidAbi| {
         let abi_options = options.clone().with_output_dir(jni_libs.join(abi.as_str()));
-        super::build_prepared(project, abi, abi_options, &[])
+        super::build_prepared(project, abi, abi_options, &[], kotlin)
     };
     for abi in earlier_abis {
         build_abi(*abi).await?;
