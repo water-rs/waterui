@@ -26,15 +26,6 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
 - `msrv` — `true` when the diff can move the toolchain floor: a
   `rust-version` key, any Cargo.toml dependency section (including
   `target.<cfg>.dependencies`), or Cargo.lock.
-- `test-assets` — `true` when a package whose test code needs a
-  generated or installed asset is in scope, or the whole workspace is:
-  the cli's `#[cfg(test)]` code `include_bytes!`s the generated
-  `Roboto-Regular.ttf` fixture, and the `waterui-testing` dev-dependency
-  closure's styled tests resolve the test fonts `install.py` installs
-  by family name. The set is the tool's `test_asset_consumers` — the
-  dev-dependency closure plus `waterui-cli` itself — so a crate that
-  merely dev-depends on `waterui-testing`, `waterui-controls` say,
-  still gets the fonts installed before its check.
 - `scene-assets` — `true` when a package whose `--all-targets` compile
   `include_bytes!`s a generated Cherenkov scene font is in scope, or the
   whole workspace is. That is a fixed owner set, not a dev-dependency
@@ -187,7 +178,6 @@ def main():
         "package-args": "",
         "comment-only": "false",
         "msrv": "true",
-        "test-assets": "true",
     }
     try:
         base = git("merge-base", args.base, args.head).strip()
@@ -223,18 +213,12 @@ def main():
         )
 
         # The tool always runs: its `owners` map is the only path→crate
-        # mapper (the comment-only lane reads it), and
-        # `test_asset_consumers` drives `test-assets` in both lanes.
+        # mapper (the comment-only lane reads it).
         report = json.loads(
             subprocess.check_output(
                 [args.tool, "--base", base, "--head", args.head], text=True
             )
         ) if entries else None
-
-        consumers = set((report or {}).get("test_asset_consumers", []))
-
-        def assets_for(names):
-            return "true" if consumers & set(names) else "false"
 
         def scene_assets_for(names):
             return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
@@ -244,7 +228,6 @@ def main():
                 {
                     "packages": "",
                     "msrv": "false",
-                    "test-assets": "false",
                     "scene-assets": "false",
                 }
             )
@@ -255,7 +238,6 @@ def main():
                 {
                     "packages": "workspace",
                     "msrv": "true" if msrv else "false",
-                    "test-assets": "true",
                     "scene-assets": "true",
                 }
             )
@@ -273,7 +255,6 @@ def main():
                     "package-args": " ".join(f"-p {name}" for name in owners),
                     "comment-only": "true",
                     "msrv": "true" if msrv else "false",
-                    "test-assets": assets_for(owners),
                     "scene-assets": scene_assets_for(owners),
                 }
             )
@@ -284,7 +265,6 @@ def main():
                     "packages": " ".join(affected),
                     "package-args": " ".join(f"-p {name}" for name in affected),
                     "msrv": "true" if msrv else "false",
-                    "test-assets": assets_for(affected),
                     "scene-assets": scene_assets_for(affected),
                 }
             )
