@@ -285,7 +285,7 @@ waterui-inspector-app = { version = "0.5.2", path = "components/devtools/inspect
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
 waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
-# Nothing in this workspace links the GTK, WinUI or Dew backends: the `water`
+# Nothing in this workspace links the GTK or WinUI backends: the `water`
 # CLI reads these entries to scaffold a launcher crate. Each pins the
 # backend's nami-migration head — the published releases still require the
 # pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and

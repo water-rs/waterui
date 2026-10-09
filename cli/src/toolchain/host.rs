@@ -344,8 +344,7 @@ impl Host {
     ///
     /// This is the deliberate exception to the null-stdin default of
     /// [`Host::command`] — for the tools that interact with the user's
-    /// terminal: the `create vite` framework picker, `<pm> install`,
-    /// `espflash flash --monitor`, QEMU's `-nographic` serial console, and
+    /// terminal: the `create vite` framework picker, `<pm> install`, and
     /// launchers that take the TTY over entirely. The
     /// `std` type is returned so callers that `exec` or group the child can;
     /// async callers wrap it with `smol::process::Command::from`.

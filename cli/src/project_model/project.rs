@@ -380,22 +380,6 @@ impl Project {
             .join(variant))
     }
 
-    /// Resolve an isolated target directory for a backend built by a different Rust
-    /// toolchain.
-    ///
-    /// Cargo hashes the compiler into every unit fingerprint, so a backend that pins
-    /// its own toolchain would invalidate the host
-    /// units of [`Self::water_target_dir`] on every switch if it shared the directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the shared build-cache directory cannot be resolved.
-    pub async fn toolchain_target_dir(&self, toolchain: &str) -> eyre::Result<PathBuf> {
-        Ok(crate::water_dir::shared_target_dir(self.host())
-            .await?
-            .join(format!("toolchain-{toolchain}")))
-    }
-
     /// Get the runtime backends configured for the project.
     #[must_use]
     pub const fn backends(&self) -> &Backends {

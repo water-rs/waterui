@@ -12,8 +12,8 @@
 # `/bin/mkdir`/`/bin/cp` calls, which resolve regardless of PATH.
 #
 # Mutable state (`rustup toolchain install`/`default`/`target add`/
-# `component add`, `rustup update`, `cargo install`, `espup install`) lives
-# in files under the fake $HOME so a `--fix` run mutates the fixture and a
+# `component add`, `rustup update`, `cargo install`) lives in files
+# under the fake $HOME so a `--fix` run mutates the fixture and a
 # re-check observes the repair.
 #
 # Asymmetry with fake_tools.cmd: `sdkmanager --licenses`/`--install` drain
@@ -258,25 +258,6 @@ cargo)
                 _dest="${0%/*}/$_krate"
                 [ -e "$_dest" ] || /bin/cp "$0" "$_dest"
             fi
-            ;;
-    esac
-    exit 0
-    ;;
-espup)
-    case "$*" in
-        "install"*)
-            # `espup install` lays down the `esp` toolchain's pieces; the
-            # RISC-V GCC lands under ~/.espressif only with --esp-riscv-gcc.
-            _esp="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/esp"
-            /bin/mkdir -p \
-                "$_esp/xtensa-esp32-elf-clang/1.0/esp-clang/lib" \
-                "$_esp/xtensa-esp-elf/1.0/xtensa-esp-elf/bin" \
-                "$_esp/lib/rustlib/src/rust"
-            case "$*" in
-                *--esp-riscv-gcc*)
-                    /bin/mkdir -p "$HOME/.espressif/tools/riscv32-esp-elf/1.0/riscv32-esp-elf/bin"
-                    ;;
-            esac
             ;;
     esac
     exit 0

@@ -13,8 +13,8 @@ const APP_MODE_KEYS: &[(&[&str], &str)] = &[
     (&["package"], "type"),
     // `Water.toml` carries no `[backends]` table at all: the local runtime
     // checkout lives at `waterui_path/backends/apple`, and the Hydrolysis
-    // painter is
-    // `[hydrolysis]` — the whole table is retired, keys and subtables alike.
+    // painter is `[hydrolysis]` — the whole table is retired, keys and
+    // subtables alike.
     (&["backends"], ""),
 ];
 

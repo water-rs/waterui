@@ -305,12 +305,10 @@ fn resolve_backend(
     // The ESP32 variants stay selectable so the refusal can name what
     // replaces their backend: Dew is archived and Hydrolysis's embedded host
     // lands with #1601.
-    if default_backend(platform).is_none() {
+    let Some(default_backend) = default_backend(platform) else {
         bail!("{}", super::ESP32_UNSUPPORTED);
-    }
-    let backend = backend_override
-        .or_else(|| default_backend(platform))
-        .expect("non-ESP32 platforms all carry a default backend");
+    };
+    let backend = backend_override.unwrap_or(default_backend);
 
     // Validate backend supports platform
     let supported = matches!(

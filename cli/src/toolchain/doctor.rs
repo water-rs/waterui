@@ -1718,7 +1718,6 @@ mod tests {
             project.scope(TargetBackend::Android),
             BackendScope::Optional
         );
-
         let host_only = |backend, on_host: bool| {
             let expected = if on_host {
                 BackendScope::HostDefault

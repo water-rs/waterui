@@ -1321,7 +1321,6 @@ mod tests {
             project_packages: Some(BTreeSet::from(["waterui_test".to_string()])),
             web_frontend_arg: None,
             android_signing: None,
-
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
             launch: LaunchTemplateEntry::default(),
@@ -4128,18 +4127,17 @@ mod tests {
             .parse::<toml::Table>()
             .expect("root Cargo.toml should parse");
 
-        let native_features = manifest["target"]
-            ["cfg(not(any(target_arch = \"wasm32\", target_os = \"espidf\")))"]["dependencies"]
-            ["waterui"]
-            .get("features")
-            .and_then(toml::Value::as_array)
-            .map(|features| {
-                features
-                    .iter()
-                    .map(|feature| feature.as_str().expect("feature name"))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let native_features =
+            manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"]["waterui"]
+                .get("features")
+                .and_then(toml::Value::as_array)
+                .map(|features| {
+                    features
+                        .iter()
+                        .map(|feature| feature.as_str().expect("feature name"))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
         assert_eq!(native_features, Vec::<&str>::new());
         assert_eq!(
             manifest["dependencies"]["waterui"]["default-features"].as_bool(),
@@ -8040,7 +8038,7 @@ pub mod root {
             waterui_features.push("webview");
         }
         BTreeMap::from([(
-            "cfg(not(any(target_arch = \"wasm32\", target_os = \"espidf\")))".to_string(),
+            "cfg(not(target_arch = \"wasm32\"))".to_string(),
             GeneratedTargetSection {
                 dependencies: BTreeMap::from([(
                     "waterui".to_string(),

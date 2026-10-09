@@ -2383,11 +2383,11 @@ fn resolve_packages(
         }
         let package = match candidates.as_slice() {
             [package] => *package,
-            // An extracted crate the framework no longer builds never enters
-            // its lock — `waterui-gtk` releases from water-rs/gtk-backend — so
-            // the scaffold's declared requirement is the resolution, the same
-            // `=<version>` the registry-source arm below produces for a crate
-            // the framework still carries.
+            // An extracted crate the framework does not build never enters
+            // its lock, so the scaffold's declared registry version is the
+            // resolution — the same `=<version>` the registry-source arm
+            // below produces for a crate the framework still carries. (A
+            // declared git pin took the branch above.)
             [] => {
                 packages.insert(
                     name.to_owned(),
@@ -4520,6 +4520,7 @@ mod tests {
         let gtk_revision = "b".repeat(40);
         let scaffold = BTreeMap::from([
             ("waterui-version".to_string(), "0.3.0".to_string()),
+            ("hydrolysis-m3-version".to_string(), "0.2.1".to_string()),
             ("waterui-gtk-version".to_string(), "0.2.0".to_string()),
             (
                 "waterui-gtk-git".to_string(),
@@ -4530,6 +4531,9 @@ mod tests {
         let packages =
             resolve_packages(&scaffold, &lock, framework_repository(), &"a".repeat(40)).unwrap();
         assert!(packages["waterui"].git.is_some());
+        let m3 = &packages["hydrolysis-m3"];
+        assert!(m3.git.is_none());
+        assert_eq!(m3.version.as_ref().unwrap().to_string(), "=0.2.1");
         let gtk = &packages["waterui-gtk"];
         assert_eq!(
             gtk.git.as_deref(),
@@ -4638,6 +4642,11 @@ mod tests {
         );
         assert_eq!(gtk.rev.as_deref(), Some(revision.as_str()));
         assert_eq!(gtk.version.as_ref().unwrap().to_string(), "^0.1.2");
+        // A scaffold package declared by version alone still resolves the
+        // registry pin.
+        let m3 = framework.dependency("hydrolysis-m3");
+        assert!(m3.git.is_none());
+        assert_eq!(m3.version.as_ref().unwrap().to_string(), "=0.2.0");
     }
 
     #[test]
@@ -4808,6 +4817,13 @@ mod tests {
                 ..Default::default()
             },
         );
+        framework.packages.insert(
+            "hydrolysis-m3".to_owned(),
+            DependencyDetail {
+                version: Some("=0.2.1".parse().unwrap()),
+                ..Default::default()
+            },
+        );
         let identity = |name: &str, version: &str, source: String| LockedPackage {
             name: name.to_owned(),
             version: version.to_owned(),
@@ -4834,6 +4850,10 @@ mod tests {
             "0.2.0",
             gtk_source(&drifted)
         )));
+        // The registry pin holds only its exact version.
+        let registry = || "registry+https://github.com/rust-lang/crates.io-index".to_owned();
+        assert!(framework.sanctioned_source(&identity("hydrolysis-m3", "0.2.1", registry())));
+        assert!(!framework.sanctioned_source(&identity("hydrolysis-m3", "0.2.2", registry())));
     }
 
     /// The exact requirement a stable channel writes for one scaffold entry.

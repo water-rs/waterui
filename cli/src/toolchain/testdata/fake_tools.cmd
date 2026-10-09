@@ -14,8 +14,8 @@ rem while the .sh consumes piped license confirmations first. Tests must not
 rem rely on stdin being drained on Windows.
 rem
 rem Mutable state (`rustup toolchain install`/`default`/`target add`/
-rem `component add`, `rustup update`, `cargo install`, `espup install`) lives
-rem in files under the fake %HOME% so a `--fix` run mutates the fixture and a
+rem `component add`, `rustup update`, `cargo install`) lives in files
+rem under the fake %HOME% so a `--fix` run mutates the fixture and a
 rem re-check observes the repair. `mkdir`/`copy`/`type`/`for /f` are cmd
 rem builtins, so the restricted PATH is still honored.
 setlocal EnableDelayedExpansion
@@ -82,7 +82,6 @@ if not "!hay:%~2=!"=="!hay!" (exit /b 0) else (exit /b 1)
 if /i "%tool%"=="rustup" goto :rustup
 if /i "%tool%"=="rustc" goto :rustc
 if /i "%tool%"=="cargo" goto :cargo
-if /i "%tool%"=="espup" goto :espup
 if /i "%tool%"=="xcodebuild" goto :xcodebuild
 if /i "%tool%"=="xcode-select" goto :xcode_select
 if /i "%tool%"=="xcrun" goto :xcrun
@@ -302,18 +301,6 @@ for %%a in (%*) do (
     )
 )
 if defined krate if not exist "%~dp0!krate!.cmd" copy /y "%~f0" "%~dp0!krate!.cmd" >nul
-exit /b 0
-
-rem `espup install` lays down the `esp` toolchain's pieces; the RISC-V GCC
-rem lands under %HOME%\.espressif only with --esp-riscv-gcc.
-:espup
-if not "%1"=="install" exit /b 0
-if defined RUSTUP_HOME (set "esp=%RUSTUP_HOME%\toolchains\esp") else (set "esp=%HOME%\.rustup\toolchains\esp")
-mkdir "%esp%\xtensa-esp32-elf-clang\1.0\esp-clang\lib" 2>nul
-mkdir "%esp%\xtensa-esp-elf\1.0\xtensa-esp-elf\bin" 2>nul
-mkdir "%esp%\lib\rustlib\src\rust" 2>nul
-set "args=%*"
-call :contains args --esp-riscv-gcc && (mkdir "%HOME%\.espressif\tools\riscv32-esp-elf\1.0\riscv32-esp-elf\bin" 2>nul)
 exit /b 0
 
 :xcodebuild

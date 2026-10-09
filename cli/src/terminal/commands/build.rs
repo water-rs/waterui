@@ -476,21 +476,18 @@ fn resolve_backend(
 ) -> Result<TargetBackend> {
     let default_backend = match platform {
         TargetPlatform::Ios | TargetPlatform::IosSimulator | TargetPlatform::Macos => {
-            Some(TargetBackend::Apple)
+            TargetBackend::Apple
         }
         TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
-            Some(TargetBackend::Hydrolysis)
+            TargetBackend::Hydrolysis
         }
         // No backend serves ESP32 targets yet: Dew is archived and
         // Hydrolysis's embedded host lands with #1601.
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => None,
+        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
+            bail!("{}", super::ESP32_UNSUPPORTED)
+        }
     };
-    if default_backend.is_none() {
-        bail!("{}", super::ESP32_UNSUPPORTED);
-    }
-    let backend = backend_override
-        .or(default_backend)
-        .expect("non-ESP32 platforms all carry a default backend");
+    let backend = backend_override.unwrap_or(default_backend);
 
     let supported = matches!(
         (platform, backend),
