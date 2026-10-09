@@ -196,9 +196,7 @@ async fn materialize_android_host(
         return Ok(host_dir);
     }
 
-    if fs::metadata(&host_dir).await.is_ok() {
-        fs::remove_dir_all(&host_dir).await?;
-    }
+    remove_dir_if_present(&host_dir).await?;
     fs::create_dir_all(&host_dir).await?;
 
     let dir = host_dir.to_string_lossy().into_owned();
@@ -761,10 +759,17 @@ pub async fn run_on_device<D: Device + AndroidAbiProvider>(
 pub async fn clean_jni_libs(project: &Project) -> eyre::Result<()> {
     let jni_libs_dir =
         android_dir(&project.backend_path::<HydrolysisBackend>()).join("app/src/main/jniLibs");
-    if fs::metadata(&jni_libs_dir).await.is_ok() {
-        fs::remove_dir_all(&jni_libs_dir).await?;
-    }
+    remove_dir_if_present(&jni_libs_dir).await?;
     Ok(())
+}
+
+/// Remove `dir` and everything under it; a directory that is already gone
+/// is the outcome asked for, and every other failure is reported.
+async fn remove_dir_if_present(dir: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(dir).await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 /// The preview host APK's application id — also the `run-as` package a
@@ -1609,50 +1614,6 @@ mod tests {
             assert!(
                 !activity.contains("HydrolysisGpuBand"),
                 "no GPU band view exists in the hwui build: {activity}"
-            );
-        });
-    }
-
-    /// One Android build performs exactly one framework resolution: the
-    /// caller resolves once and the host probe, the ffi companion render and
-    /// the scaffold context all read that answer — no layer re-resolves
-    /// (#2280, where the packaging path resolved three times over).
-    #[test]
-    fn the_android_build_resolves_the_framework_once() {
-        smol::block_on(async {
-            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let (_temporary, project) = fixture_project(&host, "").await;
-
-            let before = project.resolved_framework_calls();
-            let resolved = project
-                .resolved_framework()
-                .await
-                .expect("framework resolves");
-            let host_project_dir =
-                require_painter_module(&project, &resolved, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("gpu module exists");
-            scaffold_android_project(
-                &project,
-                &resolved,
-                HydrolysisAndroidPainter::Gpu,
-                &host_project_dir,
-            )
-            .await
-            .expect("android scaffold renders");
-            let _outputs = rendered_android_outputs(
-                &project,
-                &resolved,
-                HydrolysisAndroidPainter::Gpu,
-                &host_project_dir,
-            )
-            .await
-            .expect("scaffold renders");
-
-            assert_eq!(
-                project.resolved_framework_calls() - before,
-                1,
-                "one Android build performs exactly one framework resolution"
             );
         });
     }

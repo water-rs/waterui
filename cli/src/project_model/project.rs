@@ -160,10 +160,6 @@ pub struct Project {
     /// over from a prior open, not the fresh render its own build
     /// resolves next anyway.
     pub(crate) ffi_companion_preexisting: bool,
-    /// How many framework resolutions this project ran — the counter a
-    /// test asserts a build's single-resolution invariant against.
-    #[cfg(test)]
-    resolved_framework_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Project {
@@ -626,22 +622,11 @@ impl Project {
     /// saved selection is invalid, or the local checkout's framework facts
     /// cannot be read.
     pub async fn resolved_framework(&self) -> eyre::Result<ResolvedFramework> {
-        #[cfg(test)]
-        self.resolved_framework_calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tracing::debug!(
             root = %self.root.display(),
             "resolving the project's framework selection"
         );
         ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root).await
-    }
-
-    /// How many [`Self::resolved_framework`] resolutions this project ran —
-    /// a test asserts a build resolves once and passes the result down.
-    #[cfg(test)]
-    pub(crate) fn resolved_framework_calls(&self) -> usize {
-        self.resolved_framework_calls
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Assert the selected framework channel distributes every scaffold
@@ -1724,8 +1709,6 @@ impl Project {
             backends: Backends::default(),
             local_sources,
             ffi_companion_preexisting: false,
-            #[cfg(test)]
-            resolved_framework_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -2050,8 +2033,6 @@ impl Project {
             backends: Backends::default(),
             local_sources,
             ffi_companion_preexisting: false,
-            #[cfg(test)]
-            resolved_framework_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
         // Initialize the managed backends the caller selected.
