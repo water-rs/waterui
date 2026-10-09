@@ -27,8 +27,11 @@ use waterui_cli::project::read_project_crate_name;
 async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
     let platform = request::resolve_preview_platform(args.platform)?;
     let target_platform = request::resolve_hydrolysis_test_platform(platform)?;
-    request::check_toolchain_for_backend(ResolvedPreviewBackend::Hydrolysis(target_platform))
-        .await?;
+    request::check_toolchain_for_backend(
+        &waterui_cli::toolchain::Host::current(),
+        ResolvedPreviewBackend::Hydrolysis(target_platform),
+    )
+    .await?;
     let (width, height) = request::parse_frame(&args.frame)?;
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let crate_name = read_project_crate_name(&project_path).await?;
@@ -55,6 +58,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
         let spinner = shell.spinner("Building and testing with hydrolysis...");
         let output = Box::pin(test_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
+                host: &waterui_cli::toolchain::Host::current(),
                 project_path: &project_path,
                 source: target.source(),
                 theme: args.theme.into(),
@@ -229,7 +233,8 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let request = args.preview_args(target).resolve(&crate_name)?;
     header!(shell, "Preview: {}", request.target.display_name());
 
-    request::check_toolchain_for_backend(request.backend).await?;
+    request::check_toolchain_for_backend(&waterui_cli::toolchain::Host::current(), request.backend)
+        .await?;
 
     // Detect sccache for compilation caching
     let sccache_path =
@@ -240,6 +245,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         let spinner = shell.spinner("Building and rendering with hydrolysis...");
         Box::pin(render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
+                host: &waterui_cli::toolchain::Host::current(),
                 project_path: &project_path,
                 source: request.target.source(),
                 theme: request
@@ -278,6 +284,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         let spinner = shell.spinner("Building and rendering with the Apple backend...");
         render_preview_with_apple(
             ApplePreviewRequest {
+                host: &waterui_cli::toolchain::Host::current(),
                 project_path: &project_path,
                 source: request.target.source(),
                 width: request.width,
@@ -310,6 +317,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell.spinner("Connecting to preview app...");
     let mut session = Box::pin(launch_preview_session(
+        &waterui_cli::toolchain::Host::current(),
         &project_path,
         preview_platform,
         sccache_path.clone(),
@@ -544,6 +552,7 @@ async fn discover_preview_targets(
     progress: Option<&BuildProgress>,
 ) -> Result<Vec<PreviewTarget>> {
     let exports = discover_hydrolysis_preview_exports(
+        &waterui_cli::toolchain::Host::current(),
         project_path,
         theme,
         target_platform,

@@ -11,6 +11,7 @@ use walkdir::WalkDir;
 
 use crate::shell::Shell;
 use crate::{note, success, warn};
+use waterui_cli::toolchain::Host;
 use waterui_cli::web::{self, PackageManager};
 
 /// The `create`/`init` package-manager prompt, asked once; `initial` is the
@@ -36,8 +37,8 @@ pub fn prompt_package_manager(initial: PackageManager) -> Result<PackageManager>
 }
 
 /// Fail before touching disk when the declared manager is not on `PATH`.
-pub async fn ensure_installed(package_manager: PackageManager) -> Result<()> {
-    if !package_manager.is_installed().await {
+pub async fn ensure_installed(host: &Host, package_manager: PackageManager) -> Result<()> {
+    if !package_manager.is_installed(host).await {
         bail!(
             "`{}` is not installed; run `water doctor`",
             package_manager.binary()
@@ -50,6 +51,7 @@ pub async fn ensure_installed(package_manager: PackageManager) -> Result<()> {
 /// output — and its framework picker when no `--vite-template` was given —
 /// reaches the user.
 pub async fn create_vite(
+    host: &Host,
     shell: &Shell,
     parent: &Path,
     dir: &str,
@@ -58,11 +60,8 @@ pub async fn create_vite(
 ) -> Result<()> {
     let spinner = shell.spinner("Scaffolding the Vite frontend...");
     let status = package_manager
-        .create_vite(dir, template)
+        .create_vite(host, dir, template)
         .current_dir(parent)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
         .status()
         .await?;
     if let Some(pb) = spinner {
@@ -101,17 +100,15 @@ pub fn brand_overlay(shell: &Shell, web_dir: &Path, display_name: &str) -> Resul
 
 /// `<pm> install` inside `dir` with stdio inherited.
 pub async fn install_dependencies(
+    host: &Host,
     shell: &Shell,
     package_manager: PackageManager,
     dir: &Path,
 ) -> Result<()> {
     let spinner = shell.spinner("Installing frontend dependencies...");
     let status = package_manager
-        .install()
+        .install(host)
         .current_dir(dir)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
         .status()
         .await?;
     if let Some(pb) = spinner {
@@ -129,13 +126,18 @@ pub async fn install_dependencies(
 
 /// Move top-level entries of `root` into `root/web`. Entries tracked by git
 /// move with `git mv` to preserve history; the rest rename.
-pub async fn move_entries_to_web(root: &Path, entries: &[std::path::PathBuf]) -> Result<()> {
+pub async fn move_entries_to_web(
+    host: &Host,
+    root: &Path,
+    entries: &[std::path::PathBuf],
+) -> Result<()> {
     smol::fs::create_dir_all(root.join("web")).await?;
     for entry in entries {
         let source = root.join(entry);
         let dest = root.join("web").join(entry);
-        if git_tracked(root, entry).await {
-            let status = smol::process::Command::new("git")
+        if git_tracked(host, root, entry).await {
+            let status = host
+                .command("git")
                 .args(["mv"])
                 .arg(entry)
                 .arg(Path::new("web").join(entry))
@@ -153,12 +155,11 @@ pub async fn move_entries_to_web(root: &Path, entries: &[std::path::PathBuf]) ->
 }
 
 /// Whether `entry` is tracked in the git work tree at `root`.
-async fn git_tracked(root: &Path, entry: &Path) -> bool {
-    smol::process::Command::new("git")
+async fn git_tracked(host: &Host, root: &Path, entry: &Path) -> bool {
+    host.command("git")
         .args(["ls-files", "--error-unmatch", "--"])
         .arg(entry)
         .current_dir(root)
-        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

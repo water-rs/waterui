@@ -139,12 +139,14 @@ struct SpdxPackage<'a> {
 /// `profile_directory` is the Cargo profile directory containing the executable.
 /// `executable_directory` is the final directory from which the application runs.
 pub async fn stage(
+    host: &crate::toolchain::Host,
     plan: BrowserRuntimePlan,
     platform: TargetPlatform,
     profile_directory: &Path,
     executable_directory: &Path,
 ) -> eyre::Result<()> {
     stage_into(
+        host,
         plan,
         platform,
         profile_directory,
@@ -165,11 +167,13 @@ pub async fn stage(
 /// copied into the application bundle.
 #[cfg(target_os = "macos")]
 pub async fn stage_macos_app(
+    host: &crate::toolchain::Host,
     plan: BrowserRuntimePlan,
     profile_directory: &Path,
     contents_directory: &Path,
 ) -> eyre::Result<()> {
     stage_into(
+        host,
         plan,
         TargetPlatform::MacOS,
         profile_directory,
@@ -193,6 +197,7 @@ pub async fn remove_macos_app(contents_directory: &Path) -> eyre::Result<()> {
 }
 
 async fn stage_into(
+    host: &crate::toolchain::Host,
     plan: BrowserRuntimePlan,
     platform: TargetPlatform,
     profile_directory: &Path,
@@ -209,7 +214,7 @@ async fn stage_into(
     fs::create_dir_all(&layout.runtime_root).await?;
 
     if engines.contains(&RuntimeEngine::Wpe) {
-        stage_wpe(&configuration, platform, &layout.runtime_root).await?;
+        stage_wpe(host, &configuration, platform, &layout.runtime_root).await?;
     }
     if engines.contains(&RuntimeEngine::Cef) {
         stage_cef(&configuration, platform, profile_directory, &layout).await?;
@@ -235,6 +240,7 @@ fn engines(plan: BrowserRuntimePlan) -> BTreeSet<RuntimeEngine> {
 }
 
 async fn stage_wpe(
+    host: &crate::toolchain::Host,
     configuration: &SourceConfiguration,
     platform: TargetPlatform,
     runtime_root: &Path,
@@ -252,7 +258,7 @@ async fn stage_wpe(
         platform,
         architecture,
     )?;
-    let archive = cache_artifact(artifact).await?;
+    let archive = cache_artifact(host, artifact).await?;
     let destination = runtime_root.join(RuntimeEngine::Wpe.as_str());
     extract_verified_zip(&archive, &artifact.sha256, &destination).await?;
     validate_wpe_runtime(&destination)?;
@@ -410,8 +416,12 @@ fn select_artifact<'a>(
     }
 }
 
-async fn cache_artifact(artifact: &RuntimeArtifact) -> eyre::Result<PathBuf> {
-    let cache_root = dirs::cache_dir()
+async fn cache_artifact(
+    host: &crate::toolchain::Host,
+    artifact: &RuntimeArtifact,
+) -> eyre::Result<PathBuf> {
+    let cache_root = host
+        .cache_dir()
         .ok_or_else(|| eyre::eyre!("platform does not expose a cache directory"))?
         .join("waterui/browser-runtimes")
         .join(artifact.engine.as_str())

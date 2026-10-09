@@ -39,7 +39,12 @@ impl Args {
 /// Run the fetch command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Project::open(&project_path, ManagedBackends::NONE).await?;
+    let project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        ManagedBackends::NONE,
+    )
+    .await?;
 
     let spinner = shell.spinner("Fetching fonts...");
     let outcomes = match args.backend {

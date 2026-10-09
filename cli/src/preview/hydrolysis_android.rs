@@ -81,24 +81,24 @@ pub async fn render_preview_with_hydrolysis_android(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
-    let host = Host::current();
-    let project = crate::hydrolysis::backend::open_ready(request.project_path).await?;
+    let host = request.host;
+    let project = crate::hydrolysis::backend::open_ready(host, request.project_path).await?;
 
     // Every run of this project writes its preview bindings and stages its
     // payload into one fixed directory, so a second run of the same project
     // waits until the first finishes; the lease is held for the whole run.
-    let _project_lease = water_dir::android_preview_project_lock(&host, project.root()).await?;
+    let _project_lease = water_dir::android_preview_project_lock(host, project.root()).await?;
 
     let ((), (adb, serial, abi)) = futures_util::try_join!(
         write_preview_bindings(&project, request.source, request.theme, None),
         async {
-            let target = AndroidTarget::first_available(&host).await?;
-            target.launch(&host).await?;
+            let target = AndroidTarget::first_available(host).await?;
+            target.launch(host).await?;
             let serial = target
                 .serial()
                 .ok_or_else(|| eyre::eyre!("the Android target has no adb serial after launch"))?
                 .to_string();
-            eyre::Ok((Adb::locate(&host).await?, serial, target.android_abi()))
+            eyre::Ok((Adb::locate(host).await?, serial, target.android_abi()))
         },
     )?;
 
@@ -110,9 +110,9 @@ pub async fn render_preview_with_hydrolysis_android(
         .join("android-preview")
         .join("device");
     let ((host_apk, version_code), libraries, device_key) = futures_util::try_join!(
-        hydrolysis_android::ensure_preview_host_apk(&project, &host),
-        stage_device_payload(&project, &host, request, abi, &device_dir),
-        device_lock_key(&host, &adb, &serial),
+        hydrolysis_android::ensure_preview_host_apk(&project),
+        stage_device_payload(&project, request, abi, &device_dir),
+        device_lock_key(host, &adb, &serial),
     )?;
 
     // Output paths in the run config are relative: the runtime resolves
@@ -149,7 +149,7 @@ pub async fn render_preview_with_hydrolysis_android(
         .into_owned();
 
     render_on_device(
-        &host,
+        host,
         &DeviceRender {
             adb: &adb,
             serial: &serial,
@@ -315,11 +315,11 @@ async fn device_time_stamp(host: &Host, adb: &Adb, serial: &str) -> Result<Strin
 /// names in `System.load` order.
 async fn stage_device_payload(
     project: &Project,
-    host: &Host,
     request: &HydrolysisPreviewRequest<'_>,
     abi: AndroidAbi,
     device_dir: &Path,
 ) -> Result<Vec<String>> {
+    let host = project.host();
     match fs::remove_dir_all(device_dir).await {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -336,14 +336,9 @@ async fn stage_device_payload(
     if let Some(progress) = request.progress.clone() {
         options = options.with_progress(progress);
     }
-    let build = hydrolysis_android::build_with_features(
-        project,
-        host,
-        abi,
-        options,
-        &["waterui-preview-mode"],
-    )
-    .await?;
+    let build =
+        hydrolysis_android::build_with_features(project, abi, options, &["waterui-preview-mode"])
+            .await?;
 
     // Strip debug info in place: the cdylib carries a full desktop-sized
     // symbol set that only bloats the push. The build hands back the

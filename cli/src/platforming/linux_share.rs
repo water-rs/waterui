@@ -65,6 +65,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("temp dir");
             let root = dir.path().join("share-example");
             let project = Project::create(
+                &crate::toolchain::Host::current(),
                 &root,
                 CreateOptions {
                     name: "Share Example".to_string(),

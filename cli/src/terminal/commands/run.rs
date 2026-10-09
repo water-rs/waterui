@@ -497,15 +497,15 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
 
         // The dev-server guard is held for the app's whole run. Cancelling
         // this future drops it and the app's monitor acknowledges the kill.
-        let (running, dev_server) = Box::pin(shell.display_output(build_and_run(
+        let (running, dev_server) = Box::pin(build_and_run(
             shell,
-            &host,
-            &context.project,
+            &host.with_std_output(shell.is_interactive()),
+            &context.project.with_std_output(shell.is_interactive()),
             context.platform,
             context.backend,
             selection,
             config,
-        )))
+        ))
         .await?;
         Ok(Some(RunReady {
             backend: context.backend,
@@ -568,25 +568,29 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Box::pin(Project::open(&project_path, ManagedBackends::NONE)).await?;
+    let project = Box::pin(Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        ManagedBackends::NONE,
+    ))
+    .await?;
     let launcher_dir = Box::pin(waterui_cli::tui::ensure_launcher(&project)).await?;
 
     let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-    let built = shell
-        .display_output(Box::pin(waterui_cli::tui::build(
-            &project,
-            &launcher_dir,
-            sccache_path,
-            Some(shell.build_progress()),
-        )))
-        .await?;
+    let built = Box::pin(waterui_cli::tui::build(
+        &project.with_std_output(shell.is_interactive()),
+        &launcher_dir,
+        sccache_path,
+        Some(shell.build_progress()),
+    ))
+    .await?;
 
     note!(
         shell,
         "The TUI backend replaces this terminal until the app exits"
     );
     shell.clear();
-    waterui_cli::tui::exec(built)
+    waterui_cli::tui::exec(project.host(), built)
 }
 
 async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunContext>> {
@@ -601,7 +605,12 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         Some(args.backend.unwrap_or_else(|| default_backend(platform))),
     )?;
     let managed_backends = managed_backends(platform, backend);
-    let mut project = Box::pin(Project::open(&project_path, managed_backends)).await?;
+    let mut project = Box::pin(Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    ))
+    .await?;
     if project.manifest().package.embedded {
         bail!(
             "`water run` does not apply to embedded projects: the crate is a library the host app embeds — build the artifact with `water build` and run the host app"
@@ -693,9 +702,12 @@ async fn run_esp32_app(shell: &Shell, project: &Project, device: Option<&str>) -
         .with_progress(shell.build_progress());
 
     let _ = shell.status(">", "Building ESP32 firmware...");
-    shell
-        .display_output(Box::pin(run_esp32(project, build_options, device)))
-        .await
+    Box::pin(run_esp32(
+        &project.with_std_output(shell.is_interactive()),
+        build_options,
+        device,
+    ))
+    .await
 }
 
 async fn select_run_device(
@@ -978,7 +990,7 @@ async fn start_web_dev_server(
         .web
         .as_ref()
         .map_or_else(web::PackageManager::default, |web| web.package_manager);
-    if !package_manager.is_installed().await {
+    if !package_manager.is_installed(project.host()).await {
         bail!(
             "`{}` is not installed; run `water doctor`",
             package_manager.binary()
@@ -989,7 +1001,14 @@ async fn start_web_dev_server(
         ">",
         format!("Starting `{} run {script}`", package_manager.binary()),
     );
-    let server = web::WebDevServer::spawn(package_manager, root, &script, expose_on_lan).await?;
+    let server = web::WebDevServer::spawn(
+        project.host(),
+        package_manager,
+        root,
+        &script,
+        expose_on_lan,
+    )
+    .await?;
     let _ = shell.status(">", format!("Dev server ready at {}", server.url()));
     Ok(Some(server))
 }
@@ -1116,13 +1135,7 @@ async fn build_for_backend(
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                Box::pin(hydrolysis_android::build(
-                    project,
-                    &waterui_cli::toolchain::Host::current(),
-                    abi,
-                    build_options,
-                ))
-                .await
+                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
             } else {
                 Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
@@ -1183,7 +1196,6 @@ async fn package_for_backend(
                 })?;
                 Box::pin(hydrolysis_android::package_with_abis(
                     project,
-                    &waterui_cli::toolchain::Host::current(),
                     painter,
                     &package_options,
                     &[abi],
@@ -1293,7 +1305,9 @@ const fn device_memory_key(backend: TargetBackend, platform: TargetPlatform) -> 
 /// The device last used for `key`, if the config records one. A config read
 /// failure is a warning, not a run failure.
 async fn remembered_device(key: &str) -> Option<String> {
-    match waterui_cli::water_dir::ensure_global_config().await {
+    match waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+        .await
+    {
         Ok(config) => config.last_used_device.get(key).cloned(),
         Err(error) => {
             tracing::warn!("could not read the Water config for device memory: {error:#}");
@@ -1305,7 +1319,9 @@ async fn remembered_device(key: &str) -> Option<String> {
 /// Record `id` as the last-used device for `key`. Best-effort: a config
 /// write failure must not break a run.
 async fn persist_device_choice(key: &str, id: &str) {
-    match waterui_cli::water_dir::ensure_global_config().await {
+    match waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+        .await
+    {
         Ok(mut config) => {
             if config.last_used_device.get(key).map(String::as_str) == Some(id) {
                 return;
@@ -1313,7 +1329,12 @@ async fn persist_device_choice(key: &str, id: &str) {
             config
                 .last_used_device
                 .insert(key.to_owned(), id.to_owned());
-            if let Err(error) = waterui_cli::water_dir::write_global_config(&config).await {
+            if let Err(error) = waterui_cli::water_dir::write_global_config(
+                &waterui_cli::toolchain::Host::current(),
+                &config,
+            )
+            .await
+            {
                 tracing::warn!("could not persist the last-used device: {error:#}");
             }
         }
@@ -1451,7 +1472,7 @@ async fn select_ios_device(
             .await;
             return Ok(SelectedDevice::ApplePhysical(device));
         }
-        let sim = AppleSimulator::select_ios(host, project, Some(query)).await?;
+        let sim = AppleSimulator::select_ios(project, Some(query)).await?;
         persist_device_choice(
             device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
             &sim.udid,
@@ -1465,7 +1486,7 @@ async fn select_ios_device(
         // Reuse the simulator path's diagnosis — it lists every simulator and
         // the required runtime.
         return Ok(SelectedDevice::AppleSimulator(
-            AppleSimulator::select_ios(host, project, None).await?,
+            AppleSimulator::select_ios(project, None).await?,
         ));
     }
     choose_device_candidate(

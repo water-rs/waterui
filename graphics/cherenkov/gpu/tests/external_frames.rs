@@ -24,6 +24,13 @@ const SIZE: u32 = 16;
 /// per-column luma ramp instead of a flat colour.
 const QUADRANTS: [[f64; 3]; 3] = [[0.75, 0.15, 0.15], [0.15, 0.70, 0.20], [0.20, 0.30, 0.85]];
 
+/// The per-column 10-bit luma codes of the HLG fixture: sub-black
+/// footroom (< 64) on the left, nominal black through super-white on
+/// the right.
+const HLG_LUMA: [u32; 16] = [
+    0, 8, 16, 24, 32, 40, 48, 56, 64, 300, 500, 700, 940, 1023, 64, 0,
+];
+
 /// The encoded `R'G'B'` at luma texel `(x, y)`.
 fn encoded(x: u32, y: u32) -> [f64; 3] {
     let half = SIZE / 2;
@@ -478,6 +485,114 @@ fn solid(
             ..FrameColor::SRGB
         },
     )?)
+}
+
+/// A studio-range HLG frame's footroom — luma codes below nominal black —
+/// decodes to black, not to the positive light that squaring a negative
+/// signal produces (#2107). The frame targets a 300-nit display, where
+/// the OOTF exponent `gamma - 1` is negative and scene black must still
+/// decode to black rather than `0 * inf = NaN` (#2108).
+/// `cherenkov_oracle::yuv::decode` is the f64 reference for every column;
+/// the footroom and nominal-black columns must be exactly black.
+#[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "codes are 10-bit values shifted into 16-bit words by construction"
+)]
+fn hlg_black_and_footroom_decode_to_black() -> Result<(), Box<dyn std::error::Error>> {
+    // Below ~334 nits the OOTF exponent `gamma - 1` is negative.
+    const PEAK: f32 = 300.0;
+    let Some((engine, device, queue)) = engine()? else {
+        return Ok(());
+    };
+    let surface = engine.surface(
+        Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+        || {},
+    )?;
+    // Uniform neutral chroma, where the shader's nearest texel and the
+    // oracle's bilinear reconstruction agree.
+    let luma: Vec<Vec<u32>> = (0..SIZE)
+        .map(|_| HLG_LUMA.iter().map(|&code| code << 6).collect())
+        .collect();
+    let uv = vec![vec![[512u32 << 6, 512u32 << 6]; (SIZE / 2) as usize]; (SIZE / 2) as usize];
+    let color = FrameColor::bt2020_hlg(PEAK);
+    let y_plane = plane(
+        &device,
+        &queue,
+        SIZE,
+        SIZE,
+        wgpu::TextureFormat::R16Uint,
+        2,
+        &luma
+            .iter()
+            .flatten()
+            .flat_map(|w| (*w as u16).to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
+    let uv_plane = plane(
+        &device,
+        &queue,
+        SIZE / 2,
+        SIZE / 2,
+        wgpu::TextureFormat::Rg16Uint,
+        4,
+        &uv.iter()
+            .flatten()
+            .flat_map(|c| [c[0] as u16, c[1] as u16])
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    let frame = ExternalFrame::yuv(y_plane, uv_plane, color)?;
+    let pixels = render(&engine, &surface, frame, "hlg-footroom")?;
+
+    // The oracle decodes the same words in f64: footroom clamps to
+    // black, the rest through the published BT.2100 equations.
+    let luma_words: Vec<u16> = luma.iter().flatten().map(|&w| w as u16).collect();
+    let chroma_words: Vec<[u16; 2]> = uv
+        .iter()
+        .flatten()
+        .map(|&[cb, cr]| [cb as u16, cr as u16])
+        .collect();
+    let oracle = cherenkov_oracle::yuv::decode(
+        &cherenkov_oracle::yuv::YuvFrame::<cherenkov_oracle::yuv::P010> {
+            width: SIZE,
+            height: SIZE,
+            luma: &luma_words,
+            chroma: &chroma_words,
+        },
+        &cherenkov_oracle::yuv::YuvColor {
+            matrix: cherenkov_oracle::yuv::Matrix::Bt2020,
+            range: cherenkov_oracle::yuv::Range::Video,
+            siting: cherenkov_oracle::yuv::ChromaSiting::LEFT,
+            primaries: cherenkov_oracle::yuv::Primaries::Bt2020,
+            transfer: cherenkov_oracle::yuv::Transfer::Hlg {
+                reference_white: 203.0,
+                peak: f64::from(PEAK),
+            },
+        },
+    )?;
+    compare(
+        &pixels,
+        |x, y| oracle.pixels[(y * SIZE + x) as usize],
+        "hlg",
+    );
+
+    // A footroom or nominal-black code decodes to exactly black: a
+    // negative signal squared into positive light — however small, below
+    // `compare`'s tolerance — is #2107, and NaN at scene black is #2108.
+    for (x, &code) in HLG_LUMA.iter().enumerate() {
+        if code <= 64 {
+            for y in 0..SIZE {
+                let got = pixels[(y * SIZE + x as u32) as usize];
+                assert_eq!(
+                    got,
+                    [0.0, 0.0, 0.0, 1.0],
+                    "hlg black or footroom code {code} at ({x}, {y})"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[test]
