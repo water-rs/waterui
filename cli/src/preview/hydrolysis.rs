@@ -48,6 +48,7 @@ impl HydrolysisPreviewTheme {
                 name: "Roboto".to_string(),
                 source: FontSource::BuiltIn,
                 crate_name: "hydrolysis-m3".to_string(),
+                platforms: None,
             }],
         }
     }
@@ -115,7 +116,7 @@ pub async fn render_preview_with_hydrolysis(
     }
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, None).await?;
-    stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(&project, request.platform, theme, &built.app_symbols()?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
         &project,
@@ -138,7 +139,7 @@ pub async fn test_preview_with_hydrolysis(
 ) -> Result<String> {
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
-    stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(&project, request.platform, theme, &built.app_symbols()?).await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_test_binary(&project, built.executable()?, width, height).await
 }
@@ -218,6 +219,7 @@ pub async fn discover_hydrolysis_preview_exports(
 /// produced — its `waterui_meta_bundle_*` statics declare the asset mounts.
 pub async fn stage_hydrolysis_resources(
     project: &Project,
+    platform: TargetPlatform,
     theme: HydrolysisPreviewTheme,
     symbols: &ArtifactSymbols,
 ) -> Result<()> {
@@ -228,8 +230,12 @@ pub async fn stage_hydrolysis_resources(
         assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, false).await?;
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    let mut font_declarations =
-        assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
+    let mut font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     font_declarations.extend(theme.font_declarations());
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);

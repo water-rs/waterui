@@ -314,6 +314,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
     .await?;
     stage_hydrolysis_resources(
         &project,
+        platform,
         HydrolysisPreviewTheme::Material3,
         &built.app_symbols()?,
     )

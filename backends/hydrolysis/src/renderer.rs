@@ -793,6 +793,19 @@ impl SemanticCore {
         &self.root
     }
 
+    /// The session's fonts gained faces after text was shaped — a web
+    /// page's faces arriving after its first frame. Every shaping result made
+    /// against the old set is dropped, the font revision every text
+    /// measurement reads advances — so each cached layout that measured text
+    /// is laid out again — and the window relayouts and repaints.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    pub(crate) fn fonts_changed(&mut self) {
+        self.state.text.fonts_changed();
+        self.state.font_revision.with_mut(|revision| *revision += 1);
+        self.root.mark_layout();
+        self.root.mark(Dirty::PAINT);
+    }
+
     /// Whether any node in the window carries a mark — the pump's
     /// frame-work trigger.
     pub(crate) fn root_is_dirty(&self) -> bool {

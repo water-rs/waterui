@@ -54,7 +54,7 @@ impl<'a> HydroSubview<'a> {
         let resolved_text =
             try_resolve_text_leaf(view, env).map(|(input, max_lines)| ResolvedTextMeasure {
                 input,
-                service: Arc::clone(&state.borrow().text),
+                service: Arc::clone(state.borrow_mut().measuring_text()),
                 max_lines,
             });
         Self {

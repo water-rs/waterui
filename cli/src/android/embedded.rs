@@ -163,8 +163,12 @@ async fn stage_embedded_assets(
         assets::stage_project_assets_for_android_library(project, module_dir, symbols, false)
             .await?;
 
-    let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[waterui_assets_planner::FontPlatform::Android],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

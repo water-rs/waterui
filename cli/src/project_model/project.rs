@@ -3893,6 +3893,10 @@ pub struct FontConfig {
     /// pre-seeding the font cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_path: Option<String>,
+    /// The platforms whose builds bundle the font; absent bundles it on
+    /// every platform. An unknown name fails to parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<Vec<waterui_assets_planner::FontPlatform>>,
 }
 
 /// App-specific configuration in `Water.toml`.

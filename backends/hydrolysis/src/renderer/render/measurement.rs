@@ -541,7 +541,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
-        let layout = state.text.shape(&input, None);
+        let layout = state.measuring_text().shape(&input, None);
         if layout.line_count() == 0 {
             return;
         }
@@ -577,7 +577,7 @@ impl HydrolysisRenderer {
         max_width: Option<f32>,
     ) -> SessionTextLayout {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        state.text.shape(&input, max_width)
+        state.measuring_text().shape(&input, max_width)
     }
 
     #[expect(
@@ -597,8 +597,9 @@ impl HydrolysisRenderer {
         max_lines: Option<usize>,
     ) -> ViewDimensions {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        let layout = state.text.shape_limited(&input, max_width, max_lines);
-        state.text.dimensions(&layout, max_lines)
+        let text = state.measuring_text();
+        let layout = text.shape_limited(&input, max_width, max_lines);
+        text.dimensions(&layout, max_lines)
     }
 
     pub(crate) fn measure_text_intrinsic_size(

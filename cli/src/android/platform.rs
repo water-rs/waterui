@@ -513,7 +513,12 @@ impl AndroidPlatform {
 
         // Resolve fonts BEFORE cargo build - this ensures icons.json is present
         // for crates like fontawesome7 that need it during build.rs
-        let font_declarations = crate::assets::scan_fonts(project, &ffi_manifest).await?;
+        let font_declarations = crate::assets::scan_fonts(
+            project,
+            &ffi_manifest,
+            &[waterui_assets_planner::FontPlatform::Android],
+        )
+        .await?;
         crate::assets::resolve_fonts(project.host(), font_declarations).await?;
         Ok(())
     }
@@ -1215,8 +1220,12 @@ async fn copy_assets_and_fonts(
     .await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[waterui_assets_planner::FontPlatform::Android],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
