@@ -526,30 +526,23 @@ jobs:
           # through.
           git config --global --add safe.directory '*'
 
-          if [ "$E2E_PLATFORM" = "android" ]; then
-            # The Android toolchain pieces no image or action gives this
-            # account: the aarch64 rustup target and the Kotlin the
-            # toolchain check wants, fetched into the CLI-managed location
-            # `doctor --fix` would produce on a developer machine.
-            export PATH="$JAVA_HOME/bin:$PATH"
-            rustup target add aarch64-linux-android 2>&1 | tee e2e-logs/rustup-target.log
-            kotlin_version="$(cargo metadata --format-version 1 --no-deps --manifest-path "$WATERUI_SRC/Cargo.toml" \
-              | jq -r '.packages[] | select(.name == "waterui-cli") | .metadata["waterui-scaffold"]["android-kotlin-version"]')"
-            kotlin_home="$HOME/.water/toolchains/kotlin/$kotlin_version"
-            mkdir -p "$kotlin_home"
-            curl -fsSL "https://github.com/JetBrains/kotlin/releases/download/v$kotlin_version/kotlin-compiler-$kotlin_version.zip" \
-              -o "$HOME/kotlinc.zip"
-            unzip -q -o "$HOME/kotlinc.zip" -d "$HOME/kotlinc-extract"
-            cp -R "$HOME/kotlinc-extract/kotlinc/." "$kotlin_home/"
-            rm -rf "$HOME/kotlinc.zip" "$HOME/kotlinc-extract"
-            "$kotlin_home/bin/kotlinc" -version 2>&1 | tee e2e-logs/kotlinc-version.log
-          fi
-
           phase "water create e2eapp"
           water create e2eapp --waterui-path "$WATERUI_SRC" \
             2>&1 | tee e2e-logs/create-app.log || fail "water create failed"
           [ -f e2eapp/Water.toml ] || fail "e2eapp scaffold has no Water.toml"
 
+          if [ "$E2E_PLATFORM" = "android" ]; then
+            # Outside a project doctor leaves the Android group optional, so
+            # the repair above skipped it; inside the project it is in
+            # scope, and `--fix` provisions the managed Kotlin and the Rust
+            # targets the toolchain check wants.
+            export PATH="$JAVA_HOME/bin:$PATH"
+            phase "water doctor --fix (Android project)"
+            (cd e2eapp && water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix-android.log)
+            if grep -q 'Failed to install' e2e-logs/doctor-fix-android.log; then
+              fail "doctor --fix reported failed installs in the Android project"
+            fi
+          fi
           phase "water build e2eapp"
           (cd e2eapp && water build --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
             2>&1 | tee ../e2e-logs/build-app.log) || fail "water build failed"

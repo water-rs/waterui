@@ -375,22 +375,10 @@ jobs:
       - uses: ./.github/actions/setup-android-ndk
       # `sdkmanager` is the tool doctor's own remedy text names.
       - uses: ./.github/actions/install-android-platform
-      # The toolchain check wants the CLI-managed Kotlin install at
-      # `~/.water/toolchains/kotlin/<android-kotlin-version>` — the same
-      # layout `water doctor --fix` produces on a developer machine — so the
-      # pinned JetBrains release is fetched into it here.
-      - name: Install Kotlin (CLI-managed layout)
-        run: |
-          set -euo pipefail
-          version="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui-cli") | .metadata["waterui-scaffold"]["android-kotlin-version"]')"
-          home="$HOME/.water/toolchains/kotlin/$version"
-          mkdir -p "$home"
-          curl -fsSL "https://github.com/JetBrains/kotlin/releases/download/v$version/kotlin-compiler-$version.zip" -o "$RUNNER_TEMP/kotlinc.zip"
-          unzip -q -o "$RUNNER_TEMP/kotlinc.zip" -d "$RUNNER_TEMP/kotlinc-extract"
-          cp -R "$RUNNER_TEMP/kotlinc-extract/kotlinc/." "$home/"
-          "$home/bin/kotlinc" -version
+      # The binary under test needs no release optimisation: the ci-check
+      # profile skips the release profile's fat LTO and single codegen unit.
       - name: Install the CLI under test
-        run: cargo install --locked --path cli --root /tmp/water-cli
+        run: cargo install --locked --profile ci-check --path cli --root /tmp/water-cli
       - name: Create, build and package a Hydrolysis Android app
         run: |
           set -euo pipefail
@@ -398,6 +386,14 @@ jobs:
           mkdir -p e2e-logs
           water create e2eapp --waterui-path "$GITHUB_WORKSPACE" 2>&1 | tee e2e-logs/create.log
           cd e2eapp
+          # Inside a project doctor scopes the Android group in, so `--fix`
+          # provisions what the toolchain check wants (the managed Kotlin,
+          # the Rust targets) exactly as on a developer machine.
+          water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix.log
+          if grep -q 'Failed to install' ../e2e-logs/doctor-fix.log; then
+            echo "::error::doctor --fix reported failed installs"
+            exit 1
+          fi
           water build --platform android --backend hydrolysis --yes 2>&1 | tee ../e2e-logs/build.log
           water package --platform android --backend hydrolysis --arch arm64 --debug --yes 2>&1 | tee ../e2e-logs/package-debug.log
           water package --platform android --backend hydrolysis --arch arm64 --release --unsigned --yes 2>&1 | tee ../e2e-logs/package-release.log
