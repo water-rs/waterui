@@ -810,10 +810,6 @@ fn flush_picker_label(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
 pub fn render_radio_picker(
     ctx: &mut WidgetRenderContext<'_>,
     owner: &Rc<RefCell<PickerRenderState>>,

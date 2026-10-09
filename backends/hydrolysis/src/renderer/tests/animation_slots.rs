@@ -10,7 +10,7 @@ use waterui::component::progress;
 
 /// `48.0` while `source` holds `index`, `0.0` otherwise, animated linearly
 /// over 100ms. Every call mints its signal at the same call site.
-fn slide(source: &Binding<i32>, index: i32) -> impl Signal<Output = f32> + Clone + 'static {
+fn slide(source: &Binding<i32>, index: i32) -> impl Signal<Output = f32> {
     source
         .clone()
         .map(move |value| if value == index { 48.0 } else { 0.0 })
@@ -56,8 +56,8 @@ fn offsets_sharing_a_signal_identity_slide_independently() {
     );
     let view = || {
         vstack((
-            button("A", || {}).offset(slide(&source, 1), 0.0),
-            button("B", || {}).offset(slide(&source, 2), 0.0),
+            button("A").action(|| {}).offset(slide(&source, 1), 0.0),
+            button("B").action(|| {}).offset(slide(&source, 2), 0.0),
         ))
     };
 

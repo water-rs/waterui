@@ -2540,6 +2540,10 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 
 /// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
 type ToggleSwitchDraw = (Rect, f32, bool);
+/// A recorded `draw_progress_linear_track` call: `(bounds, active_end)`.
+type ProgressTrackDraw = (Rect, Option<f64>);
+/// A recorded `draw_radio_indicator` call: `(center, state)`.
+type RadioIndicatorDraw = (Point, RadioIndicatorState);
 
 #[derive(Default)]
 pub struct MinimalTestTheme {
@@ -2574,10 +2578,10 @@ pub struct MinimalTestTheme {
     state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
     /// Every `draw_toggle_switch` call.
     toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
-    /// Every `draw_progress_linear_track` call, as `(bounds, active_end)`.
-    progress_linear_track_draws: Rc<RefCell<Vec<(Rect, Option<f64>)>>>,
-    /// Every `draw_radio_indicator` call, as `(center, state)`.
-    radio_indicator_draws: Rc<RefCell<Vec<(Point, RadioIndicatorState)>>>,
+    /// Every `draw_progress_linear_track` call.
+    progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
+    /// Every `draw_radio_indicator` call.
+    radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
