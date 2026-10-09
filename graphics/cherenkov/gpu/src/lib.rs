@@ -461,8 +461,9 @@ impl cherenkov::HdrOutput for Gpu {}
 #[cfg(any(target_vendor = "apple", target_os = "android"))]
 impl cherenkov::Planes for Gpu {}
 
-// Hosted system layers (#2199): the host's `CALayer` or `SurfaceControl`
-// is placed on a plane of its own, never composited — see `render::planes`.
+// Hosted system layers (#2199): the host's `NSView` (macOS), `CALayer` (iOS)
+// or `SurfaceControl` is placed on a plane of its own, never composited —
+// see `render::planes`.
 #[cfg(any(target_vendor = "apple", target_os = "android"))]
 impl cherenkov::HostedLayers for Gpu {
     type Object = render::planes::Hosted;
