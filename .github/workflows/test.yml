@@ -1005,6 +1005,8 @@ jobs:
             echo "host-version=$(jq -r .host_version <<<"$library")"
             echo "tasks=$(jq -r '.gradle_tasks | join(" ")' <<<"$library")"
             echo "coordinate=$(jq -r '"\(.group):\(.artifact):\(.version)"' <<<"$library")"
+            echo "package=$(jq -r .group <<<"$library")"
+            echo "compile-sdk=$(jq -r .compile_sdk <<<"$library")"
             echo "min-sdk=$(jq -r .min_sdk <<<"$library")"
           } >> "$GITHUB_OUTPUT"
       - name: Assemble and publish the generated embedded library
@@ -1014,7 +1016,12 @@ jobs:
         run: gradle ${{ steps.embedded-library.outputs.tasks }}
       - name: Compile an app consuming the embedded library
         working-directory: cli/tests/fixtures/android-embedded-consumer
-        run: gradle :app:compileDebugKotlin -PwateruiLibrary=${{ steps.embedded-library.outputs.coordinate }} -PwateruiMinSdk=${{ steps.embedded-library.outputs.min-sdk }}
+        run: >-
+          gradle :app:compileDebugKotlin
+          -PwateruiLibrary=${{ steps.embedded-library.outputs.coordinate }}
+          -PwateruiPackage=${{ steps.embedded-library.outputs.package }}
+          -PwateruiCompileSdk=${{ steps.embedded-library.outputs.compile-sdk }}
+          -PwateruiMinSdk=${{ steps.embedded-library.outputs.min-sdk }}
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,

@@ -2,16 +2,14 @@
 // `water build` tells a host to: through `mavenLocal()` and the library's
 // published coordinate. CI renders `examples/form` as an embedded library
 // (`render_embedded_library`), publishes it with its Hydrolysis host
-// modules, and compiles this app against the result.
+// modules, and compiles this app against the result, passing what the
+// render reported as Gradle properties.
 
 pluginManagement {
     repositories {
         google()
         mavenCentral()
         gradlePluginPortal()
-    }
-    plugins {
-        id("com.android.application") version "9.3.0"
     }
 }
 
@@ -21,6 +19,13 @@ dependencyResolutionManagement {
         mavenLocal()
         google()
         mavenCentral()
+    }
+    // The Android toolchain the Hydrolysis host and every project generated
+    // against it build with, declared once in the host's catalog.
+    versionCatalogs {
+        create("libs") {
+            from(files("../../../../backends/hydrolysis/android/gradle/libs.versions.toml"))
+        }
     }
 }
 
