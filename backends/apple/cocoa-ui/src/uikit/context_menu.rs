@@ -114,13 +114,14 @@ define_class!(
                 });
                 let action_block =
                     RcBlock::new(move |_actions| Retained::autorelease_return(menu.clone()));
-                // SAFETY: the configuration retains both blocks, which own
-                // the preview and menu values for its life.
+                // SAFETY: the configuration copies both blocks, and the
+                // copies own the preview and menu values for its life; the
+                // local blocks are released on return.
                 Some(unsafe {
                     UIContextMenuConfiguration::configurationWithIdentifier_previewProvider_actionProvider(
                         None,
-                        RcBlock::into_raw(preview_block),
-                        RcBlock::into_raw(action_block),
+                        RcBlock::as_ptr(&preview_block),
+                        RcBlock::as_ptr(&action_block),
                         mtm,
                     )
                 })

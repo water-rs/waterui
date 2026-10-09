@@ -5,7 +5,6 @@ members = []
 hydrolysis = { version = "0.2.1", path = "backends/hydrolysis", default-features = false }
 hydrolysis-m3 = "0.2.0"
 waterui-gtk = "0.1.2"
-waterui-dew = { git = "https://github.com/water-rs/dew", rev = "b64f6759a3ebe7ac621bad84be00fe431f978119", version = "0.2.1" }
 
 [patch.crates-io]
 waterui-core = { path = "core" }

@@ -44,7 +44,6 @@ use crate::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
         TemplateContext,
     },
-    toolchain::Host,
 };
 
 /// The painter the Hydrolysis Android host draws with.
@@ -183,9 +182,9 @@ fn android_dir(backend_path: &Path) -> PathBuf {
 /// the git fetch fails.
 async fn materialize_android_host(
     project: &Project,
-    host: &Host,
     resolved: &ResolvedFramework,
 ) -> eyre::Result<PathBuf> {
+    let host = project.host();
     let (url, revision) = match resolved.hydrolysis_android_host()? {
         crate::framework::HydrolysisAndroidHost::Git { url, revision } => (url, revision),
         crate::framework::HydrolysisAndroidHost::Local { root } => return Ok(root.to_path_buf()),
@@ -267,12 +266,11 @@ async fn materialize_android_host(
 /// Returns an error when the checkout ships no module for `painter` — an
 /// explicit selection error, never a runtime fallback.
 async fn require_painter_module(
-    host: &Host,
     project: &Project,
     painter: HydrolysisAndroidPainter,
 ) -> eyre::Result<PathBuf> {
     let resolved = project.resolved_framework().await?;
-    let host_root = materialize_android_host(project, host, &resolved).await?;
+    let host_root = materialize_android_host(project, &resolved).await?;
     let subdirectory = resolved.hydrolysis_android_host_subdirectory()?;
     let host_project_dir = host_root.join(subdirectory);
     let module_dir = host_project_dir.join(painter.host_module());
@@ -371,20 +369,14 @@ async fn android_template_context(
 /// Returns an error when template rendering or file writing fails.
 pub async fn scaffold_android_project(
     project: &Project,
-    host: &Host,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<()> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    project.scaffold_ffi_companion(false).await?;
-    let ctx = android_template_context(
-        project,
-        painter,
-        host_project_dir,
-        &android_dir(&backend_path),
-    )
-    .await?;
-    templates::hydrolysis_android::scaffold(&android_dir(&backend_path), &ctx, host).await?;
+    project.scaffold_ffi_companion().await?;
+    let android_dir = android_dir(&backend_path);
+    let ctx = android_template_context(project, painter, host_project_dir, &android_dir).await?;
+    templates::hydrolysis_android::scaffold(project.host(), &android_dir, &ctx).await?;
     Ok(())
 }
 
@@ -420,12 +412,13 @@ async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
             .join("Cargo.toml"),
     )
     .await?;
-    let _resolved = assets::resolve_fonts(declarations).await?;
+    let _resolved = assets::resolve_fonts(project.host(), declarations).await?;
     Ok(())
 }
 
-/// What an Android launcher build leaves behind: the cargo result, the
-/// resolved NDK/SDK context callers reuse for post-build steps like
+/// The artifacts and toolchain context produced by an Android launcher build.
+///
+/// Includes the cargo result, the resolved NDK/SDK context for steps like
 /// `llvm-strip`, and the staged shared libraries in `System.load` order.
 #[derive(Debug)]
 pub struct HydrolysisAndroidBuild {
@@ -454,13 +447,10 @@ pub struct HydrolysisAndroidBuild {
 /// staging fails.
 pub async fn build(
     project: &Project,
-    host: &Host,
     abi: AndroidAbi,
     options: BuildOptions,
 ) -> eyre::Result<BuiltTarget> {
-    Ok(build_with_features(project, host, abi, options, &[])
-        .await?
-        .built)
+    Ok(build_with_features(project, abi, options, &[]).await?.built)
 }
 
 /// [`build`] with extra Cargo features — the preview entry compiles the
@@ -472,16 +462,24 @@ pub async fn build(
 /// staging fails.
 pub async fn build_with_features(
     project: &Project,
-    host: &Host,
     abi: AndroidAbi,
     options: BuildOptions,
     features: &[&str],
 ) -> eyre::Result<HydrolysisAndroidBuild> {
-    // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
-    // prebuilt `libstd.so`, so the launcher — which never `dlopen`s modules —
-    // links the runtime in.
-    let options = options.with_static_runtime();
+    prepare_for_build(project).await?;
+    build_prepared(project, abi, options, features).await
+}
 
+/// The ABI-independent prologue of [`build`]: require the generated
+/// launcher crate and stage the font metadata its dependencies' build
+/// scripts read. A build over several ABIs runs it once, then
+/// [`build_prepared`] per ABI.
+///
+/// # Errors
+///
+/// Returns an error when the launcher crate has not been generated or the
+/// font resolution fails.
+pub async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
     if !backend_path.join("Cargo.toml").is_file() {
         bail!(
@@ -489,8 +487,28 @@ pub async fn build_with_features(
             backend_path.display()
         );
     }
+    resolve_declared_fonts(project).await
+}
 
-    resolve_declared_fonts(project).await?;
+/// [`build_with_features`] for a caller that already ran
+/// [`prepare_for_build`].
+///
+/// # Errors
+///
+/// Returns an error when the NDK or SDK cannot be resolved or the build or
+/// staging fails.
+pub async fn build_prepared(
+    project: &Project,
+    abi: AndroidAbi,
+    options: BuildOptions,
+    features: &[&str],
+) -> eyre::Result<HydrolysisAndroidBuild> {
+    let host = project.host();
+    // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
+    // prebuilt `libstd.so`, so the launcher — which never `dlopen`s modules —
+    // links the runtime in.
+    let options = options.with_static_runtime();
+    let backend_path = project.backend_path::<HydrolysisBackend>();
 
     let platform = AndroidPlatform::new(abi);
     let triple = platform.triple();
@@ -500,8 +518,7 @@ pub async fn build_with_features(
         .android_min_api_level()?;
     let context = resolve_android_build_context(host, abi, &triple, min_api_level).await?;
 
-    let rust_build = RustBuild::new(&backend_path, triple.clone())
-        .with_project(project)
+    let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
@@ -606,13 +623,13 @@ async fn copy_assets(
 /// or the Gradle build fails.
 pub async fn package_with_abis(
     project: &Project,
-    host: &Host,
     painter: HydrolysisAndroidPainter,
     options: &PackageOptions,
     abis: &[AndroidAbi],
     built: &BuiltTarget,
     prepared: &crate::android::signing::PreparedSigning,
 ) -> eyre::Result<Artifact> {
+    let host = project.host();
     // Prove the release-signing plan belongs to this project and these
     // options before any work — the same bound the Android platform backend
     // enforces; `[signing.android]` is an Android platform contract, not a
@@ -626,8 +643,8 @@ pub async fn package_with_abis(
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
 
-    let host_project_dir = require_painter_module(host, project, painter).await?;
-    scaffold_android_project(project, host, painter, &host_project_dir).await?;
+    let host_project_dir = require_painter_module(project, painter).await?;
+    scaffold_android_project(project, painter, &host_project_dir).await?;
 
     copy_assets(project, &built.app_symbols()?, options.uses_dev_server()).await?;
 
@@ -643,7 +660,11 @@ pub async fn package_with_abis(
         &project.ffi_crate_path().join("Cargo.toml"),
         &android_dir.join("app"),
         crate::assets::AndroidDependencyScope::Implementation,
-        &android_ffi_dependency_features(project).await?,
+        &android_ffi_dependency_features(
+            project,
+            &abis.iter().map(|abi| abi.triple()).collect::<Vec<_>>(),
+        )
+        .await?,
     )
     .await?;
 
@@ -680,7 +701,7 @@ pub async fn package_with_abis(
         // included — writes too.
         let _host_build =
             crate::water_dir::android_host_build_lock(host, &host_project_dir).await?;
-        run_gradle_tasks(&android_dir, &[command_name], &envs, host).await?;
+        run_gradle_tasks(host, &android_dir, &[command_name], &envs).await?;
     }
 
     let path = packaged_artifact(&android_dir, output_kind, variant).await?;
@@ -704,13 +725,13 @@ pub async fn package_with_abis(
 /// launch fails.
 pub async fn run_on_device<D: Device + AndroidAbiProvider>(
     project: &Project,
-    host: &Host,
     painter: HydrolysisAndroidPainter,
     device: D,
     run_options: RunOptions,
     build_options: BuildOptions,
     progress: Option<BuildProgress>,
 ) -> Result<Running, FailToRun> {
+    let host = project.host();
     let abi = device.android_abi();
 
     clean_jni_libs(project).await.map_err(FailToRun::Build)?;
@@ -729,13 +750,12 @@ pub async fn run_on_device<D: Device + AndroidAbiProvider>(
         Some(progress) => build_options.with_progress(progress),
         None => build_options,
     };
-    let built = build(project, host, abi, build_options)
+    let built = build(project, abi, build_options)
         .await
         .map_err(FailToRun::Build)?;
 
     let artifact = package_with_abis(
         project,
-        host,
         painter,
         &package_options,
         &[abi],
@@ -905,12 +925,10 @@ fn preview_host_fingerprint(
 ///
 /// Returns an error when the host checkout ships no `preview` module, the
 /// project cannot render, or the Gradle build fails.
-pub async fn ensure_preview_host_apk(
-    project: &Project,
-    host: &Host,
-) -> eyre::Result<(PathBuf, u32)> {
+pub async fn ensure_preview_host_apk(project: &Project) -> eyre::Result<(PathBuf, u32)> {
+    let host = project.host();
     let host_dir = preview_host_dir(&project.backend_path::<HydrolysisBackend>());
-    let composite = PreviewHostComposite::prepare(project, host, &host_dir).await?;
+    let composite = PreviewHostComposite::prepare(project, &host_dir).await?;
 
     // The fingerprint covers the rendered scaffold with `versionCode` held
     // constant — hashing the real code would feed the projection back into
@@ -922,7 +940,7 @@ pub async fn ensure_preview_host_apk(
     })
     .await?;
     let version_code = fingerprint.version_code();
-    composite.write(version_code, host).await?;
+    composite.write(version_code).await?;
 
     let stamp = host_dir.join(PREVIEW_HOST_STAMP_FILE);
     if fs::read_to_string(&stamp)
@@ -937,7 +955,7 @@ pub async fn ensure_preview_host_apk(
         let _host_build =
             crate::water_dir::android_host_build_lock(host, &composite.host_project_dir).await?;
         info!("Building the hydrolysis preview host APK");
-        run_gradle_tasks(&host_dir, &[":app:assembleDebug"], &[], host).await?;
+        run_gradle_tasks(host, &host_dir, &[":app:assembleDebug"], &[]).await?;
     }
     fs::write(&stamp, fingerprint.to_string()).await?;
     let apk = packaged_artifact(&host_dir, OutputKind::Apk, "debug").await?;
@@ -964,13 +982,12 @@ pub async fn ensure_preview_host_apk(
 /// or the scaffold cannot be written.
 pub async fn render_preview_host(
     project: &Project,
-    host: &Host,
     out: &Path,
     version_code: u32,
 ) -> eyre::Result<()> {
-    PreviewHostComposite::prepare(project, host, out)
+    PreviewHostComposite::prepare(project, out)
         .await?
-        .write(version_code, host)
+        .write(version_code)
         .await
 }
 
@@ -979,6 +996,9 @@ pub async fn render_preview_host(
 /// built once from one framework resolution — the only place its host path
 /// and `minSdk` are assembled. Only the `versionCode` varies per render.
 struct PreviewHostComposite {
+    /// The machine the project was opened on; the scaffold's Android SDK
+    /// probe runs on it.
+    toolchain_host: crate::toolchain::Host,
     out: PathBuf,
     /// The host checkout's Gradle root the composite `includeBuild`s.
     host_project_dir: PathBuf,
@@ -989,9 +1009,9 @@ struct PreviewHostComposite {
 }
 
 impl PreviewHostComposite {
-    async fn prepare(project: &Project, host: &Host, out: &Path) -> eyre::Result<Self> {
+    async fn prepare(project: &Project, out: &Path) -> eyre::Result<Self> {
         let resolved = project.resolved_framework().await?;
-        let host_root = materialize_android_host(project, host, &resolved).await?;
+        let host_root = materialize_android_host(project, &resolved).await?;
         let host_project_dir = host_root.join(resolved.hydrolysis_android_host_subdirectory()?);
         let preview_module = host_project_dir.join("preview");
         let metadata = fs::metadata(&preview_module).await.wrap_err_with(|| {
@@ -1021,6 +1041,7 @@ impl PreviewHostComposite {
             version_code: 0,
         };
         Ok(Self {
+            toolchain_host: project.host().clone(),
             out: out.to_path_buf(),
             host_project_dir,
             context: HydrolysisBackend::template_context(project, &resolved).await?,
@@ -1039,11 +1060,11 @@ impl PreviewHostComposite {
     }
 
     /// Write the composite stamped with `version_code` into `out`.
-    async fn write(&self, version_code: u32, host: &Host) -> eyre::Result<()> {
+    async fn write(&self, version_code: u32) -> eyre::Result<()> {
         templates::hydrolysis_android_preview::scaffold(
+            &self.toolchain_host,
             &self.out,
             &self.context(version_code),
-            host,
         )
         .await?;
         Ok(())
@@ -1059,14 +1080,66 @@ mod tests {
 
     use super::*;
     use crate::{
-        framework::test_fixtures::stable_checkout_framework,
+        framework::ResolvedFramework,
         project::{ManagedBackends, Manifest},
-        toolchain::testing::{TestMachine, tool_file_name},
+        toolchain::{
+            Host,
+            testing::{TestMachine, tool_file_name},
+        },
     };
 
+    /// The stable resolution `fixture_project` records, pinned to a fixture
+    /// mirror of the framework repository under `dir`: `write_local_checkout`'s
+    /// manifest and lock plus the member crates a generated manifest resolves
+    /// (`waterui` at the root, `waterui-ffi` at `ffi`, `waterui-apple` at
+    /// `backends/apple`, `hydrolysis` at `backends/hydrolysis` — every
+    /// directory `[workspace] members` names). The mirror's own commit is the
+    /// release revision, so `git`-pinned member dependencies like
+    /// `waterui-apple` — a precise source `[patch]` cannot redirect — fetch
+    /// from the mirror the way a real build fetches the channel's revision.
+    fn stable_checkout_framework_mirror(dir: &Path) -> ResolvedFramework {
+        use crate::framework::test_fixtures::{
+            git_commit_all, write_local_checkout, write_vendor_stub,
+        };
+
+        let waterui_root = dir.join("waterui");
+        write_local_checkout(&waterui_root);
+        std::fs::create_dir_all(waterui_root.join("src")).expect("waterui src");
+        std::fs::write(waterui_root.join("src/lib.rs"), "").expect("waterui lib");
+        write_vendor_stub(
+            &waterui_root.join("ffi"),
+            "waterui-ffi",
+            &[
+                "android-jni",
+                "c-api",
+                "chromium",
+                "dev",
+                "gpu",
+                "inspector",
+                "map",
+                "media",
+                "video",
+                "webview",
+                "webview-cef",
+            ],
+        );
+        write_vendor_stub(
+            &waterui_root.join("backends/apple"),
+            "waterui-apple",
+            &["map", "media", "webview"],
+        );
+        write_vendor_stub(&waterui_root.join("backends/hydrolysis"), "hydrolysis", &[]);
+        let revision = git_commit_all(&waterui_root, "stage member crates");
+        crate::framework::test_fixtures::stable_checkout_framework_at(
+            &format!("file://{}", waterui_root.display()),
+            &revision,
+        )
+    }
+
     /// A minimal project whose `Water.toml` records the stable framework
-    /// resolution so `resolved_framework` answers offline.
-    async fn fixture_project(extra_manifest: &str) -> (tempfile::TempDir, Project) {
+    /// resolution so `resolved_framework` answers offline — the release
+    /// provenance pointing at a fixture mirror `fixture_project` stages.
+    async fn fixture_project(host: &Host, extra_manifest: &str) -> (tempfile::TempDir, Project) {
         let temporary = tempfile::tempdir().expect("tempdir");
         let root = temporary.path().join("fixture");
         std::fs::create_dir_all(root.join("src")).expect("crate src");
@@ -1074,7 +1147,7 @@ mod tests {
             "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n{extra_manifest}"
         ))
         .expect("Water.toml parses");
-        manifest.framework = Some(stable_checkout_framework());
+        manifest.framework = Some(stable_checkout_framework_mirror(temporary.path()));
         std::fs::write(
             root.join("Water.toml"),
             toml::to_string(&manifest).expect("manifest serializes"),
@@ -1137,13 +1210,20 @@ mod tests {
         // `Project::open` resolves the project's layout with `cargo metadata
         // --locked`; a plain offline resolve records the patched sources in
         // the lock first.
-        cargo_metadata::MetadataCommand::new()
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
             .manifest_path(&manifest_path)
-            .other_options(vec!["--offline".to_string()])
-            .exec()
+            .other_options(vec!["--offline".to_string()]);
+        host.cargo_metadata(&command)
+            .await
             .expect("offline metadata resolves the patched project");
 
-        let project = Project::open(&root, ManagedBackends::NONE)
+        // The ffi companion's feature probe and the Gradle staging resolve
+        // the framework mirror's `git` pins through the project's host, so
+        // point cargo at a per-test `CARGO_HOME`: a fetch into the real
+        // one is exactly the machine leak this seam exists to prevent.
+        let host = host.with_env("CARGO_HOME", temporary.path().join("cargo-home"));
+        let project = Project::open(&host, &root, ManagedBackends::NONE)
             .await
             .expect("fixture project opens");
         (temporary, project)
@@ -1162,7 +1242,7 @@ mod tests {
                 .expect("staged gradle file");
         }
         let checkout = machine.root().join(staged).to_string_lossy().into_owned();
-        let host = machine.host([("WATERUI_FAKE_GIT_CHECKOUT", checkout)]);
+        let host = machine.host_with_rust_toolchain([("WATERUI_FAKE_GIT_CHECKOUT", checkout)]);
         (machine, host)
     }
 
@@ -1172,7 +1252,9 @@ mod tests {
     #[test]
     fn painter_resolution_prefers_the_override_then_the_manifest() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
+            let home = tempfile::tempdir().expect("scratch home");
+            let host = crate::toolchain::testing::real_toolchain_host(home.path());
+            let (_temporary, project) = fixture_project(&host, "").await;
             assert_eq!(
                 resolve_painter(&project, None),
                 HydrolysisAndroidPainter::Gpu
@@ -1183,7 +1265,7 @@ mod tests {
             );
 
             let (_temporary, project) =
-                fixture_project("\n[hydrolysis]\npainter = \"hwui\"\n").await;
+                fixture_project(&host, "\n[hydrolysis]\npainter = \"hwui\"\n").await;
             assert_eq!(
                 resolve_painter(&project, None),
                 HydrolysisAndroidPainter::Hwui
@@ -1200,10 +1282,10 @@ mod tests {
     #[test]
     fn ensure_preview_host_apk_fails_without_the_preview_module() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let (_temporary, project) = fixture_project(&host, "").await;
 
-            let error = ensure_preview_host_apk(&project, &host)
+            let error = ensure_preview_host_apk(&project)
                 .await
                 .expect_err("a host without `preview` must fail");
             let message = format!("{error:#}");
@@ -1221,35 +1303,50 @@ mod tests {
     #[test]
     fn materialize_android_host_materializes_then_reuses_the_stamped_checkout() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
             let (machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu", "hwui"]);
+            let (_temporary, project) = fixture_project(&host, "").await;
 
             let resolved = project
                 .resolved_framework()
                 .await
                 .expect("framework resolves");
-            let checkout = materialize_android_host(&project, &host, &resolved)
+            let checkout = materialize_android_host(&project, &resolved)
                 .await
                 .expect("host materializes");
             // The checkout clones the framework repository itself at the
-            // selected revision — the host lives inside it.
-            let revision = "a".repeat(40);
+            // selected revision — the host lives inside it — and the stamp
+            // records the revision the checkout directory names.
+            let revision = match project
+                .resolved_framework()
+                .await
+                .expect("the fixture framework resolves")
+                .hydrolysis_android_host()
+                .expect("the fixture pins a git host")
+            {
+                crate::framework::HydrolysisAndroidHost::Git { revision, .. } => {
+                    revision.to_owned()
+                }
+                crate::framework::HydrolysisAndroidHost::Local { .. } => {
+                    unreachable!("the fixture pins a git host, not a local one")
+                }
+            };
             assert!(checkout.ends_with(&revision));
+            assert_eq!(
+                std::fs::read_to_string(checkout.join(HOST_STAMP_FILE)).expect("stamp file"),
+                revision,
+                "the stamp records the revision the framework resolved"
+            );
             assert!(
                 checkout
                     .join("backends/hydrolysis/android/gpu/build.gradle.kts")
                     .is_file()
-            );
-            assert_eq!(
-                std::fs::read_to_string(checkout.join(HOST_STAMP_FILE)).expect("stamp file"),
-                revision
             );
 
             // A stamped checkout short-circuits before any fetch: remove the
             // fake git entirely and the host still resolves.
             std::fs::remove_file(machine.bin().join(tool_file_name("git")))
                 .expect("remove fake git");
-            let again = materialize_android_host(&project, &host, &resolved)
+            let again = materialize_android_host(&project, &resolved)
                 .await
                 .expect("stamped checkout needs no git");
             assert_eq!(again, checkout);
@@ -1262,16 +1359,15 @@ mod tests {
     #[test]
     fn an_unavailable_painter_is_an_error_not_a_fallback() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let (_temporary, project) = fixture_project(&host, "").await;
 
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("gpu module exists");
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("gpu module exists");
             assert_eq!(host_project_dir.file_name().unwrap(), "android");
 
-            let error = require_painter_module(&host, &project, HydrolysisAndroidPainter::Hwui)
+            let error = require_painter_module(&project, HydrolysisAndroidPainter::Hwui)
                 .await
                 .expect_err("hwui module is absent")
                 .to_string();
@@ -1298,15 +1394,15 @@ mod tests {
     #[test]
     fn the_scaffold_composites_the_pinned_host_and_gpu_painter() {
         smol::block_on(async {
+            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
             let (_temporary, project) = fixture_project(
+                &host,
                 "\n[permissions]\ninternet = { enable = true, description = \"fixture\" }\n",
             )
             .await;
-            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("host project dir");
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
 
             let files = rendered_files(
                 rendered_android_outputs(
@@ -1356,6 +1452,16 @@ mod tests {
             assert!(gradle.contains("isMinifyEnabled = true"), "{gradle}");
             assert!(gradle.contains("isShrinkResources = true"), "{gradle}");
             assert!(gradle.contains("proguard-rules.pro"), "{gradle}");
+
+            let wrapper = files["gradle/wrapper/gradle-wrapper.properties"].as_str();
+            let declared = crate::framework::test_fixtures::stable_checkout_framework()
+                .android_gradle_version()
+                .expect("the fixture declares its Gradle release")
+                .to_owned();
+            assert!(
+                wrapper.contains(&format!("gradle-{declared}-bin.zip")),
+                "the scaffolded wrapper pins the declared Gradle release: {wrapper}"
+            );
 
             let manifest = files["app/src/main/AndroidManifest.xml"].as_str();
             assert!(
@@ -1428,12 +1534,11 @@ mod tests {
     #[test]
     fn only_the_debug_source_set_adds_internet_to_an_undeclaring_project() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("host project dir");
+            let (_temporary, project) = fixture_project(&host, "").await;
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
 
             let files = rendered_files(
                 rendered_android_outputs(
@@ -1467,7 +1572,9 @@ mod tests {
     #[test]
     fn the_scaffolded_project_root_resolves_against_the_android_dir() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
+            let home = tempfile::tempdir().expect("scratch home");
+            let host = crate::toolchain::testing::real_toolchain_host(home.path());
+            let (_temporary, project) = fixture_project(&host, "").await;
             let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
             std::fs::create_dir_all(&android_dir).expect("android dir");
             let host_project_dir = project.root().join("android-host");
@@ -1514,25 +1621,19 @@ mod tests {
     #[test]
     fn the_android_scaffold_renders_the_ffi_companion_on_a_cold_cache() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
+            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let (_temporary, project) = fixture_project(&host, "").await;
             assert!(
                 !project.ffi_crate_path().join("Cargo.toml").exists(),
                 "fixture opened with no managed backends: no companion scaffolded"
             );
-            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Gpu)
-                    .await
-                    .expect("host project dir");
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
 
-            scaffold_android_project(
-                &project,
-                &host,
-                HydrolysisAndroidPainter::Gpu,
-                &host_project_dir,
-            )
-            .await
-            .expect("android scaffold renders");
+            scaffold_android_project(&project, HydrolysisAndroidPainter::Gpu, &host_project_dir)
+                .await
+                .expect("android scaffold renders");
 
             assert!(
                 project.ffi_crate_path().join("Cargo.toml").exists(),
@@ -1547,12 +1648,11 @@ mod tests {
     #[test]
     fn the_hwui_painter_renders_at_the_framework_floor_and_mounts_no_band() {
         smol::block_on(async {
-            let (_temporary, project) = fixture_project("").await;
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["hwui"]);
-            let host_project_dir =
-                require_painter_module(&host, &project, HydrolysisAndroidPainter::Hwui)
-                    .await
-                    .expect("host project dir");
+            let (_temporary, project) = fixture_project(&host, "").await;
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Hwui)
+                .await
+                .expect("host project dir");
 
             let files = rendered_files(
                 rendered_android_outputs(
@@ -1599,14 +1699,14 @@ mod tests {
     fn hydrolysis_android_embedded_renders_a_publishing_library() {
         smol::block_on(async {
             const VERSION: &str = "0.0.0-deadbeefcafe00";
-            let (_temporary, project) = fixture_project("").await;
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu", "hwui"]);
+            let (_temporary, project) = fixture_project(&host, "").await;
 
             for painter in [
                 HydrolysisAndroidPainter::Gpu,
                 HydrolysisAndroidPainter::Hwui,
             ] {
-                let host_project_dir = require_painter_module(&host, &project, painter)
+                let host_project_dir = require_painter_module(&project, painter)
                     .await
                     .expect("host project dir");
                 let files = rendered_files(

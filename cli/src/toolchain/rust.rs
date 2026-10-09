@@ -373,15 +373,6 @@ fn cargo_bin_dir(host: &Host) -> Option<PathBuf> {
     host.home_dir().map(|home| home.join(".cargo/bin"))
 }
 
-/// The directory rustup unpacks toolchains into on this host:
-/// `$RUSTUP_HOME/toolchains`, falling back to `~/.rustup/toolchains`.
-pub(crate) fn rustup_toolchains_dir(host: &Host) -> Option<PathBuf> {
-    host.env_string("RUSTUP_HOME")
-        .map(PathBuf::from)
-        .or_else(|| host.home_dir().map(|home| home.join(".rustup")))
-        .map(|root| root.join("toolchains"))
-}
-
 /// When `rustup` is reachable but `cargo`/`rustc` are not, the rustup proxies
 /// either sit in a directory missing from PATH or were never created. Both
 /// are manual repairs: doctor does not edit shell profiles or reinstall
@@ -669,9 +660,10 @@ pub(crate) async fn selected_rustup_toolchain(host: &Host) -> Result<String, Unf
 /// Returns an error when rustup is missing or resolves no toolchain for the
 /// project directory.
 pub(crate) async fn project_rustup_toolchain(
+    host: &Host,
     project_root: &Path,
 ) -> Result<String, UnfixableToolchain> {
-    selected_rustup_toolchain(&Host::current().with_cwd(project_root)).await
+    selected_rustup_toolchain(&host.clone().with_cwd(project_root)).await
 }
 
 /// Targets installed on `toolchain`, via `rustup target list --installed`.
@@ -889,8 +881,7 @@ async fn select_toolchain(
 
 /// `rustup show active-toolchain` failed because the pinned (or defaulted)
 /// toolchain is not installed. When the pin names a channel rustup cannot
-/// install — `esp` being the common case — the repair is manual and names
-/// the toolchain's own installer.
+/// install, the repair is manual: the toolchain's own provider installs it.
 fn missing_pinned_toolchain(
     pin: Option<&ToolchainPin>,
     installation: &mut RustToolchainInstallation,
@@ -905,11 +896,7 @@ fn missing_pinned_toolchain(
     if classify_channel(&channel) == ChannelKind::Custom {
         return Err(ToolchainError::unfixable(
             format!("rust-toolchain pin `{channel}` is not a rustup channel: {error_message}"),
-            if channel == "esp" {
-                "Install the Espressif Rust toolchain with `espup install` (install `espup` first with `cargo install espup`)."
-            } else {
-                "Install the toolchain through its provider; rustup only installs stable/beta/nightly and released versions."
-            },
+            "Install the toolchain through its provider; rustup only installs stable/beta/nightly and released versions.",
         ));
     }
     installation.require_toolchain_install(channel);
@@ -950,13 +937,9 @@ async fn check_rustc_version(
                     "The pinned toolchain `{}` provides Rust {installed_version}, below the required {required_version}.",
                     channel.unwrap_or_default()
                 ),
-                if channel == Some("esp") {
-                    String::from("Update the Espressif Rust toolchain with `espup update`.")
-                } else {
-                    String::from(
-                        "Update the pinned toolchain through its provider, or raise the floor in `rust-toolchain.toml`.",
-                    )
-                },
+                String::from(
+                    "Update the pinned toolchain through its provider, or raise the floor in `rust-toolchain.toml`.",
+                ),
             ))
         }
         (SelectedToolchain::Rustup(_), Some(ChannelKind::Version | ChannelKind::Dated)) => {
@@ -1408,19 +1391,19 @@ mod host_tests {
     #[test]
     fn check_unfixable_when_pinned_custom_toolchain_missing() {
         let machine = complete_machine();
-        machine.file("rust-toolchain.toml", "[toolchain]\nchannel = \"esp\"\n");
+        machine.file("rust-toolchain.toml", "[toolchain]\nchannel = \"stage0\"\n");
         let mut vars = complete_vars();
         vars.push((
             String::from("WATERUI_FAKE_RUSTUP_TOOLCHAIN_NOT_INSTALLED"),
-            String::from("esp"),
+            String::from("stage0"),
         ));
         let host = machine.host(vars);
         let result = smol::block_on(RustToolchain::default().check(&host));
         match &result {
             Err(ToolchainError::Unfixable(error)) => {
                 assert!(
-                    error.suggestion().contains("espup install"),
-                    "an `esp` pin must name the espup repair: {}",
+                    error.suggestion().contains("through its provider"),
+                    "a custom pin must name its provider as the repair: {}",
                     error.suggestion()
                 );
             }

@@ -14,13 +14,11 @@ use waterui_cli::{
     android::platform::{AndroidAbi, AndroidPlatform},
     apple::{platform::build_rust_lib, toolchain::AppleSdk},
     build::{BuildOptions, BuildProfile, BuiltTarget},
-    esp32::platform::build_esp32,
     gtk4::platform::build_gtk4,
     hydrolysis::platform::build_hydrolysis,
     hydrolysis::{self, android::embedded},
     platform::TargetPlatform as LibTargetPlatform,
     project::{ManagedBackends, Project},
-    toolchain::Host,
     winui::platform::build_winui,
 };
 
@@ -39,25 +37,12 @@ pub enum TargetPlatform {
     Linux,
     /// Windows.
     Windows,
-    /// ESP32-S3 (Xtensa firmware).
+    /// ESP32-S3 (Xtensa); unsupported until #1601.
     Esp32s3,
-    /// ESP32-C3 (RISC-V firmware).
+    /// ESP32-C3 (RISC-V); unsupported until #1601.
     Esp32c3,
-    /// ESP32-P4 (RISC-V firmware, hardware FPU).
+    /// ESP32-P4 (RISC-V, hardware FPU); unsupported until #1601.
     Esp32p4,
-}
-
-impl TargetPlatform {
-    /// The ESP32 chip a platform selects, if it is an ESP32 platform.
-    const fn esp32_chip(self) -> Option<waterui_cli::esp32::chip::Esp32Chip> {
-        use waterui_cli::esp32::chip::Esp32Chip;
-        match self {
-            Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
-            Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
-            Self::Esp32p4 => Some(Esp32Chip::Esp32P4),
-            _ => None,
-        }
-    }
 }
 
 /// Target architecture for building.
@@ -200,13 +185,12 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
     success!(shell, "Toolchain ready");
 
     let spinner = shell.spinner("Compiling...");
-    let result = Box::pin(shell.display_output(embedded::build_aar(
-        &context.project,
-        &Host::current(),
+    let result = Box::pin(embedded::build_aar(
+        &context.project.with_std_output(shell.is_interactive()),
         hydrolysis::android::resolve_painter(&context.project, None),
         &context.build_options,
         &abis,
-    )))
+    ))
     .await;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -214,13 +198,14 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
 
     match result {
         Ok(artifact) => {
+            let library = &artifact.library;
             success!(
                 shell,
                 "Embedded artifact at {}",
                 artifact.aar_path.display()
             );
-            success!(shell, "Published to mavenLocal as {}", artifact.coordinate);
-            for host_coordinate in &artifact.host_coordinates {
+            success!(shell, "Published to mavenLocal as {}", library.coordinate());
+            for host_coordinate in &library.host_coordinates {
                 line!(shell, "    published {}", host_coordinate);
             }
             line!(shell, "In the host Gradle project, add:");
@@ -228,16 +213,26 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
             line!(
                 shell,
                 "    implementation(\"{}\") to dependencies",
-                artifact.coordinate
+                library.coordinate()
             );
             line!(
                 shell,
                 "then mount the WaterUI root with `WaterUi` (in `{}.waterui`):",
-                artifact.android_package_name
+                library.group
             );
             line!(
                 shell,
                 "    setContentView(WaterUi.createView(this) {{ finish() }})"
+            );
+            line!(
+                shell,
+                "The host app needs minSdk {} or higher.",
+                library.min_sdk
+            );
+            line!(
+                shell,
+                "The dev.waterui.hydrolysis artifacts exist only in this machine's mavenLocal: \
+                 build the library on each machine that builds the host, rather than copying the AAR."
             );
             Ok(())
         }
@@ -255,13 +250,11 @@ async fn run_embedded_apple_build(
 ) -> Result<()> {
     let architecture = args.arch.map(TargetArch::architecture);
     let spinner = shell.spinner("Building embedded Apple package...");
-    let result = Box::pin(
-        shell.display_output(waterui_cli::apple::embedded::build_xcframework(
-            &context.project,
-            &context.build_options,
-            architecture,
-        )),
-    )
+    let result = Box::pin(waterui_cli::apple::embedded::build_xcframework(
+        &context.project.with_std_output(shell.is_interactive()),
+        &context.build_options,
+        architecture,
+    ))
     .await;
     if let Some(progress) = spinner {
         progress.finish_and_clear();
@@ -299,18 +292,17 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         } else {
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
-    let mut project = Project::open(&project_path, managed_backends).await?;
+    let project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    )
+    .await?;
 
     if backend.is_experimental()
         && !super::confirm_experimental_backend(shell, backend_name(backend), args.yes)?
     {
         return Ok(None);
-    }
-
-    // Selecting an ESP32 platform pins the chip so the generated harness and
-    // build target follow the platform.
-    if let Some(chip) = args.platform.esp32_chip() {
-        project.set_esp32_chip(chip).await?;
     }
 
     let project = super::ensure_generated_backend(shell, project, backend).await?;
@@ -422,53 +414,46 @@ async fn check_build_toolchain(
 
 async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Result<BuiltTarget> {
     let spinner = shell.spinner("Compiling...");
-    let result = shell
-        .display_output(Box::pin(async {
-            match context.backend {
-                TargetBackend::Apple => {
-                    build_for_apple(
-                        &context.project,
-                        args.platform,
-                        args.arch,
+    let result = Box::pin(async {
+        // The project clone carries the interactive output policy into every
+        // backend's build.
+        let project = context.project.with_std_output(shell.is_interactive());
+        match context.backend {
+            TargetBackend::Apple => {
+                build_for_apple(
+                    &project,
+                    args.platform,
+                    args.arch,
+                    context.build_options.clone(),
+                )
+                .await
+            }
+            TargetBackend::Android => {
+                build_for_android(&project, args.arch, context.build_options.clone()).await
+            }
+            TargetBackend::Gtk4 => build_gtk4(&project, context.build_options.clone()).await,
+            TargetBackend::Hydrolysis => {
+                if args.platform == TargetPlatform::Android {
+                    let abi = android_abi(args.arch.unwrap_or(TargetArch::Arm64));
+                    waterui_cli::hydrolysis::android::build(
+                        &project,
+                        abi,
+                        context.build_options.clone(),
+                    )
+                    .await
+                } else {
+                    build_hydrolysis(
+                        &project,
+                        lib_platform(args.platform),
                         context.build_options.clone(),
                     )
                     .await
                 }
-                TargetBackend::Android => {
-                    build_for_android(&context.project, args.arch, context.build_options.clone())
-                        .await
-                }
-                TargetBackend::Gtk4 => {
-                    build_gtk4(&context.project, context.build_options.clone()).await
-                }
-                TargetBackend::Hydrolysis => {
-                    if args.platform == TargetPlatform::Android {
-                        let abi = android_abi(args.arch.unwrap_or(TargetArch::Arm64));
-                        waterui_cli::hydrolysis::android::build(
-                            &context.project,
-                            &waterui_cli::toolchain::Host::current(),
-                            abi,
-                            context.build_options.clone(),
-                        )
-                        .await
-                    } else {
-                        build_hydrolysis(
-                            &context.project,
-                            lib_platform(args.platform),
-                            context.build_options.clone(),
-                        )
-                        .await
-                    }
-                }
-                TargetBackend::WinUi => {
-                    build_winui(&context.project, context.build_options.clone()).await
-                }
-                TargetBackend::Dew => {
-                    build_esp32(&context.project, context.build_options.clone()).await
-                }
             }
-        }))
-        .await;
+            TargetBackend::WinUi => build_winui(&project, context.build_options.clone()).await,
+        }
+    })
+    .await;
 
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -508,8 +493,10 @@ fn resolve_backend(
         TargetPlatform::Android | TargetPlatform::Linux | TargetPlatform::Windows => {
             TargetBackend::Hydrolysis
         }
+        // No backend serves ESP32 targets yet: Dew is archived and
+        // Hydrolysis's embedded host lands with #1601.
         TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
-            TargetBackend::Dew
+            bail!("{}", super::ESP32_UNSUPPORTED)
         }
     };
     let backend = backend_override.unwrap_or(default_backend);
@@ -531,9 +518,6 @@ fn resolve_backend(
         ) | (
             TargetPlatform::Windows,
             TargetBackend::Hydrolysis | TargetBackend::WinUi
-        ) | (
-            TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
-            TargetBackend::Dew
         )
     );
     if !supported {
@@ -544,10 +528,7 @@ fn resolve_backend(
              - Android: hydrolysis, android\n  \
              - macOS: apple, hydrolysis\n  \
              - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis, winui\n  \
-             - ESP32-S3: dew\n  \
-             - ESP32-C3: dew\n  \
-             - ESP32-P4: dew",
+             - Windows: hydrolysis, winui",
             backend,
             platform
         );
@@ -567,13 +548,10 @@ fn validate_arch_args(
     }
     // Hydrolysis on Android takes --arch like the Android backend; on its
     // desktop platforms the triple is the host's.
-    let arch_free_backend = matches!(
-        backend,
-        TargetBackend::Gtk4 | TargetBackend::WinUi | TargetBackend::Dew
-    ) || (backend == TargetBackend::Hydrolysis
-        && platform != TargetPlatform::Android);
+    let arch_free_backend = matches!(backend, TargetBackend::Gtk4 | TargetBackend::WinUi)
+        || (backend == TargetBackend::Hydrolysis && platform != TargetPlatform::Android);
     if arch_free_backend && arch.is_some() {
-        bail!("--arch is not supported for gtk4/hydrolysis/winui/dew backends");
+        bail!("--arch is not supported for gtk4/hydrolysis/winui backends");
     }
     Ok(())
 }
@@ -647,11 +625,6 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: WinUI backend is not supported on {platform:?}");
             }
             toolchain_checks::check_winui(host).await?;
-        }
-        TargetBackend::Dew => {
-            if platform.esp32_chip().is_none() {
-                bail!("Internal error: dew backend is not supported on {platform:?}");
-            }
         }
     }
     Ok(())
@@ -755,7 +728,6 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
         TargetBackend::WinUi => "WinUI",
-        TargetBackend::Dew => "Dew",
     }
 }
 
