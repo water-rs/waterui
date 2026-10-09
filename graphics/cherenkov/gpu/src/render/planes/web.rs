@@ -258,9 +258,9 @@ impl DomPlanes {
         let defs = document
             .create_element_ns(Some(SVG), "defs")
             .map_err(|_| unsupported("cannot create the clip definitions"))?;
-        append(&svg, &defs)?;
-        append(&root, &svg)?;
-        append(&target.parent, &root)?;
+        append(&svg, &defs).map_err(SurfaceError::UnsupportedTarget)?;
+        append(&root, &svg).map_err(SurfaceError::UnsupportedTarget)?;
+        append(&target.parent, &root).map_err(SurfaceError::UnsupportedTarget)?;
         let mut planes = Self {
             instance: instance.clone(),
             adapter: adapter.clone(),
@@ -311,7 +311,7 @@ impl DomPlanes {
                     ("z-index", &stack_index(Slot::Part(index)).to_string()),
                 ],
             );
-            append(&self.root, &canvas)?;
+            append(&self.root, &canvas).map_err(SurfaceError::UnsupportedTarget)?;
             let request = OutputRequest {
                 transparent: index > 0 || self.request.transparent,
                 ..self.request
@@ -329,12 +329,12 @@ impl DomPlanes {
         Ok(())
     }
 
-    /// Device pixels to the root's CSS pixels, per axis: the canvases fill
-    /// the root, so the scale is the root's used size — fractional, and
-    /// untouched by any transform on its ancestors, which applies to the
-    /// canvases and the hosted elements alike — over the surface's device
-    /// size.
-    fn css_scale(&self) -> Result<(f64, f64), RenderError> {
+    /// Device pixels to the root's CSS pixels, per axis, for a surface of
+    /// `size` device pixels: the canvases fill the root, so the scale is the
+    /// root's used size over `size`. The used size is fractional and
+    /// untouched by any transform on the root's ancestors, which applies to
+    /// the canvases and the hosted elements alike.
+    fn css_scale(&self, size: (u32, u32)) -> Result<(f64, f64), RenderError> {
         let style = self
             .root
             .owner_document()
@@ -358,8 +358,8 @@ impl DomPlanes {
                 })
         };
         Ok((
-            used("width")? / f64::from(self.size.0),
-            used("height")? / f64::from(self.size.1),
+            used("width")? / f64::from(size.0),
+            used("height")? / f64::from(size.1),
         ))
     }
 
@@ -367,6 +367,7 @@ impl DomPlanes {
     /// stacking index, and hides every other bound element in place.
     fn host<'p>(
         &mut self,
+        size: (u32, u32),
         planes: impl Iterator<Item = (usize, &'p Placement, &'p HostedElement, Size)>,
     ) -> Result<(), RenderError> {
         // Reading the used size flushes the page's style, so a frame
@@ -376,7 +377,7 @@ impl DomPlanes {
         for (index, placement, object, extent) in planes {
             let scale = match scale {
                 Some(scale) => scale,
-                None => *scale.insert(self.css_scale()?),
+                None => *scale.insert(self.css_scale(size)?),
             };
             let node = match self.hosted.remove(&placement.layer) {
                 Some(node) if node.element.is(object) => node,
@@ -384,7 +385,7 @@ impl DomPlanes {
                     if let Some(previous) = previous {
                         release(previous);
                     }
-                    append(&self.root, &object.element).map_err(render)?;
+                    append(&self.root, &object.element).map_err(RenderError::Render)?;
                     HostedNode {
                         element: object.clone(),
                         clips: Vec::new(),
@@ -432,7 +433,7 @@ impl DomPlanes {
             self.clip_chain(&mut node.clips, &placement.path, device.inverse())?
         } else {
             for clip in node.clips.drain(..) {
-                clip.clip_path.remove();
+                clip.element.remove();
             }
             None
         };
@@ -502,7 +503,7 @@ impl DomPlanes {
             device_from_parent = device_from_level * Affine::translate(-level.scroll);
         }
         for clip in clips.drain(count..) {
-            clip.clip_path.remove();
+            clip.element.remove();
         }
         Ok(clips.last().map(|clip| clip.id.clone()))
     }
@@ -529,11 +530,11 @@ impl DomPlanes {
         let shape = document
             .create_element_ns(Some(SVG), "path")
             .map_err(|_| RenderError::Render("cannot create a clip shape".into()))?;
-        append(&clip_path, &shape).map_err(render)?;
-        append(&self.defs, &clip_path).map_err(render)?;
+        append(&clip_path, &shape).map_err(RenderError::Render)?;
+        append(&self.defs, &clip_path).map_err(RenderError::Render)?;
         Ok(Clip {
             id,
-            clip_path,
+            element: clip_path,
             shape,
         })
     }
@@ -542,19 +543,21 @@ impl DomPlanes {
 /// One `<clipPath>` of a hosted element's chain.
 struct Clip {
     id: String,
-    clip_path: Element,
+    /// The `<clipPath>`.
+    element: Element,
     /// Its one `<path>`.
     shape: Element,
 }
 
 /// Where a child of the root stacks: part `n` below plane `n`, plane `n`
 /// below part `n + 1` — the composition's own order, bottom first.
+#[derive(Clone, Copy)]
 enum Slot {
     Part(usize),
     Plane(usize),
 }
 
-fn stack_index(slot: Slot) -> usize {
+const fn stack_index(slot: Slot) -> usize {
     match slot {
         Slot::Part(n) => 2 * n,
         Slot::Plane(n) => 2 * n + 1,
@@ -576,7 +579,7 @@ fn page_unique() -> String {
 /// another element took its layer.
 fn release(node: HostedNode) {
     for clip in node.clips {
-        clip.clip_path.remove();
+        clip.element.remove();
     }
     node.element.element.remove();
 }
@@ -615,19 +618,16 @@ fn attributes(element: &Element, values: &[(&str, &str)]) {
     }
 }
 
-fn append(parent: &Element, child: &Element) -> Result<(), SurfaceError> {
+/// Appends `child` to `parent`, or names why the page refused it.
+fn append(parent: &Element, child: &Element) -> Result<(), String> {
     parent
         .append_child(child)
         .map(drop)
-        .map_err(|_| unsupported("the page refused an engine element"))
+        .map_err(|_| String::from("DOM planes: the page refused an engine element"))
 }
 
 fn unsupported(cause: &str) -> SurfaceError {
     SurfaceError::UnsupportedTarget(format!("DOM planes: {cause}"))
-}
-
-fn render(error: SurfaceError) -> RenderError {
-    RenderError::Render(error.to_string())
 }
 
 impl Compositor for DomPlanes {
@@ -661,17 +661,23 @@ impl SystemPlanes for DomPlanes {
     type Commit = ();
 
     fn compose(&mut self, composition: Composition<'_>) -> Result<(Presentation, ()), RenderError> {
-        self.ensure_parts(composition.parts.len()).map_err(render)?;
-        self.host(composition.planes.iter().enumerate().map(
-            |(index, plane)| match &plane.content {
-                PlaneContent::Hosted { object, extent } => {
-                    (index, plane.placement, *object, *extent)
-                }
-                PlaneContent::Frame { .. } | PlaneContent::Raster { .. } => {
-                    unreachable!("the DOM realization is offered only hosted candidates")
-                }
-            },
-        ))?;
+        self.ensure_parts(composition.parts.len())
+            .map_err(|error| RenderError::Render(error.to_string()))?;
+        self.host(
+            composition.size,
+            composition
+                .planes
+                .iter()
+                .enumerate()
+                .map(|(index, plane)| match &plane.content {
+                    PlaneContent::Hosted { object, extent } => {
+                        (index, plane.placement, *object, *extent)
+                    }
+                    PlaneContent::Frame { .. } | PlaneContent::Raster { .. } => {
+                        unreachable!("the DOM realization is offered only hosted candidates")
+                    }
+                }),
+        )?;
         let mut presented = true;
         for (part, canvas) in composition.parts.iter().zip(&self.parts) {
             presented &= composition.presenter.present(

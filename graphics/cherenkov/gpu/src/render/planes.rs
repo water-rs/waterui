@@ -888,10 +888,10 @@ pub fn frames_only<C: Compositor>(
 /// The content a plane shows.
 #[derive(Debug)]
 #[cfg_attr(
-    not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
+    not(any(target_vendor = "apple", target_os = "android")),
     expect(
         dead_code,
-        reason = "read by the platform realizations of `SystemPlanes`"
+        reason = "read by the platform realizations of `SystemPlanes`; the DOM realization shows only hosted content"
     )
 )]
 pub enum PlaneContent<'a> {
