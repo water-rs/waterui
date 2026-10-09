@@ -6229,7 +6229,7 @@ mod tests {
         let [gp, holder, video, overlay, above] = [1, 2, 3, 4, 5].map(LayerId::new);
         for (outer, inner) in [
             (round.clone(), rect.clone()),
-            (rect.clone(), round.clone()),
+            (rect, round.clone()),
             (round.clone(), round),
         ] {
             let mut tree = tree_of(
