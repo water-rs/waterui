@@ -1353,17 +1353,7 @@ async fn dom_planes_stack_a_hosted_element_between_parts() {
     let window = web_sys::window().expect("a browser window");
     let document = window.document().expect("a document");
     let scale = window.device_pixel_ratio();
-    let host: web_sys::HtmlElement = document
-        .create_element("div")
-        .expect("div")
-        .unchecked_into();
-    host.style()
-        .set_css_text("position:fixed;left:0;top:0;width:480px;height:320px");
-    document
-        .body()
-        .expect("a body")
-        .append_child(&host)
-        .expect("host appended");
+    let host = dom_host(&document);
     let frame = hosted_frame(&document);
 
     #[expect(
@@ -1457,6 +1447,23 @@ async fn dom_planes_stack_a_hosted_element_between_parts() {
         "the surface's stacking root leaves with it"
     );
     host.remove();
+}
+
+/// The host's element a DOM surface presents in: 480 by 320 CSS pixels at
+/// the page's origin.
+fn dom_host(document: &web_sys::Document) -> web_sys::HtmlElement {
+    let host: web_sys::HtmlElement = document
+        .create_element("div")
+        .expect("div")
+        .unchecked_into();
+    host.style()
+        .set_css_text("position:fixed;left:0;top:0;width:480px;height:320px");
+    document
+        .body()
+        .expect("a body")
+        .append_child(&host)
+        .expect("host appended");
+    host
 }
 
 /// The `<iframe>` a web view would host: a same-document page, so the test
