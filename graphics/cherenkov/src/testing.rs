@@ -3128,6 +3128,15 @@ pub fn ownership(members: &[(f32, [f32; 2])], member: usize) -> f32 {
 /// Retained-lowering equivalence checks for first-party backends.
 pub mod incremental;
 
+/// A surface wake-up with no host behind it, for a harness that drives a
+/// renderer directly and renders on its own schedule.
+#[must_use]
+pub fn unhosted_waker() -> crate::CompletionWaker {
+    crate::CompletionWaker::new(&std::sync::Arc::new(crate::engine::SurfaceWaker::new(
+        || {},
+    )))
+}
+
 /// The browser executor's registration lifetimes (#150). Resource
 /// registration is synchronous and queued in order, so its handle owns the
 /// id from the start; surface creation is a future that owns its id from

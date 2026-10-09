@@ -103,8 +103,8 @@ impl TestHost {
     ///
     /// # Panics
     ///
-    /// Panics with the cause if the offscreen Hydrolysis surface cannot
-    /// acquire a frame, the frame fails to render, or its readback fails.
+    /// Panics with the cause if the frame fails to render or its readback
+    /// fails.
     pub fn render<V: View>(&self, view: V) -> Snapshot {
         let mut platform = OffscreenWindow::on_context(
             self.gpu.clone(),
@@ -137,9 +137,7 @@ impl TestHost {
         );
         renderer.finish_rebuild_frame();
 
-        let frame = surface
-            .acquire()
-            .unwrap_or_else(|error| snapshot_failed("acquiring the offscreen frame", error));
+        let frame = surface.acquire();
         renderer
             .render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
                 adapter: surface.adapter(),

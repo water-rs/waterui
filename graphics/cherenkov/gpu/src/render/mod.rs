@@ -6753,14 +6753,13 @@ impl GpuRenderer {
                 texels,
             } => {
                 let hit = self.atlas.get(&key).is_some();
+                // An outline-less glyph owns no cell, so its admission
+                // references no band (#2327).
                 let out = self
                     .atlas
                     .place_glyph(key, left, top, w, h, texels, writes)
-                    .map(|(x, y)| {
-                        PendingOrigin::Cells(
-                            vec![(x, y)],
-                            vec![self.atlas.get(&key).expect("just stored").slot],
-                        )
+                    .map(|(origin, shelf)| {
+                        PendingOrigin::Cells(vec![origin], shelf.into_iter().collect())
                     })
                     .ok_or(RenderError::AtlasFull)?;
                 if !hit && w == 0 {

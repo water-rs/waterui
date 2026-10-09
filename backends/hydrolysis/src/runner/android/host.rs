@@ -34,7 +34,7 @@ use super::ime::ImeBridge;
 use super::jni::JniError;
 use crate::engine::WidgetTheme;
 use crate::platform::{
-    GpuSurfaceWindow, InputEvent, PlatformWindow, SurfaceProvider, TextInputState,
+    GpuSurfaceWindow, InputEvent, PlatformWindow, PresentationSurface as _, TextInputState,
     validated_window_frame,
 };
 use crate::renderer::{
@@ -534,7 +534,8 @@ impl PlatformWindow for AndroidHostWindow {
 }
 
 impl GpuSurfaceWindow for AndroidHostWindow {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider {
+    type Presentation = AndroidSurface;
+    fn surface(&mut self) -> &mut AndroidSurface {
         &mut self.surface
     }
 }
@@ -724,13 +725,16 @@ impl UiThreadServices {
         // SAFETY: fd >= 0 checked above.
         let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
         let wake = ExecutorWake::register(&executor)?;
-        let _ = executor_core::try_init_local_executor(
+        executor_core::try_init_local_executor(
             waterui::task::monitored_local_executor_with_probes(
                 executor.clone(),
                 waterui::task::RefreshRate::HEADLESS,
                 inspector_probe,
             ),
-        );
+        )
+        .map_err(|_| {
+            JniError("hydrolysis android: the UI thread's executor is already attached".to_owned())
+        })?;
         let mut env = Environment::new();
         waterui::inspector::install(&mut env, inspector);
         Ok(Self {
@@ -1057,6 +1061,7 @@ impl AndroidSession {
     pub(crate) fn surface_attached_with_generation(
         &mut self,
         native_window: ndk::native_window::NativeWindow,
+        peak_refresh_hz: f32,
         width: u32,
         height: u32,
         generation: u64,
@@ -1069,11 +1074,13 @@ impl AndroidSession {
             height,
             "wake posted: surface attached"
         );
-        let attached =
-            self.runtime
-                .platform
-                .surface
-                .attach(native_window, width, height, generation);
+        let attached = self.runtime.platform.surface.attach(
+            native_window,
+            peak_refresh_hz,
+            width,
+            height,
+            generation,
+        );
         self.runtime.platform.sync_frame_wake_gate();
         attached.map_err(|error| error.to_string())?;
         // A new surface never inherits the old one's presented frame — the
@@ -1131,8 +1138,12 @@ impl AndroidSession {
 
     /// The scheduler's interaction/animation high-refresh demand changed —
     /// routed onto the native window (API 30+).
-    pub(crate) fn set_high_refresh_demand(&mut self, fps: Option<f32>) {
-        self.runtime.platform.surface.set_high_refresh_demand(fps);
+    pub(crate) fn set_high_refresh_demand(&mut self, active: bool) -> Result<(), String> {
+        self.runtime
+            .platform
+            .surface
+            .set_high_refresh_demand(active)
+            .map_err(|error| error.to_string())
     }
 
     /// Whether the window's content asked the host to close.

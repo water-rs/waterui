@@ -16,8 +16,8 @@ use web_sys::{
 
 use super::{
     CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
-    PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-    TextInputState, WindowState, WuiWindow,
+    PointerButton, PointerKind, PresentationSurface as _, SurfaceError, SurfaceFrame,
+    SurfaceProvider, TextInputPurpose, TextInputState, WindowState, WuiWindow,
 };
 
 #[derive(Clone, Copy)]
@@ -28,9 +28,6 @@ struct PendingResize {
 }
 
 pub struct BrowserSurface {
-    instance: wgpu::Instance,
-    /// Identity of this device creation chain for the engine pool.
-    context_id: u64,
     surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -131,8 +128,6 @@ impl BrowserSurface {
         surface.configure(&device, &config);
 
         Self {
-            instance,
-            context_id,
             surface,
             adapter,
             device,
@@ -144,7 +139,7 @@ impl BrowserSurface {
     }
 }
 
-impl SurfaceProvider for BrowserSurface {
+impl crate::platform::PresentationSurface for BrowserSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         &self.adapter
     }
@@ -161,6 +156,18 @@ impl SurfaceProvider for BrowserSurface {
         &self.device_loss
     }
 
+    fn size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.config.width = width.max(1);
+        self.config.height = height.max(1);
+        self.surface.configure(&self.device, &self.config);
+    }
+}
+
+impl SurfaceProvider for BrowserSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         let output = super::acquire_surface_texture(&self.surface)?;
         let view = output
@@ -182,22 +189,8 @@ impl SurfaceProvider for BrowserSurface {
         }
     }
 
-    fn size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
-    }
-
     fn format(&self) -> wgpu::TextureFormat {
         self.config.format
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
-    }
-
-    fn gpu_context_id(&self) -> u64 {
-        self.context_id
     }
 
     fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
@@ -206,15 +199,6 @@ impl SurfaceProvider for BrowserSurface {
 
     fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
         cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        cherenkov_gpu::interop::SharedDevice {
-            instance: self.instance.clone(),
-            adapter: self.adapter.clone(),
-            device: self.device.clone(),
-            queue: self.queue.clone(),
-        }
     }
 }
 
@@ -520,7 +504,8 @@ impl PlatformWindow for BrowserWindow {
 }
 
 impl GpuSurfaceWindow for BrowserWindow {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider {
+    type Presentation = BrowserSurface;
+    fn surface(&mut self) -> &mut BrowserSurface {
         &mut self.surface
     }
 }
