@@ -391,7 +391,12 @@ fn await_process_identifier(page: &SmokePage, deadline: Instant) -> u64 {
         .unwrap_or_else(|error| panic!("WPE process identifier query failed: {error}"))
 }
 
-fn await_channel<T>(page: &SmokePage, receiver: &Receiver<T>, deadline: Instant, purpose: &str) -> T {
+fn await_channel<T>(
+    page: &SmokePage,
+    receiver: &Receiver<T>,
+    deadline: Instant,
+    purpose: &str,
+) -> T {
     loop {
         page.pump();
         match receiver.try_recv() {
@@ -686,4 +691,12 @@ pub fn run(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
         !calls.iter().any(|tag| tag.starts_with("E-")),
         "an excluded or provisional E request reached a Rust handler: {calls:?}"
     );
+    eprintln!("PASS excluded document: bridge rejection before and after same-document URI change");
+    eprintln!("PASS E->A provisional navigation: E rejected while A response is held");
+    eprintln!("PASS E->A process-swap commit: distinct WebProcess identifiers");
+    eprintln!("PASS admitted-page bridge call and reply after E->A commit");
+    eprintln!("PASS admitted document: bridge call and reply after same-document URI change");
+    eprintln!("PASS A->E navigation: process swap and excluded-document rejection");
+    eprintln!("PASS document-bound reply: delayed A reply cannot invoke E's replacement resolver");
+    eprintln!("PASS handler audit: no excluded-document request reached Rust");
 }

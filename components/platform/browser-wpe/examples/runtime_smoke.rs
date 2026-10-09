@@ -73,9 +73,7 @@ mod linux {
         )
     }
 
-    // Pumps the page until it has loaded the document and produced one fully
-    // rendered DMA-BUF frame, or the deadline passes.
-    fn await_rendered_frame(page: &SmokePage, deadline: Instant) -> DmaBufFrame {
+    fn await_loaded_page(page: &SmokePage, deadline: Instant) -> Rc<Cell<bool>> {
         let loaded = Rc::new(Cell::new(false));
         let load_error = Rc::new(RefCell::new(None::<String>));
         // The guard has to outlive the pump loop below: dropping it
@@ -103,14 +101,30 @@ mod linux {
         let document = base64::engine::general_purpose::STANDARD.encode(document);
         page.load_uri(&format!("data:text/html;base64,{document}"));
 
-        while !loaded.get() || !frame_ready.get() {
+        while !loaded.get() {
             page.pump();
             if let Some(error) = load_error.borrow().as_deref() {
                 panic!("WPE smoke page load failed: {error}");
             }
             assert!(
                 Instant::now() < deadline,
-                "WPE smoke timed out before the page loaded and submitted a frame"
+                "WPE smoke timed out before the page loaded"
+            );
+            std::thread::yield_now();
+        }
+        frame_ready
+    }
+
+    fn await_rendered_frame(
+        page: &SmokePage,
+        frame_ready: &Cell<bool>,
+        deadline: Instant,
+    ) -> DmaBufFrame {
+        while !frame_ready.get() {
+            page.pump();
+            assert!(
+                Instant::now() < deadline,
+                "WPE smoke timed out before the page submitted a frame"
             );
             std::thread::yield_now();
         }
@@ -297,13 +311,16 @@ mod linux {
         assert_eq!(result["json"]["answer"], 42);
         assert_eq!(result["binary"], serde_json::json!([0, 1, 2]));
         assert_eq!(result["failure"], "smoke failure");
+        eprintln!("PASS basic bridge: default-world isolation and raw-handler rejection");
+        eprintln!("PASS basic bridge: iframe transport and handler isolation");
+        eprintln!("PASS admitted-page bridge call and JSON reply after same-document hash change");
+        eprintln!("PASS basic bridge: binary reply");
+        eprintln!("PASS basic bridge: handler failure reply");
     }
 
     pub fn run() {
         let executor = SmokeExecutor::install();
         let (runtime_root, output_path, timeout) = parse_args();
-        let gpu_runtime = pollster::block_on(GpuRuntime::new())
-            .unwrap_or_else(|error| panic!("WPE smoke GPU runtime creation failed: {error}"));
         let paths = WpeRuntimePaths::new(runtime_root);
         let runtime = WpeRuntime::initialize(&paths);
         let page = SmokePage::new(runtime.clone(), &executor);
@@ -330,10 +347,17 @@ mod linux {
             Box::new(|_| Box::pin(async { Err(String::from("smoke failure")) })),
         );
         let deadline = Instant::now() + timeout;
-        let frame = await_rendered_frame(&page, deadline);
+        let frame_ready = await_loaded_page(&page, deadline);
+        eprintln!("RUN basic bridge checks");
         await_bridge_smoke(&page, deadline);
-        render_to_png(&gpu_runtime, frame, &output_path);
+        eprintln!("RUN navigation-barrier checks");
         super::bridge_smoke::run(&runtime, &executor, deadline);
+        eprintln!("RUN frame import and snapshot");
+        let frame = await_rendered_frame(&page, &frame_ready, deadline);
+        let gpu_runtime = pollster::block_on(GpuRuntime::new())
+            .unwrap_or_else(|error| panic!("WPE smoke GPU runtime creation failed: {error}"));
+        render_to_png(&gpu_runtime, frame, &output_path);
+        eprintln!("PASS frame import and snapshot");
     }
 }
 
