@@ -28,8 +28,8 @@ enum OpenMode {
 /// scaffolds them into the build cache when the project is opened. Each
 /// scaffold costs time and leaves a generated project behind, so a command
 /// declares the platforms it is about to act on and only their backends are
-/// initialised. The other managed backends (GTK4, hydrolysis, `WinUI`, ESP32)
-/// are generated on demand by the command that runs them and are not part of
+/// initialised. The other managed backends (GTK4, hydrolysis, `WinUI`) are
+/// generated on demand by the command that runs them and are not part of
 /// this selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ManagedBackends {
@@ -559,7 +559,7 @@ pub struct Project {
     managed_backends_root: PathBuf,
     /// The runtime backends this open generated — project-owned state, never
     /// persisted. Persisted backend-facing configuration lives in the
-    /// manifest's typed tables (`[esp32]`, `[hydrolysis]`).
+    /// manifest's typed tables (`[hydrolysis]`).
     backends: Backends,
     /// The canonical local backend sources the manifest's `waterui_path`
     /// checkout supplies, resolved before any template or backend
@@ -589,14 +589,6 @@ impl Project {
         let mut cargo: toml_edit::DocumentMut =
             smol::fs::read_to_string(&cargo_path).await?.parse()?;
         let (framework, lockfile) = ResolvedFramework::resolve(host, channel, rev).await?;
-        // A configured backend whose scaffold packages the target channel
-        // withholds could never be regenerated — refuse the switch before a
-        // manifest is rewritten.
-        if previous.esp32.is_some() {
-            for package in TargetBackend::Dew.scaffold_packages() {
-                framework.require_distributable(package)?;
-            }
-        }
         let mut updates = Vec::new();
         framework.update_manifest(&mut cargo, &templates::project_patches(&path, &previous)?)?;
         water.remove("waterui_path");
@@ -803,22 +795,6 @@ impl Project {
             .join(variant))
     }
 
-    /// Resolve an isolated target directory for a backend built by a different Rust
-    /// toolchain.
-    ///
-    /// Cargo hashes the compiler into every unit fingerprint, so a backend that pins
-    /// its own toolchain (ESP32's Espressif Rust fork) would invalidate the host
-    /// units of [`Self::water_target_dir`] on every switch if it shared the directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the shared build-cache directory cannot be resolved.
-    pub async fn toolchain_target_dir(&self, toolchain: &str) -> eyre::Result<PathBuf> {
-        Ok(crate::water_dir::shared_target_dir(self.host())
-            .await?
-            .join(format!("toolchain-{toolchain}")))
-    }
-
     /// Get the runtime backends configured for the project.
     #[must_use]
     pub const fn backends(&self) -> &Backends {
@@ -890,12 +866,6 @@ impl Project {
             .unwrap_or_else(|| generated_crate_name(&self.crate_name, "winui", &self.root))
     }
 
-    /// Get the generated ESP32 firmware harness crate name.
-    #[must_use]
-    pub fn esp32_backend_crate_name(&self) -> CrateName {
-        generated_crate_name(&self.crate_name, "esp32", &self.root)
-    }
-
     /// Get the crate name of the generated experimental TUI launcher.
     #[must_use]
     pub fn tui_backend_crate_name(&self) -> CrateName {
@@ -947,12 +917,6 @@ impl Project {
             self.app_crate_overrides()
                 .and_then(|crates| crates.winui.as_ref()),
         )
-    }
-
-    /// The name the packaged ESP32 firmware image ships under.
-    #[must_use]
-    pub fn esp32_binary_name(&self) -> CrateName {
-        self.shipped_backend_binary_name("esp32", None)
     }
 
     /// Get the Apple backend if this open generated one.
@@ -1013,12 +977,6 @@ impl Project {
     #[must_use]
     pub const fn android_backend(&self) -> Option<&AndroidBackend> {
         self.backends.android()
-    }
-
-    /// Get the project's `[esp32]` device configuration, if declared.
-    #[must_use]
-    pub const fn esp32_config(&self) -> Option<&crate::esp32::backend::Esp32Config> {
-        self.manifest.esp32.as_ref()
     }
 
     /// The canonical local backend sources the `waterui_path` checkout
@@ -1585,7 +1543,7 @@ impl Project {
         let chromium = self
             .links_runtime_package(target, "waterui-chromium")
             .await?;
-        if chromium && !cef_is_supported(platform, backend) {
+        if chromium && !cef_is_supported(platform) {
             eyre::bail!(
                 "waterui-chromium requires CEF, which is unsupported for platform {platform:?} \
                  with backend {backend:?}"
@@ -1639,7 +1597,6 @@ impl Project {
             self.gtk_backend_crate_name(),
             self.hydrolysis_backend_crate_name(),
             self.winui_backend_crate_name(),
-            self.esp32_backend_crate_name(),
             self.tui_backend_crate_name(),
         ]
         .into_iter()
@@ -2481,7 +2438,6 @@ impl Project {
                 accessory: false,
                 embedded: false,
             },
-            esp32: None,
             hydrolysis: None,
             waterui_path: options
                 .waterui_path
@@ -2536,28 +2492,6 @@ impl Project {
         }
 
         Ok(())
-    }
-
-    /// Select the ESP32 target chip, persisting it to `Water.toml`.
-    ///
-    /// The chip is the single source of truth for the ESP32 backend's target
-    /// triple, QEMU model, and firmware parameters. Selecting a platform such
-    /// as `esp32c3` calls this so the generated harness and build target follow
-    /// the platform. No-ops (and skips the manifest write) when the configured
-    /// chip already matches.
-    ///
-    /// # Errors
-    /// Returns an error if saving the manifest fails.
-    pub async fn set_esp32_chip(
-        &mut self,
-        chip: crate::esp32::chip::Esp32Chip,
-    ) -> eyre::Result<()> {
-        let current = self.esp32_config().cloned().unwrap_or_default();
-        if current.chip() == chip.id() {
-            return Ok(());
-        }
-        self.manifest.esp32 = Some(current.with_chip(chip));
-        self.save_manifest().await
     }
 
     /// Open a `WaterUI` project located at the specified path.
@@ -2848,12 +2782,6 @@ impl Project {
         );
 
         Ok(project)
-    }
-}
-
-impl Project {
-    async fn save_manifest(&self) -> eyre::Result<()> {
-        self.manifest.save(&self.root).await.map_err(Into::into)
     }
 }
 
@@ -3612,10 +3540,6 @@ struct WateruiPatchesRecord<'a> {
 pub struct Manifest {
     /// Package information.
     pub package: Package,
-    /// ESP32 device configuration (`[esp32]`): chip, panel geometry, and
-    /// the fonts firmware embeds — product configuration, not source state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub esp32: Option<crate::esp32::backend::Esp32Config>,
     /// Hydrolysis backend selections (`[hydrolysis]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hydrolysis: Option<crate::backend::HydrolysisConfig>,
@@ -3809,7 +3733,6 @@ impl Manifest {
     pub fn new(package: Package) -> Self {
         Self {
             package,
-            esp32: None,
             hydrolysis: None,
             waterui_path: None,
             waterui_patches: cargo_toml::PatchSet::new(),
@@ -3885,7 +3808,7 @@ impl ResolvedWebViewBackend {
                 matches!(platform, TargetPlatform::Linux)
                     && matches!(backend, TargetBackend::Gtk4 | TargetBackend::Hydrolysis)
             }
-            Self::Cef => cef_is_supported(platform, backend),
+            Self::Cef => cef_is_supported(platform),
         }
     }
 
@@ -3922,12 +3845,11 @@ impl ResolvedWebViewBackend {
     }
 }
 
-const fn cef_is_supported(platform: TargetPlatform, backend: TargetBackend) -> bool {
-    !matches!(backend, TargetBackend::Dew)
-        && matches!(
-            platform,
-            TargetPlatform::MacOS | TargetPlatform::Linux | TargetPlatform::Windows
-        )
+const fn cef_is_supported(platform: TargetPlatform) -> bool {
+    matches!(
+        platform,
+        TargetPlatform::MacOS | TargetPlatform::Linux | TargetPlatform::Windows
+    )
 }
 
 /// Error returned for an unsupported `WebView` engine/platform/backend combination.
@@ -4093,8 +4015,8 @@ mod managed_backends_tests {
         assert!(!selected.apple());
     }
 
-    /// The backends generated on demand (GTK4, hydrolysis, `WinUI`, ESP32) are
-    /// not initialised by `Project::open`, so their platforms select nothing.
+    /// The backends generated on demand (GTK4, hydrolysis, `WinUI`) are not
+    /// initialised by `Project::open`, so their platforms select nothing.
     #[test]
     fn platforms_without_a_managed_native_backend_select_none() {
         for platform in [
@@ -4136,7 +4058,6 @@ mod managed_backends_tests {
             TargetBackend::Gtk4,
             TargetBackend::Hydrolysis,
             TargetBackend::WinUi,
-            TargetBackend::Dew,
         ] {
             assert_eq!(
                 ManagedBackends::for_backend(backend),
@@ -4314,7 +4235,7 @@ mod webview_backend_tests {
     }
 
     #[test]
-    fn cef_is_available_to_every_non_dew_backend_on_desktop_platforms() {
+    fn cef_is_available_to_every_backend_on_desktop_platforms() {
         for backend in [
             TargetBackend::Apple,
             TargetBackend::Android,
@@ -4337,18 +4258,7 @@ mod webview_backend_tests {
     }
 
     #[test]
-    fn cef_rejects_dew_and_platforms_without_cef_distributions() {
-        for platform in [
-            TargetPlatform::MacOS,
-            TargetPlatform::Linux,
-            TargetPlatform::Windows,
-        ] {
-            assert!(
-                ResolvedWebViewBackend::Cef
-                    .validate(platform, TargetBackend::Dew)
-                    .is_err()
-            );
-        }
+    fn cef_rejects_platforms_without_cef_distributions() {
         for (platform, backend) in [
             (TargetPlatform::Android, TargetBackend::Android),
             (TargetPlatform::IOS, TargetBackend::Apple),
@@ -5148,10 +5058,6 @@ mod scaffold_tests {
             (
                 project.winui_binary_name(),
                 project.winui_backend_crate_name(),
-            ),
-            (
-                project.esp32_binary_name(),
-                project.esp32_backend_crate_name(),
             ),
         ] {
             assert!(

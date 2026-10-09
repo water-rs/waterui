@@ -54,11 +54,11 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU)
     Web,
-    /// ESP32-S3 (Xtensa, ESP-IDF firmware via the Dew backend)
+    /// ESP32-S3 (Xtensa, ESP-IDF firmware)
     Esp32S3,
-    /// ESP32-C3 (RISC-V, ESP-IDF firmware via the Dew backend)
+    /// ESP32-C3 (RISC-V, ESP-IDF firmware)
     Esp32C3,
-    /// ESP32-P4 (RISC-V with FPU, ESP-IDF firmware via the Dew backend)
+    /// ESP32-P4 (RISC-V with FPU, ESP-IDF firmware)
     Esp32P4,
 }
 
@@ -75,8 +75,6 @@ pub enum TargetBackend {
     Hydrolysis,
     /// `WinUI` backend (Windows App SDK / `WinUI` 3, pure Rust binary)
     WinUi,
-    /// Dew backend (embedded-first CPU renderer for ESP32-class chips)
-    Dew,
 }
 
 impl TargetBackend {
@@ -93,15 +91,14 @@ impl TargetBackend {
             // through `hydrolysis-path`, not a scaffold package (#1635).
             Self::Hydrolysis => &["hydrolysis-m3"],
             Self::WinUi => &["waterui-winui"],
-            Self::Dew => &["waterui-dew"],
         }
     }
 
     /// Whether this host can build `platform` with this backend.
     ///
     /// Desktop backends only build for their own host OS; the Android
-    /// backends, the web frontend and the ESP32 firmware cross-compile from
-    /// any host, and so does the Hydrolysis Android path. Every `water`
+    /// backends and the web frontend cross-compile from any host, and so
+    /// does the Hydrolysis Android path. Every `water`
     /// command that builds gates on this one check so a forbidden
     /// combination fails identically in `build`, `run` and `package`.
     ///
@@ -152,7 +149,7 @@ impl TargetBackend {
                 #[cfg(not(target_os = "macos"))]
                 bail!("Apple backend requires a macOS host");
             }
-            Self::Android | Self::Dew => {}
+            Self::Android => {}
         }
         Ok(())
     }
@@ -292,13 +289,16 @@ impl TargetPlatform {
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
             Self::Windows => &[TargetBackend::Hydrolysis, TargetBackend::WinUi],
             Self::Web => &[TargetBackend::Hydrolysis],
-            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => &[TargetBackend::Dew],
+            // No backend serves ESP32 targets yet: Dew is archived and
+            // Hydrolysis's embedded host lands with #1601.
+            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => &[],
         }
     }
 
-    /// Get the default backend for this platform.
+    /// Get the default backend for this platform — `None` for a platform no
+    /// backend serves yet (the ESP32 targets, until #1601).
     #[must_use]
-    pub const fn default_backend(&self) -> TargetBackend {
+    pub const fn default_backend(&self) -> Option<TargetBackend> {
         match self {
             Self::MacOS
             | Self::IOS
@@ -309,10 +309,10 @@ impl TargetPlatform {
             | Self::WatchOS
             | Self::WatchOSSimulator
             | Self::VisionOS
-            | Self::VisionOSSimulator => TargetBackend::Apple,
-            Self::Android | Self::Windows | Self::Web => TargetBackend::Hydrolysis,
-            Self::Linux => TargetBackend::Gtk4,
-            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => TargetBackend::Dew,
+            | Self::VisionOSSimulator => Some(TargetBackend::Apple),
+            Self::Android | Self::Windows | Self::Web => Some(TargetBackend::Hydrolysis),
+            Self::Linux => Some(TargetBackend::Gtk4),
+            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => None,
         }
     }
 
@@ -923,8 +923,8 @@ mod host_support_tests {
 
     #[test]
     fn cross_compiling_backends_accept_any_platform_pairing() {
-        // Android targets, the web frontend and the ESP32 firmware all
-        // cross-compile — every `water` command gates on this same check.
+        // Android targets and the web frontend cross-compile — every
+        // `water` command gates on this same check.
         assert!(
             TargetBackend::Hydrolysis
                 .validate_host_support(TargetPlatform::Android)
@@ -938,11 +938,6 @@ mod host_support_tests {
         assert!(
             TargetBackend::Android
                 .validate_host_support(TargetPlatform::Android)
-                .is_ok()
-        );
-        assert!(
-            TargetBackend::Dew
-                .validate_host_support(TargetPlatform::Esp32S3)
                 .is_ok()
         );
     }
