@@ -12,8 +12,8 @@
 # `/bin/mkdir`/`/bin/cp` calls, which resolve regardless of PATH.
 #
 # Mutable state (`rustup toolchain install`/`default`/`target add`/
-# `component add`, `rustup update`, `cargo install`, `espup install`) lives
-# in files under the fake $HOME so a `--fix` run mutates the fixture and a
+# `component add`, `rustup update`, `cargo install`) lives in files
+# under the fake $HOME so a `--fix` run mutates the fixture and a
 # re-check observes the repair.
 #
 # Asymmetry with fake_tools.cmd: `sdkmanager --licenses`/`--install` drain
@@ -26,6 +26,17 @@ tool=${0##*/}
 tool=${tool%.cmd}
 tool=${tool%.bat}
 tool=${tool%.exe}
+
+# WATERUI_FAKE_LOG names a file every fake invocation appends itself to —
+# `<tool> <args>` one per line — the seam tests use to assert which tools
+# ran and with which arguments.
+if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+    printf '%s' "$tool" >> "$WATERUI_FAKE_LOG"
+    for _log_arg in "$@"; do
+        printf ' %s' "$_log_arg" >> "$WATERUI_FAKE_LOG"
+    done
+    printf '\n' >> "$WATERUI_FAKE_LOG"
+fi
 
 # print_file <path>: emit a file's contents using only builtins. `|| [ -n ... ]`
 # keeps a final unterminated line.
@@ -240,6 +251,34 @@ cargo)
             # `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
             respond CARGO_METADATA
             ;;
+        tree)
+            # The graph is resolved per build target: `cargo tree` answers
+            # `CARGO_TREE_<triple>` for each `--target` flag it is passed —
+            # a multi-target invocation's union is exactly its per-target
+            # answers — and a call naming no `--target` or a triple with no
+            # staged response fails, so a host-graph resolution can never
+            # pass as the target's.
+            _tree_targets=""
+            _tree_prev=""
+            for _tree_arg in "$@"; do
+                if [ "$_tree_prev" = "--target" ]; then
+                    _tree_targets="$_tree_targets $_tree_arg"
+                fi
+                _tree_prev="$_tree_arg"
+            done
+            if [ -z "$_tree_targets" ]; then
+                exit 2
+            fi
+            for _tree_target in $_tree_targets; do
+                if [ ! -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/CARGO_TREE_$_tree_target" ]; then
+                    exit 1
+                fi
+            done
+            for _tree_target in $_tree_targets; do
+                print_file "${WATERUI_FAKE_RESPONSES}/CARGO_TREE_$_tree_target"
+            done
+            exit 0
+            ;;
         install | binstall)
             # `cargo install <crate>` drops the crate's binary beside cargo —
             # model that by copying this dispatcher under the crate's name.
@@ -258,25 +297,6 @@ cargo)
                 _dest="${0%/*}/$_krate"
                 [ -e "$_dest" ] || /bin/cp "$0" "$_dest"
             fi
-            ;;
-    esac
-    exit 0
-    ;;
-espup)
-    case "$*" in
-        "install"*)
-            # `espup install` lays down the `esp` toolchain's pieces; the
-            # RISC-V GCC lands under ~/.espressif only with --esp-riscv-gcc.
-            _esp="${RUSTUP_HOME:-$HOME/.rustup}/toolchains/esp"
-            /bin/mkdir -p \
-                "$_esp/xtensa-esp32-elf-clang/1.0/esp-clang/lib" \
-                "$_esp/xtensa-esp-elf/1.0/xtensa-esp-elf/bin" \
-                "$_esp/lib/rustlib/src/rust"
-            case "$*" in
-                *--esp-riscv-gcc*)
-                    /bin/mkdir -p "$HOME/.espressif/tools/riscv32-esp-elf/1.0/riscv32-esp-elf/bin"
-                    ;;
-            esac
             ;;
     esac
     exit 0

@@ -1,5 +1,6 @@
 package dev.waterui.hydrolysis
 
+import android.annotation.SuppressLint
 import android.graphics.Rect
 import android.os.Bundle
 import android.view.MotionEvent
@@ -13,6 +14,7 @@ import android.view.accessibility.AccessibilityNodeInfo.CollectionItemInfo
 import android.view.accessibility.AccessibilityNodeInfo.RangeInfo
 import android.view.accessibility.AccessibilityNodeProvider
 import androidx.autofill.HintConstants
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import org.json.JSONObject
 
 /**
@@ -87,7 +89,7 @@ internal class HydrolysisAccessibilityProvider(
             val mask = entry.optInt("mask")
             val id = entry.optLong("id", INVALID_ID)
             if (id == INVALID_ID || id > Int.MAX_VALUE) {
-                val event = AccessibilityEvent.obtain(type)
+                val event = AccessibilityEvent(type)
                 event.packageName = host.context.packageName
                 event.contentChangeTypes = mask
                 val parent = host.parent
@@ -160,7 +162,7 @@ internal class HydrolysisAccessibilityProvider(
     private fun sendNodeEvent(nodeId: Long, type: Int, contentChangeTypes: Int = 0) {
         if (nodeId == INVALID_ID || nodeId > Int.MAX_VALUE) return
         if (!accessibilityEnabled()) return
-        val event = AccessibilityEvent.obtain(type)
+        val event = AccessibilityEvent(type)
         event.setSource(host, nodeId.toInt())
         event.packageName = host.context.packageName
         event.contentChangeTypes = contentChangeTypes
@@ -256,7 +258,7 @@ internal class HydrolysisAccessibilityProvider(
      * accessibility tree is reached by traversal without a duplicate node.
      */
     private fun hostNodeInfo(): AccessibilityNodeInfo {
-        val info = AccessibilityNodeInfo.obtain()
+        val info = AccessibilityNodeInfo()
         // The framework uses this node as the host's own node, so it has to
         // carry the real view's bounds/flags — an empty bounds rect marks it
         // invisible and prunes the whole virtual subtree.
@@ -275,7 +277,11 @@ internal class HydrolysisAccessibilityProvider(
     }
 
     private fun nodeInfo(id: Long, node: JSONObject): AccessibilityNodeInfo {
-        val info = AccessibilityNodeInfo.obtain(host, id.toInt())
+        val info = AccessibilityNodeInfo(host, id.toInt())
+        // The floor-safe wrapper: `setChecked(int)` and `setBoundsInWindow` are
+        // API 36/34 members the platform calls here can't reach at minSdk; the
+        // compat lands them on the API and backfills below.
+        val compat = AccessibilityNodeInfoCompat.wrap(info)
         info.packageName = host.context.packageName
 
         val properties = props(node)
@@ -323,12 +329,9 @@ internal class HydrolysisAccessibilityProvider(
         if (properties != null && properties.optBoolean("selected", false)) {
             info.isSelected = true
         }
-        when (properties?.optString("toggled")) {
-            "true", "false" -> {
-                info.isCheckable = true
-                info.isChecked = properties.optString("toggled") == "true"
-            }
-            "mixed" -> info.isCheckable = true
+        checkedState(properties?.optString("toggled"))?.let { state ->
+            info.isCheckable = true
+            compat.setChecked(state)
         }
         if (properties != null && properties.has("expanded")) {
             info.stateDescription =
@@ -336,11 +339,17 @@ internal class HydrolysisAccessibilityProvider(
         }
         if (properties != null && properties.has("level")) info.isHeading = true
 
+        // `bounds` is host-view-local; boundsInWindow is the surviving field
+        // in the same coordinate space (boundsInParent is dead state services
+        // no longer read — API 36 keeps it only for the framework itself).
         val bounds = boundsRect(properties)
-        info.setBoundsInParent(bounds)
-        val screenBounds = Rect(bounds)
         val location = IntArray(2)
+        host.getLocationInWindow(location)
+        val windowBounds = Rect(bounds)
+        windowBounds.offset(location[0], location[1])
+        compat.setBoundsInWindow(windowBounds)
         host.getLocationOnScreen(location)
+        val screenBounds = Rect(bounds)
         screenBounds.offset(location[0], location[1])
         info.setBoundsInScreen(screenBounds)
 
@@ -349,7 +358,7 @@ internal class HydrolysisAccessibilityProvider(
             val max = properties?.optDouble("maxNumericValue", 1.0) ?: 1.0
             val current = properties?.optDouble("numericValue", 0.0) ?: 0.0
             info.rangeInfo =
-                RangeInfo.obtain(
+                RangeInfo(
                     RangeInfo.RANGE_TYPE_FLOAT,
                     min.toFloat(),
                     max.toFloat(),
@@ -360,14 +369,14 @@ internal class HydrolysisAccessibilityProvider(
         val size = properties?.optInt("sizeOfSet", -1) ?: -1
         if (role == "list" || role == "grid" || role == "table" || role == "listBox") {
             info.setCollectionInfo(
-                CollectionInfo.obtain(if (size > 0) size else -1, -1, false)
+                CollectionInfo(if (size > 0) size else -1, -1, false)
             )
         }
         if (role == "listItem" || role == "listBoxOption" || role == "option" ||
             role == "cell" || role == "row"
         ) {
             info.setCollectionItemInfo(
-                CollectionItemInfo.obtain(
+                CollectionItemInfo(
                     -1,
                     0,
                     if (position >= 0) position else -1,
@@ -393,24 +402,24 @@ internal class HydrolysisAccessibilityProvider(
 
     /** Maps the accesskit `actions` bitmask onto advertised Android actions. */
     private fun advertiseActions(info: AccessibilityNodeInfo, node: JSONObject) {
-        if (hasAction(node, AK_CLICK)) info.addAction(ACTION_CLICK)
-        if (hasAction(node, AK_FOCUS)) info.addAction(ACTION_FOCUS)
-        if (hasAction(node, AK_BLUR)) info.addAction(ACTION_CLEAR_FOCUS)
+        if (hasAction(node, AK_CLICK)) info.addAction(AccessibilityAction.ACTION_CLICK)
+        if (hasAction(node, AK_FOCUS)) info.addAction(AccessibilityAction.ACTION_FOCUS)
+        if (hasAction(node, AK_BLUR)) info.addAction(AccessibilityAction.ACTION_CLEAR_FOCUS)
         if (hasAction(node, AK_EXPAND)) info.addAction(AccessibilityAction.ACTION_EXPAND)
         if (hasAction(node, AK_COLLAPSE)) info.addAction(AccessibilityAction.ACTION_COLLAPSE)
         if (hasAction(node, AK_INCREMENT) || hasAction(node, AK_DECREMENT)) {
-            info.addAction(ACTION_SCROLL_FORWARD)
-            info.addAction(ACTION_SCROLL_BACKWARD)
+            info.addAction(AccessibilityAction.ACTION_SCROLL_FORWARD)
+            info.addAction(AccessibilityAction.ACTION_SCROLL_BACKWARD)
             if (hasAction(node, AK_SET_VALUE)) {
                 info.addAction(AccessibilityAction.ACTION_SET_PROGRESS)
             }
         }
         if (hasAction(node, AK_SCROLL_DOWN) || hasAction(node, AK_SCROLL_RIGHT)) {
-            info.addAction(ACTION_SCROLL_FORWARD)
+            info.addAction(AccessibilityAction.ACTION_SCROLL_FORWARD)
             info.isScrollable = true
         }
         if (hasAction(node, AK_SCROLL_UP) || hasAction(node, AK_SCROLL_LEFT)) {
-            info.addAction(ACTION_SCROLL_BACKWARD)
+            info.addAction(AccessibilityAction.ACTION_SCROLL_BACKWARD)
             info.isScrollable = true
         }
         if (hasAction(node, AK_SCROLL_UP)) {
@@ -438,12 +447,12 @@ internal class HydrolysisAccessibilityProvider(
             info.addAction(AccessibilityAction.ACTION_CONTEXT_CLICK)
         }
         if (isEditable(node) && hasAction(node, AK_SET_VALUE)) {
-            info.addAction(ACTION_SET_TEXT)
-            info.addAction(ACTION_NEXT_AT_MOVEMENT_GRANULARITY)
-            info.addAction(ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY)
+            info.addAction(AccessibilityAction.ACTION_SET_TEXT)
+            info.addAction(AccessibilityAction.ACTION_NEXT_AT_MOVEMENT_GRANULARITY)
+            info.addAction(AccessibilityAction.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY)
             // Selection is intrinsic to the editing session the text actions
             // run over — it needs no separate accesskit bit.
-            info.addAction(ACTION_SET_SELECTION)
+            info.addAction(AccessibilityAction.ACTION_SET_SELECTION)
             info.addAction(AccessibilityAction.ACTION_IME_ENTER)
         }
         // Named custom actions ride in as `customActions` entries; the id
@@ -458,8 +467,8 @@ internal class HydrolysisAccessibilityProvider(
             }
         }
         if (info.isFocusable || info.isClickable) {
-            info.addAction(ACTION_ACCESSIBILITY_FOCUS)
-            info.addAction(ACTION_CLEAR_ACCESSIBILITY_FOCUS)
+            info.addAction(AccessibilityAction.ACTION_ACCESSIBILITY_FOCUS)
+            info.addAction(AccessibilityAction.ACTION_CLEAR_ACCESSIBILITY_FOCUS)
         }
     }
 
@@ -467,6 +476,23 @@ internal class HydrolysisAccessibilityProvider(
      * `bounds` arrives in window logical units — the same space input events
      * leave through after `density` division. Services want physical px.
      */
+    /**
+     * Maps accesskit's `toggled` value onto the platform's tri-state checked
+     * contract, or `null` for a node that is not checkable. The
+     * `CHECKED_STATE_*` fields are API 36, above the floor, but they are
+     * compile-time ints copied into this class, and compat `setChecked`
+     * applies them on every API level (below 36 it maps them onto the boolean
+     * checked flag), so InlinedApi's runtime hazard does not exist here.
+     */
+    @SuppressLint("InlinedApi")
+    private fun checkedState(toggled: String?): Int? =
+        when (toggled) {
+            "true" -> AccessibilityNodeInfo.CHECKED_STATE_TRUE
+            "false" -> AccessibilityNodeInfo.CHECKED_STATE_FALSE
+            "mixed" -> AccessibilityNodeInfo.CHECKED_STATE_PARTIAL
+            else -> null
+        }
+
     private fun boundsRect(properties: JSONObject?): Rect {
         val bounds = properties?.optJSONObject("bounds") ?: return Rect()
         val density = host.resources.displayMetrics.density
@@ -859,23 +885,6 @@ internal class HydrolysisAccessibilityProvider(
 
         /** Advertised ids for accesskit custom actions start here. */
         const val CUSTOM_ACTION_BASE = 0x01000000
-
-        const val ACTION_CLICK = AccessibilityNodeInfo.ACTION_CLICK
-        const val ACTION_FOCUS = AccessibilityNodeInfo.ACTION_FOCUS
-        const val ACTION_CLEAR_FOCUS = AccessibilityNodeInfo.ACTION_CLEAR_FOCUS
-        const val ACTION_SCROLL_FORWARD = AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-        const val ACTION_SCROLL_BACKWARD = AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-        const val ACTION_SET_TEXT = AccessibilityNodeInfo.ACTION_SET_TEXT
-        const val ACTION_SET_SELECTION = AccessibilityNodeInfo.ACTION_SET_SELECTION
-
-        const val ACTION_NEXT_AT_MOVEMENT_GRANULARITY =
-            AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY
-        const val ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY =
-            AccessibilityNodeInfo.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY
-        const val ACTION_ACCESSIBILITY_FOCUS =
-            AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS
-        const val ACTION_CLEAR_ACCESSIBILITY_FOCUS =
-            AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS
 
         val CLICKABLE_ROLES =
             setOf(

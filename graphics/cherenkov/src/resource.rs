@@ -272,13 +272,26 @@ impl Filter {
 #[derive(Debug)]
 pub struct BackdropGroup {
     inner: Rc<Inner<BackdropId>>,
+    pub(crate) spec: crate::BackdropSpec,
 }
 
 impl BackdropGroup {
-    pub(crate) fn new(id: BackdropId, on_drop: impl FnOnce() + 'static) -> Self {
+    pub(crate) fn new(
+        id: BackdropId,
+        spec: crate::BackdropSpec,
+        on_drop: impl FnOnce() + 'static,
+    ) -> Self {
         Self {
             inner: handle(id, on_drop),
+            spec,
         }
+    }
+
+    /// The spec the group was created with — its capture scale, levels,
+    /// union field and anchor layer.
+    #[must_use]
+    pub const fn spec(&self) -> crate::BackdropSpec {
+        self.spec
     }
 
     /// The group's identifier.

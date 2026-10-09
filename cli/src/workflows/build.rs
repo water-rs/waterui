@@ -265,7 +265,7 @@ pub struct SharedExecutable {
 
 impl SharedExecutable {
     /// An `executable` report carrying no artifact lock — the bundled
-    /// executable and ESP32 firmware paths platform packaging hands out
+    /// executable paths platform packaging hands out
     /// itself, which no same-named build can re-uplift under it.
     #[must_use]
     pub const fn unlocked(path: PathBuf) -> Self {
@@ -5381,7 +5381,7 @@ mod tests {
             let temporary = tempdir().expect("tempdir");
             let root = temporary.path().join("release-app");
             let project = crate::project::Project::create(
-                &crate::toolchain::Host::current(),
+                &crate::toolchain::testing::real_toolchain_host(temporary.path()),
                 &root,
                 crate::project::CreateOptions {
                     name: "Release App".to_string(),

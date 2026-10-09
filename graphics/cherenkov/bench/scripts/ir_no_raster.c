@@ -54,10 +54,12 @@ static void VKAPI_PTR noop_cmd(void) {}
 static struct {
     VkInstance inst;
     PFN_vkGetInstanceProcAddr gipa;
+    PFN_vkDestroyInstance destroy;
 } inst_links[MAX_LINKS];
 static struct {
     VkDevice dev;
     PFN_vkGetDeviceProcAddr gdpa;
+    PFN_vkDestroyDevice destroy;
 } dev_links[MAX_LINKS];
 
 static PFN_vkGetInstanceProcAddr inst_gipa(VkInstance inst) {
@@ -101,6 +103,9 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_instance(const VkInstanceCreateInfo 
         }
         inst_links[i].inst = *out;
         inst_links[i].gipa = next_gipa;
+        /* Cache before the loader installs the top-of-chain dispatch table.
+         * A later GIPA lookup can return our own destroy and recurse. */
+        inst_links[i].destroy = (PFN_vkDestroyInstance)next_gipa(*out, "vkDestroyInstance");
     }
     return res;
 }
@@ -134,45 +139,45 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_create_device(VkPhysicalDevice gpu,
         }
         dev_links[i].dev = *out;
         dev_links[i].gdpa = next_gdpa;
+        dev_links[i].destroy = (PFN_vkDestroyDevice)next_gdpa(*out, "vkDestroyDevice");
     }
     return res;
 }
 
 VKAPI_ATTR void VKAPI_CALL layer_destroy_instance(VkInstance inst,
                                                   const VkAllocationCallbacks *alloc) {
-    PFN_vkGetInstanceProcAddr gipa = inst_gipa(inst);
-    if (!gipa) {
+    PFN_vkDestroyInstance next = NULL;
+    for (int i = 0; i < MAX_LINKS; i++) {
+        if (inst_links[i].inst == inst && inst_links[i].gipa) {
+            next = inst_links[i].destroy;
+            memset(&inst_links[i], 0, sizeof(inst_links[i]));
+            break;
+        }
+    }
+    if (!next) {
         fprintf(stderr, "%s: vkDestroyInstance on unregistered instance %p\n",
                 LAYER_NAME, (void *)inst);
         abort();
     }
-    PFN_vkDestroyInstance next =
-        (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
-    for (int i = 0; i < MAX_LINKS; i++)
-        if (inst_links[i].inst == inst) {
-            inst_links[i].inst = NULL;
-            inst_links[i].gipa = NULL;
-        }
-    if (next)
-        next(inst, alloc);
+    next(inst, alloc);
 }
 
 VKAPI_ATTR void VKAPI_CALL layer_destroy_device(VkDevice dev,
                                                 const VkAllocationCallbacks *alloc) {
-    PFN_vkGetDeviceProcAddr gdpa = dev_gdpa(dev);
-    if (!gdpa) {
+    PFN_vkDestroyDevice next = NULL;
+    for (int i = 0; i < MAX_LINKS; i++) {
+        if (dev_links[i].dev == dev && dev_links[i].gdpa) {
+            next = dev_links[i].destroy;
+            memset(&dev_links[i], 0, sizeof(dev_links[i]));
+            break;
+        }
+    }
+    if (!next) {
         fprintf(stderr, "%s: vkDestroyDevice on unregistered device %p\n",
                 LAYER_NAME, (void *)dev);
         abort();
     }
-    PFN_vkDestroyDevice next = (PFN_vkDestroyDevice)gdpa(dev, "vkDestroyDevice");
-    for (int i = 0; i < MAX_LINKS; i++)
-        if (dev_links[i].dev == dev) {
-            dev_links[i].dev = NULL;
-            dev_links[i].gdpa = NULL;
-        }
-    if (next)
-        next(dev, alloc);
+    next(dev, alloc);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_enumerate_instance_layer_properties(
@@ -236,13 +241,13 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL layer_get_instance_proc_addr(VkInstance
     return gipa ? gipa(inst, name) : NULL;
 }
 
-/* Exported entrypoints the loader binds by name. */
-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance inst,
+/* Only manifest-named entrypoints are exported, never Vulkan's names. */
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL cherenkovGetInstanceProcAddr(VkInstance inst,
                                                                const char *name) {
     return layer_get_instance_proc_addr(inst, name);
 }
 
-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice dev,
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL cherenkovGetDeviceProcAddr(VkDevice dev,
                                                            const char *name) {
     return layer_get_device_proc_addr(dev, name);
 }
