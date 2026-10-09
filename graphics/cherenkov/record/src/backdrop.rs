@@ -539,13 +539,16 @@ impl CaptureLevels {
 /// (the engine's `Surface::backdrop_group` and
 /// `Surface::backdrop_group_unfiltered`).
 ///
-/// The spec fixes the group's capture [`scale`](BackdropSpec::scale) and
-/// how many capture [`levels`](BackdropSpec::levels) the group's pyramid
-/// keeps; it is the parameter object the group is created with.
+/// The spec fixes the group's capture [`scale`](BackdropSpec::scale), how
+/// many capture [`levels`](BackdropSpec::levels) the group's pyramid keeps
+/// and the group's [`anchor`](BackdropSpec::anchor) layer when the capture
+/// is taken away from the first member; it is the parameter object the
+/// group is created with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BackdropSpec {
     scale: CaptureScale,
     levels: CaptureLevels,
+    anchor: Option<crate::LayerId>,
     union: Option<BackdropUnion>,
 }
 
@@ -559,8 +562,26 @@ impl BackdropSpec {
         Self {
             scale,
             levels,
+            anchor: None,
             union: None,
         }
+    }
+
+    /// Anchors the group's capture at `layer`'s paint-order position, before
+    /// the anchor's own content and its children: the group's capture reads
+    /// the anchor's compositing canvas as it stands at the anchor's paint
+    /// position — one capture per anchored group — so anchored members
+    /// never see each other or content painted after the anchor. A member
+    /// can be any layer painting after the anchor in the anchor's
+    /// compositing canvas, or the frame fails instead of falling back to
+    /// the first-member rule.
+    ///
+    /// A spec without an anchor keeps the first-member rule: the capture is
+    /// taken where the group's first member paints.
+    #[must_use]
+    pub const fn anchor(mut self, layer: crate::LayerId) -> Self {
+        self.anchor = Some(layer);
+        self
     }
 
     /// A group whose members composite against the shared union field
@@ -568,9 +589,8 @@ impl BackdropSpec {
     #[must_use]
     pub const fn union(self, union: BackdropUnion) -> Self {
         Self {
-            scale: self.scale,
-            levels: self.levels,
             union: Some(union),
+            ..self
         }
     }
 
@@ -584,6 +604,13 @@ impl BackdropSpec {
     #[must_use]
     pub const fn levels(self) -> CaptureLevels {
         self.levels
+    }
+
+    /// The anchor layer, when the group is anchored; `None` under the
+    /// first-member rule.
+    #[must_use]
+    pub const fn anchor_layer(self) -> Option<crate::LayerId> {
+        self.anchor
     }
 
     /// The group's union field, when one was declared.

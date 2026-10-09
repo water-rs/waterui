@@ -267,7 +267,7 @@ impl HydrolysisRenderer {
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
-        self.animation_controller.begin_rebuild_frame();
+        self.begin_animation_rebuild();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
         #[cfg(feature = "accessibility")]
@@ -334,9 +334,7 @@ impl HydrolysisRenderer {
         self.core.record_platform_views();
         self.validate_focused_text_input_after_flush();
 
-        self.core
-            .animation_controller
-            .finish_rebuild_frame_with_inactive_slot_retention(false);
+        self.core.retire_unbound_animation_slots();
         self.core
             .hit_test
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
@@ -396,15 +394,12 @@ impl HydrolysisRenderer {
         ctx: RenderContext,
         body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
     ) {
-        let scope = self.material_group_scopes.last().map_or(
-            cherenkov_record::MaterialScope::SOLO,
-            |cell| {
-                cherenkov_record::MaterialScope::new(
-                    std::num::NonZeroU64::new(Rc::as_ptr(cell) as usize as u64)
-                        .expect("a live node cell's address is never zero"),
-                )
-            },
-        );
+        let scope = self
+            .material_group_scopes
+            .last()
+            .map_or(cherenkov_record::MaterialScope::SOLO, |cell| {
+                cherenkov_record::MaterialScope::new(mount::backdrop::scope_id(cell))
+            });
         let layered = cherenkov_record::Content::record_layered(
             &cherenkov_record::LayoutSize::new(),
             scope,
@@ -514,6 +509,24 @@ impl HydrolysisRenderer {
             host.cell.mark_quiet(mount::Dirty::COMMIT);
         });
         self.program = saved;
+    }
+
+    /// Runs `record` with every `.material_group()` scope enclosing `node`'s
+    /// cell in the retained tree replayed onto `material_group_scopes`,
+    /// outermost first, then restores the stack exactly. A partial descent —
+    /// a `RetainedSubview` subtree re-recorded starting at the changed node —
+    /// calls this so a member reads the same scope as under a full flush:
+    /// scope membership never depends on where a flush starts (#2268).
+    pub(crate) fn with_enclosing_material_group_scopes(
+        &mut self,
+        core: &NodeCore,
+        record: impl FnOnce(&mut Self),
+    ) {
+        let base = self.material_group_scopes.len();
+        self.material_group_scopes
+            .extend(core.cell.enclosing_material_group_scopes());
+        record(self);
+        self.material_group_scopes.truncate(base);
     }
 
     /// Opens the named scope `key` on the recording node's program (§C):

@@ -258,12 +258,11 @@ the app crashed** — read the log tail rather than treating it as success.
 | Linux | `gtk4` | `hydrolysis` |
 | Windows | `hydrolysis` | — |
 | Web | WASM + WebGPU | — |
-| ESP32-S3 | `dew` | — |
 
-Native backends bridge to real platform widgets. `hydrolysis` and `dew` are WaterUI's own
-renderers: `hydrolysis` is GPU-required and targets high-refresh modern hardware; `dew` is
-CPU-first for constrained devices. Choosing a self-drawn renderer is a deliberate decision,
-never a fallback for a native path that failed.
+Native backends bridge to real platform widgets. `hydrolysis` is WaterUI's own
+renderer: it is GPU-required and targets high-refresh modern hardware. Choosing a
+self-drawn renderer is a deliberate decision, never a fallback for a native path that
+failed.
 
 The same view code runs on all of them. Platform-specific behavior belongs in the backend,
 not in conditional app code.
@@ -289,23 +288,3 @@ water run --logs debug
 view tree, layout bounds, and the accessibility tree. When a layout looks wrong, read the
 accessibility bounds rather than eyeballing the picture — bounds tell you which container
 mis-sized a child; a screenshot only tells you something is off.
-
-## Embedded targets (Dew)
-
-WaterUI runs on microcontrollers through the Dew backend: CPU rasterization, no GPU, and
-dirty-region flushes sized for SPI panels, so peak pixel memory is one band rather than a
-full frame. The same views, bindings, and `text!` reactivity work unchanged.
-
-Develop against the desktop panel simulator — the full embedded rendering path in a native
-window, no cross-compilation:
-
-```bash
-cargo run -p waterui-dew --example watch_sim --features embedded-simulator
-```
-
-Headless snapshot: `waterui_dew::render_view_png(builder, env, w, h)`.
-
-Dew supports a deliberately narrow set of views (stacks, padding, colors, spacers, text,
-navigation and shape primitives). An unsupported view panics immediately with a clear
-message rather than rendering something wrong — treat that panic as the accurate answer
-about what the target can do, not as a bug to route around.

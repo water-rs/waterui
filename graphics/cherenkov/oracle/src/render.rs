@@ -59,7 +59,7 @@
 //! member's sample and earlier content. A member without a clip or
 //! referencing an undeclared group id is a render error.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cherenkov_scene::{
     BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Draw, FillRule, GroupItem, Item, Layer,
@@ -252,6 +252,43 @@ fn flattened(chain: &[Level]) -> Canvas {
     acc
 }
 
+/// One group's filtered capture of `chain`'s flattened image, at the
+/// group's scale and pyramid depth.
+fn backdrop_capture(chain: &[Level], group: &BackdropGroup) -> Capture {
+    let space = chain
+        .iter()
+        .rposition(|level| level.semantic)
+        .map_or(BlendSpace::Linear, |i| chain[i].space);
+    let scale = group.scale;
+    let flat = flattened(chain);
+    let mut capture = if scale < 1.0 {
+        downsample(&flat, scale)
+    } else {
+        flat
+    };
+    for filter in &group.filters {
+        apply_backdrop_filter(&mut capture, filter);
+    }
+    // The blur pyramid: level `k` is the exact 2×2 box reduction of level
+    // `k − 1` (the filtered capture), matching the GPU's mip chain.
+    let deeper = group
+        .levels
+        .checked_sub(1)
+        .expect("a scene's backdrop group has at least one level");
+    let deeper = usize::try_from(deeper).expect("a validated level count fits usize");
+    let mut levels = Vec::with_capacity(deeper);
+    for _ in 1..group.levels {
+        let src = levels.last().unwrap_or(&capture);
+        levels.push(reduce_level(src));
+    }
+    Capture {
+        space,
+        canvas: capture,
+        levels,
+        scale,
+    }
+}
+
 /// One group's filtered capture: the capture grid's pixels, the space
 /// they were captured in, the grid's scale against device pixels, and
 /// the pyramid's deeper levels (`levels[k − 1]` is level `k`,
@@ -261,6 +298,56 @@ struct Capture {
     canvas: Canvas,
     levels: Vec<Canvas>,
     scale: f64,
+}
+
+/// One anchored group's member positions as the paint-order walk records
+/// them: enclosing canvas, paint-order index and whether the member sits
+/// inside the anchor's subtree.
+type MemberPositions = HashMap<u32, Vec<(Option<usize>, usize)>>;
+
+/// The paint-order walk behind [`Renderer::plan_anchors`]: records each
+/// `id`'d layer's canvas and index, and each anchored member's
+/// `(canvas, index)`.
+fn walk_anchor_positions(
+    layer: &Layer,
+    canvas: Option<usize>,
+    anchor_of: &HashMap<u32, u32>,
+    anchor_pos: &mut HashMap<u32, (Option<usize>, usize)>,
+    projective: &mut HashSet<u32>,
+    member_pos: &mut MemberPositions,
+    order: &mut usize,
+) {
+    for item in &layer.items {
+        let Item::Layer(child) = item else {
+            continue;
+        };
+        *order += 1;
+        let idx = *order;
+        if let Some(id) = child.id {
+            anchor_pos.insert(id.get(), (canvas, idx));
+            if child.projection.is_some() {
+                projective.insert(id.get());
+            }
+        }
+        if let Some(gid) = child.backdrop
+            && anchor_of.contains_key(&gid)
+        {
+            member_pos.entry(gid).or_default().push((canvas, idx));
+        }
+        // A filtered, blended or projective layer is its children's
+        // compositing canvas; other layers share their parent's.
+        let canvas = if child.filter.is_some()
+            || child.blend != BlendMode::Normal
+            || child.projection.is_some()
+        {
+            Some(idx)
+        } else {
+            canvas
+        };
+        walk_anchor_positions(
+            child, canvas, anchor_of, anchor_pos, projective, member_pos, order,
+        );
+    }
 }
 
 /// Backdrop-group render state: the scene's declared groups plus each
@@ -275,6 +362,8 @@ struct Backdrops<'a> {
     spaces: usize,
     /// The composition space each group's first member was found in.
     member_space: HashMap<u32, usize>,
+    /// The groups anchored at each layer `id`, in group id order.
+    anchors: HashMap<u32, Vec<u32>>,
     /// Each union group's member clip boxes — `(box shape,
     /// device-from-box-local)` — in paint order, collected ahead of the
     /// walk because a member's field reads every member's distance.
@@ -371,6 +460,16 @@ impl Renderer {
             space: BlendSpace::Linear,
             semantic: true,
         }];
+        Self::plan_anchors(scene)?;
+        let mut anchors: HashMap<u32, Vec<u32>> = HashMap::new();
+        for group in &scene.backdrop_groups {
+            if let Some(anchor) = group.anchor {
+                anchors.entry(anchor.get()).or_default().push(group.id);
+            }
+        }
+        for gids in anchors.values_mut() {
+            gids.sort_unstable();
+        }
         let root_tf = scene.root.transform
             * Affine::translate((-scene.root.scroll_offset.x, -scene.root.scroll_offset.y));
         let unions = self.union_members(scene, root_tf)?;
@@ -380,6 +479,7 @@ impl Renderer {
             space: 0,
             spaces: 0,
             member_space: HashMap::new(),
+            anchors,
             unions,
             ords: HashMap::new(),
         };
@@ -397,6 +497,67 @@ impl Renderer {
             height: self.height,
             pixels: canvas.pixels,
         })
+    }
+
+    /// Validates every anchored group's member range before rendering:
+    /// each member can be any layer painting after the group's anchor in
+    /// the anchor's compositing canvas, never falling back to a
+    /// first-member capture.
+    fn plan_anchors(scene: &Scene) -> Result<(), RenderError> {
+        if scene
+            .backdrop_groups
+            .iter()
+            .all(|group| group.anchor.is_none())
+        {
+            return Ok(());
+        }
+        let anchor_of: HashMap<u32, u32> = scene
+            .backdrop_groups
+            .iter()
+            .filter_map(|group| group.anchor.map(|anchor| (group.id, anchor.get())))
+            .collect();
+        // Layer `id`s that anchor a group, their compositing canvas and
+        // paint-order index; members' the same — the canvas is the
+        // nearest enclosing filtered, blended or projective layer.
+        let mut anchor_pos: HashMap<u32, (Option<usize>, usize)> = HashMap::new();
+        let mut projective: HashSet<u32> = HashSet::new();
+        let mut member_pos: MemberPositions = HashMap::new();
+        walk_anchor_positions(
+            &scene.root,
+            None,
+            &anchor_of,
+            &mut anchor_pos,
+            &mut projective,
+            &mut member_pos,
+            &mut 0,
+        );
+        let mut anchored: Vec<(&u32, &u32)> = anchor_of.iter().collect();
+        anchored.sort_unstable();
+        for &(gid, anchor) in &anchored {
+            if scene.root.id.is_some_and(|id| id.get() == *anchor) {
+                return Err(RenderError::Backdrop("backdrop-anchor-at-root".into()));
+            }
+            if projective.contains(anchor) {
+                return Err(RenderError::Backdrop("backdrop-anchor-projective".into()));
+            }
+            let Some(&(anchor_canvas, anchor_order)) = anchor_pos.get(anchor) else {
+                return Err(RenderError::Backdrop("backdrop-unknown-anchor".into()));
+            };
+            for &(canvas, order) in member_pos.get(gid).into_iter().flatten() {
+                if canvas == anchor_canvas && order > anchor_order {
+                    continue;
+                }
+                return Err(RenderError::Backdrop(
+                    if canvas == anchor_canvas {
+                        "backdrop-member-before-anchor"
+                    } else {
+                        "backdrop-member-outside-anchor-canvas"
+                    }
+                    .into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Every union group's member clip boxes — `(box shape,
@@ -521,6 +682,17 @@ impl Renderer {
                     self.render_draw(draw, tf, clips, chain, resources, backdrops)?;
                 }
                 Item::Layer(child) => {
+                    // The layers a group anchors at capture beneath the
+                    // anchor: its position in painter order, before its own
+                    // content and children.
+                    if let Some(gids) = child.id.and_then(|id| backdrops.anchors.get(&id.get())) {
+                        let gids = gids.clone();
+                        for gid in gids {
+                            let group = backdrops.group(gid)?;
+                            let capture = backdrop_capture(chain, group);
+                            backdrops.captures.entry(gid).or_insert(capture);
+                        }
+                    }
                     if let Some(gid) = child.backdrop {
                         // One capture per group: its members share one
                         // composition space.
@@ -541,42 +713,13 @@ impl Renderer {
                         // semantic level's canvas plus, in order, the
                         // partial contents of every looked-through level
                         // the member sits inside — filtered once and shared by
-                        // all members.
+                        // all members. An anchored group captured at its
+                        // anchor already.
                         let group = backdrops.group(gid)?;
-                        let space = chain
-                            .iter()
-                            .rposition(|level| level.semantic)
-                            .map_or(BlendSpace::Linear, |i| chain[i].space);
-                        let scale = group.scale;
-                        let flat = flattened(chain);
-                        let mut capture = if scale < 1.0 {
-                            downsample(&flat, scale)
-                        } else {
-                            flat
-                        };
-                        for filter in &group.filters {
-                            apply_backdrop_filter(&mut capture, filter);
+                        if group.anchor.is_none() {
+                            let capture = backdrop_capture(chain, group);
+                            backdrops.captures.entry(gid).or_insert(capture);
                         }
-                        // The blur pyramid: level `k` is the exact 2×2
-                        // box reduction of level `k − 1` (the filtered
-                        // capture), matching the GPU's mip chain.
-                        let deeper = group
-                            .levels
-                            .checked_sub(1)
-                            .expect("a scene's backdrop group has at least one level");
-                        let deeper =
-                            usize::try_from(deeper).expect("a validated level count fits usize");
-                        let mut levels = Vec::with_capacity(deeper);
-                        for _ in 1..group.levels {
-                            let src = levels.last().unwrap_or(&capture);
-                            levels.push(reduce_level(src));
-                        }
-                        backdrops.captures.entry(gid).or_insert(Capture {
-                            space,
-                            canvas: capture,
-                            levels,
-                            scale,
-                        });
                     }
                     self.render_child_layer(child, tf, clips, chain, resources, backdrops)?;
                 }

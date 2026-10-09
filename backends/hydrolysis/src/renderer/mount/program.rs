@@ -29,6 +29,8 @@ pub struct ScopeKey {
 /// What a run sits directly beneath.
 #[derive(Clone)]
 pub enum ItemKey {
+    /// A `.material_group()` scope's anchor item — its cell identity.
+    Anchor(Rc<NodeCell>),
     Node(Rc<NodeCell>),
     Scope(ScopeKey),
     /// A `ChromeMaterial` member layer, identified by its material
@@ -39,7 +41,7 @@ pub enum ItemKey {
 impl PartialEq for ItemKey {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
+            (Self::Anchor(a), Self::Anchor(b)) | (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
             (Self::Scope(a), Self::Scope(b)) => a == b,
             (Self::Chrome(a), Self::Chrome(b)) => a == b,
             _ => false,
@@ -88,6 +90,12 @@ pub struct ChromeMaterial {
 
 /// One entry of a layer's ordered content.
 pub enum Item {
+    /// A `.material_group()` scope's anchor: a plain, empty layer the
+    /// scope's members capture beneath, painted at this position in the
+    /// canvas the item's program mounts in (water-rs/waterui#2097).
+    /// Carrying the scope's cell pins its address against reuse while
+    /// the registration keyed by it stands.
+    Anchor(Rc<NodeCell>),
     Run(Recording),
     Node(Rc<NodeCell>),
     Chrome(ChromeMaterial),
@@ -103,6 +111,7 @@ pub enum Item {
 impl Item {
     pub(crate) fn key(&self) -> Option<ItemKey> {
         match self {
+            Self::Anchor(cell) => Some(ItemKey::Anchor(Rc::clone(cell))),
             Self::Run(_) => None,
             Self::Node(cell) => Some(ItemKey::Node(Rc::clone(cell))),
             Self::Chrome(chrome) => Some(ItemKey::Chrome(chrome.ordinal)),
@@ -260,6 +269,12 @@ impl ProgramBuilder {
             Some(Item::Run(recording)) => recording,
             _ => unreachable!("a run was just ensured"),
         }
+    }
+
+    /// Appends a `.material_group()` scope's anchor item — the empty
+    /// layer the scope's members capture beneath (water-rs/waterui#2097).
+    pub(crate) fn push_anchor(&mut self, cell: Rc<NodeCell>) {
+        self.items_mut().push(Item::Anchor(cell));
     }
 
     /// Appends a child node's frame.

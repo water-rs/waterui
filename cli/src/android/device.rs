@@ -7,12 +7,12 @@ use tracing::{debug, error};
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use std::process::{ExitStatus, Output, Stdio};
+use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::{
-    android::adb::Adb,
+    android::adb::{Adb, run_bounded_adb_command, run_bounded_adb_output},
     android::platform::AndroidAbi,
     android::toolchain::AndroidSdk,
     device::{
@@ -20,116 +20,26 @@ use crate::{
         PanicInfo, RunOptions, Running, STOPPED_EXIT_DEADLINE, StopRequest, report_monitor_error,
     },
     toolchain::Host,
-    utils::{CommandError, parse_whitespace_separated_u32s},
+    utils::parse_whitespace_separated_u32s,
 };
 
 #[derive(Debug, Clone)]
 enum AndroidRuntimeEvent {
     Panic(PanicInfo),
     NativeCrash(String),
-    ActivityFinished,
 }
 
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
+/// `adb wait-for-device` waits until the device is online, so its bound
+/// covers a device mid-boot, not a stalled transport alone.
+const WAIT_FOR_DEVICE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The launch-intent extra carrying the `--logs` level to a Hydrolysis
 /// Android app — `HydrolysisActivity` reads it and hands it to the native
 /// logging setup. Unlike `waterui.env.*` extras it never becomes an
 /// environment variable.
 const ANDROID_LOG_LEVEL_EXTRA: &str = "waterui.log.level";
-
-/// An `adb` device command could not be spawned, timed out, or exited unsuccessfully.
-#[derive(Debug, thiserror::Error)]
-enum AdbCommandError {
-    /// The `adb` process could not be spawned.
-    #[error(transparent)]
-    Spawn(#[from] CommandError),
-    /// The command did not finish within the bound.
-    #[error("{operation} timed out after {seconds} seconds")]
-    Timeout {
-        /// Human-readable name of the operation.
-        operation: String,
-        /// The bound that elapsed.
-        seconds: u64,
-    },
-    /// The command exited with a non-zero status.
-    #[error("{operation} failed with status {status}{details}")]
-    Failed {
-        /// Human-readable name of the operation.
-        operation: String,
-        /// The process exit status.
-        status: ExitStatus,
-        /// Formatted stdout/stderr tail.
-        details: String,
-    },
-}
-
-async fn run_bounded_adb_output<A, S>(
-    host: &Host,
-    adb: &Adb,
-    args: A,
-    operation: &str,
-) -> Result<Output, AdbCommandError>
-where
-    A: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let args = args
-        .into_iter()
-        .map(|argument| argument.as_ref().to_os_string())
-        .collect::<Vec<_>>();
-    let operation = operation.to_owned();
-    let command = Box::pin(async move {
-        host.output(adb.path(), &args)
-            .await
-            .map_err(AdbCommandError::from)
-    });
-    let timeout = Box::pin(async move {
-        smol::Timer::after(ADB_DEVICE_COMMAND_TIMEOUT).await;
-        Err(AdbCommandError::Timeout {
-            operation,
-            seconds: ADB_DEVICE_COMMAND_TIMEOUT.as_secs(),
-        })
-    });
-
-    match futures_util::future::select(command, timeout).await {
-        futures_util::future::Either::Left((result, _))
-        | futures_util::future::Either::Right((result, _)) => result,
-    }
-}
-
-async fn run_bounded_adb_command<A, S>(
-    host: &Host,
-    adb: &Adb,
-    args: A,
-    operation: &str,
-) -> Result<String, AdbCommandError>
-where
-    A: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = run_bounded_adb_output(host, adb, args, operation).await?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let details = if !stderr.is_empty() {
-        format!("\nstderr:\n{stderr}")
-    } else if !stdout.is_empty() {
-        format!("\nstdout:\n{stdout}")
-    } else {
-        String::new()
-    };
-    Err(AdbCommandError::Failed {
-        operation: operation.to_owned(),
-        status: output.status,
-        details,
-    })
-}
 
 /// Represents an Android device (physical or emulator).
 #[derive(Debug)]
@@ -166,8 +76,18 @@ impl Device for AndroidDevice {
 
     async fn launch(&self, host: &Host) -> eyre::Result<()> {
         let adb = Adb::locate(host).await?;
-        host.run(adb.path(), ["-s", &self.identifier, "wait-for-device"])
-            .await?;
+        // `wait-for-device` returns only once the device is online — a
+        // device mid-boot legitimately spends the bound; the timeout is the
+        // backstop for a transport that never comes up, not the expected
+        // wait.
+        run_bounded_adb_command(
+            host,
+            &adb,
+            ["-s", self.identifier.as_str(), "wait-for-device"],
+            "waiting for the Android device",
+            WAIT_FOR_DEVICE_TIMEOUT,
+        )
+        .await?;
         Ok(())
     }
 
@@ -193,10 +113,15 @@ impl AndroidDevice {
     /// Returns an error when `adb devices` fails or a device's ABI cannot be
     /// read.
     pub async fn scan_with_adb(host: &Host, adb: &Adb) -> eyre::Result<Vec<Self>> {
-        let output =
-            run_bounded_adb_command(host, adb, ["devices", "-l"], "listing Android devices")
-                .await
-                .map_err(|e| eyre!("Failed to list devices: {e}"))?;
+        let output = run_bounded_adb_command(
+            host,
+            adb,
+            ["devices", "-l"],
+            "listing Android devices",
+            ADB_DEVICE_COMMAND_TIMEOUT,
+        )
+        .await
+        .map_err(|e| eyre!("Failed to list devices: {e}"))?;
 
         let mut devices = Vec::new();
 
@@ -211,6 +136,7 @@ impl AndroidDevice {
                     adb,
                     ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
                     "querying Android device ABI",
+                    ADB_DEVICE_COMMAND_TIMEOUT,
                 )
                 .await
                 .map_err(|e| eyre!("Failed to get device ABI: {e}"))?;
@@ -695,11 +621,6 @@ fn spawn_android_runtime_tasks(
                         ))))
                         .await;
                 }
-                AndroidRuntimeEvent::ActivityFinished => {
-                    let _ = sender_for_runtime_event
-                        .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
-                        .await;
-                }
             }
         }
     })
@@ -722,6 +643,7 @@ async fn wait_for_app_pid(
             adb,
             ["-s", device_id, "shell", "pidof", bundle_id],
             "querying the launched Android process",
+            ADB_DEVICE_COMMAND_TIMEOUT,
         )
         .await
             && let Some(pid) = parse_whitespace_separated_u32s(&output).into_iter().next()
@@ -731,28 +653,7 @@ async fn wait_for_app_pid(
     }
 
     // App likely crashed on startup - fetch logcat for crash info
-    let crash_info = match run_bounded_adb_command(
-        host,
-        adb,
-        [
-            "-s",
-            device_id,
-            "logcat",
-            "-d",
-            "-t",
-            "100",
-            "-s",
-            "AndroidRuntime:E",
-            "DEBUG:*",
-            "WaterUI:*",
-        ],
-        "collecting Android startup crash logs",
-    )
-    .await
-    {
-        Ok(output) => output,
-        Err(err) => format!("(failed to collect logcat crash info: {err})"),
-    };
+    let crash_info = crate::android::adb::recent_crash_log(host, adb, device_id, None).await;
 
     let mut error_msg = format!("App {bundle_id} crashed on startup (process not found).\n\n");
 
@@ -782,6 +683,7 @@ pub async fn emulator_avd_name_with_adb(
         adb,
         ["-s", emulator_id, "emu", "avd", "name"],
         "querying the Android emulator name",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
     let name = output.lines().next().unwrap_or_default().trim();
@@ -832,6 +734,7 @@ async fn adb_emulator_states(host: &Host, adb: &Adb) -> eyre::Result<String> {
         adb,
         ["devices", "-l"],
         "querying Android emulator state",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
     let states: Vec<String> = output
@@ -855,6 +758,7 @@ async fn adb_emulator_boot_completed(host: &Host, adb: &Adb, emulator_id: &str) 
         adb,
         ["-s", emulator_id, "shell", "getprop", "sys.boot_completed"],
         "querying Android emulator boot completion",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await
     .is_ok_and(|value| value.trim() == "1")
@@ -873,6 +777,7 @@ async fn adb_device_is_ready(host: &Host, adb: &Adb, device_id: &str) -> eyre::R
         adb,
         ["devices", "-l"],
         "querying Android device readiness",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
     Ok(adb_reports_device_ready(&output, device_id))
@@ -907,6 +812,7 @@ async fn adb_package_manager_ready(host: &Host, adb: &Adb, emulator_id: &str) ->
         adb,
         ["-s", emulator_id, "shell", "pm", "path", "android"],
         "querying Android package manager readiness",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await
     .is_ok_and(|output| {
@@ -1022,7 +928,15 @@ async fn force_stop_android_app(
         OsStr::new("force-stop"),
         OsStr::new(bundle_id),
     ];
-    match run_bounded_adb_output(host, adb, args, "stopping the Android application").await {
+    match run_bounded_adb_output(
+        host,
+        adb,
+        args,
+        "stopping the Android application",
+        ADB_DEVICE_COMMAND_TIMEOUT,
+    )
+    .await
+    {
         Ok(output) if output.status.success() => {}
         Ok(output) => report_monitor_error(
             sender,
@@ -1062,6 +976,7 @@ async fn report_android_process_exit(
         adb,
         pid_log_args,
         "collecting Android process exit logs",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await
     .map_or_else(
@@ -1103,6 +1018,7 @@ async fn query_android_process_pids(
         adb,
         ["-s", device_id, "shell", "pidof", bundle_id].map(OsStr::new),
         "querying Android process state",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1177,9 +1093,11 @@ fn contains_tombstone_backtrace_marker(line: &str) -> bool {
 
 /// Start log streaming from an Android process using logcat.
 ///
-/// Always streams at minimum info level to capture lifecycle completion and panics.
-/// Returns the receiver that fires when the Activity finishes or the runtime
-/// crashes, alongside the `logcat` child itself.
+/// Always streams at minimum info level to capture panics: the Hydrolysis
+/// panic hook writes its payload at info through `__android_log_write`, so a
+/// stricter display level must not narrow the internal stream below it.
+/// Returns the receiver that fires when the runtime crashes, alongside the
+/// `logcat` child itself.
 ///
 /// The child is spawned with `kill_on_drop` and the reader task only holds its
 /// stdout, so whoever owns the returned handle owns the process's lifetime —
@@ -1201,8 +1119,9 @@ fn start_android_log_stream(
     // Bounded channel with capacity 1 acts as a oneshot for the first terminal event.
     let (runtime_event_tx, runtime_event_rx) = smol::channel::bounded::<AndroidRuntimeEvent>(1);
 
-    // Lifecycle completion is logged at info, so the internal stream must include info even
-    // when terminal log display is disabled or configured for a stricter level.
+    // The Hydrolysis panic hook writes at info through `__android_log_write`,
+    // so the internal stream must include info even when terminal log display
+    // is disabled or configured for a stricter level.
     let priority = match log_level {
         Some(LogLevel::Debug) => 'D',
         Some(LogLevel::Verbose) => 'V',
@@ -1278,9 +1197,6 @@ fn android_runtime_event_from_log_line(line: &str) -> Option<AndroidRuntimeEvent
     }
     if android_log_line_looks_like_crash(line) {
         return Some(AndroidRuntimeEvent::NativeCrash(line.to_string()));
-    }
-    if line.contains(ANDROID_ACTIVITY_FINISHED_MARKER) {
-        return Some(AndroidRuntimeEvent::ActivityFinished);
     }
     None
 }
@@ -1660,6 +1576,7 @@ pub async fn screenshot(host: &Host, device_id: &str, output: &Path) -> eyre::Re
         &adb,
         ["-s", device_id, "exec-out", "screencap", "-p"],
         "capturing the Android device screen",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1699,6 +1616,7 @@ pub async fn tap(host: &Host, device_id: &str, x: u32, y: u32) -> eyre::Result<(
             &y.to_string(),
         ],
         "performing an Android tap",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1745,7 +1663,14 @@ pub async fn swipe(
         args.push(d);
     }
 
-    run_bounded_adb_command(host, &adb, args, "performing an Android swipe").await?;
+    run_bounded_adb_command(
+        host,
+        &adb,
+        args,
+        "performing an Android swipe",
+        ADB_DEVICE_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     Ok(())
 }
@@ -1780,6 +1705,7 @@ pub async fn text(host: &Host, device_id: &str, input: &str) -> eyre::Result<()>
         &adb,
         ["-s", device_id, "shell", "input", "text", &escaped],
         "entering text on an Android device",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1801,6 +1727,7 @@ pub async fn screenshot_bytes(host: &Host, device_id: &str) -> eyre::Result<Vec<
         &adb,
         ["-s", device_id, "exec-out", "screencap", "-p"],
         "capturing the Android device screen",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1829,6 +1756,7 @@ pub async fn describe(host: &Host, device_id: &str) -> eyre::Result<String> {
         &adb,
         ["-s", device_id, "shell", "uiautomator", "dump", dump_path],
         "dumping the Android accessibility hierarchy",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1838,6 +1766,7 @@ pub async fn describe(host: &Host, device_id: &str) -> eyre::Result<String> {
         &adb,
         ["-s", device_id, "shell", "cat", dump_path],
         "reading the Android accessibility hierarchy",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -2031,11 +1960,15 @@ mod tests {
     }
 
     #[test]
-    fn detects_activity_completion_marker() {
+    fn an_activity_finishing_is_not_a_terminal_event() {
+        // water-rs/waterui#2289: `WATERUI_ACTIVITY_FINISHED` reports the
+        // activity's end, not the process's — `am start --activity-clear-task`
+        // and a launcher relaunch after Back recreate the activity in the live
+        // process, so only the pidof monitor may end the run.
         let event = android_runtime_event_from_log_line(
             "07-26 20:00:00.000 28184 28184 I WaterUI.MainActivity: WATERUI_ACTIVITY_FINISHED",
         );
-        assert!(matches!(event, Some(AndroidRuntimeEvent::ActivityFinished)));
+        assert!(event.is_none());
     }
 
     #[test]

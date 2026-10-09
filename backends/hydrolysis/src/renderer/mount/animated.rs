@@ -1,5 +1,6 @@
-//! Animated-scalar resolution and morph-progress sampling: the animated
-//! transform/opacity/morph inputs a node re-samples when it records.
+//! Per-view animation slots: the animated transform/opacity/morph inputs a
+//! node re-samples when it records, and the slot lifecycle every per-view
+//! slot follows.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -12,26 +13,42 @@ use crate::renderer::signals::SubscribedSnapshot;
 use crate::renderer::{Retain, SemanticCore};
 
 impl SemanticCore {
-    pub fn resolve_animated_scalar_with_discriminator<S>(
+    /// Opens a structural rebuild of the animation slots: from here, a slot
+    /// survives the matching [`Self::retire_unbound_animation_slots`] only if
+    /// it is bound again.
+    pub(crate) fn begin_animation_rebuild(&mut self) {
+        self.animation_controller.begin_rebuild_frame();
+        self.animation_owner_pins.begin_rebuild_frame();
+    }
+
+    /// Retires every slot not bound since [`Self::begin_animation_rebuild`],
+    /// releasing its owner's address with it.
+    pub(crate) fn retire_unbound_animation_slots(&mut self) {
+        self.animation_controller
+            .finish_rebuild_frame_with_inactive_slot_retention(false);
+        self.animation_owner_pins.finish_rebuild_frame();
+    }
+
+    /// Resolves slot `slot` of the view retained as `owner`, animating it
+    /// along `signal` (see [`Self::owned_scalar_key`]).
+    pub fn resolve_owned_scalar<S, T: 'static>(
         &mut self,
         signal: &S,
-        discriminator: usize,
+        owner: &Rc<T>,
+        slot: usize,
     ) -> f32
     where
         S: Signal<Output = f32> + Clone + 'static,
     {
-        let Some(identity) = signal.identity() else {
-            return self.read_signal(signal);
-        };
         let now = self.frame_instant;
-        let key = AnimationKey::scalar_with_discriminator(identity, discriminator);
+        let key = self.owned_scalar_key(owner, slot);
         let (subscription, observed_value) = SubscribedSnapshot::new(signal);
         let handle = self
             .animation_controller
             .bind_scalar(key, observed_value, now);
         let watcher_handle = handle.clone();
         let signals = self.signals.clone();
-        let owner = self.mark_owner_for_animation(key, Dirty::PAINT);
+        let marked = self.mark_owner_for_animation(key, Dirty::PAINT);
         // A subscription's registration emission echoes the value `bind`
         // already sampled — only a later fire may mark the owner.
         let armed = Rc::new(Cell::new(false));
@@ -39,7 +56,7 @@ impl SemanticCore {
         let guard = subscription.activate(move |update| {
             watcher_handle.apply_update_from_context(update, signals.frame_clock());
             if armed_for_watch.get()
-                && let Some(cell) = owner.upgrade()
+                && let Some(cell) = marked.upgrade()
             {
                 cell.mark(Dirty::PAINT);
             }
@@ -49,20 +66,17 @@ impl SemanticCore {
         handle.sample(now)
     }
 
-    /// Sample a time-based shape-morph phase. `node_id` is the stable identity of
-    /// the owning morph node (its retained `Rc` address), so the timeline slot keys
-    /// off node identity and survives across frames and structural changes — unlike a
-    /// positional `render_depth`, which shifts when a sibling subtree's node count
-    /// changes and would restart the morph mid-animation.
-    pub fn sample_morph_progress(
+    /// Samples the time-based morph phase of the shape retained as `owner`,
+    /// so the timeline survives frames and structural changes around it.
+    pub fn sample_morph_progress<T: 'static>(
         &mut self,
         animation: waterui_shape::MorphAnimation,
-        node_id: usize,
+        owner: &Rc<T>,
     ) -> f32 {
         if animation.duration.is_zero() {
             return 1.0;
         }
-        let key = AnimationKey::renderer_local_repeating(node_id);
+        let key = AnimationKey::renderer_local_repeating(self.animation_owner_pins.pin(owner));
         let elapsed = self.animation_controller.bind_timeline_phase(
             key,
             animation.duration,

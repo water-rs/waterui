@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Fetch `gradle-wrapper.jar` for each Gradle wrapper in this tree.
+"""Materialize the Gradle wrapper assets this tree carries.
 
 The wrapper JARs are binary assets and stay out of the repository; this
-script materializes them where `./gradlew` expects them:
+script installs them where `./gradlew` expects them:
 
     uv run backends/hydrolysis/scripts/fetch-gradle-wrapper.py
 
-For each wrapper directory it reads the Gradle version from the adjacent
-`gradle/wrapper/gradle-wrapper.properties`, downloads the pinned
+The in-tree host's `distributionUrl` derives from a declaration, never a
+literal kept in step by hand: it follows `[package.metadata.waterui]`'s
+`android-gradle-version` in the repository's root manifest — the release the
+scaffolded `gradle-wrapper.properties` renders — and this script rewrites it
+from that declaration first. The bench reference is a frozen import whose
+committed wrapper is left as imported. For each wrapper directory the script
+then reads the pinned Gradle version, downloads the pinned
 `gradle-<version>-bin.zip` from services.gradle.org verified against the
-published `-bin.zip.sha256`, extracts the `gradle-wrapper.jar` template the
-`wrapper` task writes (a resource inside `gradle-wrapper-main-<version>.jar`),
-and verifies it byte-for-byte against the published `-wrapper.jar.sha256`
-(<https://gradle.org/release-checksums/>) before installing it. Both layers
-are hash-verified: the distribution and the jar.
+published `-bin.zip.sha256`, extracts the `gradle-wrapper.jar` template
+the `wrapper` task writes (a resource inside
+`gradle-wrapper-main-<version>.jar`), and verifies it byte-for-byte against
+the published `-wrapper.jar.sha256` (<https://gradle.org/release-checksums/>)
+before installing it. Both layers are hash-verified: the distribution and
+the jar.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ import hashlib
 import io
 import re
 import sys
+import tomllib
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -75,7 +82,46 @@ def fetch_sha256(url: str) -> str:
     return text.split()[0]
 
 
+def declared_gradle_version() -> str:
+    """`[package.metadata.waterui].android-gradle-version` in the root
+    manifest — the one declaration the in-tree host follows and the
+    scaffolded `gradle-wrapper.properties` renders."""
+    with (REPO.parent.parent / "Cargo.toml").open("rb") as manifest:
+        metadata = tomllib.load(manifest)["package"]["metadata"]["waterui"]
+    version = metadata.get("android-gradle-version")
+    if not isinstance(version, str) or not version.strip():
+        raise SystemExit(
+            "[package.metadata.waterui] declares no android-gradle-version string"
+        )
+    return version
+
+
+def pin_wrapper(properties_path: Path, version: str) -> None:
+    """Rewrite `distributionUrl` from the wrapper's declared release,
+    leaving the file untouched when it already pins it — a no-diff run is a
+    clean tree."""
+    properties = properties_path.read_text()
+    url = (
+        "distributionUrl=https\\\\://services.gradle.org/distributions/"
+        f"gradle-{version}-bin.zip"
+    )
+    pinned = re.sub(r"(?m)^distributionUrl=.*$", url, properties)
+    if "distributionUrl=" not in pinned:
+        raise SystemExit(f"no distributionUrl in {properties_path}")
+    if pinned != properties:
+        properties_path.write_text(pinned)
+        print(
+            f"  pinned {properties_path.relative_to(REPO.parent.parent)} "
+            f"at gradle-{version}"
+        )
+
+
 def main() -> None:
+    pin_wrapper(
+        REPO / "android" / "gradle" / "wrapper" / "gradle-wrapper.properties",
+        declared_gradle_version(),
+    )
+
     for project in WRAPPERS:
         wrapper_dir = project / "gradle" / "wrapper"
         properties = (wrapper_dir / "gradle-wrapper.properties").read_text()

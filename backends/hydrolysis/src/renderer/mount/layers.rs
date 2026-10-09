@@ -11,6 +11,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,7 +21,7 @@ use waterui_graphics::HeldResources;
 
 use super::backdrop::{
     BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, MaterialBackdropGroups,
-    MaterialMembership, MemberBind,
+    MaterialMembership, MemberBind, ScopeAnchors, scope_id,
 };
 use super::cell::NodeCell;
 use super::placement::Placement;
@@ -139,6 +140,14 @@ pub struct ScopeLayer {
     /// The `ChromeMaterial` member layers inside the scope, in program
     /// order.
     members: Vec<MemberLayer>,
+    /// The anchor layers the scope's items lower — the same retention
+    /// and registration contract the node's own list has. The `Rc`
+    /// pins the scope's cell, so its `BackdropScope::Scoped` address
+    /// can never be reused while an anchor layer stands.
+    anchors: Vec<(Rc<NodeCell>, Layer)>,
+    /// The `(scope, canvas, layer)` keys the scope's items' anchors
+    /// registered; each entry compare-removes on the layer it installed.
+    anchor_keys: Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     committed: Committed,
 }
 
@@ -195,6 +204,26 @@ pub struct NodeLayers {
     /// the mount's table keeps it weakly, so an unmount's `layers.take()`
     /// ends the membership at the next sweep.
     material: Option<MaterialMembership>,
+    /// The `.material_group()` anchor layers this node's items lower:
+    /// one plain, empty child of the frame per anchor item. The `Rc`
+    /// pins the scope's cell, so its `BackdropScope::Scoped` address
+    /// can never be reused while an anchor layer stands
+    /// (water-rs/waterui#2097).
+    anchors: Vec<(Rc<NodeCell>, Layer)>,
+    /// The `(scope, install canvas, layer)` keys this node's items'
+    /// anchors registered in the group table — each entry
+    /// compare-removes on the layer it installed — dropped when the
+    /// layers retire.
+    anchor_keys: Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
+    /// The anchor layers the inner list's items lower — the same
+    /// retention and registration contract as `anchors`, owned by the
+    /// inner list alone: sharing the outer list's tables would let the
+    /// outer pass retire anchors the inner pass just created
+    /// (water-rs/waterui#2097).
+    inner_anchors: Vec<(Rc<NodeCell>, Layer)>,
+    /// The `(scope, canvas, layer)` keys the inner list's items'
+    /// anchors registered.
+    inner_anchor_keys: Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     /// The layer the frame is attached under.
     attached: Cell<Option<LayerId>>,
 }
@@ -214,6 +243,46 @@ impl NodeLayers {
     )]
     pub(crate) const fn frame_layer(layers: &Self, _: LayerId) -> Option<&Layer> {
         Some(layers.frame())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn committed_anchor_parent_children(
+        &self,
+        scope: NonZeroU64,
+        canvas: Option<LayerId>,
+        anchor: LayerId,
+    ) -> Option<(LayerId, Vec<LayerId>, bool)> {
+        if self.anchor_keys.contains(&(scope, canvas, anchor)) {
+            return Some((
+                self.frame.id(),
+                self.committed.iter().map(|&(id, _)| id).collect(),
+                true,
+            ));
+        }
+        if self.inner_anchor_keys.contains(&(scope, canvas, anchor))
+            && let Some((inner, _)) = &self.inner
+        {
+            return Some((
+                inner.id(),
+                self.inner_committed.iter().map(|&(id, _)| id).collect(),
+                true,
+            ));
+        }
+        self.scopes
+            .iter()
+            .find(|registered| registered.anchor_keys.contains(&(scope, canvas, anchor)))
+            .map(|registered| {
+                (
+                    registered.layer.id(),
+                    registered.committed.iter().map(|&(id, _)| id).collect(),
+                    false,
+                )
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inner_id(&self) -> Option<LayerId> {
+        self.inner.as_ref().map(|(inner, _)| inner.id())
     }
 
     /// The member's frame layer id when the node holds a backdrop-group
@@ -294,6 +363,10 @@ pub struct Mount<T: LayerTarget> {
     /// `ChromeMaterial` members join and leave their `(scope, class,
     /// canvas)` groups through it.
     chrome_groups: ChromeBackdropGroups<T::Group, T::Shader>,
+    /// The `.material_group()` scope anchors the material groups capture
+    /// beneath (water-rs/waterui#2097): each anchor item's lowering
+    /// registers its layer, and the members' group keys resolve it.
+    scope_anchors: ScopeAnchors,
     /// The window layer's own backdrop membership: the window material
     /// the root mounts over, when the window background names one.
     window_material: Option<MaterialMembership>,
@@ -313,6 +386,9 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget> {
     /// through it, and the commit's sweep releases emptied groups.
     groups: &'m mut MaterialBackdropGroups<T::Group>,
     chrome_groups: &'m mut ChromeBackdropGroups<T::Group, T::Shader>,
+    /// The mount's scope-anchor registrations: anchor items register and
+    /// release through it, and material members resolve their anchor.
+    scope_anchors: &'m mut ScopeAnchors,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
     wakes: &'m mut dyn FnMut(&Rc<NodeCell>) -> ProducerWake,
@@ -337,6 +413,12 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
     }
 
     fn retire_scope(&mut self, scope: ScopeLayer) {
+        for (scope_key, canvas, layer) in scope.anchor_keys {
+            self.scope_anchors.remove(scope_key, canvas, layer);
+        }
+        for (_, layer) in scope.anchors {
+            self.retire_layer(layer);
+        }
         for run in scope.runs {
             self.retire_run(run);
         }
@@ -363,10 +445,20 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             members,
             inner_members,
             scopes,
+            anchors,
+            anchor_keys,
+            inner_anchors,
+            inner_anchor_keys,
             content_held,
             material,
             ..
         } = layers;
+        for (scope, canvas, layer) in anchor_keys.into_iter().chain(inner_anchor_keys) {
+            self.scope_anchors.remove(scope, canvas, layer);
+        }
+        for (_, layer) in anchors.into_iter().chain(inner_anchors) {
+            self.retire_layer(layer);
+        }
         for run in runs.into_iter().chain(inner_runs) {
             self.retire_run(run);
         }
@@ -416,6 +508,7 @@ impl<T: LayerTarget> Mount<T> {
             window_token: Rc::new(LayerToken { owner: Weak::new() }),
             groups: MaterialBackdropGroups::new(),
             chrome_groups: ChromeBackdropGroups::new(),
+            scope_anchors: ScopeAnchors::new(),
             window_material: None,
             attached: false,
             stats: MountStats {
@@ -428,6 +521,13 @@ impl<T: LayerTarget> Mount<T> {
     #[cfg(test)]
     pub const fn window(&self) -> &Layer {
         &self.window
+    }
+
+    /// The window layer's child list as `reconcile` last committed it —
+    /// the engine's authoritative paint order. A test-facing answer.
+    #[cfg(test)]
+    pub fn window_children(&self) -> Vec<LayerId> {
+        self.window_committed.iter().map(|&(id, _)| id).collect()
     }
 
     /// The window layer's clip as last committed — `Some` over the window
@@ -446,6 +546,12 @@ impl<T: LayerTarget> Mount<T> {
     #[cfg(test)]
     pub(crate) const fn groups(&self) -> &MaterialBackdropGroups<T::Group> {
         &self.groups
+    }
+
+    /// The mount's `.material_group()` scope-anchor registrations.
+    #[cfg(test)]
+    pub(crate) const fn scope_anchors(&self) -> &ScopeAnchors {
+        &self.scope_anchors
     }
 
     /// The mount's chrome-group table.
@@ -480,6 +586,7 @@ impl<T: LayerTarget> Mount<T> {
             window_token,
             groups,
             chrome_groups,
+            scope_anchors,
             window_material: window_state,
             attached,
             stats,
@@ -512,7 +619,7 @@ impl<T: LayerTarget> Mount<T> {
                     tx,
                     groups,
                     window,
-                    BackdropGroupKey::new(window.id(), request, None),
+                    BackdropGroupKey::new(window.id(), request, None, scope_anchors),
                     display_scale,
                     membership,
                     MemberBind::OnChange,
@@ -531,6 +638,7 @@ impl<T: LayerTarget> Mount<T> {
                 display_scale,
                 groups,
                 chrome_groups,
+                scope_anchors,
                 graveyard: &mut graveyard,
                 stats,
                 wakes,
@@ -547,6 +655,7 @@ impl<T: LayerTarget> Mount<T> {
             reconcile(cx.tx, window, &wants, window_committed, window_token);
             cx.groups.sweep();
             cx.chrome_groups.sweep();
+            cx.scope_anchors.sweep();
         });
         drop(graveyard);
     }
@@ -725,6 +834,10 @@ pub fn commit_cell<T: LayerTarget>(
                 install_gpu: false,
                 material_request: None,
                 material: None,
+                anchors: Vec::new(),
+                anchor_keys: Vec::new(),
+                inner_anchors: Vec::new(),
+                inner_anchor_keys: Vec::new(),
                 attached: Cell::new(None),
             }
         }
@@ -858,6 +971,8 @@ fn lower_program<T: LayerTarget>(
         &layers.frame,
         &leading,
         items,
+        &mut layers.anchors,
+        &mut layers.anchor_keys,
         &mut layers.runs,
         &mut layers.members,
         &mut scopes_old,
@@ -884,7 +999,12 @@ fn commit_material<T: LayerTarget>(
 ) {
     layers.material_request = material.copied();
     if let Some(request) = material.filter(|request| request.visible) {
-        let key = BackdropGroupKey::new(layers.frame.id(), request, canvas);
+        // The request's scope says the member flushed under a
+        // `.material_group()`; the group it joins is keyed by the
+        // marked mount ancestor — the same identity the scope's
+        // registration and any filtered canvas's anchors carry
+        // (water-rs/waterui#2097).
+        let key = BackdropGroupKey::new(layers.frame.id(), request, canvas, cx.scope_anchors);
         let membership = layers
             .material
             .get_or_insert_with(|| MaterialMembership::new(layers.token.owner.clone()));
@@ -940,6 +1060,8 @@ fn lower_inner<T: LayerTarget>(
             inner_layer,
             &[],
             &inner.items,
+            &mut layers.inner_anchors,
+            &mut layers.inner_anchor_keys,
             &mut layers.inner_runs,
             &mut layers.inner_members,
             scopes_old,
@@ -952,8 +1074,17 @@ fn lower_inner<T: LayerTarget>(
         if let Some((layer, _)) = layers.inner.take() {
             cx.retire_layer(layer);
         }
+        for (scope, canvas, layer) in std::mem::take(&mut layers.inner_anchor_keys) {
+            cx.scope_anchors.remove(scope, canvas, layer);
+        }
+        for (_, layer) in std::mem::take(&mut layers.inner_anchors) {
+            cx.retire_layer(layer);
+        }
         for run in std::mem::take(&mut layers.inner_runs) {
             cx.retire_run(run);
+        }
+        for member in std::mem::take(&mut layers.inner_members) {
+            cx.retire_member(member);
         }
         layers.inner_committed.clear();
     }
@@ -1128,21 +1259,41 @@ enum Slot {
     /// A `ChromeMaterial` member layer: the index into `members`.
     Member(usize),
     Node(Rc<NodeCell>),
+    /// A `.material_group()` anchor item's layer, indexing `anchors`.
+    Anchor(usize),
+}
+
+/// The `anchors` slot of `cell`'s scope anchor layer: a plain, empty
+/// layer at the scope's paint position, kept across commits, that every
+/// member of the scope's groups captures beneath — registered before the
+/// items after it commit (water-rs/waterui#2097). The layer is reused
+/// from the last lowering's `old_anchors` when the same scope re-lowers,
+/// so the registration — and the group key carrying it — stays stable.
+fn anchor_slot<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    cell: &Rc<NodeCell>,
+    old_anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
+    anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
+) -> usize {
+    if let Some(at) = old_anchors.iter().position(|(s, _)| Rc::ptr_eq(s, cell)) {
+        anchors.push(old_anchors.swap_remove(at));
+        return anchors.len() - 1;
+    }
+    anchors.push((Rc::clone(cell), cx.layer()));
+    anchors.len() - 1
 }
 
 #[expect(
     clippy::too_many_arguments,
     reason = "one list's lowering reads the node's run, scope and committed state together"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the run/member/scope slot machinery is one lowering pass; splitting it would split its invariants across functions"
-)]
 fn lower_list<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
     parent: &Layer,
     leading: &[(LayerId, &Layer)],
     items: &[Item],
+    anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
+    anchor_keys: &mut Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     runs: &mut Vec<RunLayer>,
     members: &mut Vec<MemberLayer>,
     scopes_old: &mut Vec<ScopeLayer>,
@@ -1151,6 +1302,15 @@ fn lower_list<T: LayerTarget>(
     token: &Rc<LayerToken>,
     canvas: Option<LayerId>,
 ) {
+    // The last lowering's anchor registrations release before the
+    // items' anchors re-register — this list is the only owner of the
+    // keys its items registered. Its anchor layers rebuild like `runs`:
+    // matched entries keep their layer — a stable `LayerId` keeps the
+    // group's key stable — and the rest retire below.
+    for (scope, key_canvas, layer) in std::mem::take(anchor_keys) {
+        cx.scope_anchors.remove(scope, key_canvas, layer);
+    }
+    let mut old_anchors = std::mem::take(anchors);
     let mut old_runs = std::mem::take(runs);
     let mut members_old = std::mem::take(members);
     let had_own = old_runs.iter().any(|run| run.layer.is_none());
@@ -1181,6 +1341,17 @@ fn lower_list<T: LayerTarget>(
                 let at = lower_chrome(cx, chrome, &mut members_old, members, token, canvas);
                 slots.push(Slot::Member(at));
             }
+            Item::Anchor(cell) => {
+                // A plain, empty layer at the scope's paint position —
+                // kept across commits — that every member of the scope's
+                // groups captures beneath, registered before the items
+                // after it commit (water-rs/waterui#2097).
+                let at = anchor_slot(cx, cell, &mut old_anchors, anchors);
+                let layer = anchors[at].1.id();
+                cx.scope_anchors.set(cell, canvas, layer);
+                anchor_keys.push((scope_id(cell), canvas, layer));
+                slots.push(Slot::Anchor(at));
+            }
             Item::Scope {
                 key,
                 props,
@@ -1208,7 +1379,39 @@ fn lower_list<T: LayerTarget>(
     for member in members_old {
         cx.retire_member(member);
     }
+    // Anchor items the last lowering carried but this one does not:
+    // their registrations released at the top, and their layers leave
+    // `wants` — the reconcile detaches them from the parent's child
+    // list, keeping the engine's order in step with `committed`.
+    for (_, layer) in old_anchors {
+        cx.retire_layer(layer);
+    }
 
+    commit_list_slots(
+        cx, parent, leading, &slots, anchors, runs, members, scopes_new, committed, token,
+    );
+}
+
+/// The list's retained layers as `Want`s, in item order, then the
+/// reconcile: leading anchors, run layers, scope layers, chrome member
+/// layers, node frames and the scope anchor layers, each under this
+/// list's token.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the slot kinds each carry their own layer store"
+)]
+fn commit_list_slots<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    parent: &Layer,
+    leading: &[(LayerId, &Layer)],
+    slots: &[Slot],
+    anchors: &[(Rc<NodeCell>, Layer)],
+    runs: &[RunLayer],
+    members: &[MemberLayer],
+    scopes_new: &[ScopeLayer],
+    committed: &mut Committed,
+    token: &Rc<LayerToken>,
+) {
     let retained: Vec<_> = slots
         .iter()
         .filter_map(|slot| match slot {
@@ -1228,7 +1431,7 @@ fn lower_list<T: LayerTarget>(
         })
         .collect();
     let mut nodes = guards.iter();
-    for slot in &slots {
+    for slot in slots {
         wants.push(match slot {
             Slot::Run(at) => {
                 let layer = runs[*at].layer.as_ref().expect("a listed run has a layer");
@@ -1258,6 +1461,15 @@ fn lower_list<T: LayerTarget>(
                 }
             }
             Slot::Node(_) => node_want(nodes.next().expect("one guard per node slot")),
+            Slot::Anchor(at) => {
+                let layer = &anchors[*at].1;
+                Want {
+                    id: layer.id(),
+                    token: own.clone(),
+                    layer,
+                    attached: None,
+                }
+            }
         });
     }
     reconcile(cx.tx, parent, &wants, committed, token);
@@ -1327,6 +1539,8 @@ fn lower_scope<T: LayerTarget>(
                 props: LayerProps::DEFAULT,
                 runs: Vec::new(),
                 members: Vec::new(),
+                anchors: Vec::new(),
+                anchor_keys: Vec::new(),
                 committed: Vec::new(),
             },
             |at| scopes_old.swap_remove(at),
@@ -1348,6 +1562,8 @@ fn lower_scope<T: LayerTarget>(
         runs,
         members,
         committed,
+        anchors,
+        anchor_keys,
         ..
     } = &mut scope;
     lower_list(
@@ -1355,6 +1571,8 @@ fn lower_scope<T: LayerTarget>(
         layer,
         &[],
         items,
+        anchors,
+        anchor_keys,
         runs,
         members,
         scopes_old,

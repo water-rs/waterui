@@ -92,6 +92,56 @@ fn disabled_toggle_ignores_input_and_reports_disabled(
     );
 }
 
+// water-rs/waterui#2241: a hidden label contributes no frame — the toggle's
+// reported bounds are the switch's own, and a tap anywhere inside them
+// toggles the control (no dead zone beside the switch).
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (320, 240))]
+fn hidden_label_toggle_is_switch_sized_and_toggles_throughout(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let enabled = Binding::bool(false);
+    let enabled_for_view = enabled.clone();
+
+    let mut app = ui.mount_offscreen(move || {
+        control_shell(toggle("Dark mode", &enabled_for_view).hide_label())
+    });
+
+    let element = app.query().role(Role::SWITCH).label("Dark mode").single();
+    let bounds = element.bounds();
+    // Material3 switch metrics: a 52x32 pt track; the hidden label adds
+    // nothing to either axis.
+    assert_close(
+        f64::from(bounds.width()),
+        52.0,
+        0.5,
+        "hidden-label toggle: width must be the switch's own",
+    );
+    assert_close(
+        f64::from(bounds.height()),
+        32.0,
+        0.5,
+        "hidden-label toggle: height must be the switch's own",
+    );
+
+    // Every point inside the reported bounds must toggle — sweep the row.
+    let (cx, cy) = bounds.center();
+    for x in [bounds.x() + 1.0, cx, bounds.x() + bounds.width() - 1.0] {
+        app.tap_at(x, cy);
+        assert!(
+            enabled.snapshot(),
+            "hidden-label toggle: tap at x={x} inside the reported bounds must toggle"
+        );
+        enabled.set(false);
+    }
+
+    // The accessibility action still toggles it too.
+    app.query().role(Role::SWITCH).label("Dark mode").tap();
+    assert!(
+        enabled.snapshot(),
+        "hidden-label toggle: accessibility action must toggle"
+    );
+}
+
 // Origin: waterui `components/foundation/controls/tests/e2e_semantics.rs`.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (320, 240))]
 fn disabled_scope_cascades_and_reenables_reactively(

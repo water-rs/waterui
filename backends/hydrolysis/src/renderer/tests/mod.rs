@@ -14,6 +14,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
+mod animation_slots;
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
@@ -293,6 +294,66 @@ pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::Layer
     members.0
 }
 
+pub fn mounted_anchor_parent_children(
+    runtime: &crate::HeadlessRuntime,
+    scope: std::num::NonZeroU64,
+    canvas: Option<cherenkov::LayerId>,
+    child: cherenkov::LayerId,
+) -> Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)> {
+    struct Parent {
+        scope: std::num::NonZeroU64,
+        canvas: Option<cherenkov::LayerId>,
+        child: cherenkov::LayerId,
+        children: Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)>,
+    }
+    impl mount::layers::LayerVisitor for Parent {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if self.children.is_none()
+                && let Some(children) =
+                    layers.committed_anchor_parent_children(self.scope, self.canvas, self.child)
+            {
+                self.children = Some(children);
+            }
+        }
+    }
+    let window = window_mount(runtime);
+    if window.window_children().contains(&child) {
+        return Some((window.window().id(), window.window_children(), true));
+    }
+    let mut visitor = Parent {
+        scope,
+        canvas,
+        child,
+        children: None,
+    };
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut visitor);
+    visitor.children
+}
+
+pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
+    struct Inner(Vec<cherenkov::LayerId>);
+    impl mount::layers::LayerVisitor for Inner {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if let Some(inner) = layers.inner_id() {
+                self.0.push(inner);
+            }
+        }
+    }
+    let mut visitor = Inner(Vec::new());
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut visitor);
+    visitor.0
+}
+
 /// The window's mount — the test renders one window.
 pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov_gpu::Gpu> {
     &runtime
@@ -414,8 +475,9 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
 fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
     let mut renderer = test_renderer();
+    let owner = Rc::new(());
 
-    let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, usize::MAX);
+    let resolved = renderer.resolve_owned_scalar(&signal, &owner, usize::MAX);
 
     assert_eq!(resolved, 0.25);
     assert!(signal.subscribed.get());
@@ -425,7 +487,7 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 fn toggle_progress_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(false, nami::watcher::Context::from(false));
     let mut renderer = test_renderer();
-    let owner = RetainedIdentity::for_rc(&Rc::new(()));
+    let owner = Rc::new(());
 
     let (progress, selected) =
         renderer.resolve_toggle_progress(&signal, &owner, Animation::linear(Duration::ZERO));
@@ -2542,6 +2604,10 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 
 /// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
 type ToggleSwitchDraw = (Rect, f32, bool);
+/// A recorded `draw_progress_linear_track` call: `(bounds, active_end)`.
+type ProgressTrackDraw = (Rect, Option<f64>);
+/// A recorded `draw_radio_indicator` call: `(center, state)`.
+type RadioIndicatorDraw = (Point, RadioIndicatorState);
 
 #[derive(Default)]
 pub struct MinimalTestTheme {
@@ -2580,6 +2646,10 @@ pub struct MinimalTestTheme {
     chrome: ChromePlan,
     /// Every `draw_toggle_switch` call.
     toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
+    /// Every `draw_progress_linear_track` call.
+    progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
+    /// Every `draw_radio_indicator` call.
+    radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
 }
 
 /// One `backdrop_material` a chrome test's theme replays per
@@ -2897,10 +2967,13 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_radio_indicator(
         &self,
         _draw: &mut Recorder,
-        _center: Point,
+        center: Point,
         _radius: f64,
-        _state: RadioIndicatorState,
+        state: RadioIndicatorState,
     ) {
+        self.radio_indicator_draws
+            .borrow_mut()
+            .push((center, state));
     }
 
     fn slider_metrics(&self, size: ControlSize) -> SliderMetrics {
@@ -2986,9 +3059,12 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_progress_linear_track(
         &self,
         _draw: &mut Recorder,
-        _bounds: Rect,
-        _active_end: Option<f64>,
+        bounds: Rect,
+        active_end: Option<f64>,
     ) {
+        self.progress_linear_track_draws
+            .borrow_mut()
+            .push((bounds, active_end));
     }
     fn draw_progress_linear_fill(&self, _draw: &mut Recorder, _bounds: Rect) {}
     fn draw_progress_linear_indeterminate(

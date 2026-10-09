@@ -90,12 +90,15 @@ pub async fn build_aar(
         fs::remove_dir_all(&jni_libs).await?;
     }
 
+    // The companion render, permission audit and font staging do not
+    // depend on the ABI — run them once for the whole set.
+    AndroidPlatform::prepare_for_build(project).await?;
     let mut built: Option<BuiltTarget> = None;
     for abi in abis {
         let abi_options = options.clone().with_output_dir(jni_libs.join(abi.as_str()));
         built = Some(
             AndroidPlatform::new(*abi)
-                .build(project, abi_options)
+                .build_prepared(project, abi_options)
                 .await?,
         );
     }
@@ -118,11 +121,16 @@ pub async fn build_aar(
         &project.ffi_crate_path().join("Cargo.toml"),
         &module_dir,
         crate::assets::AndroidDependencyScope::Api,
-        &android_ffi_dependency_features(project).await?,
+        &android_ffi_dependency_features(
+            project,
+            &abis.iter().map(|abi| abi.triple()).collect::<Vec<_>>(),
+        )
+        .await?,
     )
     .await?;
 
     run_gradle_tasks(
+        project.host(),
         &backend_path,
         &[
             ":waterui:assembleRelease",
@@ -151,18 +159,17 @@ async fn stage_embedded_assets(
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
 ) -> Result<()> {
-    let manifest =
+    let (manifest, staged) =
         assets::stage_project_assets_for_android_library(project, module_dir, symbols, false)
             .await?;
-    let assets_dir = module_dir.join("src/main/assets");
 
     let font_declarations =
         assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
     if !resolved_fonts.is_empty() {
-        let fonts_dest = assets_dir.join("fonts");
+        let fonts_dest = staged.root.join("fonts");
         assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
         assets::write_font_manifest(&resolved_fonts, &fonts_dest, None).await?;
         info!("Copied {} fonts to embedded module", resolved_fonts.len());

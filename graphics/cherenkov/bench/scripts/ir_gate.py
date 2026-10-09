@@ -137,6 +137,37 @@ def dump_files(out, prefix, number):
     return sorted(out.glob(f'{prefix}.{number}-*'))
 
 
+LAYER_NAME = 'VK_LAYER_CHERENKOV_no_raster'
+
+
+def install_layer(layer_dir):
+    """Builds ir_no_raster.c into `layer_dir` and writes its manifest; returns the library path.
+
+    The manifest names the layer's entrypoints, so the library exports no Vulkan symbols.
+    """
+    source = pathlib.Path(__file__).with_name('ir_no_raster.c')
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
+    library = layer_dir / f'libVkLayerCherenkovNoRaster-{digest}.so'
+    tmp = layer_dir / f'{library.name}.{os.getpid()}.tmp'
+    subprocess.run(['cc', '-shared', '-fPIC', '-O2', '-Wall', '-Wextra', '-Werror', '-o', str(tmp), str(source)],
+                   check=True)
+    os.replace(tmp, library)
+    (layer_dir / 'VkLayer_cherenkov_no_raster.json').write_text(json.dumps({
+        'file_format_version': '1.0.0',
+        'layer': {'name': LAYER_NAME, 'type': 'GLOBAL', 'library_path': str(library),
+                  'functions': {'vkGetInstanceProcAddr': 'cherenkovGetInstanceProcAddr',
+                                'vkGetDeviceProcAddr': 'cherenkovGetDeviceProcAddr'},
+                  'api_version': '1.3.0', 'implementation_version': '1',
+                  'description': 'No-op GPU-work vkCmd* entry points (gate only)'}}, indent=1) + '\n')
+    return library
+
+
+def layer_env(layer_dir):
+    """The environment that runs Lavapipe with the layer in `layer_dir` enabled."""
+    return dict(VK_ICD_FILENAMES='/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', VK_LAYER_PATH=str(layer_dir),
+                VK_INSTANCE_LAYERS=LAYER_NAME, NODEVICE_SELECT='1')
+
+
 def profile(binary, tag, scene, repo, out, pause_at, warmup):
     binary = pathlib.Path(binary).resolve(); out = pathlib.Path(out).resolve(); out.mkdir(parents=True, exist_ok=True)
     prefix = out / f'{tag}-{scene}'
@@ -157,21 +188,9 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
         roots[phase] = hits[0]
     layer_dir = out / 'vk_layer'
     layer_dir.mkdir(exist_ok=True)
-    source = pathlib.Path(__file__).with_name('ir_no_raster.c')
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:16]
-    library = layer_dir / f'libVkLayerCherenkovNoRaster-{digest}.so'
-    tmp = layer_dir / f'{library.name}.{os.getpid()}.tmp'
-    subprocess.run(['cc', '-shared', '-fPIC', '-O2', '-o', str(tmp), str(source)], check=True)
-    os.replace(tmp, library)
-    manifest = layer_dir / 'VkLayer_cherenkov_no_raster.json'
-    manifest.write_text(json.dumps({
-        'file_format_version': '1.0.0',
-        'layer': {'name': 'VK_LAYER_CHERENKOV_no_raster', 'type': 'GLOBAL', 'library_path': str(library),
-                  'api_version': '1.3.0', 'implementation_version': '1',
-                  'description': 'No-op GPU-work vkCmd* entry points (gate only)'}}, indent=1) + '\n')
+    install_layer(layer_dir)
     env = os.environ.copy()
-    env.update(VK_ICD_FILENAMES='/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', XDG_RUNTIME_DIR='/tmp/runtime-ubuntu', RUST_LOG='error',
-               VK_LAYER_PATH=str(layer_dir), VK_INSTANCE_LAYERS='VK_LAYER_CHERENKOV_no_raster', NODEVICE_SELECT='1')
+    env.update(layer_env(layer_dir), XDG_RUNTIME_DIR='/tmp/runtime-ubuntu', RUST_LOG='error')
     os.makedirs(env['XDG_RUNTIME_DIR'], exist_ok=True)
     dumps = [f'--dump-{when}={sym}' for sym in roots.values() for when in ('before', 'after')]
     command = ['valgrind', '--tool=callgrind', '--instr-atstart=no', '--separate-threads=yes', *dumps,

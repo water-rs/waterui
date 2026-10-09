@@ -600,8 +600,13 @@ mod imp {
                 let identifier = alloc::format!("dev.waterui.menu.{index}");
                 let command = kit_command_for_menu(menu);
                 let nodes = menu_tree(&menu.items.snapshot(), &env);
-                let ui_menu =
-                    cocoa_ui::uikit::menu_with_identifier(mtm, &command, Some(&identifier), &nodes);
+                let ui_menu = cocoa_ui::uikit::menu_with_identifier(
+                    mtm,
+                    builder.key_commands(),
+                    &command,
+                    Some(&identifier),
+                    &nodes,
+                );
                 if builder.contains(&identifier) {
                     builder.replace(&identifier, &ui_menu);
                 } else {

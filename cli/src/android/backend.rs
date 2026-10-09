@@ -85,34 +85,15 @@ impl Backend for AndroidBackend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
 
-        // Android is where a missing declaration actually breaks things, so
-        // surface anything a dependency needs that the app has not enabled.
-        // The audit resolves the FFI companion's graph — the crate the Android
-        // build compiles. `Project::open` re-renders the companion for this
-        // invocation's selection before any backend runs; only a companion
-        // carried over from a prior open is audited here — the fresh render's
-        // graph is resolved by the build that follows anyway.
-        let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-        if project.ffi_companion_preexisting && ffi_manifest.exists() {
-            crate::assets::seed_managed_crate_lock(project, &ffi_manifest)
-                .await
-                .map_err(crate::backend::FailToInitBackend::Config)?;
-            let required = crate::assets::scan_required_permissions(&ffi_manifest)
-                .await
-                .map_err(crate::backend::FailToInitBackend::Config)?;
-            crate::assets::warn_missing_permissions(project, &required, |key| {
-                key.android_permission_name().is_some()
-            });
-        }
-
         // Extract enabled permissions from the manifest
         let android_permissions = manifest_permissions(manifest);
 
         let ctx = TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,
-            &project
+            project
                 .resolved_framework()
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,
@@ -128,11 +109,15 @@ impl Backend for AndroidBackend {
                     .await
                     .map_err(crate::backend::FailToInitBackend::Config)?,
             );
-            templates::android_embedded::scaffold(&project.backend_path::<Self>(), &ctx)
-                .await
-                .map_err(crate::backend::FailToInitBackend::Io)?;
+            templates::android_embedded::scaffold(
+                project.host(),
+                &project.backend_path::<Self>(),
+                &ctx,
+            )
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
         } else {
-            templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
+            templates::android::scaffold(project.host(), &project.backend_path::<Self>(), &ctx)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Io)?;
         }
@@ -153,10 +138,11 @@ impl Backend for AndroidBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         debug_assert_eq!(platform, TargetPlatform::Android);
+        let abi = AndroidPlatform::arm64();
         project
-            .browser_runtime_plan(platform, TargetBackend::Android)
+            .browser_runtime_plan(platform, TargetBackend::Android, &abi.triple())
             .await?;
-        AndroidPlatform::arm64().build(project, options).await
+        abi.build(project, options).await
     }
 
     async fn package(
@@ -216,8 +202,10 @@ mod tests {
     #[test]
     fn init_rejects_an_android_invalid_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("liquid-glass");
         let project = smol::block_on(Project::create(
+            &host,
             &root,
             CreateOptions {
                 name: "Liquid Glass".to_string(),
