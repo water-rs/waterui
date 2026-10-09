@@ -26,13 +26,16 @@ use std::rc::Rc;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIBarButtonItem, UIBarButtonItemStyle, UIButton, UIControl, UIGestureRecognizer,
-    UIGestureRecognizerDelegate, UINavigationBar, UINavigationController,
+    UIBarButtonItem, UIBarButtonItemStyle, UIBarPosition, UIBarPositioning,
+    UIBarPositioningDelegate, UIButton, UIControl, UIGestureRecognizer,
+    UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarDelegate, UINavigationController,
     UINavigationControllerDelegate, UINavigationItem, UINavigationItemLargeTitleDisplayMode,
-    UISearchController, UISearchResultsUpdating, UIViewController,
+    UISearchController, UISearchResultsUpdating, UITransitionContextFromViewControllerKey,
+    UIViewController, UIViewControllerTransitionCoordinator,
+    UIViewControllerTransitionCoordinatorContext,
 };
 
 /// `viewWillAppear:` listener, called with `UIKit`'s `animated` flag.
@@ -52,6 +55,14 @@ pub struct NavContentControllerIvars {
     search_updater: RefCell<Option<Retained<SearchUpdater>>>,
     /// The page's search drawer, retained for later updates.
     search_controller: RefCell<Option<Retained<UISearchController>>>,
+    /// Whether the stack's toolbar should hide while this page is topmost.
+    /// `set_page` runs before the page is pushed — `navigationController()`
+    /// is nil then — so the intent is recorded here and the owning
+    /// `NavigationController` applies it when the page resolves.
+    toolbar_hidden: Cell<bool>,
+    /// Whether the stack's navigation bar should hide while this page is
+    /// topmost — recorded like `toolbar_hidden` and applied the same way.
+    bar_hidden: Cell<bool>,
 }
 
 impl fmt::Debug for NavContentControllerIvars {
@@ -123,6 +134,8 @@ impl NavContentController {
             search_change: RefCell::new(None),
             search_updater: RefCell::new(None),
             search_controller: RefCell::new(None),
+            toolbar_hidden: Cell::new(true),
+            bar_hidden: Cell::new(false),
         });
         // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s
         // designated initializer; nil names and bundles load nothing.
@@ -195,30 +208,18 @@ impl NavContentController {
         item.setHidesBackButton(page.hides_back);
         if let Some(on_back) = &page.on_back {
             let on_back = on_back.clone();
-            // SAFETY: `UIAction::actionWithHandler:` retains the block, which
-            // owns the `Rc` for the action's life.
-            let action = unsafe {
-                objc2_ui_kit::UIAction::actionWithHandler(
-                    block2::RcBlock::into_raw(RcBlock::new(
-                        move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| {
-                            on_back();
-                        },
-                    )),
-                    mtm,
-                )
-            };
-            item.setBackAction(Some(&action));
+            item.setBackAction(Some(&handler_action(mtm, move || on_back())));
         }
         if page.bottom.is_empty() {
             self.setToolbarItems(None);
-            if let Some(nav) = self.navigationController() {
-                nav.setToolbarHidden_animated(true, false);
-            }
         } else {
             self.setToolbarItems(Some(&NSArray::from_retained_slice(&page.bottom)));
-            if let Some(nav) = self.navigationController() {
-                nav.setToolbarHidden_animated(false, false);
-            }
+        }
+        self.ivars().toolbar_hidden.set(page.bottom.is_empty());
+        self.ivars().bar_hidden.set(page.hidden);
+        if let Some(nav) = self.topmost_navigation_controller() {
+            nav.setToolbarHidden_animated(page.bottom.is_empty(), false);
+            nav.setNavigationBarHidden_animated(page.hidden, false);
         }
         self.ivars().search_updater.replace(None);
         self.ivars().search_controller.replace(None);
@@ -262,8 +263,28 @@ impl NavContentController {
         } else {
             item.setSearchController(None);
         }
-        if let Some(nav) = self.navigationController() {
-            nav.setNavigationBarHidden_animated(page.hidden, false);
+    }
+
+    /// The stack's navigation controller while this page is its top —
+    /// the only state in which a page may write the shared bars. A page
+    /// further down records its intent and applies it when it shows
+    /// again.
+    fn topmost_navigation_controller(&self) -> Option<Retained<UINavigationController>> {
+        let nav = self.navigationController()?;
+        nav.topViewController()
+            .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), &raw const **self))
+            .then_some(nav)
+    }
+
+    /// Records `hidden` as this page's navigation-bar intent and, when
+    /// the page is topmost, writes the stack's bar — the reactive
+    /// counterpart of [`set_page`](Self::set_page)'s `NavPage::hidden`
+    /// flag. A buried page's intent waits for the transition that shows
+    /// it.
+    pub fn set_bar_hidden(&self, hidden: bool, animated: bool) {
+        self.ivars().bar_hidden.set(hidden);
+        if let Some(nav) = self.topmost_navigation_controller() {
+            nav.setNavigationBarHidden_animated(hidden, animated);
         }
     }
 
@@ -581,33 +602,7 @@ pub fn bar_item(
     }
     let image = symbol
         .and_then(|symbol| objc2_ui_kit::UIImage::systemImageNamed(&NSString::from_str(symbol)));
-    // SAFETY: `initWithImage:style:target:action:` is a `UIBarButtonItem`
-    // designated initializer; nil target/action are valid.
-    let item = unsafe {
-        UIBarButtonItem::initWithImage_style_target_action(
-            mtm.alloc(),
-            image.as_deref(),
-            UIBarButtonItemStyle::Plain,
-            None,
-            None,
-        )
-    };
-    if let Some(action) = action {
-        // SAFETY: `UIAction::actionWithHandler:` retains the block, which
-        // owns the `Rc` for the item's life.
-        let ui_action = unsafe {
-            objc2_ui_kit::UIAction::actionWithHandler(
-                block2::RcBlock::into_raw(RcBlock::new(
-                    move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| {
-                        action();
-                    },
-                )),
-                mtm,
-            )
-        };
-        item.setPrimaryAction(Some(&ui_action));
-    }
-    item
+    image_bar_item(mtm, image.as_deref(), action)
 }
 
 /// A standalone `UINavigationBar` — the in-content bar
@@ -636,6 +631,22 @@ define_class!(
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UINavigationBar`.
     unsafe impl NSObjectProtocol for NavBar {}
+
+    // SAFETY: `positionForBar:` carries `UIBarPositioningDelegate`'s
+    // signature. The in-content bar docks clear of the status-bar band
+    // while `TopAttached` extends its background upward to cover it —
+    // §7.1's chrome split for a bar the host itself does not size.
+    unsafe impl UIBarPositioningDelegate for NavBar {
+        // SAFETY: see the module safety note.
+        #[unsafe(method(positionForBar:))]
+        fn position_for_bar(&self, _bar: &ProtocolObject<dyn UIBarPositioning>) -> UIBarPosition {
+            UIBarPosition::TopAttached
+        }
+    }
+
+    // SAFETY: `UINavigationBarDelegate` asks nothing of a `UINavigationBar`
+    // beyond the `UIBarPositioningDelegate` above.
+    unsafe impl UINavigationBarDelegate for NavBar {}
 );
 
 impl NavBar {
@@ -650,6 +661,10 @@ impl NavBar {
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
         let items = NSArray::from_retained_slice(&[this.ivars().item.clone()]);
         this.setItems(Some(&items));
+        // The bar answers `positionForBar:` as its own delegate — an
+        // assign reference — so its background extends upward over the
+        // status-bar band.
+        this.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         this
     }
 
@@ -675,21 +690,27 @@ impl NavBar {
         item.setHidesBackButton(page.hides_back);
         if let Some(on_back) = &page.on_back {
             let on_back = on_back.clone();
-            // SAFETY: `UIAction::actionWithHandler:` retains the block, which
-            // owns the `Rc` for the action's life.
-            let action = unsafe {
-                objc2_ui_kit::UIAction::actionWithHandler(
-                    block2::RcBlock::into_raw(RcBlock::new(
-                        move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| {
-                            on_back();
-                        },
-                    )),
-                    self.mtm(),
-                )
-            };
-            item.setBackAction(Some(&action));
+            item.setBackAction(Some(&handler_action(self.mtm(), move || on_back())));
         }
     }
+}
+
+/// Applies `controller`'s recorded bar intents to `nav` — the page
+/// records them in `set_page`, possibly before the stack owned it. A
+/// controller the stack does not own gets the defaults: toolbar hidden,
+/// navigation bar shown.
+fn apply_bar_intent(nav: &NavigationController, controller: &UIViewController, animated: bool) {
+    let (toolbar_hides, bar_hides) =
+        controller
+            .downcast_ref::<NavContentController>()
+            .map_or((true, false), |page| {
+                (
+                    page.ivars().toolbar_hidden.get(),
+                    page.ivars().bar_hidden.get(),
+                )
+            });
+    nav.setToolbarHidden_animated(toolbar_hides, animated);
+    nav.setNavigationBarHidden_animated(bar_hides, animated);
 }
 
 /// The navigation stack's model: the pages and the current pop state.
@@ -747,21 +768,20 @@ pub fn image_bar_item(
         )
     };
     if let Some(action) = action {
-        // SAFETY: `UIAction::actionWithHandler:` retains the block, which
-        // owns the `Rc` for the item's life.
-        let ui_action = unsafe {
-            objc2_ui_kit::UIAction::actionWithHandler(
-                block2::RcBlock::into_raw(RcBlock::new(
-                    move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| {
-                        action();
-                    },
-                )),
-                mtm,
-            )
-        };
-        item.setPrimaryAction(Some(&ui_action));
+        item.setPrimaryAction(Some(&handler_action(mtm, move || action())));
     }
     item
+}
+
+/// A `UIAction` that runs `handler`.
+fn handler_action(
+    mtm: MainThreadMarker,
+    handler: impl Fn() + 'static,
+) -> Retained<objc2_ui_kit::UIAction> {
+    let block = RcBlock::new(move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| handler());
+    // SAFETY: `actionWithHandler:` copies the block, and the copy owns
+    // `handler` for the action's life; `block` is released on return.
+    unsafe { objc2_ui_kit::UIAction::actionWithHandler(RcBlock::as_ptr(&block), mtm) }
 }
 
 /// The navigation stack's model: the pages and the current pop state.
@@ -831,9 +851,50 @@ define_class!(
         }
     }
 
-    // SAFETY: `navigationController:didShowViewController:animated:` carries
-    // `UINavigationControllerDelegate`'s signature.
+    // SAFETY: `navigationController:willShowViewController:animated:` and
+    // `navigationController:didShowViewController:animated:` carry
+    // `UINavigationControllerDelegate`'s signatures.
     unsafe impl UINavigationControllerDelegate for NavigationController {
+        // SAFETY: see the module safety note. The incoming page's bar
+        // intent applies as the page starts showing — before the
+        // transition — so each bar's hide or show rides the same
+        // animation.
+        #[unsafe(method(navigationController:willShowViewController:animated:))]
+        fn navigation_controller_will_show_view_controller_animated(
+            &self,
+            _navigation_controller: &UINavigationController,
+            view_controller: &UIViewController,
+            animated: bool,
+        ) {
+            apply_bar_intent(self, view_controller, animated);
+            // A cancelled interactive transition leaves the incoming
+            // page's intent applied while the outgoing page stays
+            // topmost — when the coordinator reports the cancellation,
+            // re-apply the staying page's intent.
+            if let Some(coordinator) = self.transitionCoordinator()
+                && coordinator.isInteractive()
+            {
+                let nav = self.retain();
+                let block = RcBlock::new(
+                    move |context: core::ptr::NonNull<
+                        ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>,
+                    >| {
+                        // SAFETY: the transition context outlives the call.
+                        let context = unsafe { context.as_ref() };
+                        // SAFETY: `UIKit` exports the key as a constant
+                        // for the process's lifetime.
+                        let staying_key = unsafe { UITransitionContextFromViewControllerKey };
+                        if context.isCancelled()
+                            && let Some(staying) = context.viewControllerForKey(staying_key)
+                        {
+                            apply_bar_intent(&nav, &staying, false);
+                        }
+                    },
+                );
+                coordinator.notifyWhenInteractionChangesUsingBlock(&block);
+            }
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(navigationController:didShowViewController:animated:))]
         fn navigation_controller_did_show_view_controller_animated(
@@ -880,6 +941,8 @@ impl NavigationController {
         if let Some(gesture) = this.interactivePopGestureRecognizer() {
             gesture.setDelegate(Some(ProtocolObject::from_ref(&*this)));
         }
+        // The root page's intent was recorded before the stack owned it.
+        apply_bar_intent(&this, root, false);
         this
     }
 
@@ -893,13 +956,6 @@ impl NavigationController {
     /// settles — model and native pops alike.
     pub fn set_show_handler(&self, handler: impl Fn(usize) + 'static) {
         self.ivars().show.replace(Some(Rc::new(handler)));
-    }
-
-    /// Whether the navigation bar is hidden, optionally animating the
-    /// change. The top page's `hidden` flag applies through
-    /// [`NavContentController::set_page`]; this is the direct override.
-    pub fn set_bar_hidden(&self, hidden: bool, animated: bool) {
-        self.setNavigationBarHidden_animated(hidden, animated);
     }
 
     /// `navigationBar.prefersLargeTitles`: the gate each page's

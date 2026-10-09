@@ -10,14 +10,14 @@ use std::{
 use nami::Signal;
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{
-    CompositionEvent, Document, Event, EventTarget, HtmlCanvasElement, HtmlInputElement,
-    KeyboardEvent, PointerEvent, WheelEvent, Window as BrowserHostWindow,
+    CompositionEvent, Document, Event, EventTarget, HtmlCanvasElement, HtmlElement,
+    HtmlInputElement, KeyboardEvent, PointerEvent, WheelEvent, Window as BrowserHostWindow,
 };
 
 use super::{
     CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
-    PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-    TextInputState, WindowState, WuiWindow, select_hydrolysis_surface_format,
+    PointerButton, PointerKind, PresentationSurface as _, SurfaceError, SurfaceFrame,
+    SurfaceProvider, TextInputPurpose, TextInputState, WindowState, WuiWindow,
 };
 
 #[derive(Clone, Copy)]
@@ -28,9 +28,6 @@ struct PendingResize {
 }
 
 pub struct BrowserSurface {
-    instance: wgpu::Instance,
-    /// Identity of this device creation chain for the engine pool.
-    context_id: u64,
     surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -38,6 +35,10 @@ pub struct BrowserSurface {
     /// Reports this device lost; taken when the device was opened.
     device_loss: crate::platform::DeviceLoss,
     config: wgpu::SurfaceConfiguration,
+    /// The encoding of the negotiated canvas colour space, which the present
+    /// pass writes: a WebGPU canvas interprets its values in its configured
+    /// `colorSpace`, so the format alone does not say what to write.
+    output_color: cherenkov_gpu::interop::OutputColor,
 }
 
 impl core::fmt::Debug for BrowserSurface {
@@ -86,34 +87,59 @@ impl BrowserSurface {
         };
         let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
 
+        // The canvas's (format, colour space) pair comes from the engine's
+        // output negotiation, so the configured `colorSpace` and the encoding
+        // the present pass writes always agree. The page asks for SDR: an
+        // extended-range canvas puts Apple displays into EDR mode, which dims
+        // every screenshot of the page and draws more power, and no
+        // Hydrolysis host presents HDR. Display P3 keeps the wide gamut where
+        // the browser offers it; sRGB is the space every canvas offers.
         let caps = surface.get_capabilities(&adapter);
+        let selection = [wgpu::SurfaceColorSpace::DisplayP3, wgpu::SurfaceColorSpace::Srgb]
+            .into_iter()
+            .find_map(|color_space| {
+                cherenkov_gpu::interop::select_output(
+                    &caps,
+                    wgpu::Backend::BrowserWebGpu,
+                    cherenkov_gpu::interop::OutputRequest {
+                        transparent: false,
+                        color_space: Some(color_space),
+                        sync: cherenkov_gpu::DisplaySync::Synchronized,
+                    },
+                )
+                .ok()
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "hydrolysis web surface: the canvas offers neither Display P3 nor sRGB output: {caps:?}"
+                )
+            });
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: select_hydrolysis_surface_format(&caps),
-            color_space: wgpu::SurfaceColorSpace::Auto,
+            format: selection.format,
+            color_space: selection.color_space,
             width: width.max(1),
             height: height.max(1),
-            present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode: caps.alpha_modes[0],
+            present_mode: selection.present_mode,
+            alpha_mode: selection.alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
 
         Self {
-            instance,
-            context_id,
             surface,
             adapter,
             device,
             queue,
             device_loss,
             config,
+            output_color: selection.output_color(),
         }
     }
 }
 
-impl SurfaceProvider for BrowserSurface {
+impl crate::platform::PresentationSurface for BrowserSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         &self.adapter
     }
@@ -130,6 +156,18 @@ impl SurfaceProvider for BrowserSurface {
         &self.device_loss
     }
 
+    fn size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.config.width = width.max(1);
+        self.config.height = height.max(1);
+        self.surface.configure(&self.device, &self.config);
+    }
+}
+
+impl SurfaceProvider for BrowserSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         let output = super::acquire_surface_texture(&self.surface)?;
         let view = output
@@ -151,31 +189,16 @@ impl SurfaceProvider for BrowserSurface {
         }
     }
 
-    fn size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
-    }
-
     fn format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
 
-    fn resize(&mut self, width: u32, height: u32) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
+    fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+        self.output_color
     }
 
-    fn gpu_context_id(&self) -> u64 {
-        self.context_id
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        cherenkov_gpu::interop::SharedDevice {
-            instance: self.instance.clone(),
-            adapter: self.adapter.clone(),
-            device: self.device.clone(),
-            queue: self.queue.clone(),
-        }
+    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+        cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
     }
 }
 
@@ -195,6 +218,13 @@ pub struct BrowserWindow {
     offscreen: Rc<Cell<bool>>,
     scale_factor: Rc<Cell<f64>>,
     pending_resize: Rc<Cell<Option<PendingResize>>>,
+    /// The page's safe area, which the window's `WindowSafeArea` installs;
+    /// re-read from the probe on every resize.
+    safe_area: nami::Binding<waterui_layout::padding::EdgeInsets>,
+    /// The runner's `requestAnimationFrame` coalescer — handed out as the
+    /// frame-signals wake so a request raised outside a frame schedules
+    /// the one it needs.
+    schedule_frame: Rc<dyn Fn()>,
     current_cursor_style: CursorStyle,
     /// Held for its lifetime: the observer keeps reporting only while
     /// both halves are alive.
@@ -235,7 +265,10 @@ impl BrowserWindow {
             .document()
             .expect("hydrolysis web platform: document unavailable");
         let canvas = find_or_create_canvas(&document);
+        prepare_canvas(&canvas);
         let ime_input = find_or_create_ime_input(&document);
+        let safe_area_probe = create_safe_area_probe(&document);
+        let safe_area = nami::binding(read_safe_area(&browser_window, &safe_area_probe));
         let pending_events = Rc::new(RefCell::new(Vec::new()));
         let redraw_requested = Rc::new(Cell::new(false));
         let scale_factor = Rc::new(Cell::new(browser_window.device_pixel_ratio()));
@@ -265,6 +298,18 @@ impl BrowserWindow {
         // A hidden page's rAF callback never fires, so the wake also
         // pulls the occlusion report into the pump synchronously — the
         // hide must be learned here, or the pump could never log it.
+        // A rotation or a toolbar showing or hiding moves the insets; the
+        // binding re-lays the window out only when they actually changed.
+        listeners.push(add_event_listener(browser_window.as_ref(), "resize", {
+            let browser_window = browser_window.clone();
+            let safe_area = safe_area.clone();
+            move |_event| {
+                let insets = read_safe_area(&browser_window, &safe_area_probe);
+                if insets != safe_area.snapshot() {
+                    safe_area.set(insets);
+                }
+            }
+        }));
         listeners.push(add_event_listener(document.as_ref(), "visibilitychange", {
             let occlusion_wake = occlusion_wake.clone();
             move |_event| occlusion_wake()
@@ -305,6 +350,8 @@ impl BrowserWindow {
             offscreen,
             scale_factor,
             pending_resize,
+            safe_area,
+            schedule_frame,
             current_cursor_style: CursorStyle::Arrow,
             _intersection_observer: intersection_observer,
             _listeners: listeners,
@@ -322,6 +369,12 @@ impl BrowserWindow {
         self.canvas
             .dispatch_event(&event)
             .expect("hydrolysis web platform: failed to dispatch the first-frame event");
+    }
+
+    /// The page's safe area: the binding the runner installs as the
+    /// window's `WindowSafeArea`.
+    pub fn safe_area(&self) -> nami::Binding<waterui_layout::padding::EdgeInsets> {
+        self.safe_area.clone()
     }
 
     /// Consumes the pending redraw request, reporting whether one was set.
@@ -399,6 +452,14 @@ impl PlatformWindow for BrowserWindow {
         self.redraw_requested.set(true);
     }
 
+    /// The page's `requestAnimationFrame` coalescer — already what every
+    /// browser listener and executor wakeup calls for a frame; a repeated
+    /// request while one is pending is merged by the runner's
+    /// `raf_pending` flag, so frame counts are unchanged.
+    fn frame_wake(&self) -> Rc<dyn Fn()> {
+        Rc::clone(&self.schedule_frame)
+    }
+
     fn scale_factor(&self) -> f64 {
         self.scale_factor.get()
     }
@@ -443,7 +504,8 @@ impl PlatformWindow for BrowserWindow {
 }
 
 impl GpuSurfaceWindow for BrowserWindow {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider {
+    type Presentation = BrowserSurface;
+    fn surface(&mut self) -> &mut BrowserSurface {
         &mut self.surface
     }
 }
@@ -461,23 +523,110 @@ fn find_or_create_canvas(document: &Document) -> HtmlCanvasElement {
         .dyn_into::<HtmlCanvasElement>()
         .expect("hydrolysis web platform: created node is not a canvas");
     canvas.set_id("waterui-canvas");
-    canvas.set_tab_index(0);
     let style = canvas.style();
-    style
-        .set_property("display", "block")
-        .expect("hydrolysis web platform: failed to style canvas");
-    style
-        .set_property("width", "100vw")
-        .expect("hydrolysis web platform: failed to style canvas width");
-    style
-        .set_property("height", "100vh")
-        .expect("hydrolysis web platform: failed to style canvas height");
+    // The layout viewport exactly: `100vh` is taller than the visible area on
+    // mobile browsers, which makes the page itself pannable under the canvas.
+    for (property, value) in [
+        ("display", "block"),
+        ("position", "fixed"),
+        ("inset", "0"),
+        ("width", "100%"),
+        ("height", "100%"),
+    ] {
+        style
+            .set_property(property, value)
+            .expect("hydrolysis web platform: failed to style canvas");
+    }
     document
         .body()
         .expect("hydrolysis web platform: document body unavailable")
         .append_child(&canvas)
         .expect("hydrolysis web platform: failed to append canvas to body");
     canvas
+}
+
+/// Makes the page's canvas the runtime's input surface, whether the page
+/// supplied it or the runtime created it.
+///
+/// - `touch-action: none`: Hydrolysis recognizes every gesture itself, so
+///   the browser must never claim a touch for panning or zooming; when it
+///   does, it cancels the pointer (`pointercancel` instead of `pointerup`)
+///   and a tap never reaches the view under it.
+/// - `tabindex` 0: the canvas receives the keys, which a focusable element
+///   alone can do.
+/// - `outline: none`: Hydrolysis draws focus itself.
+fn prepare_canvas(canvas: &HtmlCanvasElement) {
+    canvas.set_tab_index(0);
+    let style = canvas.style();
+    for (property, value) in [("touch-action", "none"), ("outline", "none")] {
+        style
+            .set_property(property, value)
+            .expect("hydrolysis web platform: failed to style the canvas");
+    }
+}
+
+/// A hidden element whose padding resolves the page's
+/// `env(safe-area-inset-*)`. CSS environment variables have no script API,
+/// so the probe's computed padding is how the host reads the safe area.
+fn create_safe_area_probe(document: &Document) -> HtmlElement {
+    let probe = document
+        .create_element("div")
+        .expect("hydrolysis web platform: failed to create the safe-area probe")
+        .dyn_into::<HtmlElement>()
+        .expect("hydrolysis web platform: created node is not an HTML element");
+    probe
+        .set_attribute("aria-hidden", "true")
+        .expect("hydrolysis web platform: failed to hide the safe-area probe");
+    let style = probe.style();
+    for (property, value) in [
+        ("position", "fixed"),
+        ("inset", "0"),
+        ("visibility", "hidden"),
+        ("pointer-events", "none"),
+        (
+            "padding",
+            "env(safe-area-inset-top) env(safe-area-inset-right) \
+             env(safe-area-inset-bottom) env(safe-area-inset-left)",
+        ),
+    ] {
+        style
+            .set_property(property, value)
+            .expect("hydrolysis web platform: failed to style the safe-area probe");
+    }
+    document
+        .body()
+        .expect("hydrolysis web platform: document body unavailable")
+        .append_child(&probe)
+        .expect("hydrolysis web platform: failed to append the safe-area probe");
+    probe
+}
+
+/// The page's safe area in CSS pixels, which are the window's logical units.
+fn read_safe_area(
+    browser_window: &BrowserHostWindow,
+    probe: &HtmlElement,
+) -> waterui_layout::padding::EdgeInsets {
+    let style = browser_window
+        .get_computed_style(probe)
+        .expect("hydrolysis web platform: failed to compute the safe-area probe style")
+        .expect("hydrolysis web platform: the safe-area probe has no computed style");
+    let inset = |property: &str| -> f32 {
+        let value = style
+            .get_property_value(property)
+            .expect("hydrolysis web platform: failed to read a safe-area inset");
+        value
+            .strip_suffix("px")
+            .and_then(|pixels| pixels.parse::<f32>().ok())
+            .unwrap_or_else(|| {
+                panic!("hydrolysis web platform: safe-area {property} resolved to {value:?}, not a pixel length")
+            })
+    };
+    waterui_layout::padding::EdgeInsets::new(
+        inset("padding-top"),
+        inset("padding-bottom"),
+        inset("padding-left"),
+        inset("padding-right"),
+    )
 }
 
 fn find_or_create_ime_input(document: &Document) -> HtmlInputElement {
@@ -678,6 +827,7 @@ fn register_listeners(
 
     {
         let canvas = canvas.clone();
+        let ime_input = ime_input.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
@@ -689,6 +839,17 @@ fn register_listeners(
                     .dyn_into::<PointerEvent>()
                     .expect("hydrolysis web platform: pointerdown event had unexpected type");
                 event.prevent_default();
+                // Preventing the default also prevents the press from focusing
+                // the canvas, which receives the keys. Text editing owns the
+                // hidden input while it holds focus; anything else returns
+                // focus to the canvas.
+                let editing = canvas
+                    .owner_document()
+                    .and_then(|document| document.active_element())
+                    .is_some_and(|active| active == *ime_input.as_ref());
+                if !editing {
+                    let _ = canvas.focus();
+                }
                 let (x, y) = event_position(
                     &canvas,
                     f64::from(event.client_x()),
@@ -806,8 +967,10 @@ fn register_listeners(
             pending_events.borrow_mut().push(InputEvent::Scroll {
                 x,
                 y,
-                dx: crate::num_cast::f64_as_f32(event.delta_x()),
-                dy: crate::num_cast::f64_as_f32(event.delta_y()),
+                // DOM WheelEvent deltas are positive right/down; Hydrolysis input
+                // takes winit's opposite sign.
+                dx: -crate::num_cast::f64_as_f32(event.delta_x()),
+                dy: -crate::num_cast::f64_as_f32(event.delta_y()),
                 is_line_delta: event.delta_mode() != WheelEvent::DOM_DELTA_PIXEL,
             });
             redraw_requested.set(true);

@@ -9,8 +9,8 @@ use alloc::vec::Vec;
 use cocoa_ui::menu::Command as KitCommand;
 #[cfg(feature = "context_menu")]
 use cocoa_ui::menu::MenuTreeNode;
-#[cfg(feature = "menu")]
-use waterui::animation::Animation;
+#[cfg(all(target_os = "macos", any(feature = "menu", feature = "context_menu")))]
+use waterui::component::menu::CloseWindowChord;
 use waterui::component::menu::{CommandRole, ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui::reactive::Signal;
 #[cfg(feature = "menu")]
@@ -32,36 +32,6 @@ mod platform {
 /// control characters interpolation inserts for layout stripped.
 pub(super) fn item_title(styled: &StyledStr) -> String {
     cocoa_ui::text::strip_bidi_controls(styled.to_plain().as_str())
-}
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-#[cfg(feature = "menu")]
-pub(super) fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
 }
 
 /// Installs one watcher per live item signal — the command and submenu
@@ -104,7 +74,7 @@ pub(super) fn collect_item_watchers(
                 })));
                 collect_item_watchers(&submenu.items.snapshot(), resync, watchers);
             }
-            ResolvedMenuItem::Divider => {}
+            ResolvedMenuItem::Divider | ResolvedMenuItem::Quit | ResolvedMenuItem::CloseWindow => {}
         }
     }
 }
@@ -122,7 +92,7 @@ fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifiers)
     .into_iter()
     .filter(|(held, _)| *held)
     .fold(KeyModifiers::empty(), |flags, (_, native)| flags | native);
-    (String::from(shortcut.key.as_str()), modifiers)
+    (crate::menus::key_equivalent_for(&shortcut.key), modifiers)
 }
 
 /// A `ResolvedCommand` as a kit `Command` — every presentation field
@@ -148,24 +118,36 @@ fn kit_command(command: &ResolvedCommand) -> KitCommand {
 }
 
 /// A `ResolvedMenuItem` list as a kit menu tree — commands, separators,
-/// nested menus — the input both platform menu builders take.
+/// nested menus — the input both platform menu builders take. A declared
+/// Quit or Close Window is the standard item on macOS and is omitted on iOS,
+/// which has no application quit and whose windows the system owns.
 #[cfg(feature = "context_menu")]
 pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<MenuTreeNode> {
-    items
-        .iter()
-        .map(|item| match item {
-            ResolvedMenuItem::Divider => MenuTreeNode::Divider,
+    let mut nodes = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            ResolvedMenuItem::Divider => nodes.push(MenuTreeNode::Divider),
             ResolvedMenuItem::Command(command) => {
                 let action = command.action.clone();
                 let env = env.clone();
-                MenuTreeNode::Command(
+                nodes.push(MenuTreeNode::Command(
                     kit_command(command),
                     Rc::new(move || {
                         action.call(&env);
                     }),
-                )
+                ));
             }
-            ResolvedMenuItem::Menu(submenu) => MenuTreeNode::Submenu(
+            ResolvedMenuItem::Quit => {
+                #[cfg(target_os = "macos")]
+                nodes.push(crate::menus::standard_quit_node());
+            }
+            ResolvedMenuItem::CloseWindow => {
+                #[cfg(target_os = "macos")]
+                nodes.push(crate::menus::standard_close_window_node(
+                    CloseWindowChord::of(env).as_ref(),
+                ));
+            }
+            ResolvedMenuItem::Menu(submenu) => nodes.push(MenuTreeNode::Submenu(
                 KitCommand {
                     label: item_title(&submenu.label.content.snapshot()),
                     symbol: submenu
@@ -178,9 +160,10 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
                     ..KitCommand::default()
                 },
                 tree_nodes(&submenu.items.snapshot(), env),
-            ),
-        })
-        .collect()
+            )),
+        }
+    }
+    nodes
 }
 
 /// `wuiApplyCommandPresentation`: title, key equivalent, enabled, checked
@@ -229,6 +212,13 @@ pub(super) fn append_items(
             ResolvedMenuItem::Command(command) => {
                 menu.add_item(command_item(mtm, command, env));
             }
+            ResolvedMenuItem::Quit => menu.add_item(crate::menus::standard_quit_item(mtm)),
+            ResolvedMenuItem::CloseWindow => {
+                menu.add_item(crate::menus::standard_close_window_item(
+                    mtm,
+                    CloseWindowChord::of(env).as_ref(),
+                ));
+            }
             ResolvedMenuItem::Menu(submenu) => {
                 let title = item_title(&submenu.label.content.snapshot());
                 let nested = platform::Menu::new(mtm, &title);
@@ -249,6 +239,7 @@ pub(super) fn append_items(
 #[cfg(all(target_os = "ios", feature = "menu"))]
 pub(super) fn build_menu(
     mtm: cocoa_ui::MainThreadMarker,
+    key_commands: &cocoa_ui::uikit::KeyCommands,
     title: &str,
     icon: Option<&str>,
     items: &[ResolvedMenuItem],
@@ -263,7 +254,7 @@ pub(super) fn build_menu(
         groups.push(&[]);
     }
     let children: Vec<platform::MenuElement> = if flat {
-        menu_elements(groups[0], env, mtm)
+        menu_elements(groups[0], env, mtm, key_commands)
     } else {
         groups
             .iter()
@@ -273,7 +264,7 @@ pub(super) fn build_menu(
                     "",
                     None,
                     true,
-                    &menu_elements(group, env, mtm),
+                    &menu_elements(group, env, mtm, key_commands),
                 ))
             })
             .collect()
@@ -281,38 +272,40 @@ pub(super) fn build_menu(
     platform::Menu::new(mtm, title, icon, false, &children)
 }
 
-/// `buildUIKitMenuElements`: one element per item — `UIAction`s for
-/// commands carrying title, subtitle, icon, disabled/destructive
-/// attributes, on-state and handler; nested menus recurse.
+/// `buildUIKitMenuElements`: one element per item — `UIAction`s, or
+/// `UIKeyCommand`s when the command declares a shortcut, carrying title,
+/// subtitle, icon, disabled/destructive attributes, on-state and handler;
+/// nested menus recurse.
 #[cfg(all(target_os = "ios", feature = "menu"))]
 fn menu_elements(
     items: &[ResolvedMenuItem],
     env: &Environment,
     mtm: cocoa_ui::MainThreadMarker,
+    key_commands: &cocoa_ui::uikit::KeyCommands,
 ) -> Vec<platform::MenuElement> {
     items
         .iter()
         .filter_map(|item| match item {
-            ResolvedMenuItem::Divider => None,
+            // iOS has no application quit and the system owns every
+            // scene's window, so a declared Quit or Close Window is omitted.
+            ResolvedMenuItem::Divider | ResolvedMenuItem::Quit | ResolvedMenuItem::CloseWindow => {
+                None
+            }
             ResolvedMenuItem::Command(command) => {
                 let kit = kit_command(command);
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
-                    platform::MenuAction::new(mtm, &kit.label, move || {
+                    platform::MenuAction::command(mtm, key_commands, &kit, move || {
                         action.call(&env);
-                    })
-                    .with_subtitle(kit.subtitle.as_deref())
-                    .with_icon(kit.symbol.as_deref())
-                    .with_disabled(!kit.enabled)
-                    .with_destructive(kit.destructive)
-                    .with_selected(kit.selected),
+                    }),
                 ))
             }
             ResolvedMenuItem::Menu(submenu) => {
                 let title = item_title(&submenu.label.content.snapshot());
                 Some(platform::MenuElement::Submenu(build_menu(
                     mtm,
+                    key_commands,
                     &title,
                     submenu.icon.as_ref().map(|icon| icon.name.as_str()),
                     &submenu.items.snapshot(),
@@ -321,4 +314,41 @@ fn menu_elements(
             }
         })
         .collect()
+}
+#[cfg(all(test, target_os = "macos", feature = "context_menu"))]
+mod tests {
+    use alloc::vec;
+
+    use cocoa_ui::appkit::{KeyModifiers, MenuAction};
+    use cocoa_ui::menu::MenuTreeNode;
+    use waterui::component::menu::{CloseWindowChord, Command, Menu, ResolvedMenuItem, Shortcut};
+    use waterui::reactive::Computed;
+    use waterui_backend_core::Environment;
+
+    use super::tree_nodes;
+
+    /// ⌘W is not reserved: a command in the application's menu bar may
+    /// bind it — and the chord is decided once for the application, so a
+    /// context menu's Close Window row carries ⇧⌘W beside the bar's own
+    /// ⌘W command.
+    #[test]
+    fn a_command_binding_command_w_moves_the_close_window_item_to_shift_command_w() {
+        let menu_bar = Computed::constant(vec![Menu::new(
+            "File",
+            (Command::builder("Close Tab")
+                .action(|| {})
+                .shortcut(Shortcut::new('w').command()),),
+        )]);
+        let mut env = Environment::new();
+        env.insert(CloseWindowChord::new(&menu_bar, &env));
+        let nodes = tree_nodes(&[ResolvedMenuItem::CloseWindow], &env);
+        let [MenuTreeNode::Standard(command, MenuAction::CloseWindow)] = nodes.as_slice() else {
+            panic!("a declared Close Window emits the standard Close node: {nodes:?}");
+        };
+        assert_eq!(command.key_equivalent, "w");
+        assert_eq!(
+            command.modifiers,
+            KeyModifiers::COMMAND | KeyModifiers::SHIFT
+        );
+    }
 }

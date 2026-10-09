@@ -295,6 +295,99 @@ fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<hydrolysis_m3::Mat
     );
 }
 
+/// A text whose string changes after mount is measured again inside a
+/// retained sub-view, so the box layout gives it, and the place of the view
+/// beside it, follow the new string. Before waterui#1872 the sub-view kept the
+/// box the first string measured, and the flush wrapped the new string inside
+/// it, over the next view. Covered where a sub-view retains its tree: a
+/// navigation page and a split view's detail column, and a lazy row inside a
+/// page, which its own flush places after the page's layout at a rect the new
+/// string does not change.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (900, 600))]
+fn a_changed_text_is_measured_again_inside_a_retained_sub_view(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::id::SelfId;
+    use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView};
+
+    fn status_column(status: &Binding<String>) -> impl View {
+        vstack((
+            text(status.clone()).a11y_label("status").width(150.0),
+            text("next").a11y_label("next"),
+        ))
+    }
+
+    /// Mounts the status column in one kind of retained sub-view.
+    type Mount = fn(&Binding<String>) -> AnyView;
+
+    fn page(status: &Binding<String>) -> AnyView {
+        AnyView::new(NavigationStack::new(NavigationView::new(
+            "Status",
+            status_column(status),
+        )))
+    }
+
+    fn split_detail(status: &Binding<String>) -> AnyView {
+        let status = status.clone();
+        let selection = Binding::container(Some(1_i32));
+        AnyView::new(NavigationSplitView::new(
+            &selection,
+            || text("sidebar"),
+            move |_| NavigationView::new("Detail", status_column(&status)),
+        ))
+    }
+
+    fn lazy_row(status: &Binding<String>) -> AnyView {
+        let status = status.clone();
+        AnyView::new(NavigationStack::new(NavigationView::new(
+            "Status",
+            VStack::for_each(vec![SelfId::new(0_usize)], move |_| {
+                hstack((
+                    text(status.clone()).a11y_label("status"),
+                    spacer(),
+                    text("next").a11y_label("next"),
+                ))
+            }),
+        )))
+    }
+
+    let cases: [(&str, Mount); 3] = [
+        ("navigation page", page),
+        ("split detail", split_detail),
+        ("lazy row in a page", lazy_row),
+    ];
+    for (case, mount) in cases {
+        let mut settled = ui
+            .clone()
+            .mount_offscreen(move || mount(&Binding::container(LONG.to_owned())));
+        let expected = settled.query().label("status").single().bounds();
+
+        let status = Binding::container(String::from("Al"));
+        let mut app = ui.clone().mount_offscreen({
+            let status = status.clone();
+            move || mount(&status)
+        });
+        status.set(LONG.to_owned());
+        app.settle();
+
+        let measured = app.query().label("status").single().bounds();
+        let next = app.query().label("next").single().bounds();
+        assert!(
+            (measured.width() - expected.width()).abs() < 0.5
+                && (measured.height() - expected.height()).abs() < 0.5,
+            "{case}: the changed text keeps the box it measured before the change: \
+             {measured:?}, while the same string mounted directly measures {expected:?}"
+        );
+        let apart = next.y() >= measured.y() + measured.height() - 0.5
+            || next.x() >= measured.x() + measured.width() - 0.5;
+        assert!(
+            apart,
+            "{case}: the next view must be placed clear of the re-measured text: \
+             {next:?} vs {measured:?}"
+        );
+    }
+}
+
 /// Compressed buttons keep their labels on one line instead of folding them
 /// into paragraphs — the webview example's toolbar rendered "Back" as
 /// "Bac / k" before button labels defaulted to a single truncated line.
@@ -403,6 +496,58 @@ fn text_field_fills_wide_container(app: &mut OffscreenApp) {
     assert!(
         (field.width() - 600.0).abs() <= 1.0,
         "a field should fill its 600-wide container: {field:?}"
+    );
+}
+
+/// The webview address row from water-rs/waterui#2275. A text field is a
+/// `Horizontal` leaf that answers the proposal width, so typing a URL wider
+/// than the row leaves the field, the `Go` button beside it, and the row
+/// below at the frames the empty field gave them; the text scrolls inside
+/// the field. Its height is its intrinsic one-line height, which an empty
+/// field measures too, so nothing below moves either.
+fn wide_url_field_view() -> impl View {
+    let url = Binding::container(Str::from(""));
+    visual_shell(
+        vstack((
+            hstack((field("Address", &url), button("Go").action(|| {}))),
+            hstack((text("Allow redirects"), spacer(), text("100%"))),
+        ))
+        .spacing(12.0),
+    )
+}
+
+#[waterui::test(wide_url_field_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (360, 200))]
+fn wide_field_text_keeps_every_frame(app: &mut OffscreenApp) {
+    // `bounds()` reads the snapshot taken at query time, so each pass
+    // re-queries.
+    let frames = |app: &mut OffscreenApp| {
+        [
+            app.query().role(Role::TEXT_INPUT).label("Address").single(),
+            app.query().role(Role::BUTTON).label("Go").single(),
+            app.query()
+                .role(Role::LABEL)
+                .label("Allow redirects")
+                .single(),
+            app.query().role(Role::LABEL).label("100%").single(),
+        ]
+        .map(|element| element.bounds())
+    };
+    let empty = frames(app);
+
+    app.query()
+        .role(Role::TEXT_INPUT)
+        .label("Address")
+        .single()
+        .set_text(
+            app,
+            "https://example.com/a/path/long/enough/to/overflow/the/address/field",
+        );
+    app.settle();
+
+    assert_eq!(
+        frames(app),
+        empty,
+        "field, Go, and the row below must keep their frames once the field holds wide text"
     );
 }
 

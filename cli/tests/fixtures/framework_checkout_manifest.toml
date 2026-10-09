@@ -9,7 +9,12 @@ edition = "2024"
 
 [package.metadata.waterui]
 minimum-cli-version = "0.1.0"
+apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
 android-min-api-level = 31
+# The Gradle release every project this framework assembles runs — the
+# scaffolded `gradle-wrapper.properties` renders it and the in-tree
+# Hydrolysis host and bench wrappers pin it.
+android-gradle-version = "9.7.1"
 # The native Apple backend is the workspace member at this path inside the
 # framework tree; the CLI resolves `waterui-apple` from the framework's own
 # repository and revision on every channel.
@@ -23,12 +28,14 @@ android-backend-revision = "cccccccccccccccccccccccccccccccccccccccc"
 # `subdirectory` names the Gradle composite root inside the framework
 # checkout the selected revision materializes.
 hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
-scaffold-packages = ["hydrolysis-m3", "waterui-dew", "waterui-gtk", "waterui-winui"]
+scaffold-packages = ["hydrolysis-m3", "waterui-gtk", "waterui-winui"]
+
+[workspace]
+members = ["ffi", "backends/apple", "backends/hydrolysis"]
 
 [workspace.dependencies]
 hydrolysis = { version = "0.2.1", path = "backends/hydrolysis", default-features = false }
 hydrolysis-m3 = "0.2.1"
-waterui-dew = { git = "https://github.com/water-rs/dew", rev = "b64f6759a3ebe7ac621bad84be00fe431f978119", version = "0.2.1" }
 waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "3162043e618e759bea6d6e52ec75c6ee1273c080", version = "0.2.0" }
 waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", version = "0.1.0" }
 

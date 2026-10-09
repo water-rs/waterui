@@ -160,7 +160,11 @@ impl LayerMotion {
 
     /// Commits the motion on `layer`: the plain `from` set followed by the
     /// animated commit to the static value.
-    pub fn apply<B: ProjectiveLayers>(&self, surface: &Surface<B>, layer: &Layer) {
+    pub fn apply<B: cherenkov::Backend + ProjectiveLayers>(
+        &self,
+        surface: &Surface<B>,
+        layer: &Layer,
+    ) {
         match self {
             Self::Rotation {
                 base,

@@ -1,5 +1,6 @@
 package dev.waterui.hydrolysis
 
+import android.annotation.SuppressLint
 import android.graphics.Rect
 import android.os.Bundle
 import android.view.MotionEvent
@@ -12,6 +13,8 @@ import android.view.accessibility.AccessibilityNodeInfo.CollectionInfo
 import android.view.accessibility.AccessibilityNodeInfo.CollectionItemInfo
 import android.view.accessibility.AccessibilityNodeInfo.RangeInfo
 import android.view.accessibility.AccessibilityNodeProvider
+import androidx.autofill.HintConstants
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import org.json.JSONObject
 
 /**
@@ -24,8 +27,11 @@ import org.json.JSONObject
  * itself is pulled lazily the next time a service asks for a node, so a
  * publish costs a JNI read only when a service is actually watching.
  *
- * The JSON shape is accesskit's serde: `nodes` is `[id, node]` pairs, `tree`
- * names the root id, `focus` the keyboard-focused node. Each node carries
+ * The publish is a serde envelope: `{"update": <TreeUpdate>, "contentTypes":
+ * {"<id>": "<camelCase ContentType name>"}}` — a missing field is a
+ * mismatched host and an error, not a state to render around. Inside
+ * `update` the shape is accesskit's serde: `nodes` is `[id, node]` pairs,
+ * `tree` names the root id, `focus` the keyboard-focused node. Each node carries
  * `role` (camelCase), `actions`/`childActions`/`flags` (u32 bitmasks indexed
  * by accesskit enum ordinal) and `properties` (camelCase map: `children`,
  * `label`, `description`, `value`, `bounds` {x0,y0,x1,y1} logical units,
@@ -54,6 +60,8 @@ internal class HydrolysisAccessibilityProvider(
     private var childrenOf = HashMap<Long, List<Long>>()
     private var parentOf = HashMap<Long, Long>()
     private var rootId = INVALID_ID
+    /** The autofill hints each node declared — from the publish's `contentTypes` map. */
+    private var autofillHints = HashMap<Long, Array<String>>()
     /** Keyboard focus — the tree update's `focus` field. */
     private var keyboardFocusId = INVALID_ID
     /** Accessibility focus — owned by this provider, never sent to the session. */
@@ -81,7 +89,7 @@ internal class HydrolysisAccessibilityProvider(
             val mask = entry.optInt("mask")
             val id = entry.optLong("id", INVALID_ID)
             if (id == INVALID_ID || id > Int.MAX_VALUE) {
-                val event = AccessibilityEvent.obtain(type)
+                val event = AccessibilityEvent(type)
                 event.packageName = host.context.packageName
                 event.contentChangeTypes = mask
                 val parent = host.parent
@@ -105,10 +113,21 @@ internal class HydrolysisAccessibilityProvider(
     private fun ensureTree() {
         if (!dirty) return
         dirty = false
-        val sessionPtr = session?.nativePtr ?: return
-        val json = NativeBridge.nativeAccessibilityTree(sessionPtr) ?: return
-        val update = runCatching { JSONObject(json) }.getOrNull() ?: return
-        val array = update.optJSONArray("nodes") ?: return
+        val session = session ?: return
+        val json =
+            session.withNativePtr(NativeBridge::nativeAccessibilityTree.name) { ptr ->
+                NativeBridge.nativeAccessibilityTree(ptr)
+            } ?: return
+        // The envelope is a serde struct — a missing field is a mismatched
+        // host, and propagating the error beats serving a half-read tree.
+        val payload = JSONObject(json)
+        val update = payload.getJSONObject("update")
+        val array = update.getJSONArray("nodes")
+        val newHints = HashMap<Long, Array<String>>()
+        val contentTypes = payload.getJSONObject("contentTypes")
+        for (key in contentTypes.keys()) {
+            newHints[key.toLong()] = arrayOf(autofillHint(contentTypes.getString(key)))
+        }
         val newNodes = HashMap<Long, JSONObject>()
         val newChildren = HashMap<Long, List<Long>>()
         for (i in 0 until array.length()) {
@@ -131,6 +150,7 @@ internal class HydrolysisAccessibilityProvider(
         nodes = newNodes
         childrenOf = newChildren
         parentOf = newParents
+        autofillHints = newHints
         rootId = update.optJSONObject("tree")?.optLong("root", INVALID_ID) ?: INVALID_ID
         keyboardFocusId = update.optLong("focus", INVALID_ID)
         // A focus that pointed at a removed node drops cleanly.
@@ -142,7 +162,7 @@ internal class HydrolysisAccessibilityProvider(
     private fun sendNodeEvent(nodeId: Long, type: Int, contentChangeTypes: Int = 0) {
         if (nodeId == INVALID_ID || nodeId > Int.MAX_VALUE) return
         if (!accessibilityEnabled()) return
-        val event = AccessibilityEvent.obtain(type)
+        val event = AccessibilityEvent(type)
         event.setSource(host, nodeId.toInt())
         event.packageName = host.context.packageName
         event.contentChangeTypes = contentChangeTypes
@@ -183,10 +203,11 @@ internal class HydrolysisAccessibilityProvider(
 
     /** The served node under the view-space point, resolved on the native side. */
     private fun hitTest(x: Float, y: Float): Long {
-        val sessionPtr = session?.nativePtr ?: return INVALID_ID
-        if (sessionPtr == 0L) return INVALID_ID
+        val session = session ?: return INVALID_ID
         val density = host.resources.displayMetrics.density
-        return NativeBridge.nativeAccessibilityHitTest(sessionPtr, x / density, y / density)
+        return session.withNativePtr(NativeBridge::nativeAccessibilityHitTest.name) { ptr ->
+            NativeBridge.nativeAccessibilityHitTest(ptr, x / density, y / density)
+        }
     }
 
     private fun childIds(node: JSONObject): List<Long> {
@@ -237,7 +258,7 @@ internal class HydrolysisAccessibilityProvider(
      * accessibility tree is reached by traversal without a duplicate node.
      */
     private fun hostNodeInfo(): AccessibilityNodeInfo {
-        val info = AccessibilityNodeInfo.obtain()
+        val info = AccessibilityNodeInfo()
         // The framework uses this node as the host's own node, so it has to
         // carry the real view's bounds/flags — an empty bounds rect marks it
         // invisible and prunes the whole virtual subtree.
@@ -256,7 +277,11 @@ internal class HydrolysisAccessibilityProvider(
     }
 
     private fun nodeInfo(id: Long, node: JSONObject): AccessibilityNodeInfo {
-        val info = AccessibilityNodeInfo.obtain(host, id.toInt())
+        val info = AccessibilityNodeInfo(host, id.toInt())
+        // The floor-safe wrapper: `setChecked(int)` and `setBoundsInWindow` are
+        // API 36/34 members the platform calls here can't reach at minSdk; the
+        // compat lands them on the API and backfills below.
+        val compat = AccessibilityNodeInfoCompat.wrap(info)
         info.packageName = host.context.packageName
 
         val properties = props(node)
@@ -304,12 +329,9 @@ internal class HydrolysisAccessibilityProvider(
         if (properties != null && properties.optBoolean("selected", false)) {
             info.isSelected = true
         }
-        when (properties?.optString("toggled")) {
-            "true", "false" -> {
-                info.isCheckable = true
-                info.isChecked = properties.optString("toggled") == "true"
-            }
-            "mixed" -> info.isCheckable = true
+        checkedState(properties?.optString("toggled"))?.let { state ->
+            info.isCheckable = true
+            compat.setChecked(state)
         }
         if (properties != null && properties.has("expanded")) {
             info.stateDescription =
@@ -317,11 +339,17 @@ internal class HydrolysisAccessibilityProvider(
         }
         if (properties != null && properties.has("level")) info.isHeading = true
 
+        // `bounds` is host-view-local; boundsInWindow is the surviving field
+        // in the same coordinate space (boundsInParent is dead state services
+        // no longer read — API 36 keeps it only for the framework itself).
         val bounds = boundsRect(properties)
-        info.setBoundsInParent(bounds)
-        val screenBounds = Rect(bounds)
         val location = IntArray(2)
+        host.getLocationInWindow(location)
+        val windowBounds = Rect(bounds)
+        windowBounds.offset(location[0], location[1])
+        compat.setBoundsInWindow(windowBounds)
         host.getLocationOnScreen(location)
+        val screenBounds = Rect(bounds)
         screenBounds.offset(location[0], location[1])
         info.setBoundsInScreen(screenBounds)
 
@@ -330,7 +358,7 @@ internal class HydrolysisAccessibilityProvider(
             val max = properties?.optDouble("maxNumericValue", 1.0) ?: 1.0
             val current = properties?.optDouble("numericValue", 0.0) ?: 0.0
             info.rangeInfo =
-                RangeInfo.obtain(
+                RangeInfo(
                     RangeInfo.RANGE_TYPE_FLOAT,
                     min.toFloat(),
                     max.toFloat(),
@@ -341,14 +369,14 @@ internal class HydrolysisAccessibilityProvider(
         val size = properties?.optInt("sizeOfSet", -1) ?: -1
         if (role == "list" || role == "grid" || role == "table" || role == "listBox") {
             info.setCollectionInfo(
-                CollectionInfo.obtain(if (size > 0) size else -1, -1, false)
+                CollectionInfo(if (size > 0) size else -1, -1, false)
             )
         }
         if (role == "listItem" || role == "listBoxOption" || role == "option" ||
             role == "cell" || role == "row"
         ) {
             info.setCollectionItemInfo(
-                CollectionItemInfo.obtain(
+                CollectionItemInfo(
                     -1,
                     0,
                     if (position >= 0) position else -1,
@@ -374,24 +402,24 @@ internal class HydrolysisAccessibilityProvider(
 
     /** Maps the accesskit `actions` bitmask onto advertised Android actions. */
     private fun advertiseActions(info: AccessibilityNodeInfo, node: JSONObject) {
-        if (hasAction(node, AK_CLICK)) info.addAction(ACTION_CLICK)
-        if (hasAction(node, AK_FOCUS)) info.addAction(ACTION_FOCUS)
-        if (hasAction(node, AK_BLUR)) info.addAction(ACTION_CLEAR_FOCUS)
+        if (hasAction(node, AK_CLICK)) info.addAction(AccessibilityAction.ACTION_CLICK)
+        if (hasAction(node, AK_FOCUS)) info.addAction(AccessibilityAction.ACTION_FOCUS)
+        if (hasAction(node, AK_BLUR)) info.addAction(AccessibilityAction.ACTION_CLEAR_FOCUS)
         if (hasAction(node, AK_EXPAND)) info.addAction(AccessibilityAction.ACTION_EXPAND)
         if (hasAction(node, AK_COLLAPSE)) info.addAction(AccessibilityAction.ACTION_COLLAPSE)
         if (hasAction(node, AK_INCREMENT) || hasAction(node, AK_DECREMENT)) {
-            info.addAction(ACTION_SCROLL_FORWARD)
-            info.addAction(ACTION_SCROLL_BACKWARD)
+            info.addAction(AccessibilityAction.ACTION_SCROLL_FORWARD)
+            info.addAction(AccessibilityAction.ACTION_SCROLL_BACKWARD)
             if (hasAction(node, AK_SET_VALUE)) {
                 info.addAction(AccessibilityAction.ACTION_SET_PROGRESS)
             }
         }
         if (hasAction(node, AK_SCROLL_DOWN) || hasAction(node, AK_SCROLL_RIGHT)) {
-            info.addAction(ACTION_SCROLL_FORWARD)
+            info.addAction(AccessibilityAction.ACTION_SCROLL_FORWARD)
             info.isScrollable = true
         }
         if (hasAction(node, AK_SCROLL_UP) || hasAction(node, AK_SCROLL_LEFT)) {
-            info.addAction(ACTION_SCROLL_BACKWARD)
+            info.addAction(AccessibilityAction.ACTION_SCROLL_BACKWARD)
             info.isScrollable = true
         }
         if (hasAction(node, AK_SCROLL_UP)) {
@@ -419,12 +447,12 @@ internal class HydrolysisAccessibilityProvider(
             info.addAction(AccessibilityAction.ACTION_CONTEXT_CLICK)
         }
         if (isEditable(node) && hasAction(node, AK_SET_VALUE)) {
-            info.addAction(ACTION_SET_TEXT)
-            info.addAction(ACTION_NEXT_AT_MOVEMENT_GRANULARITY)
-            info.addAction(ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY)
+            info.addAction(AccessibilityAction.ACTION_SET_TEXT)
+            info.addAction(AccessibilityAction.ACTION_NEXT_AT_MOVEMENT_GRANULARITY)
+            info.addAction(AccessibilityAction.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY)
             // Selection is intrinsic to the editing session the text actions
             // run over — it needs no separate accesskit bit.
-            info.addAction(ACTION_SET_SELECTION)
+            info.addAction(AccessibilityAction.ACTION_SET_SELECTION)
             info.addAction(AccessibilityAction.ACTION_IME_ENTER)
         }
         // Named custom actions ride in as `customActions` entries; the id
@@ -439,8 +467,8 @@ internal class HydrolysisAccessibilityProvider(
             }
         }
         if (info.isFocusable || info.isClickable) {
-            info.addAction(ACTION_ACCESSIBILITY_FOCUS)
-            info.addAction(ACTION_CLEAR_ACCESSIBILITY_FOCUS)
+            info.addAction(AccessibilityAction.ACTION_ACCESSIBILITY_FOCUS)
+            info.addAction(AccessibilityAction.ACTION_CLEAR_ACCESSIBILITY_FOCUS)
         }
     }
 
@@ -448,6 +476,23 @@ internal class HydrolysisAccessibilityProvider(
      * `bounds` arrives in window logical units — the same space input events
      * leave through after `density` division. Services want physical px.
      */
+    /**
+     * Maps accesskit's `toggled` value onto the platform's tri-state checked
+     * contract, or `null` for a node that is not checkable. The
+     * `CHECKED_STATE_*` fields are API 36, above the floor, but they are
+     * compile-time ints copied into this class, and compat `setChecked`
+     * applies them on every API level (below 36 it maps them onto the boolean
+     * checked flag), so InlinedApi's runtime hazard does not exist here.
+     */
+    @SuppressLint("InlinedApi")
+    private fun checkedState(toggled: String?): Int? =
+        when (toggled) {
+            "true" -> AccessibilityNodeInfo.CHECKED_STATE_TRUE
+            "false" -> AccessibilityNodeInfo.CHECKED_STATE_FALSE
+            "mixed" -> AccessibilityNodeInfo.CHECKED_STATE_PARTIAL
+            else -> null
+        }
+
     private fun boundsRect(properties: JSONObject?): Rect {
         val bounds = properties?.optJSONObject("bounds") ?: return Rect()
         val density = host.resources.displayMetrics.density
@@ -477,12 +522,19 @@ internal class HydrolysisAccessibilityProvider(
                     id,
                     AccessibilityEvent.TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY,
                 )
+                // The accessibility-focus ring is the framework's drawable,
+                // painted by the view root's draw pass over the host — not
+                // by the session's GPU frame. The focus event only records
+                // the new bounds; the host's invalidate schedules the
+                // traversal that draws them.
+                host.invalidate()
                 return true
             }
             AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS -> {
                 if (a11yFocusId == id) {
                     a11yFocusId = INVALID_ID
                     sendNodeEvent(id, AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED)
+                    host.invalidate()
                 }
                 return true
             }
@@ -496,17 +548,19 @@ internal class HydrolysisAccessibilityProvider(
         }
 
         val mapped = mapAction(node, action, arguments) ?: return false
-        val sessionPtr = session?.nativePtr ?: return false
+        val session = session ?: return false
         val handled =
-            NativeBridge.nativeAccessibilityAction(
-                sessionPtr,
-                id,
-                mapped.index,
-                mapped.arg1,
-                mapped.arg2,
-                mapped.text.orEmpty(),
-                mapped.numeric ?: Double.NaN,
-            )
+            session.withNativePtr(NativeBridge::nativeAccessibilityAction.name) { ptr ->
+                NativeBridge.nativeAccessibilityAction(
+                    ptr,
+                    id,
+                    mapped.index,
+                    mapped.arg1,
+                    mapped.arg2,
+                    mapped.text.orEmpty(),
+                    mapped.numeric ?: Double.NaN,
+                )
+            }
         if (handled) {
             host.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         }
@@ -697,7 +751,7 @@ internal class HydrolysisAccessibilityProvider(
                         value = properties?.optString("value").orEmpty(),
                         sensitive = node.optString("role") == "passwordInput",
                         bounds = boundsRect(properties),
-                        autofillHints = autofillHints(node),
+                        autofillHints = autofillHints(id, node),
                     )
                 )
             }
@@ -736,36 +790,49 @@ internal class HydrolysisAccessibilityProvider(
         ensureTree()
         val node = nodes[id] ?: return false
         if (!isEditable(node) || !hasAction(node, AK_SET_VALUE)) return false
-        val sessionPtr = session?.nativePtr ?: return false
-        return NativeBridge.nativeAccessibilityAction(
-            sessionPtr,
-            id,
-            AK_SET_VALUE,
-            -1,
-            -1,
-            text,
-            Double.NaN,
-        )
+        val session = session ?: return false
+        return session.withNativePtr(NativeBridge::nativeAccessibilityAction.name) { ptr ->
+            NativeBridge.nativeAccessibilityAction(ptr, id, AK_SET_VALUE, -1, -1, text, Double.NaN)
+        }
     }
 
-    /** Autofill has no hints of its own here — infer from role and label. */
-    private fun autofillHints(node: JSONObject): Array<String> {
-        val label = props(node)?.optString("label").orEmpty().lowercase()
-        val role = node.optString("role")
-        val hint =
-            when {
-                role == "passwordInput" -> View.AUTOFILL_HINT_PASSWORD
-                "email" in label -> View.AUTOFILL_HINT_EMAIL_ADDRESS
-                "phone" in label -> View.AUTOFILL_HINT_PHONE
-                "username" in label || "user name" in label ->
-                    View.AUTOFILL_HINT_USERNAME
-                "name" in label -> View.AUTOFILL_HINT_NAME
-                "postal" in label || "zip" in label -> View.AUTOFILL_HINT_POSTAL_CODE
-                "card" in label -> View.AUTOFILL_HINT_CREDIT_CARD_NUMBER
-                else -> null
-            }
-        return hint?.let { arrayOf(it) } ?: emptyArray()
+    /**
+     * The node's autofill hints: the declared content type when the publish
+     * carries one; else a secure field's role still gives the password hint.
+     * The label never guesses — it is display text in the app's language,
+     * not a semantic.
+     */
+    private fun autofillHints(id: Long, node: JSONObject): Array<String> {
+        autofillHints[id]?.let { return it }
+        return if (node.optString("role") == "passwordInput") {
+            arrayOf(View.AUTOFILL_HINT_PASSWORD)
+        } else {
+            emptyArray()
+        }
     }
+
+    /**
+     * Maps a serialized `ContentType` (its camelCase serde name) onto the
+     * androidx.autofill hint. An unknown name is a mismatched host — the
+     * envelope is a serde struct the two sides share — so it throws rather
+     * than dropping the hint.
+     */
+    private fun autofillHint(contentType: String): String =
+        when (contentType) {
+            "username" -> HintConstants.AUTOFILL_HINT_USERNAME
+            "password" -> HintConstants.AUTOFILL_HINT_PASSWORD
+            "newPassword" -> HintConstants.AUTOFILL_HINT_NEW_PASSWORD
+            "emailAddress" -> HintConstants.AUTOFILL_HINT_EMAIL_ADDRESS
+            "phoneNumber" -> HintConstants.AUTOFILL_HINT_PHONE_NUMBER
+            "oneTimeCode" -> HintConstants.AUTOFILL_HINT_SMS_OTP
+            "personName" -> HintConstants.AUTOFILL_HINT_PERSON_NAME
+            "postalAddress" -> HintConstants.AUTOFILL_HINT_POSTAL_ADDRESS
+            "postalCode" -> HintConstants.AUTOFILL_HINT_POSTAL_CODE
+            "creditCardNumber" -> HintConstants.AUTOFILL_HINT_CREDIT_CARD_NUMBER
+            else -> throw IllegalArgumentException(
+                "hydrolysis: unknown accessibility content type \"$contentType\""
+            )
+        }
 
     private fun androidClassName(role: String): String =
         when (role) {
@@ -825,23 +892,6 @@ internal class HydrolysisAccessibilityProvider(
 
         /** Advertised ids for accesskit custom actions start here. */
         const val CUSTOM_ACTION_BASE = 0x01000000
-
-        const val ACTION_CLICK = AccessibilityNodeInfo.ACTION_CLICK
-        const val ACTION_FOCUS = AccessibilityNodeInfo.ACTION_FOCUS
-        const val ACTION_CLEAR_FOCUS = AccessibilityNodeInfo.ACTION_CLEAR_FOCUS
-        const val ACTION_SCROLL_FORWARD = AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-        const val ACTION_SCROLL_BACKWARD = AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-        const val ACTION_SET_TEXT = AccessibilityNodeInfo.ACTION_SET_TEXT
-        const val ACTION_SET_SELECTION = AccessibilityNodeInfo.ACTION_SET_SELECTION
-
-        const val ACTION_NEXT_AT_MOVEMENT_GRANULARITY =
-            AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY
-        const val ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY =
-            AccessibilityNodeInfo.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY
-        const val ACTION_ACCESSIBILITY_FOCUS =
-            AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS
-        const val ACTION_CLEAR_ACCESSIBILITY_FOCUS =
-            AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS
 
         val CLICKABLE_ROLES =
             setOf(

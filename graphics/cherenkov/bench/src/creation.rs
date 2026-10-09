@@ -196,7 +196,7 @@ fn measure_cycle(
     // First surface and first drawn frame: the upload, staging and
     // deferred-initialization delta.
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {})
         .map_err(|error| BenchError::Gpu(format!("cherenkov surface: {error}")))?;
     push("surface");
     surface.update(|tx| {

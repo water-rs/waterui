@@ -8,6 +8,8 @@ use futures_util::StreamExt;
 
 #[cfg(target_os = "macos")]
 use jiff::Timestamp;
+#[cfg(target_os = "macos")]
+use waterui_cli::device::Crash;
 
 use super::{TargetBackend, detect_sccache_path};
 use crate::shell::Shell;
@@ -25,8 +27,7 @@ use waterui_cli::{
         toolchain::AppleSdk,
     },
     build::{BuildOptions, BuildProfile, BuildProgress},
-    device::{Artifact, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
-    esp32::platform::run_esp32,
+    device::{Artifact, CrashCause, Device, DeviceEvent, Local, LogLevel, RunOptions, Running},
     gtk4::platform::{build_gtk4, package_gtk4},
     hydrolysis::{
         android::{self as hydrolysis_android, HydrolysisAndroidPainter},
@@ -46,6 +47,7 @@ use waterui_cli::debug;
 
 #[cfg(target_os = "macos")]
 struct CrashReportContext {
+    host: waterui_cli::toolchain::Host,
     started_at: Timestamp,
     device_identifier: String,
     bundle_id: String,
@@ -71,6 +73,7 @@ impl CrashReportContext {
         let process_name = waterui_cli::apple::backend::apple_product_name(project)?.to_string();
 
         Ok(Some(Self {
+            host: project.host().clone(),
             started_at: Timestamp::now(),
             device_identifier,
             bundle_id: project.bundle_identifier().to_string(),
@@ -84,12 +87,9 @@ impl CrashReportContext {
 }
 
 #[cfg(target_os = "macos")]
-async fn find_latest_ips_report(
-    host: &waterui_cli::toolchain::Host,
-    ctx: &CrashReportContext,
-) -> Option<debug::CrashReport> {
+async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::CrashReport> {
     debug::find_macos_ips_crash_report_since(
-        host,
+        &ctx.host,
         "macOS",
         &ctx.device_identifier,
         &ctx.bundle_id,
@@ -131,26 +131,15 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU in browser).
     Web,
-    /// ESP32-S3 board or QEMU (Dew firmware, Xtensa).
+    /// ESP32-S3 (Xtensa); unsupported until #1601.
     Esp32s3,
-    /// ESP32-C3 board or QEMU (Dew firmware, RISC-V).
+    /// ESP32-C3 (RISC-V); unsupported until #1601.
     Esp32c3,
-    /// ESP32-P4 board (Dew firmware, RISC-V with FPU).
+    /// ESP32-P4 (RISC-V with FPU); unsupported until #1601.
     Esp32p4,
 }
 
 impl TargetPlatform {
-    /// The ESP32 chip a platform selects, if it is an ESP32 platform.
-    const fn esp32_chip(self) -> Option<waterui_cli::esp32::chip::Esp32Chip> {
-        use waterui_cli::esp32::chip::Esp32Chip;
-        match self {
-            Self::Esp32s3 => Some(Esp32Chip::Esp32S3),
-            Self::Esp32c3 => Some(Esp32Chip::Esp32C3),
-            Self::Esp32p4 => Some(Esp32Chip::Esp32P4),
-            _ => None,
-        }
-    }
-
     /// The desktop OS this platform runs natively on the host, if it is one.
     ///
     /// Device, web and embedded platforms carry their own target triples;
@@ -180,7 +169,7 @@ pub struct Args {
     #[arg(short, long, value_enum)]
     platform: Option<TargetPlatform>,
 
-    /// Backend to use (overrides default for platform).
+    /// Backend to use (must agree with any Water.toml platform declaration).
     /// Example: `--platform linux --backend hydrolysis`.
     #[arg(short, long, value_enum)]
     backend: Option<TargetBackend>,
@@ -257,6 +246,13 @@ pub struct Args {
     yes: bool,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// Parses one `--env KEY=VALUE` argument into its key and value.
 ///
 /// The key may not be empty or contain `=`; everything after the first `=` is
@@ -295,88 +291,6 @@ impl From<CliLogLevel> for LogLevel {
             CliLogLevel::Info => Self::Info,
             CliLogLevel::Debug => Self::Debug,
             CliLogLevel::Verbose => Self::Verbose,
-        }
-    }
-}
-
-/// Resolve the effective backend for a platform.
-/// Returns the backend to use and validates compatibility.
-fn resolve_backend(
-    platform: TargetPlatform,
-    backend_override: Option<TargetBackend>,
-) -> Result<TargetBackend> {
-    // Default backends for each platform
-    let default_backend = match platform {
-        TargetPlatform::Ios | TargetPlatform::Macos => TargetBackend::Apple,
-        TargetPlatform::Android => TargetBackend::Android,
-        TargetPlatform::Linux | TargetPlatform::Windows | TargetPlatform::Web => {
-            TargetBackend::Hydrolysis
-        }
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
-            TargetBackend::Dew
-        }
-    };
-
-    let backend = backend_override.unwrap_or(default_backend);
-
-    // Validate backend supports platform
-    let supported = matches!(
-        (platform, backend),
-        (TargetPlatform::Ios, TargetBackend::Apple)
-            | (
-                TargetPlatform::Macos,
-                TargetBackend::Apple | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Android,
-                TargetBackend::Android | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Linux,
-                TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Windows,
-                TargetBackend::Hydrolysis | TargetBackend::WinUi
-            )
-            | (TargetPlatform::Web, TargetBackend::Hydrolysis)
-            | (
-                TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4,
-                TargetBackend::Dew
-            )
-    );
-
-    if !supported {
-        bail!(
-            "Backend {:?} does not support platform {:?}.\n\
-             Valid combinations:\n  \
-             - iOS: apple\n  \
-             - macOS: apple, hydrolysis\n  \
-             - Android: android, hydrolysis\n  \
-             - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis, winui\n  \
-             - Web: hydrolysis\n  \
-             - ESP32-S3: dew\n  \
-             - ESP32-C3: dew\n  \
-             - ESP32-P4: dew",
-            backend,
-            platform
-        );
-    }
-
-    Ok(backend)
-}
-
-/// The backend a run on `platform` uses when `--backend` is not given.
-const fn default_backend(platform: TargetPlatform) -> TargetBackend {
-    match platform {
-        TargetPlatform::Ios | TargetPlatform::Macos => TargetBackend::Apple,
-        TargetPlatform::Android => TargetBackend::Android,
-        TargetPlatform::Linux | TargetPlatform::Windows | TargetPlatform::Web => {
-            TargetBackend::Hydrolysis
-        }
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => {
-            TargetBackend::Dew
         }
     }
 }
@@ -437,43 +351,54 @@ const fn resolve_platform(platform_override: Option<TargetPlatform>) -> TargetPl
 }
 
 /// Run the run command.
-pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+///
+/// `interrupts` is the process's Ctrl-C channel: the supervised run owns
+/// its shutdown through [`Running::supervise`], and the non-supervised web
+/// dev-server path races it so an interrupt ends it the way the
+/// command-level cancel used to.
+pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<()>) -> Result<()> {
     if args.tui {
-        return run_tui_app(shell, args).await;
+        return Box::pin(crate::until_interrupt(
+            Box::pin(run_tui_app(shell, args)),
+            &interrupts,
+        ))
+        .await
+        .map(|_| ());
     }
 
-    let host = waterui_cli::toolchain::Host::current();
-    // The run context carries the opened project, the resolved device, backend
-    // and build options; on Windows that future crosses clippy's `large_futures`
-    // threshold (16 KiB), so it is pinned on the heap instead of the caller's stack.
-    let Some(context) = Box::pin(prepare_run_context(shell, &args)).await? else {
-        return Ok(());
-    };
-    print_run_header(shell, &context);
-    check_run_toolchain(shell, &host, context.platform, context.backend).await?;
+    let launch = Box::pin(async {
+        let Some(context) = Box::pin(prepare_run_context(shell, &args)).await? else {
+            return Ok(None);
+        };
+        print_run_header(shell, &context);
+        check_run_toolchain(
+            shell,
+            context.project.host(),
+            context.platform,
+            context.backend,
+        )
+        .await?;
 
-    if context.platform == TargetPlatform::Web {
-        return run_web_app(shell, &context.project).await;
-    }
+        if context.platform == TargetPlatform::Web {
+            run_web_app(shell, &context.project).await?;
+            return Ok(None);
+        }
+        let selection = Box::pin(select_run_device(
+            shell,
+            context.platform,
+            context.backend,
+            &context.project,
+            args.device.as_deref(),
+        ))
+        .await?;
+        let config = build_run_config(shell, &args, &context.project, context.backend).await;
 
-    if context.platform.esp32_chip().is_some() {
-        return run_esp32_app(shell, &context.project, args.device.as_deref()).await;
-    }
-
-    let selection = select_run_device(
-        shell,
-        &host,
-        context.platform,
-        context.backend,
-        &context.project,
-        args.device.as_deref(),
-    )
-    .await?;
-    let config = build_run_config(shell, &host, &args, &context.project, context.backend).await;
-
-    #[cfg(target_os = "macos")]
-    let mut crash_ctx =
-        match CrashReportContext::try_new(&context.project, context.platform, context.backend) {
+        #[cfg(target_os = "macos")]
+        let crash_ctx = match CrashReportContext::try_new(
+            &context.project,
+            context.platform,
+            context.backend,
+        ) {
             Ok(ctx) => ctx,
             Err(e) => {
                 warn!(shell, "Crash report augmentation disabled: {e}");
@@ -481,19 +406,38 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             }
         };
 
-    // The dev-server guard is held for the app's whole run: dropping it —
-    // on app exit, normal return, or the Ctrl-C future-drop — kills the
-    // bundler child (`kill_on_drop`).
-    let (running, _dev_server) = Box::pin(shell.display_output(build_and_run(
-        shell,
-        &host,
-        &context.project,
-        context.platform,
-        context.backend,
-        selection,
-        config,
-    )))
-    .await?;
+        // The dev-server guard is held for the app's whole run. Cancelling
+        // this future drops it and the app's monitor acknowledges the kill.
+        let (running, dev_server) = Box::pin(build_and_run(
+            shell,
+            &context.project.with_std_output(shell.is_interactive()),
+            context.platform,
+            context.backend,
+            selection,
+            config,
+        ))
+        .await?;
+        Ok(Some(RunReady {
+            backend: context.backend,
+            host: context.project.host().clone(),
+            running,
+            dev_server,
+            #[cfg(target_os = "macos")]
+            crash_ctx,
+        }))
+    });
+
+    let Some(Some(RunReady {
+        backend,
+        host,
+        running,
+        dev_server: _dev_server,
+        #[cfg(target_os = "macos")]
+        mut crash_ctx,
+    })) = crate::until_interrupt(launch, &interrupts).await?
+    else {
+        return Ok(());
+    };
 
     line!(shell);
     note!(shell, "Press Ctrl+C to stop the application");
@@ -501,11 +445,20 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     // Stream device events
     #[cfg(target_os = "macos")]
-    stream_running_events(shell, &host, running, context.backend, &mut crash_ctx).await?;
+    stream_running_events(shell, &host, running, interrupts, backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
-    stream_running_events(shell, running, context.backend).await?;
+    stream_running_events(shell, &host, running, interrupts, backend).await?;
 
     Ok(())
+}
+
+struct RunReady {
+    backend: TargetBackend,
+    host: waterui_cli::toolchain::Host,
+    running: Running,
+    dev_server: Option<web::WebDevServer>,
+    #[cfg(target_os = "macos")]
+    crash_ctx: Option<CrashReportContext>,
 }
 
 /// Build and launch the experimental TUI backend in the invoking terminal.
@@ -528,25 +481,29 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Project::open(&project_path, ManagedBackends::NONE).await?;
-    let launcher_dir = waterui_cli::tui::ensure_launcher(&project).await?;
+    let project = Box::pin(Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        ManagedBackends::NONE,
+    ))
+    .await?;
+    let launcher_dir = Box::pin(waterui_cli::tui::ensure_launcher(&project)).await?;
 
-    let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-    let binary = shell
-        .display_output(waterui_cli::tui::build(
-            &project,
-            &launcher_dir,
-            sccache_path,
-            Some(shell.build_progress()),
-        ))
-        .await?;
+    let sccache_path = detect_sccache_path(shell, project.host()).await;
+    let built = Box::pin(waterui_cli::tui::build(
+        &project.with_std_output(shell.is_interactive()),
+        &launcher_dir,
+        sccache_path,
+        Some(shell.build_progress()),
+    ))
+    .await?;
 
     note!(
         shell,
         "The TUI backend replaces this terminal until the app exits"
     );
     shell.clear();
-    waterui_cli::tui::exec(&binary)
+    waterui_cli::tui::exec(project.host(), built)
 }
 
 async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunContext>> {
@@ -556,12 +513,19 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         platform.desktop_os(),
         std::env::consts::OS,
     )?;
-    let backend = resolve_backend(
-        platform,
-        Some(args.backend.unwrap_or_else(|| default_backend(platform))),
-    )?;
+    let manifest = waterui_cli::project::Manifest::open(project_path.join("Water.toml")).await?;
+    let backend = TargetBackend::from_lib(waterui_cli::project::resolve_backend(
+        &manifest,
+        lib_platform(platform),
+        args.backend.map(TargetBackend::lib_backend),
+    )?);
     let managed_backends = managed_backends(platform, backend);
-    let mut project = Project::open(&project_path, managed_backends).await?;
+    let project = Box::pin(Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    ))
+    .await?;
     if project.manifest().package.embedded {
         bail!(
             "`water run` does not apply to embedded projects: the crate is a library the host app embeds — build the artifact with `water build` and run the host app"
@@ -585,14 +549,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         return Ok(None);
     }
 
-    // Selecting an ESP32 platform pins the chip so the generated harness and
-    // build target follow the platform (the chip drives the target triple,
-    // QEMU model, and firmware parameters).
-    if let Some(chip) = platform.esp32_chip() {
-        project.set_esp32_chip(chip).await?;
-    }
-
-    let project = super::ensure_generated_backend(shell, project, backend).await?;
+    let project = Box::pin(super::ensure_generated_backend(shell, project, backend)).await?;
 
     Ok(Some(RunContext {
         project,
@@ -643,30 +600,14 @@ async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
     unreachable!("web dev server future should be cancelled by Ctrl+C")
 }
 
-async fn run_esp32_app(shell: &Shell, project: &Project, device: Option<&str>) -> Result<()> {
-    let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-    let build_options = sccache_path
-        .map_or_else(
-            || BuildOptions::development(BuildProfile::Debug),
-            |sccache| BuildOptions::development(BuildProfile::Debug).with_sccache(sccache),
-        )
-        .with_progress(shell.build_progress());
-
-    let _ = shell.status(">", "Building ESP32 firmware...");
-    shell
-        .display_output(run_esp32(project, build_options, device))
-        .await
-}
-
 async fn select_run_device(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
     project: &Project,
     device_id: Option<&str>,
 ) -> Result<DeviceSelection> {
-    let device = find_device(shell, host, platform, backend, project, device_id).await?;
+    let device = find_device(shell, platform, backend, project, device_id).await?;
 
     let needs_launch = device.needs_launch();
     if needs_launch {
@@ -683,12 +624,11 @@ async fn select_run_device(
 
 async fn build_run_config(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     args: &Args,
     project: &Project,
     backend: TargetBackend,
 ) -> BuildRunConfig {
-    let sccache_path = detect_sccache_path(shell, host).await;
+    let sccache_path = detect_sccache_path(shell, project.host()).await;
     let mut run_options = RunOptions::new();
     if let Some(level) = args.logs.map(LogLevel::from) {
         run_options.set_log_level(level);
@@ -729,82 +669,107 @@ const fn run_profile(args: &Args, backend: TargetBackend) -> BuildProfile {
     }
 }
 
+/// Print the run's device events until the run ends.
+///
+/// Shutdown policy lives in [`Running::supervise`]: the first interrupt
+/// stops the app and keeps the stream alive for shutdown output, a second
+/// kills it, and queued events behind a terminal event still arrive
+/// before the stream ends. This loop prints, and fails the run once it ends
+/// if the monitor reported an error.
 #[cfg(target_os = "macos")]
 async fn stream_running_events(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
     running: Running,
+    interrupts: smol::channel::Receiver<()>,
     backend: TargetBackend,
     crash_ctx: &mut Option<CrashReportContext>,
 ) -> Result<()> {
-    let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
+    let mut events = std::pin::pin!(running.supervise(interrupts));
+    let mut monitor_errors = MonitorErrors::default();
 
-    loop {
-        let event = running.next().await;
-
-        #[cfg(target_os = "macos")]
-        let mut event = event;
-
-        #[cfg(target_os = "macos")]
-        if matches!(event.as_ref(), Some(DeviceEvent::Started))
+    while let Some(event) = events.next().await {
+        monitor_errors.observe(&event);
+        if matches!(event, DeviceEvent::Started)
             && let Some(ctx) = crash_ctx.as_mut()
         {
             ctx.refresh_start();
         }
 
-        #[cfg(target_os = "macos")]
-        if let Some(ctx) = crash_ctx.as_ref() {
-            event = augment_event_with_crash_report(host, event, ctx).await;
-        }
+        let event = if let Some(ctx) = crash_ctx.as_ref() {
+            augment_event_with_crash_report(event, ctx).await
+        } else {
+            event
+        };
 
-        if handle_device_event(shell, event, backend_log_name)? {
-            break;
-        }
+        handle_device_event(shell, host, event, backend_log_name)?;
     }
-    Ok(())
+    monitor_errors.into_result()
 }
 
+/// Print the run's device events until the run ends — the non-macOS
+/// twin of the function above, without crash-report augmentation.
 #[cfg(not(target_os = "macos"))]
 async fn stream_running_events(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     running: Running,
+    interrupts: smol::channel::Receiver<()>,
     backend: TargetBackend,
 ) -> Result<()> {
-    let mut running = std::pin::pin!(running);
     let backend_log_name = backend_name(backend);
+    let mut events = std::pin::pin!(running.supervise(interrupts));
+    let mut monitor_errors = MonitorErrors::default();
 
-    loop {
-        if handle_device_event(shell, running.next().await, backend_log_name)? {
-            break;
+    while let Some(event) = events.next().await {
+        monitor_errors.observe(&event);
+        handle_device_event(shell, host, event, backend_log_name)?;
+    }
+    monitor_errors.into_result()
+}
+
+/// The number of monitor errors; each message is printed as it arrives.
+#[derive(Default)]
+struct MonitorErrors(usize);
+
+impl MonitorErrors {
+    const fn observe(&mut self, event: &DeviceEvent) {
+        if matches!(event, DeviceEvent::MonitorError { .. }) {
+            self.0 += 1;
         }
     }
-    Ok(())
+
+    fn into_result(self) -> Result<()> {
+        if self.0 == 0 {
+            Ok(())
+        } else {
+            bail!("the run's monitor reported {} error(s)", self.0)
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
 async fn augment_event_with_crash_report(
-    host: &waterui_cli::toolchain::Host,
-    event: Option<DeviceEvent>,
+    event: DeviceEvent,
     ctx: &CrashReportContext,
-) -> Option<DeviceEvent> {
-    use std::fmt::Write as _;
-
+) -> DeviceEvent {
     match event {
-        Some(DeviceEvent::Exited(exit)) => {
-            if let Some(report) = find_latest_ips_report(host, ctx).await {
-                return Some(DeviceEvent::Crashed(report.to_string()));
-            }
-            Some(DeviceEvent::Exited(exit))
-        }
-        Some(DeviceEvent::Crashed(mut msg)) => {
-            if !msg.contains("Crash report:")
-                && let Some(report) = find_latest_ips_report(host, ctx).await
-            {
-                write!(msg, "\n\nCrash report: {}", report.log_path().display())
-                    .expect("write to String");
-            }
-            Some(DeviceEvent::Crashed(msg))
+        DeviceEvent::Exited(exit) => find_latest_ips_report(ctx)
+            .await
+            .map_or(DeviceEvent::Exited(exit), |report| {
+                DeviceEvent::Crashed(Crash::new(CrashCause::Report(Box::new(report))))
+            }),
+        DeviceEvent::Crashed(crash)
+            if crash.report.is_none() && !matches!(crash.cause, CrashCause::Report(_)) =>
+        {
+            let Some(report) = find_latest_ips_report(ctx).await else {
+                return DeviceEvent::Crashed(crash);
+            };
+            DeviceEvent::Crashed(Crash {
+                report: Some(Box::new(report)),
+                ..crash
+            })
         }
         other => other,
     }
@@ -813,7 +778,6 @@ async fn augment_event_with_crash_report(
 /// Build, package, and run on device.
 async fn build_and_run(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     project: &Project,
     cli_platform: TargetPlatform,
     backend: TargetBackend,
@@ -829,8 +793,11 @@ async fn build_and_run(
         SelectedDevice::ApplePhysical(device) => Some(device.udid.clone()),
         _ => None,
     };
-    let launch_task =
-        spawn_device_launch_task(host.clone(), selection.device, selection.needs_launch);
+    let launch_task = spawn_device_launch_task(
+        project.host().clone(),
+        selection.device,
+        selection.needs_launch,
+    );
 
     // The package options and the release-signing plan are resolved before
     // the Rust build: a release run without a valid `[signing.android]`
@@ -845,12 +812,12 @@ async fn build_and_run(
         .transpose()?;
 
     let _ = shell.status(">", "Building...");
-    let built = build_for_backend(
+    let built = Box::pin(build_for_backend(
         project,
         backend,
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
-    )
+    ))
     .await?;
 
     // A declared `include_web!` mount is served by the bundler's own dev
@@ -864,7 +831,7 @@ async fn build_and_run(
     };
 
     let _ = shell.status(">", "Packaging...");
-    let artifact = package_for_backend(
+    let artifact = Box::pin(package_for_backend(
         project,
         backend,
         &build_plan,
@@ -872,7 +839,7 @@ async fn build_and_run(
         package_options,
         prepared_signing.as_ref(),
         config.painter,
-    )
+    ))
     .await?;
 
     if selection.needs_launch {
@@ -886,7 +853,7 @@ async fn build_and_run(
     }
 
     let _ = shell.status(">", format!("Running {}", artifact.path().display()));
-    let running = run_with_options(host, device, artifact, run_options).await?;
+    let running = run_with_options(project.host(), device, artifact, run_options).await?;
 
     Ok((running, dev_server))
 }
@@ -913,7 +880,7 @@ async fn start_web_dev_server(
         .web
         .as_ref()
         .map_or_else(web::PackageManager::default, |web| web.package_manager);
-    if !package_manager.is_installed().await {
+    if !package_manager.is_installed(project.host()).await {
         bail!(
             "`{}` is not installed; run `water doctor`",
             package_manager.binary()
@@ -924,7 +891,14 @@ async fn start_web_dev_server(
         ">",
         format!("Starting `{} run {script}`", package_manager.binary()),
     );
-    let server = web::WebDevServer::spawn(package_manager, root, &script, expose_on_lan).await?;
+    let server = web::WebDevServer::spawn(
+        project.host(),
+        package_manager,
+        root,
+        &script,
+        expose_on_lan,
+    )
+    .await?;
     let _ = shell.status(">", format!("Dev server ready at {}", server.url()));
     Ok(Some(server))
 }
@@ -1034,38 +1008,29 @@ async fn build_for_backend(
     build_options: BuildOptions,
 ) -> Result<waterui_cli::build::BuiltTarget> {
     match backend {
-        TargetBackend::Apple => build_rust_lib(project, plan.lib_platform, build_options).await,
+        TargetBackend::Apple => {
+            Box::pin(build_rust_lib(project, plan.lib_platform, build_options)).await
+        }
         TargetBackend::Android => {
             let abi = plan
                 .android_abi
                 .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
             AndroidPlatform::clean_jni_libs(project).await?;
-            AndroidPlatform::new(abi)
-                .build(project, build_options)
-                .await
+            Box::pin(AndroidPlatform::new(abi).build(project, build_options)).await
         }
-        TargetBackend::Gtk4 => build_gtk4(project, build_options).await,
+        TargetBackend::Gtk4 => Box::pin(build_gtk4(project, build_options)).await,
         TargetBackend::Hydrolysis => {
             if plan.lib_platform == LibTargetPlatform::Android {
                 let abi = plan
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                hydrolysis_android::build(
-                    project,
-                    &waterui_cli::toolchain::Host::current(),
-                    abi,
-                    build_options,
-                )
-                .await
+                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
             } else {
-                build_hydrolysis(project, plan.lib_platform, build_options).await
+                Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
         }
-        TargetBackend::WinUi => build_winui(project, build_options).await,
-        TargetBackend::Dew => {
-            panic!("esp32 run should not enter build_and_run")
-        }
+        TargetBackend::WinUi => Box::pin(build_winui(project, build_options)).await,
     }
 }
 
@@ -1087,13 +1052,19 @@ async fn package_for_backend(
 ) -> Result<Artifact> {
     match backend {
         TargetBackend::Apple => {
-            package_apple(project, plan.lib_platform, package_options, built).await
+            Box::pin(package_apple(
+                project,
+                plan.lib_platform,
+                package_options,
+                built,
+            ))
+            .await
         }
         TargetBackend::Android => {
             let abi = plan
                 .android_abi
                 .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for packaging"))?;
-            AndroidPlatform::package_with_abis(
+            Box::pin(AndroidPlatform::package_with_abis(
                 project,
                 package_options,
                 &[abi],
@@ -1101,18 +1072,17 @@ async fn package_for_backend(
                 prepared_signing.ok_or_else(|| {
                     eyre::eyre!("Internal error: Android packaging has no signing plan")
                 })?,
-            )
+            ))
             .await
         }
-        TargetBackend::Gtk4 => package_gtk4(project, package_options, built).await,
+        TargetBackend::Gtk4 => Box::pin(package_gtk4(project, package_options, built)).await,
         TargetBackend::Hydrolysis => {
             if plan.lib_platform == LibTargetPlatform::Android {
                 let abi = plan.android_abi.ok_or_else(|| {
                     eyre::eyre!("Internal error: missing Android ABI for packaging")
                 })?;
-                hydrolysis_android::package_with_abis(
+                Box::pin(hydrolysis_android::package_with_abis(
                     project,
-                    &waterui_cli::toolchain::Host::current(),
                     painter,
                     &package_options,
                     &[abi],
@@ -1120,14 +1090,19 @@ async fn package_for_backend(
                     prepared_signing.ok_or_else(|| {
                         eyre::eyre!("Internal error: Android packaging has no signing plan")
                     })?,
-                )
+                ))
                 .await
             } else {
-                package_hydrolysis(project, plan.lib_platform, package_options, Some(built)).await
+                Box::pin(package_hydrolysis(
+                    project,
+                    plan.lib_platform,
+                    package_options,
+                    Some(built),
+                ))
+                .await
             }
         }
-        TargetBackend::WinUi => package_winui(project, package_options, built).await,
-        TargetBackend::Dew => panic!("esp32 run should not enter build_and_run"),
+        TargetBackend::WinUi => Box::pin(package_winui(project, package_options, built)).await,
     }
 }
 
@@ -1215,8 +1190,8 @@ const fn device_memory_key(backend: TargetBackend, platform: TargetPlatform) -> 
 
 /// The device last used for `key`, if the config records one. A config read
 /// failure is a warning, not a run failure.
-async fn remembered_device(key: &str) -> Option<String> {
-    match waterui_cli::water_dir::ensure_global_config().await {
+async fn remembered_device(host: &waterui_cli::toolchain::Host, key: &str) -> Option<String> {
+    match waterui_cli::water_dir::ensure_global_config(host).await {
         Ok(config) => config.last_used_device.get(key).cloned(),
         Err(error) => {
             tracing::warn!("could not read the Water config for device memory: {error:#}");
@@ -1227,8 +1202,8 @@ async fn remembered_device(key: &str) -> Option<String> {
 
 /// Record `id` as the last-used device for `key`. Best-effort: a config
 /// write failure must not break a run.
-async fn persist_device_choice(key: &str, id: &str) {
-    match waterui_cli::water_dir::ensure_global_config().await {
+async fn persist_device_choice(host: &waterui_cli::toolchain::Host, key: &str, id: &str) {
+    match waterui_cli::water_dir::ensure_global_config(host).await {
         Ok(mut config) => {
             if config.last_used_device.get(key).map(String::as_str) == Some(id) {
                 return;
@@ -1236,7 +1211,7 @@ async fn persist_device_choice(key: &str, id: &str) {
             config
                 .last_used_device
                 .insert(key.to_owned(), id.to_owned());
-            if let Err(error) = waterui_cli::water_dir::write_global_config(&config).await {
+            if let Err(error) = waterui_cli::water_dir::write_global_config(host, &config).await {
                 tracing::warn!("could not persist the last-used device: {error:#}");
             }
         }
@@ -1311,6 +1286,7 @@ fn prompt_for_device(
 /// stale memory.
 async fn choose_device_candidate(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     memory_key: &str,
     prompt: &str,
     candidates: Vec<DeviceCandidate>,
@@ -1318,7 +1294,7 @@ async fn choose_device_candidate(
 ) -> Result<SelectedDevice> {
     debug_assert!(!candidates.is_empty());
 
-    let mut remembered = remembered_device(memory_key).await;
+    let mut remembered = remembered_device(host, memory_key).await;
     let mut stale_memory = false;
     let (index, persist) = loop {
         match device_choice(&candidates, remembered.as_deref()) {
@@ -1342,7 +1318,7 @@ async fn choose_device_candidate(
         .nth(index)
         .expect("the index came from the candidate list");
     if persist {
-        persist_device_choice(memory_key, &candidate.id).await;
+        persist_device_choice(host, memory_key, &candidate.id).await;
     }
     Ok(candidate.device)
 }
@@ -1353,12 +1329,11 @@ async fn choose_device_candidate(
 /// candidate, then the picker.
 async fn select_ios_device(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     project: &Project,
     device_id: Option<&str>,
     spinner: Option<&indicatif::ProgressBar>,
 ) -> Result<SelectedDevice> {
-    let physical = ApplePhysicalDevice::scan(host)
+    let physical = ApplePhysicalDevice::scan(project.host())
         .await
         .unwrap_or_else(|error| {
             tracing::warn!("devicectl device scan failed: {error:#}");
@@ -1366,16 +1341,18 @@ async fn select_ios_device(
         });
 
     if let Some(query) = device_id {
-        if let Some(device) = select_physical_ios(host, &physical, project, query).await? {
+        if let Some(device) = select_physical_ios(&physical, project, query).await? {
             persist_device_choice(
+                project.host(),
                 device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
                 &device.identifier,
             )
             .await;
             return Ok(SelectedDevice::ApplePhysical(device));
         }
-        let sim = AppleSimulator::select_ios(host, project, Some(query)).await?;
+        let sim = AppleSimulator::select_ios(project, Some(query)).await?;
         persist_device_choice(
+            project.host(),
             device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
             &sim.udid,
         )
@@ -1383,16 +1360,17 @@ async fn select_ios_device(
         return Ok(SelectedDevice::AppleSimulator(sim));
     }
 
-    let candidates = ios_device_candidates(host, project, &physical).await?;
+    let candidates = ios_device_candidates(project, &physical).await?;
     if candidates.is_empty() {
         // Reuse the simulator path's diagnosis — it lists every simulator and
         // the required runtime.
         return Ok(SelectedDevice::AppleSimulator(
-            AppleSimulator::select_ios(host, project, None).await?,
+            AppleSimulator::select_ios(project, None).await?,
         ));
     }
     choose_device_candidate(
         shell,
+        project.host(),
         device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
         "Select an iOS device",
         candidates,
@@ -1404,7 +1382,6 @@ async fn select_ios_device(
 /// Every device that can run the app on iOS: qualifying simulators (booted
 /// first, the historic preference), then usable paired devices.
 async fn ios_device_candidates(
-    host: &waterui_cli::toolchain::Host,
     project: &Project,
     physical: &[ApplePhysicalDevice],
 ) -> Result<Vec<DeviceCandidate>> {
@@ -1421,7 +1398,7 @@ async fn ios_device_candidates(
     let sim_target = deployment_target(LibTargetPlatform::IOSSimulator).await?;
     let device_target = deployment_target(LibTargetPlatform::IOS).await?;
 
-    let mut simulators = AppleSimulator::scan_ios(host).await?;
+    let mut simulators = AppleSimulator::scan_ios(project.host()).await?;
     simulators.retain(|sim| sim.supports_deployment_target(&sim_target));
     simulators.sort_by_key(|sim| usize::from(sim.state != "Booted"));
     let mut candidates: Vec<DeviceCandidate> = simulators
@@ -1469,7 +1446,6 @@ async fn ios_device_candidates(
 /// Developer Mode, too-old OS) is an error naming the remedy rather than a
 /// silent miss.
 async fn select_physical_ios(
-    host: &waterui_cli::toolchain::Host,
     devices: &[ApplePhysicalDevice],
     project: &Project,
     query: &str,
@@ -1519,7 +1495,7 @@ async fn select_physical_ios(
 
     // A device build must be signed; check the keychain has a development
     // identity now rather than after a multi-minute build.
-    waterui_cli::apple::toolchain::development_team_id(host).await?;
+    waterui_cli::apple::toolchain::development_team_id(project.host()).await?;
 
     Ok(Some(device.clone()))
 }
@@ -1581,18 +1557,12 @@ async fn check_toolchain_for_backend(
             }
             toolchain_checks::check_winui(host).await?;
         }
-        TargetBackend::Dew => {
-            if platform.esp32_chip().is_none() {
-                bail!("Internal error: dew backend is not supported on {platform:?}");
-            }
-        }
     }
     Ok(())
 }
 
 async fn find_device(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
     project: &Project,
@@ -1610,15 +1580,13 @@ async fn find_device(
 
     let spinner = shell.spinner("Scanning for devices...");
     let device = match platform {
-        TargetPlatform::Ios => {
-            select_ios_device(shell, host, project, device_id, spinner.as_ref()).await
-        }
+        TargetPlatform::Ios => select_ios_device(shell, project, device_id, spinner.as_ref()).await,
         TargetPlatform::Macos => {
             // macOS with Apple backend uses the local machine
             Ok(SelectedDevice::Local(Local))
         }
         TargetPlatform::Android => {
-            select_android_device(shell, host, backend, device_id, spinner.as_ref()).await
+            select_android_device(shell, project.host(), backend, device_id, spinner.as_ref()).await
         }
         TargetPlatform::Linux | TargetPlatform::Windows => {
             // Linux and Windows run on the local machine
@@ -1654,12 +1622,12 @@ async fn select_android_device(
     if let Some(query) = device_id {
         for dev in devices {
             if dev.identifier() == query {
-                persist_device_choice(key, dev.identifier()).await;
+                persist_device_choice(host, key, dev.identifier()).await;
                 return Ok(SelectedDevice::AndroidDevice(dev));
             }
         }
         if avds.iter().any(|avd| avd == query) {
-            persist_device_choice(key, query).await;
+            persist_device_choice(host, key, query).await;
             return Ok(SelectedDevice::AndroidEmulator(
                 AndroidEmulator::open(host, query.to_string()).await?,
             ));
@@ -1688,7 +1656,15 @@ async fn select_android_device(
             "No Android devices connected and no emulators available. Create an emulator with Android Studio or `avdmanager`, or connect a device."
         );
     }
-    choose_device_candidate(shell, key, "Select an Android device", candidates, spinner).await
+    choose_device_candidate(
+        shell,
+        host,
+        key,
+        "Select an Android device",
+        candidates,
+        spinner,
+    )
+    .await
 }
 
 fn device_name(device: &SelectedDevice) -> String {
@@ -1722,7 +1698,6 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
         TargetBackend::WinUi => "WinUI",
-        TargetBackend::Dew => "Dew",
     }
 }
 
@@ -1758,10 +1733,6 @@ fn validate_log_pipeline_args(
 ) -> Result<()> {
     let log_pipeline_unsupported = match platform {
         TargetPlatform::Web => Some("web"),
-        // The serial monitor streams firmware logs directly.
-        TargetPlatform::Esp32s3 => Some("esp32s3"),
-        TargetPlatform::Esp32c3 => Some("esp32c3"),
-        TargetPlatform::Esp32p4 => Some("esp32p4"),
         _ => None,
     };
     let Some(platform_label) = log_pipeline_unsupported else {
@@ -1778,47 +1749,58 @@ fn validate_log_pipeline_args(
 
 /// Handle a device event.
 ///
-/// Returns `true` if the event loop should break.
 fn handle_device_event(
     shell: &Shell,
-    event: Option<DeviceEvent>,
+    host: &waterui_cli::toolchain::Host,
+    event: DeviceEvent,
     platform_name: &str,
-) -> Result<bool> {
+) -> Result<()> {
     match event {
-        Some(DeviceEvent::Started) => {
+        DeviceEvent::Started => {
             let _ = shell.status("*", "Application started");
-            Ok(false)
+            Ok(())
         }
-        Some(DeviceEvent::Stopped) => {
+        DeviceEvent::Stopped => {
             let _ = shell.status("o", "Application stopped");
-            Ok(true)
+            Ok(())
         }
-        Some(DeviceEvent::Stdout { message }) => {
+        DeviceEvent::Stdout { message } => {
             line!(shell, "[stdout] {message}");
-            Ok(false)
+            Ok(())
         }
-        Some(DeviceEvent::Stderr { message }) => {
+        DeviceEvent::Stderr { message } => {
             warn!(shell, "[stderr] {message}");
-            Ok(false)
+            Ok(())
         }
-        Some(DeviceEvent::Log { level, message }) => {
+        DeviceEvent::Log { level, message } => {
             let _ = shell.device_log(platform_name, level, message);
-            Ok(false)
+            Ok(())
         }
-        Some(DeviceEvent::Exited(exit)) => {
+        DeviceEvent::MonitorError { message } => {
+            error!(shell, "{message}");
+            Ok(())
+        }
+        DeviceEvent::Exited(exit) => {
             let _ = shell.status("o", exit.terminal_message());
-            Ok(true)
+            Ok(())
         }
-        Some(DeviceEvent::Crashed(msg)) => {
-            // Use panic_report for panic messages, regular error for others
-            if msg.starts_with("Panic:") {
-                shell.panic_message(&msg);
+        DeviceEvent::Crashed(crash) => {
+            if let CrashCause::Panic(panic) = &crash.cause {
+                let extra = crash.panic_note();
+                shell.panic(
+                    host,
+                    panic,
+                    extra.as_deref(),
+                    crash
+                        .report
+                        .as_deref()
+                        .map(waterui_cli::debug::CrashReport::log_path),
+                );
             } else {
-                error!(shell, "Application crashed: {msg}");
+                error!(shell, "Application crashed: {crash}");
             }
             bail!("application crashed");
         }
-        None => Ok(true),
     }
 }
 
@@ -1826,15 +1808,15 @@ fn handle_device_event(
 mod tests {
     use super::{
         Args, DeviceCandidate, DeviceChoice, SelectedDevice, TargetBackend, TargetPlatform,
-        default_backend, device_android_abi, device_choice, handle_device_event, lib_platform,
-        parse_env_assignment, prompt_for_device, resolve_backend, resolve_platform, run_profile,
+        device_android_abi, device_choice, handle_device_event, lib_platform, parse_env_assignment,
+        prompt_for_device, resolve_platform, run_profile, stream_running_events,
         validate_device_arg,
     };
     use clap::Parser as _;
     use waterui_cli::android::device::AndroidDevice;
     use waterui_cli::android::platform::AndroidAbi;
     use waterui_cli::build::BuildProfile;
-    use waterui_cli::device::{ApplicationExit, DeviceEvent, Local};
+    use waterui_cli::device::{ApplicationExit, DeviceEvent, Local, StopRequest};
 
     /// The run `Args` wrapped in a `Parser` so tests can exercise the real
     /// flag surface instead of constructing the clap struct field by field.
@@ -2016,13 +1998,74 @@ mod tests {
     #[test]
     fn clean_device_exit_stops_without_error() {
         let shell = crate::shell::Shell::new(false);
-        let should_stop = handle_device_event(
+        handle_device_event(
             &shell,
-            Some(DeviceEvent::Exited(ApplicationExit::completed())),
+            &waterui_cli::toolchain::Host::current(),
+            DeviceEvent::Exited(ApplicationExit::completed()),
             "test",
         )
         .expect("clean device exit should not fail water run");
-        assert!(should_stop);
+    }
+
+    fn monitored_stop_result(
+        report_monitor_error: bool,
+    ) -> (eyre::Result<()>, Option<waterui_cli::device::StopRequest>) {
+        let shell = crate::shell::Shell::new(false);
+        let (running, sender, control) = waterui_cli::device::Running::new();
+        let (request_tx, request_rx) = smol::channel::bounded(1);
+        let (interrupt_sender, interrupts) = smol::channel::unbounded();
+        interrupt_sender
+            .try_send(())
+            .expect("queue the stop interrupt");
+
+        smol::spawn(async move {
+            let request = control.recv().await.ok();
+            let _ = request_tx.try_send(request);
+            if report_monitor_error {
+                sender
+                    .send(DeviceEvent::MonitorError {
+                        message:
+                            "The app did not exit within the 5s termination grace period; killing it"
+                                .to_string(),
+                    })
+                    .await
+                    .expect("send the monitor error");
+            }
+            sender
+                .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                .await
+                .expect("send the terminal event");
+        })
+        .detach();
+
+        let backend = TargetBackend::Hydrolysis;
+        let host = waterui_cli::toolchain::Host::current();
+        #[cfg(target_os = "macos")]
+        let result = smol::block_on(stream_running_events(
+            &shell, &host, running, interrupts, backend, &mut None,
+        ));
+        #[cfg(not(target_os = "macos"))]
+        let result = smol::block_on(stream_running_events(
+            &shell, &host, running, interrupts, backend,
+        ));
+
+        let request = request_rx.try_recv().ok().flatten();
+        (result, request)
+    }
+
+    #[test]
+    fn stop_after_a_monitor_error_fails_the_run() {
+        let (result, request) = monitored_stop_result(true);
+        assert_eq!(request, Some(StopRequest::Terminate));
+        let error = result.expect_err("a stop that reported an error fails water run");
+        assert_eq!(error.to_string(), "the run's monitor reported 1 error(s)");
+    }
+
+    #[test]
+    fn plain_stop_succeeds() {
+        let (result, request) = monitored_stop_result(false);
+        assert_eq!(request, Some(StopRequest::Terminate));
+        result.expect("a plain stop exits 0");
     }
 
     #[test]
@@ -2038,52 +2081,6 @@ mod tests {
             Some(AndroidAbi::Arm64V8a)
         );
         assert_eq!(device_android_abi(&SelectedDevice::Local(Local)), None);
-    }
-
-    #[test]
-    fn resolve_backend_defaults_include_web() {
-        assert_eq!(
-            resolve_backend(TargetPlatform::Web, None).expect("web backend"),
-            TargetBackend::Hydrolysis
-        );
-    }
-
-    #[test]
-    fn resolve_backend_defaults_match_platforms() {
-        assert_eq!(
-            resolve_backend(TargetPlatform::Ios, None).expect("ios backend"),
-            TargetBackend::Apple
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Android, None).expect("android backend"),
-            TargetBackend::Android
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Linux, None).expect("linux backend"),
-            TargetBackend::Hydrolysis
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Windows, None).expect("windows backend"),
-            TargetBackend::Hydrolysis
-        );
-    }
-
-    #[test]
-    fn default_backend_is_the_platforms_native_backend() {
-        assert_eq!(default_backend(TargetPlatform::Macos), TargetBackend::Apple);
-        assert_eq!(default_backend(TargetPlatform::Ios), TargetBackend::Apple);
-        assert_eq!(
-            default_backend(TargetPlatform::Android),
-            TargetBackend::Android
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Linux),
-            TargetBackend::Hydrolysis
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Windows),
-            TargetBackend::Hydrolysis
-        );
     }
 
     #[cfg(target_os = "macos")]

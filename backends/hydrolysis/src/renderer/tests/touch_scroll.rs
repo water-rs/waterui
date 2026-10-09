@@ -16,23 +16,23 @@ use std::time::Instant;
 
 use nami::{Binding, Signal as _};
 use waterui::ViewExt as _;
+use waterui::widget::condition::when;
 use waterui::{AnyView, component::text};
 use waterui_controls::button::button;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::id::SelfId;
+use waterui_core::id::{Id, SelfId};
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack};
+use waterui_navigation::NavigationView;
+use waterui_navigation::tab::{Tab, TabsLayout};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
-use crate::platform::{
-    FlingDeceleration, InputEvent, PointerButton, PointerKind, TouchScrollConfig,
-};
+use crate::platform::{InputEvent, PointerButton, PointerKind, TouchScrollConfig};
 
 const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 640;
-const TOUCH_SLOP: f32 = 10.0;
 const ROW_HEIGHT: f32 = 44.0;
 const ROWS: usize = 80;
 
@@ -41,15 +41,7 @@ const ROWS: usize = 80;
 /// density-1 display produces (`GRAVITY_EARTH * 39.37 * 160 * 0.84` px/s²,
 /// in logical units at `ppi = 160`).
 fn test_config() -> TouchScrollConfig {
-    TouchScrollConfig {
-        touch_slop: TOUCH_SLOP,
-        min_fling_velocity: 50.0,
-        max_fling_velocity: 8_000.0,
-        fling: FlingDeceleration {
-            physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
-            friction: 0.015,
-        },
-    }
+    TouchScrollConfig::android_default()
 }
 
 fn runtime(view: AnyView) -> HeadlessRuntime {
@@ -366,4 +358,134 @@ fn a_touch_down_during_a_fling_stops_it_where_it_is() {
         (settled - stopped).abs() < f64::EPSILON,
         "the fling must stay stopped after the grab (stopped {stopped}, settled {settled})"
     );
+}
+
+/// A fling only stops on a new touch, so it can outlive the scroll view it
+/// drives: content swapped mid-fling by a non-input change (a data load)
+/// drops the scroll view, and the fling ends with it instead of ticking a
+/// handle no registered `ScrollTarget` holds.
+#[test]
+fn a_fling_whose_scroll_view_is_replaced_mid_fling_ends_with_it() {
+    let show = Binding::container(true);
+    let mut runtime = runtime(AnyView::new(
+        when(show.clone(), tall_stack).otherwise(|| text("Loaded")),
+    ));
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    runtime.push_input_event(touch_down(200.0, 400.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    for (frame_ms, y) in [(32_u64, 360.0_f32), (48, 320.0), (64, 280.0)] {
+        runtime.push_input_event(touch_move(200.0, y));
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame_ms));
+    }
+    runtime.push_input_event(touch_up(200.0, 280.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(80));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(96));
+    assert!(
+        runtime.renderer().has_active_touch_fling(),
+        "a fast release over the scroll view must fling"
+    );
+
+    show.set(false);
+    for frame in 1..=20u64 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(96 + frame * 16));
+    }
+    assert!(
+        runtime.renderer().scroll_metrics_at(200.0, 400.0).is_none(),
+        "the scroll view must be gone"
+    );
+    assert!(
+        !runtime.renderer().has_active_touch_fling(),
+        "the fling must end with the scroll view it drove"
+    );
+}
+
+/// A tab switched in code mid-fling stops placing the scroll view it
+/// showed: the view stays alive, so its handle still takes the fling's
+/// writes, but no registered `ScrollTarget` holds the handle any more —
+/// the fling ends with the view's registrations instead of marking a
+/// retired owner.
+#[test]
+fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() {
+    let selection = Binding::container(Id::try_from(1).expect("non-zero tab id"));
+    let tabs = vec![
+        Tab::new(Id::try_from(1).expect("non-zero tab id"), "Rows", || {
+            NavigationView::new("Rows", tall_stack())
+        }),
+        Tab::new(Id::try_from(2).expect("non-zero tab id"), "Other", || {
+            NavigationView::new("Other", text("Other"))
+        }),
+    ];
+    let mut runtime = runtime(AnyView::new(TabsLayout::new(selection.clone(), tabs)));
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    assert!(
+        runtime.renderer().scroll_metrics_at(200.0, 300.0).is_some(),
+        "the scroll view must be under the touch"
+    );
+
+    runtime.push_input_event(touch_down(200.0, 300.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    for (frame_ms, y) in [(32_u64, 260.0_f32), (48, 220.0), (64, 180.0)] {
+        runtime.push_input_event(touch_move(200.0, y));
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame_ms));
+    }
+    runtime.push_input_event(touch_up(200.0, 180.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(80));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(96));
+    assert!(
+        runtime.renderer().has_active_touch_fling(),
+        "a fast release over the scroll view must fling"
+    );
+
+    selection.set(Id::try_from(2).expect("non-zero tab id"));
+    for frame in 1..=20u64 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(96 + frame * 16));
+    }
+    assert!(
+        runtime.renderer().scroll_metrics_at(200.0, 300.0).is_none(),
+        "the hidden tab's scroll view must no longer be hittable"
+    );
+    assert!(
+        !runtime.renderer().has_active_touch_fling(),
+        "the fling must end with the scroll view it drove"
+    );
+}
+
+/// A touch press waits out the touch delay before it begins; a target
+/// removed inside that window drops the pending press with it, so the
+/// release never begins a press on a node that no longer exists.
+#[test]
+fn a_touch_press_whose_target_is_removed_before_release_is_dropped() {
+    let show = Binding::container(true);
+    let tapped = Binding::container(false);
+    let tapped_for_view = tapped.clone();
+    let mut runtime = runtime(AnyView::new(
+        when(show.clone(), move || {
+            let tapped = tapped_for_view.clone();
+            Frame::new(button("tap me").action(move || tapped.set(true)))
+                .width(400.0)
+                .height(640.0)
+        })
+        .otherwise(|| text("Gone")),
+    ));
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+
+    runtime.push_input_event(touch_down(200.0, 320.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    // Inside the 150ms touch delay, a non-input change removes the button.
+    show.set(false);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(32));
+    runtime.push_input_event(touch_up(200.0, 320.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(48));
+    for frame in 4..=12u64 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame * 16));
+    }
+    assert!(
+        !runtime.renderer().has_pending_pointer_press(),
+        "the delayed press must end with its target"
+    );
+    assert!(!tapped.snapshot(), "a removed button must not activate");
 }

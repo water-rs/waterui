@@ -177,6 +177,7 @@ fn equal_bounds_keep_the_selected_proposal_after_other_probes() {
             fixture.node.layout(
                 &mut renderer,
                 &env,
+                None,
                 proposal,
                 axis_size(vertical, 160.0, 20.0),
             );
@@ -191,6 +192,27 @@ fn equal_bounds_keep_the_selected_proposal_after_other_probes() {
             );
         }
     }
+}
+
+/// Runs `f` inside the root's record: a sub-view flush always runs under a
+/// recording reader, which owns what it registers and anchors its placement.
+fn under_root_record<R>(
+    renderer: &mut HydrolysisRenderer,
+    f: impl FnOnce(&mut HydrolysisRenderer) -> R,
+) -> R {
+    let root = renderer.core.root_core.clone();
+    renderer
+        .program
+        .push(crate::renderer::mount::ProgramBuilder::new(Rc::clone(
+            &root.cell,
+        )));
+    let result = renderer.with_reader(&root, crate::renderer::ReaderPhase::Record, f);
+    let _ = renderer
+        .program
+        .pop()
+        .expect("the root program under_root_record opened")
+        .finish();
+    result
 }
 
 #[test]
@@ -208,19 +230,28 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     }));
     let size = Size::new(160.0, 20.0);
     let rect = SceneRect::new(0.0, 0.0, 160.0, 20.0);
-    let ctx = RenderContext::with_transforms(rect, Affine::IDENTITY, Affine::IDENTITY);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds: rect,
+    };
     let ideal = ProposalSize::new(None, Some(20.0));
-    retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect);
+    under_root_record(&mut renderer, |renderer| {
+        retained.place(renderer, ctx, &env, ideal, rect, None);
+    });
     let outer = LazyViewport {
         bounds: SceneRect::new(0.0, 800.0, 160.0, 820.0),
         transform: Affine::translate((0.0, -800.0)),
     };
     renderer.push_lazy_viewport(outer);
-    let _ = retained.render_built_scene(&mut renderer, &env, size);
+    under_root_record(&mut renderer, |renderer| {
+        retained.record_built_page(renderer, &env, size, None);
+    });
     assert_eq!(renderer.lazy.lazy_viewport_stack.len(), 1);
     assert_eq!(renderer.lazy.lazy_viewport_stack[0].bounds, outer.bounds);
     trace.borrow_mut().clear();
-    retained.flush_in_rect(&mut renderer, ctx, &env, ideal, rect);
+    under_root_record(&mut renderer, |renderer| {
+        retained.place(renderer, ctx, &env, ideal, rect, None);
+    });
     assert_eq!(
         trace.borrow().last().expect("offer changed").proposal,
         ideal
@@ -252,19 +283,26 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
         .max_width(constraint),
     ));
     let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
-    let ctx = RenderContext::with_transforms(rect, Affine::IDENTITY, Affine::IDENTITY);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds: rect,
+    };
     let proposal = ProposalSize::new(Some(800.0), Some(600.0));
-    retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect);
+    under_root_record(&mut renderer, |renderer| {
+        retained.place(renderer, ctx, &env, proposal, rect, None);
+    });
     assert_eq!(
         trace.borrow().last().expect("mount places").proposal.width,
         Some(120.0)
     );
     max_width.set(400.0);
     assert!(
-        renderer.has_patch_request(),
+        renderer.root_is_dirty(),
         "the constraint signal must still schedule a refresh"
     );
-    retained.flush_in_rect(&mut renderer, ctx, &env, proposal, rect);
+    under_root_record(&mut renderer, |renderer| {
+        retained.place(renderer, ctx, &env, proposal, rect, None);
+    });
     assert_eq!(
         trace
             .borrow()
@@ -298,6 +336,7 @@ fn scroll_preserves_its_unconstrained_content_axis() {
         fixture.node.layout(
             &mut renderer,
             &env,
+            None,
             ProposalSize::new(Some(size.width), Some(size.height)),
             size,
         );
@@ -320,9 +359,13 @@ fn transparent_metadata_preserves_the_selected_proposal() {
         &env,
     );
     let proposal = axis_proposal(false, None, Some(20.0));
-    fixture
-        .node
-        .layout(&mut renderer, &env, proposal, axis_size(false, 160.0, 20.0));
+    fixture.node.layout(
+        &mut renderer,
+        &env,
+        None,
+        proposal,
+        axis_size(false, 160.0, 20.0),
+    );
     fixture.assert_placement(false, proposal, [40.0, 120.0]);
 }
 
@@ -373,6 +416,7 @@ fn spacer_default_priority_survives_wrappers_and_explicit_overrides() {
         node.layout(
             &mut renderer,
             &env,
+            None,
             ProposalSize::new(Some(160.0), Some(20.0)),
             Size::new(160.0, 20.0),
         );
@@ -412,7 +456,7 @@ fn spacer_min_length_is_the_stack_compression_floor() {
     // colors split what is left over.
     let proposal = ProposalSize::new(Some(20.0), Some(50.0));
     let measured = node.measure(&mut renderer.state, &env, &theme, proposal);
-    node.layout(&mut renderer, &env, proposal, measured.size);
+    node.layout(&mut renderer, &env, None, proposal, measured.size);
     let heights: Vec<f32> = node
         .transparent_container()
         .expect("a vstack must build a container node")
@@ -420,9 +464,11 @@ fn spacer_min_length_is_the_stack_compression_floor() {
         .iter()
         .map(Rect::height)
         .collect();
-    assert_eq!(
-        heights[1], 40.0,
-        "the spacer keeps its min_length floor under compression"
+    assert!(
+        approx::relative_eq!(heights[1], 40.0),
+        "the spacer keeps its min_length floor under compression: left {:?}, right {:?}",
+        heights[1],
+        40.0
     );
 }
 
@@ -461,7 +507,7 @@ fn view_effect_relayouts_equal_bounds_with_a_new_proposal() {
         let proposal = axis_proposal(false, main, Some(20.0));
         fixture
             .node
-            .layout(&mut renderer, &env, proposal, Size::new(160.0, 20.0));
+            .layout(&mut renderer, &env, None, proposal, Size::new(160.0, 20.0));
         fixture.assert_placement(
             false,
             proposal,

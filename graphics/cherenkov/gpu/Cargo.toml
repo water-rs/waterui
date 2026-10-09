@@ -49,7 +49,7 @@ objc2-core-media = { version = "0.3", default-features = false, features = ["std
 objc2-core-video = { version = "0.3", default-features = false, features = ["std", "objc2-io-surface", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-quartz-core", "NSResponder", "NSView"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-quartz-core", "NSResponder", "NSView", "NSWindow", "NSGraphics", "objc2-core-foundation"] }
 
 [target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies]
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "objc2-quartz-core", "UIResponder", "UIView"] }
@@ -81,6 +81,9 @@ half = "2"
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
+# `UNION_MAX_MEMBERS` comes from `../src/union_cap.rs` via `#[path]` —
+# the same file `cherenkov::BackdropUnion::MAX_MEMBERS` reads — so the
+# build script never depends on the engine crate.
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # `tests/planes.rs` stands Core Animation's own renderer in for the window
@@ -97,12 +100,13 @@ ash = "0.38"
 libc = "0.2"
 
 [dev-dependencies]
+toml.workspace = true
 cherenkov-oracle = { path = "../oracle" }
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 cherenkov-scene = { path = "../scene" }
 
 cherenkov = { path = "..", features = ["testing"] }
-nami = { version = "0.11.1", default-features = false, features = ["std", "kurbo"] }
+nami = { version = "0.12", default-features = false, features = ["std", "kurbo"] }
 # `tests/planes.rs` runs its cases on the process main thread.
 libtest-mimic = "0.8.2"
 

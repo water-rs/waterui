@@ -32,7 +32,7 @@ use std::rc::Rc;
 
 use block2::RcBlock;
 use core::ptr::NonNull;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::Bool;
 use objc2::runtime::ProtocolObject;
 use objc2::{
@@ -43,17 +43,19 @@ use objc2_foundation::{NSArray, NSIndexPath, NSInteger, NSObjectProtocol, NSStri
 use objc2_ui_kit::{
     NSDirectionalEdgeInsets, NSIndexPathUIKitAdditions, NSLayoutConstraint,
     NSObjectUIAccessibility, UIAccessibilityTraitSelected, UIColor, UIContextualAction,
-    UIContextualActionStyle, UIEdgeInsets, UIListContentConfiguration, UIScrollViewDelegate,
-    UISwipeActionsConfiguration, UITableView, UITableViewAutomaticDimension, UITableViewCell,
-    UITableViewCellAccessoryType, UITableViewCellEditingStyle, UITableViewCellSelectionStyle,
-    UITableViewCellStyle, UITableViewDataSource, UITableViewDelegate, UITableViewHeaderFooterView,
-    UITableViewRowAnimation, UITableViewScrollPosition, UITableViewSeparatorInsetReference,
-    UITableViewStyle, UIView,
+    UIContextualActionStyle, UIEdgeInsets, UIListContentConfiguration, UIScrollView,
+    UIScrollViewDelegate, UISwipeActionsConfiguration, UITableView, UITableViewAutomaticDimension,
+    UITableViewCell, UITableViewCellAccessoryType, UITableViewCellEditingStyle,
+    UITableViewCellSelectionStyle, UITableViewCellStyle, UITableViewDataSource,
+    UITableViewDelegate, UITableViewHeaderFooterView, UITableViewRowAnimation,
+    UITableViewScrollPosition, UITableViewSeparatorInsetReference, UITableViewStyle, UIView,
 };
 
 use crate::EdgeInsets;
 use crate::callback::guarded;
-use crate::geometry::IndexPath;
+use crate::geometry::{IndexPath, Point};
+use crate::scroll_flight::{FlightPlan, ScrollFlight};
+use crate::uikit::keyboard::KeyboardTracking;
 
 /// Whether a header-footer view presents a section's header or footer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,22 +147,38 @@ impl fmt::Debug for dyn TableSource {
 }
 
 /// The per-instance state [`TableView`] stores.
-#[derive(Default)]
 pub struct TableViewIvars {
     source: RefCell<Option<Rc<dyn TableSource>>>,
+    /// The scroll animation state: at most one flight per surface.
+    flight: Rc<ScrollFlight>,
+    /// The keyboard tracking (§7.1 scroll surfaces): the covered band's
+    /// depth becomes the bottom content inset in the surface's own layout
+    /// pass, read from the window's keyboard region; the focus observers
+    /// scroll a focused field clear of the keyboard region.
+    keyboard: Rc<KeyboardTracking>,
+}
+
+impl TableViewIvars {
+    /// The state for one instance; `mtm` binds the frame clock to the
+    /// main thread.
+    fn new(mtm: MainThreadMarker) -> Self {
+        Self {
+            source: RefCell::new(None),
+            flight: ScrollFlight::new(mtm),
+            keyboard: Rc::new(KeyboardTracking::new()),
+        }
+    }
+
+    fn source(&self) -> Option<Rc<dyn TableSource>> {
+        self.source.borrow().clone()
+    }
 }
 
 impl fmt::Debug for TableViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TableViewIvars")
             .field("source", &self.source.borrow().is_some())
-            .finish()
-    }
-}
-
-impl TableViewIvars {
-    fn source(&self) -> Option<Rc<dyn TableSource>> {
-        self.source.borrow().clone()
+            .finish_non_exhaustive()
     }
 }
 
@@ -211,7 +229,18 @@ define_class!(
     unsafe impl NSObjectProtocol for TableView {}
 
     // SAFETY: `UITableView`'s scroll-view delegate methods are all optional.
-    unsafe impl UIScrollViewDelegate for TableView {}
+    unsafe impl UIScrollViewDelegate for TableView {
+        /// A drag is the user's scroll: it takes over from a programmatic
+        /// animation in flight, halting it where it carried the offset.
+        /// `UIKit`'s own `animated:` scroll already yields to a drag
+        /// natively; a clocked flight needs the explicit stop.
+        #[unsafe(method(scrollViewWillBeginDragging:))]
+        fn scroll_view_will_begin_dragging(&self, _scroll_view: &UIScrollView) {
+            guarded("TableView scrollViewWillBeginDragging", || {
+                self.ivars().flight.cancel();
+            });
+        }
+    }
 
     // SAFETY: `UITableViewDataSource`'s required methods are implemented and
     // every supplied method forwards to the installed `TableSource`.
@@ -417,14 +446,86 @@ define_class!(
             });
         }
     }
+
+    impl TableView {
+        /// A view that moves to another window or leaves its window lands
+        /// the flight it was running — a parked flight's clock ticks only
+        /// for the window it armed on.
+        #[unsafe(method(didMoveToWindow))]
+        fn did_move_to_window(&self) {
+            guarded("TableView didMoveToWindow", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+                self.ivars().flight.land();
+                self.ivars().keyboard.clear();
+                if self.window().is_some() {
+                    self.ivars().keyboard.attach(self, self.mtm());
+                    // Re-entering a window whose keyboard moved while the
+                    // view was out of the tree — a popped page's surface —
+                    // recomputes the contribution on the next pass.
+                    self.mark_keyboard();
+                }
+            });
+        }
+
+        /// Keeps `UIKit`'s layout — cells and separators — then
+        /// recomputes the keyboard inset and the focused-field clearance
+        /// from the window's keyboard region (§7.1).
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews_override(&self) {
+            guarded("TableView layoutSubviews", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                self.ivars().keyboard.apply_layout(self);
+            });
+        }
+
+        /// Any frame change — a parent's layout pass translating or
+        /// resizing the surface — marks the surface for its own pass:
+        /// `UIKit` invalidates layout on a bounds change but not on a
+        /// bare translate, and the keyboard contribution reads the
+        /// window position, which a translate changes.
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(setFrame:))]
+        fn set_frame_override(&self, frame: CGRect) {
+            guarded("TableView setFrame:", || {
+                let changed = self.frame() != frame;
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setFrame: frame] };
+                if changed {
+                    self.setNeedsLayout();
+                }
+            });
+        }
+
+        /// The kit scroll-surface marker — only `ScrollView` and
+        /// `TableView` answer it, so a `UIScrollView` that is not one of
+        /// ours (`UITextView`) never counts as a scroll surface (§7.1).
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(cocoaUiIsScrollSurface))]
+        fn is_scroll_surface_override(&self) -> bool {
+            true
+        }
+
+    }
 );
 
 impl TableView {
+    /// The window's keyboard region marked this surface for a region
+    /// change — the next layout pass recomputes the keyboard
+    /// contribution, and the mark itself queues that pass. Called by
+    /// the region's whole-window walk and by `didMoveToWindow` on
+    /// re-entry.
+    pub(crate) fn mark_keyboard(&self) {
+        self.ivars().keyboard.mark();
+        self.setNeedsLayout();
+    }
+
     /// Creates a table styled `.insetGrouped` with fixed 16-point horizontal
     /// directional margins, `fromCellEdges` separator references, and the
     /// estimated heights a plain grouped row takes.
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(TableViewIvars::default());
+        let this = Self::alloc(mtm).set_ivars(TableViewIvars::new(mtm));
         // SAFETY: `initWithFrame:style:` is the designated initializer.
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithFrame: CGRect::ZERO, style: UITableViewStyle::InsetGrouped]
@@ -595,13 +696,94 @@ impl TableView {
         self.deselectRowAtIndexPath_animated(&index_path(index), animated);
     }
 
-    /// Scrolls `index`'s row to the top of the visible rect, unanimated.
-    pub fn scroll_to_row(&self, index: IndexPath) {
+    /// Scrolls `index`'s row to the top of the visible rect — unanimated,
+    /// or with `UIKit`'s native animated row scroll. Either write takes
+    /// over from a flight in progress.
+    pub fn scroll_to_row(&self, index: IndexPath, animated: bool) {
+        self.ivars().flight.cancel();
         self.scrollToRowAtIndexPath_atScrollPosition_animated(
             &index_path(index),
             UITableViewScrollPosition::Top,
-            false,
+            animated,
         );
+    }
+
+    /// The viewport's top edge in content coordinates: the content offset
+    /// past the adjusted top inset.
+    #[must_use]
+    pub fn viewport_top(&self) -> f64 {
+        self.contentOffset().y + self.adjustedContentInset().top
+    }
+
+    /// The bottom edge of `index`'s row in content coordinates — by
+    /// estimate for a row not measured yet.
+    #[must_use]
+    pub fn row_bottom(&self, index: IndexPath) -> f64 {
+        let rect = self.rectForRowAtIndexPath(&index_path(index));
+        rect.origin.y + rect.size.height
+    }
+
+    /// The content offset that puts `index`'s row top edge at the adjusted
+    /// inset top, clamped inside the scrollable range, so a row in the
+    /// last screenful resolves to the document's end, matching the range
+    /// `scrollToRowAtIndexPath` would clamp to.
+    fn row_top_offset(&self, index: IndexPath) -> Point {
+        self.layoutIfNeeded();
+        let top = self.rectForRowAtIndexPath(&index_path(index)).origin.y
+            - self.adjustedContentInset().top;
+        ScrollFlight::uikit_clamped(self, Point::new(self.contentOffset().x, top))
+    }
+
+    /// Drives the scroll from its current offset to `index`'s row along
+    /// `progress` — elapsed seconds to eased fraction — for `duration`
+    /// seconds, writing `contentOffset` each display tick so
+    /// `scrollViewDidScroll:` observers and lazily loaded rows track the
+    /// flight. `UIKit`'s own animation or flick deceleration is frozen
+    /// first so it does not fight the clocked writes. The row's offset
+    /// re-resolves each tick — `rectForRowAtIndexPath` estimates rows
+    /// until they materialize, so the flight chases the corrected
+    /// geometry — and the last tick lands through `scroll_to_row`, the
+    /// jump itself, so landing equals the jump by construction. A later
+    /// request or the user's drag ends it early.
+    pub fn animate_scroll_to_row(
+        &self,
+        index: IndexPath,
+        duration: f64,
+        progress: Rc<dyn Fn(f64) -> f64>,
+    ) {
+        ScrollFlight::freeze_scroll(self);
+        let from: Point = self.contentOffset().into();
+        let resolve = {
+            let weak = Weak::from_retained(&self.retain());
+            Rc::new(move || {
+                let Some(this) = weak.load() else {
+                    // The flight lives in the surface's ivars — it cannot
+                    // outlive the surface it resolves for.
+                    unreachable!("the flight dies with its surface");
+                };
+                this.row_top_offset(index)
+            })
+        };
+        let land = ScrollFlight::landing(self, move |this: &Self| this.scroll_to_row(index, false));
+        self.ivars().flight.begin(
+            self,
+            from,
+            FlightPlan {
+                to: resolve,
+                land,
+                duration,
+                progress,
+                write: ScrollFlight::uikit_write(self),
+            },
+        );
+    }
+
+    /// Whether a scroll animation is in flight — the native test suite's
+    /// probe.
+    #[cfg(feature = "native-test")]
+    #[must_use]
+    pub fn scroll_animation_in_flight(&self) -> bool {
+        self.ivars().flight.in_flight()
     }
 
     /// Lays out subviews immediately.

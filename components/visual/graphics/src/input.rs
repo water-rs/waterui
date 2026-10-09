@@ -8,7 +8,7 @@
 //! feature), whose engine-hosted GPU content gets them through its
 //! `on_input` handler, and a
 //! [`SceneContent`](crate::scene_view::SceneContent), which records into a
-//! `cherenkov::Recorder` and lets the backend decide how the scene reaches
+//! `waterui_graphics::draw::Recorder` and lets the backend decide how the scene reaches
 //! the screen.
 //! Every backend used to invent its own adapter for this, so an engine had to
 //! be ported once per backend. This module is the single vocabulary they all
@@ -105,9 +105,13 @@ pub enum SurfaceInputEvent {
     Scroll {
         /// Where the pointer was during the gesture.
         position: Point,
-        /// Horizontal delta, positive when the content should move left.
+        /// Horizontal delta, positive when the content should move left — a
+        /// wheel turn to the right. This is the sign of the W3C
+        /// [`WheelEvent.deltaX`](https://w3c.github.io/uievents/#dom-wheelevent-deltax).
         delta_x: f64,
-        /// Vertical delta, positive when the content should move up.
+        /// Vertical delta, positive when the content should move up — a wheel
+        /// turned toward the user, scrolling down. This is the sign of the W3C
+        /// [`WheelEvent.deltaY`](https://w3c.github.io/uievents/#dom-wheelevent-deltay).
         delta_y: f64,
         /// What one unit of the deltas means.
         unit: ScrollUnit,

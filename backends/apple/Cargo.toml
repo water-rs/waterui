@@ -42,7 +42,6 @@ default = [
     "hittable",
     "gesture",
     "image",
-    "layer_transform",
     "layout_priority",
     "lifecycle_hook",
     "material_background",
@@ -106,7 +105,6 @@ gesture = []
 layout_priority = []
 image = []
 lifecycle_hook = []
-layer_transform = []
 list = []
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
 # `CoreLocation` types; an app that never uses the leaf gets none of it.
@@ -127,8 +125,8 @@ resolved_color = []
 resolved_gradient = []
 resolved_shape = []
 retain = []
-rotation = ["layer_transform"]
-scale = ["layer_transform"]
+rotation = []
+scale = []
 scroll = []
 secure = []
 secure_field = []
@@ -153,16 +151,24 @@ video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
 video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
 env = []
 
+# The `preview::run` entry `water preview` links — the generated preview
+# package enables it; `water run` never does, so every other Apple app
+# builds without `waterui-preview-protocol`'s dependency closure.
+preview = ["dep:waterui-preview-protocol"]
+
 # Harness-only reach for `Tests/native.rs`: compiles the doc(hidden)
 # `native_test_support` module (private windows + embedding internals),
 # never part of a production build. Forwards cocoa-ui's gate so one
-# invocation selects both crates' `native` suites.
-native-test = ["cocoa-ui/native-test"]
+# invocation selects both crates' `native` suites. `preview` joins the
+# `Tests/preview.rs` binary runs `preview::run` end to end; `webview`
+# joins so the suite can drive a real `WKWebView` for the bridge cases.
+native-test = ["cocoa-ui/native-test", "preview", "webview"]
 
 
 [dependencies]
 waterui = { workspace = true, features = ["inspector", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core = { workspace = true }
+thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
 ] }
@@ -221,10 +227,16 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = [
     "std",
+    "CFArray",
+    "CFDictionary",
+    "CFNumber",
+    "CFRunLoop",
+    "CFString",
 ] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
     "CGPath",
+    "CGWindow",
 ] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "std",
@@ -234,11 +246,49 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "objc2-core-graphics",
 ] }
 
+[build-dependencies]
+cfg_aliases = "0.2.2"
+
+# cargo-machete: `cfg_aliases` is named only in `build.rs`, which the
+# analysis does not read; the `objc2-app-kit` dev-dependency only enables
+# features on cocoa-ui's edge and is reached as `cocoa_ui::objc2_app_kit`.
+[package.metadata.cargo-machete]
+ignored = ["cfg_aliases", "objc2-app-kit"]
+
 [dev-dependencies]
 criterion = "0.8.2"
 pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }
+# The preview suite renders an `ImageAsset`, which sits behind `media` on
+# the facade — the crate's own `waterui` edge does not enable it.
+waterui = { workspace = true, features = ["media"] }
+# The termination tests park the hook futures on an `async-task` executor.
+executor-core = { workspace = true, features = ["async-task"] }
+
+# `preview`'s protocol types arrive only on macOS — the preview entry
+# exists there alone, and an iOS build of the crate keeps no trace of it.
+[target.'cfg(target_os = "macos")'.dependencies]
+waterui-preview-protocol = { workspace = true, optional = true }
+
+# The scroll takeover cases synthesize a real wheel event through
+# `CGEventCreateScrollWheelEvent2` → `+[NSEvent eventWithCGEvent:]`.
+# The preview suite reads the workspace's frontmost app through
+# `NSWorkspace` — the feature lands on cocoa-ui's same-version
+# `objc2-app-kit` edge, so `cocoa_ui::objc2_app_kit` sees it.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGEvent",
+    "CGEventTypes",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSRunningApplication",
+    "NSWorkspace",
+] }
+
 # The native tests create real `AppKit`/`UIKit` objects, which are only
 # legal on the process's actual main thread — libtest's worker threads can
 # never hold a `MainThreadMarker`. The custom harness pins execution to
@@ -250,6 +300,26 @@ path = "Tests/native.rs"
 harness = false
 # The suite links `native_test_support`, which only exists behind the
 # non-default feature; lanes that want it pass it explicitly.
+required-features = ["native-test"]
+
+# The cases that need a running `UIApplication` with a connected window
+# scene (iOS only; the binary lists no trials on macOS). The iOS target
+# runner launches it as an application, one case per launch — far costlier
+# than `native`'s bare spawn — so it carries only those cases.
+[[test]]
+name = "native_app"
+path = "Tests/native_app.rs"
+harness = false
+required-features = ["native-test"]
+
+# The `preview::run` entry's own suite — it must prove the process never
+# orders a window, so it shares no process with the suites that do
+# (`native`'s scroll cases order windows on screen). `run` is also once
+# per process: nextest's one-process-per-case gives every trial its own.
+[[test]]
+name = "preview"
+path = "Tests/preview.rs"
+harness = false
 required-features = ["native-test"]
 
 [[bench]]

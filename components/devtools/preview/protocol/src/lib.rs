@@ -2,6 +2,7 @@
 
 pub mod bench;
 pub mod hydrolysis;
+pub mod run;
 
 use serde::de::{Error as DeError, Visitor as DeVisitor};
 use serde::{Deserialize, Serialize};
@@ -42,8 +43,6 @@ pub enum PreviewRuntimePlatform {
     IosSimulator,
     /// Physical iOS preview support app.
     Ios,
-    /// Android preview support app.
-    Android,
     /// Other platform.
     Other,
 }
@@ -58,8 +57,6 @@ impl PreviewRuntimePlatform {
             Self::IosSimulator
         } else if cfg!(target_os = "ios") {
             Self::Ios
-        } else if cfg!(target_os = "android") {
-            Self::Android
         } else {
             Self::Other
         }
@@ -133,19 +130,35 @@ pub mod registry {
     }
 
     #[must_use]
-    /// Root cache directory for preview support assets.
+    /// Root cache directory for preview support assets under `water_cache_dir`.
+    pub fn preview_cache_root_dir_in(water_cache_dir: &std::path::Path) -> PathBuf {
+        water_cache_dir.join("preview")
+    }
+
+    #[must_use]
+    /// Directory containing registered preview support app instances under
+    /// `preview_cache_root`.
+    pub fn preview_instance_registry_dir_in(preview_cache_root: &std::path::Path) -> PathBuf {
+        preview_cache_root.join("instances")
+    }
+
+    #[must_use]
+    /// Root cache directory for preview support assets, resolved from the
+    /// process environment.
     pub fn preview_cache_root_dir() -> PathBuf {
-        water_cache_dir().join("preview")
+        preview_cache_root_dir_in(&water_cache_dir())
     }
 
     #[must_use]
-    /// Directory containing registered preview support app instances.
+    /// Directory containing registered preview support app instances,
+    /// resolved from the process environment.
     pub fn preview_instance_registry_dir() -> PathBuf {
-        preview_cache_root_dir().join("instances")
+        preview_instance_registry_dir_in(&preview_cache_root_dir())
     }
 
     #[must_use]
-    /// Path of the JSON registry file for a support app instance.
+    /// Path of the JSON registry file for a support app instance, resolved
+    /// from the process environment.
     pub fn preview_instance_registry_path(instance: &PreviewAppInstance) -> PathBuf {
         preview_instance_registry_dir().join(format!("{}-{}.json", instance.pid, instance.port))
     }

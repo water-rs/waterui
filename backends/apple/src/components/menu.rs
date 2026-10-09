@@ -34,7 +34,7 @@ use crate::proposal;
 use super::menu_items::append_items;
 #[cfg(target_os = "ios")]
 use super::menu_items::build_menu;
-use super::menu_items::{collect_item_watchers, item_title, with_platform_animation};
+use super::menu_items::{collect_item_watchers, item_title};
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -102,6 +102,10 @@ struct MenuState {
     /// The proposal a Rust parent last placed this leaf at —
     /// `selectedProposal`.
     selected: Cell<Option<ProposalSize>>,
+    /// The scope the live menu's key commands are armed in, replaced with
+    /// the menu on every rebuild.
+    #[cfg(target_os = "ios")]
+    key_commands: Option<cocoa_ui::uikit::KeyCommands>,
     /// Main-thread proof, captured for menu rebuilds inside watchers.
     mtm: cocoa_ui::MainThreadMarker,
 }
@@ -123,7 +127,7 @@ fn apply_items(state: &Rc<RefCell<MenuState>>, items: Vec<ResolvedMenuItem>) {
             let Some(state) = state.upgrade() else {
                 return;
             };
-            with_platform_animation(metadata, move || {
+            crate::animation::with_platform_animation(metadata, move || {
                 let items = state.borrow().items.clone();
                 apply_items(&state, items);
             });
@@ -175,7 +179,11 @@ fn rebuild_menu(state: &Rc<RefCell<MenuState>>) {
             state.mtm,
         )
     };
-    button.set_menu(&build_menu(mtm, "", None, &items, &env));
+    let key_commands = cocoa_ui::uikit::KeyCommands::new(mtm);
+    button.set_menu(&build_menu(mtm, &key_commands, "", None, &items, &env));
+    // `setMenu:` has replaced the rows of a menu that is open, so the
+    // previous menu's commands are unreachable and retire with its scope.
+    state.borrow_mut().key_commands = Some(key_commands);
 }
 
 /// The container's layout face: the label's measurement plus the label
@@ -261,6 +269,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             items: Vec::new(),
             item_watchers: Vec::new(),
             selected: Cell::new(None),
+            #[cfg(target_os = "ios")]
+            key_commands: None,
             mtm,
         }));
 
@@ -269,13 +279,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // selected proposal — or the bounds — reaches the label as its
         // offer.
         host.set_layout_handler({
-            // Weak: the host is owned by `MenuState` itself, so a strong
-            // capture would be a retain cycle on the leaf's lifetime.
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let bounds = view::bounds(host);
                 let state = state.borrow();
                 view::set_frame(state.button.view(), bounds);
@@ -329,7 +334,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             move |wctx| {
                 let items = wctx.value().clone();
                 let state = Rc::clone(&state);
-                with_platform_animation(wctx.metadata(), move || {
+                crate::animation::with_platform_animation(wctx.metadata(), move || {
                     apply_items(&state, items);
                 });
             }

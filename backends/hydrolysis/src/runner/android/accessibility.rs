@@ -11,6 +11,20 @@
 //! `handle_accessibility_action` — the same code path desktop uses.
 
 use super::jni::JniError;
+#[cfg(feature = "accessibility")]
+use crate::renderer::accessibility::AccessibilityContentTypes;
+
+/// The JSON document `nativeAccessibilityTree` hands the provider: the
+/// merged `TreeUpdate` under `update`, plus every text field's declared
+/// content type under `contentTypes` — keyed by the same merged node id,
+/// with the camelCase names the provider maps onto `HintConstants`.
+#[cfg(feature = "accessibility")]
+#[derive(serde::Serialize)]
+struct AccessibilityPayload<'a> {
+    update: &'a accesskit::TreeUpdate,
+    #[serde(rename = "contentTypes")]
+    content_types: &'a AccessibilityContentTypes,
+}
 
 /// The host's copy of the accessibility tree — whole-tree publishes only;
 /// `accesskit` updates already carry the minimal node deltas.
@@ -26,6 +40,10 @@ pub struct AccessibilitySnapshot {
     /// the provider serves.
     #[cfg(feature = "accessibility")]
     published: Option<accesskit::TreeUpdate>,
+    /// The content types the last publish carried — compared alone, so a
+    /// declaration change with an identical tree still republishes.
+    #[cfg(feature = "accessibility")]
+    published_content_types: AccessibilityContentTypes,
 }
 
 impl AccessibilitySnapshot {
@@ -57,7 +75,7 @@ impl AccessibilitySnapshot {
 #[cfg(feature = "accessibility")]
 pub fn publish_if_pending(session: &mut super::host::AndroidSession) {
     // Popups have no second band on Android — the merged iterator is empty.
-    let Some(update) = session
+    let Some(merged) = session
         .runtime
         .renderer
         .take_merged_accessibility_tree_update(std::iter::empty::<
@@ -66,22 +84,30 @@ pub fn publish_if_pending(session: &mut super::host::AndroidSession) {
     else {
         return;
     };
-    // Publish whenever the update differs from what was last served —
-    // including changes no event is emitted for (bounds drift, scroll
-    // metrics). The empty event list below then just marks the provider
-    // dirty so the next query pulls a fresh tree. An identical update
-    // skips the serialize and the JNI crossing entirely.
-    let changed = session.a11y.published.as_ref() != Some(&update);
-    let events =
-        crate::runner::android_accessibility::diff_events(session.a11y.published.as_ref(), &update);
-    session.a11y.published = Some(update);
+    // Publish whenever the update or the content types differ from what was
+    // last served — including changes no event is emitted for (bounds drift,
+    // scroll metrics). The empty event list below then just marks the
+    // provider dirty so the next query pulls a fresh tree. An identical
+    // publish skips the serialize and the JNI crossing entirely.
+    let changed = session.a11y.published.as_ref() != Some(&merged.tree_update)
+        || session.a11y.published_content_types != merged.content_types;
+    let events = crate::runner::android_accessibility::diff_events(
+        session.a11y.published.as_ref(),
+        &merged.tree_update,
+    );
+    session.a11y.published = Some(merged.tree_update);
+    session.a11y.published_content_types = merged.content_types;
     if !changed {
         return;
     }
     let Some(published) = session.a11y.published.as_ref() else {
         return;
     };
-    match serde_json::to_string(published) {
+    let payload = AccessibilityPayload {
+        update: published,
+        content_types: &session.a11y.published_content_types,
+    };
+    match serde_json::to_string(&payload) {
         Ok(json) => {
             session.a11y.tree_json = Some(json);
             session.a11y.dirty = true;
@@ -215,6 +241,11 @@ pub fn perform_action(
         .renderer
         .handle_accessibility_action(request, &session.env);
     if handled {
+        // A handled action changed session state and is owed the frame that
+        // presents it, whatever cell marks the change happened to leave —
+        // the request every runner's accessibility dispatch makes.
+        session.runtime.request_refresh();
+        session.runtime.request_redraw();
         // A focus the action moved lands in the mirror now — the connection
         // rebinds while the screen reader's announcement is still live,
         // not at the next vsync.

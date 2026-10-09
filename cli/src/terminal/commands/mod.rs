@@ -10,7 +10,6 @@ use crate::{note, success, warn};
 use waterui_cli::{
     apple::backend::AppleBackend,
     backend::reinit_backend,
-    esp32::backend::Esp32Backend,
     gtk4::backend::Gtk4Backend,
     hydrolysis::backend::HydrolysisBackend,
     platform::TargetBackend as LibTargetBackend,
@@ -23,8 +22,7 @@ use waterui_cli::{
 /// Target backend (how the app is built and rendered).
 ///
 /// Shared by every command that takes `--backend`; commands accepting a
-/// narrower or wider set (`water package` has no ESP32 firmware backend,
-/// `water clean` adds `all`) define their own.
+/// narrower or wider set (`water clean` adds `all`) define their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TargetBackend {
     /// Apple backend (UIKit/AppKit).
@@ -38,11 +36,20 @@ pub enum TargetBackend {
     /// `WinUI` backend (Windows only, experimental).
     #[value(name = "winui")]
     WinUi,
-    /// Dew backend (ESP32 firmware).
-    Dew,
 }
 
 impl TargetBackend {
+    /// Convert a resolved library backend to its terminal representation.
+    pub const fn from_lib(backend: LibTargetBackend) -> Self {
+        match backend {
+            LibTargetBackend::Apple => Self::Apple,
+            LibTargetBackend::Android => Self::Android,
+            LibTargetBackend::Gtk4 => Self::Gtk4,
+            LibTargetBackend::Hydrolysis => Self::Hydrolysis,
+            LibTargetBackend::WinUi => Self::WinUi,
+        }
+    }
+
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     pub const fn is_experimental(self) -> bool {
@@ -57,7 +64,6 @@ impl TargetBackend {
             Self::Gtk4 => "GTK4",
             Self::Hydrolysis => "Hydrolysis",
             Self::WinUi => "WinUI",
-            Self::Dew => "ESP32",
         }
     }
 
@@ -69,7 +75,6 @@ impl TargetBackend {
             Self::Gtk4 => LibTargetBackend::Gtk4,
             Self::Hydrolysis => LibTargetBackend::Hydrolysis,
             Self::WinUi => LibTargetBackend::WinUi,
-            Self::Dew => LibTargetBackend::Dew,
         }
     }
 }
@@ -133,9 +138,6 @@ async fn ensure_generated_backend(
         TargetBackend::Gtk4 => Gtk4Backend::requires_regeneration(&project).await?,
         TargetBackend::Hydrolysis => HydrolysisBackend::requires_regeneration(&project).await?,
         TargetBackend::WinUi => WinUiBackend::requires_regeneration(&project).await?,
-        TargetBackend::Dew => {
-            project.esp32_config().is_none() || Esp32Backend::requires_regeneration(&project)?
-        }
     };
     if !needs_generation {
         return Ok(project);
@@ -157,9 +159,6 @@ async fn ensure_generated_backend(
         }
         TargetBackend::WinUi => {
             reinit_backend::<WinUiBackend>(&project).await?;
-        }
-        TargetBackend::Dew => {
-            reinit_backend::<Esp32Backend>(&project).await?;
         }
     }
     if let Some(pb) = spinner {

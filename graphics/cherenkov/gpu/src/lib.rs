@@ -1,10 +1,11 @@
 //! `cherenkov-gpu`: the wgpu backend for the Cherenkov 2D rendering
 //! engine.
 //!
-//! The shared front end lives in the [`cherenkov`] crate: [`Engine`],
-//! [`Surface`], [`Layer`], the layer tree and the render thread's loop are
-//! all generic over [`Backend`]. This crate supplies the render side only —
-//! [`Gpu`]'s [`Backend`] implementation drives the wgpu device on the
+//! The shared front end lives in the [`cherenkov`] crate:
+//! [`Engine`](cherenkov::Engine), [`Surface`](cherenkov::Surface),
+//! [`Layer`](cherenkov::Layer), the layer tree and the render thread's loop
+//! are all generic over [`Backend`]. This crate supplies the render side
+//! only — [`Gpu`]'s [`Backend`] implementation drives the wgpu device on the
 //! render thread.
 //!
 //! ```no_run
@@ -13,7 +14,7 @@
 //! use cherenkov_gpu::{Gpu, GpuConfig};
 //!
 //! let engine = Engine::<Gpu>::new(GpuConfig::default())?;
-//! let surface = engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16))?;
+//! let surface = engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {})?;
 //! surface.update(|tx| {
 //!     tx[surface.root()].content(
 //!         surface.record(|c| c.fill(Rect::new(0., 0., 64., 64.), WorkingColor::WHITE)),
@@ -174,9 +175,6 @@ pub enum ScratchFormat {
 /// Configuration for the GPU engine.
 #[derive(Clone, Debug)]
 pub struct GpuConfig {
-    /// Wakes an idle host for asynchronous filter parameter changes. The
-    /// callback can run on producer threads; offscreen callers may omit it.
-    pub redraw: Option<interop::RedrawCallback>,
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
@@ -192,10 +190,10 @@ pub struct GpuConfig {
     /// Window of a native GPU wait, and the deadline of a browser one.
     /// A native wait opens a new window every time the queue retires any
     /// submission — a slow adapter keeps draining — and fails with
-    /// [`RenderError::Timeout`] only when a whole window passes with
-    /// nothing retired: a deadline on progress, not on duration. On
-    /// wasm32, where a wait resolves on the page's event loop, it is a
-    /// hard timeout.
+    /// [`RenderError::Timeout`](cherenkov::RenderError::Timeout) only when
+    /// a whole window passes with nothing retired: a deadline on progress,
+    /// not on duration. On wasm32, where a wait resolves on the page's event
+    /// loop, it is a hard timeout.
     pub wait_timeout: std::time::Duration,
     /// Memory budgets.
     pub budget: cherenkov::Budget,
@@ -218,7 +216,6 @@ impl Default for GpuConfig {
     fn default() -> Self {
         Self {
             device: None,
-            redraw: None,
             backends: wgpu::Backends::all(),
             power_preference: wgpu::PowerPreference::HighPerformance,
             timestamps: false,
@@ -424,6 +421,11 @@ impl From<Offscreen> for GpuTarget {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Gpu;
 
+impl cherenkov::Target for Gpu {
+    type Queue = cherenkov::EngineQueue<Self>;
+    type Install = cherenkov::InstallOp<Self>;
+}
+
 impl Backend for Gpu {
     type Config = GpuConfig;
     type Info = GpuInfo;
@@ -454,9 +456,32 @@ impl Uploads<Rgba16F> for Gpu {}
 impl cherenkov::HdrOutput for Gpu {}
 
 // System-compositor planes (#90): eligible layers of an Apple window surface
-// are promoted to Core Animation layers — see `render::planes`.
-#[cfg(target_vendor = "apple")]
+// are promoted to Core Animation layers, and of an Android surface-control
+// surface to child surface controls — see `render::planes`.
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
 impl cherenkov::Planes for Gpu {}
+
+// Hosted system layers (#2199): the host's `NSView` (macOS), `CALayer` (iOS)
+// or `SurfaceControl` is placed on a plane of its own, never composited —
+// see `render::planes`.
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
+impl cherenkov::HostedLayers for Gpu {
+    type Object = render::planes::Hosted;
+
+    fn bind_hosted(
+        r: &mut Self::Renderer,
+        surface: cherenkov::SurfaceId,
+        layer: cherenkov::LayerId,
+        object: Self::Object,
+        size: kurbo::Size,
+    ) {
+        r.bind_hosted(surface, layer, object, size);
+    }
+}
+
+impl cherenkov::BackdropSampling for Gpu {}
+
+impl cherenkov::GpuInstalls for Gpu {}
 
 impl cherenkov::ProjectiveLayers for Gpu {}
 
@@ -478,13 +503,8 @@ impl cherenkov::GpuContent for Gpu {
         r.add_gpu_producer(id, content);
     }
 
-    fn add_frame_producer(
-        r: &mut Self::Renderer,
-        id: cherenkov::ProducerId,
-        dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        gate: std::sync::Arc<cherenkov::WakeGate>,
-    ) {
-        r.add_frame_producer(id, dirty, gate);
+    fn add_frame_producer(r: &mut Self::Renderer, id: cherenkov::ProducerId) {
+        r.add_frame_producer(id);
     }
 
     fn bind_gpu_producer(
@@ -568,8 +588,9 @@ impl cherenkov::Backdrop for Gpu {
         r: &mut Self::Renderer,
         surface: cherenkov::SurfaceId,
         id: cherenkov::BackdropId,
+        spec: cherenkov::BackdropSpec,
     ) {
-        r.add_backdrop_group(surface, id, None);
+        r.add_backdrop_group(surface, id, None, spec);
     }
     fn remove_backdrop_group(
         r: &mut Self::Renderer,
@@ -589,6 +610,7 @@ where
         surface: cherenkov::SurfaceId,
         id: cherenkov::BackdropId,
         filter: F,
+        spec: cherenkov::BackdropSpec,
     ) {
         r.add_backdrop_group(
             surface,
@@ -597,6 +619,7 @@ where
                 filter,
                 std::marker::PhantomData,
             ))),
+            spec,
         );
     }
 }

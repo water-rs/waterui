@@ -189,6 +189,20 @@ typedef enum WuiEvent {
 } WuiEvent;
 
 /**
+ * Which kind of key a [`WuiShortcutKey`] carries.
+ */
+typedef enum WuiShortcutKeyTag {
+  /**
+   * A key that produces one character, in `character`.
+   */
+  WuiShortcutKeyTag_Character = 0,
+  /**
+   * A named key, its W3C `KeyboardEvent.key` name in `name`.
+   */
+  WuiShortcutKeyTag_Named = 1,
+} WuiShortcutKeyTag;
+
+/**
  * FFI-safe menu item tag.
  */
 typedef enum WuiMenuItemTag {
@@ -879,6 +893,60 @@ typedef enum WuiKeyboardType {
    */
   WuiKeyboardType_PhoneNumber,
 } WuiKeyboardType;
+
+/**
+ * C ABI mirror of `Option<ContentType>` — `None` declares no content type.
+ *
+ * Written by hand rather than through `into_ffi!` because the FFI side
+ * carries the option inside the enum: `WuiContentType_None` is the value a
+ * field without a declared content type sends.
+ */
+typedef enum WuiContentType {
+  /**
+   * The field declares no content type.
+   */
+  WuiContentType_None,
+  /**
+   * Mirrors `ContentType::Username`.
+   */
+  WuiContentType_Username,
+  /**
+   * Mirrors `ContentType::Password`.
+   */
+  WuiContentType_Password,
+  /**
+   * Mirrors `ContentType::NewPassword`.
+   */
+  WuiContentType_NewPassword,
+  /**
+   * Mirrors `ContentType::EmailAddress`.
+   */
+  WuiContentType_EmailAddress,
+  /**
+   * Mirrors `ContentType::PhoneNumber`.
+   */
+  WuiContentType_PhoneNumber,
+  /**
+   * Mirrors `ContentType::OneTimeCode`.
+   */
+  WuiContentType_OneTimeCode,
+  /**
+   * Mirrors `ContentType::PersonName`.
+   */
+  WuiContentType_PersonName,
+  /**
+   * Mirrors `ContentType::PostalAddress`.
+   */
+  WuiContentType_PostalAddress,
+  /**
+   * Mirrors `ContentType::PostalCode`.
+   */
+  WuiContentType_PostalCode,
+  /**
+   * Mirrors `ContentType::CreditCardNumber`.
+   */
+  WuiContentType_CreditCardNumber,
+} WuiContentType;
 
 /**
  *C ABI mirror of `ToggleStyle`.
@@ -2108,6 +2176,18 @@ typedef struct EdgeSet EdgeSet;
 typedef struct ProposalSize ProposalSize;
 
 /**
+ * Specifies which safe-area regions a view ignores.
+ *
+ * The safe area has two regions on each edge: *container* — the system bars,
+ * display cutouts, the home indicator and window chrome — and *keyboard* —
+ * the software keyboard and other input-method surfaces. A region set always
+ * names at least one region; [`ALL`](Self::ALL), [`CONTAINER`](Self::CONTAINER)
+ * and [`KEYBOARD`](Self::KEYBOARD) are its only values, and
+ * [`on`](Self::on) pairs one with the edges it is ignored on.
+ */
+typedef struct SafeAreaRegions SafeAreaRegions;
+
+/**
  * Normalized coordinates (0.0–1.0) for positioning and gradient endpoints.
  *
  * Used to specify both anchor points on views and target positions in parents.
@@ -2138,11 +2218,6 @@ typedef struct WuiAnyView WuiAnyView;
  *Opaque FFI handle owning a `AnyViews<AnyView>`.
  */
 typedef struct WuiAnyViews WuiAnyViews;
-
-/**
- *Opaque FFI handle owning a `AnyViewsSnapshot<AnyView>`.
- */
-typedef struct WuiViewSnapshot WuiViewSnapshot;
 
 /**
  * The [`AssetServer`] a native web view owns.
@@ -2277,6 +2352,11 @@ typedef struct WuiVideoController WuiVideoController;
  *Opaque FFI handle owning a `Rc<BoundVideoEventHandler>`.
  */
 typedef struct WuiVideoEventHandler WuiVideoEventHandler;
+
+/**
+ *Opaque FFI handle owning a `AnyViewsSnapshot<AnyView>`.
+ */
+typedef struct WuiViewSnapshot WuiViewSnapshot;
 
 /**
  *Opaque FFI handle owning a `BoxWatcherGuard`.
@@ -3728,11 +3808,30 @@ typedef struct WuiMetadata_WuiFocused {
 typedef struct WuiMetadata_WuiFocused WuiMetadataFocused;
 
 /**
+ * FFI-safe representation of `SafeAreaRegions`: the regions an
+ * `IgnoreSafeArea` ignores.
+ */
+typedef struct WuiSafeAreaRegions {
+  /**
+   * Ignore the container region (system bars, cutouts, window chrome).
+   */
+  bool container;
+  /**
+   * Ignore the keyboard region (software keyboard, input-method surfaces).
+   */
+  bool keyboard;
+} WuiSafeAreaRegions;
+
+/**
  * FFI-safe representation of `IgnoreSafeArea`.
  */
 typedef struct WuiIgnoreSafeArea {
   /**
-   * Which edges should ignore safe area.
+   * Which safe-area regions are ignored.
+   */
+  struct WuiSafeAreaRegions regions;
+  /**
+   * Which edges ignore the named regions.
    */
   struct WuiEdgeSet edges;
 } WuiIgnoreSafeArea;
@@ -3852,6 +3951,26 @@ typedef struct WuiSystemIcon {
 } WuiSystemIcon;
 
 /**
+ * FFI-safe shortcut key: one character, or a named key from the W3C
+ * `KeyboardEvent.key` vocabulary.
+ */
+typedef struct WuiShortcutKey {
+  /**
+   * Which of `character` and `name` holds the key.
+   */
+  enum WuiShortcutKeyTag tag;
+  /**
+   * The key's Unicode scalar value for `Character`; 0 for `Named`.
+   */
+  uint32_t character;
+  /**
+   * The W3C key name (`Delete`, `F5`, `ArrowLeft`, …) for `Named`; empty
+   * for `Character`.
+   */
+  struct WuiStr name;
+} WuiShortcutKey;
+
+/**
  * FFI-safe shortcut modifier flags.
  */
 typedef struct WuiShortcutModifiers {
@@ -3878,9 +3997,9 @@ typedef struct WuiShortcutModifiers {
  */
 typedef struct WuiShortcut {
   /**
-   * The key equivalent.
+   * The key the shortcut fires on.
    */
-  struct WuiStr key;
+  struct WuiShortcutKey key;
   /**
    * The shortcut modifiers.
    */
@@ -4425,10 +4544,15 @@ typedef struct WuiGradient {
   float end_y;
   /**
    * Start radius (radial) or start angle in radians (angular).
+   *
+   * A radial radius is a fraction of the shorter side of the view's
+   * bounds and draws a circle: on a `w`x`h` box it spans `r * min(w, h)`
+   * points, so `0.5` reaches the nearer edge.
    */
   float start_value;
   /**
-   * End radius (radial) or end angle in radians (angular).
+   * End radius (radial) or end angle in radians (angular), in the same
+   * units as [`start_value`](Self::start_value).
    */
   float end_value;
 } WuiGradient;
@@ -5291,6 +5415,11 @@ typedef struct WuiTextField {
    * The on-screen keyboard variant to present while editing.
    */
   enum WuiKeyboardType keyboard;
+  /**
+   * The semantic content type the field declares for autofill —
+   * `WuiContentType_None` when it declares none.
+   */
+  enum WuiContentType content_type;
   /**
    * Context menu items offered when the user selects text in the field.
    */
@@ -7993,27 +8122,43 @@ typedef struct WuiBitmap {
 typedef struct Computed_RgbaBitmap WuiComputed_RgbaBitmap;
 
 /**
- * Callback for returning rendered RGBA data to Rust.
+ * One-shot completion handed to [`ViewRenderFn`].
+ *
+ * Native completes a render by invoking exactly one of `call` or `fail`,
+ * exactly once. It may do so asynchronously. Either function releases `data`,
+ * so neither may be invoked after the first.
  */
 typedef struct ViewRenderCallback {
   /**
-   * Opaque data pointer passed to the callback.
+   * Opaque data pointer passed to `call` or `fail`.
    */
   void *data;
   /**
-   * One-shot callback function. Native may invoke it asynchronously, but
-   * must invoke it exactly once.
+   * Completes the render with pixels.
    * - `data`: The opaque data pointer
    * - `rgba_ptr`: Pointer to RGBA pixel data (4 bytes per pixel)
    * - `rgba_len`: Length of the RGBA data in bytes
    * - `width`: Rendered width in pixels
    * - `height`: Rendered height in pixels
+   *
+   * The pixel buffer is only read during the call; native keeps ownership.
    */
   void (*call)(void *data,
                const uint8_t *rgba_ptr,
                uintptr_t rgba_len,
                uint32_t width,
                uint32_t height);
+  /**
+   * Completes the render with a failure instead of pixels.
+   * - `data`: The opaque data pointer
+   * - `message_ptr`: Pointer to a UTF-8 message describing the failure
+   * - `message_len`: Length of the message in bytes
+   *
+   * The message is only read during the call; native keeps ownership. It
+   * must be valid UTF-8: a message that is not valid UTF-8 aborts the
+   * process.
+   */
+  void (*fail)(void *data, const uint8_t *message_ptr, uintptr_t message_len);
 } ViewRenderCallback;
 
 /**
@@ -8023,7 +8168,8 @@ typedef struct ViewRenderCallback {
  * 1. Create an offscreen rendering context at the given size
  * 2. Render the `AnyView` hierarchy (native widgets + GPU surfaces)
  * 3. Capture the final composited result to RGBA pixels
- * 4. Call the callback with the pixel data
+ * 4. Invoke the callback's `call` with the pixel data, or its `fail` with
+ *    the reason when the capture cannot produce the view's pixels
  *
  * The view pointer is an `AnyView` that native should render.
  */
@@ -8102,6 +8248,12 @@ typedef struct WuiApp {
    */
   enum WuiLastWindowPolicy last_window_policy;
 } WuiApp;
+
+
+
+
+
+
 
 
 

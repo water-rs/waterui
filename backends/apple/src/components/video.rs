@@ -25,12 +25,16 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 use crate::main_queue_owned::{Shared, shared};
+#[cfg(feature = "video")]
+use cocoa_ui::avkit::PlayerLayerView;
 use cocoa_ui::avkit::{
-    ItemStatus, LoadGuard, MediaCharacteristic, PipEvent, Player, PlayerItem, PlayerLayerView,
-    PlayerView, TimeControlStatus, VideoGravity, media_option_is_forced, media_option_label,
-    media_option_language, media_option_roles, variant_codec_fourccs, variant_declared_bit_rate,
-    variant_is_hdr, variant_presentation_size,
+    ItemStatus, LoadGuard, MediaCharacteristic, Player, PlayerItem, TimeControlStatus,
+    VideoGravity, media_option_is_forced, media_option_label, media_option_language,
+    media_option_roles, variant_codec_fourccs, variant_declared_bit_rate, variant_is_hdr,
+    variant_presentation_size,
 };
+#[cfg(feature = "video_player")]
+use cocoa_ui::avkit::{PipEvent, PlayerView};
 use cocoa_ui::objc2_av_foundation::{AVAssetVariant, AVMediaSelectionGroup};
 use cocoa_ui::{MainThreadMarker, Retained, Size as CocoaSize, main_queue};
 use waterkit_audio::{
@@ -39,11 +43,14 @@ use waterkit_audio::{
 };
 use waterui::reactive::{Binding, Computed, Signal};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+#[cfg(feature = "video")]
+use waterui_video::video::NativeVideoConfig;
+#[cfg(feature = "video_player")]
+use waterui_video::video::NativeVideoPlayerConfig;
 use waterui_video::video::{
     AudioTrackInfo, AudioTrackSelection, BoundVideoEventHandler, ContentMode, Event,
-    NativeVideoConfig, NativeVideoPlayerConfig, PlaybackMetrics, PlaybackOutputPath,
-    PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog,
-    VideoTrackInfo, VideoTrackSelection,
+    PlaybackMetrics, PlaybackOutputPath, PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo,
+    SubtitleTrackOrigin, TrackCatalog, VideoTrackInfo, VideoTrackSelection,
 };
 use waterui_video::{
     Delivery, LiveWindow, MediaItem, PlaybackPhase, PlaybackPolicy, PlayerController, RepeatMode,
@@ -55,7 +62,6 @@ use crate::dispatch::Dispatcher;
 #[cfg(all(target_os = "ios", feature = "video_player"))]
 use cocoa_ui::uikit::HostView;
 
-#[cfg(feature = "video_player")]
 /// Registers both video leaves; each is still gated by its own feature.
 pub fn install(dispatcher: &mut Dispatcher) {
     #[cfg(feature = "video")]
@@ -98,11 +104,16 @@ const fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
 }
 
 /// The leaf's measure: the proposal, falling back to `320×180` per side.
-fn measure(proposal: ProposalSize) -> ViewDimensions {
-    ViewDimensions::new(Size::new(
-        proposal.width.unwrap_or(FALLBACK_WIDTH),
-        proposal.height.unwrap_or(FALLBACK_HEIGHT),
-    ))
+/// A `Fit` leaf does not stretch vertically, so its height answer is its
+/// own fallback under every proposal — never the offered height echoed
+/// back and claimed as the band a stack negotiated.
+fn measure(stretch: StretchAxis, proposal: ProposalSize) -> ViewDimensions {
+    let height = if stretch == StretchAxis::Horizontal {
+        FALLBACK_HEIGHT
+    } else {
+        proposal.height.unwrap_or(FALLBACK_HEIGHT)
+    };
+    ViewDimensions::new(Size::new(proposal.width.unwrap_or(FALLBACK_WIDTH), height))
 }
 
 /// Layout face shared by both leaves.
@@ -118,7 +129,7 @@ impl core::fmt::Debug for VideoSubView {
 
 impl SubView for VideoSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        measure(proposal)
+        measure(self.stretch, proposal)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -1746,7 +1757,7 @@ mod tests {
 
     #[test]
     fn measure_falls_back_to_320x180() {
-        let empty = measure(ProposalSize::new(None, None));
+        let empty = measure(StretchAxis::Both, ProposalSize::new(None, None));
         assert!(f32::abs(empty.size.width - FALLBACK_WIDTH) < f32::EPSILON);
         assert!(f32::abs(empty.size.height - FALLBACK_HEIGHT) < f32::EPSILON);
     }
@@ -1754,9 +1765,17 @@ mod tests {
     #[test]
     fn measure_uses_proposal() {
         let proposal = ProposalSize::new(Some(640.0), Some(360.0));
-        let measured = measure(proposal);
+        let measured = measure(StretchAxis::Both, proposal);
         assert!(f32::abs(measured.size.width - 640.0) < f32::EPSILON);
         assert!(f32::abs(measured.size.height - 360.0) < f32::EPSILON);
+    }
+
+    #[test]
+    fn measure_fit_keeps_its_own_height() {
+        let proposal = ProposalSize::new(Some(640.0), Some(360.0));
+        let measured = measure(StretchAxis::Horizontal, proposal);
+        assert!(f32::abs(measured.size.width - 640.0) < f32::EPSILON);
+        assert!(f32::abs(measured.size.height - FALLBACK_HEIGHT) < f32::EPSILON);
     }
 
     #[test]

@@ -3,7 +3,20 @@
 use super::*;
 
 pub mod lazy;
-mod lifecycle_impl;
 
 pub use lazy::*;
-pub use lifecycle_impl::*;
+
+pub struct DeferredLifeCycleHook {
+    pub(crate) env: Environment,
+    pub(crate) hook: LifeCycleHook,
+}
+
+impl DeferredLifeCycleHook {
+    pub(crate) const fn new(hook: LifeCycleHook, env: Environment) -> Self {
+        Self { env, hook }
+    }
+
+    pub(crate) fn call(self) {
+        self.hook.handle(&self.env);
+    }
+}

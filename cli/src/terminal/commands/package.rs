@@ -23,7 +23,8 @@ use waterui_cli::{
     },
     package_output::place_in_project,
     platform::{
-        DeviceSigning, PackageAudience, PackageOptions, TargetPlatform as LibTargetPlatform,
+        DeviceSigning, PackageAudience, PackageOptions, TargetBackend as LibTargetBackend,
+        TargetPlatform as LibTargetPlatform,
     },
     project::{ManagedBackends, Project},
     winui::platform::{build_winui, package_winui},
@@ -65,6 +66,16 @@ pub enum TargetBackend {
 }
 
 impl TargetBackend {
+    const fn from_lib(backend: LibTargetBackend) -> Self {
+        match backend {
+            LibTargetBackend::Apple => Self::Apple,
+            LibTargetBackend::Android => Self::Android,
+            LibTargetBackend::Gtk4 => Self::Gtk4,
+            LibTargetBackend::Hydrolysis => Self::Hydrolysis,
+            LibTargetBackend::WinUi => Self::WinUi,
+        }
+    }
+
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     const fn is_experimental(self) -> bool {
@@ -115,10 +126,9 @@ pub struct Args {
     #[arg(short, long, value_enum)]
     platform: TargetPlatform,
 
-    /// Backend to use (overrides default for platform).
-    /// Required: `water package` always needs an explicit backend.
+    /// Backend to use (must agree with any Water.toml platform declaration).
     #[arg(short, long, value_enum)]
-    backend: TargetBackend,
+    backend: Option<TargetBackend>,
 
     /// Android painter the Hydrolysis host draws with (gpu, hwui).
     /// Only valid with `--platform android --backend hydrolysis`; the
@@ -157,6 +167,13 @@ pub struct Args {
     /// (needed in non-interactive environments).
     #[arg(short = 'y', long)]
     yes: bool,
+}
+
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 /// The build profile flags: at most one of them, and `release` when neither is
@@ -225,12 +242,20 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     // The per-backend artifact builds cross clippy's `large_futures` threshold
     // (16 KiB) on Windows, so the future is pinned on the heap.
     let built = Box::pin(build_packaging_artifacts(shell, &args, &context)).await?;
-    package_artifact(shell, &args, &context, built.as_ref()).await
+    // The packaging step's future crosses the same threshold, so it is
+    // pinned too.
+    Box::pin(package_artifact(shell, &args, &context, built.as_ref())).await
 }
 
 async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<PackagingContext>> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let backend = resolve_backend(args.platform, args.backend)?;
+    let manifest = waterui_cli::project::Manifest::open(project_path.join("Water.toml")).await?;
+    let backend = TargetBackend::from_lib(waterui_cli::project::resolve_backend(
+        &manifest,
+        lib_platform(args.platform),
+        args.backend
+            .map(|backend| backend.cli_backend().lib_backend()),
+    )?);
     // Hydrolysis on Android opens no managed backend — the old widget-FFI
     // backend is not its runtime; the Hydrolysis launcher crate
     // `ensure_generated_backend` produces is.
@@ -240,7 +265,12 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         } else {
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
-    let project = Project::open(&project_path, managed_backends).await?;
+    let project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    )
+    .await?;
     if project.manifest().package.embedded {
         bail!(
             "`water package` does not apply to embedded projects: `water build` already produces the host-consumable artifact"
@@ -393,13 +423,13 @@ async fn build_packaging_artifacts(
                 .await
         }
         TargetBackend::Hydrolysis => {
-            build_hydrolysis_packaging_artifacts(
+            Box::pin(build_hydrolysis_packaging_artifacts(
                 shell,
                 &context.project,
                 args.platform,
                 &args.arch,
                 context.build_options.clone(),
-            )
+            ))
             .await
         }
         TargetBackend::WinUi => {
@@ -416,16 +446,21 @@ async fn build_android_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let mut built = None;
+    // Every tool the build spawns, the prologue's included, echoes to the
+    // terminal the user is watching.
+    let project = &project.with_std_output(shell.is_interactive());
     AndroidPlatform::clean_jni_libs(project).await?;
+    // The companion render, permission audit and font staging do not
+    // depend on the ABI — run them once for the whole set.
+    AndroidPlatform::prepare_for_build(project).await?;
     for arch in arch {
         let abi = arch.to_abi();
         let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
         // The Android build future crosses clippy's `large_futures` threshold
         // (16 KiB) on Windows, so it is pinned on the heap.
-        let target = Box::pin(
-            shell.display_output(AndroidPlatform::new(abi).build(project, build_options.clone())),
-        )
-        .await?;
+        let target =
+            Box::pin(AndroidPlatform::new(abi).build_prepared(project, build_options.clone()))
+                .await?;
         built = Some(target);
         if let Some(pb) = spinner {
             pb.finish_and_clear();
@@ -442,13 +477,12 @@ async fn build_apple_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let spinner = shell.spinner("Building Rust library...");
-    let built = shell
-        .display_output(Box::pin(build_rust_lib(
-            project,
-            lib_platform(platform),
-            build_options,
-        )))
-        .await?;
+    let built = Box::pin(build_rust_lib(
+        &project.with_std_output(shell.is_interactive()),
+        lib_platform(platform),
+        build_options,
+    ))
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -462,9 +496,11 @@ async fn build_gtk4_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let spinner = shell.spinner("Building GTK4 app...");
-    let built = shell
-        .display_output(build_gtk4(project, build_options))
-        .await?;
+    let built = build_gtk4(
+        &project.with_std_output(shell.is_interactive()),
+        build_options,
+    )
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -478,9 +514,11 @@ async fn build_winui_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let spinner = shell.spinner("Building WinUI app...");
-    let built = shell
-        .display_output(build_winui(project, build_options))
-        .await?;
+    let built = build_winui(
+        &project.with_std_output(shell.is_interactive()),
+        build_options,
+    )
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -505,14 +543,12 @@ async fn build_hydrolysis_packaging_artifacts(
         for arch in arch {
             let abi = arch.to_abi();
             let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
-            let target = shell
-                .display_output(hydrolysis_android::build(
-                    project,
-                    &waterui_cli::toolchain::Host::current(),
-                    abi,
-                    build_options.clone(),
-                ))
-                .await?;
+            let target = hydrolysis_android::build(
+                &project.with_std_output(shell.is_interactive()),
+                abi,
+                build_options.clone(),
+            )
+            .await?;
             built = Some(target);
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
@@ -523,13 +559,12 @@ async fn build_hydrolysis_packaging_artifacts(
     }
 
     let spinner = shell.spinner("Building hydrolysis app...");
-    let built = shell
-        .display_output(build_hydrolysis(
-            project,
-            hydrolysis_platform(platform),
-            build_options,
-        ))
-        .await?;
+    let built = Box::pin(build_hydrolysis(
+        &project.with_std_output(shell.is_interactive()),
+        hydrolysis_platform(platform),
+        build_options,
+    ))
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -544,9 +579,7 @@ async fn package_artifact(
     built: Option<&BuiltTarget>,
 ) -> Result<()> {
     let spinner = shell.spinner("Packaging application...");
-    let artifact = shell
-        .display_output(package_artifact_inner(args, context, built))
-        .await?;
+    let artifact = package_artifact_inner(args, context, built, shell.is_interactive()).await?;
     let artifact = place_in_project(&context.project, artifact).await?;
     // Consumers read the host library beside the `.app` this command reports,
     // so it stages against the placed path, which only exists after the move.
@@ -569,7 +602,7 @@ async fn package_artifact(
                 artifact.path().display()
             )
         })?;
-        stage_dxc_runtime(destination).await?;
+        stage_dxc_runtime(context.project.host(), destination).await?;
     }
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -582,7 +615,11 @@ async fn package_artifact_inner(
     args: &Args,
     context: &PackagingContext,
     built: Option<&BuiltTarget>,
+    std_output: bool,
 ) -> Result<Artifact> {
+    // The only project in scope carries the output policy the packaging
+    // tools run under.
+    let project = &context.project.with_std_output(std_output);
     let package_options = context.package_options.clone();
     match context.backend {
         TargetBackend::Android => {
@@ -591,7 +628,7 @@ async fn package_artifact_inner(
                 eyre::eyre!("Internal error: Android packaging has no build result")
             })?;
             AndroidPlatform::package_with_abis(
-                &context.project,
+                project,
                 package_options,
                 &abis,
                 built,
@@ -605,17 +642,11 @@ async fn package_artifact_inner(
             let built = built.ok_or_else(|| {
                 eyre::eyre!("Internal error: Apple packaging has no build result")
             })?;
-            package_apple(
-                &context.project,
-                lib_platform(args.platform),
-                package_options,
-                built,
-            )
-            .await
+            package_apple(project, lib_platform(args.platform), package_options, built).await
         }
         TargetBackend::Gtk4 => {
             package_gtk4(
-                &context.project,
+                project,
                 package_options,
                 built.ok_or_else(|| {
                     eyre::eyre!("Internal error: GTK4 packaging has no build result")
@@ -625,7 +656,7 @@ async fn package_artifact_inner(
         }
         TargetBackend::WinUi => {
             package_winui(
-                &context.project,
+                project,
                 package_options,
                 built.ok_or_else(|| {
                     eyre::eyre!("Internal error: WinUI packaging has no build result")
@@ -636,10 +667,9 @@ async fn package_artifact_inner(
         TargetBackend::Hydrolysis => {
             if args.platform == TargetPlatform::Android {
                 let abis: Vec<AndroidAbi> = args.arch.iter().map(|arch| arch.to_abi()).collect();
-                let painter = hydrolysis_android::resolve_painter(&context.project, args.painter);
+                let painter = hydrolysis_android::resolve_painter(project, args.painter);
                 hydrolysis_android::package_with_abis(
-                    &context.project,
-                    &waterui_cli::toolchain::Host::current(),
+                    project,
                     painter,
                     &package_options,
                     &abis,
@@ -655,7 +685,7 @@ async fn package_artifact_inner(
                 .await
             } else {
                 package_hydrolysis(
-                    &context.project,
+                    project,
                     hydrolysis_platform(args.platform),
                     package_options,
                     built,
@@ -664,45 +694,6 @@ async fn package_artifact_inner(
             }
         }
     }
-}
-
-fn resolve_backend(platform: TargetPlatform, backend: TargetBackend) -> Result<TargetBackend> {
-    let supported = matches!(
-        (platform, backend),
-        (
-            TargetPlatform::Ios | TargetPlatform::IosSimulator,
-            TargetBackend::Apple
-        ) | (
-            TargetPlatform::Macos,
-            TargetBackend::Apple | TargetBackend::Hydrolysis
-        ) | (
-            TargetPlatform::Android,
-            TargetBackend::Android | TargetBackend::Hydrolysis
-        ) | (
-            TargetPlatform::Linux,
-            TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-        ) | (
-            TargetPlatform::Windows,
-            TargetBackend::Hydrolysis | TargetBackend::WinUi
-        ) | (TargetPlatform::Web, TargetBackend::Hydrolysis)
-    );
-
-    if !supported {
-        bail!(
-            "Backend {:?} does not support platform {:?}.\n\
-             Valid combinations:\n  \
-             - iOS/iOS Simulator: apple\n  \
-             - Android: android, hydrolysis\n  \
-             - macOS: apple, hydrolysis\n  \
-             - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis, winui\n  \
-             - Web: hydrolysis",
-            backend,
-            platform
-        );
-    }
-
-    Ok(backend)
 }
 
 fn validate_unsigned_args(
@@ -880,8 +871,8 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        AndroidArch, BuildProfile, TargetBackend, TargetPlatform, resolve_backend,
-        validate_arch_args, validate_unsigned_args,
+        AndroidArch, BuildProfile, TargetBackend, TargetPlatform, validate_arch_args,
+        validate_unsigned_args,
     };
 
     #[test]
@@ -998,36 +989,6 @@ mod tests {
                 &[AndroidArch::Arm64]
             )
             .is_ok()
-        );
-    }
-
-    #[test]
-    fn resolve_backend_validates_explicit_backend() {
-        assert_eq!(
-            resolve_backend(TargetPlatform::Android, TargetBackend::Android)
-                .expect("android backend"),
-            TargetBackend::Android
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Android, TargetBackend::Hydrolysis)
-                .expect("hydrolysis on android backend"),
-            TargetBackend::Hydrolysis
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Windows, TargetBackend::Hydrolysis)
-                .expect("windows backend"),
-            TargetBackend::Hydrolysis
-        );
-        assert!(resolve_backend(TargetPlatform::Windows, TargetBackend::Gtk4).is_err());
-        assert_eq!(
-            resolve_backend(TargetPlatform::Windows, TargetBackend::WinUi)
-                .expect("windows winui backend"),
-            TargetBackend::WinUi
-        );
-        assert!(resolve_backend(TargetPlatform::Linux, TargetBackend::WinUi).is_err());
-        assert_eq!(
-            resolve_backend(TargetPlatform::Web, TargetBackend::Hydrolysis).expect("web backend"),
-            TargetBackend::Hydrolysis
         );
     }
 }

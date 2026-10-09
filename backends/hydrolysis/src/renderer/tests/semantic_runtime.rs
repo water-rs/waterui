@@ -210,7 +210,7 @@ fn toggle_emits_and_click_flips() {
     let on = Binding::container(false);
     let on_for_view = on.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
-        AnyView::new(vstack((toggle("Airplane mode", &on_for_view),)))
+        AnyView::new(vstack((toggle("Airplane mode", &on_for_view).switch(),)))
     }));
 
     let update = pumped(&mut runtime);
@@ -233,6 +233,10 @@ fn toggle_emits_and_click_flips() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "SetValue must store the written value exactly, not a stepped or snapped one"
+)]
 fn slider_emits_and_value_actions_step() {
     let value = Binding::container(0.5f64);
     let value_for_view = value.clone();
@@ -262,12 +266,22 @@ fn slider_emits_and_value_actions_step() {
         act(&mut runtime, Action::Increment, slider_id),
         "Increment changed nothing"
     );
-    assert_eq!(value.snapshot(), 0.51, "Increment did not step the binding");
+    assert!(
+        approx::relative_eq!(value.snapshot(), 0.51),
+        "Increment did not step the binding: left {:?}, right {:?}",
+        value.snapshot(),
+        0.51
+    );
     assert!(
         act(&mut runtime, Action::Decrement, slider_id),
         "Decrement changed nothing"
     );
-    assert_eq!(value.snapshot(), 0.5, "Decrement did not step the binding");
+    assert!(
+        approx::relative_eq!(value.snapshot(), 0.5),
+        "Decrement did not step the binding: left {:?}, right {:?}",
+        value.snapshot(),
+        0.5
+    );
     assert!(
         act_with_data(
             &mut runtime,
@@ -277,7 +291,12 @@ fn slider_emits_and_value_actions_step() {
         ),
         "SetValue changed nothing"
     );
-    assert_eq!(value.snapshot(), 0.25, "SetValue did not write the binding");
+    assert!(
+        value.snapshot() == 0.25,
+        "SetValue did not write the binding: left {:?}, right {:?}",
+        value.snapshot(),
+        0.25
+    );
 
     let update = pumped(&mut runtime);
     let (_, slider_node) = find_by_label(&update, Role::Slider, "Volume")
@@ -666,7 +685,10 @@ fn color_picker_emits_and_popup_swatches_select() {
         (picked.components[2], expected.components[2], "blue"),
         (picked.components[3], expected.components[3], "opacity"),
     ] {
-        assert_eq!(picked, expected, "the swatch wrote a different {channel}");
+        assert!(
+            approx::relative_eq!(picked, expected),
+            "the swatch wrote a different {channel}: left {picked:?}, right {expected:?}"
+        );
     }
     let update = pumped(&mut runtime);
     assert!(
@@ -883,7 +905,7 @@ fn list_toggle_row_emits_actionable_switch() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let on_for_row = on_for_view.clone();
         AnyView::new(List::content((move || {
-            ListItem::new(toggle("Wi-Fi", &on_for_row))
+            ListItem::new(toggle("Wi-Fi", &on_for_row).switch())
         },)))
     }));
 
@@ -1245,7 +1267,7 @@ fn tab_traverses_the_semantic_tree_and_activation_dispatches_click() {
         let tapped = tapped_for_view.clone();
         AnyView::new(vstack((
             button("First").action(move || tapped.set(true)),
-            toggle("Mode", &on_for_view),
+            toggle("Mode", &on_for_view).switch(),
             field("Name", &value_for_view),
             button("Last"),
         )))

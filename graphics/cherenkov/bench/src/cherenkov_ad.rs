@@ -23,13 +23,14 @@ use cherenkov_gpu::interop::{
 use cherenkov_gpu::{Gpu, GpuConfig, ScratchFormat};
 use cherenkov_oracle::present::presented_srgb_to_working;
 use cherenkov_scene::{
-    BackdropEffectSpec, BackdropFilter, BlendMode, BlendSpace, ColorSpace, Draw as SceneDraw,
-    Feature, FilterBlend, GroupItem, ImageColorSpace, ImageEncoding, Item, Layer as SceneLayer,
-    LayerFilter, Motion, ResourceHash,
+    BackdropFilter, BlendMode, BlendSpace, ColorSpace, Draw as SceneDraw, Feature, FilterBlend,
+    GroupItem, ImageColorSpace, ImageEncoding, Item, Layer as SceneLayer, LayerFilter, Motion,
+    ResourceHash,
 };
 use filtrate::{FilterExt, FilterImage, filters};
 use kurbo::{Affine, BezPath, Circle, Ellipse, Line, Rect, RoundedRect, Vec2};
 
+use crate::convert::AnchorLayer as _;
 use crate::convert::{
     self, Blobs, Op, ShapeKind, engine_blend, group_op, op, shape_kind, text_op, working,
 };
@@ -465,7 +466,11 @@ struct PrepLayer {
     /// The backdrop group this layer samples, if any.
     backdrop: Option<u32>,
     /// The member's per-member backdrop effect, if any.
-    backdrop_effect: Option<BackdropEffectSpec>,
+    backdrop_effect: Option<cherenkov::BackdropEffect>,
+    /// The `Layer::id` a backdrop group's `anchor` can name, if any.
+    id: Option<u32>,
+    /// The member's outer extent in device pixels (`0` for none).
+    backdrop_outer: cherenkov::BackdropOuter,
     /// The layer's projective pose.
     projection: Option<LayerProjection>,
     /// The layer's one-time motion.
@@ -476,6 +481,8 @@ struct PrepLayer {
 struct ContentLayer {
     /// The layer handle; `None` for the surface root.
     layer: Option<GpuLayer>,
+    /// The scene `Layer::id` a backdrop group's `anchor` names, if any.
+    id: Option<u32>,
     /// Its recorded ops.
     ops: Vec<Op>,
     /// Live items inside `ops`.
@@ -486,10 +493,13 @@ struct ContentLayer {
     motion: Option<LayerMotion>,
 }
 
-impl ContentLayer {
-    /// The engine layer handle, resolving `None` to the surface root.
+impl convert::AnchorLayer<Gpu> for ContentLayer {
     fn handle<'a>(&'a self, surface: &'a Surface<Gpu>) -> &'a GpuLayer {
         self.layer.as_ref().unwrap_or_else(|| surface.root())
+    }
+
+    fn scene_id(&self) -> Option<u32> {
+        self.id
     }
 }
 
@@ -839,6 +849,11 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropBlur,
         Feature::BackdropColorMatrix,
         Feature::BackdropEffect,
+        Feature::BackdropScale,
+        Feature::BackdropLevels,
+        Feature::BackdropAnchor,
+        Feature::BackdropUnion,
+        Feature::BackdropOuter,
         Feature::Projective,
         // `sRGB` maps to `SrgbEncoded`; `linear-p3` and `linear-srgb` are
         // both linear interpolation, which is the working space already.
@@ -871,6 +886,9 @@ fn unsupported_feature(u: &str) -> Feature {
         | "backdrop-footprint"
         | "backdrop-effect-sdf-path"
         | "backdrop-shader" => Feature::Backdrop,
+        "backdrop-member-before-anchor" | "backdrop-member-outside-anchor-canvas" => {
+            Feature::BackdropAnchor
+        }
         "blend-space" => Feature::BlendSpace(BlendSpace::SrgbEncoded),
         "projective-unclipped"
         | "projective-backdrop-member"
@@ -1151,7 +1169,9 @@ fn register_filter(
             filters::ColorMatrix(first.map(|value| value as f32))
                 .then(filters::ColorMatrix(second.map(|value| value as f32))),
         ),
-        LayerFilter::GaussianBlur { sigma } => engine.filter(filters::GaussianBlur(*sigma as f32)),
+        LayerFilter::GaussianBlur { sigma } => {
+            engine.filter(filters::GaussianBlur::new(*sigma as f32))
+        }
         LayerFilter::BoxBlur { radius } => engine.filter(filters::Blur(*radius as f32)),
         LayerFilter::BlendImage {
             image,
@@ -1235,7 +1255,16 @@ fn prep_layer(
         },
         items: Vec::new(),
         backdrop: layer.backdrop,
-        backdrop_effect: layer.backdrop_effect.clone(),
+        backdrop_effect: layer
+            .backdrop_effect
+            .as_ref()
+            .map(crate::convert::backdrop_effect)
+            .transpose()?,
+        id: layer.id.map(std::num::NonZeroU32::get),
+        backdrop_outer: match layer.backdrop {
+            Some(group) => crate::convert::backdrop_outer(layer.backdrop_outer, group)?,
+            None => cherenkov::BackdropOuter::ZERO,
+        },
         // A `Motion::Paint` animates a content operand, not a layer
         // property — `paint_motion` binds it inside the content run.
         motion: match &layer.motion {
@@ -1426,9 +1455,9 @@ fn build_layer(
     tx: &mut Transaction<'_, Gpu>,
     parent: Option<&GpuLayer>,
     prep: PrepLayer,
-    groups: &HashMap<u32, cherenkov::BackdropGroup>,
     content_layers: &mut Vec<ContentLayer>,
     filter_handles: &mut Vec<cherenkov::Filter>,
+    pending: &mut Vec<convert::PendingMember>,
 ) {
     let owned = parent.map(|_| surface.layer());
     let layer = owned.as_ref().unwrap_or_else(|| surface.root());
@@ -1442,42 +1471,10 @@ fn build_layer(
         edit.opacity(prep.opacity as f32);
         edit.blend(prep.blend);
         if let Some(filter) = &prep.filter {
-            edit.filter(filter);
+            edit.filter(filter.id());
         }
         if let Some(clip) = &prep.clip {
             clip_shape(edit, clip);
-        }
-        if let Some(id) = prep.backdrop {
-            let group = &groups[&id];
-            match &prep.backdrop_effect {
-                None => {
-                    edit.backdrop(group.sample());
-                }
-                Some(spec) => {
-                    use BackdropEffectSpec as S;
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "effect parameters are f32 at the engine boundary"
-                    )]
-                    let effect: cherenkov::BackdropEffect = match spec {
-                        S::ColorMatrix { matrix } => {
-                            cherenkov::ColorMatrix(matrix.map(|v| v as f32)).into()
-                        }
-                        S::Refraction { depth, strength } => cherenkov::Refraction {
-                            depth: *depth as f32,
-                            strength: *strength as f32,
-                        }
-                        .into(),
-                        S::RimLight { width, color, gain } => cherenkov::Rim {
-                            width: *width as f32,
-                            color: color.map(|v| v as f32),
-                            gain: *gain as f32,
-                        }
-                        .into(),
-                    };
-                    edit.backdrop(group.sample_with(effect));
-                }
-            }
         }
     }
     if let Some(parent) = parent {
@@ -1490,6 +1487,7 @@ fn build_layer(
                 tx[layer].push(&child);
                 content_layers.push(ContentLayer {
                     layer: Some(child),
+                    id: None,
                     ops: run.ops,
                     live: run.live,
                     motions: run.motions,
@@ -1502,9 +1500,9 @@ fn build_layer(
                     tx,
                     Some(layer),
                     *p,
-                    groups,
                     content_layers,
                     filter_handles,
+                    pending,
                 );
             }
         }
@@ -1514,11 +1512,23 @@ fn build_layer(
     }
     content_layers.push(ContentLayer {
         layer: owned,
+        id: prep.id,
         ops: prep.own.ops,
         live: prep.own.live,
         motions: prep.own.motions,
         motion: prep.motion,
     });
+    // The member's backdrop composite defers to `prepare`: a group's spec
+    // names its anchor layer, so the group's handle exists only once
+    // every layer is built. The index is this layer's `ContentLayer`.
+    if let Some(gid) = prep.backdrop {
+        pending.push((
+            content_layers.len() - 1,
+            gid,
+            prep.backdrop_effect,
+            prep.backdrop_outer,
+        ));
+    }
 }
 
 /// Creates the engine backdrop group for a scene group. The chain type is
@@ -1533,6 +1543,7 @@ fn build_layer(
 fn backdrop_group(
     surface: &Surface<Gpu>,
     group: &cherenkov_scene::BackdropGroup,
+    anchor: Option<&GpuLayer>,
 ) -> Result<cherenkov::BackdropGroup, BenchError> {
     use filtrate::filters::{ColorMatrix, GaussianBlur};
     let unsupported = || BenchError::Unsupported {
@@ -1540,19 +1551,22 @@ fn backdrop_group(
         feature: Feature::Backdrop,
         api: Some("backdrop filter chain shape is not built"),
     };
+    let spec = convert::backdrop_spec(group)?;
+    let spec = anchor.map_or(spec, |anchor| spec.anchor(anchor.id()));
     Ok(match group.filters.as_slice() {
-        [] => surface.backdrop_group_unfiltered(),
+        [] => surface.backdrop_group_unfiltered(spec),
         [BackdropFilter::GaussianBlur { sigma }] => {
-            surface.backdrop_group(GaussianBlur(*sigma as f32))
+            surface.backdrop_group(GaussianBlur::new(*sigma as f32), spec)
         }
         [BackdropFilter::ColorMatrix { matrix }] => {
-            surface.backdrop_group(ColorMatrix(matrix.map(|v| v as f32)))
+            surface.backdrop_group(ColorMatrix(matrix.map(|v| v as f32)), spec)
         }
         [
             BackdropFilter::GaussianBlur { sigma },
             BackdropFilter::ColorMatrix { matrix },
         ] => surface.backdrop_group(
-            GaussianBlur(*sigma as f32).then(ColorMatrix(matrix.map(|v| v as f32))),
+            GaussianBlur::new(*sigma as f32).then(ColorMatrix(matrix.map(|v| v as f32))),
+            spec,
         ),
         _ => return Err(unsupported()),
     })
@@ -1689,7 +1703,7 @@ impl Engine for Cherenkov {
                 let (target, textures) = TextureTarget::new(size);
                 let surface = self
                     .engine
-                    .surface(target)
+                    .surface(target, || {})
                     .map_err(|e| BenchError::Gpu(format!("cherenkov surface: {e}")))?;
                 present.source =
                     Some(textures.try_recv().map_err(|e| {
@@ -1704,7 +1718,7 @@ impl Engine for Cherenkov {
             }
             None => self
                 .engine
-                .surface(Offscreen::new(size, OffscreenFormat::LinearF16))
+                .surface(Offscreen::new(size, OffscreenFormat::LinearF16), || {})
                 .map_err(|e| BenchError::Gpu(format!("cherenkov surface: {e}")))?,
         };
         if let Some(present) = self.present.as_deref_mut() {
@@ -1739,24 +1753,30 @@ impl Engine for Cherenkov {
         )?;
         self.content_layers.clear();
         self.backdrop_groups.clear();
-        let mut backdrop_groups = HashMap::new();
-        for group in &input.scene.backdrop_groups {
-            backdrop_groups.insert(group.id, backdrop_group(&surface, group)?);
-        }
         let mut content_layers = Vec::new();
         let mut filter_handles = Vec::new();
+        let mut pending = Vec::new();
         surface.update(|tx| {
             build_layer(
                 &surface,
                 tx,
                 None,
                 prep,
-                &backdrop_groups,
                 &mut content_layers,
                 &mut filter_handles,
+                &mut pending,
             );
         });
-        self.backdrop_groups = backdrop_groups;
+        // A group's `anchor` names the `Layer::id` of a layer built above,
+        // so the groups exist only once every layer does.
+        self.backdrop_groups = convert::build_backdrop_groups(
+            &surface,
+            &input.scene.backdrop_groups,
+            &content_layers,
+            Self::NAME,
+            backdrop_group,
+        )?;
+        convert::apply_backdrop_members(&surface, pending, &content_layers, &self.backdrop_groups);
         self.has_motion = content_layers
             .iter()
             .any(|c| c.motion.is_some() || !c.motions.is_empty());

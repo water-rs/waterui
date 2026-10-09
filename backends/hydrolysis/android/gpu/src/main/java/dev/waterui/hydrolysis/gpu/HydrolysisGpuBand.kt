@@ -72,18 +72,24 @@ constructor(
     private fun attemptAttach() {
         val surface = holder.surface
         if (surface == null || !surface.isValid) return
+        val peakRefreshHz = peakRefreshHz()
+        // The accessor sits outside the retry: a destroyed session is a
+        // named error, not an attach failure to retry.
         val attached =
-            try {
-                NativeBridge.nativeSurfaceAttached(
-                    session.nativePtr,
-                    surface,
-                    width,
-                    height,
-                    generation,
-                )
-            } catch (error: RuntimeException) {
-                retryAttachOrThrow(error)
-                return
+            session.withNativePtr(NativeBridge::nativeSurfaceAttached.name) { ptr ->
+                try {
+                    NativeBridge.nativeSurfaceAttached(
+                        ptr,
+                        surface,
+                        peakRefreshHz,
+                        width,
+                        height,
+                        generation,
+                    )
+                } catch (error: RuntimeException) {
+                    retryAttachOrThrow(error)
+                    return
+                }
             }
         if (!attached) {
             retryAttachOrThrow(
@@ -92,6 +98,23 @@ constructor(
                 ),
             )
         }
+    }
+
+    /**
+     * The highest refresh rate the band's display offers at its current
+     * resolution — the rate a high-refresh demand asks for. A band whose
+     * surface exists is attached to a window, so it has a display.
+     */
+    private fun peakRefreshHz(): Float {
+        val display =
+            checkNotNull(display) { "hydrolysis android: GPU band surface exists without a display" }
+        val current = display.mode
+        return display.supportedModes
+            .filter {
+                it.physicalWidth == current.physicalWidth &&
+                    it.physicalHeight == current.physicalHeight
+            }
+            .maxOf { it.refreshRate }
     }
 
     private fun retryAttachOrThrow(error: RuntimeException) {
@@ -106,13 +129,17 @@ constructor(
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        NativeBridge.nativeSurfaceChanged(session.nativePtr, width, height, generation)
+        session.withNativePtr(NativeBridge::nativeSurfaceChanged.name) { ptr ->
+            NativeBridge.nativeSurfaceChanged(ptr, width, height, generation)
+        }
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         attachPending = false
         Choreographer.getInstance().removeFrameCallback(attachRetry)
-        NativeBridge.nativeSurfaceDestroyed(session.nativePtr, generation)
+        session.withNativePtr(NativeBridge::nativeSurfaceDestroyed.name) { ptr ->
+            NativeBridge.nativeSurfaceDestroyed(ptr, generation)
+        }
     }
 
     private companion object {

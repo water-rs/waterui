@@ -65,7 +65,9 @@ pub use spacer::{Spacer, spacer, spacer_min};
 pub mod stack;
 
 pub use grid::{Grid, GridRow, grid, row};
-pub use scroll::{ScrollController, ScrollView, scroll, scroll_both, scroll_horizontal};
+pub use scroll::{
+    ScrollController, ScrollRequest, ScrollView, scroll, scroll_both, scroll_horizontal,
+};
 
 pub use alignment::{
     Bottom, BottomLeading, BottomTrailing, Center, FirstBaseline, LastBaseline, Leading, Top,
@@ -78,7 +80,7 @@ pub use container::LazyContainer;
 
 pub use background::{BackgroundLayout, BackgroundView, background};
 pub use overlay::{Overlay, OverlayLayout, overlay};
-pub use safe_area::{EdgeSet, IgnoreSafeArea};
+pub use safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 
 pub use absolute::{
     Absolute, AbsoluteLayout, PinConstraints, PositionExt, PositionTarget, PositionedChild,

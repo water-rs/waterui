@@ -107,6 +107,7 @@
 mod app;
 mod artifacts;
 pub mod bench;
+mod declared_fonts;
 pub(crate) mod driver;
 mod executor;
 mod perf;
@@ -127,7 +128,8 @@ pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};
 pub use executor::drain_parked_local_work;
 pub use executor::{TestLocalExecutor, install_test_executor};
 pub use hydrolysis::{
-    AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style,
+    AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, PointerKind,
+    SemanticRuntime, Style,
 };
 pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
 pub use query::Query;
@@ -135,6 +137,9 @@ pub use selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
 pub use snapshot::{Snapshot, TestHost};
 pub use wait::{Expectation, WaitOptions, WaitResult};
+/// The content-type vocabulary [`NodeSnapshot::content_type`],
+/// [`Selector::content_type`] and [`Query::content_type`] speak.
+pub use waterui::component::text_field::ContentType;
 
 /// Internal async bridge used by `#[waterui::test(...)]` expansion.
 pub fn block_on<F>(future: F) -> F::Output

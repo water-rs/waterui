@@ -15,7 +15,24 @@ fn main() {
         // this library may. Every winit-scoped item gates on this alias, so
         // `--features winit` compiles on Android and simply means nothing.
         hydrolysis_winit: { all(feature = "winit", not(android_platform)) },
+        // Where `hydrolysis::run` exists: every target but Android, whose
+        // entry point is the Kotlin host, and bare wasm32, which reaches no
+        // windowing model until the browser runner is compiled in. The
+        // examples that need the runner gate on it too, so they and the
+        // export never disagree.
+        hydrolysis_run: {
+            any(
+                all(not(target_arch = "wasm32"), not(android_platform)),
+                all(target_arch = "wasm32", feature = "web")
+            )
+        },
         hydrolysis_wayland_platform: { all(feature = "winit", free_unix, not(target_os = "redox")) },
+        // The winit desktops, whose windows the application closes itself
+        // (Close Window, ⌘W/Ctrl+W). On iOS and the web the system or the
+        // page owns the window, so the runner offers no close primitive.
+        hydrolysis_closable_windows: {
+            all(hydrolysis_winit, any(target_os = "macos", target_os = "windows", free_unix))
+        },
         // The macOS `WKWebView` bridge needs a real window: it is composed into
         // the winit window's AppKit view as a native subview, so a headless
         // build (the renderer `waterui-testing` drives, a `web` build) has

@@ -20,7 +20,6 @@ use cocoa_ui::scroll::{
     ScrollObservation, enclosing_scroll_view, observe_scroll_viewport, scroll_viewport,
 };
 use cocoa_ui::{Rect, Retained, view};
-use waterui::animation::Animation;
 use waterui::id::{Id as RawId, SelfId};
 use waterui::layout::container::LazyContainer;
 use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis};
@@ -46,35 +45,6 @@ use cocoa_ui::uikit::{HitTest, HostView};
 
 /// A child's identity: the collection id `AnyViews` answers for an index.
 type ItemId = SelfId<RawId>;
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
-}
 
 /// `resolveVisibleWindow`'s answer: the first index inside the range, one
 /// past the last, and the offset the first starts at.
@@ -512,7 +482,7 @@ fn deliver_children(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<Pe
         let Some((snapshot, ids, metadata)) = pending.borrow_mut().take() else {
             break;
         };
-        with_platform_animation(&metadata, {
+        crate::animation::with_platform_animation(&metadata, {
             let state = Rc::clone(state);
             move || {
                 let mut borrowed = state.borrow_mut();
@@ -594,9 +564,14 @@ fn install_scroll_observation(state: &mut ContainerState) {
     let Some(scroll_view) = enclosing_scroll_view(&state.host) else {
         return;
     };
-    let host = state.host.clone();
+    // The observation lives inside the state; borrow the view rather
+    // than retain it — the state owns the host, not the other way around,
+    // and a dead view needs no layout pass.
+    let host = objc2::rc::Weak::new(&*state.host);
     state.scroll = Some(observe_scroll_viewport(&scroll_view, move || {
-        host.set_needs_layout();
+        if let Some(host) = host.load() {
+            host.set_needs_layout();
+        }
     }));
 }
 
@@ -929,7 +904,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.set_layout_handler({
             let state = Rc::clone(&state);
             let pending = Rc::clone(&pending);
-            move |_host| perform_layout(&state, &pending)
+            move |_host| {
+                perform_layout(&state, &pending);
+            }
         });
         // Moving superviews can change the enclosing scroll view.
         host.set_superview_handler({
@@ -988,10 +965,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // `WuiLayoutInvalidationTarget.invalidate`: rebuild by re-laying
         // out, since stretch axes and priorities bake into the child set.
         let layout_guards = state.borrow().layout.watch_invalidation(Rc::new({
-            let state = Rc::clone(&state);
-            let host = host.clone();
+            // The guards are stored inside the very state a strong capture
+            // would keep alive — a self-cycle with no outside participant
+            // (WaterUI #1575). Both captures stay weak; a dead owner no-ops.
+            let state = Rc::downgrade(&state);
+            let host = objc2::rc::Weak::new(&*host);
             move || {
-                let _ = &state;
+                let (Some(_state), Some(host)) = (state.upgrade(), host.load()) else {
+                    return;
+                };
                 crate::invalidation::invalidate_layout_hierarchy(&host);
             }
         }));

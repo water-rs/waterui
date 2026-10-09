@@ -17,6 +17,7 @@ use waterui::style::Rotation;
 use waterui_core::Metadata;
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
+#[cfg(macos_layer_transform)]
 use crate::components::layer_transform;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -198,7 +199,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             move |wctx| {
                 state.borrow_mut().angle = *wctx.value();
                 #[cfg(target_os = "ios")]
-                layer_transform::apply_with_animation(wctx.metadata(), {
+                crate::animation::with_platform_animation(wctx.metadata(), {
                     let state = Rc::clone(&state);
                     let host = host.clone();
                     move || {

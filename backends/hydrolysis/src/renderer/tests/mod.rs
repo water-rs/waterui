@@ -2,6 +2,7 @@ mod collection_update;
 mod frame_work;
 mod slider_size_indicator;
 use super::*;
+use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::future::Future;
@@ -13,6 +14,8 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
+mod animation_slots;
+mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -44,12 +47,18 @@ mod list_row_focus;
 mod list_row_hit;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_row_metrics;
+#[cfg(feature = "accessibility")]
+mod list_table_scroll_frames;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
+mod material;
+mod material_group;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
+pub mod mirror;
 mod navigation_back;
+mod navigation_layers;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
 mod perf_full_rebuild;
@@ -58,6 +67,8 @@ mod perf_scroll;
 mod popup_frame;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod popup_windows;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod registrations;
 mod render_identity;
 mod retained_scene;
 mod scene_offer;
@@ -123,7 +134,10 @@ fn test_renderer() -> HydrolysisRenderer {
 }
 
 fn test_renderer_with_theme(theme: MinimalTestTheme) -> HydrolysisRenderer {
-    HydrolysisRenderer::new(Rc::new(theme), FontFamilyResolution::Strict)
+    HydrolysisRenderer::with_engine(
+        Rc::new(theme),
+        SessionTextEngine::system(FontFamilyResolution::Strict),
+    )
 }
 
 /// Emits the semantic node a real widget emits for an interaction identity:
@@ -209,29 +223,6 @@ impl LocalExecutor for TestLocalExecutor {
     }
 }
 
-/// Raw data of the default face of an installed font `family`, resolved
-/// through system font discovery as a runtime resolves a named family. The
-/// repository commits no fonts: `backends/hydrolysis/test-fonts/install.py`
-/// installs the fixtures, and a family that is not installed fails naming it.
-pub fn installed_font_bytes(family: &str) -> std::sync::Arc<[u8]> {
-    let mut collection =
-        parley::fontique::Collection::new(parley::fontique::CollectionOptions::default());
-    let info = collection.family_by_name(family).unwrap_or_else(|| {
-        panic!(
-            "font family `{family}` is not installed; install the test fonts with \
-             `uv run backends/hydrolysis/test-fonts/install.py`"
-        )
-    });
-    let face = info
-        .default_font()
-        .unwrap_or_else(|| panic!("the installed `{family}` family carries no face"));
-    std::sync::Arc::from(
-        face.load(None)
-            .unwrap_or_else(|| panic!("the installed `{family}` face failed to load"))
-            .as_ref(),
-    )
-}
-
 pub fn test_environment() -> Environment {
     let (parked_tx, parked_rx) = mpsc::channel();
     let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
@@ -266,8 +257,128 @@ fn themed_test_environment() -> Environment {
     // The runners seed the chord table; a test that mounts menus resolves
     // shortcuts through the same path (water-rs/hydrolysis#247).
     env.insert(crate::renderer::MenuShortcutRegistry::default());
+    // `App::into_parts` installs the application's decided Close Window
+    // chord; the test environment installs the same value over an empty
+    // bar, so a Close Window item reads the free ⌘W / Ctrl+W.
+    env.insert(waterui_controls::menu::CloseWindowChord::new(
+        &nami::Computed::constant(Vec::new()),
+        &env,
+    ));
     env.insert(BadgeDrawLog(Rc::new(RefCell::new(Vec::new()))));
     env
+}
+
+/// The member layer ids of every backdrop membership the frame's nodes
+/// hold, flush order — including the members inside filtered groups, which
+/// the walk descends into.
+pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
+    struct Members(Vec<cherenkov::LayerId>);
+    impl mount::layers::LayerVisitor for Members {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if let Some(member) = layers.material_member() {
+                self.0.push(member);
+            }
+        }
+    }
+    let mut members = Members(Vec::new());
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut members);
+    members.0
+}
+
+pub fn mounted_anchor_parent_children(
+    runtime: &crate::HeadlessRuntime,
+    scope: usize,
+    canvas: Option<cherenkov::LayerId>,
+    child: cherenkov::LayerId,
+) -> Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)> {
+    struct Parent {
+        scope: usize,
+        canvas: Option<cherenkov::LayerId>,
+        child: cherenkov::LayerId,
+        children: Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)>,
+    }
+    impl mount::layers::LayerVisitor for Parent {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if self.children.is_none()
+                && let Some(children) =
+                    layers.committed_anchor_parent_children(self.scope, self.canvas, self.child)
+            {
+                self.children = Some(children);
+            }
+        }
+    }
+    let window = window_mount(runtime);
+    if window.window_children().contains(&child) {
+        return Some((window.window().id(), window.window_children(), true));
+    }
+    let mut visitor = Parent {
+        scope,
+        canvas,
+        child,
+        children: None,
+    };
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut visitor);
+    visitor.children
+}
+
+pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
+    struct Inner(Vec<cherenkov::LayerId>);
+    impl mount::layers::LayerVisitor for Inner {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if let Some(inner) = layers.inner_id() {
+                self.0.push(inner);
+            }
+        }
+    }
+    let mut visitor = Inner(Vec::new());
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut visitor);
+    visitor.0
+}
+
+/// The window's mount — the test renders one window.
+pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov_gpu::Gpu> {
+    &runtime
+        .renderer()
+        .cherenkov_window
+        .as_ref()
+        .expect("the frame installed into a window")
+        .mount
+}
+
+/// The window's backdrop-group table — the test renders one window.
+pub fn mounts(
+    runtime: &crate::HeadlessRuntime,
+) -> &mount::backdrop::BackdropGroups<cherenkov::BackdropGroup> {
+    window_mount(runtime).groups()
+}
+
+/// The engine's current backdrop-capture bytes.
+pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
+    runtime
+        .renderer()
+        .cherenkov_window
+        .as_ref()
+        .expect("the frame installed into a window")
+        .state
+        .engine
+        .memory()
+        .backdrop_captures
+        .0
 }
 
 /// Every badge indicator rect the test theme was asked to draw, in window
@@ -328,6 +439,10 @@ fn registration_signal<T: Clone + 'static>(
 }
 
 #[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
+)]
 fn subscribed_snapshot_preserves_registration_animation_metadata() {
     let signal = registration_signal(
         0.25,
@@ -349,11 +464,16 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
 }
 
 #[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
+)]
 fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
     let mut renderer = test_renderer();
+    let owner = Rc::new(());
 
-    let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, usize::MAX);
+    let resolved = renderer.resolve_owned_scalar(&signal, &owner, usize::MAX);
 
     assert_eq!(resolved, 0.25);
     assert!(signal.subscribed.get());
@@ -363,11 +483,12 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 fn toggle_progress_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(false, nami::watcher::Context::from(false));
     let mut renderer = test_renderer();
+    let owner = Rc::new(());
 
     let (progress, selected) =
-        renderer.resolve_toggle_progress(&signal, Animation::linear(Duration::ZERO));
+        renderer.resolve_toggle_progress(&signal, &owner, Animation::linear(Duration::ZERO));
 
-    assert_eq!(progress, 0.0);
+    approx::assert_relative_eq!(progress, 0.0);
     assert!(!selected);
     assert!(signal.subscribed.get());
 }
@@ -381,7 +502,7 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
 
     capture_root_window(
         &mut renderer,
-        toggle("Enable Feature", &enabled),
+        toggle("Enable Feature", &enabled).switch(),
         &env,
         bounds,
     );
@@ -467,6 +588,109 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
     );
 }
 
+/// One bit of `source` as a two-way `Binding<bool>` — every call reuses this
+/// one `Binding::mapping` call site, so the bindings it returns all carry the
+/// same `SignalIdentity` (nami keys a mapping's identity by the source plus a
+/// `#[track_caller]` call-site discriminator).
+fn bit(source: &Binding<u8>, bit: u8) -> Binding<bool> {
+    Binding::mapping(
+        source,
+        move |value| value & bit != 0,
+        move |source, on| {
+            source.set(if on {
+                source.snapshot() | bit
+            } else {
+                source.snapshot() & !bit
+            });
+        },
+    )
+}
+
+/// Regression for #2232: toggles whose bindings share a `SignalIdentity` must
+/// still own their thumb-progress animation slots. Two switches bound to
+/// mappings minted at one call site — the shape of the inspector's channel
+/// toggles — used to collapse onto one slot, so the off switch drew at the
+/// on switch's progress.
+#[test]
+fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
+    let toggle_draws = Rc::new(RefCell::new(Vec::new()));
+    let theme = MinimalTestTheme {
+        toggle_switch_draws: Rc::clone(&toggle_draws),
+        ..Default::default()
+    };
+    let mut renderer = test_renderer_with_theme(theme);
+    let env = test_environment();
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+    let s = Binding::container(0b01_u8);
+
+    // The collision the test exists for: both bindings carry one identity.
+    assert_eq!(
+        bit(&s, 1).identity(),
+        bit(&s, 2).identity(),
+        "same-site mappings must share a SignalIdentity for this test to cover the bug"
+    );
+
+    let draw_progress = |toggle_draws: &Rc<RefCell<Vec<ToggleSwitchDraw>>>| {
+        let mut frame = toggle_draws.borrow_mut().drain(..).collect::<Vec<_>>();
+        frame.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
+        frame
+            .iter()
+            .map(|(_, progress, selected)| (*progress, *selected))
+            .collect::<Vec<_>>()
+    };
+
+    capture_root_window(
+        &mut renderer,
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
+        &env,
+        bounds,
+    );
+    let first = draw_progress(&toggle_draws);
+    approx::assert_relative_eq!(first[0].0, 1.0);
+    assert!(first[0].1, "A is bound to an on bit");
+    approx::assert_relative_eq!(first[1].0, 0.0);
+    assert!(!first[1].1, "B is bound to an off bit");
+
+    // Toggling B animates only B's slot: mid-animation A still draws 1.0
+    // while B is in flight toward 1.0 (100ms linear in MinimalTestTheme).
+    let started = renderer.frame_instant();
+    bit(&s, 2).set(true);
+    renderer.set_frame_instant(started + Duration::from_millis(50));
+    capture_root_window(
+        &mut renderer,
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
+        &env,
+        bounds,
+    );
+    let mid = draw_progress(&toggle_draws);
+    approx::assert_relative_eq!(mid[0].0, 1.0);
+    assert!(
+        mid[1].0 > 0.0 && mid[1].0 < 1.0,
+        "B's thumb must be mid-animation, got {}",
+        mid[1].0
+    );
+
+    renderer.set_frame_instant(started + Duration::from_millis(200));
+    capture_root_window(
+        &mut renderer,
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
+        &env,
+        bounds,
+    );
+    let finished = draw_progress(&toggle_draws);
+    approx::assert_relative_eq!(finished[0].0, 1.0);
+    approx::assert_relative_eq!(finished[1].0, 1.0);
+}
+
 fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
     nami::Computed::new(Vec::new())
 }
@@ -494,16 +718,18 @@ fn text_input_target(
 ) -> TextInputTarget {
     let interaction_key = InteractionKey::for_rc(&selection, 0);
     TextInputTarget {
+        owner: std::rc::Weak::new(),
         interaction_key,
         modal: false,
         bounds: Rect::ZERO,
+        frame: Rect::ZERO,
         cursor_area: Rect::ZERO,
         text_bounds: Rect::ZERO,
         text_clip_bounds: Rect::ZERO,
         content_alpha: 1.0,
-        layout: std::sync::Arc::new(parley::Layout::default()),
+        layout: SessionTextEngine::system(FontFamilyResolution::Strict).empty_layout(),
         display_text: waterui_core::Str::default(),
-        display_layout: std::sync::Arc::new(parley::Layout::default()),
+        display_layout: SessionTextEngine::system(FontFamilyResolution::Strict).empty_layout(),
         purpose: TextInputPurpose::Normal,
         depth: 0,
         order: 0,
@@ -532,7 +758,7 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
         alignment: HorizontalAlignment::Leading,
         spacing: Computed::constant(0.0),
     };
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let dimensions = measure_layout_dimensions(
         &layout,
         [&child],
@@ -545,6 +771,47 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
     assert_eq!(
         dimensions.explicit_horizontal(HorizontalAlignment::Leading),
         Some(10.0)
+    );
+}
+
+/// A plain `FixedContainer` — normalization's form, before `body` wraps its
+/// layout in `DirectionalLayout` — must still resolve explicit horizontal
+/// guides against the placements `DirectionalLayout` produces: under RTL the
+/// leading-aligned child sits on the trailing edge, so a guide anchored in
+/// its frame mirrors to `width - offset`.
+#[test]
+fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
+    use waterui_core::layout::LayoutDirection;
+    use waterui_layout::container::FixedContainer;
+    let mut env = test_environment();
+    env.insert(LayoutDirection::RightToLeft);
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let view = normalize_layout_view(
+        AnyView::new(FixedContainer::new(
+            VStackLayout {
+                alignment: HorizontalAlignment::Leading,
+                spacing: Computed::constant(0.0),
+            },
+            vec![
+                AnyView::new(().size(20.0, 10.0).horizontal_alignment_guide(
+                    HorizontalAlignment::Leading,
+                    |dimensions: &ViewDimensions| dimensions.size.width * 0.5,
+                )),
+                AnyView::new(().size(100.0, 10.0)),
+            ],
+        )),
+        &env,
+    );
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let dimensions = measure_view_dimensions(&view, &mut state, &env, &theme);
+
+    // Under RTL the 20-wide leading child mirrors to the trailing edge —
+    // placed at `width - 20`, so its mid-child guide resolves at
+    // `width - 10` (unmirrored it would sit at 10) — the same value the
+    // built tree's DirectionalLayout reports.
+    assert_eq!(
+        dimensions.explicit_horizontal(HorizontalAlignment::Leading),
+        Some(dimensions.size.width - 10.0)
     );
 }
 
@@ -583,11 +850,11 @@ fn scale_metadata_is_layout_transparent() {
         &env,
     );
 
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let initial = measure_view_dimensions(&view, &mut state, &env, &theme).size;
 
     scale.set(2.0);
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let scaled = measure_view_dimensions(&view, &mut state, &env, &theme).size;
 
     assert_eq!(initial, LayoutSize::new(80.0, 120.0));
@@ -603,7 +870,7 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
         AnyView::new(slider("Playback position", &value).hide_label()),
         &env,
     );
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
@@ -620,16 +887,18 @@ fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposa
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let view = normalize_layout_view(AnyView::new(button("Medium (0.7)").action(|| {})), &env);
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
     let intrinsic = subview.measure(ProposalSize::UNSPECIFIED);
     let constrained = subview.measure(ProposalSize::new(Some(0.0), None));
 
-    assert_eq!(
-        constrained.size.width, intrinsic.size.width,
-        "Hydrolysis non-stretch controls must not be compressed below their intrinsic text width"
+    assert!(
+        approx::relative_eq!(constrained.size.width, intrinsic.size.width),
+        "Hydrolysis non-stretch controls must not be compressed below their intrinsic text width: left {:?}, right {:?}",
+        constrained.size.width,
+        intrinsic.size.width
     );
 }
 
@@ -648,7 +917,7 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
         ),
         &env,
     );
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
@@ -656,9 +925,11 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
     let proposed = subview.measure(ProposalSize::new(Some(720.0), None));
 
     assert_eq!(subview.stretch_axis(), StretchAxis::None);
-    assert_eq!(
-        proposed.size.width, intrinsic.size.width,
-        "environment state metadata must not make a button stretch across its VStack row"
+    assert!(
+        approx::relative_eq!(proposed.size.width, intrinsic.size.width),
+        "environment state metadata must not make a button stretch across its VStack row: left {:?}, right {:?}",
+        proposed.size.width,
+        intrinsic.size.width
     );
 }
 
@@ -721,8 +992,8 @@ fn floating_button_measurement_uses_style_tokens() {
         .first()
         .expect("floating button must register an intrinsic pointer target")
         .bounds;
-    assert_eq!(intrinsic_bounds.width(), 37.0);
-    assert_eq!(intrinsic_bounds.height(), 41.0);
+    approx::assert_relative_eq!(intrinsic_bounds.width(), 37.0);
+    approx::assert_relative_eq!(intrinsic_bounds.height(), 41.0);
 }
 
 /// A button takes its size and chrome from floating-surface tokens only when it
@@ -841,50 +1112,11 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         &env,
     ));
 
-    assert_eq!(zoom.snapshot(), 0.5);
+    approx::assert_relative_eq!(zoom.snapshot(), 0.5);
     assert!(
-        renderer.take_patch_request(),
+        renderer.root_is_dirty(),
         "a synchronous button action must schedule a retained-tree refresh"
     );
-}
-
-#[test]
-fn gpu_content_box_starts_dirty_and_coalesces_requests() {
-    // The redraw coalescing the retired `take_gpu_surface_redraw_request`
-    // owned now lives in `cherenkov_gpu::GpuContentBox`: a freshly installed
-    // producer is dirty (so its first frame draws without a request), and a
-    // request on an already-dirty producer does not re-wake the host. The
-    // consumption side — a render clearing `dirty` — is pinned by the
-    // gpu_surface_idle end-to-end render counts on Metal.
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use waterui_graphics::{GpuContent, GpuContentView};
-
-    struct Probe;
-    impl GpuContent for Probe {
-        fn setup(&mut self, _gpu: &waterui_graphics::gpu::Context<'_>) {}
-        fn render(&mut self, _frame: &mut waterui_graphics::gpu::Frame<'_>) {}
-    }
-
-    let wakes = Arc::new(AtomicU32::new(0));
-    let wake_counter = wakes.clone();
-    let mut view = GpuContentView::new(Probe);
-    let content = view.take_engine_content(move || {
-        wake_counter.fetch_add(1, Ordering::Relaxed);
-    });
-
-    let handle = content.redraw_handle();
-    assert!(
-        handle.is_dirty(),
-        "freshly installed content draws on the next engine frame"
-    );
-    handle.request_redraw();
-    assert_eq!(
-        wakes.load(Ordering::Relaxed),
-        0,
-        "a request on an already-dirty producer must not re-wake the host"
-    );
-    assert!(handle.is_dirty(), "the coalesced request stays outstanding");
 }
 
 #[test]
@@ -970,9 +1202,9 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
         }
     };
 
-    let mut renderer = HydrolysisRenderer::new(
+    let mut renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
-        FontFamilyResolution::Strict,
+        SessionTextEngine::system(FontFamilyResolution::Strict),
     );
     let env = test_environment();
     let bounds = kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
@@ -996,7 +1228,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
 fn string_views_measure_through_body_recursion() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let proposal = ProposalSize::UNSPECIFIED;
 
     let raw = measure_view_dimensions_with_proposal(
@@ -1966,6 +2198,10 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
 }
 
 #[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "the local-space mapping must carry the wave's progress and opacity through untouched, so the values stay bit-identical"
+)]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
     let mut press_waves = waterui_backend_core::widget::PressWaves::EMPTY;
     press_waves.push(waterui_backend_core::widget::PressWave {
@@ -2080,7 +2316,7 @@ fn interaction_engine_resolves_focus_state() {
     );
 
     assert!(state.state.contains(InteractionState::FOCUSED));
-    assert_eq!(state.focus_progress, 1.0);
+    approx::assert_relative_eq!(state.focus_progress, 1.0);
 }
 
 #[test]
@@ -2371,9 +2607,25 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
     assert!(renderer.hit_test.modal_interaction.is_none());
 }
 
+/// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
+type ToggleSwitchDraw = (Rect, f32, bool);
+/// A recorded `draw_progress_linear_track` call: `(bounds, active_end)`.
+type ProgressTrackDraw = (Rect, Option<f64>);
+/// A recorded `draw_radio_indicator` call: `(center, state)`.
+type RadioIndicatorDraw = (Point, RadioIndicatorState);
+
 #[derive(Default)]
 pub struct MinimalTestTheme {
     badge_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every navigation-bar surface bounds the theme was asked to draw —
+    /// the painted geometry §7.1's chrome extension lives in.
+    navigation_bar_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every navigation-bar separator bounds the theme was asked to draw.
+    navigation_bar_separator_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every tabs-bar surface bounds the theme was asked to draw.
+    tabs_bar_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every tabs-bar divider bounds the theme was asked to draw.
+    tabs_bar_divider_draws: Rc<RefCell<Vec<Rect>>>,
     /// Forces the tab item layout the theme reports; `None` defaults to
     /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
     forced_tab_item_layout: Option<TabItemLayout>,
@@ -2393,6 +2645,12 @@ pub struct MinimalTestTheme {
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every `draw_interaction_state_layer` call, as `(state, resolved radii)`.
     state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
+    /// Every `draw_toggle_switch` call.
+    toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
+    /// Every `draw_progress_linear_track` call.
+    progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
+    /// Every `draw_radio_indicator` call.
+    radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2496,11 +2754,14 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_toggle_switch(
         &self,
         _draw: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _selected: bool,
+        bounds: Rect,
+        progress: f32,
+        selected: bool,
         _state: WidgetInteractionState,
     ) {
+        self.toggle_switch_draws
+            .borrow_mut()
+            .push((bounds, progress, selected));
     }
 
     fn draw_toggle_checkbox(
@@ -2652,10 +2913,13 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_radio_indicator(
         &self,
         _draw: &mut Recorder,
-        _center: Point,
+        center: Point,
         _radius: f64,
-        _state: RadioIndicatorState,
+        state: RadioIndicatorState,
     ) {
+        self.radio_indicator_draws
+            .borrow_mut()
+            .push((center, state));
     }
 
     fn slider_metrics(&self, size: ControlSize) -> SliderMetrics {
@@ -2741,9 +3005,12 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_progress_linear_track(
         &self,
         _draw: &mut Recorder,
-        _bounds: Rect,
-        _active_end: Option<f64>,
+        bounds: Rect,
+        active_end: Option<f64>,
     ) {
+        self.progress_linear_track_draws
+            .borrow_mut()
+            .push((bounds, active_end));
     }
     fn draw_progress_linear_fill(&self, _draw: &mut Recorder, _bounds: Rect) {}
     fn draw_progress_linear_indeterminate(
@@ -2806,9 +3073,15 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn draw_navigation_bar(&self, _draw: &mut Recorder, _bounds: Rect, _background: &Paint) {}
+    fn draw_navigation_bar(&self, _draw: &mut Recorder, bounds: Rect, _background: &Paint) {
+        self.navigation_bar_draws.borrow_mut().push(bounds);
+    }
 
-    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
+    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, bounds: Rect) {
+        self.navigation_bar_separator_draws
+            .borrow_mut()
+            .push(bounds);
+    }
     fn draw_navigation_back_button(&self, _draw: &mut Recorder, _bounds: Rect) {}
     fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
         self.tabs_layout_queries
@@ -2835,7 +3108,12 @@ impl WidgetTheme for MinimalTestTheme {
             icon_label_spacing: 4.0,
         }
     }
-    fn draw_tabs_bar(&self, _draw: &mut Recorder, _bounds: Rect, _top_edge: bool) {}
+    fn draw_tabs_bar(&self, _draw: &mut Recorder, surface: Rect) {
+        self.tabs_bar_draws.borrow_mut().push(surface);
+    }
+    fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
+        self.tabs_bar_divider_draws.borrow_mut().push(divider);
+    }
     fn draw_tabs_highlight(&self, _draw: &mut Recorder, bounds: Rect, layout: TabItemLayout) {
         self.tabs_highlight_draws
             .borrow_mut()
@@ -2923,22 +3201,24 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
         focus: 0,
         initialized: true,
     }));
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("", None),
             Rc::clone(&selection),
-        ));
+        )],
+    );
 
     assert!(renderer.set_focused_text_input(Some(0)));
     assert!(
-        renderer.take_patch_request(),
+        renderer.root_is_dirty(),
         "text input focus changes must refresh the retained tree so focus animations start on click"
     );
     assert!(
-        !renderer.take_rebuild_request(),
-        "text input focus changes must not rebuild the view body"
+        !renderer
+            .root_marks()
+            .contains(crate::renderer::Dirty::STRUCTURE),
+        "text input focus changes must not mark structure — the view body is never re-dispatched"
     );
     assert!(renderer.handle_ime_preedit("拼音", Some(0)));
     assert_eq!(renderer.text_editing.ime_preedit.as_deref(), Some("拼音"));
@@ -2978,16 +3258,15 @@ fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
     let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let emit = |renderer: &mut HydrolysisRenderer,
                 targets: &[(&str, &Rc<RefCell<TextSelectionSlot>>)]| {
-        renderer.text_editing.text_input_targets.clear();
-        for (value, selection) in targets {
-            renderer
-                .text_editing
-                .text_input_targets
-                .push(text_input_target(
-                    text_field_model(value, None),
-                    Rc::clone(selection),
-                ));
-        }
+        seed_text_input_targets(
+            renderer,
+            targets
+                .iter()
+                .map(|(value, selection)| {
+                    text_input_target(text_field_model(value, None), Rc::clone(selection))
+                })
+                .collect(),
+        );
     };
 
     emit(&mut renderer, &[("first", &first), ("focused", &focused)]);
@@ -3038,25 +3317,24 @@ fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
     renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
     let survivor = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let removed = Rc::new(RefCell::new(TextSelectionSlot::default()));
-    for (value, selection) in [("survivor", &survivor), ("removed", &removed)] {
-        renderer
-            .text_editing
-            .text_input_targets
-            .push(text_input_target(
-                text_field_model(value, None),
-                Rc::clone(selection),
-            ));
-    }
+    seed_text_input_targets(
+        &mut renderer,
+        [("survivor", &survivor), ("removed", &removed)]
+            .iter()
+            .map(|(value, selection)| {
+                text_input_target(text_field_model(value, None), Rc::clone(selection))
+            })
+            .collect(),
+    );
     assert!(renderer.set_focused_text_input(Some(1)));
 
-    renderer.text_editing.text_input_targets.clear();
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("survivor", None),
             Rc::clone(&survivor),
-        ));
+        )],
+    );
     renderer.validate_focused_text_input_after_flush();
 
     assert!(
@@ -3070,24 +3348,54 @@ fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
 fn text_selection_pointer_update_uses_transient_redraw_path() {
     let mut renderer = test_renderer();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
-    renderer
-        .text_editing
-        .text_input_targets
-        .push(text_input_target(
+    seed_text_input_targets(
+        &mut renderer,
+        vec![text_input_target(
             text_field_model("selection", None),
             Rc::clone(&selection),
-        ));
+        )],
+    );
 
     assert!(renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
-    assert!(
-        !renderer.take_rebuild_request(),
-        "text selection changes are rendered by the transient overlay instead of a full scene rebuild"
+    assert_eq!(
+        renderer.root_marks(),
+        crate::renderer::Dirty::NONE,
+        "text selection changes are rendered by the transient overlay instead of a structural mark"
     );
     assert!(!renderer.update_text_selection_from_pointer(0, Point::ZERO, false));
-    assert!(
-        !renderer.take_rebuild_request(),
-        "unchanged text selection must not schedule redundant rebuilds"
+    assert_eq!(
+        renderer.root_marks(),
+        crate::renderer::Dirty::NONE,
+        "unchanged text selection must not mark structure"
     );
+}
+
+/// Seeds `targets` as the frame's emitted text inputs through the retained
+/// registry — the path a real emit takes, owner bucket and all — then
+/// materializes, so staged and retained readers both see them exactly like
+/// a flush's. The owner is the root cell, the owner a window-level
+/// registration carries.
+fn seed_text_input_targets(renderer: &mut HydrolysisRenderer, targets: Vec<TextInputTarget>) {
+    let anchor = renderer.window_placement();
+    let owner = Rc::clone(renderer.root_cell());
+    renderer.purge_registrations(&owner);
+    renderer.retained.enlist(&owner);
+    for target in targets {
+        let bounds = target.bounds;
+        let entry = crate::renderer::mount::RetainedEntry::at(
+            target,
+            bounds,
+            &anchor,
+            &owner,
+            renderer.retained.next_seq(),
+        );
+        let mut slot = owner.registrations.borrow_mut();
+        slot.get_or_insert_with(|| Box::new(crate::renderer::mount::OwnerRegistrations::default()))
+            .text_input_targets
+            .push(entry);
+    }
+    renderer.retained.stale.set(true);
+    renderer.registries();
 }
 
 /// A text-input target with real bounds and a real shaped layout, so click
@@ -3098,7 +3406,7 @@ fn shaped_text_input_target(
     selection: &Rc<RefCell<TextSelectionSlot>>,
     env: &Environment,
 ) -> TextInputTarget {
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let layout = HydrolysisRenderer::build_text_layout(
         &mut state,
         StyledStr::plain(value.to_owned()),
@@ -3108,6 +3416,7 @@ fn shaped_text_input_target(
     );
     let mut target = text_input_target(text_field_model(value, None), Rc::clone(selection));
     target.bounds = Rect::new(0.0, 0.0, 200.0, 60.0);
+    target.frame = target.bounds;
     target.text_bounds = Rect::new(0.0, 0.0, 200.0, 60.0);
     target.text_clip_bounds = target.text_bounds;
     target.cursor_area = target.text_bounds;
@@ -3119,9 +3428,10 @@ fn shaped_text_input_target(
 /// The window point at the center of the caret geometry for `byte_index`, used
 /// to aim synthetic clicks inside a specific word.
 fn caret_point_in_target(target: &TextInputTarget, byte_index: usize) -> Point {
-    let cursor =
-        parley::Cursor::from_byte_index(&target.layout, byte_index, parley::Affinity::Downstream);
-    let geometry = cursor.geometry(&target.layout, 1.0);
+    let geometry = target.layout.caret_rect(TextPosition {
+        index: byte_index,
+        affinity: Affinity::Downstream,
+    });
     Point::new(
         target.text_bounds.x0 + f64::midpoint(geometry.x0, geometry.x1),
         target.text_bounds.y0 + f64::midpoint(geometry.y0, geometry.y1),
@@ -3140,7 +3450,7 @@ fn double_click_word_selection_survives_pointer_release() {
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);
     let point = caret_point_in_target(&target, 8);
-    renderer.text_editing.text_input_targets.push(target);
+    seed_text_input_targets(&mut renderer, vec![target]);
 
     renderer.handle_pointer_down(
         crate::num_cast::f64_as_f32(point.x),
@@ -3191,7 +3501,7 @@ fn double_click_drag_extends_selection_by_words() {
     let target = shaped_text_input_target("hello world", &selection, &env);
     let world_point = caret_point_in_target(&target, 8);
     let hello_point = caret_point_in_target(&target, 2);
-    renderer.text_editing.text_input_targets.push(target);
+    seed_text_input_targets(&mut renderer, vec![target]);
 
     renderer.handle_pointer_down(
         crate::num_cast::f64_as_f32(world_point.x),
@@ -3252,7 +3562,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 
     let mut env = test_environment();
     crate::localization::install(&mut env);
-    let nodes = SemanticCore::build_text_context_menu_nodes(&target, &env);
+    let nodes = SemanticCore::build_text_context_menu_nodes(&target, &env, true);
     let labels = nodes
         .iter()
         .filter_map(|node| match node {
@@ -3265,7 +3575,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 }
 
 #[test]
-fn bare_text_at_window_root_renders_into_scene() {
+fn bare_text_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3278,14 +3588,14 @@ fn bare_text_at_window_root_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare text view at the window root must draw glyphs"
     );
     renderer.finish_rebuild_frame();
 }
 
 #[test]
-fn bare_str_at_window_root_renders_into_scene() {
+fn bare_str_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3298,7 +3608,7 @@ fn bare_str_at_window_root_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare string view at the window root must draw glyphs"
     );
     renderer.finish_rebuild_frame();
@@ -3307,7 +3617,7 @@ fn bare_str_at_window_root_renders_into_scene() {
 #[test]
 fn text_shaping_produces_nonzero_intrinsic_in_tests() {
     let env = test_environment();
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let size = HydrolysisRenderer::measure_text_intrinsic_size(
         &mut state,
         waterui_text::styled::StyledStr::plain("probe"),
@@ -3334,7 +3644,7 @@ fn resolved_text_fast_path_matches_the_recursive_measure() {
     let string_view = AnyView::new(String::from("hello world"));
 
     for view in [&str_view, &string_view] {
-        let mut state = HydroState::new(FontFamilyResolution::Strict);
+        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
         let state_cell = RefCell::new(&mut state);
         let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
         let fast_path = HydroSubview::from_view(view, &state_cell, &env, &theme).measure(proposal);
@@ -3358,7 +3668,7 @@ fn resolved_text_fast_path_matches_the_recursive_measure() {
 }
 
 #[test]
-fn bare_str_renders_into_scene() {
+fn bare_str_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
 
@@ -3372,7 +3682,7 @@ fn bare_str_renders_into_scene() {
         Affine::IDENTITY,
     );
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "a bare string must build a text node and draw glyphs"
     );
     renderer.finish_rebuild_frame();
@@ -3381,7 +3691,7 @@ fn bare_str_renders_into_scene() {
 #[test]
 fn render_path_text_layout_has_lines() {
     let env = test_environment();
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let layout = HydrolysisRenderer::build_text_layout(
         &mut state,
         waterui_text::styled::StyledStr::plain("probe"),
@@ -3390,10 +3700,9 @@ fn render_path_text_layout_has_lines() {
         Some(160.0),
     );
     assert!(
-        !layout.is_empty(),
+        layout.line_count() > 0,
         "render-path text layout must not be empty"
     );
-    assert!(layout.lines().next().is_some(), "layout must have lines");
 }
 
 /// The three-point probe contract every `SubView` owes the layout algorithm.
@@ -3447,7 +3756,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
         // The layout path measures normalized views, so the contract is about
         // those, not about raw bodies.
         let view = normalize_layout_view(view, &env);
-        let mut state = HydroState::new(FontFamilyResolution::Strict);
+        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
         let cell = RefCell::new(&mut state);
         let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
         let subview = HydroSubview::from_view(&view, &cell, &env, &theme);
@@ -3558,8 +3867,8 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
     // 2 above the anchor).
     let draws = capture(Badge::new(5, anchor.clone()), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
-    assert_eq!(draws[0].x0, 148.0);
-    assert_eq!(draws[0].y0, -2.0);
+    approx::assert_relative_eq!(draws[0].x0, 148.0);
+    approx::assert_relative_eq!(draws[0].y0, -2.0);
 
     // RTL mirrors the anchor to the leading edge.
     env.insert(LayoutDirection::RightToLeft);
@@ -3570,8 +3879,8 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 
     let draws = capture(Badge::new(5, anchor), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
-    assert_eq!(draws[0].x1, 12.0);
-    assert_eq!(draws[0].y0, -2.0);
+    approx::assert_relative_eq!(draws[0].x1, 12.0);
+    approx::assert_relative_eq!(draws[0].y0, -2.0);
 }
 
 /// water-rs/hydrolysis#51: after the single-child collapse the surviving
@@ -3586,7 +3895,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let measured = measure_view_dimensions_with_proposal(
         &normalize_layout_view(AnyView::new(button("OK").padding_with(8.0)), &env),
         ProposalSize::new(Some(160.0), Some(160.0)),
@@ -3636,7 +3945,7 @@ fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
 fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::new(FontFamilyResolution::Strict);
+    let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
     let measured = measure_view_dimensions_with_proposal(
         &normalize_layout_view(
             AnyView::new(button("OK").padding_with([0.0, 0.0, 20.0, 0.0])),

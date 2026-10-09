@@ -8,7 +8,7 @@ use accesskit::{
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessRuntime, KeyCode, Modifiers,
-    SemanticRuntime, Style,
+    PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppParts};
 use waterui::window::Window;
@@ -286,6 +286,12 @@ impl<S> UiBuilder<S> {
         // `realization::install` skips because their system backend would
         // bridge a native player.
         waterui::realization::install_video(&mut env);
+        // An application's declared fonts are staged by the `water` CLI; a
+        // test binary resolves the package under test's crate-local ones
+        // itself, styled or not, as the application path loads them. A host
+        // that staged them itself — a CLI-launched runtime binary, which
+        // installs an empty `DeclaredFonts` — needs no cargo resolution here.
+        crate::declared_fonts::install_declared_fonts(&mut env);
         env
     }
 
@@ -439,6 +445,12 @@ impl<S: Style> UiBuilder<Styled<S>> {
         // self-drawn video realization applies even where `App::new`'s
         // `realization::install` skipped it.
         waterui::realization::install_video(&mut env);
+        // As on `mount_env`, the package under test's crate-local declared
+        // fonts resolve here unless the layered environment — the app's or
+        // the test's — already carries a `DeclaredFonts`, as a CLI-launched
+        // runtime binary's does (the CLI staged the fonts into the resource
+        // directory).
+        crate::declared_fonts::install_declared_fonts(&mut env);
         self.mount_rendered_window(env, window)
     }
 
@@ -559,6 +571,13 @@ pub struct DragOptions {
     /// frame: gesture recognizers then observe a real motion timeline
     /// (velocity, glide) instead of every sample arriving at once.
     pub frame_per_step: bool,
+    /// The pointer kind the drag dispatches. `PointerKind::Touch` is what a
+    /// real device's finger produces: the scroll claim, the touch slop and
+    /// the fling all key on the pointer kind, which `PointerKind::Mouse`
+    /// never reaches. The runtime reports no touch-scroll configuration
+    /// until [`OffscreenApp::set_touch_scroll_config`] supplies it — on a
+    /// host without one a touch drag still dispatches but claims nothing.
+    pub pointer: PointerKind,
 }
 
 impl Default for DragOptions {
@@ -566,6 +585,7 @@ impl Default for DragOptions {
         Self {
             steps: 6,
             frame_per_step: false,
+            pointer: PointerKind::Mouse,
         }
     }
 }
@@ -686,7 +706,7 @@ impl OffscreenApp {
     pub fn queue_pointer_move(&mut self, x: f32, y: f32) {
         self.app
             .runtime
-            .push_input_event(driver::pointer_move_event(x, y));
+            .push_input_event(driver::pointer_move_event(PointerKind::Mouse, x, y));
     }
 }
 
@@ -1108,6 +1128,12 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// This waits on unapplied work only, never on work that continues by
     /// itself: an app with a running animation is never settled, so settling
     /// here would spend the full pump budget on every query.
+    ///
+    /// Reading the tree never advances time: every pump here is held at the
+    /// current virtual instant. Animations and glides sample the same instant
+    /// to the same values, so the update lands in the phase the clock already
+    /// shows, and only [`OffscreenApp::pump_for`] and the other explicit
+    /// pumping paths move the clock.
     fn sync_tree(&mut self) {
         /// Enough pumps for a change to cascade (a patch that schedules the
         /// next), far below anything a real update needs. Exceeding it means
@@ -1119,7 +1145,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             if !self.runtime.has_pending_semantic_update() {
                 return;
             }
-            self.pump_once();
+            self.pump_held();
         }
     }
 
@@ -1431,7 +1457,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {
         self.ui_focus = outcome.ui_focus;
         if let Some(update) = outcome.tree_update {
-            self.tree = TreeSnapshot::from_update(self.revision, update);
+            self.tree = TreeSnapshot::from_update(self.revision, update, &outcome.content_types);
             self.revision = self
                 .revision
                 .checked_add(1)
@@ -1537,7 +1563,7 @@ impl SemanticApp<HeadlessRuntime> {
     /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
     pub fn queue_hover_at(&mut self, x: f32, y: f32) {
         self.runtime
-            .push_input_event(driver::pointer_move_event(x, y));
+            .push_input_event(driver::pointer_move_event(PointerKind::Mouse, x, y));
     }
 
     /// Resolves the viewport point a pointer can activate on `node_id`'s
@@ -1577,9 +1603,9 @@ impl SemanticApp<HeadlessRuntime> {
     /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
     pub fn tap_at(&mut self, x: f32, y: f32) {
         self.runtime
-            .push_input_event(driver::pointer_down_event(x, y));
+            .push_input_event(driver::pointer_down_event(PointerKind::Mouse, x, y));
         self.runtime
-            .push_input_event(driver::pointer_up_event(x, y));
+            .push_input_event(driver::pointer_up_event(PointerKind::Mouse, x, y));
         self.settle();
     }
 
@@ -1596,7 +1622,7 @@ impl SemanticApp<HeadlessRuntime> {
     /// than being waited out.
     pub fn queue_pointer_down_at(&mut self, x: f32, y: f32) {
         self.runtime
-            .push_input_event(driver::pointer_down_event(x, y));
+            .push_input_event(driver::pointer_down_event(PointerKind::Mouse, x, y));
     }
 
     /// Right-clicks at viewport coordinates, opening a context menu if there is
@@ -1627,7 +1653,7 @@ impl SemanticApp<HeadlessRuntime> {
     /// by the next pump.
     pub fn queue_pointer_up_at(&mut self, x: f32, y: f32) {
         self.runtime
-            .push_input_event(driver::pointer_up_event(x, y));
+            .push_input_event(driver::pointer_up_event(PointerKind::Mouse, x, y));
     }
 
     pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
@@ -1675,19 +1701,28 @@ impl SemanticApp<HeadlessRuntime> {
     ) {
         let steps = options.steps.max(1);
         self.runtime
-            .push_input_event(driver::pointer_down_event(from_x, from_y));
+            .push_input_event(driver::pointer_down_event(options.pointer, from_x, from_y));
         for step in 1..=steps {
             let t = f32::from(step) / f32::from(steps);
             let x = (to_x - from_x).mul_add(t, from_x);
             let y = (to_y - from_y).mul_add(t, from_y);
             self.runtime
-                .push_input_event(driver::pointer_move_event(x, y));
+                .push_input_event(driver::pointer_move_event(options.pointer, x, y));
             if options.frame_per_step {
                 let _ = self.pump_step(VIRTUAL_FRAME);
             }
         }
         self.runtime
-            .push_input_event(driver::pointer_up_event(to_x, to_y));
+            .push_input_event(driver::pointer_up_event(options.pointer, to_x, to_y));
+    }
+
+    /// Supplies the touch-gesture parameters a real platform's window
+    /// reports (Android's `ViewConfiguration` values through
+    /// `PlatformWindow::touch_scroll_config`), enabling
+    /// `PointerKind::Touch` drags to claim scroll views the way they do on
+    /// device.
+    pub fn set_touch_scroll_config(&mut self, config: hydrolysis::TouchScrollConfig) {
+        self.runtime.set_touch_scroll_config(config);
     }
 
     /// Dispatches a wheel/trackpad scroll at viewport coordinates and settles

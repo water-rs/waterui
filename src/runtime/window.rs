@@ -2,9 +2,15 @@
 //!
 //! # Window Backgrounds
 //!
-//! Windows support solid color backgrounds. For blur effects, use `Material`:
-//! `Material` is delegated to platform backends as `MaterialBackground` metadata
-//! and is best-effort (quality and behavior may vary by platform).
+//! A window's background is what lies behind its content: the theme's
+//! background colour, a solid colour (translucent through its alpha), or a
+//! [`Material`]. A material window background is that window's material. The
+//! mainline backends realize it at the window — within-window levels as a
+//! backdrop treatment of the window behind its content, behind-window levels
+//! by letting the desktop show through the window; a backend that does not
+//! realize materials draws the window opaque in the theme's background
+//! colour. See [`WindowBackground::Material`] for the per-platform
+//! realizations.
 //!
 //! ```rust
 //! use waterui::prelude::*;
@@ -14,9 +20,11 @@
 //! let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
 //!     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
 //!
-//! // Frosted glass window (opaque window + material blur on content)
+//! // Frosted glass window: the desktop shows through, blurred on macOS;
+//! // on Hydrolysis tinted, and blurred where the compositor
+//! // supports it
 //! let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
-//!     .background(Material::Regular);
+//!     .background(Material::UltraThin);
 //! ```
 
 use std::{fmt::Debug, rc::Rc};
@@ -24,7 +32,7 @@ use std::{fmt::Debug, rc::Rc};
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View, flatten_signal};
+use waterui_core::{AnyView, Dynamic, Environment, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
 
@@ -32,11 +40,8 @@ use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarManager;
 use crate::{
-    ViewExt,
-    background::{Material, MaterialBackground},
-    component::label::LabelDisplayMode,
-    prelude::FullScreenOverlayManager,
-    theme::color::Background,
+    ViewExt, background::Material, component::label::LabelDisplayMode,
+    prelude::FullScreenOverlayManager, theme::color::Background,
 };
 
 /// Represents a window in the UI.
@@ -48,7 +53,12 @@ pub struct Window {
     pub title: Computed<Str>,
     /// Whether the window is closable.
     ///
-    /// Notice that it may not be supported on all platforms.
+    /// How each platform honours `false`:
+    ///
+    /// - **macOS and Windows:** the close button is disabled.
+    /// - **Linux (X11 and Wayland):** the button stays drawn and enabled,
+    ///   but the close request it sends is ignored.
+    /// - **iOS, Android and web:** there is no window close.
     pub closable: bool,
     /// Whether the window is resizable.
     ///
@@ -78,8 +88,9 @@ pub struct Window {
     ///
     /// Use this to create transparent or frosted glass windows. Reactive:
     /// backends re-apply the background when the binding changes after the
-    /// window is shown, including a switch between [`WindowBackground::Opaque`]
-    /// and a translucent [`WindowBackground::Color`]. Backends paint what
+    /// window is shown, including a switch between [`WindowBackground::Opaque`],
+    /// a translucent [`WindowBackground::Color`] and a
+    /// [`WindowBackground::Material`]. Backends realize what
     /// [`Window::resolved_background`] resolves it to.
     ///
     /// Notice that it may not be supported on all platforms.
@@ -315,18 +326,19 @@ pub enum WindowStyle {
     FullSizeContentView,
 }
 
-/// The background style of a window.
-///
-/// This only supports opaque or solid color backgrounds.
-/// For blur effects, use `Material` which wraps content with `MaterialBackground` metadata.
+/// The background style of a window: what lies behind its content.
 ///
 /// # Platform Support
+///
+/// [`Opaque`](Self::Opaque) and [`Color`](Self::Color):
 ///
 /// - **macOS**: `NSWindow.backgroundColor` and `isOpaque`.
 /// - **Android**: `Window.setBackgroundDrawable()`.
 /// - **Linux (GTK)**: window CSS background.
 /// - **Windows (`WinUI`)**: the content root's background brush.
 /// - **Hydrolysis**: the surface clear colour and composite alpha mode.
+///
+/// [`Material`](Self::Material) is described on the variant.
 #[derive(Debug, Clone, Default)]
 pub enum WindowBackground {
     /// Opaque background in the theme's [`Background`] colour.
@@ -334,23 +346,57 @@ pub enum WindowBackground {
     Opaque,
     /// Solid color background (can be semi-transparent via alpha).
     Color(Color),
-}
-
-impl WindowBackground {
-    /// The colour this background paints: the theme's [`Background`] colour
-    /// for [`Self::Opaque`], the declared colour otherwise.
-    #[must_use]
-    pub fn color(&self) -> Color {
-        match self {
-            Self::Opaque => Color::new(Background),
-            Self::Color(color) => color.clone(),
-        }
-    }
+    /// The window's material: every level is allowed, and each backend
+    /// realizes the level's own blending, as it does for a view's
+    /// [`Material`] background.
+    ///
+    /// Within-window levels ([`Material::Regular`], [`Material::Thick`],
+    /// [`Material::UltraThick`]) are a backdrop treatment over the window's
+    /// opaque theme [`Background`]. Behind-window levels
+    /// ([`Material::UltraThin`], [`Material::Thin`]) make the window
+    /// translucent so the desktop shows through it.
+    ///
+    /// - **macOS**: an `NSVisualEffectView` filling the window behind its
+    ///   content, with the level's blending mode; for a behind-window level
+    ///   the window is non-opaque with a clear background, so the desktop
+    ///   shows through blurred.
+    /// - **iOS**: a `UIVisualEffectView` filling the window behind its
+    ///   content, over the theme background — nothing lies behind an iOS
+    ///   window.
+    /// - **Hydrolysis on a desktop**: a within-window level mounts the
+    ///   window's content over the level's backdrop treatment of the opaque
+    ///   theme background. A behind-window level makes the window and its
+    ///   surface transparent and composites the level's colour treatment as
+    ///   the closest source-over tint under the content; blurring the desktop
+    ///   is the compositor's job. The desktop is blurred where the platform's
+    ///   blur-behind is wired — an `NSVisualEffectView` behind the window on
+    ///   macOS, the DWM's acrylic system backdrop on Windows 11 22H2 and
+    ///   later, `_KDE_NET_WM_BLUR_BEHIND_REGION` under a window manager that
+    ///   honours it (`KWin`) on X11, and `ext-background-effect-v1` on
+    ///   Wayland, whose compositor applies blur by its own policy — and
+    ///   shows through tinted but unblurred elsewhere: older Windows, other
+    ///   X11 window managers and Wayland compositors not advertising the
+    ///   global.
+    /// - **Hydrolysis on Android**: a within-window level is realized as on a
+    ///   desktop. Window transparency is not realized on Android yet, so a
+    ///   behind-window level renders as an opaque window
+    ///   (water-rs/waterui#1966).
+    /// - **Android (the Kotlin runtime)** and the experimental backends realize
+    ///   no material: the window is drawn opaque in the theme's background
+    ///   colour. Hydrolysis is the Android backend that realizes it
+    ///   (water-rs/waterui#1899).
+    Material(Material),
 }
 
 impl From<Color> for WindowBackground {
     fn from(color: Color) -> Self {
         Self::Color(color)
+    }
+}
+
+impl From<Material> for WindowBackground {
+    fn from(material: Material) -> Self {
+        Self::Material(material)
     }
 }
 
@@ -360,46 +406,68 @@ impl From<WindowBackground> for Binding<WindowBackground> {
     }
 }
 
-/// Resolves a reactive window background to the concrete colour a backend
-/// paints behind the window's content.
+/// A window background resolved for the frame a backend realizes: the
+/// concrete colour to paint behind the content, or the material to realize
+/// at the window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResolvedWindowBackground {
+    /// Paint this colour behind the window's content. An opacity below one
+    /// asks for a translucent window. [`WindowBackground::Opaque`] resolves
+    /// to the theme's [`Background`] colour.
+    Color(WorkingColor),
+    /// Realize this material at the window. See
+    /// [`WindowBackground::Material`].
+    Material(Material),
+}
+
+/// Resolves a reactive window background to what a backend realizes behind
+/// the window's content.
 ///
 /// The result follows both a change of the background itself — including a
-/// switch between [`WindowBackground::Opaque`] and [`WindowBackground::Color`]
-/// — and a change of the colour it currently resolves to, such as a theme
-/// switch. A colour whose opacity is below one asks for a translucent window.
+/// switch between [`WindowBackground::Opaque`], [`WindowBackground::Color`]
+/// and [`WindowBackground::Material`] — and a change of the colour it
+/// currently resolves to, such as a theme switch.
 #[must_use]
-pub fn resolve_background<S>(background: &S, env: &Environment) -> Computed<WorkingColor>
+pub fn resolve_background<S>(
+    background: &S,
+    env: &Environment,
+) -> Computed<ResolvedWindowBackground>
 where
     S: Signal<Output = WindowBackground>,
 {
     let env = env.clone();
-    flatten_signal(background.map(move |background| background.color().resolve(&env)))
+    flatten_signal(background.map(move |background| {
+        let color = match background {
+            WindowBackground::Opaque => Color::new(Background),
+            WindowBackground::Color(color) => color,
+            WindowBackground::Material(material) => {
+                return Computed::constant(ResolvedWindowBackground::Material(material));
+            }
+        };
+        color
+            .resolve(&env)
+            .map(ResolvedWindowBackground::Color)
+            .into_computed()
+    }))
 }
 
 /// Input type for `Window::background()` method.
 ///
-/// Allows setting window background via a `Color`, a [`WindowBackground`], a
-/// `Binding<WindowBackground>` the app keeps to change it later, or a
-/// `Material`. When `Material` is used, the window becomes opaque and the
-/// content is wrapped with a `MaterialBackground` metadata for native blur
-/// effects.
+/// Accepts a `Color`, a [`Material`], a [`WindowBackground`], or a
+/// `Binding<WindowBackground>` the app keeps to change the background later;
+/// a colour and a material each become the matching [`WindowBackground`].
 #[derive(Debug)]
-pub enum WindowBackgroundInput {
-    /// A reactive background: a fixed colour or `Opaque`, or a binding.
-    Background(Binding<WindowBackground>),
-    /// A material blur effect (wraps content, window stays opaque).
-    Material(Material),
-}
+pub struct WindowBackgroundInput(Binding<WindowBackground>);
 
 impl From<WindowBackground> for WindowBackgroundInput {
     fn from(background: WindowBackground) -> Self {
-        Self::Background(background.into())
+        Self(background.into())
     }
 }
 
 impl From<Binding<WindowBackground>> for WindowBackgroundInput {
     fn from(background: Binding<WindowBackground>) -> Self {
-        Self::Background(background)
+        Self(background)
     }
 }
 
@@ -411,7 +479,7 @@ impl From<Color> for WindowBackgroundInput {
 
 impl From<Material> for WindowBackgroundInput {
     fn from(material: Material) -> Self {
-        Self::Material(material)
+        WindowBackground::Material(material).into()
     }
 }
 
@@ -622,12 +690,10 @@ impl Window {
 
     /// Set the background style of the window.
     ///
-    /// Accepts a `Color` for solid backgrounds, a [`WindowBackground`] or a
-    /// `Binding<WindowBackground>` to change the background after the window
-    /// is shown, or a `Material` for blur effects. When using `Material`, the
-    /// window stays opaque and the content is wrapped with
-    /// `MaterialBackground` metadata handled by the native backend on a
-    /// best-effort basis.
+    /// Accepts a `Color` for solid backgrounds, a `Material` for the window's
+    /// material, or a [`WindowBackground`] or a `Binding<WindowBackground>` to
+    /// change the background after the window is shown — between a colour,
+    /// [`WindowBackground::Opaque`] and a material alike.
     ///
     /// # Examples
     ///
@@ -639,35 +705,22 @@ impl Window {
     /// let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
     ///     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
     ///
-    /// // Frosted glass window (opaque + material blur on content)
+    /// // Frosted glass window: the desktop shows through, blurred on macOS;
+    /// // on Hydrolysis tinted, and blurred where the compositor
+    /// // supports it
     /// let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
-    ///     .background(Material::Regular);
+    ///     .background(Material::UltraThin);
     /// ```
     #[must_use]
     pub fn background(mut self, background: impl Into<WindowBackgroundInput>) -> Self {
-        match background.into() {
-            WindowBackgroundInput::Background(background) => {
-                self.background = background;
-            }
-            WindowBackgroundInput::Material(material) => {
-                // Keep window opaque, wrap content with MaterialBackground metadata
-                self.background = Binding::container(WindowBackground::Opaque);
-                let content = self.content;
-                self.content = AnyViewBuilder::new(move || {
-                    AnyView::new(IgnorableMetadata::new(
-                        content.build(),
-                        MaterialBackground(material),
-                    ))
-                });
-            }
-        }
+        self.background = background.into().0;
         self
     }
 
-    /// The colour a backend paints behind the window's content, following the
+    /// What a backend realizes behind the window's content, following the
     /// reactive [`Self::background`]. See [`resolve_background`].
     #[must_use]
-    pub fn resolved_background(&self, env: &Environment) -> Computed<WorkingColor> {
+    pub fn resolved_background(&self, env: &Environment) -> Computed<ResolvedWindowBackground> {
         resolve_background(&self.background, env)
     }
 
@@ -902,35 +955,106 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use nami::{Binding, Signal};
-    use waterui_core::Environment;
-    use waterui_graphics::Color;
+    use waterui_core::{Environment, plugin::Plugin as _};
+    use waterui_graphics::{
+        Color,
+        color::{WorkingColor, working::from_linear_srgb},
+    };
 
-    use super::{WindowBackground, resolve_background};
+    use super::{
+        ResolvedWindowBackground, Window, WindowBackground, WindowState, resolve_background,
+    };
+    use crate::background::Material;
+    use crate::theme::{
+        ColorSettings, Theme,
+        color::{Accent, Background},
+    };
+
+    fn color(resolved: ResolvedWindowBackground) -> WorkingColor {
+        match resolved {
+            ResolvedWindowBackground::Color(color) => color,
+            ResolvedWindowBackground::Material(material) => {
+                panic!("expected a colour, resolved Material::{material:?}")
+            }
+        }
+    }
+
+    /// `Window::background(Material)` stores the material as the window's
+    /// background instead of wrapping the content.
+    #[test]
+    fn a_material_is_the_window_background() {
+        let window = Window::new("", Binding::container(WindowState::Normal), || ())
+            .background(Material::Thin);
+        assert!(matches!(
+            window.background.snapshot(),
+            WindowBackground::Material(Material::Thin)
+        ));
+        assert_eq!(
+            window.resolved_background(&Environment::new()).snapshot(),
+            ResolvedWindowBackground::Material(Material::Thin)
+        );
+    }
 
     /// The resolved background follows a replacement of the background
-    /// itself, not only a change of the colour it started with.
+    /// itself — colour to colour, to a material, to `Opaque` — and, while a
+    /// colour is set, a theme change of the colour it resolves through.
     #[test]
     fn resolved_background_follows_a_replaced_background() {
-        let env = Environment::new();
+        let green = from_linear_srgb([0.0, 1.0, 0.0], 1.0);
+        let red = from_linear_srgb([1.0, 0.0, 0.0], 1.0);
+        let accent = Binding::container(green);
+        let mut env = Environment::new();
+        Theme::new()
+            .colors(
+                ColorSettings::new()
+                    .background(from_linear_srgb([0.5, 0.5, 0.5], 1.0))
+                    .accent(accent.clone()),
+            )
+            .install(&mut env);
+
         let background = Binding::container(WindowBackground::Color(Color::srgb(255, 0, 0)));
         let resolved = resolve_background(&background, &env);
         // Components are linear Display P3 red, green, blue, alpha: sRGB red
         // lands near 0.82 in the wider P3 gamut.
-        assert!(resolved.snapshot().components[0] > 0.8);
+        assert!(color(resolved.snapshot()).components[0] > 0.8);
 
         let seen = Rc::new(RefCell::new(Vec::new()));
         let _guard = resolved.watch({
             let seen = seen.clone();
             move |ctx| seen.borrow_mut().push(ctx.into_value())
         });
+        let last = || *seen.borrow().last().expect("a change was delivered");
+
         background.set(WindowBackground::Color(
             Color::srgb(0, 0, 255).with_opacity(0.5),
         ));
+        let blue = color(last());
+        assert!(blue.components[2] > 0.9 && blue.components[0] < 0.05);
+        assert!((blue.components[3] - 0.5).abs() < 1e-6);
+        assert!((color(resolved.snapshot()).components[3] - 0.5).abs() < 1e-6);
 
-        let seen = seen.borrow();
-        let last = seen.last().expect("the replaced background was delivered");
-        assert!(last.components[2] > 0.9 && last.components[0] < 0.05);
-        assert!((last.components[3] - 0.5).abs() < 1e-6);
-        assert!((resolved.snapshot().components[3] - 0.5).abs() < 1e-6);
+        background.set(WindowBackground::Material(Material::UltraThin));
+        assert_eq!(
+            last(),
+            ResolvedWindowBackground::Material(Material::UltraThin)
+        );
+        assert_eq!(
+            resolved.snapshot(),
+            ResolvedWindowBackground::Material(Material::UltraThin)
+        );
+
+        background.set(WindowBackground::Opaque);
+        assert_eq!(
+            color(last()),
+            Color::new(Background).resolve(&env).snapshot(),
+            "`Opaque` resolves to the theme background"
+        );
+
+        // A theme change while a colour is set reaches the resolved colour.
+        background.set(WindowBackground::Color(Color::new(Accent)));
+        assert_eq!(color(last()), green);
+        accent.set(red);
+        assert_eq!(color(last()), red);
+        assert_eq!(color(resolved.snapshot()), red);
     }
 }

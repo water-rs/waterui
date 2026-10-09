@@ -95,6 +95,19 @@ pub enum Feature {
     BackdropColorMatrix,
     /// A member layer carries a per-member backdrop sampling effect.
     BackdropEffect,
+    /// A backdrop group captures below device resolution (`scale < 1`).
+    BackdropScale,
+    /// A backdrop group captures a blur pyramid (`levels > 1`).
+    BackdropLevels,
+    /// A backdrop group anchors its capture at a named layer
+    /// ([`BackdropGroup::anchor`]).
+    BackdropAnchor,
+    /// A backdrop group composites its members against a shared union
+    /// field (`BackdropGroup::union`).
+    BackdropUnion,
+    /// A member layer extends its backdrop composite past its clip edge
+    /// (`Layer::backdrop_outer`).
+    BackdropOuter,
     /// A layer with a projective pose.
     Projective,
 }
@@ -184,6 +197,18 @@ impl Scene {
             f.insert(Feature::WideGamut);
         }
         for group in &self.backdrop_groups {
+            if group.scale < 1.0 {
+                f.insert(Feature::BackdropScale);
+            }
+            if group.levels > 1 {
+                f.insert(Feature::BackdropLevels);
+            }
+            if group.anchor.is_some() {
+                f.insert(Feature::BackdropAnchor);
+            }
+            if group.union.is_some() {
+                f.insert(Feature::BackdropUnion);
+            }
             for filter in &group.filters {
                 match filter {
                     BackdropFilter::GaussianBlur { .. } => {
@@ -219,10 +244,21 @@ impl Scene {
                 computed: scene.features.iter().cloned().collect(),
             });
         }
-        scene.validate_backdrops()?;
-        scene.validate_projections()?;
-        scene.validate_text()?;
+        scene.validate()?;
         Ok(scene)
+    }
+
+    /// The scene's structural contract: backdrop groups, projections and
+    /// text lowers as [`Scene::load`] checks them. `Scene::builder` output
+    /// is unchecked until this runs.
+    ///
+    /// # Errors
+    /// [`SceneError`] on the first violated rule.
+    pub fn validate(&self) -> Result<(), SceneError> {
+        self.validate_backdrops()?;
+        self.validate_projections()?;
+        self.validate_text()?;
+        Ok(())
     }
 
     /// A text layer's source must name fonts and character-boundary
@@ -334,8 +370,30 @@ impl Scene {
         walk(&self.root)
     }
 
-    /// Every layer's `backdrop` must name a declared group and carry a clip.
+    /// Every group's capture scale must be finite and in `(0, 1]`; every
+    /// layer's `backdrop` must name a declared group and carry a clip,
+    /// and every group's `anchor` must name exactly one layer's `id`.
     fn validate_backdrops(&self) -> Result<(), SceneError> {
+        fn ids(
+            layer: &Layer,
+            seen: &mut std::collections::HashSet<u32>,
+            projective: &mut std::collections::HashSet<u32>,
+        ) -> Result<(), SceneError> {
+            if let Some(id) = layer.id {
+                if !seen.insert(id.get()) {
+                    return Err(SceneError::DuplicateBackdropAnchor(id.get()));
+                }
+                if layer.projection.is_some() {
+                    projective.insert(id.get());
+                }
+            }
+            for item in &layer.items {
+                if let Item::Layer(l) = item {
+                    ids(l, seen, projective)?;
+                }
+            }
+            Ok(())
+        }
         fn walk(layer: &Layer, groups: &[BackdropGroup]) -> Result<(), SceneError> {
             if let Some(id) = layer.backdrop {
                 if layer.clip.is_none() {
@@ -344,6 +402,11 @@ impl Scene {
                 if !groups.iter().any(|g| g.id == id) {
                     return Err(SceneError::UnknownBackdropGroup(id));
                 }
+                if !(layer.backdrop_outer.is_finite() && layer.backdrop_outer >= 0.0) {
+                    return Err(SceneError::InvalidBackdropOuter(id));
+                }
+            } else if layer.backdrop_outer != 0.0 {
+                return Err(SceneError::BackdropOuterWithoutGroup);
             }
             if let Some(effect) = &layer.backdrop_effect {
                 if layer.backdrop.is_none() {
@@ -357,6 +420,51 @@ impl Scene {
                 }
             }
             Ok(())
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| !(g.scale.is_finite() && g.scale > 0.0 && g.scale <= 1.0))
+        {
+            return Err(SceneError::InvalidBackdropScale(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| !(1..=crate::BackdropGroup::MAX_LEVELS).contains(&g.levels))
+        {
+            return Err(SceneError::InvalidBackdropLevels(group.id));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut projective = std::collections::HashSet::new();
+        ids(&self.root, &mut seen, &mut projective)?;
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| self.root.id == Some(a)))
+        {
+            return Err(SceneError::BackdropAnchorAtRoot(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| projective.contains(&a.get())))
+        {
+            return Err(SceneError::BackdropAnchorProjective(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.anchor.is_some_and(|a| !seen.contains(&a.get())))
+        {
+            return Err(SceneError::UnknownBackdropAnchor(group.id));
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| g.union.is_some_and(|k| !(k.is_finite() && k > 0.0)))
+        {
+            return Err(SceneError::InvalidBackdropUnion(group.id));
         }
         walk(&self.root, &self.backdrop_groups)
     }
@@ -391,6 +499,23 @@ impl Scene {
                 } else {
                     Err(SceneError::InvalidBackdropEffect(
                         "rim-light colour and gain must be finite, gain non-negative",
+                    ))
+                }
+            }
+            E::Level {
+                depth,
+                edge_level,
+                interior_level,
+            } => {
+                if depth.is_finite()
+                    && *depth > 0.0
+                    && edge_level.is_finite()
+                    && interior_level.is_finite()
+                {
+                    Ok(())
+                } else {
+                    Err(SceneError::InvalidBackdropEffect(
+                        "level ramp needs depth > 0 and finite edge and interior levels",
                     ))
                 }
             }
@@ -727,6 +852,9 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     }
     if layer.backdrop_effect.is_some() {
         f.insert(Feature::BackdropEffect);
+    }
+    if layer.backdrop_outer != 0.0 {
+        f.insert(Feature::BackdropOuter);
     }
     if layer.projection.is_some() {
         f.insert(Feature::Projective);

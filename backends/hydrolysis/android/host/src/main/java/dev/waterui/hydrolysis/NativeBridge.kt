@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.os.Looper
 import android.view.Surface
 
 /**
@@ -28,9 +29,18 @@ object NativeBridge {
      * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
      * 31, so `ANativeWindow_setFrameRate` is linked directly; 9 =
      * [nativeBackEvent] and `onNativeBackAvailable` carry system back into
-     * the navigation stack and report whether a back target is registered.
+     * the navigation stack and report whether a back target is registered;
+     * 10 = `nativeSetMetrics` splits the window insets into the container
+     * and keyboard regions of layout-spec.md §7.1, and the host's
+     * `WindowInsetsAnimationCompat` progress pushes each IME animation frame;
+     * 11 = [nativeUiThreadServices] creates the one executor per UI thread
+     * at load time, and [nativeCreateSession] takes its handle so every
+     * session shares it; 12 = [nativeSetHighRefresh] takes a typed `active`
+     * flag in place of the `-1f` sentinel float the native side decoded as a
+     * release, and [nativeSurfaceAttached] carries the display's peak
+     * refresh rate that flag asks for.
      */
-    private const val SCHEMA: Int = 9
+    private const val SCHEMA: Int = 12
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -44,7 +54,16 @@ object NativeBridge {
     /** [nativeBackEvent] phase: the gesture committed, or a back button was pressed. */
     const val BACK_INVOKED: Int = 3
 
-    private var initialized = false
+    /** The `System.loadLibrary` name [load] mounted, or null before it. */
+    private var loadedLibraryName: String? = null
+
+    /**
+     * Opaque handle for the UI-thread services the load hook created once:
+     * the executor every session shares, registered with the main looper.
+     * Sessions receive it explicitly — the native side keeps no global.
+     */
+    internal var uiThreadServices: Long = 0
+        private set
 
     /**
      * Loads the app's Hydrolysis-backed shared library and verifies the JNI
@@ -55,25 +74,49 @@ object NativeBridge {
      */
     @Synchronized
     fun load(libraryName: String, logLevel: String?) {
-        if (initialized) return
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "hydrolysis: load must run on the main thread, whose looper the executor registers with"
+        }
+        loadedLibraryName?.let { loaded ->
+            check(loaded == libraryName) {
+                "hydrolysis: the process already mounted '$loaded'; a second library '$libraryName' cannot share it"
+            }
+            return
+        }
         System.loadLibrary(libraryName)
         val nativeSchema = nativeInit(SCHEMA, logLevel)
         check(nativeSchema == SCHEMA) {
             "hydrolysis JNI schema mismatch: host expects $SCHEMA, native library reports $nativeSchema"
         }
-        initialized = true
+        uiThreadServices = nativeUiThreadServices()
+        check(uiThreadServices != 0L) { "hydrolysis: the UI-thread executor was not created" }
+        loadedLibraryName = libraryName
     }
 
     @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int
 
     /**
-     * `context` is the application context — the native side publishes it
-     * through `ndk_context` so service backends (clipboard) can resolve it.
+     * Creates the one executor per UI thread — registered with the main
+     * looper through the same eventfd it writes — plus the process
+     * environment carrying the inspector. Called once from [load], which is
+     * why the executor exists for the process's life rather than per
+     * session. Returns the process-owned handle passed to
+     * [nativeCreateSession].
+     */
+    @JvmStatic private external fun nativeUiThreadServices(): Long
+
+    /**
+     * `context` is any `Context` of the app — the native side resolves its
+     * `Application` and publishes that, once per process, through
+     * `ndk_context` so service backends (clipboard) can resolve it.
+     * `uiThreadServices` is the handle [load] created — every session
+     * shares that executor rather than installing its own.
      */
     @JvmStatic
     external fun nativeCreateSession(
         session: HydrolysisSession,
         context: Context,
+        uiThreadServices: Long,
     ): Long
 
     @JvmStatic external fun nativeDestroySession(sessionPtr: Long)
@@ -90,6 +133,10 @@ object NativeBridge {
         insetTop: Int,
         insetRight: Int,
         insetBottom: Int,
+        imeLeft: Int,
+        imeTop: Int,
+        imeRight: Int,
+        imeBottom: Int,
         touchSlopPx: Float,
         minFlingVelocityPx: Float,
         maxFlingVelocityPx: Float,
@@ -105,10 +152,16 @@ object NativeBridge {
 
     @JvmStatic external fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long
 
+    /**
+     * A band surface was created. `peakRefreshHz` is the highest rate the
+     * band's display offers at its current resolution — what a
+     * [nativeSetHighRefresh] demand asks this surface for.
+     */
     @JvmStatic
     external fun nativeSurfaceAttached(
         sessionPtr: Long,
         surface: Surface,
+        peakRefreshHz: Float,
         width: Int,
         height: Int,
         generation: Long,
@@ -130,7 +183,13 @@ object NativeBridge {
      */
     @JvmStatic external fun nativeSetVisible(sessionPtr: Long, visible: Boolean)
 
-    @JvmStatic external fun nativeSetHighRefresh(sessionPtr: Long, fps: Float)
+    /**
+     * The scheduler's high-refresh demand. `active` asks the surface for the
+     * peak rate its attach reported, for as long as the pump runs or a touch
+     * is held; `false` releases the request. The native side holds the
+     * demand across surface re-creations.
+     */
+    @JvmStatic external fun nativeSetHighRefresh(sessionPtr: Long, active: Boolean)
 
     /**
      * One system-back phase. `phase` is a `BACK_*` constant. `edge` is

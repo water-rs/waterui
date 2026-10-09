@@ -12,7 +12,7 @@ fn render_card(
     engine: &Engine<Gpu>,
     alpha: f32,
 ) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
-    let surface = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             let card = Rect::new(24., 24., 104., 104.);
@@ -45,7 +45,7 @@ fn a_red_rect_renders_and_reads_back() -> Result<(), Box<dyn std::error::Error>>
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -76,7 +76,7 @@ fn a_cyclic_layer_tree_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let a = surface.layer();
     let b = surface.layer();
     surface.update(|tx| {
@@ -98,7 +98,7 @@ fn a_path_fill_renders() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     let mut path = BezPath::new();
     path.move_to((4., 4.));
     path.curve_to((20., 60.), (44., 60.), (60., 4.));
@@ -121,7 +121,7 @@ fn a_path_shadow_renders() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     let mut path = BezPath::new();
     path.move_to((4., 4.));
     path.curve_to((20., 60.), (44., 60.), (60., 4.));
@@ -178,8 +178,8 @@ fn an_earlier_surfaces_uploads_survive_a_shared_buffer_grow()
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let small = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
-    let big = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let small = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let big = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     small.update(|tx| {
         tx[small.root()].content(small.record(|c| {
             c.fill(
@@ -274,7 +274,7 @@ fn many_timed_frames(engine: &Engine<Gpu>) -> Result<(), Box<dyn std::error::Err
         env!("CARGO_MANIFEST_DIR"),
         "/../scenes/fonts/NotoSans.ttf"
     ))?))?;
-    let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16), || {}))?;
     let mut submitted = Vec::new();
     for frame in 0..60u32 {
         // A different glyph size each frame keeps rasterising new atlas
@@ -399,7 +399,7 @@ fn a_large_fill_spans_its_interior() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((320, 320), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((320, 320), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -453,7 +453,7 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
         env!("CARGO_MANIFEST_DIR"),
         "/../scenes/fonts/NotoSans.ttf"
     ))?))?;
-    let surface = wait!(engine.surface(Offscreen::new((128, 96), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((128, 96), OffscreenFormat::LinearF16), || {}))?;
     let run = cherenkov::GlyphRun {
         font: font.id(),
         size: 24.0,
@@ -522,7 +522,7 @@ fn retained_painter_commands_follow_content_revisions() -> Result<(), Box<dyn st
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let actual = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let actual = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     // Same command layout with new instance data, buffer growth, fewer
     // commands, and an empty pass must all agree with a fresh recording.
     for (count, color) in [(1, [1., 0., 0., 1.]), (1, [0., 1., 0., 1.]),
@@ -539,7 +539,7 @@ fn retained_painter_commands_follow_content_revisions() -> Result<(), Box<dyn st
         actual.update(|tx| { tx[actual.root()].content(actual.record(record)); });
         wait!(engine.render(cherenkov::FrameTime::now()))?;
         let pixels = wait!(actual.readback())?.pixels;
-        let fresh = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+        let fresh = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
         fresh.update(|tx| { tx[fresh.root()].content(fresh.record(record)); });
         wait!(engine.render(cherenkov::FrameTime::now()))?;
         assert_eq!(pixels, wait!(fresh.readback())?.pixels, "painter revision with {count} cards");

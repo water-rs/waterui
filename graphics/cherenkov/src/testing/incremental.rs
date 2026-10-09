@@ -6,13 +6,13 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use crate::kurbo::{Affine, BezPath, Circle, Rect, Stroke, Vec2};
-use crate::message::LayerOp;
 use crate::{
     Animation, Command, ContentOp, Curve, Display, Draw, FontData, FontId, Frame, FrameId,
     FrameStats, FrameTime, Glyph, GlyphRun, GlyphStyle, Group, LayerId, LinearGradient, Offscreen,
     OffscreenFormat, Operand, Paint, Picture, Pressure, Prop, Renderer, Shadow, ShapeData,
     SlotUpdate, SurfaceFrame, SurfaceId, SurfaceTree, WorkingColor,
 };
+use cherenkov_record::LayerOp;
 
 /// Runs deterministic randomized slot changes against fresh full lowering.
 /// Backend initialization must succeed: a missing GPU must fail this test.
@@ -47,7 +47,7 @@ where
             .create_surface(
                 id,
                 Offscreen::new(size, OffscreenFormat::LinearF16).into(),
-                unhosted_waker(),
+                super::unhosted_waker(),
             )
             .expect("surface");
         let _ = renderer.set_content(
@@ -81,7 +81,7 @@ where
             renderer.trim(Pressure::Critical);
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
-        let _ = tree.sample(time, Display::default());
+        let _ = tree.sample(time, 1.0);
         let _ = renderer.set_content(
             ids[1],
             layer,
@@ -163,7 +163,7 @@ where
             .create_surface(
                 id,
                 Offscreen::new(size, OffscreenFormat::LinearF16).into(),
-                unhosted_waker(),
+                super::unhosted_waker(),
             )
             .expect("surface");
         let _ = renderer.set_content(
@@ -197,7 +197,7 @@ where
             renderer.trim(Pressure::Critical);
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
-        let _ = tree.sample(time, Display::default());
+        let _ = tree.sample(time, 1.0);
         let _ = renderer.set_content(
             ids[1],
             layer,
@@ -476,7 +476,7 @@ fn updates(list: &crate::DisplayList, frame: u32) -> Vec<SlotUpdate> {
                     value.mul_add(3., 1.),
                     WorkingColor::new([0.1, 0.2, 0.3, 0.5]),
                 )),
-                Command::Picture { .. } | Command::BeginTransform { .. } => {
+                Command::Picture { .. } | Command::Text { .. } | Command::BeginTransform { .. } => {
                     Operand::Transform(Affine::translate((value * 5., value * 3.)))
                 }
                 Command::BeginGroup { .. } => {
@@ -503,6 +503,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
                         random(step, 12).mul_add(0.4, 0.8),
                     ),
                 animation: Some(Animation::Curve(Curve::linear(Duration::from_millis(40)))),
+                start: None,
             },
         ));
     }
@@ -512,6 +513,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
             Prop {
                 target: if step % 16 == 6 { 0.6 } else { 1. },
                 animation: Some(Animation::Curve(Curve::linear(Duration::from_millis(40)))),
+                start: None,
             },
         ));
     }
@@ -525,6 +527,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
             Prop {
                 target: Vec2::new(1., 2.),
                 animation: None,
+                start: None,
             },
         ));
     }
@@ -676,20 +679,4 @@ async fn assert_patch_counts<R: Renderer>(
         u32::try_from(list.len()).unwrap(),
         "a glyph-count change must rebuild only its layer"
     );
-}
-
-/// A surface wake-up with no host behind it: the harness drives the
-/// renderer directly and renders on its own schedule.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        clippy::arc_with_non_send_sync,
-        reason = "the browser engine's waker is single-threaded; `Arc` matches the native type"
-    )
-)]
-fn unhosted_waker() -> crate::CompletionWaker {
-    let engine = std::sync::Arc::new(crate::engine::Waker::new());
-    crate::CompletionWaker::new(&std::sync::Arc::new(crate::engine::SurfaceWaker::new(
-        engine,
-    )))
 }

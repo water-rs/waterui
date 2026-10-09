@@ -10,7 +10,7 @@
   </p>
 </div>
 
-`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws through Android's hardware-accelerated renderer (HWUI) on Android and on the GPU through Cherenkov elsewhere, and Dew is a CPU renderer frugal enough for microcontrollers.
+`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, GTK4 on Linux. Where no native toolkit fits, Hydrolysis is the self-drawn renderer: it draws through Android's hardware-accelerated renderer (HWUI) on Android and on the GPU through Cherenkov elsewhere.
 
 State is plain values. Put mutable state in a `Binding`, derive from it with `Computed`, and hand those to views. When a value changes, the views that read it update. There is no virtual tree to diff, and changing one string never rebuilds the subtree around it.
 
@@ -92,12 +92,12 @@ The same surface drives `water preview test` for semantic interaction tests and 
 The same project you iterate on is the one that ships: the CLI generates and manages the platform projects, and builds, signs and packages the app from the declarations in `Water.toml`:
 
 ```bash
-water create my-app --backends apple,android
+water create my-app
 cd my-app
 water run --platform ios
 ```
 
-`Water.toml` holds package metadata, enabled backends, permissions, and theming. Add or remove a backend later with `water backend`.
+`Water.toml` holds package metadata, permissions, and theming. The backend is chosen per command — `water run --platform android` builds with Hydrolysis, and `--backend android` selects the Kotlin runtime.
 
 To give the app an icon, drop a square `Icon.svg` or `Icon.png` into `assets/`. The CLI renders every platform format from that one file: full-bleed squares for iOS, the rounded-rect shape for macOS, and adaptive icon layers for Android, so the artwork survives each platform's mask. New projects start with the `WaterUI` logo there until you replace it.
 
@@ -153,11 +153,10 @@ One thing to know early: `watch` replaces the subtree it wraps, losing any state
 | Android | Hydrolysis | Self-drawn, HWUI `RenderNode` display lists |
 | Linux | GTK4 | GTK4 widgets |
 | macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Cherenkov) |
-| ESP32-S3 / ESP32-C3 | Dew | Self-drawn, CPU, dirty-region |
 
 ## Status
 
-Pre-1.0. The API still moves, and we break it on purpose when a better shape is found. The Apple backend is the most complete; Hydrolysis, which also serves Android, is close behind; GTK4 and Dew are younger. If you hit a wall, an issue with a small reproduction is genuinely useful.
+Pre-1.0. The API still moves, and we break it on purpose when a better shape is found. The Apple backend is the most complete; Hydrolysis, which also serves Android, is close behind; GTK4 is younger. If you hit a wall, an issue with a small reproduction is genuinely useful.
 
 ## Examples
 
@@ -181,7 +180,7 @@ water run --platform macos
 
 - [`core/`](core/) — `View`, `Environment`, layout contracts, reactive integration
 - [`components/`](components/) — layouts, text, controls, forms, navigation, media, charts, and friends
-- [`backends/`](backends/) — Apple, Android, GTK4, Hydrolysis, Dew
+- [`backends/`](backends/) — the mainline backends: Apple (`UIKit`/`AppKit`) and Hydrolysis (self-drawn, and the Android backend)
 - [`cli/`](cli/) — `waterui-cli`, the `water` command and project generators (a workspace member)
 - [`ffi/`](ffi/) — the C ABI backends talk through
 - [`testing/`](testing/) — semantic UI testing over the accessibility tree

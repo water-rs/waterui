@@ -18,7 +18,7 @@ use crate::{
 /// Project-owned state filled when [`Project::open`] generates the selected
 /// backends in the managed build cache — never persisted in `Water.toml`.
 /// Persisted backend-facing configuration lives in the manifest's typed
-/// tables (`[esp32]` device configuration, `[hydrolysis]` painter).
+/// tables (the `[hydrolysis]` painter selection).
 #[derive(Debug, Clone, Default)]
 pub struct Backends {
     android: Option<AndroidBackend>,
@@ -82,9 +82,9 @@ pub enum FailToInitBackend {
     #[error("Failed to write template files: {0}")]
     Io(#[from] std::io::Error),
     /// Invalid backend configuration prevented scaffolding (e.g. an
-    /// unsupported chip in `[esp32]`).
-    #[error("Invalid backend configuration: {0}")]
-    Config(#[source] eyre::Error),
+    /// unsupported painter in `[hydrolysis]`).
+    #[error("Invalid backend configuration: {0:#}")]
+    Config(eyre::Error),
 }
 
 /// Trait for backends in a `WaterUI` project.

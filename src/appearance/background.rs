@@ -10,9 +10,10 @@
 //! by the framework in Rust via `BackgroundView`.
 //!
 //! `Material` and `Glass` are different: they become `MaterialBackground` and
-//! `GlassBackground` metadata delegated to platform backends on a best-effort
-//! basis, because true backdrop blur requires native compositor APIs that are
-//! not uniformly available from the Rust layer.
+//! `GlassBackground` metadata that each backend realizes, because they treat
+//! the content behind the view rather than drawing a view of their own. Every
+//! backend realizes `Material` (see its contract); `Glass` is an asymmetric
+//! primitive.
 //!
 //! ```rust
 //! use waterui::prelude::*;
@@ -34,13 +35,8 @@ use waterui_graphics::gradient::Gradient;
 use waterui_layout::BackgroundView;
 use waterui_shape::{Capsule, Shape, ShapeKind};
 
-/// A material background metadata for native blur effects.
-///
-/// This is an ignorable metadata delegated to native backends. Backends should
-/// provide the best material effect they can (real blur, approximation, or no-op).
-///
-/// This metadata remains ignorable because full material/backdrop effects depend
-/// on platform compositor capabilities and cannot be implemented uniformly in Rust.
+/// A material background metadata: the [`Material`] a backend realizes
+/// behind the wrapped content, following the contract [`Material`] states.
 ///
 /// # Usage
 ///
@@ -104,6 +100,30 @@ impl IntoBackground for Glass {
     }
 }
 
+/// A material group metadata: the backdrop materials in the wrapped subtree
+/// form one group.
+///
+/// The members of one group share one capture of what lies behind the
+/// group, so a member does not see another member of its group. Where the
+/// realization's style supports it, members may also merge into one shape
+/// where they come close. Whether and how they merge, and the distance
+/// over which they do, belong to the style and its theme tokens, never to
+/// the view.
+///
+/// The nearest enclosing group wins: a group nested in another starts a
+/// group of its own, and its materials do not join the outer one. A
+/// material outside every group is a group of its own.
+///
+/// This is ignorable metadata, like [`MaterialBackground`]: a realization
+/// whose style does not group materials renders the content unchanged.
+///
+/// Use via [`material_group`](crate::ViewExt::material_group) rather than
+/// directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialGroup;
+
+impl MetadataKey for MaterialGroup {}
+
 impl<V: View> IntoBackground for V {
     type Output<Content: View> = BackgroundView<Content, V>;
 
@@ -135,9 +155,45 @@ pub enum Background {
 /// Materials create translucent blur effects that allow content behind the view
 /// to show through with varying degrees of blur and vibrancy.
 ///
-/// Material rendering is backend-defined and best-effort.
-/// - On Apple platforms, this typically maps to native material/visual effect APIs.
-/// - Other platforms may provide approximations or ignore the metadata.
+/// The mainline backends, Apple and Hydrolysis, realize `Material`. As a
+/// view's background it travels as ignorable metadata, so a backend that does
+/// not realize it, such as an experimental one, draws the content without it;
+/// as a window's background see [`WindowBackground::Material`]. The levels
+/// fall in two groups:
+///
+/// - **Within-window levels** — [`Regular`](Self::Regular),
+///   [`Thick`](Self::Thick) and [`UltraThick`](Self::UltraThick) — are a
+///   backdrop treatment of the window's own content behind the view, clipped
+///   to the view's shape: that content passes through the level's colour stage
+///   (a luminance curve, a chroma gain and a brightness offset) and is then
+///   blurred, with no tint layer on top. Apple platforms project them onto the
+///   native visual-effect views; self-drawn backends draw the treatment
+///   themselves, Hydrolysis through Cherenkov on every platform, Android
+///   included. Hydrolysis's HWUI render target (water-rs/waterui#1899) must
+///   realize the same treatment when it lands.
+/// - **Behind-window levels** — [`UltraThin`](Self::UltraThin) and
+///   [`Thin`](Self::Thin) — blur what lies behind the window, which is the
+///   compositor's work and is therefore defined per platform. Apple platforms
+///   realize them natively: macOS blends them behind the window, and iOS,
+///   with nothing behind its windows, over the app's own content.
+///
+///   On Hydrolysis a behind-window level is realized as a window's
+///   background ([`WindowBackground::Material`]): the window is translucent
+///   and tinted with the level's colour treatment. The desktop behind it is
+///   blurred where the platform's blur-behind is wired — an
+///   `NSVisualEffectView` blends it behind the window on macOS, the
+///   DWM's acrylic system backdrop blurs it on Windows 11 22H2 and later,
+///   an X11 window manager honouring `_KDE_NET_WM_BLUR_BEHIND_REGION`
+///   (`KWin`) blurs it, and so does a Wayland compositor advertising
+///   `ext-background-effect-v1` and applying its blur by its own policy —
+///   and shows through unblurred elsewhere: older Windows, other X11
+///   window managers and Wayland compositors not advertising the global
+///   keep the window translucent and unblurred. As a view's background, a
+///   behind-window level is
+///   unsupported on Hydrolysis and panics naming the level
+///   (water-rs/waterui#1853).
+///
+/// [`WindowBackground::Material`]: crate::window::WindowBackground::Material
 ///
 /// # Examples
 ///
@@ -151,8 +207,8 @@ pub enum Background {
 ///     .background(Material::Regular)
 ///     .clip(RoundedRectangle::new(0.1));
 ///
-/// // Subtle blur for overlays
-/// let overlay = text!("Overlay").background(Material::UltraThin);
+/// // A heavier frost for an overlay over busy content
+/// let overlay = text!("Overlay").background(Material::Thick);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Material {

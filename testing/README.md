@@ -40,9 +40,17 @@ fn stepper_updates(ui: UiBuilder) {
   installs); `mount()` is the fast semantic runtime,
   `mount_offscreen()` the GPU-backed one. Any theme works in either mode.
 - **Style-package fonts resolve strictly.** A styled test resolves the font
-  families its style package names against the host's installed fonts, exactly
-  as the application does. A named family that is not installed fails the test
-  naming it — install the style package's fonts with its font install script.
+  families its style package names against the host's installed fonts plus the
+  font files the package under test's dependency graph declares, exactly as the
+  application does. The harness reads those declarations itself — `cargo
+  metadata --all-features` on `$CARGO_MANIFEST_DIR`, with the `cargo` that runs
+  the test, over the package's own closure (its normal dependencies plus its
+  dev-dependencies) — and registers every `local_path` file of a
+  `[[package.metadata.waterui.assets.font]]` table into every mount, styled or
+  not, the way the `water` CLI stages them for an application. A named family
+  that is neither installed nor declared that way fails the test naming it.
+  Fonts declared by registry name or `remote_path` are staged only by the
+  `water` CLI, so a test needs them installed on the host.
 - **Interactions are assertions.** `tap`, `set_text`, `increment`, `focus`, drags and key
   presses return `()` and panic when the runtime reports the accessibility action
   unhandled. Tests for disabled/clamped controls assert the panic (`catch_unwind`).
@@ -61,7 +69,8 @@ fn stepper_updates(ui: UiBuilder) {
   `.identifier("settings.wifi")` — the same identifier surfaces to XCUITest and Android
   automation in the native backends.
 - **Gesture and keyboard control.** `DragOptions` paces drags (`frame_per_step` gives
-  recognizers a real motion timeline); `press_named_key_with` / `press_character_key_with`
+  recognizers a real motion timeline, `pointer` picks the `PointerKind` the drag
+  dispatches — touch is what scrolls); `press_named_key_with` / `press_character_key_with`
   dispatch a full key stroke — press, then release — under explicit `Modifiers`, and
   `key_down` / `key_up` hold a key across calls.
 - **Performance harness.** `ui().perf(view)` / `perf_with` measure steady-state offscreen

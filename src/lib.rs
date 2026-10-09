@@ -86,7 +86,8 @@ pub mod prelude {
         List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
     };
     pub use super::component::menu::{
-        Command, CommandExt, CommandRole, Menu, MenuItem, Shortcut, ShortcutModifiers,
+        Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
+        ShortcutModifiers,
     };
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
 
@@ -277,20 +278,18 @@ pub use tracing as log;
 ///
 /// Symbol format: `waterui_preview_{crate_name}_{fn_name}`
 ///
-/// The export exists only when the emitting crate's `dev` feature is on: the
-/// generated backend enables `<app>/dev` on every development-linkage build
-/// (`water run`/`preview`/`build`), and `dev` is what pulls in the
-/// `dynamic_linking` runtime a preview host loads the app through. A packaged
-/// static-linkage build never enables it, so the exported entry point — and
-/// the view it would force into the artifact — stays out of shipped binaries.
+/// The export exists in debug builds of the emitting crate — the same gate
+/// the compiler-emitted `waterui_meta_*` records use — so a release build
+/// never carries the entry point or the view it forces into the artifact.
+/// The preview host loads it from the debug artifact, whether that is the
+/// dynamic-linking desktop dylib or the static Android cdylib.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __export_preview {
     ($fn_name:expr, $body:block) => {
         $crate::pastey::paste! {
             #[doc(hidden)]
-            #[allow(unexpected_cfgs)]
-            #[cfg(feature = "dev")]
+            #[cfg(debug_assertions)]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_preview_ env!("CARGO_PKG_NAME") _ $fn_name>]() -> *mut () {
                 $body

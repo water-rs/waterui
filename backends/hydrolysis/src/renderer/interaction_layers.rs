@@ -329,9 +329,9 @@ impl SemanticCore {
                 .interaction
                 .begin_press(&press.slot, press.origin, now);
             if press.chrome_state_dependent {
-                self.request_refresh();
+                self.context_mark_layout();
             } else {
-                self.request_redraw();
+                self.context_mark_paint();
             }
         }
         let mut pending = self.hit_test.pending_pointer_press.is_some();

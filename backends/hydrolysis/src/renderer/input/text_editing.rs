@@ -1,6 +1,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::text::{SessionTextLayout, TextLayout as _, TextPosition, TextSelection};
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_graphics::draw::Draw as _;
 
@@ -52,8 +53,17 @@ pub enum TextInputModel {
 /// focus, caret and selection migrate to a different field whenever flush order
 /// changes (a row inserted above a focused field, a `when(...)` revealing an
 /// earlier one).
+/// A scroll surface registered for the post-record focus clearance.
+pub struct ClearanceSurface {
+    pub(crate) cell: std::rc::Weak<crate::renderer::mount::cell::NodeCell>,
+    pub(crate) area: std::rc::Weak<crate::renderer::ScrollSurfaceArea>,
+    pub(crate) handle: crate::scroll::ScrollHandle,
+}
+
 #[derive(Default)]
 pub struct TextEditingState {
+    /// The scroll surfaces the post-record focus clearance runs over.
+    pub(crate) clearance_surfaces: RefCell<Vec<ClearanceSurface>>,
     pub(crate) text_input_targets: Vec<TextInputTarget>,
     pub(crate) active_text_selection_drag: Option<ActiveTextSelectionDrag>,
     pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
@@ -183,14 +193,23 @@ pub struct ActiveTextSelectionDrag {
 
 #[derive(Clone)]
 pub struct TextInputTarget {
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     pub(crate) interaction_key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) bounds: kurbo::Rect,
+    /// The field's laid-out frame in the same window coordinates, before
+    /// the hit clip [`Self::bounds`] went through. A field covered by a
+    /// scroll surface's clip keeps a real rectangle here — the §7.1
+    /// focused-field clearance measures "the field's frame" against it,
+    /// which the hit bounds cannot answer once they degenerate to the
+    /// clip's edge.
+    pub(crate) frame: kurbo::Rect,
     pub(crate) cursor_area: kurbo::Rect,
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
-    pub(crate) layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) layout: SessionTextLayout,
     /// The string the IME-visible layout was typeset from — the committed
     /// text with the live pre-edit spliced in (a text field) or the mask
     /// glyphs (a secure field) — and that layout, in `text_bounds`
@@ -211,7 +230,7 @@ pub struct TextInputTarget {
             reason = "read by the Android editing session and its tests"
         )
     )]
-    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) display_layout: SessionTextLayout,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -342,7 +361,7 @@ pub struct FocusedEditorSnapshot {
     /// The text `display_layout` describes — committed + pre-edit for a
     /// field, the mask glyphs for a secure field.
     pub(crate) display_text: String,
-    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) display_layout: SessionTextLayout,
 }
 
 pub struct TextInputTargetRegistration {
@@ -353,7 +372,7 @@ pub struct TextInputTargetRegistration {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
-    pub(crate) layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) layout: SessionTextLayout,
     /// See [`TextInputTarget::display_text`].
     #[cfg_attr(
         not(any(target_os = "android", test)),
@@ -370,7 +389,7 @@ pub struct TextInputTargetRegistration {
             reason = "read by the Android editing session and its tests"
         )
     )]
-    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    pub(crate) display_layout: SessionTextLayout,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) model: TextInputModel,
     pub(crate) selection: Rc<RefCell<TextSelectionSlot>>,
@@ -995,9 +1014,9 @@ pub fn execute_text_context_menu_action(
 
 fn selection_for_target_layout(
     model: &TextInputModel,
-    layout: &parley::Layout<[u8; 4]>,
+    layout: &SessionTextLayout,
     slot: &TextSelectionSlot,
-) -> parley::Selection {
+) -> TextSelection {
     assert!(
         slot.initialized,
         "hydrolysis registered a text-input target before initializing its selection"
@@ -1008,24 +1027,13 @@ fn selection_for_target_layout(
     let layout_len = model.layout_len_for_plain_text(plain_text.as_str());
     let anchor_layout = model.layout_index_from_plain_index(anchor);
     let focus_layout = model.layout_index_from_plain_index(focus);
-    let anchor_affinity = if anchor_layout >= layout_len {
-        parley::Affinity::Upstream
-    } else {
-        parley::Affinity::Downstream
-    };
-    let focus_affinity = if focus_layout >= layout_len {
-        parley::Affinity::Upstream
-    } else {
-        parley::Affinity::Downstream
-    };
-    parley::Selection::new(
-        parley::Cursor::from_byte_index(layout, anchor_layout, anchor_affinity),
-        parley::Cursor::from_byte_index(layout, focus_layout, focus_affinity),
+    layout.selection(
+        TextPosition::in_text(anchor_layout, layout_len),
+        TextPosition::in_text(focus_layout, layout_len),
     )
-    .refresh(layout)
 }
 
-fn refreshed_target_selection(target: &TextInputTarget) -> parley::Selection {
+fn refreshed_target_selection(target: &TextInputTarget) -> TextSelection {
     let slot = target.selection.borrow();
     // The transient overlay may run after the model changes but before the next
     // retained-tree refresh replaces `target.layout`. Project the source
@@ -1104,7 +1112,7 @@ impl HydrolysisRenderer {
                                         draw.fill(target.cursor_area, paint.clone());
                                     }
                                 } else {
-                                    for (rect, _) in selection.geometry(&target.layout) {
+                                    target.layout.selection_rects(selection, |rect| {
                                         let highlight = kurbo::Rect::new(
                                             target.text_bounds.x0 + rect.x0,
                                             target.text_bounds.y0 + rect.y0,
@@ -1112,7 +1120,7 @@ impl HydrolysisRenderer {
                                             target.text_bounds.y0 + rect.y1,
                                         );
                                         draw.fill(highlight, selection_paint.clone());
-                                    }
+                                    });
                                 }
                             },
                         );
@@ -1120,7 +1128,7 @@ impl HydrolysisRenderer {
                 }
             });
         }
-        self.transient_scene = Some(scene);
+        self.scene_mut().append(&scene, kurbo::Affine::IDENTITY);
     }
 }
 
@@ -1193,36 +1201,76 @@ impl SemanticCore {
     /// `None`. The target need not be emitted this frame; focus simply resolves
     /// to nothing until it is.
     /// Wires a `.focused(binding)` modifier to the single focusable target —
-    /// a text field or an input surface — registered inside the spans
-    /// (`text_start`, `embedded_start`): writes the binding onto that target,
-    /// then applies the binding's value to the focused-input key. Shared by
-    /// the rendered flush and the semantic accessibility walk.
+    /// a text field or an input surface — registered inside `scope`'s subtree:
+    /// writes the binding onto that target, then applies the binding's value
+    /// to the focused-input key. The retained equivalent of the flat lists'
+    /// `[start..]` span: entries owned by cells inside `scope`'s subtree,
+    /// hittable or not — a `.focused()` inside an unhittable subtree still saw
+    /// the target on dev (the outer truncation ran after the wiring), and the
+    /// post-flush validation releases whatever focus a dead chain took.
+    /// Shared by the rendered flush and the semantic accessibility walk.
     pub(crate) fn wire_focused_target(
         &mut self,
         value: &waterui::component::focus::Focused,
         should_focus: bool,
-        text_start: usize,
-        embedded_start: usize,
+        scope: &Rc<NodeCell>,
     ) {
-        let text_count = self.text_editing.text_input_targets.len() - text_start;
-        let embedded_count = self.hit_test.embedded_input_targets.len() - embedded_start;
-        let focus_target_count = text_count + embedded_count;
+        // Whether the entry's owning cell is `scope` or a descendant of it.
+        let in_scope = |owner: &std::rc::Weak<NodeCell>| -> bool {
+            let mut cell = owner.upgrade();
+            while let Some(current) = cell {
+                if Rc::ptr_eq(&current, scope) {
+                    return true;
+                }
+                cell = current.parent();
+            }
+            false
+        };
+        // The retained registries own entries per recording cell — the
+        // scan walks every live owner's bucket and keeps the cell it
+        // found, so the write-back lands in the same bucket.
+        let mut text_hit = None;
+        let mut embedded_hit = None;
+        let mut count = 0usize;
+        for cell in self.retained.owners() {
+            let slot = cell.registrations.borrow();
+            let Some(regs) = slot.as_ref() else {
+                continue;
+            };
+            for (index, entry) in regs.text_input_targets.iter().enumerate() {
+                if in_scope(&entry.owner) {
+                    count += 1;
+                    text_hit = Some((Rc::clone(&cell), index));
+                }
+            }
+            for (index, entry) in regs.embedded_input_targets.iter().enumerate() {
+                if in_scope(&entry.owner) {
+                    count += 1;
+                    embedded_hit = Some((Rc::clone(&cell), index));
+                }
+            }
+        }
         assert!(
-            focus_target_count == 1,
-            "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {focus_target_count}"
+            count == 1,
+            "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {count}"
         );
-        if embedded_count == 1 {
-            let target = self
-                .hit_test
-                .embedded_input_targets
-                .get_mut(embedded_start)
-                .expect("hydrolysis focused metadata missing registered surface input target");
-            assert!(
-                target.focus_binding.is_none(),
-                "hydrolysis does not allow multiple .focused() modifiers to target the same control"
-            );
-            target.focus_binding = Some(value.0.clone());
-            let target_key = target.interaction_key.clone();
+        if let Some((cell, index)) = embedded_hit {
+            // The bucket borrow ends before the focus setters run: they
+            // materialize the registries, which borrow the same `RefCell`.
+            let target_key = {
+                let mut slot = cell.registrations.borrow_mut();
+                let target = &mut slot
+                    .as_mut()
+                    .expect("hydrolysis focused metadata missing embedded input bucket")
+                    .embedded_input_targets[index]
+                    .payload;
+                assert!(
+                    target.focus_binding.is_none(),
+                    "hydrolysis does not allow multiple .focused() modifiers to target the same control"
+                );
+                target.focus_binding = Some(value.0.clone());
+                target.interaction_key.clone()
+            };
 
             if should_focus {
                 self.set_focused_embedded_key(Some(target_key));
@@ -1231,17 +1279,22 @@ impl SemanticCore {
             }
             return;
         }
-        let target = self
-            .text_editing
-            .text_input_targets
-            .get_mut(text_start)
-            .expect("hydrolysis focused metadata missing registered text input target");
-        assert!(
-            target.focus_binding.is_none(),
-            "hydrolysis does not allow multiple .focused() modifiers to target the same control"
-        );
-        target.focus_binding = Some(value.0.clone());
-        let target_key = target.interaction_key.clone();
+        let (cell, index) =
+            text_hit.expect("hydrolysis focused metadata missing registered text input target");
+        let target_key = {
+            let mut slot = cell.registrations.borrow_mut();
+            let target = &mut slot
+                .as_mut()
+                .expect("hydrolysis focused metadata missing text input bucket")
+                .text_input_targets[index]
+                .payload;
+            assert!(
+                target.focus_binding.is_none(),
+                "hydrolysis does not allow multiple .focused() modifiers to target the same control"
+            );
+            target.focus_binding = Some(value.0.clone());
+            target.interaction_key.clone()
+        };
 
         if should_focus {
             self.set_focused_text_input_key(Some(target_key));
@@ -1251,6 +1304,10 @@ impl SemanticCore {
     }
 
     pub(crate) fn set_focused_text_input_key(&mut self, focused: Option<InteractionKey>) -> bool {
+        // Mid-flush callers (`wire_focused_target`) run before this frame's
+        // materialization — resolve the key against what is registered so
+        // far, not last frame's staged lists.
+        self.registries();
         let previous = self.text_editing.focused_key();
         let mut changed = false;
         match focused.as_ref() {
@@ -1343,7 +1400,14 @@ impl SemanticCore {
             self.dismiss_active_text_context_menu();
             self.dismiss_active_popup_menu();
         }
-        self.request_refresh();
+        if let Some(key) = self.text_editing.focused_key() {
+            self.mark_key_owner(&key, crate::renderer::mount::Dirty::LAYOUT);
+        }
+        // The transition itself is window bookkeeping — the caret deadline,
+        // the focus-binding writes and the traversal anchor live on the
+        // window's state, not on the node that owns the key, so the window
+        // is marked as well.
+        self.context_mark_layout();
         true
     }
 
@@ -1360,7 +1424,7 @@ impl SemanticCore {
                     {
                         self.popup_menu.active_popup_menu_group = None;
                     }
-                    self.request_refresh();
+                    self.context_mark_layout();
                 }
                 ActiveTextContextMenu::NativeWindow { group, .. } => {
                     group.close_all();
@@ -1407,7 +1471,7 @@ impl HydrolysisRenderer {
         let theme = self.theme();
         let metrics = theme.text_context_menu_metrics();
         {
-            self.scene.record_picture(transform, |draw| {
+            self.scene_mut().record_picture(transform, |draw| {
                 theme.draw_text_context_menu_panel(&mut *draw, overlay.bounds);
             });
         }
@@ -1427,7 +1491,7 @@ impl HydrolysisRenderer {
                     row.bounds.x1 - metrics.separator_horizontal_inset,
                     row.bounds.y1,
                 );
-                self.scene.record_picture(transform, |draw| {
+                self.scene_mut().record_picture(transform, |draw| {
                     theme.draw_text_context_menu_separator(&mut *draw, separator);
                 });
             }
@@ -1441,15 +1505,14 @@ impl HydrolysisRenderer {
                         metrics.vertical_padding,
                     );
                     let ctx = RenderContext {
-                        transform,
-                        hit_transform: kurbo::Affine::IDENTITY,
+                        local: transform,
                         bounds: overlay.bounds,
                     }
                     .child(
                         kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
                         kurbo::Rect::new(0.0, 0.0, text_rect.width(), text_rect.height()),
                     );
-                    let (state, scene) = self.state_and_scene_mut();
+                    let (state, scene) = self.state_and_run_mut();
                     Self::render_styled_text(
                         state,
                         scene,
@@ -1470,7 +1533,7 @@ impl HydrolysisRenderer {
                             .separator_thickness
                             .mul_add(0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
                     );
-                    self.scene.record_picture(transform, |draw| {
+                    self.scene_mut().record_picture(transform, |draw| {
                         theme.draw_text_context_menu_separator(&mut *draw, separator);
                     });
                 }
@@ -1556,7 +1619,7 @@ impl SemanticCore {
             .expect("hydrolysis text selection menus require PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
     }
 
     pub(crate) fn focused_text_target_data(
@@ -1612,7 +1675,7 @@ impl SemanticCore {
             cursor_area: target.cursor_area,
             text_bounds: target.text_bounds,
             display_text: target.display_text.to_string(),
-            display_layout: std::sync::Arc::clone(&target.display_layout),
+            display_layout: target.display_layout.clone(),
         })
     }
 
@@ -1727,11 +1790,8 @@ impl SemanticCore {
     ) -> usize {
         let local_x = crate::num_cast::f64_as_f32(point.x - target.text_bounds.x0);
         let local_y = crate::num_cast::f64_as_f32(point.y - target.text_bounds.y0);
-        let selection =
-            parley::Selection::from_point(&target.layout, local_x, local_y).refresh(&target.layout);
-        target
-            .model
-            .plain_index_from_layout_index(selection.focus().index())
+        let position = target.layout.hit_test(local_x, local_y);
+        target.model.plain_index_from_layout_index(position.index)
     }
 
     pub(crate) fn text_selection_range_from_point_with_click_count(
@@ -1742,18 +1802,17 @@ impl SemanticCore {
         let local_x = crate::num_cast::f64_as_f32(point.x - target.text_bounds.x0);
         let local_y = crate::num_cast::f64_as_f32(point.y - target.text_bounds.y0);
         let selection = match click_count {
-            2 => parley::Selection::word_from_point(&target.layout, local_x, local_y),
-            3.. => parley::Selection::line_from_point(&target.layout, local_x, local_y),
-            _ => parley::Selection::from_point(&target.layout, local_x, local_y),
-        }
-        .refresh(&target.layout);
+            2 => target.layout.word_at(local_x, local_y),
+            3.. => target.layout.line_at(local_x, local_y),
+            _ => TextSelection::collapsed(target.layout.hit_test(local_x, local_y)),
+        };
         (
             target
                 .model
-                .plain_index_from_layout_index(selection.anchor().index()),
+                .plain_index_from_layout_index(selection.anchor.index),
             target
                 .model
-                .plain_index_from_layout_index(selection.focus().index()),
+                .plain_index_from_layout_index(selection.focus.index),
         )
     }
 
@@ -1821,8 +1880,8 @@ impl SemanticCore {
     /// while a double/triple-click drag keeps the word/line it snapped to as
     /// the anchor and extends by whole units — so the pointer release (or a
     /// sub-pixel jiggle inside the same word) cannot collapse the gesture's
-    /// selection back to a caret. Mirrors parley's `Selection::extend_to_point`
-    /// in plain-index space.
+    /// selection back to a caret. Extends in plain-index space, the way a
+    /// word- or line-anchored selection extends to a point.
     pub(crate) fn update_text_selection_drag(&mut self, index: usize, point: kurbo::Point) -> bool {
         let Some(drag) = self.text_editing.active_text_selection_drag.clone() else {
             return false;
@@ -1843,7 +1902,7 @@ impl SemanticCore {
                     point,
                     drag.click_count,
                 );
-            // Same merge parley's `extend_selection` performs: union of the
+            // The extend merge: union of the
             // hovered unit and the armed anchor range, with the anchor kept on
             // the side opposite the drag direction.
             let extending_right = target_anchor >= drag.anchor;
@@ -1974,12 +2033,12 @@ impl SemanticCore {
         let mut slot = selection.borrow_mut();
         let current = selection_for_target_layout(&model, &target.layout, &slot);
         let next = if backward {
-            current.previous_visual(&target.layout, extend)
+            target.layout.previous_visual(current, extend)
         } else {
-            current.next_visual(&target.layout, extend)
+            target.layout.next_visual(current, extend)
         };
-        let anchor = model.plain_index_from_layout_index(next.anchor().index());
-        let focus = model.plain_index_from_layout_index(next.focus().index());
+        let anchor = model.plain_index_from_layout_index(next.anchor.index);
+        let focus = model.plain_index_from_layout_index(next.focus.index);
         let changed = slot.anchor != anchor || slot.focus != focus || !slot.initialized;
         slot.anchor = anchor;
         slot.focus = focus;
@@ -2006,12 +2065,15 @@ impl SemanticCore {
 
     /// The selection menu's rows as [`PopupMenuNode`]s: built-in editing
     /// commands become plain command rows, the field's custom
-    /// `selection_menu` items go through the same [`popup_menu_node`]
+    /// `selection_menu` items go through the same [`popup_menu_nodes`]
     /// conversion `.context_menu` items take — a nested `Menu` keeps its
     /// structure and opens as a submenu rather than flattening or panicking.
+    /// `owner_closable` is the owning window's `closable`, the enabled state
+    /// a Close Window row carries.
     pub(crate) fn build_text_context_menu_nodes(
         target: &TextInputTarget,
         env: &Environment,
+        owner_closable: bool,
     ) -> Vec<PopupMenuNode> {
         let has_selection = {
             let slot = target.selection.borrow();
@@ -2036,13 +2098,11 @@ impl SemanticCore {
             nodes.push(builtin("select_all", TextContextMenuAction::SelectAll));
         }
         if has_selection {
-            nodes.extend(
-                target
-                    .model
-                    .custom_selection_menu_items()
-                    .into_iter()
-                    .map(crate::renderer::views::popup_menu_node),
-            );
+            nodes.extend(crate::renderer::views::popup_menu_nodes(
+                &target.model.custom_selection_menu_items(),
+                env,
+                owner_closable,
+            ));
         }
         nodes
     }
@@ -2069,7 +2129,11 @@ impl HydrolysisRenderer {
         // this dispatch's, so `.state(&value)` overlays reach the item
         // actions (water-rs/hydrolysis#140).
         let menu_env = target.env.layered_on(env);
-        let nodes = SemanticCore::build_text_context_menu_nodes(&target, &menu_env);
+        // The menu's rows carry this window's identity, so a Close Window
+        // row they fire targets the window the menu belongs to.
+        let menu_env = menu_env.extending(self.window_id);
+        let nodes =
+            SemanticCore::build_text_context_menu_nodes(&target, &menu_env, self.window_closable);
         if nodes.is_empty() {
             self.dismiss_active_text_context_menu();
             return false;
@@ -2111,7 +2175,7 @@ impl HydrolysisRenderer {
                     env: menu_env,
                 },
             });
-            self.request_refresh();
+            self.context_mark_layout();
             return true;
         }
 
@@ -2258,7 +2322,7 @@ impl SemanticCore {
         env: &Environment,
         press: &KeyPress,
     ) -> KeyPressOutcome {
-        if self.handle_keyboard_key_down(key, modifiers, env) {
+        if self.handle_keyboard_key_down(key, &press.key, modifiers, env) {
             return KeyPressOutcome::Consumed;
         }
         if self.handle_key(key, modifiers) {
@@ -2476,6 +2540,7 @@ impl SemanticCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{SessionTextEngine, TextEngine as _};
 
     fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
         nami::Computed::new(Vec::new())
@@ -2609,7 +2674,7 @@ mod tests {
     #[test]
     fn stale_transient_layout_does_not_rewind_the_model_selection() {
         let model = text_field_model("l", Some(1));
-        let layout = parley::Layout::new();
+        let layout = SessionTextEngine::system(FontFamilyResolution::Strict).empty_layout();
         let slot = TextSelectionSlot {
             anchor: 1,
             focus: 1,
@@ -2618,7 +2683,7 @@ mod tests {
 
         let display_selection = selection_for_target_layout(&model, &layout, &slot);
 
-        assert_eq!(display_selection.focus().index(), 0);
+        assert_eq!(display_selection.focus.index, 0);
         assert_eq!((slot.anchor, slot.focus), (1, 1));
     }
 

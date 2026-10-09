@@ -6,6 +6,7 @@ import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.core.view.isVisible
 import org.json.JSONArray
 
 /**
@@ -61,8 +62,11 @@ class PlatformViewRegistry internal constructor(
      * even before the next traversal.
      */
     internal fun publishIfPending() {
-        val sessionPtr = session?.nativePtr ?: return
-        val json = NativeBridge.nativePlatformViewFrames(sessionPtr) ?: return
+        val session = session ?: return
+        val json =
+            session.withNativePtr(NativeBridge::nativePlatformViewFrames.name) { ptr ->
+                NativeBridge.nativePlatformViewFrames(ptr)
+            } ?: return
         // The JNI side always serializes the current set, and onLayout pulls
         // it once per layout pass — re-applying an unchanged frame would
         // re-request layout inside the very pass that read it, forever.
@@ -75,7 +79,7 @@ class PlatformViewRegistry internal constructor(
 
     /** Mounted platform views, in `order`, grafted onto the a11y host node. */
     internal fun accessibilityChildren(): List<View> =
-        slots.values.filter { it.view.visibility == View.VISIBLE }.map { it.view }
+        slots.values.filter { it.view.isVisible }.map { it.view }
 
     /**
      * Whether a point in the container's coordinate space (== host view
@@ -87,7 +91,7 @@ class PlatformViewRegistry internal constructor(
         val rect = Rect()
         for (slot in slots.values) {
             val view = slot.view
-            if (view.visibility != View.VISIBLE) continue
+            if (!view.isVisible) continue
             view.getHitRect(rect)
             if (rect.contains(x.toInt(), y.toInt())) return true
         }

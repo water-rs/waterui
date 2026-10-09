@@ -18,6 +18,7 @@
 const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
+const VARIANT_UNION: u32 = 3u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -182,43 +183,54 @@ fn linear_t(i: u32, p: vec2<f32>) -> f32 {
 }
 
 // Two-point conical gradient parameter, a literal port of the oracle's
-// radial_t: the larger real root of |p - (c0 + t·dc)| = r0 + t·dr.
-// Degenerate coincident circles use the relative distance from the centre.
-// Explicit validity avoids a non-finite constant, which WGSL rejects.
+// radial_t: the largest root of |p - (c0 + t·dc)| = r0 + t·dr whose radius
+// r0 + t·dr is non-negative; `valid` is false where there is none.
+// Identical circles (grad2.z set by lowering) take t = -∞ inside r0 and
+// +∞ outside. WGSL rejects non-finite constants, so `side` carries that
+// sign (-1 or +1, 0 for a finite `value`); lowering rejects identical
+// circles under repeat and reflect.
 struct RadialParameter {
     value: f32,
     valid: bool,
+    side: f32,
 }
 fn radial_t(i: u32, p: vec2<f32>) -> RadialParameter {
     let c0 = instances[i].grad.xy;
     let c1 = instances[i].grad.zw;
     let r0 = instances[i].grad2.x;
     let r1 = instances[i].grad2.y;
+    let pd = p - c0;
+    if instances[i].grad2.z != 0.0 {
+        return RadialParameter(0.0, true, select(1.0, -1.0, length(pd) <= r0));
+    }
     let dc = c1 - c0;
     let dr = r1 - r0;
-    let pd = p - c0;
     let a = dot(dc, dc) - dr * dr;
     // b = -2·((p - c0)·dc + r0·dr)
     let b = -2.0 * (dot(pd, dc) + r0 * dr);
     let c = dot(pd, pd) - r0 * r0;
     if abs(a) < 1e-12 {
         if abs(b) < 1e-12 {
-            // Coincident circles: distance relative to r0.
-            if abs(r0) < 1e-12 {
-                return RadialParameter(0.0, true);
-            }
-            return RadialParameter((length(pd) - r0) / abs(r0), true);
+            return RadialParameter(0.0, false, 0.0);
         }
-        return RadialParameter(-c / b, true);
+        let t = -c / b;
+        return RadialParameter(t, r0 + t * dr >= 0.0, 0.0);
     }
     let disc = b * b - 4.0 * a * c;
     if disc < 0.0 {
-        return RadialParameter(0.0, false);
+        return RadialParameter(0.0, false, 0.0);
     }
     let sq = sqrt(disc);
-    // The cone answer is the larger root; when `a` is negative that is the
-    // smaller numerator, so compare the roots themselves.
-    return RadialParameter(max((-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a)), true);
+    // When `a` is negative the larger root has the smaller numerator, so
+    // compare the roots themselves.
+    let q0 = (-b + sq) / (2.0 * a);
+    let q1 = (-b - sq) / (2.0 * a);
+    let hi = max(q0, q1);
+    if r0 + hi * dr >= 0.0 {
+        return RadialParameter(hi, true, 0.0);
+    }
+    let lo = min(q0, q1);
+    return RadialParameter(lo, r0 + lo * dr >= 0.0, 0.0);
 }
 
 // Sweep (conic) parameter: the wrapped angle of p - center mapped into
@@ -373,6 +385,8 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
             return paint_image(i, point);
         }
         default: {
+            let meta_w = meta_.w;
+            let extend = (meta_w >> 20u) & 0xfu;
             var t: f32;
             if kind == PAINT_LINEAR {
                 t = linear_t(i, point);
@@ -383,7 +397,16 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
                 if !radial.valid {
                     return vec4<f32>(0.0);
                 }
-                t = radial.value;
+                if radial.side != 0.0 {
+                    // t = ±∞ clamps to an end stop under pad and is outside
+                    // the range of every other mode lowering accepts.
+                    if extend != EXTEND_PAD {
+                        return vec4<f32>(0.0);
+                    }
+                    t = max(radial.side, 0.0);
+                } else {
+                    t = radial.value;
+                }
             }
             // NaN (exponent all-ones, nonzero mantissa) → transparent.
             // `t != t` is not reliable under every driver.
@@ -391,8 +414,6 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
             if (tbits & 0x7f800000u) == 0x7f800000u && (tbits & 0x007fffffu) != 0u {
                 return vec4<f32>(0.0);
             }
-            let meta_w = meta_.w;
-            let extend = (meta_w >> 20u) & 0xfu;
             let interp = (meta_w >> 16u) & 0xfu;
             let count = meta_w & 0xffffu;
             if !extend_ok(t, extend) {
@@ -405,42 +426,93 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
 
 // Per-member backdrop effects: a member composite bilinearly samples the
 // bound capture and applies the effect packed in meta_.w's low bits.
-// `backdrop_origin`/`backdrop_size` are set per instance by
-// paint_backdrop; registered effect shaders call backdrop_sample.
+// `backdrop_origin`/`backdrop_size`/`backdrop_scale`/`backdrop_levels`
+// are set per instance by paint_backdrop; registered effect shaders call
+// backdrop_sample and backdrop_sample_level.
 var<private> backdrop_origin: vec2<f32>;
 var<private> backdrop_size: vec2<f32>;
+var<private> backdrop_scale: f32;
+var<private> backdrop_levels: f32;
 
-// Bilinear sample of the bound capture at device point `q`: the four
-// texels around `q - 0.5` (texel centres), clamped to the capture
-// region, values unclamped.
-fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
-    let f = clamp(q - backdrop_origin - 0.5, vec2<f32>(0.0), backdrop_size - 1.0);
+// Bilinear sample of the bound capture's level `k` at device point `q`:
+// on the level-k grid `q` is `q · scale / 2^k`, the four texels around
+// it minus 0.5 (texel centres) are read at mip `k`, clamped to the
+// level's extent `ceil(backdrop_size / 2^k)`, values unclamped. The
+// region's texel origin is aligned to `2^k`, so the level-k origin is
+// `backdrop_origin / 2^k` exactly.
+fn backdrop_sample_at(q: vec2<f32>, k: u32) -> vec4<f32> {
+    let div = f32(1u << k);
+    let size = (vec2<u32>(backdrop_size) + vec2<u32>((1u << k) - 1u)) >> vec2<u32>(k);
+    let f = clamp(
+        (q * backdrop_scale - backdrop_origin) / div - 0.5,
+        vec2<f32>(0.0),
+        vec2<f32>(size) - 1.0,
+    );
     let lo = vec2<i32>(floor(f));
-    let hi = min(lo + 1, vec2<i32>(backdrop_size) - 1);
+    let hi = min(lo + 1, vec2<i32>(size) - 1);
     let t = f - floor(f);
-    let c00 = textureLoad(source, lo, 0);
-    let c10 = textureLoad(source, vec2<i32>(hi.x, lo.y), 0);
-    let c01 = textureLoad(source, vec2<i32>(lo.x, hi.y), 0);
-    let c11 = textureLoad(source, hi, 0);
+    let c00 = textureLoad(source, lo, i32(k));
+    let c10 = textureLoad(source, vec2<i32>(hi.x, lo.y), i32(k));
+    let c01 = textureLoad(source, vec2<i32>(lo.x, hi.y), i32(k));
+    let c11 = textureLoad(source, hi, i32(k));
     return mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
 }
 
+// Bilinear sample of the bound capture at device point `q`: on the
+// capture grid `q` is `q · scale`, and the four texels around it minus
+// 0.5 (texel centres) are read, clamped to the capture region, values
+// unclamped.
+fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
+    return backdrop_sample_at(q, 0u);
+}
+
+// Trilinear sample of the capture pyramid at device point `q`: `level`
+// clamps to `[0, backdrop_levels − 1]` and the read is bilinear at
+// `floor(level)` and `ceil(level)`, mixed by `fract(level)`.
+fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
+    let lc = clamp(level, 0.0, backdrop_levels - 1.0);
+    let k0 = u32(floor(lc));
+    let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
+    let lo = backdrop_sample_at(q, k0);
+    let hi = backdrop_sample_at(q, k1);
+    return mix(lo, hi, lc - floor(lc));
+}
+
+// The effect entry's pixel input: the device-space sample point, the
+// signed distance of the field the member draws against — the group's
+// union field when it has one, the member's own clip distance
+// otherwise — the unit outward normal of that field, the member's own
+// signed distance, and the member's device size.
+struct BackdropPixel {
+    p: vec2<f32>,
+    sdf: f32,
+    normal: vec2<f32>,
+    own_sdf: f32,
+    size: vec2<f32>,
+}
+
 // backdrop-effect-stub
-fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-    return backdrop_sample(p);
+fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+    return backdrop_sample(px.p);
 }
 // backdrop-effect-stub
 
 // The member composite for a PAINT_BACKDROP instance: the effect in
 // meta_.w's low bits (`kind | stop count << 8`) evaluated at the device
-// pixel centre `pixel`. grad.xy is the capture origin, grad2.xy its
-// size, grad2.zw the member's device size.
+// pixel centre `pixel`. grad.xy is the capture origin, grad.z the capture
+// scale, grad.w its level count, grad2.xy its size, grad2.zw the member's
+// device size.
 fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     let inst = instances[i];
     backdrop_origin = inst.grad.xy;
+    backdrop_scale = inst.grad.z;
+    backdrop_levels = inst.grad.w;
     backdrop_size = inst.grad2.xy;
     let kind = inst.meta_.w & 0xffu;
     let first = inst.meta_.z;
+    if kind == EFFECT_SAMPLE {
+        return backdrop_sample(pixel);
+    }
     if kind == EFFECT_COLOR {
         // 3x4 premultiplied matrix, filtrate ColorMatrix layout:
         // dot(row, c) per channel, alpha passes through.
@@ -454,15 +526,29 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     }
     // Refraction and effect shaders need the member clip's SDF: signed
     // distance and unit outward normal in device space, the same
-    // J^-T math the clip coverage block uses.
-    let pc = apply(inst.clip_inv, pixel);
-    let sample = sdf_sample(inst.clip, pc, false);
-    let g = sample.gradient;
-    let ci = inst.clip_inv;
-    let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
-    let len = max(length(dg), 1e-6);
-    let d = sample.distance / len;
-    let n = dg / len;
+    // J^-T math the clip coverage block uses. A union member's own clip
+    // lives in its union record — the instance clip then carries the
+    // ancestors only — and the shared field replaces both `sdf` and
+    // `normal` for every effect kind.
+    var px: BackdropPixel;
+    px.p = pixel;
+    px.size = inst.grad2.zw;
+    // union-stub
+    if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
+        let field = backdrop_field;
+        px.own_sdf = field.own;
+        px.sdf = field.d;
+        px.normal = field.n;
+    } else
+    // union-stub
+    {
+        let own = device_sdf(inst.clip_inv, inst.clip, pixel);
+        px.own_sdf = own.x;
+        px.sdf = own.x;
+        px.normal = own.yz;
+    }
+    let d = px.sdf;
+    let n = px.normal;
     if kind == EFFECT_REFRACTION {
         // stops[first].color.xy = (depth, strength).
         let p0 = stops[first].color;
@@ -480,12 +566,20 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
         let c = backdrop_sample(pixel);
         return vec4<f32>(c.rgb + p0.yzw * k, c.a);
     }
+    if kind == EFFECT_LEVEL {
+        // stops[first].color = (depth, edge, interior): the pyramid
+        // level ramps from `edge` at the clip's edge (t = 1) to
+        // `interior` deep inside (t = 0).
+        let p0 = stops[first].color;
+        let t = clamp(1.0 + d / p0.x, 0.0, 1.0);
+        return backdrop_sample_level(pixel, p0.z + (p0.y - p0.z) * t);
+    }
     var params = array<vec4<f32>, 16>();
     let count = (inst.meta_.w >> 8u) & 0xffu;
     for (var j = 0u; j < count; j = j + 1u) {
         params[j] = stops[first + j].color;
     }
-    return backdrop_effect(pixel, d, n, inst.grad2.zw, params);
+    return backdrop_effect(px, params);
 }
 
 @fragment
@@ -732,6 +826,20 @@ fn fs_full(in: VsOut) -> vec4<f32> {
         }
     }
     cov *= clip_mask_coverage(in);
+    // union-stub
+    if in.meta_.y == PAINT_BACKDROP && (flags & FLAG_UNION) != 0u {
+        // A union member's instance clip carries the ancestors only; the
+        // member's own coverage term is the ownership-weighted union
+        // field `w_own · AA(field < outer)`, `outer` in params.x. The
+        // record base and member index arrive bitcast in `uv.xy` — read
+        // from `instances` storage, not a varying: the small u32s are
+        // subnormals as f32 and could flush to zero.
+        let base = bitcast<u32>(instances[i].uv.x);
+        let ord = bitcast<u32>(instances[i].uv.y);
+        backdrop_field = union_field(base, ord, in.device);
+        cov *= union_coverage(backdrop_field, instances[i].params.x);
+    }
+    // union-stub
     // Coverage before the opacity multiply is the composite's clip coverage:
     // the destructive Porter-Duff branch antialiases the clip edge between
     // the backdrop and the blended result.

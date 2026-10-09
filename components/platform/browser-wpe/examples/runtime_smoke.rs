@@ -11,9 +11,9 @@ mod linux {
     use waterui_browser_wpe::{
         DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
     };
-    use waterui_graphics::cherenkov::Display;
+    use waterui_graphics::cherenkov::{Display, FrameTime};
     use waterui_graphics::gpu::{GpuContentRenderer, GpuRuntime};
-    use waterui_graphics::{OffscreenImage, OffscreenSize};
+    use waterui_graphics::{OffscreenImage, OffscreenSize, RedrawHandle};
     use waterui_webview::{BackendEvent, WebViewEvent};
     use wgpu_external_frame::dma_buf::DmaBufFrame;
 
@@ -125,10 +125,17 @@ mod linux {
         let size = OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
             .expect("WPE smoke viewport must be non-zero");
         let mut view = DmaBufGpuView::new(source).into_view();
-        let engine_content = view.take_engine_content(|| {});
+        let engine_content = view.take_engine_content();
         let context = gpu_runtime.context();
-        let mut renderer =
-            GpuContentRenderer::new(gpu_runtime, context.clone(), engine_content, size);
+        // One frame, read back at once: no host loop exists to wake.
+        let mut renderer = GpuContentRenderer::new(
+            gpu_runtime,
+            context.clone(),
+            engine_content,
+            size,
+            RedrawHandle::new(|| {}),
+        )
+        .expect("the smoke renderer's engine layer installs");
         // The UI hook feeds the content's mailbox; run it before presenting so
         // the smoke frame is queued for the render.
         view.frame();
@@ -147,13 +154,16 @@ mod linux {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        renderer.present(
-            &target,
-            Display {
-                scale: 1.0,
-                headroom: 1.0,
-            },
-        );
+        renderer
+            .present(
+                &target,
+                Display {
+                    scale: 1.0,
+                    headroom: 1.0,
+                },
+                FrameTime(Instant::now()),
+            )
+            .expect("the smoke frame presents");
         let bytes_per_row = WIDTH * 4;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wpe_smoke_readback"),

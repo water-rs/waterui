@@ -24,9 +24,15 @@ pub struct Runtime {
 
 /// An attached application instance. Dropping it detaches the entire subtree.
 pub struct Mount {
+    /// The mounted subtree. Declared first because Rust drops fields in
+    /// declaration order: `Mounted` must detach and destruct while `root`,
+    /// the external host, the controller and the scene registrations are
+    /// still retained — `removeFromSuperview` cannot run inside a parent
+    /// already in native teardown. `NativeLeaf` expresses the same inverse
+    /// ownership ordering: child state before the platform view.
+    _content: Rc<Mounted>,
     root: Retained<HostView>,
     _host: Retained<PlatformView>,
-    _content: Rc<Mounted>,
     _keepalive: KeepAlive,
     #[cfg(target_os = "ios")]
     controller: Retained<cocoa_ui::uikit::ViewController>,
@@ -44,6 +50,10 @@ impl core::fmt::Debug for Mount {
 
 impl Drop for Mount {
     fn drop(&mut self) {
+        // Clear the root's handler slots first so a callback the removal
+        // itself delivers — a window/superview move, a final layout pass —
+        // finds `None` and does nothing by construction.
+        self.root.clear_handlers();
         #[cfg(target_os = "ios")]
         cocoa_ui::uikit::view_controller::will_move_to_parent(&self.controller);
         cocoa_ui::view::remove_from_superview(&self.root);
@@ -163,6 +173,9 @@ pub unsafe fn mount(
     };
     keepalive.keep(crate::locale::install(&mut env, mtm));
     let parts = app(env).into_parts();
+    // An embedded application's lifetime belongs to its host — iOS kills the
+    // process without notice — so the termination machine is never started.
+    let _ = parts.termination;
     #[allow(unused_mut)]
     let mut env = parts.env;
     #[cfg(feature = "webview")]
@@ -200,18 +213,13 @@ pub unsafe fn mount(
     }
     #[cfg(target_os = "ios")]
     {
-        let background = declaration.resolved_background(&env);
-        let background_host = root.clone();
-        keepalive.bind(&background, move |color| {
-            let [r, g, b, a] = color.components;
-            let color = cocoa_ui::uikit::colors::extended_linear_display_p3(
-                f64::from(r),
-                f64::from(g),
-                f64::from(b),
-                f64::from(a),
-            );
-            cocoa_ui::view::set_background_color(&background_host, Some(&color));
-        });
+        crate::windows::bind_background(
+            &mut keepalive,
+            &root,
+            &declaration.resolved_background(&env),
+            &env,
+            mtm,
+        );
         let declarations = std::iter::once(declaration).chain(windows).collect();
         crate::windows::declare(&scenes.state, declarations, &env, 1, mtm);
         keepalive.keep(parts.menu_bar);
@@ -258,10 +266,10 @@ pub(crate) fn mount_content(
     let leaf = crate::dispatch::render(view, env);
     let content = Rc::new(leaf.mount(root));
     crate::primary_content::forward(root, content.view());
-    let placed = content.clone();
+    let placed = Rc::clone(&content);
     crate::inspector::install(root, env, keepalive);
     root.set_layout_handler(move |root| {
-        let frame = crate::native_layout::content_frame(placed.view(), root);
+        let frame = crate::native_layout::LayoutContext::of(root).content_frame(placed.view());
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the layout contract uses f32 points"
@@ -302,6 +310,7 @@ fn bind_root(
         let toolbar = declaration.toolbar.take();
         *observed_binding.borrow_mut() = Some(crate::windows::bind_root_window(
             window,
+            root,
             &observed_env,
             &declaration.title,
             &declaration.frame,

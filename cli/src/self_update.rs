@@ -12,7 +12,7 @@
 //! [`check`] act on the answer.
 //!
 //! The passive check is a separate surface: [`passive_update_notice`] runs at
-//! most once per [`PASSIVE_CHECK_INTERVAL`], records the attempt in the CLI's
+//! most once per `PASSIVE_CHECK_INTERVAL`, records the attempt in the CLI's
 //! own state directory (`~/.water/config.toml`), and is silent on failure.
 
 use std::{
@@ -248,8 +248,8 @@ pub async fn check(host: &Host) -> Result<CheckOutcome> {
 /// under the Homebrew prefix, and `fallback` — the channel-appropriate cargo
 /// invocation the caller already selected — everywhere else.
 #[must_use]
-pub fn cli_update_command(fallback: &str) -> String {
-    match InstallSource::detect(&Host::current()) {
+pub fn cli_update_command(host: &Host, fallback: &str) -> String {
+    match InstallSource::detect(host) {
         Ok(InstallSource::Dist) => "water update".to_owned(),
         Ok(InstallSource::Homebrew) => "brew upgrade water".to_owned(),
         Ok(InstallSource::Cargo | InstallSource::Unknown) | Err(_) => fallback.to_owned(),
@@ -258,18 +258,17 @@ pub fn cli_update_command(fallback: &str) -> String {
 
 /// The passive version check behind every non-hot-path command.
 ///
-/// At most one release query per [`PASSIVE_CHECK_INTERVAL`], recorded in the
+/// At most one release query per `PASSIVE_CHECK_INTERVAL`, recorded in the
 /// CLI's state directory, silent on any failure. Returns the notice to print
 /// when a newer release exists, `None` otherwise.
 #[must_use]
-pub async fn passive_update_notice() -> Option<String> {
-    let host = Host::current();
-    let water_home = water_dir::water_home_dir_in(&host).ok()?;
+pub async fn passive_update_notice(host: &Host) -> Option<String> {
+    let water_home = water_dir::water_home_dir(host).ok()?;
     let mut config = water_dir::ensure_global_config_in(&water_home).await.ok()?;
     if !passive_check_due(config.last_update_check_unix_seconds, unix_now()) {
         return None;
     }
-    let notice = passive_notice_inner(&host).await;
+    let notice = passive_notice_inner(host).await;
     config.last_update_check_unix_seconds = Some(unix_now());
     if let Err(error) = water_dir::write_global_config_in(&water_home, &config).await {
         tracing::debug!("update check: failed to record the check timestamp: {error}");
@@ -475,10 +474,7 @@ fn homebrew_prefixes(host: &Host) -> Vec<PathBuf> {
     if let Some(prefix) = host.env_string("HOMEBREW_PREFIX") {
         prefixes.push(PathBuf::from(prefix));
     }
-    let paths = host.path_entries();
-    if !paths.is_empty()
-        && let Ok(path) = std::env::join_paths(&paths)
-        && let Ok(brew) = which::which_in("brew", Some(path), host.cwd())
+    if let Ok(brew) = host.which_blocking("brew")
         && let Some(prefix) = canonicalize_or_self(&brew).parent().and_then(Path::parent)
     {
         prefixes.push(prefix.to_path_buf());

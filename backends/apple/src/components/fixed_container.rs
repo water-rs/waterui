@@ -16,6 +16,7 @@ use core::cell::{Cell, RefCell};
 use cocoa_ui::geometry::MeasureProposal;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::layout::container::FixedContainer;
+use waterui_backend_core::{AnyView, View};
 use waterui_core::layout::{
     Layout, ProposalSize, StretchAxis, SubView, ViewDimensions, measure_layout,
     with_memoized_children,
@@ -62,22 +63,32 @@ fn measure(state: &FixedState, proposal: ProposalSize) -> ViewDimensions {
     measure_layout(&*state.layout, proposal, &children_of(state))
 }
 
-/// `performLayout`: place every child inside the safe area, extend the ones
-/// that manage their own safe area through the edges they touch, snap to
+/// `performLayout`: place every child inside the boundary the regions it
+/// does not ignore leave, then run each child's extension rule — an ignorer
+/// reaches the deepest boundary its declaration releases, a scroll surface
+/// or a background-slot fill reaches the window edge on the edges it
+/// touches, a safe-area manager reaches the bounds it touches — and snap to
 /// pixels.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the layout contract is f32; kit geometry is f64"
 )]
 fn perform_layout(state: &Rc<RefCell<FixedState>>) {
-    let (host, safe_rect, placements) = {
+    let host = {
         let state = state.borrow();
         if state.children.is_empty() {
             return;
         }
-        let host = state.host.clone();
-        let host_view: &PlatformView = &state.host;
-        let safe_rect = crate::native_layout::safe_area_rect(host_view);
+        state.host.clone()
+    };
+    let host_view: &PlatformView = &host;
+    // The region context is computed once for the pass and handed to
+    // every child's extension rule — the ancestor walk runs at the
+    // boundary, not per child.
+    let context = crate::native_layout::LayoutContext::of(host_view);
+    let safe_rect = context.safe_rect();
+    let placements = {
+        let state = state.borrow();
         // Placed by a Rust parent: the proposal it selected. Natively hosted:
         // the boundary offer for the rect this container fills.
         let proposal = state.selected.get().unwrap_or_else(|| {
@@ -86,7 +97,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
                 Some(safe_rect.size.height as f32),
             )
         });
-        let placements = with_memoized_children(&children_of(&state), |children| {
+        with_memoized_children(&children_of(&state), |children| {
             state.layout.place(
                 waterui_core::layout::Rect::new(
                     waterui_core::layout::Point::new(
@@ -101,8 +112,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
                 proposal,
                 children,
             )
-        });
-        (host, safe_rect, placements)
+        })
     };
 
     let state = state.borrow();
@@ -113,7 +123,6 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
         placements.len(),
         state.children.len()
     );
-    let bounds: Rect = view::bounds(&host);
     for (index, (child, placement)) in state.children.iter().zip(placements.iter()).enumerate() {
         let mut frame = Rect::new(
             f64::from(placement.frame.x()),
@@ -125,9 +134,11 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
             frame.is_valid_for_layout(),
             "fixed container received an invalid layout rect for child {index}: {frame:?}"
         );
-        if crate::native_layout::manages_safe_area(child.view()) {
-            frame = frame.extended_through(safe_rect, bounds);
-        }
+        frame = context.extend_child(
+            child.view(),
+            frame,
+            state.host.background_slot() == Some(index),
+        );
         // The negotiated proposal lands before the frame: a container child
         // that lays out on the frame change already holds its selected
         // proposal, and a proposal change alone still marks it for relayout.
@@ -184,6 +195,24 @@ fn to_proposal(proposal: MeasureProposal) -> ProposalSize {
 
 /// Installs the `fixed_container` handler on the dispatcher.
 pub fn install(dispatcher: &mut Dispatcher) {
+    // A `.background()` desugars to
+    // `FixedContainer::new(BackgroundLayout, (background, content))` —
+    // claimed as a plain view before `body()` hides the layout inside
+    // `DirectionalLayout`, so the host can mark slot 0 as the background
+    // the §7.1 fill rule extends through touched-edge regions.
+    dispatcher.register_view::<FixedContainer>(|container, ctx| {
+        let background = (container.as_parts().0 as &dyn core::any::Any)
+            .is::<waterui::layout::BackgroundLayout>();
+        let leaf = ctx.render(AnyView::new(container.body(ctx.env())));
+        if background {
+            let host = leaf.view().downcast_ref::<HostView>().expect(
+                "a `BackgroundLayout` container must mount a `HostView` — the fill rule marks the background slot on it",
+            );
+            host.set_background_slot(Some(0));
+        }
+        leaf
+    });
+
     dispatcher.register_native::<FixedContainer>(|container, ctx| {
         let mtm = ctx.mtm();
         let (layout, contents) = container.into_inner();
@@ -244,7 +273,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |_host| perform_layout(&state)
+            move |_host| {
+                perform_layout(&state);
+            }
         });
 
         // The proposal a Rust parent selected invalidates placement even

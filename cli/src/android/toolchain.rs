@@ -29,7 +29,7 @@ use crate::{
         winget::{WingetInstallError, ensure_package_installed},
     },
     utils::{CommandError, command},
-    water_dir::{HomeDirError, water_home_dir_in},
+    water_dir::{HomeDirError, water_home_dir},
 };
 
 /// Errors from Android SDK/NDK inspection and installation pipelines.
@@ -997,14 +997,14 @@ async fn run_sdkmanager_output_with_java(
         use std::process::Stdio;
 
         cmd.stdin(Stdio::piped());
-        let mut child = command(&mut cmd).spawn()?;
+        let mut child = command(&mut cmd, host.std_output()).spawn()?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(stdin_payload.as_bytes()).await?;
             stdin.flush().await?;
         }
         child.output().await.map_err(AndroidToolchainError::from)
     } else {
-        command(&mut cmd)
+        command(&mut cmd, host.std_output())
             .output()
             .await
             .map_err(AndroidToolchainError::from)
@@ -1133,7 +1133,7 @@ fn kotlin_executable_from_home(home: &Path) -> Option<PathBuf> {
 }
 
 fn managed_kotlin_home(host: &Host, version: &str) -> Result<PathBuf, AndroidToolchainError> {
-    Ok(water_home_dir_in(host)?
+    Ok(water_home_dir(host)?
         .join("toolchains/kotlin")
         .join(version))
 }
@@ -2185,12 +2185,13 @@ async fn verify_ndk_host_toolchain_executable(
 
     // Unique scratch source for the compile probe; the `NamedTempFile`
     // deletes itself on drop, including on the early-error paths below.
-    let probe_file = smol::unblock(|| -> std::io::Result<tempfile::NamedTempFile> {
+    let temp_root = host.temp_dir();
+    let probe_file = smol::unblock(move || -> std::io::Result<tempfile::NamedTempFile> {
         use std::io::Write as _;
         let mut file = tempfile::Builder::new()
             .prefix("waterui-android-ndk-probe-")
             .suffix(".c")
-            .tempfile()?;
+            .tempfile_in(temp_root)?;
         file.write_all(b"int main(void) { return 0; }\n")?;
         file.flush()?;
         Ok(file)

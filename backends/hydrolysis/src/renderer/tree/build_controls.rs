@@ -89,15 +89,39 @@ impl_widget_behavior!(
 
 impl RenderNode {
     /// Build a `Widget` node around its single shared state allocation.
-    pub(super) fn build_widget<S>(state: Rc<S>, stretch: StretchAxis, env: &Environment) -> Self
+    pub(super) fn build_widget<S>(
+        renderer: &SemanticCore,
+        state: Rc<S>,
+        stretch: StretchAxis,
+        env: &Environment,
+    ) -> Self
+    where
+        S: WidgetBehavior + 'static,
+    {
+        Self::build_widget_with_core(state, stretch, env, renderer.new_core())
+    }
+
+    /// Build a `Widget` node around a caller-created core. `prebuild` sites
+    /// make the core first and run the state's build-time reads under it as
+    /// the record reader, so the subviews the prebuild materializes attach
+    /// to this widget's cell rather than the window root (water-rs/waterui
+    /// §A.2: the parent cell is pushed during `build`).
+    pub(super) fn build_widget_with_core<S>(
+        state: Rc<S>,
+        stretch: StretchAxis,
+        env: &Environment,
+        core: NodeCore,
+    ) -> Self
     where
         S: WidgetBehavior + 'static,
     {
         Self::Widget(WidgetNode {
             accessibility_identity: Rc::new(()),
-            render_id: RenderId::next(),
+            core,
+            safe_area: None,
             behavior: state,
             stretch,
+            fill_leaf: false,
             env: env.clone(),
         })
     }
@@ -107,6 +131,7 @@ impl RenderNode {
     /// sink lookup happens here so a runner that embeds no native views fails
     /// at build instead of at first flush.
     pub(super) fn build_platform_view(
+        renderer: &SemanticCore,
         config: &crate::platform_view::PlatformView,
         env: &Environment,
     ) -> Self {
@@ -114,26 +139,36 @@ impl RenderNode {
         let state = Rc::new(RefCell::new(PlatformViewRenderState::from_config(
             config, env,
         )));
-        Self::build_widget(state, StretchAxis::Both, env)
+        Self::build_widget(renderer, state, StretchAxis::Both, env)
     }
 
     /// Build a persistent button node: retain the config behind an `Rc<RefCell<…>>`
     /// (its `Label` carries the live content signal; its action is invoked through the
     /// shared cell), and re-render it every flush so a reactive label stays live.
-    pub(super) fn build_button(config: ButtonConfig, env: &Environment) -> Self {
+    pub(super) fn build_button(
+        renderer: &SemanticCore,
+        config: ButtonConfig,
+        env: &Environment,
+    ) -> Self {
         use crate::widgets::controls::button::ButtonRenderState;
         let mut state = ButtonRenderState::from_config(config);
         // Create the general label sub-view unstyled; the layout-time prepare
         // pass paints it with the theme and builds it before first measure.
         state.init_label();
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, StretchAxis::None, env)
+        Self::build_widget(renderer, state, StretchAxis::None, env)
     }
 
     /// Build a persistent toggle node: its main label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on); the cloneable config drives the control + accessibility, and its
     /// `toggle` binding is read through `resolve_toggle_progress` which watches it.
+    ///
+    /// The node's stretch is the resolved payload's own axis: a switch with a
+    /// visible label claims the full row (`label … switch`), while a checkbox
+    /// or a hidden label is content-sized. A stretched hidden-label toggle
+    /// would report a frame the label's dead zone inflates past the control,
+    /// and taps inside it would hit nothing (water-rs/waterui#2241).
     pub(super) fn build_toggle(
         config: ToggleConfig,
         env: &Environment,
@@ -142,9 +177,15 @@ impl RenderNode {
         use crate::widgets::controls::toggle::ToggleRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ToggleRenderState::from_config(config);
-        state.prebuild(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent slider node: its value-end labels are move-only
@@ -159,15 +200,27 @@ impl RenderNode {
         use crate::widgets::controls::slider::SliderRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = SliderRenderState::from_config(config);
-        state.prebuild_labels(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild_labels(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent stepper node: its main label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on); the cloneable config drives the buttons + accessibility, and its
     /// value/step signals are read through `read_signal` so a change schedules a frame.
+    ///
+    /// The node's stretch is the resolved payload's own axis: a stepper with a
+    /// visible label claims the full row (`label … buttons`), while a hidden
+    /// label is content-sized — a stretched hidden-label stepper would report
+    /// a frame inflated past the buttons that accepts no input
+    /// (water-rs/waterui#2364).
     pub(super) fn build_stepper(
         config: StepperConfig,
         env: &Environment,
@@ -176,9 +229,15 @@ impl RenderNode {
         use crate::widgets::controls::stepper::StepperRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = StepperRenderState::from_config(config);
-        state.prebuild(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent progress node: its label/value labels are move-only
@@ -193,21 +252,31 @@ impl RenderNode {
         use crate::widgets::controls::progress::ProgressRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ProgressRenderState::from_config(config);
-        state.prebuild_labels(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild_labels(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent menu node: its trigger label is a move-only `AnyView`
     /// pre-built into a [`RetainedSubview`]; its `accessibility_label` and `items`
     /// signals are read through `read_signal` so a change schedules a frame.
-    pub(super) fn build_menu(menu: ResolvedMenu, env: &Environment) -> Self {
+    pub(super) fn build_menu(
+        renderer: &SemanticCore,
+        menu: ResolvedMenu,
+        env: &Environment,
+    ) -> Self {
         use crate::widgets::controls::button::MenuRenderState;
         let stretch = <ResolvedMenu as waterui_core::NativeView>::stretch_axis(&menu);
         // The label sub-view (created by `from_resolved`) is painted with the
         // theme and built by the layout-time prepare pass before first measure.
         let state = Rc::new(RefCell::new(MenuRenderState::from_resolved(menu, env)));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget(renderer, state, stretch, env)
     }
 
     /// Build a persistent date-picker node: its main label is pre-built into a
@@ -223,9 +292,15 @@ impl RenderNode {
         use crate::widgets::controls::date_picker::DatePickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = DatePickerRenderState::from_config(config);
-        state.prebuild(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent color-picker node: its main label is pre-built into a
@@ -241,9 +316,15 @@ impl RenderNode {
         use crate::widgets::controls::color_picker::ColorPickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ColorPickerRenderState::from_config(config);
-        state.prebuild(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent picker node: its field label is pre-built into a
@@ -260,9 +341,15 @@ impl RenderNode {
         use crate::widgets::controls::picker::PickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = PickerRenderState::from_config(config);
-        state.prebuild(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent text-field node: its floating label is pre-built into a
@@ -281,9 +368,15 @@ impl RenderNode {
         use crate::widgets::controls::text_field::TextFieldRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = TextFieldRenderState::from_config(config);
-        state.prebuild(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent secure-field node: its floating label is pre-built into a
@@ -301,9 +394,15 @@ impl RenderNode {
         use crate::widgets::controls::text_field::SecureFieldRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = SecureFieldRenderState::from_config(config);
-        state.prebuild(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 
     /// Build a persistent badge node: its wrapped content is a move-only `AnyView`
@@ -318,8 +417,14 @@ impl RenderNode {
         use crate::widgets::layout::badge::BadgeRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = BadgeRenderState::from_config(config);
-        state.prebuild_content(renderer, env);
+        // The prebuild materializes subviews and reads bindings: run it
+        // under this widget's cell as the record reader so its reads
+        // and the subviews' cells attach to the widget, not the root.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild_content(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
-        Self::build_widget(state, stretch, env)
+        Self::build_widget_with_core(state, stretch, env, core)
     }
 }

@@ -5,6 +5,11 @@ pub enum SceneError {
     /// An independent paint transform cannot be inverted to sample its paint.
     #[error("paint transform must be finite and invertible")]
     PaintTransform,
+    /// A radial gradient's two circles are identical and its extend mode
+    /// repeats or reflects, which the two-point conical parameter does not
+    /// define.
+    #[error("radial gradient with identical circles cannot use extend {0:?}")]
+    IdenticalRadialCircles(crate::Extend),
     /// An I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -20,12 +25,48 @@ pub enum SceneError {
     /// A layer samples a backdrop group the scene does not declare.
     #[error("layer samples unknown backdrop group {0}")]
     UnknownBackdropGroup(u32),
+    /// A backdrop group's capture scale is not finite or not in `(0, 1]`.
+    #[error("backdrop group {0} has a capture scale outside (0, 1]")]
+    InvalidBackdropScale(u32),
+    /// A backdrop group's level count is outside `1` to
+    /// [`BackdropGroup::MAX_LEVELS`](crate::BackdropGroup::MAX_LEVELS).
+    #[error(
+        "backdrop group {0} has a level count outside 1..={max}",
+        max = crate::BackdropGroup::MAX_LEVELS
+    )]
+    InvalidBackdropLevels(u32),
     /// A backdrop-group member layer has no clip.
     #[error("backdrop group {0} member layer has no clip")]
     BackdropMemberUnclipped(u32),
+    /// A backdrop group's union smoothing is not finite or not above 0.
+    #[error("backdrop group {0} has a union smoothing outside (0, ∞)")]
+    InvalidBackdropUnion(u32),
+    /// A backdrop-group member layer's outer extent is not finite or is
+    /// negative.
+    #[error("backdrop group {0} member layer has an outer extent outside [0, ∞)")]
+    InvalidBackdropOuter(u32),
     /// A layer has a `backdrop_effect` without a `backdrop` group.
     #[error("layer has a backdrop effect but no backdrop group")]
     BackdropEffectWithoutGroup,
+    /// A backdrop group anchors at a `Layer::id` no layer in the scene
+    /// carries.
+    #[error("backdrop group {0} anchors at an unknown layer id")]
+    UnknownBackdropAnchor(u32),
+    /// Two layers carry the `Layer::id` a backdrop anchor could name.
+    #[error("backdrop anchor layer id {0} is declared twice")]
+    DuplicateBackdropAnchor(u32),
+    /// A backdrop group anchors at the scene root: the anchor's
+    /// compositing canvas is the surface and its order precedes every
+    /// member, but the root's own capture never exists to sample.
+    #[error("backdrop group {0} anchors at the scene root")]
+    BackdropAnchorAtRoot(u32),
+    /// A backdrop group anchors at a projective layer: the layer is a
+    /// flattening boundary, so the anchor's canvas is not the member's.
+    #[error("backdrop group {0} anchors at a projective layer")]
+    BackdropAnchorProjective(u32),
+    /// A layer has a `backdrop_outer` without a `backdrop` group.
+    #[error("layer has a backdrop outer extent but no backdrop group")]
+    BackdropOuterWithoutGroup,
     /// A `backdrop_effect` parameter is non-finite or out of range.
     #[error("invalid backdrop effect: {0}")]
     InvalidBackdropEffect(&'static str),

@@ -6,37 +6,8 @@
 use super::*;
 use kurbo::Shape as _;
 
-/// The two transforms a clip layer is pushed under: `paint` positions the
-/// scene layer's clip, `hit` positions the matching hit-test clip — they diverge
-/// where paint and hit spaces differ (e.g. a filter-atlas capture paints into
-/// slot space but keeps window hit space).
-#[derive(Clone, Copy)]
-pub struct LayerTransforms {
-    pub(crate) paint: kurbo::Affine,
-    pub hit: kurbo::Affine,
-}
-
-/// What one frame's window pass was made of.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RenderLayerStats {
-    /// Layers the compositor drew, which is every layer unless the window pass
-    /// was handed to a GPU surface outright.
-    pub(crate) composited_scene: u32,
-    /// Composited layers that were recorded scene segments.
-    pub(crate) scene_segments: u32,
-    /// Composited layers that were embedded GPU content mounts.
-    pub(crate) gpu_content: u32,
-    /// Composited layers that were filtered subtrees.
-    pub filtered_subtrees: u32,
-}
-
 pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
-}
-
-/// Whether a recording encodes any visible content.
-pub const fn scene_has_content(scene: &Recording) -> bool {
-    !scene.is_empty()
 }
 
 impl SemanticCore {
@@ -170,27 +141,12 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     pub(crate) fn emitted_node_is_live(&self, node: AccessibilityNodeId) -> bool {
         self.accessibility
-            .nodes
-            .iter()
-            .any(|(id, emitted)| *id == node && !emitted.is_hidden() && !emitted.is_disabled())
-    }
-
-    /// The shared frame-trigger handle for closures that outlive a borrow of
-    /// the renderer (navigation controllers, GPU-surface invalidators, …).
-    pub(crate) fn frame_signals(&self) -> FrameSignals {
-        self.signals.clone()
+            .node(node)
+            .is_some_and(|emitted| !emitted.is_hidden() && !emitted.is_disabled())
     }
 
     pub fn request_redraw(&self) {
         self.signals.request_redraw();
-    }
-
-    /// Schedules a full frame: every awake frame re-reads signals, runs
-    /// layout, and re-encodes the retained tree. Reactive updates and visual
-    /// values outside the reactive graph (a scroll offset, a scrollbar drag)
-    /// share this one path.
-    pub fn request_refresh(&self) {
-        self.signals.request_refresh();
     }
 
     pub fn take_redraw_request(&mut self) -> bool {
@@ -201,64 +157,20 @@ impl SemanticCore {
         requested
     }
 
-    pub fn request_rebuild(&self) {
-        self.signals.request_rebuild();
-    }
-
-    #[must_use]
-    pub fn has_rebuild_request(&self) -> bool {
-        self.signals.has_rebuild_request()
-    }
-
-    pub fn request_next_frame_rebuild(&self) {
-        self.signals.request_next_frame_rebuild();
-    }
-
-    pub fn take_rebuild_request(&mut self) -> bool {
-        let requested = self.signals.take_rebuild_request();
-        if requested {
-            self.state.counters.host_wakeups += 1;
-        }
-        requested
-    }
-
-    #[must_use]
-    pub fn has_patch_request(&self) -> bool {
-        self.signals.has_patch_request()
-    }
-
-    pub fn take_patch_request(&mut self) -> bool {
-        let requested = self.signals.take_patch_request();
-        if requested {
-            self.state.counters.host_wakeups += 1;
-        }
-        requested
-    }
-
-    pub fn take_next_frame_rebuild_request(&mut self) -> bool {
-        let requested = self.signals.take_next_frame_rebuild_request();
-        if requested {
-            self.state.counters.host_wakeups += 1;
-        }
-        requested
-    }
-
-    /// Whether a state change has already been requested but not yet applied,
+    /// Whether a state change has already been marked but not yet applied,
     /// so the semantics the last flush produced are stale.
     ///
     /// This is the *unapplied* half of [`Self::has_scheduled_semantic_work`]:
-    /// a signal fired and asked for a patch or a rebuild, and the next flush
-    /// will show a different tree. It deliberately excludes work that merely
-    /// continues over future frames — animations, gesture deadlines, gliding
-    /// scrolls — because those never stop asking, so a caller that waits on
-    /// them waits forever. An observer that needs to see the current state
-    /// waits on this; one that needs the app to come fully to rest waits on
+    /// a signal fired and marked its owner, and the next flush will show a
+    /// different tree. It deliberately excludes work that merely continues
+    /// over future frames — animations, gesture deadlines, gliding scrolls —
+    /// because those never stop asking, so a caller that waits on them waits
+    /// forever. An observer that needs to see the current state waits on
+    /// this; one that needs the app to come fully to rest waits on
     /// `has_scheduled_semantic_work`.
     #[must_use]
     pub fn has_pending_semantic_update(&self) -> bool {
-        self.signals.has_patch_request()
-            || self.signals.has_rebuild_request()
-            || self.signals.has_next_frame_rebuild_request()
+        self.root_is_dirty()
     }
 
     /// Whether the renderer has scheduled work that will still change layout,
@@ -299,15 +211,22 @@ impl HydrolysisRenderer {
         root_transform: kurbo::Affine,
     ) {
         self.window_bounds = bounds;
-        self.window_root_transform = root_transform;
+        self.window_display_transform = root_transform;
         // The activation-point projection intersects node bounds with the
         // window bounds alongside the node's clip chain — both in the same
         // window hit-test space the hit clip stack uses.
         self.hit_test.window_bounds = bounds;
     }
 
-    pub(crate) const fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut Recording) {
-        (&mut self.core.state, &mut self.scene)
+    /// The renderer state and the recording node's trailing run, split so
+    /// text shaping can read the one while drawing into the other.
+    pub(crate) fn state_and_run_mut(&mut self) -> (&mut HydroState, &mut Recording) {
+        let run = self
+            .program
+            .last_mut()
+            .expect("hydrolysis renderer: drawing with no recording node")
+            .run();
+        (&mut self.core.state, run)
     }
 
     /// The per-frame work counters of the last rendered pump.
@@ -324,39 +243,16 @@ impl HydrolysisRenderer {
         &mut self.core.state.counters
     }
 
-    #[must_use]
-    /// The frame's recorded scene.
-    pub const fn scene(&self) -> &Recording {
-        &self.scene
-    }
-
-    /// The recordings the last flush committed to the compositor, in painter's
-    /// order — `self.scene` itself is only the scratch tail that has not been
-    /// drained yet. Tests assert on painted geometry through this.
-    #[cfg(test)]
-    pub(crate) fn painted_recordings(&self) -> impl Iterator<Item = &Recording> {
-        self.compositor
-            .render_layers
-            .iter()
-            .filter_map(|layer| match layer {
-                RenderLayer::Scene(scene) => Some(scene),
-                _ => None,
-            })
-    }
-
     /// Drops the recorded scene and the hit-test state derived from it.
+    ///
+    /// The hit registries are retained: clearing them would lose what the
+    /// kept nodes own — materialization rebuilds the flat lists, so only
+    /// the gesture engine's per-frame target list drains here.
     pub fn reset_scene(&mut self) {
-        self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
-        self.scene.reset();
-        self.compositor.render_layers.clear();
-        self.compositor.active_scene_layers.clear();
         self.state.measurement.reset_counters();
         self.state.counters.reset_frame();
-        self.frame_clip_layers = 0;
-        self.frame_max_clip_depth = 0;
-        self.frame_filtered_count = 0;
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }
@@ -365,22 +261,25 @@ impl HydrolysisRenderer {
     pub fn begin_rebuild_frame(&mut self) {
         // A full rebuild re-dispatches every Dynamic node, so any pending isolated
         // reactive patch is subsumed by it.
-        self.signals.begin_rebuild();
+        self.begin_rebuild();
+        self.core.begin_outside_read_frame();
         self.state.measurement.begin_frame();
-        self.frame_clip_layers = 0;
-        self.frame_max_clip_depth = 0;
-        self.frame_filtered_count = 0;
-        self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
-        self.animation_controller.begin_rebuild_frame();
+        self.begin_animation_rebuild();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
-        self.compositor.render_layers.clear();
-        self.compositor.active_scene_layers.clear();
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
+        // The frame's window-level record: registrations emitted with no
+        // enclosing node — test-side binds and transient passes alike —
+        // attribute to the root's own record, closed in
+        // `finish_rebuild_frame`.
+        let root = self.core.root_core.clone();
+        self.core.enter_reader(&root, ReaderPhase::Record, true);
+        self.program
+            .push(mount::ProgramBuilder::new(Rc::clone(&root.cell)));
     }
 
     pub(crate) fn begin_redraw_frame(&mut self) {
@@ -392,25 +291,25 @@ impl HydrolysisRenderer {
         // The persistent, content-keyed text-shaping cache is untouched and keeps full
         // layout cheap.
         self.state.measurement.begin_frame();
-        self.frame_clip_layers = 0;
-        self.frame_max_clip_depth = 0;
-        self.frame_filtered_count = 0;
     }
 
-    /// Ends the rebuild pass, asserting the scene-layer stack drained, and
-    /// flushes the frame's last open layer.
+    /// Ends the rebuild pass and stores the root's program for the commit.
     ///
     /// # Panics
-    /// Panics when a frame ends with scene layers still open — the
-    /// tracked-stack invariant the flush asserts.
+    /// Panics when a node program is left open at the end of the frame.
     pub fn finish_rebuild_frame(&mut self) {
+        let program = self
+            .program
+            .pop()
+            .expect("hydrolysis renderer: finish_rebuild_frame without its root program")
+            .finish();
+        let root = self.core.root_core.clone();
+        root.retained.stage(program);
+        root.cell.mark_quiet(mount::Dirty::COMMIT);
         assert!(
-            self.compositor.active_scene_layers.is_empty(),
-            "hydrolysis renderer: scene layer stack must be empty at end of rebuild (len={})",
-            self.compositor.active_scene_layers.len()
+            self.program.is_empty(),
+            "hydrolysis renderer: a node program is still open at the end of a rebuild"
         );
-        self.flush_scene_layer();
-        self.lifecycle.finish_rebuild_frame();
         // Prune the measure-path `Dynamic` dimension cache down to the identities
         // still present in the retained render tree. The cache is read by
         // `measure_dynamic` when a `Dynamic` leaf is measured after its content was
@@ -423,225 +322,258 @@ impl HydrolysisRenderer {
             .unwrap_or_default();
         self.prune_dynamic_measurements(&live_dynamics);
 
+        // The frame's window-level record closes before materialization:
+        // the leave retires every subtree the root record left unplaced,
+        // so the flat lists rebuild against the post-retire registries.
+        self.core.leave_reader(None);
+
+        self.core.registries();
+        // Same frame-end record `flush_window_tree` runs: the first-frame
+        // build ends here, not in the flush tail, and the placements it
+        // registered publish only through this drain.
+        self.core.record_platform_views();
         self.validate_focused_text_input_after_flush();
 
-        self.core
-            .animation_controller
-            .finish_rebuild_frame_with_inactive_slot_retention(false);
+        self.core.retire_unbound_animation_slots();
         self.core
             .hit_test
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
         self.relocate_dropped_focus();
+        self.clear_focused_fields();
         self.core.navigation.finish_rebuild_frame();
-        self.core.signals.finish_rebuild();
+        self.core.finish_outside_read_frame();
+        self.core.finish_rebuild();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();
     }
 
-    /// The frame's recorded scene, mutably.
-    pub const fn scene_mut(&mut self) -> &mut Recording {
-        &mut self.scene
+    /// The recording node's trailing run (§C): drawing lands in it.
+    ///
+    /// # Panics
+    /// Panics when no node is recording.
+    pub fn scene_mut(&mut self) -> &mut Recording {
+        self.program().run()
+    }
+
+    /// The recording node's program builder.
+    pub(crate) fn program(&mut self) -> &mut mount::ProgramBuilder {
+        self.program
+            .last_mut()
+            .expect("hydrolysis renderer: drawing with no recording node")
+    }
+
+    /// The opacity the open programs apply at the current record point —
+    /// whether content recorded here can show at all.
+    pub(crate) fn record_alpha(&self) -> f32 {
+        self.program
+            .iter()
+            .map(mount::ProgramBuilder::alpha)
+            .product()
+    }
+
+    /// `local` — record space of the recording node — in window space,
+    /// through the node's structural placement chain.
+    pub(crate) fn record_world(&self, local: kurbo::Affine) -> kurbo::Affine {
+        let program = self
+            .program
+            .last()
+            .expect("hydrolysis renderer: record_world with no recording node");
+        program.cell().placement().resolved_transform(true) * local
     }
 
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
-        body: impl FnOnce(&mut cherenkov::Recorder),
+        body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
     ) {
-        self.scene.record_picture(ctx.transform, body);
+        self.scene_mut().record_picture(ctx.local, body);
     }
 
-    pub(crate) fn push_layer_rect(
+    /// Records `core`'s node into its own program (§C): the parent's list
+    /// (or the window when none records) gets an `Item::Node`, the node's
+    /// frame anchors on the placement that list resolves against, and the
+    /// node draws from its frame origin with `local = IDENTITY`.
+    pub(crate) fn record_layer_node(
         &mut self,
-        alpha: f32,
-        transforms: LayerTransforms,
-        rect: kurbo::Rect,
+        core: &NodeCore,
+        bounds: kurbo::Rect,
+        record: impl FnOnce(&mut Self, RenderContext),
     ) {
-        self.record_clip_layer_push();
-        self.scene.push_group(
-            peniko::Fill::NonZero,
-            peniko::BlendMode::default(),
-            alpha,
-            transforms.paint,
-            &rect,
-        );
-        // The same clip paint uses bounds the hit regions flushed inside the
-        // layer: a row straddling a scroll viewport keeps only the part of its
-        // hit bounds that is actually painted (water-rs/hydrolysis#252).
-        self.hit_test
-            .push_hit_clip(transformed_rect(transforms.hit, rect));
-        self.compositor.active_scene_layers.push(ActiveSceneLayer {
-            alpha,
-            transform: transforms.paint,
-            shape: LayerShape::Rect(rect),
-        });
+        self.record_layer_node_in(core, bounds, true, record);
     }
 
-    pub(super) fn push_layer_path(
+    /// Records a layer node; `listed: false` leaves it out of its parent's
+    /// program, for a caller that lists it elsewhere and sets its anchor.
+    pub(crate) fn record_layer_node_in(
         &mut self,
-        alpha: f32,
-        transforms: LayerTransforms,
-        path: kurbo::BezPath,
+        core: &NodeCore,
+        bounds: kurbo::Rect,
+        listed: bool,
+        record: impl FnOnce(&mut Self, RenderContext),
     ) {
-        self.record_clip_layer_push();
-        self.scene.push_group(
-            peniko::Fill::NonZero,
-            peniko::BlendMode::default(),
-            alpha,
-            transforms.paint,
-            &path,
-        );
-        self.hit_test
-            .push_hit_clip(transformed_rect(transforms.hit, path.bounding_box()));
-        self.compositor.active_scene_layers.push(ActiveSceneLayer {
-            alpha,
-            transform: transforms.paint,
-            shape: LayerShape::Path(path),
-        });
-    }
-
-    pub(super) fn push_layer_rounded_rect(
-        &mut self,
-        alpha: f32,
-        transforms: LayerTransforms,
-        path: kurbo::BezPath,
-        rect: kurbo::Rect,
-        corner_width: f64,
-        corner_height: f64,
-    ) {
-        self.record_clip_layer_push();
-        self.scene.push_group(
-            peniko::Fill::NonZero,
-            peniko::BlendMode::default(),
-            alpha,
-            transforms.paint,
-            &path,
-        );
-        self.hit_test
-            .push_hit_clip(transformed_rect(transforms.hit, rect));
-        self.compositor.active_scene_layers.push(ActiveSceneLayer {
-            alpha,
-            transform: transforms.paint,
-            shape: LayerShape::RoundedRect {
-                path,
-                rect,
-                corner_width,
-                corner_height,
-            },
-        });
-    }
-
-    pub(crate) fn pop_layer(&mut self) {
-        self.scene.pop_scope();
-        self.compositor
-            .active_scene_layers
-            .pop()
-            .expect("hydrolysis renderer: pop_layer underflow");
-        self.hit_test.pop_hit_clip();
-    }
-
-    /// Opens a rect clip/opacity scope on the recording, runs `f` inside it,
-    /// then closes it. The lexical pairing every traversal helper uses, so an
-    /// unclosed or misplaced scope is a type error — and the cutover has one
-    /// defined place to substitute retained group layers (water-rs/hydrolysis#205).
-    pub(crate) fn with_clip_rect_scope(
-        &mut self,
-        alpha: f32,
-        transforms: LayerTransforms,
-        rect: kurbo::Rect,
-        f: impl FnOnce(&mut Self),
-    ) {
-        self.push_layer_rect(alpha, transforms, rect);
-        f(self);
-        self.pop_layer();
-    }
-
-    /// The [`Self::with_clip_rect_scope`] pairing for an arbitrary clip path.
-    pub(super) fn with_clip_path_scope(
-        &mut self,
-        alpha: f32,
-        transforms: LayerTransforms,
-        path: kurbo::BezPath,
-        f: impl FnOnce(&mut Self),
-    ) {
-        self.push_layer_path(alpha, transforms, path);
-        f(self);
-        self.pop_layer();
-    }
-
-    /// The [`Self::with_clip_rect_scope`] pairing for a rounded-rect clip.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn with_clip_rounded_rect_scope(
-        &mut self,
-        alpha: f32,
-        transforms: LayerTransforms,
-        path: kurbo::BezPath,
-        rect: kurbo::Rect,
-        corner_width: f64,
-        corner_height: f64,
-        f: impl FnOnce(&mut Self),
-    ) {
-        self.push_layer_rounded_rect(alpha, transforms, path, rect, corner_width, corner_height);
-        f(self);
-        self.pop_layer();
-    }
-
-    pub(super) fn record_clip_layer_push(&mut self) {
-        self.frame_clip_layers = self
-            .frame_clip_layers
-            .checked_add(1)
-            .expect("hydrolysis frame clip layer counter overflow");
-        let depth = u32::try_from(self.compositor.active_scene_layers.len() + 1)
-            .expect("hydrolysis active scene layer depth exceeds u32");
-        self.frame_max_clip_depth = self.frame_max_clip_depth.max(depth);
-    }
-
-    pub(super) fn flush_scene_layer(&mut self) {
-        assert!(
-            (self.scene.open_clip_count() as usize) == self.compositor.active_scene_layers.len(),
-            "hydrolysis renderer: scene clip count {} does not match tracked scene layers {}",
-            self.scene.open_clip_count(),
-            self.compositor.active_scene_layers.len()
-        );
-
-        for _ in 0..self.compositor.active_scene_layers.len() {
-            self.scene.pop_scope();
+        let cell = Rc::clone(&core.cell);
+        if listed {
+            let anchor = if self.program.is_empty() {
+                self.current_placement()
+            } else {
+                let parent = self.program();
+                parent.push_node(Rc::clone(&cell));
+                parent.anchor()
+            };
+            *core.retained.anchor.borrow_mut() = Some(anchor);
         }
+        let retained = Rc::clone(&core.retained);
+        self.with_reader(core, ReaderPhase::Record, |renderer| {
+            renderer
+                .program
+                .push(mount::ProgramBuilder::new(Rc::clone(&cell)));
+            record(
+                renderer,
+                RenderContext {
+                    local: kurbo::Affine::IDENTITY,
+                    bounds,
+                },
+            );
+            let program = renderer
+                .program
+                .pop()
+                .expect("hydrolysis renderer: a node's program left the stack during its record")
+                .finish();
+            retained.stage(program);
+            cell.mark_quiet(mount::Dirty::COMMIT);
+        });
+    }
 
-        if self.scene.is_empty() {
-            for layer in &self.compositor.active_scene_layers {
-                layer.push_to_scene(&mut self.scene);
-            }
+    /// Records a presentation host's program (§D): the host's reader and
+    /// its own program, anchored on the window.
+    pub(crate) fn record_host(&mut self, host: &NodeCore, record: impl FnOnce(&mut Self)) {
+        let anchor = host
+            .cell
+            .placement()
+            .parent()
+            .expect("hydrolysis renderer: a presentation host is not under the window");
+        *host.retained.anchor.borrow_mut() = Some(anchor);
+        // The root records into the frame's window-level program, which
+        // `finish_rebuild_frame` stores.
+        if let [frame] = self.program.as_slice()
+            && Rc::ptr_eq(frame.cell(), &host.cell)
+        {
+            self.with_reader(host, ReaderPhase::Record, record);
             return;
         }
-        let scene = core::mem::take(&mut self.scene);
-        self.compositor
-            .render_layers
-            .push(RenderLayer::Scene(scene));
-
-        for layer in &self.compositor.active_scene_layers {
-            layer.push_to_scene(&mut self.scene);
-        }
+        let retained = Rc::clone(&host.retained);
+        let saved = core::mem::take(&mut self.program);
+        self.with_reader(host, ReaderPhase::Record, |renderer| {
+            renderer
+                .program
+                .push(mount::ProgramBuilder::new(Rc::clone(&host.cell)));
+            record(renderer);
+            let program = renderer
+                .program
+                .pop()
+                .expect("hydrolysis renderer: a host's program left the stack during its record")
+                .finish();
+            retained.stage(program);
+            host.cell.mark_quiet(mount::Dirty::COMMIT);
+        });
+        self.program = saved;
     }
 
-    #[cfg(hydrolysis_macos_system_webview)]
-    pub(crate) fn record_native_view_layer(
+    /// Runs `record` with every `.material_group()` scope enclosing `node`'s
+    /// cell in the retained tree replayed onto `material_group_scopes`,
+    /// outermost first, then restores the stack exactly. A partial descent —
+    /// a `RetainedSubview` subtree re-recorded starting at the changed node —
+    /// calls this so a member reads the same scope as under a full flush:
+    /// scope membership never depends on where a flush starts (#2268).
+    pub(crate) fn with_enclosing_material_group_scopes(
         &mut self,
-        view: objc2::rc::Retained<objc2_web_kit::WKWebView>,
-        transform: kurbo::Affine,
-        bounds: kurbo::Rect,
-        occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
+        core: &NodeCore,
+        record: impl FnOnce(&mut Self),
     ) {
-        self.flush_scene_layer();
-        self.compositor
-            .render_layers
-            .push(RenderLayer::NativeView(NativeViewLayer {
-                view,
-                transform,
-                bounds,
-                active_layers: self.compositor.active_scene_layers.clone(),
-                occlusion,
-            }));
+        let base = self.material_group_scopes.len();
+        self.material_group_scopes
+            .extend(core.cell.enclosing_material_group_scopes());
+        record(self);
+        self.material_group_scopes.truncate(base);
+    }
+
+    /// Opens the named scope `key` on the recording node's program (§C):
+    /// its layer groups at `alpha` under `clip`, and a placement scope with
+    /// the caller's record-space `scope` delta resolves the registrations
+    /// inside. `paint` is the transform `clip` is given under, in the
+    /// recording node's space; the clip is stored in the scope's own space.
+    /// The layer sits at the scope's record-space delta.
+    pub(crate) fn open_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        alpha: f32,
+        paint: kurbo::Affine,
+        clip: &ScopeClip,
+        scope: crate::renderer::ScopeDelta,
+    ) {
+        self.open_scope_with(key, scope.transform, alpha, Some(clip), paint, scope, true);
+    }
+
+    /// [`Self::open_scope`] with the scope layer's own transform `layer`
+    /// (in the enclosing scope's space), an optional clip given under
+    /// `clip_space`, and the hit state: `hit: false` keeps the scope's
+    /// content painted while nothing inside it takes input. The placement
+    /// scope still takes the caller's explicit `scope` delta.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a scope's layer transform, clip and placement delta are independent inputs"
+    )]
+    pub(crate) fn open_scope_with(
+        &mut self,
+        key: mount::ScopeKey,
+        layer: kurbo::Affine,
+        alpha: f32,
+        clip: Option<&ScopeClip>,
+        clip_space: kurbo::Affine,
+        scope: crate::renderer::ScopeDelta,
+        hit: bool,
+    ) {
+        let space = self.program().origin() * layer;
+        let shape = clip.map(|clip| clip.in_space(space.inverse() * clip_space));
+        self.push_placement_scope(scope, clip.map(ScopeClip::hit_bounds));
+        if !hit {
+            let gate = crate::renderer::HitGate::Inactive;
+            let placement = self.current_placement();
+            placement.set_removes(gate.removes());
+            placement.set_alpha(gate.alpha());
+        }
+        let placement = self.current_placement();
+        self.program().open_scope(
+            key,
+            mount::ScopeProps {
+                transform: layer,
+                clip: shape,
+                alpha,
+            },
+            placement,
+        );
+    }
+
+    /// Closes the scope [`Self::open_scope`] opened.
+    pub(crate) fn close_scope(&mut self) {
+        self.program().close_scope();
+        self.pop_placement_scope();
+    }
+
+    /// Runs `f` inside the named scope `key` — the lexical pairing of
+    /// [`Self::open_scope`] and [`Self::close_scope`].
+    pub(crate) fn with_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        alpha: f32,
+        paint: kurbo::Affine,
+        clip: &ScopeClip,
+        scope: crate::renderer::ScopeDelta,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.open_scope(key, alpha, paint, clip, scope);
+        f(self);
+        self.close_scope();
     }
 
     pub(crate) fn set_host_redraw_handle(&mut self, handle: RedrawHandle) {
@@ -655,42 +587,48 @@ impl HydrolysisRenderer {
         self.engine_next.take()
     }
 
-    pub(crate) fn render_layer_stats(&self) -> RenderLayerStats {
-        let scene_layers = u32::try_from(self.compositor.render_layers.len())
-            .expect("hydrolysis render layer count exceeds u32");
-        let scene_segments = u32::try_from(
-            self.compositor
-                .render_layers
-                .iter()
-                .filter(|layer| matches!(layer, RenderLayer::Scene(_)))
-                .count(),
-        )
-        .expect("hydrolysis scene segment layer count exceeds u32");
-        let gpu_content = u32::try_from(
-            self.compositor
-                .render_layers
-                .iter()
-                .filter(|layer| matches!(layer, RenderLayer::GpuContent(_)))
-                .count(),
-        )
-        .expect("hydrolysis GPU content layer count exceeds u32");
-        let filtered_subtrees = u32::try_from(
-            self.compositor
-                .render_layers
-                .iter()
-                .filter(|layer| matches!(layer, RenderLayer::Filtered(_)))
-                .count(),
-        )
-        .expect("hydrolysis filtered layer count exceeds u32");
-        RenderLayerStats {
-            composited_scene: scene_layers,
-            scene_segments,
-            gpu_content,
-            filtered_subtrees,
+    /// The engine work the last commit did.
+    pub(crate) const fn mount_stats(&self) -> mount::MountStats {
+        self.last_mount_stats
+    }
+}
+
+/// A scope's clip silhouette, given in the recording node's space under the
+/// paint transform [`HydrolysisRenderer::open_scope`] receives.
+pub enum ScopeClip {
+    Rect(kurbo::Rect),
+    Path(kurbo::BezPath),
+    /// A rounded-rect clip: `path` is its silhouette, `rect` its hit bounds.
+    RoundedRect {
+        path: kurbo::BezPath,
+        rect: kurbo::Rect,
+    },
+}
+
+impl ScopeClip {
+    pub(crate) fn in_space(&self, transform: kurbo::Affine) -> waterui_graphics::draw::ShapeData {
+        if transform == kurbo::Affine::IDENTITY {
+            return match self {
+                Self::Rect(rect) => waterui_graphics::draw::ShapeData::of(rect),
+                Self::Path(path) | Self::RoundedRect { path, .. } => {
+                    waterui_graphics::draw::ShapeData::of(path)
+                }
+            };
         }
+        let mut path = match self {
+            Self::Rect(rect) => rect.to_path(waterui_graphics::draw::PATH_TOLERANCE),
+            Self::Path(path) | Self::RoundedRect { path, .. } => path.clone(),
+        };
+        path.apply_affine(transform);
+        waterui_graphics::draw::ShapeData::of(&path)
     }
 
-    pub(crate) const fn clip_layer_stats(&self) -> (u32, u32) {
-        (self.frame_clip_layers, self.frame_max_clip_depth)
+    /// The hit clip in the placement scope's space: the clip's bounds as the
+    /// caller gave them.
+    pub(crate) fn hit_bounds(&self) -> kurbo::Rect {
+        match self {
+            Self::Rect(rect) | Self::RoundedRect { rect, .. } => *rect,
+            Self::Path(path) => path.bounding_box(),
+        }
     }
 }

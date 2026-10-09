@@ -146,8 +146,17 @@ pub struct Entry {
     pub left: i32,
     /// Offset of the cell's top edge from the glyph's integer device origin.
     pub top: i32,
-    /// Shelf the cell lives on, for [`Atlas::begin_commit`] touches.
-    pub slot: u32,
+}
+
+/// A cached glyph: the cell the lowering reads and the shelf the cell
+/// lives on. A glyph with no outline is cached too, so its miss is not
+/// retried every frame, but it owns no cell and so names no shelf —
+/// `shelf` is `None` — and it sits in neither `live` nor `slot_keys`
+/// (#2327).
+#[derive(Clone, Copy)]
+struct CachedGlyph {
+    entry: Entry,
+    shelf: Option<u32>,
 }
 
 /// One atlas cell emitted by the path rasterizer: a device-space quad
@@ -372,7 +381,7 @@ pub struct Atlas {
     evicting: bool,
     /// Bytes evicted this commit, drained by the caller for diagnostics.
     evicted: Vec<(u64, bool)>,
-    map: rustc_hash::FxHashMap<GlyphKey, Entry>,
+    map: rustc_hash::FxHashMap<GlyphKey, CachedGlyph>,
     /// Rasterized path emissions, keyed by content hash.
     paths: rustc_hash::FxHashMap<u64, PathEmit>,
     /// Slot lists the `PathEmit::slots` ranges address. Entries
@@ -568,17 +577,20 @@ impl Atlas {
 
     /// Drops every cached glyph of `font`. The freed texels stay claimed
     /// in the shelf layout until eviction or a grow reclaims them; path
-    /// and mask cells are font-independent and stay.
+    /// and mask cells are font-independent and stay. An outline-less
+    /// glyph leaves only the map: it was never indexed or charged.
     pub fn remove_font(&mut self, font: u64) {
         let dropped: Vec<(u64, u64, usize)> = self
             .map
             .extract_if(|key, _| key.font == font)
-            .map(|(key, entry)| {
-                (
-                    live_hash(&key),
-                    u64::from(entry.w) * u64::from(entry.h),
-                    usize::try_from(entry.slot).expect("shelf count fits usize"),
-                )
+            .filter_map(|(key, cached)| {
+                cached.shelf.map(|slot| {
+                    (
+                        live_hash(&key),
+                        u64::from(cached.entry.w) * u64::from(cached.entry.h),
+                        usize::try_from(slot).expect("shelf count fits usize"),
+                    )
+                })
             })
             .collect();
         for (hk, bytes, slot) in dropped {
@@ -929,9 +941,12 @@ impl Atlas {
             let row = &self.layout.shelves[usize::try_from(slot).expect("shelf index")];
             row.live && row.last_used == tick
         };
-        for entry in self.map.values() {
-            if entry.w > 0 && touched(entry.slot) {
-                self.plan_all.push((u32::from(entry.w), u32::from(entry.h)));
+        for cached in self.map.values() {
+            if let Some(slot) = cached.shelf
+                && touched(slot)
+            {
+                self.plan_all
+                    .push((u32::from(cached.entry.w), u32::from(cached.entry.h)));
             }
         }
         for emit in self.paths.values() {
@@ -1206,13 +1221,15 @@ impl Atlas {
         if !hit && w == 0 {
             crate::diag::atlas_cell(device, (0, 0, 0, 0));
         }
-        out
+        out.map(|(origin, _)| origin)
     }
 
     /// The [`Self::store_glyph`] placement half: registers `key`'s cell
-    /// without uploading. On a miss the texels move into `writes` for
-    /// the batch's shelf-region uploads (#169 A3). `None` when the
-    /// cell does not fit — the caller plans first.
+    /// without uploading, returning its texel origin and the shelf it
+    /// lives on — `None` for a glyph with no outline, which owns no
+    /// cell (#2327). On a miss the texels move into `writes` for the
+    /// batch's shelf-region uploads (#169 A3). `None` when the cell
+    /// does not fit — the caller plans first.
     #[expect(
         clippy::too_many_arguments,
         reason = "the pending raster record's fields, passed through"
@@ -1230,21 +1247,31 @@ impl Atlas {
         h: u32,
         texels: Vec<u8>,
         writes: &mut Vec<CellWrite>,
-    ) -> Option<(u32, u32)> {
-        if let Some(entry) = self.get(&key) {
-            let (x, y, slot) = (u32::from(entry.x), u32::from(entry.y), entry.slot);
+    ) -> Option<((u32, u32), Option<u32>)> {
+        if let Some(cached) = self.map.get(&key).copied() {
             // A pending raster can hit a cold entry the lowering never
             // pinned — keep it out of this commit's eviction set (#119).
-            self.touch(slot);
-            return Some((x, y));
+            // An outline-less glyph has no shelf to keep.
+            if let Some(slot) = cached.shelf {
+                self.touch(slot);
+            }
+            let origin = (u32::from(cached.entry.x), u32::from(cached.entry.y));
+            return Some((origin, cached.shelf));
         }
         if w == 0 {
-            self.map.insert(key, Entry::default());
-            return Some((0, 0));
+            self.map.insert(
+                key,
+                CachedGlyph {
+                    entry: Entry::default(),
+                    shelf: None,
+                },
+            );
+            return Some(((0, 0), None));
         }
         let (cx, cy, slot) = self.alloc(w, h)?;
         self.cpu_bytes += u64::from(w) * u64::from(h) + LIVE_ENTRY_BYTES;
         let hk = live_hash(&key);
+        let cell_shelf = u32::try_from(slot).expect("shelf count fits u32");
         let entry = Entry {
             x: cx as u16,
             y: cy as u16,
@@ -1252,9 +1279,14 @@ impl Atlas {
             h: h as u16,
             left,
             top,
-            slot: slot as u32,
         };
-        self.map.insert(key, entry);
+        self.map.insert(
+            key,
+            CachedGlyph {
+                entry,
+                shelf: Some(cell_shelf),
+            },
+        );
         self.live.insert(
             hk,
             LiveEntry {
@@ -1270,7 +1302,7 @@ impl Atlas {
             h,
             texels,
         });
-        Some((cx, cy))
+        Some(((cx, cy), Some(cell_shelf)))
     }
 
     /// The [`Self::store_path`] placement half: allocates each cell and
@@ -1614,8 +1646,9 @@ impl Atlas {
             };
             match live.kind {
                 LiveKind::Glyph(key) => {
-                    if let Some(entry) = self.map.remove(&key) {
-                        bytes += u64::from(entry.w) * u64::from(entry.h) + LIVE_ENTRY_BYTES;
+                    if let Some(cached) = self.map.remove(&key) {
+                        bytes += u64::from(cached.entry.w) * u64::from(cached.entry.h)
+                            + LIVE_ENTRY_BYTES;
                     }
                 }
                 LiveKind::Path => {
@@ -2087,7 +2120,6 @@ pub fn entry(
             h: h as u16,
             left,
             top,
-            slot: 0,
         },
         Some(idx),
     ))
@@ -2350,7 +2382,7 @@ pub fn glyph_key(
 /// The atlas's map lookup.
 impl Atlas {
     pub fn get(&self, key: &GlyphKey) -> Option<Entry> {
-        self.map.get(key).copied()
+        self.map.get(key).map(|cached| cached.entry)
     }
 }
 
@@ -2542,6 +2574,95 @@ mod tests {
         assert_eq!(parallel.mask_origin(0xdead), Some(stored));
     }
 
+    /// A glyph with no outline is cached without a cell, so it names no
+    /// shelf (#2327). Parallel lowerings read an atlas that does not see
+    /// their own admissions, so one batch can carry the same outline-less
+    /// glyph twice; the second apply is a hit, and a hit pins its shelf.
+    /// On an atlas with no shelves yet — the first commit, or the first
+    /// after a resize cleared the layout — that pin must not index one.
+    #[test]
+    fn an_outline_less_glyph_names_no_shelf() {
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let mut atlas = Atlas::new(&device, u64::MAX);
+        let key = |glyph: u32| GlyphKey {
+            font: 7,
+            glyph,
+            size_bits: (16.0f32 * 64.0).to_bits(),
+            subpixel: 0,
+            matrix: [
+                1.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                1.0f32.to_bits(),
+            ],
+            coords_hash: 0,
+        };
+        let (space, ink) = (key(3), key(4));
+        let other = GlyphKey { font: 8, ..ink };
+        let mut writes = Vec::new();
+        // One batch on an empty layout: the outline-less glyph twice
+        // before any cell opens a shelf.
+        atlas.begin_commit(&[]);
+        assert_eq!(
+            atlas.place_glyph(space, 0, 0, 0, 0, Vec::new(), &mut writes),
+            Some(((0, 0), None))
+        );
+        assert_eq!(
+            atlas.place_glyph(space, 0, 0, 0, 0, Vec::new(), &mut writes),
+            Some(((0, 0), None)),
+            "the duplicate resolves to the cached outline-less glyph"
+        );
+        assert!(writes.is_empty(), "an outline-less glyph writes no texels");
+        assert!(atlas.layout.shelves.is_empty());
+        // A later commit opens shelf 0; hitting the outline-less glyph
+        // again must not pin it, so an evicting commit may still reclaim
+        // it.
+        assert!(
+            atlas
+                .place_glyph(ink, 0, 0, 4, 4, vec![0; 16], &mut writes)
+                .is_some()
+        );
+        assert!(
+            atlas
+                .place_glyph(other, 0, 0, 4, 4, vec![0; 16], &mut writes)
+                .is_some()
+        );
+        atlas.begin_commit(&[]);
+        let pinned = atlas.layout.shelves[0].last_used;
+        assert!(
+            atlas
+                .place_glyph(space, 0, 0, 0, 0, Vec::new(), &mut writes)
+                .is_some()
+        );
+        assert_eq!(
+            atlas.layout.shelves[0].last_used, pinned,
+            "an outline-less hit pins no shelf"
+        );
+        // Dropping the font drops the outline-less glyph with it, and
+        // releases only the bytes its cells were charged: the other
+        // font's cell keeps its shelf key and its share.
+        atlas.remove_font(7);
+        assert!(atlas.get(&space).is_none() && atlas.get(&ink).is_none());
+        assert_eq!(
+            atlas.slot_keys[0].iter().copied().collect::<Vec<_>>(),
+            [live_hash(&other)]
+        );
+        assert_eq!(atlas.cpu_bytes(), 16 + LIVE_ENTRY_BYTES);
+        // The same after a reset: a fresh layout holds only the
+        // outline-less glyph, and dropping its font touches no shelf.
+        atlas.clear();
+        atlas.begin_commit(&[]);
+        assert!(
+            atlas
+                .place_glyph(space, 0, 0, 0, 0, Vec::new(), &mut writes)
+                .is_some()
+        );
+        atlas.remove_font(7);
+        assert!(atlas.get(&space).is_none());
+    }
+
     /// Masks over `MASK_TEXTURE_TEXELS` leave the atlas for a dedicated
     /// texture.
     #[test]
@@ -2605,12 +2726,9 @@ mod tests {
             64,
             "the layout is full"
         );
-        let [slot_a, slot_b, slot_c, slot_e] = [
-            atlas.get(&key_a).expect("a").slot,
-            atlas.get(&key_b).expect("b").slot,
-            atlas.get(&key_c).expect("c").slot,
-            atlas.get(&key_e).expect("e").slot,
-        ];
+        let shelf = |key: &GlyphKey| atlas.map[key].shelf.expect("an outlined glyph has a shelf");
+        let [slot_a, slot_b, slot_c, slot_e] =
+            [shelf(&key_a), shelf(&key_b), shelf(&key_c), shelf(&key_e)];
         let epoch_a = atlas.shelf_epoch(slot_a);
         let epoch_b = atlas.shelf_epoch(slot_b);
         // Commit 2: the hits pin A, C and E; B's shelf is untouched. A

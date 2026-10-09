@@ -20,7 +20,7 @@ const RED: WorkingColor = WorkingColor::new([1., 0., 0., 1.]);
 fn a_half_edge_rect_has_exact_coverage() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
@@ -49,7 +49,7 @@ fn linear_f16_is_the_f16_rounding_of_f32() {
     let engine = engine();
     for format in [OffscreenFormat::LinearF32, OffscreenFormat::LinearF16] {
         let surface = engine
-            .surface(Offscreen::new((64, 64), format))
+            .surface(Offscreen::new((64, 64), format), || {})
             .expect("surface");
         surface.update(|tx| {
             tx[surface.root()]
@@ -81,7 +81,7 @@ fn even_odd_leaves_the_centre_of_concentric_squares_empty() {
     let engine = engine();
     let centre = |even_odd: bool| {
         let surface = engine
-            .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+            .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
             .expect("surface");
         let content = surface.record(|c| {
             if even_odd {
@@ -104,7 +104,7 @@ fn even_odd_leaves_the_centre_of_concentric_squares_empty() {
 fn a_rotated_rects_coverage_sums_to_its_area() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -128,7 +128,7 @@ fn a_rotated_rects_coverage_sums_to_its_area() {
 fn a_half_opacity_group_halves_the_alpha() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -152,7 +152,10 @@ fn render_f32(
     body: impl FnOnce(&mut cherenkov::Recorder),
 ) -> Vec<[f32; 4]> {
     let surface = engine
-        .surface(Offscreen::new((width, height), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((width, height), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(body));
@@ -266,6 +269,34 @@ fn a_radial_gradient_interpolates_from_the_centre() {
 }
 
 #[test]
+fn identical_radial_circles_cannot_repeat_or_reflect() {
+    for extend in [Extend::Repeat, Extend::Reflect] {
+        let engine = engine();
+        let grad = RadialGradient {
+            extend,
+            ..RadialGradient::two_point((32.0, 32.0), 16.0, (32.0, 32.0), 16.0)
+                .stop(0.0, RED)
+                .stop(1.0, RED)
+        };
+        let surface = engine
+            .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 64.0, 64.0), Paint::from(grad.clone()));
+            }));
+        });
+        let Err(err) = engine.render(FrameTime::now()) else {
+            panic!("identical circles rendered under {extend:?}");
+        };
+        assert!(
+            matches!(err, cherenkov::RenderError::IdenticalRadialCircles(e) if e == extend),
+            "{extend:?}: {err}"
+        );
+    }
+}
+
+#[test]
 fn srgb_encoded_interpolation_midpoint_is_not_linear_half() {
     let engine = engine();
     let grad = LinearGradient::new((0.0, 0.0), (64.0, 0.0))
@@ -348,7 +379,7 @@ fn a_glyph_run_renders_and_the_second_frame_hits_the_cache() {
 fn sweep_renders_and_remaining_unsupported_features_report_their_names() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let sweep = SweepGradient::new((32.0, 32.0), 0.0, std::f64::consts::TAU)
         .stop(0.0, RED)
@@ -384,7 +415,7 @@ fn sweep_renders_and_remaining_unsupported_features_report_their_names() {
         style: cherenkov::GlyphStyle::Fill,
     };
     let surface2 = engine2
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface2.update(|tx| {
         tx[surface2.root()].content(surface2.record(|c| c.glyphs(run.clone(), RED)));

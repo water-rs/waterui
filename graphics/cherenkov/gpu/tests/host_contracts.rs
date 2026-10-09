@@ -136,15 +136,12 @@ fn producer() -> (
     let frames = Arc::new(AtomicUsize::new(0));
     let drops = Arc::new(AtomicUsize::new(0));
     let (send, colors) = mpsc::channel();
-    let content = GpuContentBox::new(
-        Producer {
-            colors,
-            setups: setups.clone(),
-            frames: frames.clone(),
-            drops: drops.clone(),
-        },
-        || {},
-    );
+    let content = GpuContentBox::new(Producer {
+        colors,
+        setups: setups.clone(),
+        frames: frames.clone(),
+        drops: drops.clone(),
+    });
     (content, setups, frames, drops, send)
 }
 
@@ -218,7 +215,7 @@ fn presented_pixels(
     source: &wgpu::Texture,
 ) -> Result<Vec<[f32; 4]>, Box<dyn std::error::Error>> {
     let (target, destinations) = TextureTarget::new((24, 24));
-    let destination = wait!(engine.surface(target))?;
+    let destination = wait!(engine.surface(target, || {}))?;
     let destination_texture = destinations.try_recv()?;
     let delivery = cherenkov_gpu::interop::shader_delivery(backend, device)?;
     let mut presenter = Presenter::new(device, delivery);
@@ -250,16 +247,15 @@ fn host_contracts_at_one_revision() -> Result<(), Box<dyn std::error::Error>> {
             device: device.clone(),
             queue: queue.clone(),
         }),
-        redraw: Some(cherenkov_gpu::interop::RedrawCallback::new(move || {
-            wake.fetch_add(1, Ordering::Relaxed);
-        })),
         ..GpuConfig::default()
     }))?;
 
     // Retained texture output: the host gets a texture now and a notification
     // only when the allocation changes again.
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = wait!(engine.surface(target))?;
+    let surface = wait!(engine.surface(target, move || {
+        wake.fetch_add(1, Ordering::Relaxed);
+    }))?;
     let first_output = textures.try_recv()?;
     assert_eq!((first_output.width(), first_output.height()), (16, 16));
 
@@ -285,7 +281,7 @@ fn host_contracts_at_one_revision() -> Result<(), Box<dyn std::error::Error>> {
             .transform(cherenkov::kurbo::Affine::translate((1.0, 1.0)))
             .clip(Rect::new(0.0, 0.0, 4.0, 4.0))
             .opacity(0.5_f32)
-            .filter(&effect)
+            .filter(effect.id())
             .content(engine.gpu_producer(content).at((8, 8)));
         tx[&video_layer]
             .transform(cherenkov::kurbo::Affine::translate((8.0, 8.0)))

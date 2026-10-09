@@ -43,33 +43,57 @@ pub fn collect_replaced_ids<S: ViewSnapshot>(
 #[derive(Clone, Copy)]
 pub(super) enum EntryPhase {
     Stable,
-    /// Animating in since this instant.
-    Entering(Instant),
-    /// Animating out since this instant; dropped when the animation completes.
-    Exiting(Instant),
+    /// Animating in since `start`, from presence `from`: `0.0` for a fresh
+    /// enter, or the interrupted exit's sampled presence when the removal was
+    /// reversed mid-flight, so the enter resumes where the exit stopped.
+    Entering {
+        start: Instant,
+        from: f32,
+    },
+    /// Animating out since `start`, from presence `from`: `1.0` for a fresh
+    /// exit, or the interrupted enter's sampled presence when the insert was
+    /// reversed mid-flight. Dropped when the animation completes.
+    Exiting {
+        start: Instant,
+        from: f32,
+    },
 }
 
 impl EntryPhase {
     /// The 0..=1 presence factor at `now`: opacity and stack-axis size scale.
+    /// A phase carries everything the value depends on — a reversal samples
+    /// the interrupted phase into `from` rather than restarting it — so the
+    /// factor is a pure function of the phase and `now`.
     fn factor(self, now: Instant, animation: &Animation) -> f32 {
         match self {
             Self::Stable => 1.0,
-            Self::Entering(start) => animation.progress(now.saturating_duration_since(start)),
-            Self::Exiting(start) => 1.0 - animation.progress(now.saturating_duration_since(start)),
+            Self::Entering { start, from } => (1.0 - from).mul_add(
+                animation.progress(now.saturating_duration_since(start)),
+                from,
+            ),
+            Self::Exiting { start, from } => {
+                from * (1.0 - animation.progress(now.saturating_duration_since(start)))
+            }
         }
+    }
+
+    /// The presence this phase would render at `now`, clamped to the range
+    /// layout and flush consume — the value a reversal samples into `from`.
+    fn sampled_presence(self, now: Instant, animation: &Animation) -> f32 {
+        self.factor(now, animation).clamp(0.0, 1.0)
     }
 
     fn is_transitioning(self, now: Instant, animation: &Animation) -> bool {
         match self {
             Self::Stable => false,
-            Self::Entering(start) | Self::Exiting(start) => {
+            Self::Entering { start, .. } | Self::Exiting { start, .. } => {
                 !animation.is_complete(now.saturating_duration_since(start))
             }
         }
     }
 
     fn is_finished_exit(self, now: Instant, animation: &Animation) -> bool {
-        matches!(self, Self::Exiting(start) if animation.is_complete(now.saturating_duration_since(start)))
+        matches!(self, Self::Exiting { start, .. } if animation.is_complete(now.saturating_duration_since(start)))
     }
 
     /// Whether an entry in this phase is kept out of the accessibility tree. The
@@ -78,7 +102,7 @@ impl EntryPhase {
     /// is purely visual), while an exiting entry — already removed from the
     /// membership — is suppressed while it collapses out.
     const fn suppresses_accessibility(self) -> bool {
-        matches!(self, Self::Exiting(_))
+        matches!(self, Self::Exiting { .. })
     }
 }
 
@@ -103,6 +127,10 @@ struct TransitionAxis {
 pub(super) struct CollectionEntry {
     /// Stable item identity from the source collection.
     pub(super) id: CollectionItemId,
+    /// The entry's own mount core: the layer its presence factor writes and
+    /// the cell a presence animation marks, distinct from `node`'s so an
+    /// entry transition re-places only the entry, not the subtree inside it.
+    pub(crate) core: NodeCore,
     /// The item's retained node, kept across membership changes by id.
     pub(super) node: RenderNode,
     /// Membership-transition phase. Always `Stable` when the collection has no
@@ -117,9 +145,10 @@ pub(super) struct CollectionEntry {
 impl CollectionEntry {
     /// An at-rest entry: full presence, no transition. The initial membership
     /// of a collection is built from these.
-    pub(super) const fn stable(id: CollectionItemId, node: RenderNode) -> Self {
+    pub(super) const fn stable(id: CollectionItemId, node: RenderNode, core: NodeCore) -> Self {
         Self {
             id,
+            core,
             node,
             phase: EntryPhase::Stable,
             factor: 1.0,
@@ -134,6 +163,7 @@ impl CollectionEntry {
 pub(super) fn collection_transition_runtime(
     env: &Environment,
     layout: &dyn Layout,
+    state: &mut HydroState,
 ) -> Option<CollectionTransitionRuntime> {
     let transition = env.get::<CollectionTransition>()?;
     let axis = lazy_stack_axis_config(
@@ -143,11 +173,11 @@ pub(super) fn collection_transition_runtime(
     .map(|config| match config {
         LazyStackAxisConfig::Vertical { spacing, .. } => TransitionAxis {
             vertical: true,
-            spacing: f64::from(spacing.snapshot()),
+            spacing: f64::from(state.measure_signal(&spacing)),
         },
         LazyStackAxisConfig::Horizontal { spacing, .. } => TransitionAxis {
             vertical: false,
-            spacing: f64::from(spacing.snapshot()),
+            spacing: f64::from(state.measure_signal(&spacing)),
         },
     });
     Some(CollectionTransitionRuntime {
@@ -157,17 +187,24 @@ pub(super) fn collection_transition_runtime(
 }
 
 /// The phase a reused live entry should carry after a reconcile: `Stable`
-/// without a transition, a fresh enter when it was leaving, otherwise its
-/// current phase (so an in-flight enter keeps running).
-const fn next_live_phase(
+/// without a transition, a reversal-resuming enter when it was leaving,
+/// otherwise its current phase (so an in-flight enter keeps running).
+fn next_live_phase(
     transition: Option<&CollectionTransitionRuntime>,
     previous: EntryPhase,
     now: Instant,
 ) -> EntryPhase {
-    match (transition.is_some(), previous) {
-        (false, _) => EntryPhase::Stable,
-        (true, EntryPhase::Exiting(_)) => EntryPhase::Entering(now),
-        (true, phase) => phase,
+    match (transition, previous) {
+        (None, _) => EntryPhase::Stable,
+        (Some(runtime), EntryPhase::Exiting { .. }) => {
+            let from = previous.sampled_presence(now, &runtime.animation);
+            tracing::trace!(
+                presence = from,
+                "collection entry exit reversed mid-flight; enter resumes from sampled presence"
+            );
+            EntryPhase::Entering { start: now, from }
+        }
+        (Some(_), phase) => phase,
     }
 }
 
@@ -194,10 +231,8 @@ pub struct CollectionNode {
     /// Stable identity owning this collection's own accessibility node id, so the
     /// id survives membership changes shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
-    /// The collection's own render identity.
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    /// The collection's own mount core: cell, placement and subscriptions.
+    pub(crate) core: NodeCore,
     /// The unshielded environment when this collection carries accessibility
     /// naming metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -227,8 +262,6 @@ pub struct CollectionNode {
     /// are rebuilt while every other surviving id keeps its node and state.
     /// Shared with the watcher closure via `Rc`.
     pub(super) replaced_ids: Rc<RefCell<std::collections::HashSet<CollectionItemId>>>,
-    /// Stable allocation whose address is this collection's patch dirty-key.
-    pub(super) _dirty_key: Rc<()>,
     /// Membership-change watcher; a change sets `dirty` and schedules a refresh.
     pub(super) _guard: BoxWatcherGuard,
     /// The collection layout's own `watch_invalidation` subscriptions — a
@@ -260,10 +293,12 @@ pub struct LazyStackNode {
     /// Stable identity owning this stack's own accessibility node id, so the id
     /// survives the visible window shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
-    /// The stack's own render identity.
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    /// The stack's own mount core: cell, placement and subscriptions.
+    pub(crate) core: NodeCore,
+    /// The §7.1 context the stack was last laid out against — node-lifetime
+    /// storage, so a stack inside an unchanged retained sub-view still hands
+    /// each materialized item its context at flush.
+    pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -303,9 +338,6 @@ pub struct LazyStackNode {
     /// drops exactly those ids' retained rows; untouched rows keep their
     /// nodes. Shared with the watcher closure via `Rc`.
     pub(super) replaced_ids: Rc<RefCell<std::collections::HashSet<CollectionItemId>>>,
-    /// Stable allocation whose address is this collection's patch dirty-key,
-    /// owned so the key cannot be reused by another allocation while it lives.
-    pub(super) _dirty_key: Rc<()>,
     /// Membership-change watcher: a change schedules a window refresh, which
     /// re-resolves the visible window (the collection `len`/items are re-read).
     pub(super) _guard: BoxWatcherGuard,
@@ -433,6 +465,7 @@ impl CollectionNode {
     pub(super) fn layout(
         &mut self,
         renderer: &mut HydrolysisRenderer,
+        safe_area: Option<&safe_area::SafeAreaLayout>,
         proposal: ProposalSize,
         size: Size,
     ) {
@@ -491,9 +524,14 @@ impl CollectionNode {
             }
         }
         for (entry, placement) in self.entries.iter_mut().zip(&placements) {
-            entry
-                .node
-                .layout(renderer, &env, placement.proposal, *placement.frame.size());
+            let child_area = safe_area.map(|area| area.child(placement.frame));
+            entry.node.layout(
+                renderer,
+                &env,
+                child_area,
+                placement.proposal,
+                *placement.frame.size(),
+            );
         }
         self.placed = placements
             .into_iter()
@@ -505,14 +543,11 @@ impl CollectionNode {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
-            let scope = renderer.begin_accessibility_container(
-                transformed_rect(ctx.hit_transform, ctx.bounds),
-                Some(transformed_rect(
-                    ctx.hit_transform,
-                    kurbo_rect(self.resolved),
-                )),
-                env,
+            let (bounds, extent) = (
+                ctx.bounds,
+                renderer.resolve_window_rect(kurbo_rect(self.resolved)),
             );
+            let scope = renderer.begin_accessibility_container(bounds, Some(extent), env);
             renderer.pop_accessibility_owner();
             scope
         });
@@ -522,16 +557,17 @@ impl CollectionNode {
             if factor <= f32::EPSILON {
                 continue;
             }
+            let delta = kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
             let child_ctx = ctx.child(
-                kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
+                delta,
                 kurbo::Rect::new(0.0, 0.0, f64::from(rect.width()), f64::from(rect.height())),
             );
             if entry.phase.suppresses_accessibility() {
                 renderer.with_suppressed_accessibility(|renderer| {
-                    Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis);
+                    Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis, delta);
                 });
             } else {
-                Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis);
+                Self::flush_entry(renderer, entry, child_ctx, &self.env, factor, axis, delta);
             }
         }
         #[cfg(feature = "accessibility")]
@@ -583,9 +619,10 @@ impl CollectionNode {
         env: &Environment,
         factor: f32,
         axis: Option<TransitionAxis>,
+        delta: kurbo::Affine,
     ) {
         if factor >= 1.0 {
-            entry.node.flush(renderer, child_ctx, env);
+            entry.node.flush(renderer, child_ctx, env, delta);
             return;
         }
         let bounds = child_ctx.bounds;
@@ -606,18 +643,33 @@ impl CollectionNode {
             ),
             None => bounds,
         };
-        renderer.with_clip_rect_scope(
-            factor,
-            LayerTransforms {
-                paint: child_ctx.transform,
-                hit: child_ctx.hit_transform,
+        // The scope carries the entry's `delta` as its placement transform
+        // and `factor` as its hit alpha, so the entry's regions gate the way
+        // its paint fades; the entry node then links with IDENTITY under
+        // it, so the delta applies once.
+        let scope = crate::renderer::ScopeDelta {
+            transform: delta,
+            hit_alpha: factor,
+        };
+        let key = crate::renderer::mount::ScopeKey {
+            role: "entry",
+            item: {
+                use core::hash::{Hash, Hasher};
+                let mut hasher = rustc_hash::FxHasher::default();
+                entry.id.hash(&mut hasher);
+                hasher.finish()
             },
-            clip,
+        };
+        renderer.with_scope(
+            key,
+            factor,
+            child_ctx.local,
+            &crate::renderer::frame::ScopeClip::Rect(clip),
+            scope,
             |renderer| {
-                let previous_opacity = renderer.hit_test.hit_test_opacity;
-                renderer.hit_test.hit_test_opacity = previous_opacity * factor;
-                entry.node.flush(renderer, child_ctx, env);
-                renderer.hit_test.hit_test_opacity = previous_opacity;
+                entry
+                    .node
+                    .flush(renderer, child_ctx, env, kurbo::Affine::IDENTITY);
             },
         );
     }
@@ -677,9 +729,28 @@ impl CollectionNode {
             }
         }
 
+        let animation = self
+            .transition
+            .as_ref()
+            .map(|runtime| runtime.animation.clone());
         let begin_exit = |mut entry: CollectionEntry| -> CollectionEntry {
-            if !matches!(entry.phase, EntryPhase::Exiting(_)) {
-                entry.phase = EntryPhase::Exiting(now);
+            if !matches!(entry.phase, EntryPhase::Exiting { .. }) {
+                // Departed entries are only kept while a transition is
+                // configured, so the animation is present. An entry still
+                // entering exits from the presence it had reached, not from
+                // full presence — the siblings keep sliding from where they
+                // are instead of jumping to the fully-grown slot.
+                let animation = animation
+                    .as_ref()
+                    .expect("departed entries are only retained under a transition");
+                let from = entry.phase.sampled_presence(now, animation);
+                if matches!(entry.phase, EntryPhase::Entering { .. }) {
+                    tracing::trace!(
+                        presence = from,
+                        "collection entry enter reversed mid-flight; exit resumes from sampled presence"
+                    );
+                }
+                entry.phase = EntryPhase::Exiting { start: now, from };
             }
             entry
         };
@@ -699,17 +770,26 @@ impl CollectionNode {
                         .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                     previous.node =
                         RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                    previous.node.core().cell.set_parent(&previous.core.cell);
                 }
                 previous
             } else {
                 let view = snapshot
                     .get_view(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
+                let core = renderer.new_core();
+                core.cell.set_parent(&self.core.cell);
+                let node = RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                node.core().cell.set_parent(&core.cell);
                 CollectionEntry {
                     id,
-                    node: RenderNode::build(normalize_layout_view(view, &env), &env, renderer),
+                    core,
+                    node,
                     phase: if animated {
-                        EntryPhase::Entering(now)
+                        EntryPhase::Entering {
+                            start: now,
+                            from: 0.0,
+                        }
                     } else {
                         EntryPhase::Stable
                     },
@@ -733,11 +813,7 @@ impl CollectionNode {
     /// `Stable`, and while anything is still mid-flight a refresh is requested
     /// so frames keep coming until the collection settles. Returns whether the
     /// tree changed shape or is still animating (both need a fresh layout).
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
-    pub(super) fn advance_transitions(&mut self, renderer: &mut SemanticCore) -> bool {
+    pub(super) fn advance_transitions(&mut self, renderer: &SemanticCore) -> bool {
         let Some(runtime) = &self.transition else {
             return false;
         };
@@ -749,7 +825,7 @@ impl CollectionNode {
         let dropped = self.entries.len() != before;
         let mut transitioning = false;
         for entry in &mut self.entries {
-            if let EntryPhase::Entering(start) = entry.phase
+            if let EntryPhase::Entering { start, .. } = entry.phase
                 && animation.is_complete(now.saturating_duration_since(start))
             {
                 entry.phase = EntryPhase::Stable;
@@ -758,7 +834,7 @@ impl CollectionNode {
             transitioning |= entry.phase.is_transitioning(now, &animation);
         }
         if transitioning {
-            renderer.signals.request_refresh();
+            renderer.context_mark_layout();
         }
         dropped || transitioning
     }
@@ -799,7 +875,7 @@ impl LazyStackNode {
             && let Some((visible_start, visible_end)) = self.visible_span.get()
         {
             let estimate = self.estimate.get();
-            let spacing = self.spacing();
+            let spacing = self.spacing(&mut renderer.state);
             {
                 let mut extent_index = self.extent_index.borrow_mut();
                 if estimate > 0.0 && !extent_index.matches(count, estimate, spacing) {
@@ -840,10 +916,12 @@ impl LazyStackNode {
         changed | materialized
     }
 
-    fn spacing(&self) -> f64 {
+    fn spacing(&self, state: &mut HydroState) -> f64 {
         match &self.axis {
             LazyStackAxisConfig::Vertical { spacing, .. }
-            | LazyStackAxisConfig::Horizontal { spacing, .. } => f64::from(spacing.snapshot()),
+            | LazyStackAxisConfig::Horizontal { spacing, .. } => {
+                f64::from(state.measure_signal(spacing))
+            }
         }
     }
 
@@ -949,17 +1027,17 @@ impl LazyStackNode {
         self.estimate_sample.set(Some((cross, size)));
         self.floor_sample.set(None);
         self.dirty.set(true);
-        self.prepare_extent_index(snapshot.len());
+        self.prepare_extent_index(state, snapshot.len());
         self.extent_index.borrow_mut().set_measured(0, extent);
         size
     }
 
-    fn prepare_extent_index(&self, count: usize) {
+    fn prepare_extent_index(&self, state: &mut HydroState, count: usize) {
         let estimate = self.estimate.get();
         if count == 0 || estimate <= 0.0 {
             return;
         }
-        let spacing = self.spacing();
+        let spacing = self.spacing(state);
         let dirty = self.dirty.replace(false);
         if dirty || !self.extent_index.borrow().matches(count, estimate, spacing) {
             self.extent_index
@@ -1014,7 +1092,7 @@ impl LazyStackNode {
             LazyStackAxisConfig::Horizontal { .. } => (proposal.height, proposal.width),
         };
         let sample = self.ensure_estimate(&snapshot, state, theme, cross);
-        self.prepare_extent_index(count);
+        self.prepare_extent_index(state, count);
         self.refresh_visible_extents(&snapshot, state, theme, count, cross);
         // The extent index holds the items' intrinsic main extents, so the
         // unclamped total is the stack's ideal, not its minimum: a lazy
@@ -1024,7 +1102,7 @@ impl LazyStackNode {
         // that cannot shrink keeps its extent, as the eager stack's
         // `minima_overflow` answer does.
         let extent = self.extent_index.borrow().total_extent();
-        let floor = self.spacing().mul_add(
+        let floor = self.spacing(state).mul_add(
             crate::num_cast::usize_as_f64(count - 1),
             self.ensure_floor(&snapshot, state, theme, cross)
                 * crate::num_cast::usize_as_f64(count),
@@ -1066,11 +1144,8 @@ impl LazyStackNode {
             // A lazy stack places its items at flush (offset-dependent), so no
             // resolved extent is cached for it — `None` keeps the surviving
             // child's own bounds on collapse.
-            let scope = renderer.begin_accessibility_container(
-                transformed_rect(ctx.hit_transform, ctx.bounds),
-                None,
-                env,
-            );
+            let bounds = ctx.bounds;
+            let scope = renderer.begin_accessibility_container(bounds, None, env);
             renderer.pop_accessibility_owner();
             scope
         });
@@ -1084,7 +1159,7 @@ impl LazyStackNode {
         };
         let theme = renderer.theme();
         self.ensure_estimate(&snapshot, &mut renderer.state, &theme, cross);
-        self.prepare_extent_index(count);
+        self.prepare_extent_index(&mut renderer.state, count);
         let total_extent_before = self.extent_index.borrow().total_extent();
         self.item_cache.borrow_mut().begin_frame();
         let visible = renderer
@@ -1092,7 +1167,8 @@ impl LazyStackNode {
             .lazy_viewport_stack
             .last()
             .map_or(ctx.bounds, |viewport| {
-                (ctx.transform.inverse() * viewport.transform).transform_rect_bbox(viewport.bounds)
+                (renderer.record_world(ctx.local).inverse() * viewport.transform)
+                    .transform_rect_bbox(viewport.bounds)
             });
         let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
@@ -1111,13 +1187,16 @@ impl LazyStackNode {
             }
         };
         self.visible_span.set(Some((visible_start, visible_end)));
-        let spacing = self.spacing();
+        let spacing = self.spacing(&mut renderer.state);
         let window = self
             .extent_index
             .borrow()
             .visible_window(visible_start, visible_end);
         *self.visible_range.borrow_mut() = window.start..window.end;
         let mut cursor = window.leading_offset;
+        // The context the stack laid out against: one borrow for the whole
+        // visible window — every item derives its hosted frame from it.
+        let stack_area = self.safe_area.as_deref();
         for index in window.start..window.end {
             let id = snapshot
                 .get_id(index)
@@ -1152,7 +1231,14 @@ impl LazyStackNode {
                     });
                     normalize_layout_view(view, env)
                 });
-                subview.flush_in_rect(renderer, ctx, env, proposal, child_rect);
+                // The item's frame in the context the stack recorded at
+                // layout: `child_rect` resolves in `ctx.bounds` space — the
+                // same layout-fact mapping `WidgetRenderContext` and the
+                // collection layout loop share through
+                // `SafeAreaLayout::hosted_frame`.
+                let item_area = stack_area
+                    .map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
+                subview.place(renderer, ctx, env, proposal, child_rect, item_area);
             }
             cursor += extent;
             if index + 1 < count {
@@ -1173,7 +1259,7 @@ impl LazyStackNode {
         // the re-encode path.
         let total_extent_after = self.extent_index.borrow().total_extent();
         if (total_extent_after - total_extent_before).abs() > 0.5 {
-            renderer.request_refresh();
+            renderer.context_mark_layout();
         }
     }
 

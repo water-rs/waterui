@@ -23,9 +23,9 @@ mod raster;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::{
-    BackdropId, ContentOp, EngineError, FontData, FontId, Frame, FrameStats, ImageId, ImageUpload,
-    LayerId, MemoryUsage, Pressure, Readback, Redraw, RenderError, Renderer, ResourceError,
-    ResourceId, SurfaceError, SurfaceId, SurfaceInfo, SurfaceVisibility, Visibility,
+    BackdropId, ContentOp, EngineError, FontData, FontId, Frame, FrameRedraw, FrameStats, ImageId,
+    ImageUpload, LayerId, MemoryUsage, Pressure, Readback, RenderError, Renderer, ResourceError,
+    ResourceId, SurfaceError, SurfaceId, SurfaceInfo, Visibility,
 };
 use lower::{ContentData, Item, Lowering};
 
@@ -63,6 +63,7 @@ struct SurfaceState {
     filters: Vec<u64>,
     /// Backdrop groups referenced by the last frame, by group id.
     groups: Vec<u64>,
+    anchor_scratch: lower::AnchorScratch,
     /// The largest live pixel-buffer bytes in any band that ran a
     /// backdrop capture last frame (window, isolation stack and capture
     /// buffers). 0 when no capture ran.
@@ -73,10 +74,10 @@ struct SurfaceState {
     /// The host's announced visibility as the render loop applied it. A
     /// hidden surface is in no frame, and its filters ask for no redraw.
     visibility: Visibility,
-    /// The host's announced visibility as it flips on the UI thread: the
-    /// wake gates of the surface's filters read it, so they stop waking the
-    /// moment the host hides the surface.
-    announced: SurfaceVisibility,
+    /// The surface's host wake-up: the filters its frames run wake the
+    /// host through it, so they stop waking the moment the host hides the
+    /// surface.
+    waker: cherenkov::CompletionWaker,
 }
 
 impl SurfaceState {
@@ -137,7 +138,7 @@ impl std::fmt::Debug for RasterRenderer {
 ///
 /// # Errors
 /// [`EngineError::Backend`] when the pool cannot be built.
-pub fn init(config: RasterConfig) -> Result<(RasterRenderer, RasterInfo), EngineError> {
+pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), EngineError> {
     let builder = rayon::ThreadPoolBuilder::new()
         .num_threads(config.threads.unwrap_or(0))
         .thread_name(|i| format!("cherenkov-raster-{i}"));
@@ -153,7 +154,7 @@ pub fn init(config: RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engine
                 RasterRenderer {
                     pool,
                     surfaces: FxHashMap::default(),
-                    filters: filter::Registry::new(config.redraw),
+                    filters: filter::Registry::default(),
                     fonts: FxHashMap::default(),
                     bitmap_fonts: FxHashMap::default(),
                     images: FxHashMap::default(),
@@ -186,6 +187,7 @@ fn cpu_model() -> Option<String> {
 impl Renderer for RasterRenderer {
     type Target = RasterTarget;
     type Font = font::PreparedFont;
+    type FrameCommit = ();
 
     fn create_surface(
         &mut self,
@@ -240,10 +242,11 @@ impl Renderer for RasterRenderer {
                 layers: FxHashMap::default(),
                 filters: Vec::new(),
                 groups: Vec::new(),
+                anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
-                announced: waker.visibility(),
+                waker,
             },
         );
         Ok(SurfaceInfo {
@@ -281,8 +284,8 @@ impl Renderer for RasterRenderer {
 
     fn set_visibility(&mut self, id: SurfaceId, visibility: Visibility) {
         // The filters' wakes already follow the announced visibility
-        // through their gates; this decides what counts in `Redraw` and
-        // what each frame housekeeps.
+        // through the surface's waker; this decides what counts in
+        // `FrameRedraw` and what each frame housekeeps.
         self.surfaces
             .get_mut(&id)
             .expect("visibility of a created surface")
@@ -330,6 +333,14 @@ impl Renderer for RasterRenderer {
             for content in surface.layers.values_mut() {
                 content.invalidate();
             }
+        }
+    }
+
+    fn image_limits(&self) -> cherenkov::ImageLimits {
+        cherenkov::ImageLimits {
+            max_dimension: u32::MAX,
+            // The decoded image is f32 RGBA: sixteen bytes a texel.
+            max_texels: self.image_budget / 16,
         }
     }
 
@@ -458,8 +469,12 @@ impl Renderer for RasterRenderer {
 
     /// Lowers and rasterizes every changed surface.
     #[cfg(not(target_arch = "wasm32"))]
-    fn render(&mut self, frame: &Frame<'_>, stats: &mut FrameStats) -> Result<Redraw, RenderError> {
-        self.render_frame(frame, stats)
+    fn render(
+        &mut self,
+        frame: &Frame<'_>,
+        stats: &mut FrameStats,
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
+        self.render_frame(frame, stats).map(|redraw| (redraw, ()))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -467,8 +482,9 @@ impl Renderer for RasterRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> impl core::future::Future<Output = Result<Redraw, RenderError>> {
-        core::future::ready(self.render_frame(frame, stats))
+    ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>
+    {
+        core::future::ready(self.render_frame(frame, stats).map(|redraw| (redraw, ())))
     }
 
     /// Materializes a surface's output buffer into `Readback` pixels.
@@ -525,6 +541,7 @@ impl Renderer for RasterRenderer {
         let mut categories = account::Categories::default();
         for surface in self.surfaces.values() {
             categories.output += surface.output_bytes();
+            categories.retained += surface.anchor_scratch.heap_bytes();
             categories.retained += surface
                 .layers
                 .values()
@@ -596,7 +613,7 @@ impl RasterRenderer {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<Redraw, RenderError> {
+    ) -> Result<FrameRedraw, RenderError> {
         self.filters.begin_frame(frame.id, frame.time);
         self.frame_count += 1;
         for sf in frame.surfaces {
@@ -617,50 +634,46 @@ impl RasterRenderer {
         }
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
-        self.gate_filters();
         self.filters.finish_frame(&used, &used_groups);
-        let rate = self
-            .surfaces
-            .iter()
-            .filter(|(_, surface)| surface.visibility == Visibility::Visible)
-            .filter(|(id, surface)| {
-                surface
-                    .filters
+        self.update_filter_wakes();
+        // Every visible surface whose filter or backdrop group still
+        // runs asks for the next frame on its own entry — the animated
+        // backdrop names the surface it draws into.
+        let mut redraw = FrameRedraw::default();
+        for (id, surface) in &self.surfaces {
+            if surface.visibility != Visibility::Visible {
+                continue;
+            }
+            if surface
+                .filters
+                .iter()
+                .any(|fid| self.filters.wants_redraw(*fid))
+                || surface
+                    .groups
                     .iter()
-                    .any(|fid| self.filters.wants_redraw(*fid))
-                    || surface
-                        .groups
-                        .iter()
-                        .any(|gid| self.filters.wants_redraw_group(**id, BackdropId::new(*gid)))
-            })
-            .map(|(_, surface)| surface)
-            .fold(None, |rate: Option<cherenkov::RefreshRange>, surface| {
-                Some(rate.map_or_else(
-                    || surface.refresh.clone(),
-                    |rate| {
-                        (*rate.start()).min(*surface.refresh.start())
-                            ..=(*rate.end()).max(*surface.refresh.end())
-                    },
-                ))
-            });
-        Ok(rate.map_or(Redraw::None, |rate| Redraw::Wanted { rate }))
+                    .any(|gid| self.filters.wants_redraw_group(*id, BackdropId::new(*gid)))
+            {
+                redraw.request(*id, surface.refresh.clone());
+            }
+        }
+        Ok(redraw)
     }
 
-    /// Gates every filter's and backdrop chain's wakes on the surfaces whose
-    /// last frames ran it.
-    fn gate_filters(&self) {
-        let mut uses: FxHashMap<u64, Vec<SurfaceVisibility>> = FxHashMap::default();
+    /// Points every filter's and backdrop chain's wakes at the surfaces
+    /// whose last frames ran it.
+    fn update_filter_wakes(&self) {
+        let mut uses: FxHashMap<u64, Vec<cherenkov::CompletionWaker>> = FxHashMap::default();
         let mut groups = FxHashMap::default();
         for (surface, state) in &self.surfaces {
             for filter in &state.filters {
                 let surfaces = uses.entry(*filter).or_default();
                 // Listed surface by surface: one entry per surface.
-                if surfaces.last() != Some(&state.announced) {
-                    surfaces.push(state.announced.clone());
+                if surfaces.last() != Some(&state.waker) {
+                    surfaces.push(state.waker.clone());
                 }
             }
             for group in &state.groups {
-                groups.insert((surface.raw(), *group), state.announced.clone());
+                groups.insert((surface.raw(), *group), state.waker.clone());
             }
         }
         self.filters.set_surfaces(&uses, &groups);
@@ -807,7 +820,7 @@ impl RasterRenderer {
             };
             let mut caches = std::mem::take(&mut surf.layers);
             let mut lowering = Lowering::new(
-                items,
+                (items, &mut surf.anchor_scratch),
                 size,
                 Some(&mut self.filters),
                 frame,

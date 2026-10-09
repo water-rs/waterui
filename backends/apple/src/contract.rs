@@ -81,10 +81,14 @@ impl KeepAlive {
 /// A rendered component: its platform view, its layout face, and what keeps
 /// its reactivity alive.
 ///
-/// Drop order is fixed by field order: watchers and children stop first, the
-/// layout face next, the platform view last. Dropping a leaf does not detach
-/// its view from a superview; mount it through [`NativeLeaf::mount`] for
-/// that.
+/// Dropping a leaf first clears the handler slots of a leaf view that is a
+/// `HostView`, which releases the state those handlers capture. The
+/// keepalive drops next, in reverse order of keeping: a component whose own
+/// view holds handler slots keeps a `cocoa_ui::HandlerTeardown` guard there,
+/// which clears those slots at its position in that order. The layout face
+/// drops after the keepalive and the platform view last (field order).
+/// Dropping a leaf does not detach its view from a superview; mount it
+/// through [`NativeLeaf::mount`] for that.
 pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
@@ -144,6 +148,12 @@ impl NativeLeaf {
     /// content size and the constraint system collapses it to zero.
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
+            // The handler may hold the layout face strongly: `detach`
+            // clears it when the leaf moves, and the leaf's `Drop` clears
+            // every handler slot, which breaks the HostView → handler →
+            // SubView → leaf-state → HostView cycle (water-rs/waterui#1567).
+            // The context-menu panel clones the layout through
+            // `layout_handle` for its own measure.
             let layout = Rc::clone(layout);
             host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
         }
@@ -195,6 +205,14 @@ impl NativeLeaf {
         )
     )]
     fn detach(&mut self) {
+        // The inverse of `mount`, and nothing more: a detached leaf may be
+        // mounted again (the iOS context-menu panel moves its preview and
+        // accessory in and out on every presentation), so the handlers its
+        // component installed at render time stay. Only the intrinsic
+        // measure `mount` installed goes, and `mount` installs it again.
+        if let Some(host) = self.view.downcast_ref::<HostView>() {
+            host.clear_measure_handler();
+        }
         #[cfg(target_os = "ios")]
         let controllers = std::mem::take(&mut self.attached_controllers);
         #[cfg(target_os = "ios")]
@@ -205,6 +223,24 @@ impl NativeLeaf {
         #[cfg(target_os = "ios")]
         for controller in controllers.iter().rev() {
             cocoa_ui::uikit::view_controller::remove_from_parent(controller);
+        }
+    }
+}
+
+impl Drop for NativeLeaf {
+    /// The leaf's release boundary: when the leaf view is a `HostView`, its
+    /// handler slots clear here (the teardown water-rs/waterui#1860 added), so
+    /// the state those handlers capture is released with the leaf whichever
+    /// owner lets go of it — a `Mounted`, a window's keepalive, a navigation
+    /// page — and a callback the platform delivers to a view that outlives
+    /// the leaf finds `None`. Other handler-holding views clear through the
+    /// `cocoa_ui::HandlerTeardown` guard their component keeps in
+    /// `keepalive`, which drops after this and before the layout face and the
+    /// view. The view stays where it is: removing it from its superview is
+    /// the owner's job, as [`Mounted`] does.
+    fn drop(&mut self) {
+        if let Some(host) = self.view.downcast_ref::<HostView>() {
+            host.clear_handlers();
         }
     }
 }

@@ -53,6 +53,12 @@ pub const EFFECT_REFRACTION: u32 = 2;
 pub const EFFECT_SHADER: u32 = 3;
 /// A rim highlight additive on the sample inside the clip edge.
 pub const EFFECT_RIM: u32 = 4;
+/// No effect on a reduced-scale capture: the plain bilinear sample at
+/// `p · s`, which a texel read cannot express.
+pub const EFFECT_SAMPLE: u32 = 5;
+/// A blur-level ramp over the clip's signed distance: the trilinear
+/// `backdrop_sample_level` at `interior + (edge − interior)·t`.
+pub const EFFECT_LEVEL: u32 = 6;
 /// Smooth colour weights; low 16 bits still identify the mesh paint kind.
 pub const PAINT_MESH_SMOOTH: u32 = 1 << 17;
 
@@ -87,6 +93,12 @@ pub const FLAG_TEX_SRGB: u32 = 0x10;
 /// the destination converts into it, the result converts back. Set when
 /// the isolated plane's storage space differs from the pass's.
 pub const FLAG_BLEND_SRC: u32 = 0x20;
+/// A `PAINT_BACKDROP` member draws against its group's union field: the
+/// instance's clip carries the ancestors only, `uv.xy` bitcast holds the
+/// record run's base `vec4` index and the member's index, and `params.x`
+/// its `outer` extent. The ownership-weighted field replaces the
+/// member's clip coverage for the composite.
+pub const FLAG_UNION: u32 = 0x40;
 
 /// The shader's blend-mode code for a [`cherenkov::BlendMode`]; `0` keeps the
 /// fixed-function source-over composite. Matches `blend_mode` in the WGSL.
@@ -176,9 +188,12 @@ pub struct Instance {
     pub color: [f32; 4],
     /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
     /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.
-    /// `PAINT_TEXTURE`: source region origin.xy.
+    /// `PAINT_TEXTURE`: source region origin.xy. `PAINT_BACKDROP`: the
+    /// capture region's texel origin.xy, the capture scale in z and the
+    /// capture's level count in w.
     pub grad: [f32; 4],
-    /// Radial: start radius, end radius. Sweep: start angle, end angle.
+    /// Radial: start radius, end radius, identical-circles flag (1 or 0).
+    /// Sweep: start angle, end angle.
     /// Image: local→image affine `[e, f]` and image `[w, h]`.
     pub grad2: [f32; 4],
     /// Glyph/cell: atlas cell origin in texels. zw: mask atlas cell origin.

@@ -15,14 +15,15 @@ use std::rc::Rc;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::sel;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol};
 use objc2_ui_kit::{
     UIEdgeInsets, UIEvent, UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress,
-    UIPressesEvent, UITraitEnvironment, UIView,
+    UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
 };
 
+use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
@@ -67,11 +68,20 @@ pub struct HostViewIvars {
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: Cell<bool>,
-    /// The edges this view erases from the safe-area insets its subtree
-    /// sees — what `cocoaUiIgnoredSafeAreaEdges` reports: bits 0–3 the
-    /// `Edges` mask, bit 4 marking the view an ignore-safe-area wrapper so
-    /// a reader can tell "ignores nothing" from "not an ignorer".
-    ignored_safe_area_edges: Cell<u8>,
+    /// The regions and edges this view erases from the safe-area insets its
+    /// subtree sees — what `cocoaUiIgnoredSafeAreaEdges` reports: bits 0–3
+    /// the container `Edges` mask, bits 4–7 the keyboard `Edges` mask, bit 8
+    /// marking the view an ignore-safe-area wrapper so a reader can tell
+    /// "ignores nothing" from "not an ignorer".
+    ignored_safe_area_edges: Cell<u16>,
+    /// Whether this view declares itself a fill — a view whose painted
+    /// surface is a color, a gradient or a material — through
+    /// `cocoaUiIsFill`.
+    is_fill: Cell<bool>,
+    /// Which `BackgroundLayout` child slot this fixed-container host was
+    /// rendered as, when a `register_view` claim marked it; `None` for any
+    /// other content.
+    background_slot: Cell<Option<usize>>,
     /// Whether the Auto Layout width is tracked for intrinsic size; see
     /// [`set_intrinsic_auto_layout`](HostView::set_intrinsic_auto_layout).
     intrinsic_auto_layout: Cell<bool>,
@@ -87,10 +97,14 @@ pub struct HostViewIvars {
     pointer_events: Cell<PointerEvents>,
     /// Whether the pointer is currently over the view.
     pointer_inside: Cell<bool>,
-    /// The recognizer serving the pointer handler, kept so the target
-    /// stays alive.
+    /// The one recognizer attached for the pointer handler, kept so the
+    /// target stays alive and a replacement can detach it.
     hover_recognizer: RefCell<Option<Retained<UIHoverGestureRecognizer>>>,
     key: RefCell<Option<KeyHandler>>,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
+    /// The display-scale registration serving backing-scale subscribers.
+    backing_changed: RefCell<Option<TraitChangeObservation>>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -124,6 +138,7 @@ impl fmt::Debug for HostViewIvars {
                 &self.hover_recognizer.borrow().is_some(),
             )
             .field("key", &self.key.borrow().is_some())
+            .field("backing_changed", &self.backing_changed.borrow().is_some())
             .finish_non_exhaustive()
     }
 }
@@ -230,6 +245,18 @@ define_class!(
             guarded("HostView didMoveToWindow", || {
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+                if let Some(window) = self.window() {
+                    // The window's keyboard region exists from the first
+                    // `WaterUI` view that reaches it; hosts read it and
+                    // only mark.
+                    let _ = crate::uikit::keyboard::region_for(&window);
+                    // Re-entering a window whose regions moved while the
+                    // host was out of the tree — a popped page — needs
+                    // one pass to re-derive its children's placements.
+                    if self.has_layout_handler() {
+                        self.setNeedsLayout();
+                    }
+                }
                 let handler = self.ivars().window.borrow().clone();
                 if let Some(handler) = handler {
                     handler(self);
@@ -297,11 +324,20 @@ define_class!(
 
         // SAFETY: see the module safety note. Exposed under a `cocoaUi`
         // selector for the sibling backend's safe-area erasure; it reads an
-        // ivar and performs no layout. Bits 0–3 are the `Edges` mask, bit 4
-        // marks the view an ignore-safe-area wrapper.
+        // ivar and performs no layout. Bits 0–3 are the container `Edges`
+        // mask, bits 4–7 the keyboard `Edges` mask, bit 8 marks the view an
+        // ignore-safe-area wrapper.
         #[unsafe(method(cocoaUiIgnoredSafeAreaEdges))]
-        fn ignored_safe_area_edges_override(&self) -> isize {
-            isize::from(self.ivars().ignored_safe_area_edges.get())
+        fn ignored_safe_area_edges_override(&self) -> u16 {
+            self.ivars().ignored_safe_area_edges.get()
+        }
+
+        // SAFETY: see the module safety note. Exposed under a `cocoaUi`
+        // selector for the sibling backend's fill detection; it reads an
+        // ivar and performs no layout.
+        #[unsafe(method(cocoaUiIsFill))]
+        fn is_fill_override(&self) -> bool {
+            self.ivars().is_fill.get()
         }
 
         // SAFETY: see the module safety note. Exposed under a `cocoaUi`
@@ -324,9 +360,23 @@ define_class!(
         #[unsafe(method(setFrame:))]
         fn set_frame_override(&self, frame: CGRect) {
             guarded("HostView setFrame:", || {
+                let moved = self.frame().origin != frame.origin;
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setFrame: frame] };
                 self.report_size();
+                // A parent's layout pass translating the host — a banner
+                // pushing a container down — gives the moved view no
+                // layout pass, so the region readers in its subtree (the
+                // host's own fill extension, every scroll surface) would
+                // keep positions and insets derived for the old window
+                // position; the move marks them the way a keyboard
+                // notification does. A host under a scroll surface reads
+                // no regions — `mark_region_readers` never descends one —
+                // so marking there would only relayout the row.
+                if moved && self.window().is_some() && !crate::view::inside_scroll_surface(self)
+                {
+                    crate::uikit::keyboard::mark_region_readers(self);
+                }
             });
         }
 
@@ -338,22 +388,6 @@ define_class!(
                 let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
                 self.report_size();
             });
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(safeAreaInsets))]
-        fn safe_area_insets_override(&self) -> UIEdgeInsets {
-            guarded("HostView safeAreaInsets", || {
-                // A window root reports its window's insets, so content that
-                // fills the window still learns where the window is obscured.
-                if self.ivars().fills_window.get()
-                    && let Some(window) = self.window()
-                {
-                    return window.safeAreaInsets();
-                }
-                // SAFETY: see the module safety note.
-                unsafe { msg_send![super(self), safeAreaInsets] }
-            })
         }
 
         // SAFETY: see the module safety note.
@@ -431,6 +465,17 @@ impl HostView {
         self.ivars().layout.replace(Some(Rc::new(handler)));
     }
 
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
+    }
+
     /// Calls `handler` with the new size every time the view's size changes,
     /// replacing any handler set before.
     pub fn set_resize_handler(&self, handler: impl Fn(&Self, Size) + 'static) {
@@ -451,6 +496,19 @@ impl HostView {
     /// or is lost.
     pub fn set_window_handler(&self, handler: impl Fn(&Self) + 'static) {
         self.ivars().window.replace(Some(Rc::new(handler)));
+    }
+
+    /// Calls `handler` when the view's display scale changes — the
+    /// `UITraitDisplayScale` trait, which a backing-scale change rides on.
+    /// The handler decides whether the change matters to it. Replaces any
+    /// handler set before.
+    pub fn set_backing_changed_handler(&self, handler: impl Fn(&Self) + 'static) {
+        let registration = register_trait_change::<UIView, _>(
+            self,
+            UITraitDisplayScale::class().as_ref(),
+            handler,
+        );
+        self.ivars().backing_changed.replace(Some(registration));
     }
 
     /// Sends the hover recognizer's state change to the pointer handler
@@ -518,7 +576,9 @@ impl HostView {
             )
         };
         self.addGestureRecognizer(&recognizer);
-        self.ivars().hover_recognizer.replace(Some(recognizer));
+        if let Some(previous) = self.ivars().hover_recognizer.replace(Some(recognizer)) {
+            self.removeGestureRecognizer(&previous);
+        }
     }
 
     /// Whether the pointer is currently over this view.
@@ -548,6 +608,42 @@ impl HostView {
         self.ivars().measure.replace(Some(Rc::new(handler)));
     }
 
+    /// Drops the installed measure handler, after which measurements fall
+    /// back to `UIView`'s own intrinsic size.
+    pub fn clear_measure_handler(&self) {
+        self.ivars().measure.replace(None);
+    }
+
+    /// Drops every installed handler — the release boundary of the
+    /// view's owner.
+    ///
+    /// Each `set_*_handler` slot answers `None` afterwards, so a callback
+    /// `UIKit` delivers to this view does nothing by construction rather
+    /// than reaching state the owner released, and the handlers no longer
+    /// keep that state alive: layout, resize, hit-test, backing-changed,
+    /// window, superview, measure, primary content, scroll surface, pointer
+    /// and key. The hover recognizer is removed as well, since it exists
+    /// only to serve the pointer handler.
+    pub fn clear_handlers(&self) {
+        let ivars = self.ivars();
+        ivars.layout.replace(None);
+        ivars.resize.replace(None);
+        ivars.hit_test.replace(None);
+        ivars.window.replace(None);
+        ivars.superview.replace(None);
+        ivars.measure.replace(None);
+        ivars.primary_content.replace(None);
+        ivars.scroll_surface_candidates.replace(None);
+        ivars.pointer.replace(None);
+        ivars.pointer_events.set(PointerEvents::NONE);
+        ivars.pointer_inside.set(false);
+        if let Some(recognizer) = ivars.hover_recognizer.replace(None) {
+            self.removeGestureRecognizer(&recognizer);
+        }
+        ivars.key.replace(None);
+        ivars.backing_changed.replace(None);
+    }
+
     /// Whether the intrinsic content size reports the height the current
     /// Auto Layout width produces.
     ///
@@ -567,16 +663,44 @@ impl HostView {
         self.ivars().manages_safe_area.set(manages);
     }
 
-    /// The edges this view erases from the safe-area insets its subtree
-    /// sees — what an ignore-safe-area wrapper reports through the
-    /// `cocoaUiIgnoredSafeAreaEdges` selector the sibling backend's
-    /// safe-area rect consults on its ancestor walk. Setting the marks
-    /// bit 4, so a wrapper that ignores no edge still answers as an
-    /// ignorer.
-    pub fn set_ignored_safe_area_edges(&self, edges: Edges) {
+    /// Whether this view is a fill — the color, gradient and material
+    /// leaves mark themselves through `cocoaUiIsFill`; the sibling backend
+    /// reads the answer through the `cocoaUiPrimaryContent` chain, so a
+    /// transparent wrapper stays a fill without the wrapper copying the
+    /// bit.
+    pub fn set_is_fill(&self, fill: bool) {
+        self.ivars().is_fill.set(fill);
+    }
+
+    /// Which `BackgroundLayout` slot this host renders — the child index
+    /// that owns the background fill, `None` on an ordinary container.
+    pub fn set_background_slot(&self, slot: Option<usize>) {
+        self.ivars().background_slot.set(slot);
+    }
+
+    /// The `BackgroundLayout` slot marked at mount, if any.
+    #[must_use]
+    pub fn background_slot(&self) -> Option<usize> {
+        self.ivars().background_slot.get()
+    }
+
+    /// The regions and edges this view erases from the safe-area insets
+    /// its subtree sees — what an ignore-safe-area wrapper reports through
+    /// the `cocoaUiIgnoredSafeAreaEdges` selector the sibling backend's
+    /// region math consults on its ancestor walk: `container` on bits 0–3,
+    /// `keyboard` on bits 4–7, bit 8 marking the view an ignorer so a
+    /// wrapper that ignores nothing still answers as one.
+    pub fn set_ignored_safe_area_edges(&self, container: Edges, keyboard: Edges) {
         self.ivars()
             .ignored_safe_area_edges
-            .set(edges.mask() | 0x10);
+            .set(u16::from(container.mask()) | (u16::from(keyboard.mask()) << 4) | 0x100);
+    }
+
+    /// Whether this host runs a layout handler — what the window's
+    /// keyboard notification walk marks so the pass re-places the host's
+    /// children against the new region boundaries.
+    pub(crate) fn has_layout_handler(&self) -> bool {
+        self.ivars().layout.borrow().is_some()
     }
 
     /// The primary content the sibling backend's wrappers descend to — the
@@ -722,10 +846,10 @@ impl HostView {
 
 /// A host view for a controller at a window's root site.
 ///
-/// It always fills its
-/// window, reports its window's safe-area insets, and extends hit testing to
-/// subviews placed outside its bounds. Embedded sites use [`HostView::new`],
-/// which keeps the bounds its native parent assigns.
+/// It always fills its window, reports its window's safe-area insets,
+/// and extends hit testing to subviews placed outside its bounds.
+/// Embedded sites use [`HostView::new`], which keeps the bounds its native
+/// parent assigns.
 #[must_use]
 pub fn window_root(mtm: MainThreadMarker) -> Retained<HostView> {
     HostView::with_ivars(

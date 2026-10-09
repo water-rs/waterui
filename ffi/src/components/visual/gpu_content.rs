@@ -48,11 +48,11 @@ use {
 
 use waterui_core::Str;
 use waterui_core::layout::{ProposalSize, Size, ViewDimensions};
-use waterui_graphics::cherenkov::{Display, Next};
+use waterui_graphics::cherenkov::{Display, FrameTime, Next};
 use waterui_graphics::draw::kurbo;
 use waterui_graphics::gpu::{
     ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
-    GpuContentView, GpuRuntime, RedrawHandle, SharedGpuContext,
+    GpuContentView, GpuRuntime, HostedLayerError, RedrawHandle, SharedGpuContext,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
@@ -177,7 +177,15 @@ trait HostedRenderer {
     /// The context generation the renderer was built under.
     fn generation(&self) -> u64;
     /// Renders and composites into the host's texture.
-    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next;
+    ///
+    /// # Errors
+    /// The layer's typed failure when engine or presentation fails.
+    fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedLayerError>;
 }
 
 impl HostedView for GpuContentView {
@@ -218,12 +226,12 @@ impl HostedView for GpuContentView {
     ) -> Box<dyn HostedRenderer> {
         // `engine_content` answers the same content object every time, so a
         // renderer rebuilt after device loss re-installs it with its state.
-        let redraw = redraw.clone();
-        let producer = waterui_graphics::cherenkov_gpu::interop::GpuContentBox::new(
-            self.engine_content(),
-            move || redraw.request_redraw(),
-        );
-        Box::new(GpuContentRenderer::new(runtime, context, producer, size))
+        let producer =
+            waterui_graphics::cherenkov_gpu::interop::GpuContentBox::new(self.engine_content());
+        Box::new(
+            GpuContentRenderer::new(runtime, context, producer, size, redraw.clone())
+                .expect("the engine layer installs on a live context"),
+        )
     }
 }
 
@@ -232,8 +240,13 @@ impl HostedRenderer for GpuContentRenderer {
         Self::generation(self)
     }
 
-    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next {
-        Self::present(self, target, display)
+    fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedLayerError> {
+        Self::present(self, target, display, target_time)
     }
 }
 
@@ -272,13 +285,10 @@ impl HostedView for ExternalFrameView {
         size: OffscreenSize,
     ) -> Box<dyn HostedRenderer> {
         let stream: ExternalFrameStream = self.stream();
-        Box::new(ExternalFrameRenderer::new(
-            runtime,
-            context,
-            &stream,
-            size,
-            redraw.clone(),
-        ))
+        Box::new(
+            ExternalFrameRenderer::new(runtime, context, &stream, size, redraw.clone())
+                .expect("the external frame layer installs on a live context"),
+        )
     }
 }
 
@@ -287,8 +297,13 @@ impl HostedRenderer for ExternalFrameRenderer {
         Self::generation(self)
     }
 
-    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next {
-        Self::present(self, target, display)
+    fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedLayerError> {
+        Self::present(self, target, display, target_time)
     }
 }
 
@@ -488,8 +503,19 @@ impl WuiGpuContentState {
             );
         }
         let renderer = self.renderer.as_mut().expect("renderer created above");
-        renderer.present(texture, display) != Next::Idle
-            || self.dirty.load(core::sync::atomic::Ordering::Acquire)
+        // The ffi host drives the frame itself — there is no display-link
+        // target timestamp to map, so the frame's own timestamp is used.
+        match renderer.present(texture, display, FrameTime(std::time::Instant::now())) {
+            Ok(next) => {
+                next != Next::Idle || self.dirty.load(core::sync::atomic::Ordering::Acquire)
+            }
+            Err(error) => {
+                tracing::error!("hosted frame failed: {error}");
+                // The frame did not complete: still pending, like an
+                // acquire failure or a mid-frame device loss.
+                true
+            }
+        }
     }
 }
 

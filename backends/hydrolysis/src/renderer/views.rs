@@ -5,6 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::recording::transform_paint;
+use waterui::app::Quit;
 
 pub fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
@@ -14,62 +15,38 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
     let _ = action.call(env);
 }
 
-pub fn popup_menu_nodes(items: &[ResolvedMenuItem]) -> Vec<PopupMenuNode> {
-    items.iter().cloned().map(popup_menu_node).collect()
+/// Resolved menu items as popup-menu nodes. A declared `MenuItem::Quit`
+/// becomes the row of the quit command [`Quit::command`] builds, and is
+/// omitted where `env` carries no application quit; a declared
+/// `MenuItem::CloseWindow` becomes the row [`close_window_command`] builds
+/// — disabled for a non-closable `owner_closable` — and is omitted where
+/// the host's windows cannot be closed.
+pub fn popup_menu_nodes(
+    items: &[ResolvedMenuItem],
+    env: &Environment,
+    owner_closable: bool,
+) -> Vec<PopupMenuNode> {
+    items
+        .iter()
+        .cloned()
+        .filter_map(|item| popup_menu_node(item, env, owner_closable))
+        .collect()
 }
 
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
-pub fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
+fn popup_menu_node(
+    item: ResolvedMenuItem,
+    env: &Environment,
+    owner_closable: bool,
+) -> Option<PopupMenuNode> {
     match item {
-        ResolvedMenuItem::Command(command) => {
-            let mut styled = command.label.content.snapshot();
-            if command.selected.snapshot() {
-                styled = StyledStr::plain("✓ ") + styled;
-            }
-            // The destructive role lives in the styled label itself: an explicit
-            // span colour survives the button's environment-level foreground,
-            // so the theme's error colour wins (water-rs/hydrolysis#200).
-            if command.role == CommandRole::Destructive {
-                styled = styled.foreground(waterui::Color::new(waterui::theme::color::Error));
-            }
-            let plain_label = styled.to_plain().to_string();
-            // `Label::new` keeps the semantic text for accessibility while the
-            // custom content fills the row's label slot and aligns it leading —
-            // plain and subtitled rows share one leading edge.
-            let semantic_text = command.semantic_label.semantic_text().clone();
-            let subtitle = command.subtitle.clone();
-            let shortcut = command.shortcut.clone();
-            let label = SemanticLabel::new(semantic_text, move || {
-                let leading = match subtitle.clone() {
-                    Some(subtitle) => AnyView::new(
-                        waterui_layout::stack::vstack((
-                            Text::new(styled.clone()),
-                            waterui_text::text(subtitle).caption().muted(),
-                        ))
-                        .alignment(HorizontalAlignment::Leading)
-                        .spacing(0.0),
-                    ),
-                    None => AnyView::new(Text::new(styled.clone())),
-                };
-                AnyView::new(
-                    waterui_layout::frame::Frame::new(leading)
-                        .alignment(waterui_layout::alignment::Leading)
-                        .max_width(f32::INFINITY),
-                )
-            });
-            PopupMenuNode::Command {
-                label,
-                plain_label,
-                action: command.action,
-                disabled: command.disabled,
-                shortcut,
-                subtitle: command.subtitle,
-            }
+        ResolvedMenuItem::Command(command) => Some(command_node(command)),
+        ResolvedMenuItem::Quit => env
+            .get::<Quit>()
+            .map(|quit| command_node(quit.command(env))),
+        ResolvedMenuItem::CloseWindow => {
+            close_window_command(env, owner_closable).map(command_node)
         }
-        ResolvedMenuItem::Divider => PopupMenuNode::Divider,
+        ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
             let styled = menu.label.content.snapshot() + StyledStr::plain(" ›");
             let plain_label = styled.to_plain().to_string();
@@ -81,12 +58,62 @@ pub fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
                         .max_width(f32::INFINITY),
                 )
             });
-            PopupMenuNode::Menu {
+            Some(PopupMenuNode::Menu {
                 label,
                 plain_label,
-                items: popup_menu_nodes(&menu.items.snapshot()),
-            }
+                items: popup_menu_nodes(&menu.items.snapshot(), env, owner_closable),
+            })
         }
+    }
+}
+
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
+fn command_node(command: ResolvedCommand) -> PopupMenuNode {
+    let mut styled = command.label.content.snapshot();
+    if command.selected.snapshot() {
+        styled = StyledStr::plain("✓ ") + styled;
+    }
+    // The destructive role lives in the styled label itself: an explicit
+    // span colour survives the button's environment-level foreground,
+    // so the theme's error colour wins (water-rs/hydrolysis#200).
+    if command.role == CommandRole::Destructive {
+        styled = styled.foreground(waterui::Color::new(waterui::theme::color::Error));
+    }
+    let plain_label = styled.to_plain().to_string();
+    // `Label::new` keeps the semantic text for accessibility while the
+    // custom content fills the row's label slot and aligns it leading —
+    // plain and subtitled rows share one leading edge.
+    let semantic_text = command.semantic_label.semantic_text().clone();
+    let subtitle = command.subtitle.clone();
+    let shortcut = command.shortcut.clone();
+    let label = SemanticLabel::new(semantic_text, move || {
+        let leading = match subtitle.clone() {
+            Some(subtitle) => AnyView::new(
+                waterui_layout::stack::vstack((
+                    Text::new(styled.clone()),
+                    waterui_text::text(subtitle).caption().muted(),
+                ))
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(0.0),
+            ),
+            None => AnyView::new(Text::new(styled.clone())),
+        };
+        AnyView::new(
+            waterui_layout::frame::Frame::new(leading)
+                .alignment(waterui_layout::alignment::Leading)
+                .max_width(f32::INFINITY),
+        )
+    });
+    PopupMenuNode::Command {
+        label,
+        plain_label,
+        action: command.action,
+        disabled: command.disabled,
+        shortcut,
+        subtitle: command.subtitle,
     }
 }
 
@@ -180,6 +207,24 @@ pub fn render_gradient_node(
     render_gradient_parts(ctx, gradient, env);
 }
 
+/// The gradient view's unit-space paint on a `width` × `height` box: points
+/// map through [`Gradient::transform_to`], and a radial gradient's radii scale
+/// by `min(width, height)` so a unit-space radius stays a circle.
+fn gradient_paint_in_bounds(paint: Paint, width: f32, height: f32) -> Paint {
+    let transform = Gradient::transform_to(width, height);
+    match paint {
+        Paint::Radial(mut radial) => {
+            radial.start_center = transform * radial.start_center;
+            radial.end_center = transform * radial.end_center;
+            let scale = f64::from(width.min(height));
+            radial.start_radius *= scale;
+            radial.end_radius *= scale;
+            Paint::Radial(radial)
+        }
+        other => transform_paint(other, Some(transform)),
+    }
+}
+
 pub fn render_gradient_parts(
     ctx: &mut WidgetRenderContext<'_>,
     gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
@@ -187,15 +232,14 @@ pub fn render_gradient_parts(
 ) {
     let bounds = ctx.bounds;
     // The view's `Paint` is authored in unit space; map it onto the placed
-    // box and fill the box with it under the frame's transform.
-    let unit = waterui_graphics::Gradient::transform_to(
-        crate::num_cast::f64_as_f32(bounds.width()),
-        crate::num_cast::f64_as_f32(bounds.height()),
-    );
-    let paint = transform_paint(gradient.borrow().paint().clone(), Some(unit));
-    let transform = ctx.transform;
+    // box, scaling radial radii by its shorter side, and fill it under the
+    // frame's transform.
+    let width = crate::num_cast::f64_as_f32(bounds.width());
+    let height = crate::num_cast::f64_as_f32(bounds.height());
+    let paint = gradient_paint_in_bounds(gradient.borrow().paint().clone(), width, height);
+    let transform = ctx.local;
     ctx.renderer_mut()
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, paint, &bounds);
 }
 
@@ -240,10 +284,10 @@ pub fn render_shape_parts(
             resolved.fill.clone(),
         )
     };
-    let fill = cherenkov::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
-    let transform = ctx.transform;
+    let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
+    let transform = ctx.local;
     ctx.renderer_mut()
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
@@ -261,7 +305,7 @@ pub fn measure_morph_shape_node(
 /// Renders a retained morph-shape leaf every flush: emits a11y (unless hidden) then
 /// fills the morphed path at the current animation progress. The morph progress is
 /// resolved via the animation controller every frame (explicit `progress` signal
-/// watched through `resolve_animated_scalar_with_discriminator`; time-based
+/// watched through `resolve_owned_scalar`; time-based
 /// animation driven by `sample_morph_progress`), so the morph stays live.
 pub fn render_morph_shape_node(
     ctx: &mut WidgetRenderContext<'_>,
@@ -284,27 +328,23 @@ pub fn render_morph_shape_parts(
     _env: &Environment,
 ) {
     let bounds = ctx.bounds;
-    let transform = ctx.transform;
-    // Stable identity of this morph node: the retained shape `Rc`'s address keys the
-    // time-based morph slot so it survives structural changes (no `render_depth`).
-    let node_id = Rc::as_ptr(shape) as usize;
+    let transform = ctx.local;
     let renderer = ctx.renderer_mut();
     let (path, fill) = {
         let resolved = shape.borrow();
         let progress = if let Some(progress) = resolved.progress.as_ref() {
-            renderer
-                .resolve_animated_scalar_with_discriminator(progress, MORPH_PROGRESS_ANIMATION_KEY)
+            renderer.resolve_owned_scalar(progress, shape, MORPH_PROGRESS_ANIMATION_KEY)
         } else {
-            renderer.sample_morph_progress(resolved.animation, node_id)
+            renderer.sample_morph_progress(resolved.animation, shape)
         };
         let fill = renderer.read_signal(&resolved.fill);
         (
             resolved_morph_shape_to_path(&resolved, progress, bounds),
-            cherenkov::Paint::Solid(fill),
+            waterui_graphics::draw::Paint::Solid(fill),
         )
     };
     renderer
-        .scene
+        .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
@@ -398,7 +438,7 @@ pub fn render_str_parts(
 ) {
     let styled = StyledStr::plain(text.borrow().clone());
     let render_ctx = ctx.render_context();
-    let (state, scene) = ctx.renderer_mut().state_and_scene_mut();
+    let (state, scene) = ctx.renderer_mut().state_and_run_mut();
     HydrolysisRenderer::render_styled_text(
         state,
         scene,
@@ -430,4 +470,29 @@ pub fn emit_graphics_leaf_accessibility<T>(
     env: &Environment,
 ) {
     graphics_image_accessibility(renderer, None, env, None, None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use waterui_graphics::draw::WorkingColor;
+
+    #[test]
+    fn radial_gradient_radii_use_the_shorter_side_of_a_200x100_box() {
+        let gradient = Gradient::radial(
+            vec![(0.0, WorkingColor::WHITE), (1.0, WorkingColor::BLACK)],
+            [0.5, 0.5],
+            0.25,
+            0.5,
+        );
+        let paint = gradient_paint_in_bounds(gradient.paint().clone(), 200.0, 100.0);
+        let Paint::Radial(radial) = paint else {
+            panic!("a radial gradient remains a radial paint");
+        };
+
+        assert_eq!(radial.start_center, kurbo::Point::new(100.0, 50.0));
+        assert_eq!(radial.end_center, kurbo::Point::new(100.0, 50.0));
+        approx::assert_relative_eq!(radial.start_radius, 25.0);
+        approx::assert_relative_eq!(radial.end_radius, 50.0);
+    }
 }

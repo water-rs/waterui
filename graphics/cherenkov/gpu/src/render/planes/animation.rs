@@ -195,9 +195,10 @@ mod tests {
             Prop {
                 target: Affine::translate((40., -70.)),
                 animation: Some(Spring::bouncy().into()),
+                start: None,
             },
         ));
-        tree.sample(start, Display::default());
+        tree.sample(start, Display::default().scale);
         let description = motion(&tree, root).expect("translation is expressible");
         let [x, y] = description.position.expect("position lanes");
         assert_eq!([x.target, y.target], [40., -70.]);
@@ -207,9 +208,10 @@ mod tests {
             Prop {
                 target: Affine::rotate(1.),
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
-        tree.sample(start, Display::default());
+        tree.sample(start, Display::default().scale);
         assert!(motion(&tree, root).is_none());
     }
 
@@ -230,6 +232,7 @@ mod tests {
             Prop {
                 target: 0.5,
                 animation: None,
+                start: None,
             },
         ));
         assert!(!safe_path(&tree, plane, [plane].into_iter()));
@@ -253,9 +256,10 @@ mod tests {
             Prop {
                 target: 0.5,
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
-        tree.sample(Instant::now(), Display::default());
+        tree.sample(Instant::now(), Display::default().scale);
         assert_eq!(tree.layer(moving).opacity, 1.0);
         assert!(!safe_path(&tree, moving, [below, moving].into_iter()));
     }

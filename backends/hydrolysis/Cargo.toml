@@ -13,6 +13,7 @@ categories = ["gui", "graphics"]
 
 [dependencies]
 waterui-core.workspace = true
+thiserror.workspace = true
 waterui-assets.workspace = true
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
 png = "0.18"
@@ -41,6 +42,10 @@ cherenkov.workspace = true
 cherenkov-gpu.workspace = true
 kurbo.workspace = true
 peniko = "0.6"
+# `imageops::resize` fits a decoded image to the engine's image limits
+# before registration (water-rs/waterui#1806): the decode-quality resample
+# belongs to the ingest path, not the engine. Pixel ops only — no codecs.
+image = { version = "0.25", default-features = false }
 # `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
 # Southeast-Asian scripts) inside the one parley build: this runner owns the
 # `LayoutContext`, and without them its word segmenter logs `No segmentation
@@ -82,8 +87,23 @@ cfg_aliases = "0.2.2"
 
 # Termination signals for the windowed desktop runner. No windowing system
 # delivers SIGINT/SIGTERM/SIGHUP (or the Windows console close events) to winit,
-# so the runner installs its own handler on every desktop target it builds for.
-[target.'cfg(all(any(unix, windows), not(target_os = "android")))'.dependencies]
+# so the runner installs its own watcher on every desktop target it builds for:
+# `signal-hook` on Unix — src/runner/termination.rs, gated on
+# `any(hydrolysis_winit, test)`, so the pair is optional under the `winit`
+# feature and repeated as dev-dependencies for the test build — and `ctrlc`
+# for the Windows console control events.
+[target.'cfg(all(unix, not(target_os = "android")))'.dependencies]
+signal-hook = { version = "0.4", default-features = false, features = ["iterator"], optional = true }
+libc = { version = "0.2", optional = true }
+
+# The termination child-process suite compiles the module in test builds
+# without the `winit` feature, so the optional pair above is repeated here
+# unconditionally for tests.
+[target.'cfg(all(unix, not(target_os = "android")))'.dev-dependencies]
+signal-hook = { version = "0.4", default-features = false, features = ["iterator"] }
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
 ctrlc = { version = "3.5", features = ["termination"], optional = true }
 
 # Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
@@ -102,10 +122,10 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSResponder",
     "NSScreen",
     "NSView",
+    "NSVisualEffectView",
     "NSWindow",
     "objc2-quartz-core",
 ] }
-objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
 objc2-foundation = { workspace = true, optional = true, features = [
     "NSArray",
     "NSBundle",
@@ -116,6 +136,7 @@ objc2-foundation = { workspace = true, optional = true, features = [
     "NSGeometry",
     "NSHTTPCookie",
     "NSJSONSerialization",
+    "NSNotification",
     "NSObject",
     "NSProcessInfo",
     "NSRunLoop",
@@ -159,11 +180,14 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
 ] }
 serde_json = { workspace = true, optional = true }
 
-# The native app menu-bar surface (`App::menu_bar`): muda builds the real
-# NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
+# The native app menu-bar surface (`App::menu_bar`): waterkit-menu builds the
+# real NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
 # (Windows). See src/platform/native_menu_bar.rs.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-muda = { version = "0.20", optional = true, default-features = false }
+waterkit-menu = { workspace = true, optional = true }
+# Each bar's `events()` stream is a `futures::Stream`; the event pump drains
+# it with a noop waker once per event-loop pass.
+futures = { workspace = true, optional = true }
 
 # Window placement (water-rs/waterui#1302): X11 reads the pointer position and
 # `_NET_WORKAREA` over the connection winit already holds — borrowed through
@@ -172,16 +196,46 @@ muda = { version = "0.20", optional = true, default-features = false }
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
 x11-dl = { version = "2.21", optional = true }
 x11rb = { version = "0.13", optional = true }
+# `ext-background-effect-v1` blur behind a Wayland window, bound on the
+# `wl_display` winit already owns — borrowed through the raw display handle,
+# never a second connection. `staging` carries the ext-* protocols, and
+# wayland-client's `system` feature turns on wayland-backend's
+# `client_system`, which `Backend::from_foreign_display` and
+# `ObjectId::from_ptr` need — winit happens to enable it, but the borrow
+# must not rely on that. Both crates track the versions winit 0.30 already
+# pulls in.
+wayland-client = { version = "0.31", features = ["system"], optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 
 # `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
 # `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
-# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion. The
-# version tracks the `windows-sys` release winit 0.30 already builds against.
+# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion,
+# `DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE)` and
+# `DwmExtendFrameIntoClientArea` for the behind-window material's acrylic
+# backdrop, `RtlGetVersion` for the build floor that gates it. The version
+# tracks the `windows-sys` release winit 0.30 already builds against.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", optional = true, features = [
+    "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_System_Console",
+    "Win32_System_Shutdown",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Controls",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# `waterkit-menu::MenuBar::attach` takes the `windows` crate's `HWND` — a
+# different type from `windows-sys`'s alias.
+windows = { workspace = true, optional = true, features = ["Win32_Foundation"] }
+
+# The native menu bar's test creates real windows for its bars to attach to.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { workspace = true, features = [
+    "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -204,6 +258,9 @@ tracing-log = "0.2"
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# The published payload's `contentTypes` map serializes `ContentType`
+# (camelCase names) — the provider maps each onto `HintConstants`.
+waterui-controls = { workspace = true, features = ["serde"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The web runner fetches its fonts while the GPU device comes up; `join!` and
@@ -242,6 +299,9 @@ web-sys = { version = "0.3", optional = true, features = [
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
 waterui-canvas.workspace = true
+# The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine
+# crate does not re-export.
+cherenkov-record.workspace = true
 # The wayland examples need a widget theme; m3 is independently maintained.
 hydrolysis-m3.workspace = true
 waterui-testing.workspace = true
@@ -263,6 +323,8 @@ jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 waterui = { workspace = true, features = ["flow-markdown", "gpu", "snackbar", "video-gpu"] }
 base64 = "0.22"
+# Tolerance assertions for computed geometry and animation values in tests.
+approx = "0.5"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
 # Two crates that only exist to let the segmentation test see what it asserts
@@ -323,14 +385,19 @@ winit = [
     "dep:ui-events-winit",
     "dep:accesskit_winit",
     "dep:ctrlc",
+    "dep:signal-hook",
+    "dep:libc",
     "dep:objc2",
     "dep:objc2-app-kit",
-    "dep:objc2-core-graphics",
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
-    "dep:muda",
+    "dep:futures",
+    "dep:waterkit-menu",
+    "dep:windows",
     "dep:x11-dl",
     "dep:x11rb",
+    "dep:wayland-client",
+    "dep:wayland-protocols",
     "dep:windows-sys",
 ]
 web = [

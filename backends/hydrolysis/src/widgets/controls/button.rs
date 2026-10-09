@@ -3,7 +3,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, interaction_focus_ring, local_interaction_state, measure_label_intrinsic,
-    measure_view_intrinsic, popup_menu_nodes, transformed_rect,
+    measure_view_intrinsic, popup_menu_nodes,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -175,7 +175,7 @@ pub fn button_accessibility(
         };
         let node_id = match ctx {
             Some(ctx) => {
-                let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                let bounds = ctx.bounds;
                 renderer.register_accessibility_node(node, bounds, env, action_target)
             }
             None => renderer.register_accessibility_node_semantic(node, env, action_target),
@@ -258,6 +258,7 @@ pub fn measure_button_node(
         subview.measure_built(state, env, theme)
     } else {
         let styled = styled_button_title(
+            state,
             theme,
             render_state.config.style,
             &render_state.config.label,
@@ -312,7 +313,7 @@ enum MenuLabel {
     /// each frame (cloneable, like a button title).
     Title(Label),
     /// Any other view: re-flushed from a retained sub-view each frame.
-    View(RetainedSubview),
+    View(Box<RetainedSubview>),
 }
 
 impl MenuRenderState {
@@ -330,8 +331,8 @@ impl MenuRenderState {
             .is_some_and(|label| label_resolves_icon_only(label, env));
         let label = match label.downcast::<Label>() {
             Ok(label) if renders_as_plain_title(&label) => MenuLabel::Title(*label),
-            Ok(label) => MenuLabel::View(RetainedSubview::new(AnyView::new(*label))),
-            Err(view) => MenuLabel::View(RetainedSubview::new(view)),
+            Ok(label) => MenuLabel::View(Box::new(RetainedSubview::new(AnyView::new(*label)))),
+            Err(view) => MenuLabel::View(Box::new(RetainedSubview::new(view))),
         };
         Self {
             label,
@@ -415,7 +416,7 @@ pub fn menu_accessibility(
         // origin through `activate_popup_menu_nodes` — the items land in the
         // merged accessibility tree exactly as the rendered popup's do.
         let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
-            let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+            let bounds = ctx.bounds;
             (
                 LayoutPoint::new(
                     crate::num_cast::f64_as_f32(bounds.x0),
@@ -433,8 +434,9 @@ pub fn menu_accessibility(
         let activation = AccessibilityActionTarget::Activate {
             action: Rc::new(RefCell::new(
                 move |renderer: &mut crate::renderer::SemanticCore, env: &Environment| {
-                    let nodes = popup_menu_nodes(&items.snapshot());
                     let env = menu_env.layered_on(env);
+                    let nodes =
+                        popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable());
                     match &request {
                         Some((anchor, metrics, theme)) => {
                             renderer.show_popup_menu_nodes(nodes, *anchor, *metrics, &env, theme);
@@ -449,7 +451,7 @@ pub fn menu_accessibility(
         };
         let node_id = match ctx {
             Some(ctx) => {
-                let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+                let bounds = ctx.bounds;
                 renderer.register_accessibility_node(node, bounds, env, Some(activation))
             }
             None => renderer.register_accessibility_node_semantic(node, env, Some(activation)),
@@ -485,7 +487,7 @@ pub fn measure_menu_node(
     );
     let label_size = match &state.label {
         MenuLabel::Title(label) => {
-            let styled = styled_button_title(theme, MENU_TRIGGER_STYLE, label, env);
+            let styled = styled_button_title(hydro, theme, MENU_TRIGGER_STYLE, label, env);
             HydrolysisRenderer::measure_text_intrinsic_size(hydro, styled, env)
         }
         MenuLabel::View(subview) => subview.measure_built(hydro, env, theme),
@@ -558,11 +560,10 @@ pub fn render_button_parts(
         floating_style.as_ref(),
     );
     let bounds = ctx.bounds;
-    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
         interaction_key.clone(),
-        hit_bounds,
+        bounds,
         env,
         disabled,
     );
@@ -606,20 +607,23 @@ pub fn render_button_parts(
             let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
             let label_target = centered_label_rect(label_target, label_size);
             let render_ctx = ctx.render_context();
+            let label_area = ctx.safe_area_for(label_target);
             ctx.renderer_mut()
                 .with_suppressed_accessibility(|renderer| {
-                    subview.flush_in_rect(
+                    subview.place(
                         renderer,
                         render_ctx,
                         env,
                         ProposalSize::UNSPECIFIED,
                         label_target,
+                        label_area,
                     );
                 });
         } else if label_target.width() > 0.0 && label_target.height() > 0.0 {
             // Title label: centered styled text rendered fresh each frame,
             // picking the enabled or disabled label color for this frame.
-            let mut styled = styled_button_title(&theme, style, &state_mut.config.label, env);
+            let mut styled =
+                styled_button_title(ctx.state_mut(), &theme, style, &state_mut.config.label, env);
             let title_color = if env.get::<ListRowChrome>().is_some() {
                 Some(Color::new(waterui::theme::color::Foreground))
             } else {
@@ -640,7 +644,8 @@ pub fn render_button_parts(
     {
         // Hover/focus/press state layers, drawn fresh each flush from the sampled
         // interaction state (the press/hover animations keep frames pumping).
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let interaction =
+            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         if let Some(interaction_style) = interaction_style {
             let color_signal = interaction_style.state_layer_color.resolve(env);
             let color = ctx.renderer_mut().read_signal(&color_signal);
@@ -704,7 +709,7 @@ pub fn render_button_parts(
     let state = Rc::clone(state);
     let action_env = env.clone();
     ctx.renderer_mut().register_interactive_pointer_target(
-        hit_bounds,
+        bounds,
         press_slot,
         move |_renderer, _point, _env| {
             (state.borrow_mut().config.action)(&action_env);
@@ -721,11 +726,10 @@ pub fn render_menu_parts(
     let theme = ctx.theme();
     let style = MENU_TRIGGER_STYLE;
     let bounds = ctx.bounds;
-    let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let (interaction, press_slot, _) =
         ctx.renderer_mut()
-            .bind_interaction_target(interaction_key, hit_bounds, env);
+            .bind_interaction_target(interaction_key, bounds, env);
     let icon_only = state.borrow().icon_only;
     {
         ctx.draw_context(|draw| {
@@ -748,7 +752,7 @@ pub fn render_menu_parts(
             MenuLabel::Title(label)
                 if label_bounds.width() > 0.0 && label_bounds.height() > 0.0 =>
             {
-                let mut styled = styled_button_title(&theme, style, label, env);
+                let mut styled = styled_button_title(ctx.state_mut(), &theme, style, label, env);
                 if let Some(color) = theme.button_label_color(style, false) {
                     styled = styled_with_default_foreground(styled, color);
                 }
@@ -766,14 +770,16 @@ pub fn render_menu_parts(
                 let (label_size, _) = subview.patch_and_measure(ctx.renderer_mut(), env, proposal);
                 let label_bounds = centered_label_rect(label_bounds, label_size);
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_bounds);
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        subview.flush_in_rect(
+                        subview.place(
                             renderer,
                             render_ctx,
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_bounds,
+                            label_area,
                         );
                     });
             }
@@ -781,7 +787,8 @@ pub fn render_menu_parts(
     }
     {
         // Hover/focus/press state layers over the menu trigger chrome.
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
+        let interaction =
+            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         ctx.draw_context(|draw| {
             theme.draw_button_state_layer(&mut *draw, bounds, style, icon_only, interaction);
         });
@@ -796,6 +803,8 @@ pub fn render_menu_parts(
     // the registration with it.
     ctx.renderer_mut()
         .register_menu_shortcuts(Rc::downgrade(state), items.clone(), env.clone());
+    // The popup anchors in window space at the trigger's bottom edge.
+    let hit_bounds = ctx.renderer_mut().resolve_window_rect(bounds);
     let anchor = LayoutPoint::new(
         crate::num_cast::f64_as_f32(hit_bounds.x0),
         crate::num_cast::f64_as_f32(hit_bounds.y1),
@@ -806,12 +815,12 @@ pub fn render_menu_parts(
     // dispatch's (water-rs/hydrolysis#140).
     let menu_env = env.clone();
     ctx.renderer_mut().register_interactive_pointer_target(
-        hit_bounds,
+        bounds,
         press_slot,
         move |renderer, _point, env| {
             let env = menu_env.layered_on(env);
             renderer.show_popup_menu_nodes(
-                popup_menu_nodes(&items.snapshot()),
+                popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable()),
                 anchor,
                 menu_metrics,
                 &env,
@@ -860,7 +869,7 @@ pub fn measure_menu_intrinsic(
     let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
         && renders_as_plain_title(label)
     {
-        let styled = styled_button_title(theme, MENU_TRIGGER_STYLE, label, env);
+        let styled = styled_button_title(state, theme, MENU_TRIGGER_STYLE, label, env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     } else {
         measure_view_intrinsic(&menu.label, state, env, theme)
@@ -1008,7 +1017,7 @@ fn measure_button_label_intrinsic(
     env: &Environment,
 ) -> LayoutSize {
     if renders_as_plain_title(label) {
-        let styled = styled_button_title(theme, style, label, env);
+        let styled = styled_button_title(state, theme, style, label, env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     } else {
         let label = styled_button_label(theme, style, label.clone());
@@ -1041,6 +1050,7 @@ pub fn label_resolves_icon_only(label: &Label, env: &Environment) -> bool {
 }
 
 fn styled_button_title(
+    state: &mut HydroState,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
     style: ButtonStyle,
     label: &Label,
@@ -1052,7 +1062,8 @@ fn styled_button_title(
     } else {
         title
     };
-    title.resolve(env).content.snapshot()
+    let resolved = title.resolve(env);
+    state.measure_signal(&resolved.content)
 }
 
 /// Subscribes to a label's reactive title content so a change schedules a frame

@@ -18,7 +18,8 @@ use std::ops::Range;
 use cherenkov::FillRule;
 
 use crate::render::lower::{
-    ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect, SdfKind,
+    CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect, SdfKind,
+    UnionSample,
 };
 use crate::render::paint::PaintData;
 use crate::{Band as BandOut, BandPixels};
@@ -27,6 +28,11 @@ use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
 /// Rows per rasterization band.
 pub const BAND_H: usize = 16;
+
+/// Texel rows a reduced capture keeps past the rows its sampled device
+/// rows' bilinear taps reach, on each side: a tap that float rounding
+/// moves across a texel boundary still lands on a kept row.
+pub const SAMPLE_MARGIN: usize = 1;
 
 /// One worker's reusable raster and filter buffers.
 ///
@@ -72,20 +78,154 @@ struct Plane {
     space: cherenkov::BlendSpace,
 }
 
-/// The rows one group's captured backdrop holds this band.
+/// The rows one group's captured backdrop holds this band, on the
+/// capture grid: texel `i` covers the device interval `[i/s, (i+1)/s)`.
 struct Capture {
-    /// `w × rows` premultiplied pixels starting at `y0`.
+    /// `w × rows` premultiplied texels starting at texel row `y0`.
     buf: Vec<[f32; 4]>,
-    /// First kept row's device y.
+    /// The capture scale `s`.
+    scale: cherenkov::CaptureScale,
+    /// First kept texel row.
     y0: usize,
-    /// Kept row count.
+    /// Kept texel row count.
     rows: usize,
-    /// First column (the capture region's `x0`).
+    /// First texel column (the capture region's `x0`).
     x0: usize,
-    /// Row stride (the capture region's width).
+    /// Row stride (the capture region's width in texels).
     w: usize,
+    /// The capture region's first texel row (`region.y0`) on the
+    /// device-anchored capture grid — a multiple of `2^(n−1)` on an
+    /// `n`-level capture. `y0` is an absolute grid row like it; each
+    /// deeper level's `CaptureLevel::y0` counts from this origin's
+    /// level-k row `ry0 / 2^k`.
+    ry0: usize,
+    /// The pyramid's deeper levels: `levels[k − 1]` holds level `k`'s
+    /// kept texel rows, `k` in `1..n`; empty on a one-level capture.
+    levels: Vec<CaptureLevel>,
+    /// The device rows `[y0, y1)` this band's samples read.
+    device_rows: (usize, usize),
+    /// The device columns `[x0, x1)` the region's texels cover.
+    device_cols: (usize, usize),
     /// The space the captured rows are stored in.
     space: cherenkov::BlendSpace,
+}
+
+/// A pyramid level's kept rows: level `k`'s texels, `w` columns wide
+/// (the level's spec extent), starting at level-k row `y0`.
+struct CaptureLevel {
+    /// `w × rows` premultiplied texels starting at level-k row `y0`.
+    buf: Vec<[f32; 4]>,
+    /// First kept level-k row, in level-k texels counting from the
+    /// region's level-k origin.
+    y0: usize,
+    /// Kept level-k row count.
+    rows: usize,
+    /// The level's spec width in texels (`⌈w / 2^k⌉`).
+    w: usize,
+}
+
+/// Where one capture lands for a surface band (see [`capture_rows`]).
+#[derive(Clone, Copy, Debug)]
+struct CaptureRows {
+    /// The device rows the band's samples read: the union's rows within
+    /// the capture's reach of the band.
+    device: (usize, usize),
+    /// The capture texel rows kept for them.
+    kept: (usize, usize),
+    /// The device rows the run window must hold for the chain's window
+    /// around the kept texels, before clamping to the region.
+    window: (usize, usize),
+    /// Levels 1..n's kept texel-row ranges, the first `n − 1` entries
+    /// used; each counts from that level's grid origin.
+    levels: [(usize, usize); cherenkov::CaptureLevels::MAX as usize],
+}
+
+/// The rows capture `item` covers for the surface band `band` of a
+/// surface `h` rows tall, `None` when the band samples none of it.
+///
+/// A 1:1 capture keeps exactly the sampled device rows, and its window
+/// is them `± apron`. A reduced capture keeps the texel rows the
+/// sampled rows' bilinear taps at `(y + ½)·s − ½` reach, plus
+/// [`SAMPLE_MARGIN`], within the region; its window is the device rows
+/// under those texels `± apron` texels.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "rows are bounded by the surface height and clamped before the conversions"
+)]
+fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<CaptureRows> {
+    let (k0, k1) = kept_rows(&item.union, item.reach, band, h);
+    if k0 >= k1 {
+        return None;
+    }
+    if item.scale.is_full() && item.levels == 1 {
+        return Some(CaptureRows {
+            device: (k0, k1),
+            kept: (k0, k1),
+            window: (k0.saturating_sub(item.apron), k1.saturating_add(item.apron)),
+            levels: [(0, 0); cherenkov::CaptureLevels::MAX as usize],
+        });
+    }
+    let s = f64::from(item.scale.get());
+    let (ty0, ty1) = (
+        usize::try_from(item.region.y0).unwrap_or(0),
+        usize::try_from(item.region.y1).unwrap_or(0),
+    );
+    let first = (k0 as f64 + 0.5).mul_add(s, -0.5).floor().max(0.0) as usize;
+    let last = (k1 as f64 - 0.5).mul_add(s, -0.5).floor().max(0.0) as usize + 2;
+    let mut kept = (
+        first.saturating_sub(SAMPLE_MARGIN).max(ty0),
+        (last + SAMPLE_MARGIN).min(ty1),
+    );
+    let mut levels = [(0usize, 0usize); cherenkov::CaptureLevels::MAX as usize];
+    if item.levels > 1 {
+        // Level `k`'s tap range: the sampled device rows read level-k
+        // texels `floor((d ± ½)·s/2^k − ½)` through `+1`, clamped to the
+        // level's spec rows — the region's `y0` is 2^k-aligned, so the
+        // level-k grid runs `ty0 / 2^k .. ⌈ty1 / 2^k⌉` in absolute
+        // level-k rows.
+        for (k, slot) in levels.iter_mut().enumerate().take(item.levels as usize - 1) {
+            let k = k as u64 + 1;
+            let d = (1u64 << k) as f64;
+            let (gy0, gy1) = (ty0 >> k, ty1.div_ceil(1 << k));
+            let first = ((k0 as f64 + 0.5) * s / d - 0.5).floor().max(0.0) as usize;
+            let last = ((k1 as f64 - 0.5) * s / d - 0.5).floor().max(0.0) as usize + 2;
+            *slot = (first.clamp(gy0, gy1), last.min(gy1));
+        }
+        // Level-k texel `r` reads level `k−1` texels `{2r, 2r+1}` — each
+        // level's kept rows must cover the deeper level's parents,
+        // folding down into the level-0 window the capture keeps.
+        for k in (1..item.levels as usize).rev() {
+            let (r0, r1) = levels[k - 1];
+            if r0 >= r1 {
+                continue;
+            }
+            let (lo, hi) = (2 * r0, (2 * r1).min(ty1.div_ceil(1 << (k - 1))));
+            if k == 1 {
+                kept = (kept.0.min(lo), kept.1.max(hi));
+            } else {
+                levels[k - 2].0 = levels[k - 2].0.min(lo);
+                levels[k - 2].1 = levels[k - 2].1.max(hi);
+            }
+        }
+    }
+    if kept.0 >= kept.1 {
+        return None;
+    }
+    let (w0, w1) = (
+        kept.0.saturating_sub(item.apron),
+        kept.1.saturating_add(item.apron),
+    );
+    Some(CaptureRows {
+        device: (k0, k1),
+        kept,
+        window: (
+            (w0 as f64 / s).floor() as usize,
+            (w1 as f64 / s).ceil() as usize,
+        ),
+        levels,
+    })
 }
 
 /// This band's captures by backdrop group id.
@@ -454,16 +594,23 @@ fn color_matrix(m: &[f32; 12], s: [f32; 4]) -> [f32; 4] {
     ]
 }
 
-/// Evaluates an [`SdfEffect`] at pixel centre `(px + 0.5, py + 0.5)`:
-/// `Refraction` displaced-bilinear reads the capture, `Rim` adds the
-/// highlight to the sampled colour (alpha unchanged — gaining alpha
-/// would cancel under src-over).
+/// Evaluates an [`SdfEffect`] at pixel centre `(px + 0.5, py + 0.5)`
+/// given the field's signed distance `d` and unit outward normal
+/// `(nx, ny)` there: `Refraction` displaced-bilinear reads the capture,
+/// `Rim` adds the highlight to the sampled colour (alpha unchanged —
+/// gaining alpha would cancel under src-over).
 #[expect(
     clippy::cast_precision_loss,
     reason = "pixels stay well below f32's integer bound"
 )]
-fn sdf_sample(capture: &Capture, sdf: &SdfEffect, px: usize, py: usize, crow: usize) -> [f32; 4] {
-    let (d, nx, ny) = sdf_at(&sdf.edges, px as f32 + 0.5, py as f32 + 0.5);
+fn sdf_sample(
+    capture: &Capture,
+    sdf: &SdfEffect,
+    (d, nx, ny): (f32, f32, f32),
+    px: usize,
+    py: usize,
+    crow: usize,
+) -> [f32; 4] {
     match sdf.kind {
         SdfKind::Refraction { depth, strength } => {
             let t = d.mul_add(depth.recip(), 1.0).clamp(0.0, 1.0);
@@ -474,7 +621,7 @@ fn sdf_sample(capture: &Capture, sdf: &SdfEffect, px: usize, py: usize, crow: us
         SdfKind::Rim { width, color, gain } => {
             let t = d.mul_add(width.recip(), 1.0).clamp(0.0, 1.0);
             let k = color[3] * gain * t * t;
-            let s = capture.buf[crow + px - capture.x0];
+            let s = pixel_sample(capture, px, py, crow);
             [
                 color[0].mul_add(k, s[0]),
                 color[1].mul_add(k, s[1]),
@@ -482,7 +629,98 @@ fn sdf_sample(capture: &Capture, sdf: &SdfEffect, px: usize, py: usize, crow: us
                 s[3],
             ]
         }
+        SdfKind::Level {
+            depth,
+            edge,
+            interior,
+        } => {
+            let t = d.mul_add(depth.recip(), 1.0).clamp(0.0, 1.0);
+            let level = (edge - interior).mul_add(t, interior);
+            capture_sample_level(capture, px as f32 + 0.5, py as f32 + 0.5, level)
+        }
     }
+}
+
+/// The union field at `(x, y)`: `(field, nx, ny, w_own, w)` — every
+/// member's distance and gradient folded in ascending order with the
+/// quadratic smin, the folded gradient's unit normal, this member's
+/// ownership weight `a_ord / Σ_j a_j`, and the folded gradient's length
+/// (the field's pixel width). `k == 0` (a lone `outer` member) folds to
+/// the member's own field. `a_i = clamp(0.5 + f_i/|∇d₂ − ∇d_i|, 0, 1)`
+/// with `f_i = d₂ − d_i` against the member's nearest competitor — a
+/// hard step only where `|∇d₂ − ∇d_i| < 1e-6` (coincident shapes), an
+/// exact `f_i == 0` tie going to the earliest member in paint order.
+/// The same math as `union_field` in the GPU's `union.wgsl`, in f32.
+fn union_field_at(
+    union: &crate::render::lower::UnionSample,
+    x: f32,
+    y: f32,
+) -> (f32, f32, f32, f32, f32) {
+    const MAX: usize = cherenkov::BackdropUnion::MAX_MEMBERS as usize;
+    let count = union.members.len();
+    debug_assert!(count <= MAX, "the member cap is enforced at planning");
+    let mut dists = [0.0f32; MAX];
+    let mut grads = [(0.0f32, 0.0f32); MAX];
+    // Every member: the cap is enforced at planning, nothing is
+    // truncated here.
+    for (i, edges) in union.members.iter().enumerate() {
+        let (dist, nx, ny) = sdf_at(edges, x, y);
+        dists[i] = dist;
+        grads[i] = (nx, ny);
+    }
+    let ord = union.ord as usize;
+    // Insertion sort of member indexes by distance in `total_cmp`
+    // order — like the oracle's `sort_by` and the GPU fold: exact ties
+    // keep paint order, and a −0.0/+0.0 pair resolves the same on every
+    // engine.
+    let mut order = [0usize; MAX];
+    for i in 0..count {
+        let mut j = i;
+        while j > 0 && dists[order[j - 1]].total_cmp(&dists[i]) == std::cmp::Ordering::Greater {
+            order[j] = order[j - 1];
+            j -= 1;
+        }
+        order[j] = i;
+    }
+    let mut field = dists[order[0]];
+    let mut grad = grads[order[0]];
+    for &j in order.iter().take(count).skip(1) {
+        let blend = (union.k - (dists[j] - field)).max(0.0) / union.k;
+        field = (blend * blend * union.k).mul_add(-0.25, field);
+        let share = 0.5 * blend;
+        grad.0 = share.mul_add(grads[j].0 - grad.0, grad.0);
+        grad.1 = share.mul_add(grads[j].1 - grad.1, grad.1);
+    }
+    let width = grad.0.hypot(grad.1).max(1e-6);
+    let (nx, ny) = (grad.0 / width, grad.1 / width);
+    // `a_j` per member against its nearest competitor (`order[0]`, or
+    // `order[1]` when `j` is the argmin itself).
+    let w_own = if count == 1 {
+        1.0
+    } else {
+        let mut sum = 0.0f32;
+        let mut own = 0.0f32;
+        for j in 0..count {
+            let other = if order[0] == j { order[1] } else { order[0] };
+            let f = dists[other] - dists[j];
+            let slope = (grads[other].0 - grads[j].0).hypot(grads[other].1 - grads[j].1);
+            let a = if slope < 1e-6 {
+                if f > 0.0 || (f == 0.0 && j == order[0]) {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                (0.5 + f / slope).clamp(0.0, 1.0)
+            };
+            sum += a;
+            if j == ord {
+                own = a;
+            }
+        }
+        own / sum
+    };
+    (field, nx, ny, w_own, width)
 }
 
 /// Signed distance and unit outward normal of `(x, y)` to a closed edge
@@ -522,9 +760,24 @@ fn sdf_at(edges: &[Edge], x: f32, y: f32) -> (f32, f32, f32) {
     if inside { (-d, -nx, -ny) } else { (d, nx, ny) }
 }
 
-/// Bilinear sample of `capture` at device point `(x, y)`: texel centres
-/// at integer + 0.5, clamped to the capture region — the GPU's
-/// `backdrop_sample` convention.
+/// The plain sample of `capture` at device pixel `(px, py)`, whose kept
+/// row starts at `crow`: the texel itself on a 1:1 capture, the bilinear
+/// sample at the pixel centre on a reduced one.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixels stay well below f32's integer bound"
+)]
+fn pixel_sample(capture: &Capture, px: usize, py: usize, crow: usize) -> [f32; 4] {
+    if capture.scale.is_full() {
+        capture.buf[crow + px - capture.x0]
+    } else {
+        capture_sample(capture, px as f32 + 0.5, py as f32 + 0.5)
+    }
+}
+
+/// Bilinear sample of `capture` at device point `(x, y)`: `(x, y) · s` on
+/// the capture grid, texel centres at integer + 0.5, clamped to the
+/// capture region — the GPU's `backdrop_sample` convention.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -532,8 +785,9 @@ fn sdf_at(edges: &[Edge], x: f32, y: f32) -> (f32, f32, f32) {
     reason = "the coordinates are clamped into the capture first"
 )]
 fn capture_sample(capture: &Capture, x: f32, y: f32) -> [f32; 4] {
-    let fx = (x - capture.x0 as f32 - 0.5).clamp(0.0, capture.w as f32 - 1.0);
-    let fy = (y - capture.y0 as f32 - 0.5).clamp(0.0, capture.rows as f32 - 1.0);
+    let s = capture.scale.get();
+    let fx = (x.mul_add(s, -(capture.x0 as f32)) - 0.5).clamp(0.0, capture.w as f32 - 1.0);
+    let fy = (y.mul_add(s, -(capture.y0 as f32)) - 0.5).clamp(0.0, capture.rows as f32 - 1.0);
     let (x_lo, y_lo) = (fx.floor() as usize, fy.floor() as usize);
     let (x_hi, y_hi) = (
         (x_lo + 1).min(capture.w - 1),
@@ -556,6 +810,81 @@ fn capture_sample(capture: &Capture, x: f32, y: f32) -> [f32; 4] {
         ]
     };
     mix(mix(c00, c10, tx), mix(c01, c11, tx), ty)
+}
+
+/// Bilinear sample of `capture`'s level `k` at device point `(x, y)`:
+/// `(x, y) · s / 2^k` on the level's grid, texel centres at integer +
+/// 0.5, clamped to the kept rows — the GPU's `backdrop_sample_at`
+/// convention.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the coordinates are clamped into the capture first"
+)]
+fn capture_sample_at(capture: &Capture, x: f32, y: f32, k: u32) -> [f32; 4] {
+    if k == 0 {
+        return capture_sample(capture, x, y);
+    }
+    let level = &capture.levels[k as usize - 1];
+    if level.rows == 0 {
+        unreachable!(
+            "capture_rows keeps every level's tap rows for each sampled device row, \
+             so a sampled level holds at least one row"
+        );
+    }
+    let div = (1u64 << k) as f32;
+    let s = capture.scale.get();
+    // Level-k texel coordinates relative to the region's origin; `y0`
+    // shifts them to the kept rows' window.
+    let fx = (x.mul_add(s, -(capture.x0 as f32)) / div - 0.5).clamp(0.0, level.w as f32 - 1.0);
+    let fy = (y.mul_add(s, -(capture.ry0 as f32)) / div - 0.5 - level.y0 as f32)
+        .clamp(0.0, level.rows as f32 - 1.0);
+    let (x_lo, y_lo) = (fx.floor() as usize, fy.floor() as usize);
+    let (x_hi, y_hi) = ((x_lo + 1).min(level.w - 1), (y_lo + 1).min(level.rows - 1));
+    let (tx, ty) = (fx - x_lo as f32, fy - y_lo as f32);
+    let at = |x: usize, y: usize| level.buf[y * level.w + x];
+    let (c00, c10, c01, c11) = (
+        at(x_lo, y_lo),
+        at(x_hi, y_lo),
+        at(x_lo, y_hi),
+        at(x_hi, y_hi),
+    );
+    let mix = |a: [f32; 4], b: [f32; 4], t: f32| {
+        [
+            (b[0] - a[0]).mul_add(t, a[0]),
+            (b[1] - a[1]).mul_add(t, a[1]),
+            (b[2] - a[2]).mul_add(t, a[2]),
+            (b[3] - a[3]).mul_add(t, a[3]),
+        ]
+    };
+    mix(mix(c00, c10, tx), mix(c01, c11, tx), ty)
+}
+
+/// Trilinear sample of `capture`'s pyramid at device point `(x, y)`:
+/// `level` clamped to `[0, n − 1]`, bilinear at `floor(level)` and
+/// `ceil(level)` mixed by `fract(level)` — the GPU's
+/// `backdrop_sample_level` convention.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the level is clamped into the pyramid first"
+)]
+fn capture_sample_level(capture: &Capture, x: f32, y: f32, level: f32) -> [f32; 4] {
+    let n = capture.levels.len() as u32 + 1;
+    let lc = level.clamp(0.0, (n - 1) as f32);
+    let k0 = lc.floor() as u32;
+    let k1 = (k0 + 1).min(n - 1);
+    let lo = capture_sample_at(capture, x, y, k0);
+    let hi = capture_sample_at(capture, x, y, k1);
+    let t = lc - k0 as f32;
+    [
+        (hi[0] - lo[0]).mul_add(t, lo[0]),
+        (hi[1] - lo[1]).mul_add(t, lo[1]),
+        (hi[2] - lo[2]).mul_add(t, lo[2]),
+        (hi[3] - lo[3]).mul_add(t, lo[3]),
+    ]
 }
 
 /// Convert a premultiplied pixel between linear and sRGB-encoded
@@ -657,7 +986,7 @@ fn shade(
     // scopes are handled by the scope's own windowed run). A surface that
     // used no backdrop group cannot contain a `Capture`, so the scan is
     // skipped outright.
-    let mut captures: Vec<(usize, usize, usize)> = Vec::new();
+    let mut captures: Vec<(usize, (usize, usize))> = Vec::new();
     if has_backdrop {
         let mut i = 0;
         while i < items.len() {
@@ -667,9 +996,8 @@ fn shade(
                     continue;
                 }
                 Item::Capture(capture) => {
-                    let (kept0, kept1) = kept_rows(&capture.union, capture.reach, surface, h);
-                    if kept0 < kept1 {
-                        captures.push((i, kept0, kept1));
+                    if let Some(rows) = capture_rows(capture, surface, h) {
+                        captures.push((i, rows.window));
                     }
                 }
                 _ => {}
@@ -678,7 +1006,10 @@ fn shade(
         }
     }
     let coverage = std::mem::take(&mut scratch.coverage);
-    let result = if let Some(&(last, ..)) = captures.last() {
+    let result = if let Some(&(last, _)) = captures.last() {
+        let (win0, win1) = captures
+            .iter()
+            .fold(surface, |(w0, w1), &(_, (c0, c1))| (w0.min(c0), w1.max(c1)));
         shade_windowed(
             items,
             clear,
@@ -686,7 +1017,7 @@ fn shade(
             w,
             surface,
             h,
-            (&captures, last),
+            ((win0, win1), last),
             coverage,
             scratch,
         )
@@ -742,13 +1073,14 @@ fn shade_plain(
     result
 }
 
-/// The band's pass with top-level captures: `run` over an expanded
-/// window up to the last capture, then over the band for the rest.
+/// The band's pass with top-level captures: `run` over the expanded
+/// `window` rows up to the `last` capture item, then over the band for
+/// the rest.
 ///
-/// The window covers the band plus every capture's `kept ± apron` rows;
-/// the capture canvas clamps to its region inside it. On success the
-/// central rows copy back into `slice` and each live isolation buffer
-/// crops to band size.
+/// The window covers the band plus every capture's window rows
+/// ([`CaptureRows::window`]); the capture canvas clamps to its region
+/// inside it. On success the central rows copy back into `slice` and
+/// each live isolation buffer crops to band size.
 #[expect(
     clippy::too_many_arguments,
     reason = "the band's captured state travels together"
@@ -760,21 +1092,12 @@ fn shade_windowed(
     w: usize,
     surface: (usize, usize),
     h: usize,
-    (captures, last): (&[(usize, usize, usize)], usize),
+    ((win0, win1), last): ((usize, usize), usize),
     coverage: Vec<f32>,
     scratch: &mut Scratch,
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
     let bh = y1 - y0;
-    let mut win0 = y0;
-    let mut win1 = y1;
-    for &(item, kept0, kept1) in captures {
-        let Item::Capture(capture) = &items[item] else {
-            unreachable!("scanned item kind");
-        };
-        win0 = win0.min(kept0.saturating_sub(capture.apron));
-        win1 = win1.max(kept1.saturating_add(capture.apron));
-    }
     let win1 = win1.min(h);
     let rows = win1 - win0;
     let mut window = scratch.buffers.take_color(w * rows);
@@ -1096,20 +1419,8 @@ fn run(
                 ));
             }
             Item::Capture(capture) => {
-                let (kept0, kept1) = kept_rows(&capture.union, capture.reach, ctx.surface, h);
-                if kept0 < kept1 {
-                    capture_band(
-                        band,
-                        stack.as_slice(),
-                        buffers,
-                        ctx,
-                        capture.group,
-                        capture.region,
-                        capture.apron,
-                        capture.filter.as_ref(),
-                        capture.flatten,
-                        (kept0, kept1),
-                    )?;
+                if let Some(rows) = capture_rows(capture, ctx.surface, h) {
+                    capture_band(band, stack.as_slice(), buffers, ctx, capture, rows)?;
                 }
             }
             Item::Sample {
@@ -1117,6 +1428,7 @@ fn run(
                 bounds,
                 clip,
                 effect,
+                union,
             } => {
                 if let Some(capture) = ctx.captures.get(group) {
                     band.sample(
@@ -1124,6 +1436,7 @@ fn run(
                         *bounds,
                         clip.as_ref(),
                         effect,
+                        union.as_ref(),
                         stack.as_mut_slice(),
                     );
                 }
@@ -1172,104 +1485,330 @@ fn apply_filter(
         })
 }
 
-/// Runs one backdrop group's capture for this band: copies the run's
-/// `win` rows of the nearest semantic level with the trailing `flatten`
-/// clip-only levels composited raw over it, applies the group's chain,
-/// and keeps the `kept` rows for this band's samples.
+/// Runs one backdrop group's capture for this band: copies the device
+/// rows under the chain's window of the nearest semantic level with the
+/// trailing `flatten` looked-through levels composited raw over it,
+/// resolves them onto the capture grid when the capture is reduced,
+/// applies the group's chain, and keeps the `rows.kept` texel rows for
+/// this band's samples.
 #[expect(
-    clippy::too_many_arguments,
-    reason = "the item's fields travel together"
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "device spans of texels inside the surface are small and non-negative"
 )]
 fn capture_band(
     band: &Band<'_>,
     stack: &[Plane],
     buffers: &mut Buffers,
     ctx: &mut FrameCtx<'_>,
-    group: u64,
-    region: IRect,
-    apron: usize,
-    filter: Option<&FrameFilter>,
-    flatten: usize,
-    kept: (usize, usize),
+    item: &CaptureItem,
+    rows: CaptureRows,
 ) -> Result<(), cherenkov::RenderError> {
-    let (kept0, kept1) = kept;
-    let w = band.w;
+    let (kept0, kept1) = rows.kept;
+    let (w, h) = (band.w, ctx.h);
+    let region = item.region;
     let rx0 = usize::try_from(region.x0).unwrap_or(0);
     let rx1 = usize::try_from(region.x1).unwrap_or(0).min(w);
     let ry0 = usize::try_from(region.y0).unwrap_or(0);
     let ry1 = usize::try_from(region.y1).unwrap_or(0);
     let rw = rx1.saturating_sub(rx0);
-    // The window the chain reads: `kept` plus `apron` rows, clamped to
-    // the region.
-    let win0 = kept0.saturating_sub(apron).max(ry0);
-    let win1 = kept1.saturating_add(apron).min(ry1);
-    let rows = win1.saturating_sub(win0);
-    if rw == 0 || rows == 0 {
+    // The texel window the chain reads: `kept` plus `apron` rows, clamped
+    // to the region.
+    let win0 = kept0.saturating_sub(item.apron).max(ry0);
+    let win1 = kept1.saturating_add(item.apron).min(ry1);
+    let texel_rows = win1.saturating_sub(win0);
+    if rw == 0 || texel_rows == 0 {
         return Ok(());
     }
+    // The device rows and columns under the window's texels.
+    let reduced = !item.scale.is_full();
+    let s = f64::from(item.scale.get());
+    let ((d0, d1), (c0, c1)) = if reduced {
+        (
+            (
+                span(win0, s, h).0.floor() as usize,
+                span(win1 - 1, s, h).1.ceil() as usize,
+            ),
+            (
+                span(rx0, s, w).0.floor() as usize,
+                span(rx1 - 1, s, w).1.ceil() as usize,
+            ),
+        )
+    } else {
+        ((win0, win1), (rx0, rx1))
+    };
     let bh = band.fb.len() / w;
-    if win0 < band.y0 || win1 > band.y0 + bh {
+    if d0 < band.y0 || d1 > band.y0 + bh {
         return Err(cherenkov::RenderError::Render(
             "backdrop capture reads outside the run window".into(),
         ));
     }
-    if flatten > stack.len() {
-        return Err(cherenkov::RenderError::Render(
-            "backdrop capture flatten underflow".into(),
-        ));
-    }
-    let mut canvas = buffers.take_color(rw * rows);
-    let base = stack.len() - flatten;
-    // The flattened clip-only levels share the semantic level's storage
-    // space, so the capture copies and composites in it raw.
-    let space = if base == 0 {
-        band.space
-    } else {
-        stack[base - 1].space
+    let cw = c1 - c0;
+    let mut flat = buffers.take_color(cw * (d1 - d0));
+    let space = match flatten(band, stack, item.flatten, (d0, d1), (c0, c1), &mut flat) {
+        Ok(space) => space,
+        Err(error) => {
+            buffers.give_color(flat);
+            return Err(error);
+        }
     };
-    {
-        // The nearest semantic level: the framebuffer when every live
-        // level is clip-only, else the level below the flattened ones.
-        let src: &[[f32; 4]] = if base == 0 {
-            band.fb
-        } else {
-            &stack[base - 1].buf
-        };
-        for row in win0..win1 {
-            let dst = &mut canvas[(row - win0) * rw..(row - win0) * rw + rw];
-            dst.copy_from_slice(&src[(row - band.y0) * w + rx0..(row - band.y0) * w + rx0 + rw]);
-        }
-    }
-    // Clip-only levels composite raw src-over, matching the oracle's
-    // `flattened`.
-    for level in &stack[base..] {
-        for row in win0..win1 {
-            for px in 0..rw {
-                let dst = &mut canvas[(row - win0) * rw + px];
-                *dst = src_over(*dst, level.buf[(row - band.y0) * w + rx0 + px]);
-            }
-        }
-    }
-    if let Some(filter) = filter {
+    let mut canvas = if reduced {
+        let mut canvas = buffers.take_color(rw * texel_rows);
+        let mut across = buffers.take_color(rw * (d1 - d0));
+        resolve(
+            Resolved {
+                src: &flat,
+                origin: (c0, d0),
+                width: cw,
+            },
+            (&mut across, &mut canvas),
+            (rx0, win0, rw),
+            (w, h),
+            s,
+        );
+        buffers.give_color(across);
+        buffers.give_color(flat);
+        canvas
+    } else {
+        flat
+    };
+    if let Some(filter) = &item.filter {
         apply_filter(filter, &mut canvas, win0 - ry0, (rw, ry1 - ry0))?;
     }
     let kept_rows = kept1 - kept0;
     let mut buf = buffers.take_color(rw * kept_rows);
     buf.copy_from_slice(&canvas[(kept0 - win0) * rw..(kept0 - win0) * rw + rw * kept_rows]);
+    // A levelled group's pyramid over the chain's output: `canvas` is
+    // level 0, holding the `win0..win1` window.
+    let levels = capture_pyramid(&canvas, item, &rows, (rw, ry0, ry1, win0), buffers);
     buffers.give_color(canvas);
     buffers.meter.captured = true;
     ctx.captures.insert(
-        group,
+        item.group,
         Capture {
             buf,
+            scale: item.scale,
             y0: kept0,
             rows: kept_rows,
             x0: rx0,
             w: rw,
+            ry0,
+            levels,
+            device_rows: rows.device,
+            device_cols: (c0, c1),
             space,
         },
     );
     Ok(())
+}
+
+/// Builds levels `1..item.levels` of a levelled capture: level `k` texel
+/// `(x, y)` is the mean of level `k − 1` texels `(2x..=2x+1, 2y..=2y+1)`,
+/// a partial box at the spec edge averaging the texels present — the
+/// GPU reduce's exact 2×2 box. Each level's source is the previous
+/// level's kept rows (`canvas` is level 0's, holding the `win0..win1`
+/// texel window).
+fn capture_pyramid(
+    canvas: &[[f32; 4]],
+    item: &CaptureItem,
+    rows: &CaptureRows,
+    (rw, ry0, ry1, win0): (usize, usize, usize, usize),
+    buffers: &mut Buffers,
+) -> Vec<CaptureLevel> {
+    let mut levels: Vec<CaptureLevel> = Vec::new();
+    if item.levels <= 1 {
+        return levels;
+    }
+    // `sh`/`sw` are the source level's spec extent; `gy0` its grid
+    // origin in absolute rows (`ry0 / 2^{k−1}`, exact since the region
+    // is `2^{n−1}`-aligned); `src_y0` the first row its buf actually
+    // holds.
+    let (mut sw, mut sh, mut gy0, mut src_y0) = (rw, ry1 - ry0, ry0, win0);
+    for (k, &range) in (1..item.levels as usize).zip(rows.levels.iter()) {
+        let dw = sw.div_ceil(2);
+        let (r0, r1) = range;
+        let mut dst = buffers.take_color(r1.saturating_sub(r0) * dw);
+        if r0 < r1 {
+            let src: &[[f32; 4]] = levels
+                .last()
+                .map_or_else(|| canvas, |prev| prev.buf.as_slice());
+            reduce_rows(src, sw, (src_y0, gy0 + sh), (r0, r1), &mut dst);
+        }
+        src_y0 = r0;
+        gy0 >>= 1;
+        sh = sh.div_ceil(2);
+        sw = dw;
+        levels.push(CaptureLevel {
+            buf: dst,
+            // The kept window relative to the level's grid origin
+            // (`ry0 / 2^k`), which `capture_sample_at` subtracts.
+            y0: r0 - (ry0 >> k),
+            rows: r1.saturating_sub(r0),
+            w: dw,
+        });
+    }
+    levels
+}
+
+/// Rows `r0..r1` of the next pyramid level into `dst`, reduced from
+/// `src`: the source level's rows from `src_y0` on, `sw` texels wide,
+/// on a grid whose rows end at `src_end`. Texel `(x, r)` is the mean of
+/// the source texels `(2x..=2x+1, 2r..=2r+1)` inside the grid — a
+/// partial box at the right edge, the bottom edge or the corner averages
+/// the texels present.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a partial 2×2 box holds at most 4 texels"
+)]
+fn reduce_rows(
+    src: &[[f32; 4]],
+    sw: usize,
+    (src_y0, src_end): (usize, usize),
+    (r0, r1): (usize, usize),
+    dst: &mut [[f32; 4]],
+) {
+    let dw = sw.div_ceil(2);
+    for r in r0..r1 {
+        let (y0, y1) = (2 * r, (2 * r + 1).min(src_end - 1));
+        for x in 0..dw {
+            let (x0, x1) = (2 * x, (2 * x + 1).min(sw - 1));
+            let mut acc = [0f32; 4];
+            for row in y0..=y1 {
+                for xx in x0..=x1 {
+                    let c = src[(row - src_y0) * sw + xx];
+                    acc[0] += c[0];
+                    acc[1] += c[1];
+                    acc[2] += c[2];
+                    acc[3] += c[3];
+                }
+            }
+            let n = ((y1 - y0 + 1) * (x1 - x0 + 1)) as f32;
+            dst[(r - r0) * dw + x] = [acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n];
+        }
+    }
+}
+
+/// Copies the device `rows × cols` of the nearest semantic level below
+/// the trailing `count` looked-through levels into `out` and composites
+/// those levels over it as each would pop at full opacity — the oracle's
+/// `flattened` — and returns the semantic level's space. Every
+/// looked-through level is `Normal`-blended and stored in the root's
+/// linear space (layers never sit inside an encoded group scope), so
+/// each composites source-over.
+fn flatten(
+    band: &Band<'_>,
+    stack: &[Plane],
+    count: usize,
+    (d0, d1): (usize, usize),
+    (c0, c1): (usize, usize),
+    out: &mut [[f32; 4]],
+) -> Result<cherenkov::BlendSpace, cherenkov::RenderError> {
+    if count > stack.len() {
+        return Err(cherenkov::RenderError::Render(
+            "backdrop capture flatten underflow".into(),
+        ));
+    }
+    let (w, cw) = (band.w, c1 - c0);
+    let base = stack.len() - count;
+    // The nearest semantic level: the framebuffer when every live level
+    // is looked through, else the level below the flattened ones.
+    let (src, space): (&[[f32; 4]], _) = if base == 0 {
+        (band.fb, band.space)
+    } else {
+        (&stack[base - 1].buf, stack[base - 1].space)
+    };
+    for row in d0..d1 {
+        let dst = &mut out[(row - d0) * cw..(row - d0) * cw + cw];
+        dst.copy_from_slice(&src[(row - band.y0) * w + c0..(row - band.y0) * w + c0 + cw]);
+    }
+    for level in &stack[base..] {
+        for row in d0..d1 {
+            for px in 0..cw {
+                let dst = &mut out[(row - d0) * cw + px];
+                *dst = src_over(*dst, level.buf[(row - band.y0) * w + c0 + px]);
+            }
+        }
+    }
+    Ok(space)
+}
+
+/// Capture texel `i`'s device span `[i/s, (i+1)/s)` at scale `s`, clipped
+/// to `[0, end)`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "texel indices and surface sizes are far below 2^53"
+)]
+fn span(i: usize, s: f64, end: usize) -> (f64, f64) {
+    (i as f64 / s, ((i + 1) as f64 / s).min(end as f64))
+}
+
+/// Device pixels a reduced capture resolves from.
+#[derive(Clone, Copy)]
+struct Resolved<'a> {
+    /// The pixels, `width` per row.
+    src: &'a [[f32; 4]],
+    /// The device position of `src[0]`.
+    origin: (usize, usize),
+    /// Row stride.
+    width: usize,
+}
+
+/// One axis of the resolve's box: each device pixel under texel `i`'s
+/// span at scale `s`, clipped to `[0, end)`, with its overlap weight.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "spans lie inside the surface; weights are in [0, 1]"
+)]
+fn taps(i: usize, s: f64, end: usize) -> impl Iterator<Item = (usize, f32)> {
+    let (lo, hi) = span(i, s, end);
+    let len = hi - lo;
+    (lo.floor() as usize..hi.ceil() as usize).map(move |k| {
+        let k0 = k as f64;
+        (k, (((k0 + 1.0).min(hi) - k0.max(lo)) / len) as f32)
+    })
+}
+
+/// Resolves `from` onto the capture grid at scale `s`: `out` receives
+/// `width` texels per row starting at texel `(tx, ty)`, each the
+/// area-weighted mean of the device pixels under its span clipped to
+/// `extent` — rows across first into `across` (`from`'s rows × `width`),
+/// then down.
+fn resolve(
+    from: Resolved<'_>,
+    (across, out): (&mut [[f32; 4]], &mut [[f32; 4]]),
+    (tx, ty, width): (usize, usize, usize),
+    extent: (usize, usize),
+    s: f64,
+) {
+    let (ox, oy) = from.origin;
+    for (src, dst) in from
+        .src
+        .chunks_exact(from.width)
+        .zip(across.chunks_exact_mut(width))
+    {
+        for (i, texel) in dst.iter_mut().enumerate() {
+            let mut acc = [0.0f32; 4];
+            for (k, weight) in taps(tx + i, s, extent.0) {
+                for (a, c) in acc.iter_mut().zip(src[k - ox]) {
+                    *a = weight.mul_add(c, *a);
+                }
+            }
+            *texel = acc;
+        }
+    }
+    for (j, dst) in out.chunks_exact_mut(width).enumerate() {
+        for (i, texel) in dst.iter_mut().enumerate() {
+            let mut acc = [0.0f32; 4];
+            for (k, weight) in taps(ty + j, s, extent.1) {
+                for (a, c) in acc.iter_mut().zip(across[(k - oy) * width + i]) {
+                    *a = weight.mul_add(c, *a);
+                }
+            }
+            *texel = acc;
+        }
+    }
 }
 
 /// One band's rasterization state.
@@ -1538,32 +2077,39 @@ impl Band<'_> {
     /// Composites `capture`'s rows over the band's top inside `bounds`,
     /// under `clip` — the member's backdrop sample.
     /// Samples `capture` under `clip` with the member's `effect`
-    /// (`SampleEffect::None` reads the capture unchanged). Writes are
-    /// `clip`-coverage-gated: nothing lands outside the member clip.
+    /// (`SampleEffect::None` reads the capture unchanged) at full
+    /// strength — the member's own scope attenuates it at composite.
+    /// Writes are `clip`-coverage-gated: nothing lands outside the
+    /// member clip.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixels stay well below f32's integer bound"
+    )]
     fn sample(
         &mut self,
         capture: &Capture,
         bounds: IRect,
         clip: Option<&ClipRef>,
         effect: &SampleEffect,
+        union: Option<&UnionSample>,
         stack: &mut [Plane],
     ) {
         let bh = self.fb.len() / self.w;
         let y_lo = usize::try_from(bounds.y0)
             .unwrap_or(0)
             .max(self.y0)
-            .max(capture.y0);
+            .max(capture.device_rows.0);
         let y_hi = usize::try_from(bounds.y1)
             .unwrap_or(0)
             .min(self.y0 + bh)
-            .min(capture.y0 + capture.rows);
+            .min(capture.device_rows.1);
         let x_lo = usize::try_from(bounds.x0)
             .unwrap_or(0)
-            .max(capture.x0)
+            .max(capture.device_cols.0)
             .min(self.w);
         let x_hi = usize::try_from(bounds.x1)
             .unwrap_or(0)
-            .min(capture.x0 + capture.w)
+            .min(capture.device_cols.1)
             .min(self.w);
         if y_lo >= y_hi || x_lo >= x_hi {
             return;
@@ -1571,16 +2117,41 @@ impl Band<'_> {
         let (dst, space) = top(&mut *self.fb, self.space, stack);
         for py in y_lo..y_hi {
             let row = (py - self.y0) * self.w;
-            let crow = (py - capture.y0) * capture.w;
+            // The kept row's start, read only by a 1:1 capture's texel
+            // reads, whose device rows are its texel rows.
+            let crow = py.saturating_sub(capture.y0) * capture.w;
             for px in x_lo..x_hi {
-                let cc = clip_cov(clip, self.w, px, py);
+                // A union member's composite coverage is its antialiased
+                // ownership weight times the AA coverage of
+                // `field < outer`, replacing the member's clip coverage
+                // (the item's clip then carries the ancestors only);
+                // the field is also what SDF effects read.
+                let mut field = (0.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32);
+                let mut cc = clip_cov(clip, self.w, px, py);
                 if cc <= 0.0 {
                     continue;
                 }
+                if let Some(u) = union {
+                    field = union_field_at(u, px as f32 + 0.5, py as f32 + 0.5);
+                    let (_, _, _, w_own, w) = field;
+                    cc *= w_own * (0.5 - (field.0 - u.outer) / w).clamp(0.0, 1.0);
+                    if cc <= 0.0 {
+                        continue;
+                    }
+                }
+                let (d, nx, ny) = match union {
+                    Some(_) => (field.0, field.1, field.2),
+                    None => match effect {
+                        SampleEffect::Sdf(sdf) => {
+                            sdf_at(&sdf.edges, px as f32 + 0.5, py as f32 + 0.5)
+                        }
+                        _ => (0.0, 0.0, 0.0),
+                    },
+                };
                 let c = match effect {
-                    SampleEffect::None => capture.buf[crow + px - capture.x0],
-                    SampleEffect::Color(m) => color_matrix(m, capture.buf[crow + px - capture.x0]),
-                    SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, px, py, crow),
+                    SampleEffect::None => pixel_sample(capture, px, py, crow),
+                    SampleEffect::Color(m) => color_matrix(m, pixel_sample(capture, px, py, crow)),
+                    SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, (d, nx, ny), px, py, crow),
                 };
                 let src = c.map(|v| v * cc);
                 dst[row + px] = src_over(dst[row + px], move_space(src, capture.space, space));
@@ -1683,7 +2254,8 @@ impl Band<'_> {
     /// Composites the popped isolation buffer onto the buffer below:
     /// the blend runs in the popped level's storage space (`src_space`),
     /// which is its declared `blend_space` for a semantic level or the
-    /// parent's for a clip-only one — members already composited in it.
+    /// parent's for a pass-through one — members already composited in
+    /// it.
     fn composite_isolate(
         &mut self,
         scratch: &[[f32; 4]],
@@ -1756,4 +2328,54 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
             }
         });
     mask
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reduce_rows;
+
+    /// Texel `(x, y)` of the source level: every channel varies, alpha
+    /// included.
+    fn texel(x: u8, y: u8) -> [f32; 4] {
+        [
+            f32::from(x),
+            f32::from(y).mul_add(0.5, 0.25),
+            f32::from(x * y),
+            f32::from(x + 3 * y).mul_add(0.05, 0.1),
+        ]
+    }
+
+    /// The mean of the listed source texels.
+    fn mean(texels: &[(u8, u8)]) -> [f32; 4] {
+        let n = f32::from(u8::try_from(texels.len()).expect("a box holds at most 4 texels"));
+        std::array::from_fn(|c| texels.iter().map(|&(x, y)| texel(x, y)[c]).sum::<f32>() / n)
+    }
+
+    fn assert_texel(actual: [f32; 4], expected: [f32; 4]) {
+        for (a, e) in actual.iter().zip(expected) {
+            assert!(
+                (a - e).abs() <= 1e-6,
+                "texel {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pyramid_partial_boxes_average_the_texels_present() {
+        // A 5×5 source level whose rows 2..5 are kept: level rows 1..3,
+        // three texels wide.
+        let src: Vec<[f32; 4]> = (2..5)
+            .flat_map(|y| (0..5).map(move |x| texel(x, y)))
+            .collect();
+        let mut dst = vec![[0.0; 4]; 2 * 3];
+        reduce_rows(&src, 5, (2, 5), (1, 3), &mut dst);
+        // A full box.
+        assert_texel(dst[0], mean(&[(0, 2), (1, 2), (0, 3), (1, 3)]));
+        // The right edge's partial box: column 4 alone, two rows.
+        assert_texel(dst[2], mean(&[(4, 2), (4, 3)]));
+        // The bottom edge's partial box: row 4 alone, two columns.
+        assert_texel(dst[4], mean(&[(2, 4), (3, 4)]));
+        // The corner: the single texel present.
+        assert_texel(dst[5], texel(4, 4));
+    }
 }

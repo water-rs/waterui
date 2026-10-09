@@ -42,6 +42,9 @@ mod date_picker;
 pub mod drag_drop;
 pub mod gesture;
 mod menu_panel;
+#[cfg(feature = "native-test")]
+#[doc(hidden)]
+pub mod native_test;
 pub use color_well::ColorWell;
 pub use context_menu::{
     ContextMenu, ContextMenuConfiguration, ContextMenuHandlers, preview_controller,
@@ -52,6 +55,8 @@ pub mod colors;
 mod host_view;
 pub mod image;
 pub mod input_view;
+mod key_commands;
+pub mod keyboard;
 mod menu;
 mod navigation;
 pub use pointer::PointerInteraction;
@@ -59,6 +64,7 @@ mod search_bar;
 mod split;
 pub mod surface_view;
 mod tabs;
+mod trait_change;
 pub mod view_controller;
 mod window;
 
@@ -76,6 +82,7 @@ pub use gesture::GestureAttachment;
 pub use host_view::{HitTest, HostView, window_root};
 pub use image::ImageView;
 pub mod label;
+pub use key_commands::KeyCommands;
 pub use menu::{Menu, MenuAction, MenuButton, MenuElement};
 mod picker;
 mod pointer;

@@ -66,9 +66,10 @@ pub trait SceneContent: 'static {
     /// Registering returns a [`Registered`] handle, which content keeps for
     /// as long as it goes on drawing the resource; asking again for a source
     /// it still holds returns the same registration without a new upload.
-    /// A new registration is a round trip to the render thread and blocks
-    /// this call — and so the host's frame — until the engine has the
-    /// resource; see the blocking contract on
+    /// A new registration is validated on the calling thread and queued on
+    /// the target — an image beyond
+    /// [`RecordingResources::image_limits`](crate::resources::RecordingResources::image_limits)
+    /// fails right there with `ResourceError::TooLarge`; see the contract on
     /// [`SceneResources`](crate::resources::SceneResources#blocking).
     /// The id to record comes from [`RecordingResources::name`], which holds
     /// the registration for this recording. It is the only way to get an id
@@ -294,9 +295,12 @@ fn scale_across(named: f32, natural_along: f32, natural_across: f32) -> f32 {
 ///
 /// Content with no size of its own takes whatever it is offered, exactly as it
 /// always has. Content that *is* a size is content-sized and claims no leftover
-/// space: an icon in a row must not eat the row, and a container that wants it
-/// bigger says so with a frame, which [`resolve_scene_proposal`] then honours.
-/// This is the rule `waterui-image` already measures its own surfaces by.
+/// space: an icon in a row must not eat the row. [`resolve_scene_proposal`]
+/// honours finite proposals for the scene itself; `waterui-image` adds its own
+/// non-resizable layout, which answers the natural size to an unspecified
+/// proposal and only scales down under smaller finite proposals, preserving
+/// the aspect ratio. It never scales up and remains `StretchAxis::None`.
+/// A `.resizable()` image instead fills the proposal per its `content_mode`.
 #[must_use]
 pub const fn scene_stretch_axis(intrinsic: Option<Size>) -> StretchAxis {
     if intrinsic.is_some() {

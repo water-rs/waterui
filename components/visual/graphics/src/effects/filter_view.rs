@@ -18,7 +18,7 @@
 //! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
 //! feeds a `Send` value slot the render side samples, and a change carrying
 //! a public [`Animation`] in its metadata hands an interpolator to every
-//! watcher. The engine consumes its own `cherenkov::Animation`, so the
+//! watcher. The engine consumes its own `crate::draw::Animation`, so the
 //! metadata type is mapped through the public `curve()`/`duration()`
 //! contract at the watcher boundary.
 
@@ -804,10 +804,34 @@ impl FilteredView {
     }
 }
 
-waterui_core::raw_view!(FilteredView);
+// `raw_view!` only takes a constant axis; an effect never changes how its
+// subtree stretches, so both impls report the content's axis, as `Filtered`
+// does.
+impl waterui_core::NativeView for FilteredView {
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
 
+impl View for FilteredView {
+    fn body(self, _env: &Environment) -> impl View {
+        waterui_core::Native::new(self)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
+
+/// Generates the inherent method appending a single-parameter filter.
+///
+/// The filter is built by `$constructor` from the bound parameter; without
+/// one, by the filter's tuple constructor.
 macro_rules! inherent_single_param_filter {
     ($method:ident, $filter:ident) => {
+        inherent_single_param_filter!($method, $filter, filtrate::filters::$filter);
+    };
+    ($method:ident, $filter:ident, $constructor:path) => {
         #[doc = concat!("Append a `", stringify!($filter), "` filter to the chain.")]
         #[must_use]
         pub fn $method<P: IntoSignalF32>(
@@ -815,7 +839,7 @@ macro_rules! inherent_single_param_filter {
             value: P,
         ) -> Filtered<V, Chain<F, filtrate::filters::$filter<Reactive>>> {
             let mut guards = ParamGuards::default();
-            let filter = filtrate::filters::$filter(guards.bind(value));
+            let filter = $constructor(guards.bind(value));
             self.then_bound(filter, guards)
         }
     };
@@ -828,7 +852,11 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     inherent_single_param_filter!(crystallize, Crystallize);
     inherent_single_param_filter!(exposure, Exposure);
     inherent_single_param_filter!(gamma, Gamma);
-    inherent_single_param_filter!(gaussian_blur, GaussianBlur);
+    inherent_single_param_filter!(
+        gaussian_blur,
+        GaussianBlur,
+        filtrate::filters::GaussianBlur::new
+    );
     inherent_single_param_filter!(grayscale, Grayscale);
     inherent_single_param_filter!(hue_rotation, HueRotation);
     inherent_single_param_filter!(pixellate, Pixellate);
@@ -1305,7 +1333,7 @@ pub trait FilterViewExt: View + Sized {
         let mut guards = ParamGuards::default();
         Filtered::bound(
             self,
-            filtrate::filters::GaussianBlur(guards.bind(sigma)),
+            filtrate::filters::GaussianBlur::new(guards.bind(sigma)),
             guards,
         )
     }
@@ -1910,6 +1938,8 @@ mod tests {
     #[cfg(feature = "gpu")]
     use waterui_core::AnyView;
     use waterui_core::animation::Animation;
+    use waterui_core::layout::StretchAxis;
+    use waterui_core::{Native, NativeView, View};
 
     /// Records each stage's kind, name and parameter offset, and checks that
     /// it carries its shader source.
@@ -2063,6 +2093,32 @@ mod tests {
 
         assert_eq!(effect.output_size(10, 20), (1920, 1080));
         drop(guards);
+    }
+
+    /// Content that stretches horizontally only.
+    struct HorizontalRule;
+    waterui_core::raw_view!(HorizontalRule, StretchAxis::Horizontal);
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn effect_view_reports_its_content_stretch_axis() {
+        let effected = HorizontalRule.effect(NoopEffect);
+        assert_eq!(View::stretch_axis(&effected), StretchAxis::Horizontal);
+        assert_eq!(NativeView::stretch_axis(&effected), StretchAxis::Horizontal);
+    }
+
+    #[test]
+    fn output_sized_view_reports_its_content_stretch_axis() {
+        let sized = HorizontalRule
+            .brightness(0.25_f32)
+            .erase()
+            .output_size(OutputSize::Scale(2.0));
+        assert_eq!(View::stretch_axis(&sized), StretchAxis::Horizontal);
+        assert_eq!(NativeView::stretch_axis(&sized), StretchAxis::Horizontal);
+        assert_eq!(
+            View::stretch_axis(&Native::new(sized)),
+            StretchAxis::Horizontal
+        );
     }
 
     #[cfg(feature = "gpu")]

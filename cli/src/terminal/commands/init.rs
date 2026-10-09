@@ -13,6 +13,7 @@ use crate::{header, line, success};
 use waterui_cli::framework::FrameworkChannel;
 use waterui_cli::project::{CreateOptions, Project, WebScaffold};
 use waterui_cli::project_types::{BundleIdentifier, default_bundle_identifier};
+use waterui_cli::toolchain::Host;
 use waterui_cli::web::{
     self, ExistingFrontendMode, InitAction, InitAnswers, PackageManager, WebSource, plan_init,
 };
@@ -79,7 +80,8 @@ impl From<WebMode> for ExistingFrontendMode {
 
 /// Run the init command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
-    let project_root = std::env::current_dir()?;
+    let host = Host::current();
+    let project_root = host.cwd().to_path_buf();
     let entries = top_level_entries(&project_root)?;
     let answers = resolve_answers(shell, &args, &entries)?;
     let actions = plan_init(&project_root, &entries, &answers)?;
@@ -87,7 +89,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         .package_manager
         .expect("resolve_answers always settles the package manager");
 
-    super::web::ensure_installed(package_manager).await?;
+    super::web::ensure_installed(&host, package_manager).await?;
 
     let name = match &args.name {
         Some(name) => name.clone(),
@@ -103,6 +105,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         project_root.display()
     );
     let include_arg = execute_plan(
+        &host,
         shell,
         &project_root,
         &actions,
@@ -112,6 +115,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     )
     .await?;
     scaffold_shell(
+        &host,
         shell,
         &project_root,
         &args,
@@ -226,6 +230,7 @@ fn prompt_web_mode() -> Result<ExistingFrontendMode> {
 /// Execute the planned actions in order; returns the `include_web!` argument
 /// the shell's root view must use.
 async fn execute_plan(
+    host: &Host,
     shell: &Shell,
     root: &std::path::Path,
     actions: &[InitAction],
@@ -237,11 +242,12 @@ async fn execute_plan(
     for action in actions {
         match action {
             InitAction::MoveFrontendToWeb { entries } => {
-                super::web::move_entries_to_web(root, entries).await?;
+                super::web::move_entries_to_web(host, root, entries).await?;
                 success!(shell, "Moved the frontend into web/");
             }
             InitAction::ScaffoldVite => {
                 super::web::create_vite(
+                    host,
                     shell,
                     root,
                     "web",
@@ -257,7 +263,8 @@ async fn execute_plan(
                 success!(shell, "Copied {} into web/", source.display());
             }
             InitAction::InstallDependencies => {
-                super::web::install_dependencies(shell, package_manager, &root.join("web")).await?;
+                super::web::install_dependencies(host, shell, package_manager, &root.join("web"))
+                    .await?;
             }
             InitAction::ScaffoldShell { web_arg } => {
                 include_arg = Some(web_arg.clone());
@@ -269,6 +276,7 @@ async fn execute_plan(
 
 /// The Rust shell: the root view is `include_web!(resources, <include_arg>)`.
 async fn scaffold_shell(
+    host: &Host,
     shell: &Shell,
     root: &std::path::Path,
     args: &Args,
@@ -285,6 +293,7 @@ async fn scaffold_shell(
 
     let spinner = shell.spinner("Scaffolding the Rust shell...");
     let project = Project::init(
+        host,
         root,
         CreateOptions {
             name,

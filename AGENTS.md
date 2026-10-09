@@ -112,7 +112,7 @@ These are the target architecture and acceptance criteria for repository changes
 
 ## Cross-platform behaviour
 
-Layout and gestures behave identically on every backend. Layout is specified in [`docs/layout-spec.md`](docs/layout-spec.md) (below). For gestures, which input a `Gesture` recognizes, its thresholds and timing, how composed and competing gestures resolve, and the event it delivers are the same everywhere. A backend whose native recognizer differs is non-conforming and is fixed in the backend, not documented as a platform difference.
+Layout and gestures behave identically on every backend. Layout is specified in [`docs/layout-spec.md`](docs/layout-spec.md) (below). For gestures, which input a `Gesture` recognizes, its thresholds and timing, how composed and competing gestures resolve, and the event it delivers are the same everywhere. A backend whose native recognizer differs is non-conforming and is fixed in the backend, not documented as a platform difference. Typesetting — shaping, line breaking, line metrics — belongs to the text leaf and each platform decides it; layout places the leaf at the size it reports.
 
 ## Layout Is Frozen
 
@@ -253,6 +253,7 @@ Keep unrelated changes out of the change set.
 - Every UI component is expected to produce a meaningful accessibility tree. If a component cannot be covered by `waterui-testing`, treat that as a bug to fix rather than a gap to paper over.
 - Keep a component body's shape as simple and concrete as its semantics: do not wrap otherwise static content in a `Dynamic` because the body has a branch.
 - Do not add `anyhow` as a direct dependency in any `Cargo.toml` in this workspace. The error type is re-exported as `waterui_core::Error`; reach for that re-export when implementing traits whose associated error is `anyhow::Error` (e.g. `Extractor`). `thiserror` and other error-construction utilities are unaffected.
+- No dependency, direct or transitive, comes from the Tauri project (crates published by tauri-apps); the capability is implemented in waterkit instead.
 
 <important>
     For rust: YOU CANNOT USE println, use tracing::debug!() instead for debug output.

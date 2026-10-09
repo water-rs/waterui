@@ -30,7 +30,7 @@ split_test! {
 fn mesh_interpolates_premultiplied_color_and_updates_one_retained_command() {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default())).expect("GPU");
     let surface = wait!(engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let value = Binding::container(mesh(0.25));
     let fixed = Picture::record(|c| {

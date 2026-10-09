@@ -144,7 +144,7 @@ pub fn config_chain_dir(build_dir: &Path, files: &[PathBuf]) -> Result<PathBuf> 
         let cargo_dir = dir.join(".cargo");
         std::fs::create_dir_all(&cargo_dir)
             .wrap_err_with(|| format!("cannot create config chain dir {}", cargo_dir.display()))?;
-        std::fs::copy(file, cargo_dir.join("config.toml"))
+        crate::utils::copy_file_if_changed_sync(file, &cargo_dir.join("config.toml"))
             .wrap_err_with(|| format!("cannot copy {} into the config chain", file.display()))?;
     }
     Ok(dir)
@@ -324,13 +324,12 @@ mod tests {
     /// sources are mutually exclusive and `target.*` wins), silently
     /// discarding the flags under test. The toolchain still resolves
     /// through rustup's `RUSTUP_HOME`, which `CARGO_HOME` does not affect.
-    fn hermetic_cargo_home(root: &Path) {
+    /// Returned as a `Host` so the hermetic registry reaches the spawned
+    /// cargo without touching this process's environment.
+    fn hermetic_host(root: &Path) -> crate::toolchain::Host {
         let home = root.join("cargo-home");
         std::fs::create_dir_all(&home).expect("create hermetic CARGO_HOME");
-        // SAFETY: nextest runs each test in its own process, and this runs
-        // on the test's only thread before it spawns anything that could
-        // read the environment concurrently.
-        unsafe { std::env::set_var("CARGO_HOME", home) };
+        crate::toolchain::Host::current().with_env("CARGO_HOME", home)
     }
 
     /// The probe crate whose build fails unless the `--cfg
@@ -453,7 +452,7 @@ mod tests {
     #[test]
     fn managed_build_receives_the_project_rustflags() {
         let (_temp, root) = temp_root();
-        hermetic_cargo_home(&root);
+        let host = hermetic_host(&root);
         let project = root.join("proj");
         write(
             &project.join(".cargo").join("config.toml"),
@@ -463,7 +462,8 @@ mod tests {
         probe_crate(&build);
 
         let args = cargo_config_args(&project, &build).unwrap();
-        let status = std::process::Command::new("cargo")
+        let status = host
+            .std_command("cargo")
             .current_dir(&build)
             .arg("build")
             .args(&args)
@@ -476,12 +476,13 @@ mod tests {
 
         // Sanity: the same build without the args fails — the probe crate
         // cannot compile without the `--cfg water_config_probe` marker.
-        std::process::Command::new("cargo")
+        host.std_command("cargo")
             .current_dir(&build)
             .arg("clean")
             .status()
             .unwrap();
-        let status = std::process::Command::new("cargo")
+        let status = host
+            .std_command("cargo")
             .current_dir(&build)
             .arg("build")
             .status()

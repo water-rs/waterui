@@ -14,14 +14,17 @@ use tracing::info;
 use crate::browser_runtime;
 #[cfg(target_os = "macos")]
 use crate::macos_bundle::{package_cef_helper_app, remove_cef_helper_apps};
-#[cfg(target_os = "macos")]
-use crate::utils::run_command_os;
+use target_lexicon::Triple;
+
 use crate::{
     apple::app_bundle,
     apple::backend::AppleBackend,
     apple::dynamic_runtime,
     assets,
-    build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage},
+    build::{
+        ArtifactLockScope, BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage,
+        SharedExecutable,
+    },
     device::Artifact,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::{BrowserRuntimePlan, Project, ResolvedWebViewBackend},
@@ -126,6 +129,55 @@ async fn remove_superseded_host_library(
     }
 }
 
+/// Whether `dest` still carries `source`'s last-processed bytes — `false`
+/// when `dest` is missing: the record asserts provenance, not presence.
+///
+/// `dest` is rewritten in place after each copy — the runtime retarget and
+/// install-name canonicalisation a shared-runtime build applies — so its
+/// bytes can never match `source`'s again and a plain
+/// [`crate::utils::copy_file_if_changed`] would recopy and re-rewrite on
+/// every build. A `.<file>.preimage` file beside `dest` records the source
+/// artifact the last completed staging processed instead; while it still
+/// names the same output — same size and mtime, the identity a Cargo
+/// artifact carries — `dest` already holds that artifact's post-processed
+/// form and the caller skips the copy.
+///
+/// # Errors
+/// - If `source` or `dest` cannot be statted.
+async fn staged_source_current(source: &Path, dest: &Path) -> eyre::Result<bool> {
+    let record = staged_source_record(dest);
+    let source = source.to_path_buf();
+    let dest = dest.to_path_buf();
+    smol::unblock(move || -> std::io::Result<bool> {
+        Ok(dest.try_exists()? && crate::utils::cargo_output_unmodified(&source, &record)?)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+/// Record `source` as `dest`'s preimage — the artifact `dest`'s
+/// post-processed bytes were made from. Call only once the rewrite the
+/// [`staged_source_current`] gate assumes done has completed: a failure
+/// before this point leaves the stale record, so the next build recopies.
+///
+/// # Errors
+/// - If `source` cannot be copied or the record cannot be written.
+async fn record_staged_source(source: &Path, dest: &Path) -> eyre::Result<()> {
+    copy_file(source, &staged_source_record(dest)).await?;
+    Ok(())
+}
+
+/// The `.<file>.preimage` path beside `dest` whose bytes record the source
+/// artifact its last completed staging processed.
+fn staged_source_record(dest: &Path) -> PathBuf {
+    dest.with_file_name(format!(
+        ".{}.preimage",
+        dest.file_name()
+            .expect("a staged library path names a file")
+            .to_string_lossy()
+    ))
+}
+
 /// Stage the packaged app's static host library beside the `.app` `water
 /// package` reports.
 ///
@@ -171,11 +223,13 @@ pub async fn stage_packaged_host_library(
 pub(crate) async fn apple_dependency_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let build_manifest = project.ffi_crate_path().join("Cargo.toml");
     let mut features = Vec::new();
     features.extend(
-        crate::project_model::assets::capability_ffi_features(project, &build_manifest).await?,
+        crate::project_model::assets::capability_ffi_features(project, &build_manifest, target)
+            .await?,
     );
     if browser_runtime.chromium {
         features.push("chromium".to_string());
@@ -186,12 +240,13 @@ pub(crate) async fn apple_dependency_features(
     Ok(features)
 }
 
-async fn apple_build_features(
+pub(crate) async fn apple_build_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
     linkage: RustLinkage,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
-    let mut features = apple_dependency_features(project, browser_runtime).await?;
+    let mut features = apple_dependency_features(project, browser_runtime, target).await?;
     if linkage == RustLinkage::SharedRuntime {
         features.push("dev".to_string());
         // The inspector is devtooling: development sessions get it through the
@@ -207,6 +262,20 @@ async fn apple_build_features(
         }
     }
     Ok(features)
+}
+
+/// The triple an Apple build produces — the explicitly requested target,
+/// or the platform's own. The backend build's `WebView` validation and
+/// the library build it drives share this one derivation so the two can
+/// never resolve different targets.
+pub(crate) fn apple_build_triple(
+    platform: TargetPlatform,
+    options: &crate::build::BuildOptions,
+) -> Triple {
+    options
+        .target_triple()
+        .cloned()
+        .unwrap_or_else(|| platform.triple())
 }
 
 /// Build Rust library for an Apple platform.
@@ -233,10 +302,7 @@ pub(crate) async fn build_rust_lib_with_links(
     platform: TargetPlatform,
     options: BuildOptions,
 ) -> eyre::Result<(BuiltTarget, Vec<crate::build::NativeLink>)> {
-    let triple = options
-        .target_triple()
-        .cloned()
-        .unwrap_or_else(|| platform.triple());
+    let triple = apple_build_triple(platform, &options);
     validate_architecture(triple.architecture)?;
     // A packaged app stamps the identifier as `CFBundleIdentifier`; reject an
     // Apple-invalid one before the Rust build pays for it. An embedded build
@@ -253,22 +319,26 @@ pub(crate) async fn build_rust_lib_with_links(
     } else {
         options
     };
+
+    // The ffi companion is the crate this builds — render it for the graph
+    // its `cfg` tables serve before anything reads its manifest.
+    project.scaffold_ffi_companion().await?;
+
     // Resolve fonts BEFORE cargo build - this ensures icons.json is present
     // for crates like fontawesome7 that need it during build.rs
     let font_declarations =
         crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let _resolved_fonts = crate::assets::resolve_fonts(font_declarations).await?;
+    let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
     let browser_runtime_plan = project
-        .browser_runtime_plan(platform, TargetBackend::Apple)
+        .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
 
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
     let host_library = AppleHostLibrary::for_linkage(options.linkage());
-    let mut build = RustBuild::new(project.ffi_crate_path(), triple.clone())
-        .with_project(project)
+    let mut build = RustBuild::for_project(project, project.ffi_crate_path(), triple.clone())
         .with_features(
-            apple_build_features(project, browser_runtime_plan, options.linkage()).await?,
+            apple_build_features(project, browser_runtime_plan, options.linkage(), &triple).await?,
         )
         .with_envs(options.cargo_envs().iter().cloned());
     if let Some(sccache_path) = options.sccache_path() {
@@ -290,7 +360,7 @@ pub(crate) async fn build_rust_lib_with_links(
 
     let target_dir = project.water_target_dir(options.linkage()).await?;
     let build = build.with_target_dir(target_dir.clone());
-    let built_target = match host_library {
+    let mut built_target = match host_library {
         // The shared runtime's lib build emits every crate type the
         // manifest declares — not a `--crate-type` selection, which
         // writes only the chosen artifact — because this build feeds
@@ -332,36 +402,68 @@ pub(crate) async fn build_rust_lib_with_links(
         })
         .join("deps");
 
+    // The executable's `-l` names the runtime soname this build recorded —
+    // `RustDynamicLibraries` reads it from the artifact's own dynamic
+    // section; absent a dynamic runtime it stays the canonical name.
+    let mut runtime_link_name = "waterui_dylib".to_string();
+
     // Stage the host library and shared runtime before the executable links,
     // so its dependencies already carry their final install names.
     if let Some(output_dir) = options.output_dir() {
         fs::create_dir_all(output_dir).await?;
         let dest_lib = output_dir.join(host_library.linked_file_name());
-        copy_file(&built_target.artifact, &dest_lib).await?;
+        // The `Dynamic` shape's copy is rewritten in place below — the
+        // runtime retarget and install-name canonicalisation — so its
+        // bytes never match the artifact's again: the recorded preimage,
+        // not the copy's contents, gates the copy (#2073).
+        let rewrites_dest_lib = options.linkage() == RustLinkage::SharedRuntime
+            && host_library == AppleHostLibrary::Dynamic;
+        let mut restaged_dest_lib = false;
+        if rewrites_dest_lib {
+            restaged_dest_lib = !staged_source_current(&built_target.artifact, &dest_lib).await?;
+            if restaged_dest_lib {
+                copy_file(&built_target.artifact, &dest_lib).await?;
+            }
+        } else {
+            crate::utils::copy_file_if_changed(&built_target.artifact, &dest_lib).await?;
+        }
         remove_superseded_host_library(output_dir, host_library).await?;
         if options.linkage() == RustLinkage::SharedRuntime {
             let libraries = RustDynamicLibraries::resolve(&built_target, &triple, project).await?;
+            runtime_link_name = dynamic_runtime::runtime_link_name(
+                &libraries.waterui_staged_name().to_string_lossy(),
+            );
             libraries.stage(output_dir).await?;
             let staged_runtime = libraries.stage_apple_canonical(output_dir).await?;
-            if host_library == AppleHostLibrary::Dynamic {
-                // The app library records the runtime's cargo-written install
-                // name; retarget while the canonical copy still carries it.
-                dynamic_runtime::retarget_module(&dest_lib, &staged_runtime).await?;
+            if rewrites_dest_lib {
+                // The app library records the runtime's cargo-written
+                // install name; retarget while the canonical copy still
+                // carries it. Both rewrites read the recorded names first
+                // and leave an already-canonical dylib untouched.
+                dynamic_runtime::retarget_module(project.host(), &dest_lib, &staged_runtime)
+                    .await?;
                 // The executable binds the app dylib by its install name.
-                dynamic_runtime::canonicalize_install_name(&dest_lib).await?;
+                dynamic_runtime::canonicalize_install_name(project.host(), &dest_lib).await?;
+                // Only once the copy's rewrites completed may the preimage
+                // name the artifact again — a failure before this leaves
+                // it stale and the next build recopies.
+                if restaged_dest_lib {
+                    record_staged_source(&built_target.artifact, &dest_lib).await?;
+                }
             }
-            dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
+            dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
         }
     } else if host_library == AppleHostLibrary::Dynamic {
         // Without an output directory the link's runtime search dir is the
         // deps dir below, which Cargo fills only with the hashed
-        // `libwaterui_dylib-<metadata>.dylib` — so `-lwaterui_dylib` cannot
-        // resolve. Stage the canonical install-name copy there first, with
-        // the same `@rpath` handling the packaged staging path performs
-        // (cli#272).
+        // `libwaterui_dylib-<metadata>.dylib` the `-l` below resolves.
+        // Stage the canonical install-name copy there first, with the same
+        // `@rpath` handling the packaged staging path performs (cli#272).
         let libraries = RustDynamicLibraries::resolve(&built_target, &triple, project).await?;
+        runtime_link_name =
+            dynamic_runtime::runtime_link_name(&libraries.waterui_staged_name().to_string_lossy());
         let staged_runtime = libraries.stage_apple_canonical(&deps_dir).await?;
-        dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
+        dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
     }
 
     if project.manifest().package.embedded {
@@ -384,7 +486,7 @@ pub(crate) async fn build_rust_lib_with_links(
         // The rlib's codegen units also export `rust_eh_personality`. The
         // copy lives in the build dir and is only consumed by this link, so
         // localize it in place.
-        localize_archive_symbols(&ffi_rlib, &["rust_eh_personality"]).await?;
+        localize_archive_symbols(project.host(), &ffi_rlib, &["rust_eh_personality"]).await?;
     }
 
     let mut executable = build
@@ -401,6 +503,7 @@ pub(crate) async fn build_rust_lib_with_links(
         project,
         &project.ffi_crate_path().join("Cargo.toml"),
         "media",
+        &triple,
     )
     .await?
     {
@@ -413,19 +516,32 @@ pub(crate) async fn build_rust_lib_with_links(
         let runtime_dir = staged_dir.clone().unwrap_or(deps_dir);
         executable = executable
             .with_final_rustc_arg(link_search_flag(runtime_dir.as_os_str()))
-            .with_final_rustc_arg("-Clink-arg=-lwaterui_dylib");
+            .with_final_rustc_arg(format!("-Clink-arg=-l{runtime_link_name}"));
     }
-    executable
-        .build_binary(APPLE_ENTRY_BINARY_NAME, options.is_release())
-        .await?;
+    // The entry `[[bin]]`'s own `BuiltTarget` rides on this build's result
+    // so packaging reads its marked `deps/` artifact, never a name
+    // reconstructed under the profile directory. Nothing execs the shared
+    // `<profile>/waterui-apple-main` uplift — its lock file sits in the
+    // shared profile directory for every Apple project — so the lock is
+    // released once the marked link exists instead of riding a `BuiltTarget`
+    // a `water run` holds through packaging and launch.
+    built_target.entry_binary = Some(Box::new(
+        executable
+            .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
+            .build_binary(APPLE_ENTRY_BINARY_NAME, options.is_release())
+            .await?,
+    ));
 
     // The helper `[[bin]]` exists only when the manifest declared it — the
     // application's linked engine, not chromium alone — so the build gates
-    // on the manifest's own predicate or Cargo reports `no bin target`.
-    if project.declares_cef_helper().await? {
-        build
+    // on the manifest's own predicate or Cargo reports `no bin target`. Its
+    // `BuiltTarget` rides on this build's result so packaging reads the
+    // helper's own artifact, never a name reconstructed in a directory.
+    if project.declares_cef_helper(&triple).await? {
+        let helper = build
             .clone()
             .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@executable_path/../Frameworks")
+            .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
             .build_binary(
                 &crate::project_model::project_types::cef_helper_binary_name(
                     project.ffi_crate_name().as_str(),
@@ -433,6 +549,7 @@ pub(crate) async fn build_rust_lib_with_links(
                 options.is_release(),
             )
             .await?;
+        built_target.cef_helper = Some(Box::new(helper));
     }
 
     Ok((built_target, Vec::new()))
@@ -450,21 +567,26 @@ fn link_search_flag(dir: &OsStr) -> String {
 /// so the symbols still resolve for the member's own internal references
 /// while stopping `ld`'s duplicate-symbol diagnostics.
 #[cfg(target_os = "macos")]
-async fn localize_archive_symbols(archive: &Path, symbols: &[&str]) -> eyre::Result<()> {
+async fn localize_archive_symbols(
+    host: &crate::toolchain::Host,
+    archive: &Path,
+    symbols: &[&str],
+) -> eyre::Result<()> {
     let scratch = archive.with_extension("localize-work");
     fs::create_dir_all(&scratch).await?;
-    let members = run_command_os(
-        "ar",
-        ["t".into(), archive.as_os_str().to_owned()].map(OsString::from),
-    )
-    .await?;
+    let members = host
+        .run(
+            "ar",
+            ["t".into(), archive.as_os_str().to_owned()].map(OsString::from),
+        )
+        .await?;
     for member in members
         .lines()
         .map(str::trim)
         .filter(|member| !member.is_empty() && *member != "__.SYMDEF")
     {
         let member_path = scratch.join(member);
-        run_command_os(
+        host.run(
             "sh",
             [
                 OsString::from("-c"),
@@ -477,7 +599,8 @@ async fn localize_archive_symbols(archive: &Path, symbols: &[&str]) -> eyre::Res
             ],
         )
         .await?;
-        let nm = run_command_os("nm", [member_path.as_os_str().to_owned()])
+        let nm = host
+            .run("nm", [member_path.as_os_str().to_owned()])
             .await
             .unwrap_or_default();
         let mut args = vec![member_path.as_os_str().to_owned()];
@@ -497,8 +620,9 @@ async fn localize_archive_symbols(archive: &Path, symbols: &[&str]) -> eyre::Res
         }
         args.push("-o".into());
         args.push(member_path.as_os_str().to_owned());
-        run_command_os("ld", std::iter::once(OsString::from("-r")).chain(args)).await?;
-        run_command_os(
+        host.run("ld", std::iter::once(OsString::from("-r")).chain(args))
+            .await?;
+        host.run(
             "ar",
             [
                 "r".into(),
@@ -513,22 +637,16 @@ async fn localize_archive_symbols(archive: &Path, symbols: &[&str]) -> eyre::Res
     Ok(())
 }
 
-/// The deployment targets the Apple backend supports, as `SEMVER` strings.
-///
-/// These were `*_DEPLOYMENT_TARGET` build settings in the generated Xcode
-/// project; entry-owning packaging has no project file, so they are declared
-/// here next to the backend that owns them — the same values the framework
-/// tree's root `Package.swift` publishes.
-const fn apple_deployment_target_for(platform: TargetPlatform) -> Option<&'static str> {
+/// The framework metadata key for each Apple platform family.
+const fn apple_deployment_platform(platform: TargetPlatform) -> Option<&'static str> {
     match platform {
-        TargetPlatform::MacOS
-        | TargetPlatform::IOS
-        | TargetPlatform::IOSSimulator
-        | TargetPlatform::TvOS
-        | TargetPlatform::TvOSSimulator
-        | TargetPlatform::WatchOS
-        | TargetPlatform::WatchOSSimulator => Some("26.0"),
-        TargetPlatform::VisionOS | TargetPlatform::VisionOSSimulator => Some("2.5"),
+        TargetPlatform::MacOS => Some("macos"),
+        TargetPlatform::IOS | TargetPlatform::IOSSimulator | TargetPlatform::MacCatalyst => {
+            Some("ios")
+        }
+        TargetPlatform::TvOS | TargetPlatform::TvOSSimulator => Some("tvos"),
+        TargetPlatform::WatchOS | TargetPlatform::WatchOSSimulator => Some("watchos"),
+        TargetPlatform::VisionOS | TargetPlatform::VisionOSSimulator => Some("visionos"),
         _ => None,
     }
 }
@@ -539,15 +657,19 @@ const fn apple_deployment_target_for(platform: TargetPlatform) -> Option<&'stati
 ///
 /// Returns an error when the platform has no Apple deployment target.
 pub async fn apple_deployment_target(
-    _project: &Project,
+    project: &Project,
     platform: TargetPlatform,
 ) -> eyre::Result<(&'static str, String)> {
     let environment = platform.deployment_target_setting().ok_or_else(|| {
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
-    let target = apple_deployment_target_for(platform).ok_or_else(|| {
+    let key = apple_deployment_platform(platform).ok_or_else(|| {
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
+    let target = project
+        .resolved_framework()
+        .await?
+        .apple_deployment_target(key)?;
     Ok((environment, target.to_string()))
 }
 
@@ -557,23 +679,34 @@ pub async fn apple_deployment_target(
 /// Every cargo process the CLI starts whose compilation target is Apple gets
 /// this — including host builds, where the host triple *is* the Apple target.
 /// A simulator triple shares its device variant's setting name and floor, so
-/// `Environment::Sim` never reaches the pair.
-pub(crate) fn apple_deployment_target_env(
+/// `Environment::Sim` reaches the same pair as `Environment::Unknown`.
+/// Mac Catalyst keys on the iOS variable: the build scripts a macabi
+/// compilation runs read `IPHONEOS_DEPLOYMENT_TARGET`, and no consumer in
+/// the graph reads `MACOSX_DEPLOYMENT_TARGET` for it.
+pub(crate) fn apple_deployment_target_env<'a>(
+    framework: &'a crate::framework::ResolvedFramework,
     triple: &target_lexicon::Triple,
-) -> Option<(&'static str, &'static str)> {
-    use target_lexicon::OperatingSystem;
+) -> eyre::Result<Option<(&'static str, &'a str)>> {
+    use target_lexicon::{Environment, OperatingSystem};
     let platform = match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
-        OperatingSystem::IOS(_) => TargetPlatform::IOS,
+        OperatingSystem::IOS(_) => match triple.environment {
+            Environment::Macabi => TargetPlatform::MacCatalyst,
+            _ => TargetPlatform::IOS,
+        },
         OperatingSystem::TvOS(_) => TargetPlatform::TvOS,
         OperatingSystem::WatchOS(_) => TargetPlatform::WatchOS,
         OperatingSystem::VisionOS(_) | OperatingSystem::XROS(_) => TargetPlatform::VisionOS,
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some((
-        platform.deployment_target_setting()?,
-        apple_deployment_target_for(platform)?,
-    ))
+    Ok(Some((
+        platform
+            .deployment_target_setting()
+            .expect("Apple platform"),
+        framework.apple_deployment_target(
+            apple_deployment_platform(platform).expect("Apple platform"),
+        )?,
+    )))
 }
 
 // ============================================================================
@@ -588,38 +721,22 @@ pub(crate) fn apple_deployment_target_env(
 /// # Errors
 /// Returns an error when the backend source cannot be located.
 pub(crate) async fn apple_backend_source_root(project: &Project) -> eyre::Result<PathBuf> {
-    let manifest_path_arg: OsString = project.ffi_crate_path().join("Cargo.toml").into();
-    let output = crate::utils::run_command_os(
-        "cargo",
-        [
-            OsString::from("metadata"),
-            OsString::from("--format-version"),
-            OsString::from("1"),
-            OsString::from("--manifest-path"),
-            manifest_path_arg,
-        ],
-    )
-    .await
-    .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
-    let metadata: serde_json::Value =
-        serde_json::from_str(&output).wrap_err("cargo metadata returned unparseable JSON")?;
-    let manifest_path = metadata
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|packages| {
-            packages.iter().find_map(|package| {
-                (package.get("name").and_then(serde_json::Value::as_str) == Some("waterui-apple"))
-                    .then(|| {
-                    package
-                        .get("manifest_path")
-                        .and_then(serde_json::Value::as_str)
-                })?
-            })
-        })
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(project.ffi_crate_path().join("Cargo.toml"));
+    let metadata = project
+        .host()
+        .cargo_metadata(&command)
+        .await
+        .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| package.name.as_str() == "waterui-apple")
         .ok_or_else(|| eyre::eyre!("the ffi crate does not depend on a `waterui-apple` package"))?;
-    PathBuf::from(manifest_path)
+    package
+        .manifest_path
         .parent()
-        .map(Path::to_path_buf)
+        .map(|directory| directory.as_std_path().to_path_buf())
         .ok_or_else(|| eyre::eyre!("`waterui-apple` manifest path has no parent"))
 }
 
@@ -683,10 +800,23 @@ pub async fn package_apple(
         .bundle_identifier()
         .apple_bundle_identifier()
         .map_err(|error| eyre::eyre!("{error}"))?;
-    #[cfg(target_os = "macos")]
+    let triple = platform.triple();
+    // The ffi companion's manifest feeds the declaration scan below —
+    // render it before it is read.
+    project.scaffold_ffi_companion().await?;
     let browser_runtime_plan = project
-        .browser_runtime_plan(platform, TargetBackend::Apple)
+        .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
+    // Crate-declared entitlements and `Info.plist` keys, collected from the
+    // graph the companion compiles with — a conflict fails before any
+    // bundle work.
+    let mut apple_declarations = crate::assets::scan_apple_declarations(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &apple_dependency_features(project, browser_runtime_plan, &triple).await?,
+    )
+    .await?;
+    apple_declarations.supply_app_values(&project.manifest().app_values)?;
 
     let project_path = project.backend_path::<AppleBackend>();
 
@@ -695,7 +825,6 @@ pub async fn package_apple(
     } else {
         "Release"
     };
-    let triple = platform.triple();
     let sdk_name = platform
         .sdk_name()
         .ok_or_else(|| eyre::eyre!("Platform {platform:?} is not an Apple platform"))?;
@@ -737,8 +866,20 @@ pub async fn package_apple(
     let ctx = AppleBackend::template_context(project).await?;
     let layout = app_bundle::AppleAppLayout::for_app(&app_path, sdk_name);
 
-    let executable = built.profile_dir.join(APPLE_ENTRY_BINARY_NAME);
-    let info_plist = app_bundle::apple_info_plist(
+    // Packaging reads the variant-stable `deps/<name>-<marker>` link, not
+    // the reported `executable`: the `<profile>/<name>` uplift is shared
+    // between variants and a same-named build can re-uplift it once the
+    // binary artifact lock is gone.
+    let executable = &built
+        .entry_binary
+        .as_deref()
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "the build produced no `{APPLE_ENTRY_BINARY_NAME}` entry binary; package the result of `build_rust_lib`"
+            )
+        })?
+        .artifact;
+    let mut info_plist = app_bundle::apple_info_plist(
         &ctx,
         project,
         platform,
@@ -746,15 +887,19 @@ pub async fn package_apple(
         &product_name,
         &bundle_id,
     );
+    apple_declarations.merge_into_info_plist(&mut info_plist)?;
 
     app_bundle::assemble_app_bundle(
+        project.host(),
         &layout,
-        &executable,
+        executable,
         &product_name,
         &staging_dir,
         &info_plist,
-        sdk_name,
-        &deployment_target,
+        &app_bundle::AppleSdkSpec {
+            sdk_name,
+            deployment_target: &deployment_target,
+        },
     )
     .await?;
 
@@ -765,8 +910,13 @@ pub async fn package_apple(
         let bin_built = BuiltTarget {
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),
+            executable: Some(SharedExecutable::unlocked(
+                layout.executable_file(&product_name),
+            )),
+            entry_binary: None,
             shared_runtime: built.shared_runtime.clone(),
             app_library: None,
+            cef_helper: None,
         };
         let libraries = RustDynamicLibraries::resolve(&bin_built, &triple, project).await?;
         libraries.stage(&layout.frameworks_dir).await?;
@@ -775,9 +925,13 @@ pub async fn package_apple(
             .await?;
         // Redirect the executable's recorded runtime dependency to the
         // canonical `@rpath` name of the staged Rust runtime.
-        dynamic_runtime::retarget_module(&layout.executable_file(&product_name), &staged_runtime)
-            .await?;
-        dynamic_runtime::prepare_host_runtime(&staged_runtime).await?;
+        dynamic_runtime::retarget_module(
+            project.host(),
+            &layout.executable_file(&product_name),
+            &staged_runtime,
+        )
+        .await?;
+        dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
         Some(libraries)
     } else {
         RustDynamicLibraries::remove_staged(&layout.frameworks_dir, &triple).await?;
@@ -788,6 +942,7 @@ pub async fn package_apple(
     #[cfg(target_os = "macos")]
     if platform == TargetPlatform::MacOS && browser_runtime_plan.requires_cef() {
         browser_runtime::stage_macos_app(
+            project.host(),
             browser_runtime_plan,
             &built.profile_dir,
             &app_path.join("Contents"),
@@ -796,14 +951,16 @@ pub async fn package_apple(
         // Helper bundles wrap the helper `[[bin]]`, which the manifest
         // declares only when the application links the CEF engine crate —
         // chromium alone stages the runtime but builds no helper.
-        if project.declares_cef_helper().await? {
+        if project.declares_cef_helper(&triple).await? {
             let main_binary = layout.executable_file(&product_name);
-            let helper_binary = built.profile_dir.join(
-                crate::project_model::project_types::cef_helper_binary_name(
-                    project.ffi_crate_name().as_str(),
-                ),
-            );
-            package_cef_helper_app(&app_path, &main_binary, &helper_binary, &bundle_id).await?;
+            let helper_binary = built
+                .cef_helper
+                .as_ref()
+                .map(|helper| helper.artifact.as_path())
+                .ok_or_else(|| {
+                    eyre::eyre!("the project declares a CEF helper but the build produced none")
+                })?;
+            package_cef_helper_app(&app_path, &main_binary, helper_binary, &bundle_id).await?;
         }
     }
 
@@ -815,6 +972,7 @@ pub async fn package_apple(
         project_path.as_path(),
         project,
         &deployment_target,
+        &apple_declarations,
     )
     .await?;
 
@@ -841,7 +999,7 @@ async fn copy_assets_and_fonts(
     // Scan and resolve dependency fonts
     let font_declarations =
         assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
     if !resolved_fonts.is_empty() {
@@ -875,4 +1033,58 @@ pub const fn is_apple_platform(platform: TargetPlatform) -> bool {
             | TargetPlatform::VisionOS
             | TargetPlatform::VisionOSSimulator
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A second build over an unchanged artifact rewrites nothing: the
+    /// staged dylib is rewritten in place — retargeted and canonicalised —
+    /// so its bytes never match the source's again, and only the recorded
+    /// preimage keeps the copy from recopying on every build (#2073).
+    #[test]
+    fn staged_source_record_gates_rewritten_dylib_staging() {
+        let temporary = tempfile::tempdir().expect("tempdir");
+        let output = temporary.path();
+        let source = output.join("libffi-cargo.dylib");
+        let dest = output.join("libffi.dylib");
+        std::fs::write(&source, b"cargo artifact").expect("write the artifact");
+
+        // Build 1: nothing recorded, so the caller copies, rewrites the
+        // copy in place — a byte append standing in for install_name_tool —
+        // and records the artifact the copy was made from.
+        assert!(
+            !smol::block_on(staged_source_current(&source, &dest)).expect("nothing is staged yet")
+        );
+        smol::block_on(copy_file(&source, &dest)).expect("copy the artifact");
+        let mut bytes = std::fs::read(&dest).expect("read the copy");
+        bytes.extend_from_slice(b" retargeted");
+        std::fs::write(&dest, bytes).expect("rewrite the copy");
+        smol::block_on(record_staged_source(&source, &dest)).expect("record the processed source");
+        let staged = std::fs::read(&dest).expect("read the staged dylib");
+        assert_eq!(staged, b"cargo artifact retargeted");
+
+        // Build 2: the copy's bytes no longer match the artifact's, but the
+        // record still names it — the dylib is already this artifact's
+        // post-processed form, so the caller skips the copy.
+        assert!(
+            smol::block_on(staged_source_current(&source, &dest))
+                .expect("the record gates the second build")
+        );
+        assert_eq!(std::fs::read(&dest).expect("read the staged dylib"), staged);
+
+        // A rebuilt artifact — every Cargo write carries a new mtime —
+        // restages, byte length aside.
+        std::fs::write(&source, b"cargo artifact").expect("rewrite the artifact");
+        filetime::set_file_mtime(
+            &source,
+            filetime::FileTime::from_unix_time(1_800_000_000, 0),
+        )
+        .expect("stamp the rebuilt artifact's mtime");
+        assert!(
+            !smol::block_on(staged_source_current(&source, &dest))
+                .expect("a rebuilt source restages")
+        );
+    }
 }

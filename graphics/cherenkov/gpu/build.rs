@@ -30,6 +30,12 @@ mod deployment;
 
 #[path = "build_tile.rs"]
 mod tile;
+/// The union member cap the WGSL fold compiles against — the same
+/// definition `cherenkov::BackdropUnion::MAX_MEMBERS` re-exports, kept
+/// free of a crate dependency so this build script does not link the
+/// engine.
+#[path = "../src/union_cap.rs"]
+mod union_cap;
 
 use std::env;
 use std::num::NonZeroU32;
@@ -59,33 +65,51 @@ struct Spec {
 /// Apple shader tools and the deployment target resolved by rustc.
 struct AppleTarget {
     sdk: &'static str,
-    deployment_variable: &'static str,
-    deployment_version: String,
+    /// The `metal -target` the air compiles for, spelled like
+    /// `air64-apple-ios26.0-macabi`. Every Apple platform passes it
+    /// explicitly: the flag alone picks the Metal platform, which ambient
+    /// deployment variables cannot express at all for Catalyst and would
+    /// otherwise steer (a `MACOSX_DEPLOYMENT_TARGET` in the environment
+    /// compiles an iOS-family air for macOS — the misdirection waterui#2158
+    /// hit). Once `-target` names the triple, `metal` ignores the
+    /// `*_DEPLOYMENT_TARGET` variables entirely and `metallib` never reads
+    /// them, so nothing in the `xcrun` environment is scrubbed or set.
+    metal_target: String,
+    /// Whether the air target belongs to the iOS platform family — the
+    /// Metal language dialect is ios-keyed for iOS, its simulator and
+    /// Catalyst, and macos-keyed only for macOS itself. It falls out of
+    /// `metal_target`'s platform segment.
+    ios_family: bool,
 }
 
-/// Every Apple deployment-target variable the Metal compiler reads. It picks
-/// its target platform from whichever of these is set, so an environment that
-/// sets several (a workspace `[env]` table, for one) would compile an
-/// iOS-simulator shader for macOS.
-const DEPLOYMENT_VARIABLES: [&str; 5] = [
-    "MACOSX_DEPLOYMENT_TARGET",
-    "IPHONEOS_DEPLOYMENT_TARGET",
-    "TVOS_DEPLOYMENT_TARGET",
-    "WATCHOS_DEPLOYMENT_TARGET",
-    "XROS_DEPLOYMENT_TARGET",
-];
-
-impl AppleTarget {
-    /// An `xcrun` invocation that sees this target's deployment variable and
-    /// no other platform's.
-    fn xcrun(&self) -> Command {
-        let mut command = Command::new("xcrun");
-        for variable in DEPLOYMENT_VARIABLES {
-            command.env_remove(variable);
+/// Removes every `// <marker>`-bracketed span from `source` — the mirror
+/// of the marker convention in `shaders.rs`: marker lines pair up, and
+/// the text between an opening and closing marker is a specialization's
+/// optional block (the union field today), dropped wholesale by variants
+/// that do not carry it.
+///
+/// Only a whole trimmed line equal to the marker toggles the span — a
+/// marker inside other text is not a marker. An unpaired marker is a
+/// build bug and panics. The stripped output must carry neither
+/// `union_field` nor `backdrop_field`: the check fails loudly if the
+/// spans drift from what the marker is supposed to remove.
+fn drop_marked(source: &str, marker: &str) -> String {
+    let tag = format!("// {marker}");
+    let mut out = String::with_capacity(source.len());
+    let mut dropping = false;
+    for line in source.split_inclusive('\n') {
+        if line.trim() == tag {
+            dropping = !dropping;
+        } else if !dropping {
+            out.push_str(line);
         }
-        command.env(self.deployment_variable, &self.deployment_version);
-        command
     }
+    assert!(!dropping, "unpaired `{tag}` marker");
+    assert!(
+        !out.contains("union_field") && !out.contains("backdrop_field"),
+        "`{tag}` stripping left union code in the output"
+    );
+    out
 }
 
 /// Passthrough shaders carry no naga runtime checks: the source is
@@ -100,72 +124,131 @@ const UNCHECKED: naga::proc::BoundsCheckPolicies = naga::proc::BoundsCheckPolici
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let shader_path = manifest.join("src/render/shader.wgsl");
-    let present_path = manifest.join("src/render/present.wgsl");
-    let shared_path = manifest.join("src/render/shared.wgsl");
-    let external_path = manifest.join("src/render/external.wgsl");
-    let blend_path = manifest.join("src/render/blend.wgsl");
-    let projective_path = manifest.join("src/render/projective.wgsl");
-    let mip_path = manifest.join("src/render/mip.wgsl");
-    for path in [
-        &shader_path,
-        &present_path,
-        &shared_path,
-        &external_path,
-        &blend_path,
-        &projective_path,
-        &mip_path,
-    ] {
-        println!("cargo::rerun-if-changed={}", path.display());
-    }
     println!(
         "cargo::rerun-if-changed={}",
         manifest.join("src/render/bindings.rs").display()
     );
+    let read = |name: &str| {
+        let path = manifest.join(format!("src/render/{name}.wgsl"));
+        println!("cargo::rerun-if-changed={}", path.display());
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    };
+    let [
+        shared,
+        shader,
+        union,
+        present,
+        external,
+        blend,
+        projective,
+        mip,
+        resolve,
+        reduce,
+        native,
+    ] = [
+        "shared",
+        "shader",
+        "union",
+        "present",
+        "external",
+        "blend",
+        "projective",
+        "mip",
+        "resolve",
+        "reduce",
+        "external_native",
+    ]
+    .map(read);
 
-    let shared = std::fs::read_to_string(&shared_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", shared_path.display()));
-    let shader = std::fs::read_to_string(&shader_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", shader_path.display()));
-    let present = std::fs::read_to_string(&present_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", present_path.display()));
-    let external = std::fs::read_to_string(&external_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", external_path.display()));
-    let blend = std::fs::read_to_string(&blend_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", blend_path.display()));
-    let projective = std::fs::read_to_string(&projective_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", projective_path.display()));
-    let mip = std::fs::read_to_string(&mip_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", mip_path.display()));
-    let native_path = manifest.join("src/render/external_native.wgsl");
-    println!("cargo::rerun-if-changed={}", native_path.display());
-    let native = std::fs::read_to_string(&native_path)
-        .unwrap_or_else(|e| panic!("{}: {e}", native_path.display()));
+    // The union member cap the WGSL fold is compiled against:
+    // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the
+    // Rust constant stays the single definition. The runtime assembles
+    // the union module from this fragment and the non-union variants
+    // from `shader_no_union.wgsl` — `shader.wgsl` minus every
+    // `// union-stub`-bracketed span.
+    let union_max = format!(
+        "const UNION_MAX_MEMBERS: u32 = {}u;\n",
+        union_cap::UNION_MAX_MEMBERS
+    );
+    std::fs::write(out_dir.join("union_max_members.wgsl"), &union_max).unwrap();
+    let shader_no_union = drop_marked(&shader, "union-stub");
+    std::fs::write(out_dir.join("shader_no_union.wgsl"), &shader_no_union).unwrap();
+    let specs = module_specs(&Modules {
+        shared: &shared,
+        shader: &shader,
+        shader_no_union: &shader_no_union,
+        union: &union,
+        union_max: &union_max,
+        blend: &blend,
+        present: &present,
+        external: &external,
+        native: &native,
+        projective: &projective,
+        mip: &mip,
+        resolve: &resolve,
+        reduce: &reduce,
+    });
 
-    // The three VARIANT specializations of shader.wgsl plus present.wgsl,
-    // external.wgsl, projective.wgsl and mip.wgsl — the fixed module set
-    // `render` creates. The engine, external and projective modules share
-    // the `shared.wgsl` prelude; the engine and projective tails share the
-    // `blend.wgsl` compositing helpers.
-    let mut specs: Vec<Spec> = (0..3u32)
-        .map(|variant| Spec {
-            name: format!("engine{variant}"),
-            source: format!("const VARIANT: u32 = {variant}u;\n{shared}\n{shader}\n{blend}"),
-            groups: bindings::ENGINE_GROUPS,
-            metal: true,
-            merge_pair: None,
+    compile_specs(&out_dir, &specs);
+}
+
+/// The WGSL module sources `module_specs` splices into `Spec`s.
+struct Modules<'a> {
+    shared: &'a str,
+    shader: &'a str,
+    /// `shader` minus its `// union-stub` spans.
+    shader_no_union: &'a str,
+    union: &'a str,
+    /// The `UNION_MAX_MEMBERS` const fragment.
+    union_max: &'a str,
+    blend: &'a str,
+    present: &'a str,
+    external: &'a str,
+    native: &'a str,
+    projective: &'a str,
+    mip: &'a str,
+    resolve: &'a str,
+    reduce: &'a str,
+}
+
+/// The fixed module set `render` creates: four VARIANT specializations
+/// of `shader.wgsl` plus `present`, `external`, `external_native`,
+/// `projective`, `mip`, `resolve` and `reduce`. The engine, external
+/// and projective modules share the `shared.wgsl` prelude; the engine
+/// and projective tails share the `blend.wgsl` compositing helpers.
+/// Variant 3 (Union) additionally prepends `UNION_MAX_MEMBERS` and links
+/// `union.wgsl`; the plain variants drop every `// union-stub` span, so
+/// their modules carry no union fold or member-cap arrays.
+fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
+    let mut specs: Vec<Spec> = (0..4u32)
+        .map(|variant| {
+            let (cap, shader, union) = if variant == 3 {
+                (m.union_max, m.shader, m.union)
+            } else {
+                ("", m.shader_no_union, "")
+            };
+            Spec {
+                name: format!("engine{variant}"),
+                source: format!(
+                    "const VARIANT: u32 = {variant}u;\n{cap}{}\n{shader}\n{union}{}",
+                    m.shared, m.blend
+                ),
+                groups: bindings::ENGINE_GROUPS,
+                metal: true,
+                merge_pair: None,
+            }
         })
         .collect();
     specs.push(Spec {
         name: "present".into(),
-        source: present,
+        source: m.present.into(),
         groups: bindings::PRESENT_GROUPS,
         metal: true,
         merge_pair: None,
     });
     specs.push(Spec {
         name: "external".into(),
-        source: format!("{shared}\n{external}"),
+        source: format!("{}\n{}", m.shared, m.external),
         groups: bindings::EXTERNAL_GROUPS,
         metal: true,
         merge_pair: None,
@@ -176,27 +259,32 @@ fn main() {
     // `VkSamplerYcbcrConversion` immutable sampler occupies.
     specs.push(Spec {
         name: "external_native".into(),
-        source: format!("{shared}\n{external}\n{native}"),
+        source: format!("{}\n{}\n{}", m.shared, m.external, m.native),
         groups: bindings::NATIVE_EXTERNAL_GROUPS,
         metal: false,
         merge_pair: Some((5, 6)),
     });
     specs.push(Spec {
         name: "projective".into(),
-        source: format!("{shared}\n{blend}\n{projective}"),
+        source: format!("{}\n{}\n{}", m.shared, m.blend, m.projective),
         groups: bindings::PROJECTIVE_GROUPS,
         metal: true,
         merge_pair: None,
     });
-    specs.push(Spec {
-        name: "mip".into(),
-        source: mip,
-        groups: bindings::MIP_GROUPS,
-        metal: true,
-        merge_pair: None,
-    });
-
-    compile_specs(&out_dir, &specs);
+    for (name, source, groups) in [
+        ("mip", m.mip, bindings::MIP_GROUPS),
+        ("resolve", m.resolve, bindings::RESOLVE_GROUPS),
+        ("reduce", m.reduce, bindings::REDUCE_GROUPS),
+    ] {
+        specs.push(Spec {
+            name: name.into(),
+            source: source.into(),
+            groups,
+            metal: true,
+            merge_pair: None,
+        });
+    }
+    specs
 }
 
 fn compile_specs(out_dir: &Path, specs: &[Spec]) {
@@ -217,6 +305,9 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
         compile(out_dir, spec, apple.as_ref(), wasm, spirv);
     }
     if let Some(apple) = apple.as_ref() {
+        // The tile executor's composition shaders. Only the stripped
+        // no-union variant: a union member samples its group's capture,
+        // a read `ExecutionPlan::epoch` never admits into a tile epoch.
         let spec = Spec {
             name: "engine_tile".into(),
             source: specs[2].source.clone(),
@@ -746,30 +837,31 @@ fn compile_metal(out_dir: &Path, name: &str, input: &Path, apple: &AppleTarget, 
     // Metal 3 unified the platform-specific language dialects.
     let dialect = if version >= (3, 0) {
         "metal"
-    } else if sdk == "macosx" {
-        "macos-metal"
-    } else {
+    } else if apple.ios_family {
         "ios-metal"
+    } else {
+        "macos-metal"
     };
+    let mut metal = Command::new("xcrun");
+    metal
+        .args(["-sdk", sdk, "metal", "-c", "-o"])
+        .arg(&air)
+        // Match the language naga emitted instead of inheriting
+        // the build SDK's newest version, which older supported
+        // operating systems cannot load.
+        .arg(format!("-std={dialect}{}.{}", version.0, version.1))
+        .arg("-target")
+        .arg(&apple.metal_target)
+        .arg("-I")
+        .arg(out_dir);
     run(
-        apple
-            .xcrun()
-            .args(["-sdk", sdk, "metal", "-c", "-o"])
-            .arg(&air)
-            // Match the language naga emitted instead of inheriting
-            // the build SDK's newest version, which older supported
-            // operating systems cannot load.
-            .arg(format!("-std={dialect}{}.{}", version.0, version.1))
-            .arg("-I")
-            .arg(out_dir)
-            .arg(input),
+        metal.arg(input),
         name,
         "xcrun metal is required to build cherenkov-gpu for Apple \
              targets: engine shaders are precompiled (issue #57).",
     );
     run(
-        apple
-            .xcrun()
+        Command::new("xcrun")
             .args(["-sdk", sdk, "metallib", "-o"])
             .arg(&metallib)
             .arg(&air),
@@ -857,10 +949,23 @@ fn resource_map(spec: &Spec, module: &naga::Module) -> msl::EntryPointResourceMa
 fn apple_target() -> Option<AppleTarget> {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    let (sdk, deployment_variable) = match target_os.as_str() {
-        "macos" => ("macosx", "MACOSX_DEPLOYMENT_TARGET"),
-        "ios" if target_env == "sim" => ("iphonesimulator", "IPHONEOS_DEPLOYMENT_TARGET"),
-        "ios" => ("iphoneos", "IPHONEOS_DEPLOYMENT_TARGET"),
+    // `air_platform`/`air_environment` spell the Rust target's Metal
+    // `-target` triple; the iOS family flag is just the platform segment.
+    let (sdk, deployment_variable, air_platform, air_environment) = match target_os.as_str() {
+        "macos" => ("macosx", "MACOSX_DEPLOYMENT_TARGET", "macosx", ""),
+        "ios" if target_env == "sim" => (
+            "iphonesimulator",
+            "IPHONEOS_DEPLOYMENT_TARGET",
+            "ios",
+            "-simulator",
+        ),
+        // Catalyst links the macOS SDK's iOSSupport frameworks, so `metal`
+        // runs on the macosx SDK — but the air target and language dialect
+        // stay ios-keyed.
+        "ios" if target_env == "macabi" => {
+            ("macosx", "IPHONEOS_DEPLOYMENT_TARGET", "ios", "-macabi")
+        }
+        "ios" => ("iphoneos", "IPHONEOS_DEPLOYMENT_TARGET", "ios", ""),
         "tvos" | "watchos" | "visionos" => panic!(
             "cherenkov-gpu precompiles Metal shaders for Apple targets (issue \
              #57): no Metal SDK mapping exists for target-os {target_os}"
@@ -892,10 +997,11 @@ fn apple_target() -> Option<AppleTarget> {
         .expect("rustc reports the target platform's deployment variable")
         .to_owned();
     deployment::require_floor(&deployment_version);
+    let metal_target = format!("air64-apple-{air_platform}{deployment_version}{air_environment}");
     Some(AppleTarget {
         sdk,
-        deployment_variable,
-        deployment_version,
+        metal_target,
+        ios_family: air_platform == "ios",
     })
 }
 

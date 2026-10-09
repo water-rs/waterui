@@ -237,6 +237,12 @@ erasure happens below the authoring layer. It adapts to a sliding pane on a phon
 side-by-side columns on a large window. Both closures are re-invoked on rebuild, so state
 they read must be owned outside them.
 
+At compact widths a two-column split shows exactly one column, chosen by the
+selection binding: `Some` shows the detail and `None` shows the sidebar. The
+platform back control, including a completed swipe back, writes `None`. The
+binding is the single source of truth on every backend: start with `None` if the
+app should open on the sidebar. At wider widths the columns remain side by side.
+
 ## Windows
 
 A single-window app needs nothing beyond `App::new(view, env)`. For window chrome,
@@ -263,11 +269,21 @@ The `Window` builder, precisely:
   `window.handle().set_style(..)`) re-applies it to the open window, e.g. to toggle
   decorations. "Frosted" and "transparent" are **not** styles — they are backgrounds:
 - `.background(..)` accepts a `Color` (a translucent one gives a transparent window), a
-  `WindowBackground` (`Opaque` is the theme background) or a `Binding<WindowBackground>`,
-  or a `Material` (frosted glass; applied to the window's content, best-effort per
-  backend). The background is reactive: setting the binding (or
-  `window.handle().set_background(..)`) re-applies it to the open window, e.g. to toggle
-  between opaque and translucent.
+  `Material` (the window's material), a `WindowBackground` (`Opaque` is the theme
+  background; `Color(..)` and `Material(..)` are the other two) or a
+  `Binding<WindowBackground>`. A material window background is realized at the window,
+  not on the content: `Regular`, `Thick` and `UltraThick` frost the window's own opaque
+  background behind the content; `UltraThin` and `Thin` make the window translucent so
+  the desktop shows through — blurred on macOS on the Apple and Hydrolysis
+  backends, through the DWM's acrylic system backdrop on Windows 11 22H2 and
+  later, under an X11 window manager honouring `_KDE_NET_WM_BLUR_BEHIND_REGION`
+  (KWin), and under a Wayland compositor advertising
+  `ext-background-effect-v1` and applying its blur by its own policy; older
+  Windows, other X11 window managers and Wayland compositors not advertising
+  the global leave the window tinted with the level's colour but unblurred. The Kotlin Android runtime realizes no material
+  and draws a material window background as the opaque theme background. The background is reactive:
+  setting the binding (or `window.handle().set_background(..)`) re-applies it to the
+  open window, e.g. to switch between opaque, a translucent colour and a material.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
   take one `impl IntoComputed<Size>` (a `Size` or a signal of one, not two floats);
   without a min, the backend derives one by measuring content at a zero proposal.

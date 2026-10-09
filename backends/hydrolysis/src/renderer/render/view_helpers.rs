@@ -222,10 +222,13 @@ pub fn a11y_scoped_env_for_view(
 /// leaf inside its content — claims the content's explicit label, role, or
 /// identifier; the subtree then emits under the container-child environment
 /// that strips that naming ([`accessibility_container_child_environment`]).
-/// `Metadata<Environment>` snapshots are transparent to hoisting: every row's
-/// content arrives wrapped in the selection theme's `use_env` snapshot, which
-/// is not a view the user named — it stays on the returned view while the
-/// metadata inside it lifts. Any other `Metadata<T>` (a `.padding()` between
+/// `Metadata<Environment>` snapshots and `IgnorableMetadata<MaterialGroup>`
+/// scope markers are transparent to hoisting. A snapshot stays on the
+/// returned view while the naming metadata inside it lifts, because every
+/// row's content arrives wrapped in the selection theme's `use_env`
+/// snapshot, which is not a view the user named. A group marker stays the
+/// same way — a pure scope marker is not a view the user named either.
+/// Any other `Metadata<T>` (a `.padding()` between
 /// the modifier and the named view) still belongs to the subtree's own build,
 /// so hoisting stops at one.
 #[cfg(feature = "accessibility")]
@@ -242,6 +245,17 @@ fn hoist_accessibility_metadata_inner(mut view: AnyView, scoped: &mut Environmen
             let Metadata { content, value } = *metadata;
             let content = hoist_accessibility_metadata_inner(content, scoped);
             return AnyView::new(Metadata { content, value });
+        }
+        Err(view) => view,
+    };
+    // A `.material_group()` is a pure scope marker, like the
+    // `Metadata<Environment>` snapshot above: it stays on the returned
+    // view while the naming metadata inside it lifts.
+    view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
+        Ok(metadata) => {
+            let IgnorableMetadata { content, value } = *metadata;
+            let content = hoist_accessibility_metadata_inner(content, scoped);
+            return AnyView::new(IgnorableMetadata { content, value });
         }
         Err(view) => view,
     };
@@ -324,6 +338,9 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
+        // `.material_group()` marks a scope for backdrop capture only:
+        // every measure/identity/label lookup sees the content it wraps.
+        MaterialGroup,
         AccessibilityIdentifier,
         AccessibilityLabel,
         AccessibilityValue,
@@ -495,6 +512,10 @@ fn normalize_layout_view_with_budget(
     // then relabel every descendant leaf).
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
+        // `.material_group()` is a scope marker with no environment effect:
+        // its wrapper must reach the tree build so the flush can push the
+        // scope its member materials join (water-rs/waterui#1999).
+        MaterialGroup,
         AccessibilityIdentifier,
         AccessibilityLabel,
         AccessibilityValue,
@@ -532,6 +553,28 @@ fn normalize_layout_view_with_budget(
         AccessibilityStateSignal, a11y_scoped_env;
         AccessibilityState, a11y_scoped_env_for_state
     );
+
+    // A plain `FixedContainer` has not run `body()` yet: its layout object
+    // is still the one the modifier built — the only moment
+    // `BackgroundLayout` is identifiable, because `body` wraps it in
+    // `DirectionalLayout`. Keep the container plain: the tree build
+    // identifies the slot while the layout is still concrete and then runs
+    // `body` itself; normalization only descends into the children.
+    if view.is::<FixedContainer>() {
+        let container = *view
+            .downcast::<FixedContainer>()
+            .expect("layout normalization failed to downcast FixedContainer");
+        let (layout, children) = container.into_inner();
+        let mut normalized_children = Vec::with_capacity(children.len());
+        for child in children {
+            normalized_children.push(normalize_layout_view_with_budget(
+                child,
+                env,
+                next_remaining,
+            ));
+        }
+        return AnyView::new(FixedContainer::from_parts(layout, normalized_children));
+    }
 
     if view.is::<Native<FixedContainer>>() {
         let native = *view
@@ -636,7 +679,7 @@ pub fn interaction_focus_ring(
 ) -> Option<(
     kurbo::Rect,
     kurbo::RoundedRectRadii,
-    cherenkov::WorkingColor,
+    waterui_graphics::draw::WorkingColor,
     f64,
 )> {
     let ring = style.focus_ring.as_ref()?;
@@ -936,9 +979,9 @@ pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurb
     )
 }
 
-/// The sRGB8 encoding of a resolved working colour — the form parley's text
-/// layout takes for its brush.
-pub fn working_color_to_rgba8(color: cherenkov::WorkingColor) -> [u8; 4] {
+/// The sRGB8 encoding of a resolved working colour — the brush form text
+/// shaping takes.
+pub fn working_color_to_rgba8(color: waterui_graphics::draw::WorkingColor) -> [u8; 4] {
     let srgb = waterui_graphics::color::working::to_srgb(color);
     [
         crate::num_cast::f32_as_u8((srgb.red.clamp(0.0, 1.0) * 255.0).round()),
@@ -955,35 +998,6 @@ pub fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
         f32::from(color[2]) / 255.0,
         f32::from(color[3]) / 255.0,
     ])
-}
-
-pub const fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
-    let value = match weight {
-        TextFontWeight::Thin => 100.0,
-        TextFontWeight::UltraLight => 200.0,
-        TextFontWeight::Light => 300.0,
-        TextFontWeight::Normal => 400.0,
-        TextFontWeight::Medium => 500.0,
-        TextFontWeight::SemiBold => 600.0,
-        TextFontWeight::Bold => 700.0,
-        TextFontWeight::UltraBold => 800.0,
-        TextFontWeight::Black => 900.0,
-    };
-    parley::FontWeight::new(value)
-}
-
-pub fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parley::Alignment {
-    if alignment == HorizontalAlignment::Leading && right_to_left
-        || alignment == HorizontalAlignment::Trailing && !right_to_left
-    {
-        parley::Alignment::Right
-    } else if alignment == HorizontalAlignment::Leading
-        || alignment == HorizontalAlignment::Trailing
-    {
-        parley::Alignment::Left
-    } else {
-        parley::Alignment::Center
-    }
 }
 
 pub fn transformed_rect(transform: kurbo::Affine, rect: kurbo::Rect) -> kurbo::Rect {
@@ -1033,25 +1047,4 @@ pub fn circle_arc_path(
         ));
     }
     path
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn logical_text_alignment_follows_environment_direction() {
-        assert_eq!(
-            parley_alignment(HorizontalAlignment::Leading, false),
-            parley::Alignment::Left
-        );
-        assert_eq!(
-            parley_alignment(HorizontalAlignment::Leading, true),
-            parley::Alignment::Right
-        );
-        assert_eq!(
-            parley_alignment(HorizontalAlignment::Trailing, true),
-            parley::Alignment::Left
-        );
-    }
 }

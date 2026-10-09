@@ -132,6 +132,36 @@ jobs:
       - name: Lint target cache writer
         id: writer
         run: echo "sweep=${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.lint-target.outputs.cache-hit != 'true' }}" >> "${GITHUB_OUTPUT}"
+      # The affected set as this Linux leg compiles it. `-p` and `--exclude`
+      # are mutually exclusive, so the Apple-only crates are dropped from the
+      # package arguments here — the macOS legs lint them. An Apple-only
+      # scope therefore compiles nothing on Linux. `compiles` is exactly the
+      # condition under which some cargo step below runs: each one is gated
+      # on the full or workspace sweep, the writer sweep, or a package this
+      # filtered set names.
+      - name: Linux scope
+        id: linux-scope
+        env:
+          PACKAGE_ARGS: ${{ inputs.package-args }}
+          SWEEPS: ${{ inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' }}
+        run: |
+          # `package-args` is affected.py's `-p <name>` pairs.
+          read -ra words <<< "${PACKAGE_ARGS}"
+          args=()
+          for ((i = 0; i < ${#words[@]}; i += 2)); do
+            case "${words[i + 1]}" in
+              waterui-apple | cocoa-ui) ;;
+              *) args+=("${words[i]}" "${words[i + 1]}") ;;
+            esac
+          done
+          compiles=false
+          if [ "${SWEEPS}" = true ] || [ "${#args[@]}" -gt 0 ]; then
+            compiles=true
+          fi
+          {
+            echo "args=${args[*]}"
+            echo "compiles=${compiles}"
+          } >> "${GITHUB_OUTPUT}"
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
       # waterui-cli's `#[cfg(test)]` font-subsetting module `include_bytes!`s
@@ -140,15 +170,17 @@ jobs:
       # The composite also installs the test fonts the styled suites resolve
       # at run time; this gate never runs tests, so that half only matters
       # to the `full` callers that share the step.
+      # The writer sweep lints the whole workspace with `--all-targets`
+      # whatever the scope, so it needs every generated asset too.
       - name: Generate Hydrolysis test assets
-        if: inputs.full || inputs['test-assets']
+        if: inputs.full || inputs['test-assets'] || steps.writer.outputs.sweep == 'true'
         uses: ./.github/actions/generate-test-assets
       # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
       # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
       # `--all-targets` compiles them, so the fonts must exist first.
       # Corpus and perf are read at run time — this job never runs tests.
       - name: Generate Cherenkov scene assets
-        if: inputs.full || inputs['scene-assets']
+        if: inputs.full || inputs['scene-assets'] || steps.writer.outputs.sweep == 'true'
         uses: ./.github/actions/generate-scene-assets
         with:
           mode: fonts
@@ -170,24 +202,21 @@ jobs:
         # waterui-apple / cocoa-ui compile only on Apple hosts; the macOS legs carry them.
         run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets -- -D warnings
       - name: Check and clippy (affected packages)
-        if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && inputs.affected != '' && steps.writer.outputs.sweep != 'true'
+        if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && steps.writer.outputs.sweep != 'true' && steps.linux-scope.outputs.args != ''
+        env:
+          LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
-          # `-p` and `--exclude` are mutually exclusive, so the Apple-only
-          # crates are filtered out of the affected set on this Linux leg —
-          # the macOS legs cover them.
-          args="$(printf '%s' '${{ inputs.package-args }}' | sed -E 's/(^| )-p (waterui-apple|cocoa-ui)//g')"
-          if [ -n "$args" ]; then
-            cargo check --locked --profile ci-check $args --all-targets
-            cargo clippy --locked --profile ci-check $args --all-targets -- -D warnings
-          fi
+          read -ra args <<< "${LINUX_ARGS}"
+          cargo check --locked --profile ci-check "${args[@]}" --all-targets
+          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
       - name: Clippy and rustdoc (comment-only owners)
-        if: inputs.full == false && inputs['comment-only'] == true
+        if: inputs.full == false && inputs['comment-only'] == true && steps.linux-scope.outputs.args != ''
+        env:
+          LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
-          args="$(printf '%s' '${{ inputs.package-args }}' | sed -E 's/(^| )-p (waterui-apple|cocoa-ui)//g')"
-          if [ -n "$args" ]; then
-            cargo clippy --locked --profile ci-check $args --all-targets -- -D warnings
-            RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps $args
-          fi
+          read -ra args <<< "${LINUX_ARGS}"
+          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps "${args[@]}"
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
       # description would otherwise go unnoticed until a non-GPU target built it.
@@ -219,9 +248,8 @@ jobs:
       # `--workspace`: the root manifest carries both `[workspace]` and
       # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
       # backend's own non-default features were linted only where the root
-      # happened to enable them. Nothing in CI compiled dew's
-      # `embedded-simulator` / `espidf`, gtk's `webkitgtk`, or the browsers'
-      # engine features at all (#261).
+      # happened to enable them. Nothing in CI compiled gtk's
+      # `webkitgtk` or the browsers' engine features at all (#261).
       #
       # `--workspace --all-features` covers all of those — except
       # `waterui-apple` (ARM-Apple-only objc2 code plus a `native` suite that
@@ -282,14 +310,19 @@ jobs:
       # WKWebView bridge exists on macOS alone — would regress invisibly
       # otherwise. The bare check is the other half of that contract: call
       # sites a feature gates out rot under every enabled leg.
+      #
+      # `default = []`, so the default-feature affected pass compiles none of
+      # the `accessibility`-gated tests; the fast gate runs this leg too
+      # whenever the scope can reach Hydrolysis, or they lint only nightly
+      # (#2047). Measured at 27 s on top of the default-feature graph.
       - name: Clippy (hydrolysis, checked feature set)
-        if: inputs.full
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
         run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - name: Check (hydrolysis, no features)
         if: inputs.full
         run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib
       # The cli's own CI ran a no-default-features check on every change
-      # (water-rs/cli ci.yml): `default` bundles esp32+svg-icons+preview,
+      # (water-rs/cli ci.yml): `default` bundles svg-icons+preview,
       # and nothing else in this workspace compiles the bare shape.
       - name: Check (waterui-cli, no default features)
         if: inputs.full || contains(inputs.affected, 'waterui-cli')
@@ -302,7 +335,10 @@ jobs:
       - name: Skill snippet compile gate
         if: inputs.full
         run: cargo check --locked --profile ci-check -p skill_snippets --all-targets --features compile-gate-tests
+      # Every cargo step above writes `target`, so it exists exactly when
+      # one of them ran; a run that compiled and left none fails here.
       - name: Target size
+        if: steps.linux-scope.outputs.compiles == 'true'
         run: du -sh target
       # Retirement runs after every check has passed and BEFORE the saves:
       # a lockfile bump mints a new key, so the superseded generations of
@@ -408,8 +444,9 @@ jobs:
       # `compile_error` off wasm32, so the all-features pass is the only
       # way the WebGL executor gets linted anywhere. cherenkov-gpu's
       # browser test target compiles the WebGPU surface code nothing on
-      # the host can see, and cherenkov-cpu is the whole CPU backend's
-      # wasm shape.
+      # the host can see, cherenkov-cpu is the whole CPU backend's wasm
+      # shape, and cherenkov's own pass lints the engine crate's wasm
+      # test targets.
       - name: Clippy (Cherenkov wasm32 legs)
         run: |
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
@@ -420,6 +457,9 @@ jobs:
             -- -D warnings
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
             -p cherenkov-cpu --all-targets \
+            -- -D warnings
+          cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
+            -p cherenkov --all-targets \
             -- -D warnings
 
   # The workspace test run, per platform, also carrying the doctests that
@@ -533,8 +573,8 @@ jobs:
   # `cargo nextest run --locked --all-features` inside the `test` job, with neither
   # `-p` nor `--workspace`: the root manifest carries both `[workspace]` and
   # `[package]`, so cargo narrowed it to the root `waterui` crate, and a
-  # backend crate's tests behind its own optional features — dew's
-  # `embedded-simulator`, the browsers' engine features — ran nowhere
+  # backend crate's tests behind its own optional features — the
+  # browsers' engine features — ran nowhere
   # (#276, the test-side twin of
   # #261). It is its own job for the same reason the clippy sweep is a
   # separate step: a second feature variant of the dependency graph is a
@@ -738,31 +778,24 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
           cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
-      # The clippy below compiles waterui-cli's `#[cfg(test)]` modules,
-      # which `include_bytes!` the generated Roboto fixture — and the
-      # real-engine run resolves the installed test fonts by family name.
+      # The clippy in `macos-lint` compiles waterui-cli's `#[cfg(test)]`
+      # modules, which `include_bytes!` the generated Roboto fixture — and
+      # the real-engine run resolves the installed test fonts by family
+      # name.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
-      # Hydrolysis's own CI ran this clippy shape on macos-latest alongside
-      # Linux and Windows; the in-tree move kept it on Linux only, which
-      # silently dropped the backend's `cfg(target_os = "macos")` lint
-      # coverage (#1428 review). This leg restores it, on the same feature
-      # sweep the Linux lint step runs — `webview-system` is the macOS-only
-      # entry point no other leg sees.
-      - name: Clippy (hydrolysis, checked feature set)
-        run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # The macOS host lint legs for hydrolysis's `cfg(target_os =
+      # "macos")` code — `webview-system`'s WKWebView bridge is the entry
+      # point no other leg sees — and waterui-cli's Apple-side plumbing.
+      # The fast gate's `macos` job below calls the same composite, so the
+      # two legs can never drift on the commands.
+      - name: Clippy (macOS host crates)
+        uses: ./.github/actions/macos-lint
       # `cargo test` rather than nextest: CEF's browser process has to own the
       # main thread, libtest runs test bodies on spawned ones, so the target is
       # `harness = false` and nextest cannot enumerate it.
       - name: Run the CEF real-engine tests
         run: cargo test --locked -p waterui-browser-cef --features real-engine --test real_engine
-      # The cli's own CI linted on every OS because most of the crate is
-      # behind `cfg(target_os)`: the Apple backend, the Windows toolchain
-      # and process plumbing. A clippy finding in macOS-only code surfaces
-      # nowhere else — the fast gate lints on Linux alone — so this job,
-      # the macOS lint leg, owns waterui-cli too.
-      - name: Clippy (waterui-cli)
-        run: cargo clippy --locked --profile ci-check -p waterui-cli --all-targets -- -D warnings
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -867,6 +900,197 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+
+  # The Android host library's own lint (`warningsAsErrors`): the Kotlin
+  # half of the Android runner, which no cargo pass reaches (#2047), plus
+  # the `preview` module's instrumentation the CLI drives for
+  # `water preview --platform android` (#2216). Lint itself needs no Rust
+  # build — it analyses the Kotlin sources against `compileSdk` — so it
+  # runs beside the cross-target clippy above on the same scope. The job
+  # also assembles the generated preview-host app: the CLI's
+  # `render_preview_host` example renders the composite through the
+  # library's own host resolution — the same preparation `water preview`
+  # renders the managed host with — into
+  # `backends/hydrolysis/android-preview-host` (never committed), then
+  # `:app:assembleDebug` compiles it against the in-tree host checkout —
+  # the only place the generated app's Kotlin↔Gradle wiring is checked.
+  # The embedded-library composite gets the same treatment, rendered by
+  # `render_embedded_library`, published to the runner's mavenLocal and
+  # compiled against by a consumer app.
+  # The CLI renders both, so a CLI-only change runs the job too, but
+  # only the renders and the assembles: no CLI change reaches the host's
+  # Kotlin, so the host lint and its Gradle setup run only when the scope
+  # reaches Hydrolysis. The wrapper JARs are not committed (the CLI
+  # materializes them), so each build installs the distribution its own
+  # wrapper pins: the host's for the lint, the rendered app's — the Gradle
+  # users run — for the assemble. The host's Robolectric unit tests run
+  # only in the nightly (`full`): the push gate is format, compile and lint.
+  hydrolysis-android-host:
+    name: Hydrolysis Android host lint
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'waterui-cli')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backends/hydrolysis/android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Gradle version pinned by the host wrapper
+        id: host-gradle-version
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+        run: |
+          version="$(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin\.zip$|\1|p' gradle/wrapper/gradle-wrapper.properties)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: gradle/actions/setup-gradle@v4
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+        with:
+          gradle-version: ${{ steps.host-gradle-version.outputs.version }}
+      - name: Lint the host, gpu and preview modules
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+        run: gradle :host:lintDebug :gpu:lintDebug :preview:lintDebug
+      - name: Host unit tests
+        if: inputs.full
+        run: gradle :host:testDebugUnitTest
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: ""
+          cache: "false"
+      # Reads the shared `cargo-sources` archive the lint lane owns on
+      # Linux, like every other read-only lane — the render example
+      # compiles waterui-cli once.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The project is generated, never hand-written: `examples/form` is on
+      # this checkout's `waterui_path`, so the library resolves the in-tree
+      # host and the app's `minSdk` and JDK level from it. The render
+      # reaches none of the CLI's optional features, so it builds without
+      # the defaults.
+      - name: Render the generated preview-host app
+        working-directory: ${{ github.workspace }}
+        run: cargo run --locked --profile ci-check -p waterui-cli --no-default-features --example render_preview_host -- examples/form backends/hydrolysis/android-preview-host
+      - name: Gradle version pinned by the rendered wrapper
+        id: app-gradle-version
+        working-directory: backends/hydrolysis/android-preview-host
+        run: |
+          version="$(sed -n 's|^distributionUrl=.*/gradle-\(.*\)-bin\.zip$|\1|p' gradle/wrapper/gradle-wrapper.properties)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ steps.app-gradle-version.outputs.version }}
+      - name: Assemble the generated preview-host app
+        working-directory: backends/hydrolysis/android-preview-host
+        run: gradle :app:assembleDebug
+      # The embedded library: `render_embedded_library` renders the Gradle
+      # composite `water build` assembles for an embedded project (no Rust
+      # build — the AAR carries no native library here) and reports its
+      # coordinates, host version and Gradle tasks as JSON. The tasks
+      # publish the host modules and assemble and publish the library to
+      # this runner's mavenLocal; a consumer app then compiles the mount
+      # call `water build` prints against the published coordinate, which
+      # checks the composite, the substitution, the POM's `api`
+      # dependencies and the generated `WaterUi` signatures together. Both
+      # Gradle builds share the rendered wrapper's distribution set up above.
+      - name: Render the generated embedded library
+        id: embedded-library
+        working-directory: ${{ github.workspace }}
+        run: |
+          library="$(cargo run --locked --profile ci-check -p waterui-cli --no-default-features --example render_embedded_library -- examples/form backends/hydrolysis/android-embedded-library)"
+          {
+            echo "host-version=$(jq -r .host_version <<<"$library")"
+            echo "tasks=$(jq -r '.gradle_tasks | join(" ")' <<<"$library")"
+            echo "coordinate=$(jq -r '"\(.group):\(.artifact):\(.version)"' <<<"$library")"
+            echo "package=$(jq -r .group <<<"$library")"
+            echo "compile-sdk=$(jq -r .compile_sdk <<<"$library")"
+            echo "min-sdk=$(jq -r .min_sdk <<<"$library")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Assemble and publish the generated embedded library
+        working-directory: backends/hydrolysis/android-embedded-library
+        env:
+          WATERUI_HYDROLYSIS_HOST_VERSION: ${{ steps.embedded-library.outputs.host-version }}
+        run: gradle ${{ steps.embedded-library.outputs.tasks }}
+      - name: Compile an app consuming the embedded library
+        working-directory: cli/tests/fixtures/android-embedded-consumer
+        run: >-
+          gradle :app:compileDebugKotlin
+          -PwateruiLibrary=${{ steps.embedded-library.outputs.coordinate }}
+          -PwateruiPackage=${{ steps.embedded-library.outputs.package }}
+          -PwateruiCompileSdk=${{ steps.embedded-library.outputs.compile-sdk }}
+          -PwateruiMinSdk=${{ steps.embedded-library.outputs.min-sdk }}
+
+  # Hydrolysis's Windows leg, beside the Android one for the same reason:
+  # `cfg(target_os = "windows")` code — the winit platform's cursor,
+  # monitor and extended-style calls — is compiled nowhere else. The
+  # nightly's `windows.yml` lints the workspace natively with default
+  # features, and `winit` is not one of them, so cross-checking the target
+  # on ubuntu is the only coverage this code gets — none until now, which
+  # is how it accumulated 16 warnings (#1886). Linting needs no Windows
+  # SDK: every dependency it reaches is a type check, not a link.
+  #
+  # The nightly sweeps it under `full`; the fast gate also runs it when the
+  # affected scope can reach the crate, like the Android leg above.
+  hydrolysis-windows:
+    name: x86_64-pc-windows-msvc
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # Build scripts still run on the host; cherenkov-gpu's optimizes its
+      # precompiled SPIR-V with spirv-opt on every non-Apple native target.
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+      - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
+
+  # The macOS host legs beside the cross-target ones above (#2143): the
+  # Linux lint compiles `cfg(target_os = "macos")` code away, so a
+  # macOS-only lint break in hydrolysis or waterui-cli used to surface
+  # only in the nightly's `cef` job. Same commands through the shared
+  # `macos-lint` composite; the nightly keeps them in `cef`, where they
+  # share the CEF leg's runner — running them here too under `full`
+  # would pay a second macOS slot for an identical pass.
+  macos:
+    name: aarch64-apple-darwin
+    if: inputs.full == false && (inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'waterui-cli'))
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+          cache: "false"
+      # Reads the shared `cargo-sources` archive written by the Apple
+      # gate's rust job (apple.yml); read-only lanes never save.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # `--all-targets` compiles waterui-cli's `#[cfg(test)]` modules,
+      # which `include_bytes!` the generated Roboto fixture — the
+      # repository stores it nowhere.
+      - name: Generate Hydrolysis test assets
+        if: inputs['test-assets']
+        uses: ./.github/actions/generate-test-assets
+      - name: Clippy (macOS host crates)
+        uses: ./.github/actions/macos-lint
+        with:
+          hydrolysis: ${{ inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') }}
+          waterui-cli: ${{ inputs.affected == 'workspace' || contains(inputs.affected, 'waterui-cli') }}
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,

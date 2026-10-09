@@ -13,7 +13,11 @@ use crate::ShaderId;
 use crate::backend::Backend;
 use crate::error::ResourceError;
 use crate::image::Format;
-use crate::message::{BackdropId, BackdropShaderId, LayerId, ProducerId, SurfaceId};
+use cherenkov_record::{
+    BackdropId, BackdropSampling, BackdropShaderId, GpuInstalls, LayerId, SurfaceId,
+};
+
+use crate::message::ProducerId;
 use crate::style::FilterId;
 
 /// The backend draws user WGSL shader paints.
@@ -82,7 +86,11 @@ pub trait Effects: Filters {
 /// a rendered producer draws into a buffer from the renderer-owned frame
 /// ring and a [`FrameSink`](crate::FrameSink)'s producer takes the frame
 /// its owner submits.
-pub trait GpuContent: Backend {
+///
+/// `GpuInstalls` — the marker that lets the backend's target seal an
+/// install payload — comes with `GpuContent`: a backend that runs GPU
+/// producers is always a target that can install them.
+pub trait GpuContent: Backend + GpuInstalls {
     /// The rendered producer's content payload type.
     type Content: crate::RenderTransfer + 'static;
     /// The frame payload a [`FrameSink`](crate::FrameSink) submits
@@ -98,15 +106,9 @@ pub trait GpuContent: Backend {
     fn add_gpu_producer(r: &mut Self::Renderer, producer: ProducerId, content: Self::Content);
     /// Registers `producer` as a submitted-frame producer — the kind whose
     /// frames come from [`FrameSink::submit`](crate::FrameSink::submit).
-    /// `dirty` and `gate` are the sink's shared wake state: the sink marks
-    /// the producer dirty on each submit and the render loop drives the
-    /// gate with the visibility of the surfaces drawing its bindings.
-    fn add_frame_producer(
-        r: &mut Self::Renderer,
-        producer: ProducerId,
-        dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        gate: std::sync::Arc<crate::WakeGate>,
-    );
+    /// It has no wake state: each submitted frame wakes the surfaces
+    /// [`submit_frame`](Self::submit_frame) reports it bound on.
+    fn add_frame_producer(r: &mut Self::Renderer, producer: ProducerId);
     /// Binds `producer` to `layer` of `surface` at `size` pixels — the
     /// binding samples `ImageSource::Content(producer)`, the producer's
     /// current frame, and becomes a `Source::Frame` candidate for the
@@ -199,9 +201,15 @@ impl<F: filtrate_core::Filter<Kind = filtrate_core::kind::Color>>
 
 /// The backend captures and samples backdrops
 /// (`Surface::backdrop_group_unfiltered`, `LayerEdit::backdrop`).
-pub trait Backdrop: Filters {
-    /// Registers backdrop group `id` on `surface` with no filter chain.
-    fn add_backdrop_group(r: &mut Self::Renderer, surface: SurfaceId, id: BackdropId);
+pub trait Backdrop: Filters + BackdropSampling {
+    /// Registers backdrop group `id` on `surface` with no filter chain,
+    /// capturing per `spec` ([`BackdropSpec`](crate::BackdropSpec)).
+    fn add_backdrop_group(
+        r: &mut Self::Renderer,
+        surface: SurfaceId,
+        id: BackdropId,
+        spec: crate::BackdropSpec,
+    );
 
     /// Unregisters a backdrop group; frames that still sample it fail.
     fn remove_backdrop_group(r: &mut Self::Renderer, surface: SurfaceId, id: BackdropId);
@@ -212,13 +220,15 @@ pub trait Backdrop: Filters {
 pub trait BackdropRuns<K: filtrate_core::kind::Kind, F: BackdropChain<K> + crate::RenderTransfer>:
     Backdrop
 {
-    /// Registers backdrop group `id` on `surface` whose capture runs
-    /// through `filter`.
+    /// Registers backdrop group `id` on `surface` capturing per `spec`
+    /// ([`BackdropSpec`](crate::BackdropSpec)), whose capture runs through
+    /// `filter` with its footprint counted in capture texels.
     fn add_filtered_backdrop_group(
         r: &mut Self::Renderer,
         surface: SurfaceId,
         id: BackdropId,
         filter: F,
+        spec: crate::BackdropSpec,
     );
 }
 
@@ -269,16 +279,38 @@ pub trait BackdropShaders: Backdrop {
 /// The backend produces HDR output.
 pub trait HdrOutput: Backend {}
 
-/// The backend composes projective layers (`LayerEdit::projection`).
-///
-/// It renders a projective layer's subtree into a bounded
-/// layer-local image and projects that image during composition. A
-/// banded backend that cannot hold the bounded local image does not
-/// implement it.
-pub trait ProjectiveLayers: Backend {}
-
 /// The backend presents on multiple hardware planes.
 pub trait Planes: Backend {}
+
+/// The backend shows system layers the host supplies — a system web view,
+/// an embedded platform view — in the layer tree, through
+/// [`Hosted::at`](crate::Hosted::at).
+///
+/// A hosted layer is always realized on a system-compositor plane of its
+/// own and never composited by the engine. [`Object`](Self::Object) is the
+/// platform object itself, not pixels: no engine path samples, filters,
+/// caches or reads it back, because none can reach it. Its eligibility is
+/// the mandatory-plane rule — a hosted layer that cannot be placed on a
+/// plane fails the render with
+/// [`RenderError::Unplaceable`](crate::RenderError::Unplaceable), never
+/// falls back to composition.
+pub trait HostedLayers: Planes + GpuInstalls {
+    /// The platform object the host hands over: an `NSView` on macOS, a
+    /// `CALayer` on iOS, a `SurfaceControl` on Android.
+    type Object: Clone + crate::RenderTransfer + 'static;
+    /// Binds `object` as the content of `layer` on `surface`, its own
+    /// coordinate space mapped onto the layer's content space with
+    /// `(0, 0)..size` as its extent. Replaces the layer's other content; a
+    /// rebinding of the same object on the same layer keeps its plane and
+    /// moves only its geometry.
+    fn bind_hosted(
+        r: &mut Self::Renderer,
+        surface: SurfaceId,
+        layer: LayerId,
+        object: Self::Object,
+        size: kurbo::Size,
+    );
+}
 
 /// A user shader's WGSL fragment source.
 #[derive(Clone, Debug)]
