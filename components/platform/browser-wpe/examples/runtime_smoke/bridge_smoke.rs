@@ -638,4 +638,95 @@ pub fn run(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
         "PASS document-bound reply: delayed A reply cannot invoke E's replacement resolver"
     );
     tracing::info!("PASS handler audit: no excluded-document request reached Rust");
+
+    run_same_process_admission(runtime, executor, deadline);
+}
+
+fn run_same_process_admission(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
+    let mut excluded_server = LocalHttpServer::new();
+    let mut admitted_server = LocalHttpServer::new();
+    let excluded_origin = format!("http://127.0.0.1:{}", excluded_server.port());
+    let admitted_origin = format!("http://127.0.0.1:{}", admitted_server.port());
+    assert_ne!(excluded_origin, admitted_origin);
+    let admitted_url = format!("{admitted_origin}/hold-a");
+    let initial_url = format!("{excluded_origin}/e")
+        .parse::<Url>()
+        .expect("parse excluded same-site WPE smoke URL");
+    let page = SmokePage::new(runtime.clone(), executor);
+    page.set_bridge_origins(OriginPolicy::new(
+        BridgeOrigins::Allowed(vec![Str::from(admitted_origin.clone())]),
+        &initial_url,
+    ));
+    install_bridge(&page);
+    let handler_calls = Arc::new(Mutex::new(Vec::<String>::new()));
+    install_probe_handler(&page, Arc::clone(&handler_calls));
+
+    await_load(
+        &page,
+        &mut excluded_server,
+        initial_url.as_str(),
+        "loaded-A-e",
+        deadline,
+    );
+    let excluded_process = await_process_identifier(&page, deadline);
+    page.load_uri(&admitted_url);
+    admitted_server.wait_for(
+        &page,
+        |request| request.path == "/hold-a",
+        deadline,
+        "held same-site admitted response",
+    );
+    let provisional_process = await_process_identifier(&page, deadline);
+    assert_eq!(excluded_process, provisional_process);
+    let provisional = await_page_script(
+        &page,
+        r#"
+          const origin = location.origin;
+          let result = "resolved";
+          try {
+            await waterui.invoke("probe", {tag: "E-same-site-provisional"});
+          } catch {
+            result = "rejected";
+          }
+          return {origin, result};
+        "#,
+        deadline,
+    );
+    assert_eq!(provisional["origin"], excluded_origin);
+    assert_eq!(provisional["result"], "rejected");
+    assert!(
+        handler_calls
+            .lock()
+            .expect("handler call list lock")
+            .is_empty(),
+        "excluded same-site document reached a Rust handler during provisional load"
+    );
+    admitted_server.response_gate.release();
+    admitted_server.wait_for_tag(&page, "loaded-A-hold-a", deadline);
+    let admitted_process = await_process_identifier(&page, deadline);
+    tracing::info!(
+        "Same-site admission {excluded_origin} -> {admitted_origin}: WebProcess identifiers excluded={excluded_process} provisional={provisional_process} admitted={admitted_process}"
+    );
+    assert_eq!(
+        excluded_process, admitted_process,
+        "same-host different-port navigation swapped WebProcesses"
+    );
+    let admitted = await_page_script(
+        &page,
+        r#"
+          const value = await waterui.invoke("probe", {tag: "A-same-site-committed"});
+          return {origin: location.origin, tag: value.tag};
+        "#,
+        deadline,
+    );
+    assert_eq!(admitted["origin"], admitted_origin);
+    assert_eq!(admitted["tag"], "A-same-site-committed");
+    assert_eq!(
+        *handler_calls.lock().expect("handler call list lock"),
+        ["A-same-site-committed"],
+        "only the admitted committed document may reach the Rust handler"
+    );
+    tracing::info!(
+        "PASS same-process admission: different-port E rejected during provisional load, A call and reply accepted after commit, one WebProcess throughout"
+    );
 }
