@@ -484,7 +484,7 @@ pub async fn build_with_features(
 ///
 /// Returns an error when the launcher crate has not been generated or the
 /// font resolution fails.
-pub async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
+pub(crate) async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
     if !fs::metadata(backend_path.join("Cargo.toml"))
         .await
@@ -505,7 +505,7 @@ pub async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
 ///
 /// Returns an error when the NDK or SDK cannot be resolved or the build or
 /// staging fails.
-pub async fn build_prepared(
+pub(crate) async fn build_prepared(
     project: &Project,
     abi: AndroidAbi,
     options: BuildOptions,

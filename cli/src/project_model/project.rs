@@ -757,7 +757,7 @@ impl Project {
     /// # Errors
     ///
     /// Returns an error when Cargo metadata cannot resolve the package.
-    pub async fn crate_version(&self) -> eyre::Result<String> {
+    pub(crate) async fn crate_version(&self) -> eyre::Result<String> {
         Ok(self.cargo_layout().await?.root_package_version)
     }
 
@@ -2905,12 +2905,14 @@ async fn resolve_cargo_layout(
     // match the application package (part of #152).
     let application_manifest = dunce::canonicalize(current_dir.join("Cargo.toml"))?;
     let root_package = package_at_manifest(&metadata, &application_manifest)?;
+    let root_package_id = root_package.id.to_string();
+    let root_package_version = root_package.version.to_string();
 
     Ok(CargoLayout {
         target_dir: metadata.target_directory.into_std_path_buf(),
         workspace_root: metadata.workspace_root.into_std_path_buf(),
-        root_package_id: root_package.id.to_string(),
-        root_package_version: root_package.version.to_string(),
+        root_package_id,
+        root_package_version,
     })
 }
 
