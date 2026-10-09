@@ -129,7 +129,7 @@ pub(super) async fn write_web_shell(project: &Project, site_root: &Path) -> eyre
         project.manifest(),
         project.crate_name().clone(),
         app_name,
-        &project.resolved_framework().await?,
+        project.resolved_framework().await?,
         project.local_sources(),
     );
     let launch = WebLaunch::resolve(project, wasm_bytes)?;

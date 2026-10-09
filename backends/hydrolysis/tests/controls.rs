@@ -28,10 +28,14 @@ use waterui::Binding;
 use waterui::Signal as _;
 use waterui::View;
 use waterui::ViewExt as _;
-use waterui::component::{hstack, vstack};
+use waterui::component::{hstack, vstack, zstack};
 use waterui::graphics::color::Srgb;
-use waterui_controls::{Menu, button, label, slider::slider, toggle};
+use waterui_controls::{Menu, Toggle, ToggleStyle, button, label, slider::slider, toggle};
 use waterui_testing::{OffscreenApp, Role, Styled, UiBuilder};
+
+/// The role a default-style toggle reports on this host — the platform's
+/// default style decides it, so queries for one hold on every host.
+const DEFAULT_TOGGLE: Role = Role::toggle(ToggleStyle::Automatic);
 
 fn control_shell<V: View>(content: V) -> impl View {
     vstack((content,))
@@ -69,7 +73,7 @@ fn disabled_toggle_ignores_input_and_reports_disabled(
     let mut app = ui
         .mount_offscreen(move || control_shell(toggle("Wi-Fi", &enabled_for_view).disabled(true)));
 
-    let element = app.query().role(Role::SWITCH).label("Wi-Fi").single();
+    let element = app.query().role(DEFAULT_TOGGLE).label("Wi-Fi").single();
     assert!(
         !element.node().enabled(),
         "disabled-toggle: switch should expose disabled accessibility state"
@@ -77,18 +81,147 @@ fn disabled_toggle_ignores_input_and_reports_disabled(
     assert_rejected(
         "disabled-toggle: accessibility tap should be rejected",
         || {
-            app.query().role(Role::SWITCH).label("Wi-Fi").tap();
+            app.query().role(DEFAULT_TOGGLE).label("Wi-Fi").tap();
         },
     );
     // The pointer event dispatches into the window but must not hit the
     // disabled control: the binding stays unchanged.
     app.query()
-        .role(Role::SWITCH)
+        .role(DEFAULT_TOGGLE)
         .label("Wi-Fi")
         .tap_at(0.5, 0.5);
     assert!(
         !enabled.snapshot(),
         "disabled-toggle: binding must stay unchanged"
+    );
+}
+
+// water-rs/waterui#2241: a hidden label contributes no frame — the toggle's
+// reported bounds are the switch's own, and a tap anywhere inside them
+// toggles the control (no dead zone beside the switch).
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (320, 240))]
+fn hidden_label_toggle_is_switch_sized_and_toggles_throughout(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let enabled = Binding::bool(false);
+    let enabled_for_view = enabled.clone();
+
+    let mut app = ui.mount_offscreen(move || {
+        control_shell(toggle("Dark mode", &enabled_for_view).switch().hide_label())
+    });
+
+    let element = app.query().role(Role::SWITCH).label("Dark mode").single();
+    let bounds = element.bounds();
+    // Material3 switch metrics: a 52x32 pt track; the hidden label adds
+    // nothing to either axis.
+    assert_close(
+        f64::from(bounds.width()),
+        52.0,
+        0.5,
+        "hidden-label toggle: width must be the switch's own",
+    );
+    assert_close(
+        f64::from(bounds.height()),
+        32.0,
+        0.5,
+        "hidden-label toggle: height must be the switch's own",
+    );
+
+    // Every point inside the reported bounds must toggle — sweep the row.
+    let (cx, cy) = bounds.center();
+    for x in [bounds.x() + 1.0, cx, bounds.x() + bounds.width() - 1.0] {
+        app.tap_at(x, cy);
+        assert!(
+            enabled.snapshot(),
+            "hidden-label toggle: tap at x={x} inside the reported bounds must toggle"
+        );
+        enabled.set(false);
+    }
+
+    // The accessibility action still toggles it too.
+    app.query().role(Role::SWITCH).label("Dark mode").tap();
+    assert!(
+        enabled.snapshot(),
+        "hidden-label toggle: accessibility action must toggle"
+    );
+}
+
+// water-rs/waterui#2326 (layout spec §3, §6): under one offer, a switch with
+// a visible label fills the width while a checkbox and any toggle with a
+// hidden label answer the control's intrinsic size. The `ZStack` keeps a
+// stretcher's finite answer instead of promoting it, so the switch inside
+// it fills only because the leaf itself answers the proposed width.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (320, 320))]
+fn toggle_frames_follow_style_and_label_visibility(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    let views: [_; 5] = core::array::from_fn(|_| Binding::bool(false));
+
+    let mut app = ui.mount_offscreen(move || {
+        let [wifi, bluetooth, airdrop, hotspot, cellular] = views.clone();
+        control_shell(vstack((
+            Toggle::new("Wi-Fi", &wifi).switch(),
+            Toggle::new("Bluetooth", &bluetooth).switch().hide_label(),
+            Toggle::new("AirDrop", &airdrop).checkbox(),
+            Toggle::new("Hotspot", &hotspot).checkbox().hide_label(),
+            zstack((Toggle::new("Cellular", &cellular).switch(),)),
+        )))
+    });
+
+    // The 320 pt viewport less `control_shell`'s 16 pt padding on each side.
+    let offered = 288.0;
+    let mut frame = |role: Role, label: &str| app.query().role(role).label(label).single().bounds();
+
+    let wifi = frame(Role::SWITCH, "Wi-Fi");
+    assert_close(
+        f64::from(wifi.width()),
+        offered,
+        0.5,
+        "visible-label switch: width must be the offered width",
+    );
+    assert_close(
+        f64::from(wifi.height()),
+        32.0,
+        0.5,
+        "visible-label switch: height must stay intrinsic",
+    );
+
+    let cellular = frame(Role::SWITCH, "Cellular");
+    assert_close(
+        f64::from(cellular.width()),
+        offered,
+        0.5,
+        "visible-label switch: the leaf must answer the proposed width",
+    );
+
+    // Material3 metrics: a 52x32 pt switch track, an 18 pt checkbox, 8 pt
+    // between the control and its label.
+    let bluetooth = frame(Role::SWITCH, "Bluetooth");
+    assert_close(
+        f64::from(bluetooth.width()),
+        52.0,
+        0.5,
+        "hidden-label switch: width must be the switch's own",
+    );
+    let hotspot = frame(Role::CHECKBOX, "Hotspot");
+    assert_close(
+        f64::from(hotspot.width()),
+        18.0,
+        0.5,
+        "hidden-label checkbox: width must be the box's own",
+    );
+    assert_close(
+        f64::from(hotspot.height()),
+        18.0,
+        0.5,
+        "hidden-label checkbox: height must be the box's own",
+    );
+
+    let airdrop = frame(Role::CHECKBOX, "AirDrop");
+    let airdrop_width = f64::from(airdrop.width());
+    assert!(
+        airdrop_width > 18.0 + 8.0 && airdrop_width < offered - 1.0,
+        "visible-label checkbox: width {airdrop_width} must be box, gap and label — not the offer"
     );
 }
 
@@ -111,7 +244,7 @@ fn disabled_scope_cascades_and_reenables_reactively(
 
     let element = app
         .query()
-        .role(Role::SWITCH)
+        .role(DEFAULT_TOGGLE)
         .label("Notifications")
         .single();
     assert!(
@@ -121,7 +254,10 @@ fn disabled_scope_cascades_and_reenables_reactively(
     assert_rejected(
         "disabled-scope: tap inside a disabled container must be rejected",
         || {
-            app.query().role(Role::SWITCH).label("Notifications").tap();
+            app.query()
+                .role(DEFAULT_TOGGLE)
+                .label("Notifications")
+                .tap();
         },
     );
     assert!(
@@ -132,13 +268,16 @@ fn disabled_scope_cascades_and_reenables_reactively(
     form_locked.set(false);
     assert!(
         app.query()
-            .role(Role::SWITCH)
+            .role(DEFAULT_TOGGLE)
             .label("Notifications")
             .enabled(true)
             .wait_for_existence(core::time::Duration::from_secs(2)),
         "disabled-scope: re-enabling the container must re-enable the toggle"
     );
-    app.query().role(Role::SWITCH).label("Notifications").tap();
+    app.query()
+        .role(DEFAULT_TOGGLE)
+        .label("Notifications")
+        .tap();
     assert!(
         enabled.snapshot(),
         "disabled-scope: tap after re-enable must flip the binding"

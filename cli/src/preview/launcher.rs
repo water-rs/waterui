@@ -37,7 +37,6 @@ use crate::project::{ManagedBackends, Project};
 use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
 use crate::runtime_fingerprint::{compute_runtime_fingerprint, runtime_package_identity};
 use crate::support_app;
-use waterui_preview_protocol::registry::preview_instance_registry_dir;
 
 const PREVIEW_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const PREVIEW_METADATA_FILE: &str = ".waterui-preview-signature";
@@ -264,6 +263,9 @@ async fn configure_preview_module_build(
     )
     .await
     .wrap_err("Failed to open the preview support project")?;
+    // The capability feature probe below resolves the support project's own
+    // generated FFI manifest — render it before anything reads it.
+    support_project.scaffold_ffi_companion().await?;
     let support_target_dir = support_project
         .water_target_dir(RustLinkage::SharedRuntime)
         .await?;
@@ -275,14 +277,22 @@ async fn configure_preview_module_build(
         ))
         .with_target_dir(support_target_dir);
     let browser_runtime = support_project
-        .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
+        .browser_runtime_plan(
+            target,
+            crate::platform::TargetBackend::Apple,
+            &target.triple(),
+        )
         .await?;
     // The deployment-target env the module once carried explicitly now
     // comes from the triple inside `cargo_build_output`, so a module and
     // the support app it loads into cannot drift on it.
     Ok(rust_build.with_features(
-        crate::apple::platform::apple_dependency_features(&support_project, browser_runtime)
-            .await?,
+        crate::apple::platform::apple_dependency_features(
+            &support_project,
+            browser_runtime,
+            &target.triple(),
+        )
+        .await?,
     ))
 }
 
@@ -475,16 +485,9 @@ fn preview_run_options(host: &crate::toolchain::Host) -> RunOptions {
     run_options.set_log_level(LogLevel::Info);
     // Point the support app's registry at the cache directory the CLI
     // watches.
-    let preview_cache_root = waterui_preview_protocol::registry::preview_cache_root_dir();
-    let water_cache_dir = preview_cache_root.parent().unwrap_or_else(|| {
-        panic!(
-            "preview cache root must have a parent directory: {}",
-            preview_cache_root.display()
-        )
-    });
     run_options.insert_env_var(
         "WATER_CACHE_DIR".to_string(),
-        water_cache_dir.display().to_string(),
+        crate::preview::water_cache_dir(host).display().to_string(),
     );
     for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
         run_options.insert_env_var(key.to_string(), value.to_string());
@@ -745,6 +748,21 @@ const fn preview_target_platform(platform: PreviewPlatform) -> TargetPlatform {
         PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
         PreviewPlatform::Ios => TargetPlatform::IOS,
     }
+}
+
+/// Every triple the preview support app and its module workspace can build
+/// for — one per [`PreviewPlatform`], the serving set of the support
+/// manifest's shared `[profile]` overrides and the workspace root that
+/// carries them.
+fn preview_targets() -> Vec<target_lexicon::Triple> {
+    [
+        PreviewPlatform::Macos,
+        PreviewPlatform::IosSimulator,
+        PreviewPlatform::Ios,
+    ]
+    .iter()
+    .map(|platform| preview_target_platform(*platform).triple())
+    .collect()
 }
 
 async fn open_preview_support_project(
@@ -1034,7 +1052,7 @@ async fn wait_for_registered_preview_ready(
         PreviewProbe::Silent => {}
     }
 
-    let registry_dir = preview_instance_registry_dir();
+    let registry_dir = crate::preview::preview_instance_registry_dir(host);
     if let Err(error) = smol::fs::create_dir_all(&registry_dir).await {
         error!(path = %registry_dir.display(), "Failed to create preview registry dir: {error}");
         return ConnectionWaitResult::Timeout(rejection);
@@ -1442,7 +1460,11 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             &workspace_root,
             patches,
             Some(project.root()),
-            Some(&project.project_packages(&framework).await?),
+            Some(
+                &project
+                    .project_packages(framework, &preview_targets())
+                    .await?,
+            ),
         )
         .await?;
     }
@@ -1766,7 +1788,9 @@ async fn resolve_preview_metadata(
         .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
-    let project_packages = project.project_packages(&framework).await?;
+    let project_packages = project
+        .project_packages(framework, &preview_targets())
+        .await?;
     let metadata_start = Instant::now();
     let abi_feature = PreviewLinkMode::for_platform(platform)
         .abi_feature
@@ -1786,7 +1810,8 @@ async fn resolve_preview_metadata(
     );
     Ok(ResolvedPreviewMetadata {
         metadata,
-        framework,
+        // The metadata outlives the project opened above, so it owns a copy.
+        framework: framework.clone(),
         app_crate_name,
         app_path,
         project_packages,

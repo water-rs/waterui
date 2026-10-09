@@ -88,12 +88,3 @@ pub fn project_block_04() {
     debug!(?value, "recomputed layout");
     info!("saved");
 }
-
-// ---------------------------------------------------------------------------
-// project.md § "## Embedded targets (Dew)" (prose):
-// "Headless snapshot: `waterui_dew::render_view_png(builder, env, w, h)`."
-//
-// NOT COMPILABLE BY DESIGN here: `waterui-dew` is a separate backend crate an
-// app does not depend on, and adding it would say nothing about the `waterui`
-// API surface this crate gates. Recorded, not transcribed.
-// ---------------------------------------------------------------------------
