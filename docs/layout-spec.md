@@ -124,8 +124,9 @@ wrapped at the proposal the column was measured with.
   `None` for a lazy stack. A lazy stack that must fill is placed by a parent
   that stretches it (`ScrollView`, `Absolute`, a `Frame` with `max = INFINITY`).
 - `ScrollView` is `Both`; `Spacer` is `MainAxis`; `Divider` is `CrossAxis`;
-  `Color` and shapes are `Both`; text, buttons, toggles and other content
-  controls are `None`; a text field is `Horizontal`.
+  `Color` and shapes are `Both`; text, buttons and other content controls
+  are `None`; a text field is `Horizontal`; a toggle is `Horizontal` when it
+  draws the switch style with a visible label, and `None` otherwise.
 
 ## 4. Stacks (`HStack`, `VStack`)
 
@@ -365,7 +366,14 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   platform control's intrinsic size, with the platform's own chrome padding
   for the selected style and none for a borderless one; a text field answers
   the proposal width (`Horizontal`) and its intrinsic height — a plain iOS
-  text field is one 22 pt line with no border, fill or vertical floor.
+  text field is one 22 pt line with no border, fill or vertical floor. A
+  switch-style toggle with a visible label answers the proposal width
+  (`Horizontal`) and its intrinsic height, placing the label at the leading
+  edge and the switch at the trailing edge with the free space between; a
+  checkbox-style toggle (box, then label) and a toggle with a hidden label
+  answer the control's intrinsic size. The automatic style resolves to the
+  platform's default style — switch on iOS and Android, checkbox on macOS —
+  before this rule applies.
 - **ScrollView**: a scroll claims the whole offer — a finite proposal on
   either axis is answered with that proposal; only a `0` proposal measures the
   content, answering its intrinsic extent on the non-scrolling axis and `0` on
