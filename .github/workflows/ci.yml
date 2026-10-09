@@ -375,6 +375,8 @@ jobs:
       - uses: ./.github/actions/setup-android-ndk
       # `sdkmanager` is the tool doctor's own remedy text names.
       - uses: ./.github/actions/install-android-platform
+      # The CLI links libudev (serialport) on the host.
+      - uses: ./.github/actions/setup-linux-deps
       # The binary under test needs no release optimisation: the ci-check
       # profile skips the release profile's fat LTO and single codegen unit.
       - name: Install the CLI under test
