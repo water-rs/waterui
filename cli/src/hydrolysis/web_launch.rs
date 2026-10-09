@@ -125,6 +125,7 @@ pub(super) async fn write_web_shell(project: &Project, site_root: &Path) -> eyre
         .filter(|ch| ch.is_alphanumeric())
         .collect::<String>();
     let ctx = TemplateContext::for_project_manifest(
+        project.host(),
         project.manifest(),
         project.crate_name().clone(),
         app_name,
@@ -182,6 +183,7 @@ mod tests {
             embedded: false,
         });
         let ctx = TemplateContext::for_project_manifest(
+            &crate::toolchain::Host::current(),
             &manifest,
             CrateName::try_from("demo").unwrap(),
             "Demo",
@@ -220,6 +222,7 @@ mod tests {
             embedded: false,
         });
         let ctx = TemplateContext::for_project_manifest(
+            &crate::toolchain::Host::current(),
             &manifest,
             CrateName::try_from("demo").unwrap(),
             "Demo",

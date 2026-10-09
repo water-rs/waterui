@@ -51,14 +51,6 @@ class MainActivity : HydrolysisActivity() {
         Log.i(TAG, "WATERUI_ROOT_READY")
     }
 
-    override fun onDestroy() {
-        val activityFinished = isFinishing && !isChangingConfigurations
-        super.onDestroy()
-        if (activityFinished) {
-            Log.i(TAG, "WATERUI_ACTIVITY_FINISHED")
-        }
-    }
-
     companion object {
         private const val TAG = "WaterUI.MainActivity"
         private const val ENV_PREFIX = "waterui.env."

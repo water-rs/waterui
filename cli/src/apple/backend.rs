@@ -124,9 +124,6 @@ impl AppleBackend {
                     })
             })
             .collect();
-        let webview_enabled = project.uses_standard_webview().await?;
-        let chromium_enabled = project.links_runtime_package("waterui-chromium").await?;
-        let browser_engine = project.linked_browser_engine().await?;
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
         let launch = crate::assets::project_launch_assets(project)?;
@@ -135,6 +132,7 @@ impl AppleBackend {
             has_image: launch.has_artwork(),
         };
         Ok(TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             crate_name_for_template,
             app_name,
@@ -144,9 +142,6 @@ impl AppleBackend {
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
         .with_ios_permissions(ios_permissions)
-        .with_webview_enabled(webview_enabled)
-        .with_chromium_enabled(chromium_enabled)
-        .with_browser_engine(browser_engine)
         .with_launch(launch_entry))
     }
 
@@ -218,7 +213,11 @@ impl Backend for AppleBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         project
-            .browser_runtime_plan(platform, TargetBackend::Apple)
+            .browser_runtime_plan(
+                platform,
+                TargetBackend::Apple,
+                &crate::apple::platform::apple_build_triple(platform, &options),
+            )
             .await?;
         build_rust_lib(project, platform, options).await
     }
@@ -248,6 +247,7 @@ mod tests {
         platform::TargetBackend,
         project::{CreateOptions, ManagedBackends, Project},
         project_types::BundleIdentifier,
+        toolchain::Host,
     };
 
     /// The channel's pins resolve without a network: `waterui` and
@@ -256,7 +256,7 @@ mod tests {
     /// canonical `backends/apple` slot in the stub checkout `waterui_path`
     /// names — a path dependency — so the ffi companion's feature-table
     /// probe resolves entirely locally.
-    fn vendor_offline_resolution(root: &Path, vendor_dir: &Path) {
+    fn vendor_offline_resolution(host: &Host, root: &Path, vendor_dir: &Path) {
         // The vendored checkout mirrors the real framework layout: the
         // `waterui` facade is the root package, `waterui-ffi` lives at
         // `ffi`, and the Apple backend is the canonical `backends/apple`
@@ -332,10 +332,11 @@ mod tests {
         // `Project::open` resolves the project's layout with `cargo metadata
         // --locked`; a plain offline resolve records the patched sources in
         // the lock first.
-        cargo_metadata::MetadataCommand::new()
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command
             .manifest_path(&manifest_path)
-            .other_options(vec!["--offline".to_string()])
-            .exec()
+            .other_options(vec!["--offline".to_string()]);
+        smol::block_on(host.cargo_metadata(&command))
             .expect("offline metadata resolves the patched project");
     }
 
@@ -345,8 +346,10 @@ mod tests {
     #[test]
     fn scaffold_without_xcode_project_still_detects_staleness() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
         smol::block_on(Project::create(
+            &host,
             &root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -363,9 +366,14 @@ mod tests {
         ))
         .expect("project creation must succeed");
 
-        vendor_offline_resolution(&root, &dir.path().join("vendor"));
+        vendor_offline_resolution(
+            &crate::toolchain::Host::current(),
+            &root,
+            &dir.path().join("vendor"),
+        );
 
         let project = smol::block_on(Project::open(
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
@@ -414,8 +422,10 @@ mod tests {
     #[test]
     fn template_context_rejects_an_apple_invalid_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("menu-example");
         let project = smol::block_on(Project::create(
+            &host,
             &root,
             CreateOptions {
                 name: "Menu Example".to_string(),
@@ -446,8 +456,10 @@ mod tests {
     #[test]
     fn apple_backend_accepts_and_preserves_a_hyphenated_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("liquid-glass");
         smol::block_on(Project::create(
+            &host,
             &root,
             CreateOptions {
                 name: "Liquid Glass".to_string(),
@@ -464,9 +476,14 @@ mod tests {
         ))
         .expect("project creation must succeed");
 
-        vendor_offline_resolution(&root, &dir.path().join("vendor"));
+        vendor_offline_resolution(
+            &crate::toolchain::Host::current(),
+            &root,
+            &dir.path().join("vendor"),
+        );
 
         let project = smol::block_on(Project::open(
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
@@ -493,8 +510,10 @@ mod tests {
     #[test]
     fn ios_info_plist_opts_out_of_the_promotion_frame_cap() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
         smol::block_on(Project::create(
+            &host,
             &root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -511,9 +530,14 @@ mod tests {
         ))
         .expect("project creation must succeed");
 
-        vendor_offline_resolution(&root, &dir.path().join("vendor"));
+        vendor_offline_resolution(
+            &crate::toolchain::Host::current(),
+            &root,
+            &dir.path().join("vendor"),
+        );
 
         let project = smol::block_on(Project::open(
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))

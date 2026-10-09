@@ -375,6 +375,16 @@ impl RenderNode {
                             .last()
                             .map(Rc::as_ptr)
                             .map(|cell| cell as usize);
+                        // Scope membership must never depend on where a flush
+                        // starts: a member with a `.material_group()` cell on
+                        // its ancestry that reads an empty stack is a partial
+                        // descent that did not replay the enclosing scopes
+                        // (#2268) — a bug, not a solo group.
+                        assert!(
+                            scope.is_some()
+                                || node.core.cell.enclosing_material_group_scopes().is_empty(),
+                            "hydrolysis renderer: a material member under a `.material_group()` scope re-recorded with an empty scope stack — the partial descent did not establish the enclosing scopes"
+                        );
                         let program = renderer.program().program_mut();
                         program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
                         program.material = Some(mount::MaterialRequest {
@@ -388,9 +398,13 @@ impl RenderNode {
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
                     WrapperEffect::MaterialGroup => {
-                        // The node's cell is the group scope: push it
-                        // while the child flushes, then pop, so the
-                        // members inside join its shared backdrop group.
+                        // The scope's anchor is an item at its position:
+                        // the pass-through wrapper mounts a plain, empty
+                        // layer there that the members inside capture
+                        // beneath (water-rs/waterui#2097). The node's
+                        // cell is the group scope: hold it while the
+                        // child flushes so the members join its groups.
+                        renderer.program().push_anchor(Rc::clone(&node.core.cell));
                         renderer
                             .material_group_scopes
                             .push(Rc::clone(&node.core.cell));
@@ -645,6 +659,15 @@ impl RenderNode {
                 // unwind the paint stack for the child flush and re-open the
                 // scopes for what flushes after.
                 renderer.program().program_mut().filter = Some(Rc::clone(&node.runtime));
+                // Members of the innermost `.material_group()` scope that
+                // mount inside this node's filtered canvas anchor on it:
+                // an anchor item at the start of the filtered program for
+                // that scope, so its `(scope, canvas)` groups capture the
+                // canvas at the anchor's paint position
+                // (water-rs/waterui#2097).
+                if let Some(cell) = renderer.material_group_scopes.last().cloned() {
+                    renderer.program().push_anchor(cell);
+                }
                 node.child
                     .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);
             }

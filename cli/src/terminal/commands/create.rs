@@ -12,7 +12,6 @@ use crate::{header, line, success};
 use waterui_cli::framework::FrameworkChannel;
 use waterui_cli::project::{CreateOptions, Project, ProjectDraft, WebScaffold};
 use waterui_cli::project_types::{BundleIdentifier, default_bundle_identifier};
-use waterui_cli::toolchain::Host;
 use waterui_cli::web::PackageManager;
 
 /// Arguments for the create command.
@@ -83,7 +82,11 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let plan = resolve_create_plan(shell, &args)?;
     if plan.template == CreateTemplate::Web {
         // The declared manager must exist before anything touches disk.
-        super::web::ensure_installed(plan.package_manager).await?;
+        super::web::ensure_installed(
+            &waterui_cli::toolchain::Host::current(),
+            plan.package_manager,
+        )
+        .await?;
     }
     header!(shell, "Creating WaterUI project: {}", plan.name);
     let draft = create_project(shell, &plan).await?;
@@ -164,7 +167,7 @@ fn resolve_bundle_id(args: &Args, interactive: bool, name: &str) -> Result<Strin
 async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<ProjectDraft> {
     let spinner = shell.spinner("Creating project files...");
     let draft = ProjectDraft::create(
-        &Host::current(),
+        &waterui_cli::toolchain::Host::current(),
         &plan.project_path,
         CreateOptions {
             name: plan.name.clone(),
@@ -198,6 +201,7 @@ async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<ProjectDraft
 
 async fn scaffold_web_frontend(shell: &Shell, plan: &CreatePlan, project: &Project) -> Result<()> {
     super::web::create_vite(
+        project.host(),
         shell,
         project.root(),
         "web",
@@ -206,7 +210,13 @@ async fn scaffold_web_frontend(shell: &Shell, plan: &CreatePlan, project: &Proje
     )
     .await?;
     super::web::brand_overlay(shell, &project.root().join("web"), &plan.name)?;
-    super::web::install_dependencies(shell, plan.package_manager, &project.root().join("web")).await
+    super::web::install_dependencies(
+        project.host(),
+        shell,
+        plan.package_manager,
+        &project.root().join("web"),
+    )
+    .await
 }
 
 fn print_create_summary(shell: &Shell, plan: &CreatePlan) {
@@ -274,6 +284,7 @@ mod tests {
     ) {
         let shell = Shell::new(false);
         let project = waterui_cli::project::Project::create(
+            &waterui_cli::toolchain::Host::current(),
             root,
             waterui_cli::project::CreateOptions {
                 name: name.to_string(),
@@ -297,6 +308,7 @@ mod tests {
         .expect("project scaffold");
 
         crate::commands::web::create_vite(
+            project.host(),
             &shell,
             project.root(),
             "web",
@@ -308,6 +320,7 @@ mod tests {
         crate::commands::web::brand_overlay(&shell, &project.root().join("web"), name)
             .expect("brand overlay");
         crate::commands::web::install_dependencies(
+            project.host(),
             &shell,
             super::PackageManager::Bun,
             &project.root().join("web"),
@@ -386,7 +399,8 @@ mod tests {
             }
 
             // The branded starter type-checks and bundles.
-            let status = smol::process::Command::new("bun")
+            let status = waterui_cli::toolchain::Host::current()
+                .command("bun")
                 .args(["run", "build"])
                 .current_dir(project_path.join("web"))
                 .status()
@@ -398,7 +412,8 @@ mod tests {
             // a scratch target dir; pointing it under `target/` lets a nextest
             // retry — and the next cached CI run — resume instead of
             // restarting a cold graph every attempt.
-            let status = smol::process::Command::new("cargo")
+            let status = waterui_cli::toolchain::Host::current()
+                .command("cargo")
                 .arg("check")
                 .current_dir(&project_path)
                 .env(
@@ -430,7 +445,8 @@ mod tests {
             assert!(contents.contains("WaterUI + React"), "{contents}");
             assert!(project_path.join("web/public/waterui.svg").is_file());
 
-            let status = smol::process::Command::new("bun")
+            let status = waterui_cli::toolchain::Host::current()
+                .command("bun")
                 .args(["run", "build"])
                 .current_dir(project_path.join("web"))
                 .status()

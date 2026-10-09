@@ -44,7 +44,8 @@ use crate::{
 /// `Server startup failed: File exists (os error 17)` and rustc reports a
 /// failed build. One client of our own beforehand is the serialization point:
 /// once it returns, the socket is bound and every client Cargo spawns
-/// connects to it instead of trying to create it.
+/// connects to it instead of trying to create it. Across `water` processes
+/// the per-user start lock in [`start_server`] serializes the same step.
 ///
 /// # Errors
 /// Returns an error when the socket directory under the user's Water home
@@ -52,10 +53,11 @@ use crate::{
 /// the server does not come up — every compile would fail on the same thing,
 /// so it fails here where the reason is still legible.
 pub async fn configure_compilation_cache(
+    host: &Host,
     command: &mut Command,
     sccache_path: &Path,
 ) -> eyre::Result<()> {
-    let water_home = crate::project_model::water_dir::water_home_dir().ok();
+    let water_home = crate::project_model::water_dir::water_home_dir(host).ok();
     #[cfg(unix)]
     let env = compilation_cache_env_in(sccache_path, water_home.as_deref())?;
     #[cfg(not(unix))]
@@ -63,7 +65,7 @@ pub async fn configure_compilation_cache(
     for (key, value) in &env {
         command.env(key, value);
     }
-    start_server(sccache_path, &env).await
+    start_server(host, sccache_path, &env).await
 }
 
 /// Connect to the per-user server, starting it when it is not listening.
@@ -75,13 +77,19 @@ pub async fn configure_compilation_cache(
 /// # Errors
 /// Returns an error when the client cannot be spawned, or when it reports
 /// that the server is not available.
-async fn start_server(sccache_path: &Path, env: &[(&'static str, OsString)]) -> eyre::Result<()> {
+async fn start_server(
+    host: &Host,
+    sccache_path: &Path,
+    env: &[(&'static str, OsString)],
+) -> eyre::Result<()> {
     use eyre::WrapErr as _;
 
-    let mut client = Command::new(sccache_path);
+    #[cfg(unix)]
+    let _server_start = begin_serialized_server_start(host, env).await?;
+
+    let mut client = host.command(sccache_path);
     client
         .arg("--show-stats")
-        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     for (key, value) in env {
@@ -98,6 +106,67 @@ async fn start_server(sccache_path: &Path, env: &[(&'static str, OsString)]) -> 
         String::from_utf8_lossy(&output.stderr).trim()
     );
     Ok(())
+}
+
+/// Take the per-user start lock and clear a socket whose server is gone,
+/// before the client's connect-or-start runs.
+///
+/// `SCCACHE_SERVER_UDS` points every build of one user at one socket path,
+/// and an sccache client that finds no listener spawns a server itself.
+/// Two `water` processes starting servers at once race the daemons' binds
+/// on that fixed path, and the loser reports `EEXIST` on the hosts that
+/// return it for a colliding create — `Server startup failed: File
+/// exists` — instead of the `EADDRINUSE` sccache retries. Holding the
+/// lock across the client run means the loser of the process race waits
+/// for the winner's server and connects to it instead of binding over it.
+///
+/// The returned file holds the lock until it drops; `None` when no socket
+/// was configured (a home-less host leaves clients on the TCP address).
+#[cfg(unix)]
+async fn begin_serialized_server_start(
+    host: &Host,
+    env: &[(&'static str, OsString)],
+) -> eyre::Result<Option<std::fs::File>> {
+    let Some(socket) = env
+        .iter()
+        .find(|(key, _)| *key == "SCCACHE_SERVER_UDS")
+        .map(|(_, value)| Path::new(value))
+    else {
+        return Ok(None);
+    };
+    let lock = crate::project_model::water_dir::sccache_server_lock(host).await?;
+    remove_dead_server_socket(socket).await?;
+    Ok(Some(lock))
+}
+
+/// Unlink `socket` once a connect proves no server answers on it.
+///
+/// An sccache server never unlinks its socket on exit — an idle shutdown,
+/// a crash, or a suspended VM leaves a socket nothing listens on — and
+/// the file's existence is what the next bind reports. Unlinking
+/// unconditionally would steal a live server's socket from under its
+/// clients, so the file's fate hangs on the server's real state:
+/// `ConnectionRefused` proves the process is gone and the file safe to
+/// remove; a listener answering, or an error that is not refusal, leaves
+/// it for the client to report.
+#[cfg(unix)]
+async fn remove_dead_server_socket(socket: &Path) -> eyre::Result<()> {
+    use eyre::WrapErr as _;
+
+    match smol::net::unix::UnixStream::connect(socket).await {
+        Ok(_server) => Ok(()),
+        Err(error) if error.kind() != std::io::ErrorKind::ConnectionRefused => Ok(()),
+        Err(_) => match smol::fs::remove_file(socket).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).wrap_err_with(|| {
+                format!(
+                    "Failed to remove the stale sccache socket {}",
+                    socket.display()
+                )
+            }),
+        },
+    }
 }
 
 /// The environment a compile command needs for per-user sccache routing, as
@@ -765,6 +834,67 @@ mod host_tests {
         super::server_socket_path_in(home.path())
             .expect("a 0700 socket dir is accepted")
             .expect("a 0700 socket dir yields a socket");
+    }
+
+    /// The failure in the issue: a socket file outliving its server collides
+    /// with the next connect-or-start, which fails the build on "Server
+    /// startup failed: File exists". The fake `sccache` fails `--show-stats`
+    /// the same way while the socket file still exists, so the run only
+    /// succeeds if the dead file is cleared first.
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_server_socket_is_cleared_before_connect_or_start() {
+        let machine = TestMachine::new();
+        let sccache = machine.install("sccache");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let water_home = crate::project_model::water_dir::water_home_dir(&host)
+            .expect("the fake host declares a home");
+        let socket = super::server_socket_path_in(&water_home)
+            .expect("a private socket dir")
+            .expect("a socket path");
+        let dead_socket = std::os::unix::net::UnixListener::bind(&socket)
+            .expect("bind the socket a dead server leaves behind");
+        drop(dead_socket);
+
+        let mut cargo = host.command("cargo");
+        smol::block_on(super::configure_compilation_cache(
+            &host, &mut cargo, &sccache,
+        ))
+        .expect("a dead socket file must not fail the build's server startup");
+        assert!(
+            !socket.exists(),
+            "the dead socket was removed before connect-or-start: {}",
+            socket.display()
+        );
+    }
+
+    /// The socket a live server owns is never taken over — unlinking it
+    /// would cut the running server off from its clients, so the file must
+    /// still be there when connect-or-start finishes.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_server_socket_is_never_taken_over() {
+        let machine = TestMachine::new();
+        let sccache = machine.install("sccache");
+        let host = machine.host([("WATERUI_FAKE_SCCACHE_LIVE", "1")]);
+        let water_home = crate::project_model::water_dir::water_home_dir(&host)
+            .expect("the fake host declares a home");
+        let socket = super::server_socket_path_in(&water_home)
+            .expect("a private socket dir")
+            .expect("a socket path");
+        let _live_server =
+            std::os::unix::net::UnixListener::bind(&socket).expect("bind the live server");
+
+        let mut cargo = host.command("cargo");
+        smol::block_on(super::configure_compilation_cache(
+            &host, &mut cargo, &sccache,
+        ))
+        .expect("a live server answers the client's connect-or-start");
+        assert!(
+            socket.exists(),
+            "a live server's socket was left alone: {}",
+            socket.display()
+        );
     }
 
     #[test]
