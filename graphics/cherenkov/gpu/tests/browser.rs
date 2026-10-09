@@ -1444,6 +1444,12 @@ async fn dom_planes_stack_a_hosted_element_between_parts() {
     assert_ne!(property("transform"), before);
     assert!(frame.parent_element().is_some_and(|parent| parent == root));
 
+    // A surface that outlives the DOM one keeps the engine rendering, so
+    // the frame after the drop releases it.
+    let _visible = engine
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+        .await
+        .expect("offscreen surface");
     drop(surface);
     engine.render(FrameTime::now()).await.expect("render");
     assert!(
