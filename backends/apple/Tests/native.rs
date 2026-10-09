@@ -7282,12 +7282,13 @@ mod webview {
     /// document currently loaded — `waterui`, the `__wateruiEval` wrapper
     /// and the `__wateruiState` store from the document-start script, plus
     /// the `__wateruiProbe` the case itself injects, riding the same keyed
-    /// `inject_script` the mirrored-state seed does.
+    /// `inject_script` the mirrored-state seed does. The probe answers an
+    /// array, whose reply is its JSON encoding on every engine.
     fn bridge_globals(handle: &AnyWebViewHandle) -> String {
         block_on_main(
             MAIN_QUEUE_DEADLINE,
             handle.run_javascript(
-                "[typeof waterui, typeof __wateruiEval, typeof __wateruiState, typeof __wateruiProbe].join()",
+                "[typeof waterui, typeof __wateruiEval, typeof __wateruiState, typeof __wateruiProbe]",
             ),
         )
         .unwrap_or_else(|error| panic!("the globals probe must evaluate: {error}"))
@@ -7332,7 +7333,7 @@ mod webview {
         navigate(&handle, "about:blank", &loaded);
         assert_eq!(
             bridge_globals(&handle),
-            "object,function,object,boolean",
+            r#"["object","function","object","boolean"]"#,
             "an admitted document must receive the whole bridge"
         );
 
@@ -7343,7 +7344,7 @@ mod webview {
         navigate(&handle, "data:text/plain,elsewhere", &loaded);
         assert_eq!(
             bridge_globals(&handle),
-            "undefined,undefined,undefined,undefined",
+            r#"["undefined","undefined","undefined","undefined"]"#,
             "a document outside the admission policy must get no bridge globals"
         );
     }
