@@ -395,6 +395,9 @@ pub struct SemanticCore {
     /// Frame triggers shared with reactive closures; see [`FrameSignals`].
     signals: FrameSignals,
     animation_controller: AnimationController,
+    /// Reserves the address of every owner keying a live renderer-local
+    /// slot in `animation_controller`; begins and retires with it.
+    animation_owner_pins: AnimationOwnerPins,
     frame_instant: Instant,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
@@ -724,6 +727,7 @@ impl SemanticCore {
             materialized_platform_views: Vec::new(),
             signals,
             animation_controller: AnimationController::default(),
+            animation_owner_pins: AnimationOwnerPins::default(),
             frame_instant,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),

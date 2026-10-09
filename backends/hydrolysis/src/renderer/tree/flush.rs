@@ -228,9 +228,9 @@ impl RenderNode {
                 }
             }
             Self::Opacity(node) => {
-                let alpha = renderer.resolve_animated_scalar_with_discriminator(
+                let alpha = renderer.resolve_owned_scalar(
                     &node.value.value,
-                    &RetainedIdentity::for_rc(&node.core.cell),
+                    &node.core.cell,
                     OPACITY_ANIMATION_KEY,
                 );
                 let program = renderer.program().program_mut();
@@ -246,14 +246,14 @@ impl RenderNode {
             }
             Self::Scale(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
-                let scale_x = renderer.resolve_animated_scalar_with_discriminator(
+                let scale_x = renderer.resolve_owned_scalar(
                     &node.value.x,
-                    &RetainedIdentity::for_rc(&node.core.cell),
+                    &node.core.cell,
                     SCALE_X_ANIMATION_KEY,
                 );
-                let scale_y = renderer.resolve_animated_scalar_with_discriminator(
+                let scale_y = renderer.resolve_owned_scalar(
                     &node.value.y,
-                    &RetainedIdentity::for_rc(&node.core.cell),
+                    &node.core.cell,
                     SCALE_Y_ANIMATION_KEY,
                 );
                 let transform = kurbo::Affine::translate((center.x, center.y))
@@ -264,9 +264,9 @@ impl RenderNode {
             }
             Self::Rotation(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
-                let radians = f64::from(renderer.resolve_animated_scalar_with_discriminator(
+                let radians = f64::from(renderer.resolve_owned_scalar(
                     &node.value.angle,
-                    &RetainedIdentity::for_rc(&node.core.cell),
+                    &node.core.cell,
                     ROTATION_ANIMATION_KEY,
                 ))
                 .to_radians();
@@ -277,14 +277,14 @@ impl RenderNode {
                     .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
             }
             Self::Offset(node) => {
-                let offset_x = renderer.resolve_animated_scalar_with_discriminator(
+                let offset_x = renderer.resolve_owned_scalar(
                     &node.value.x,
-                    &RetainedIdentity::for_rc(&node.core.cell),
+                    &node.core.cell,
                     OFFSET_X_ANIMATION_KEY,
                 );
-                let offset_y = renderer.resolve_animated_scalar_with_discriminator(
+                let offset_y = renderer.resolve_owned_scalar(
                     &node.value.y,
-                    &RetainedIdentity::for_rc(&node.core.cell),
+                    &node.core.cell,
                     OFFSET_Y_ANIMATION_KEY,
                 );
                 let transform =

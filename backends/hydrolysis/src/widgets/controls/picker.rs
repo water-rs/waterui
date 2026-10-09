@@ -10,7 +10,7 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
-use nami::{Binding, Signal, SignalIdentity};
+use nami::{Binding, Signal};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::ViewExt as _;
@@ -866,15 +866,9 @@ pub fn render_radio_picker(
         );
         let indicator_radius = metrics.radio_indicator_size / 2.0;
         let is_selected = item.tag == selected;
-        // The indicator choreography is a slot of this picker — key it on the
-        // retained picker state (the same owner the row interaction keys
-        // claim), not on the selection signal: two pickers whose selection
-        // bindings share a nami identity animate independently.
         let radio_indicator_state = ctx.renderer_mut().sample_radio_indicator_state(
-            AnimationKey::radio_indicator_with_discriminator(
-                SignalIdentity::from_rc(owner),
-                row_index,
-            ),
+            owner,
+            row_index,
             is_selected,
             &radio_motion,
         );
@@ -1045,7 +1039,6 @@ fn segmented_label_rect(
     let y0 = (segment_rect.height() - height).mul_add(0.5, segment_rect.y0);
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
-use crate::animation::AnimationKey;
 
 /// Emits a retained picker's accessibility tree for the semantic walk — the
 /// same nodes `picker_accessibility` registers, with no bounds.

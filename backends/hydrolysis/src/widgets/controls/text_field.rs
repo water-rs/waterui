@@ -1,4 +1,3 @@
-use crate::animation::AnimationKey;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TailMark, TextInputModel,
@@ -188,10 +187,7 @@ pub fn render_text_field_parts(
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    // The field's own identity for renderer-local animation slots (the label
-    // float): the retained render-state `Rc`'s address, matching the owner
-    // `interaction_key` claims.
-    let node_id = Rc::as_ptr(state) as usize;
+    let owner = state;
     let theme = ctx.theme();
     let input_metrics = theme.input_field_metrics();
     ctx.renderer_mut()
@@ -369,15 +365,9 @@ pub fn render_text_field_parts(
         0.0
     };
     let interaction_motion = theme.interaction_motion();
-    // The label's float animation is a slot of this field — key it on the
-    // retained field state (the same owner the field's interaction key
-    // uses), not on the value signal: two fields whose value bindings share
-    // a nami identity float independently.
-    let label_progress = ctx.renderer_mut().sample_widget_scalar_target(
-        AnimationKey::renderer_local_scalar_with_discriminator(
-            node_id,
-            TEXT_FIELD_LABEL_ANIMATION_KEY,
-        ),
+    let label_progress = ctx.renderer_mut().sample_owned_scalar_target(
+        owner,
+        TEXT_FIELD_LABEL_ANIMATION_KEY,
         label_target,
         if label_target > 0.0 {
             interaction_motion.focus_enter
@@ -609,10 +599,7 @@ pub fn render_secure_field_parts(
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    // The field's own identity for renderer-local animation slots (the label
-    // float): the retained render-state `Rc`'s address, matching the owner
-    // `interaction_key` claims.
-    let node_id = Rc::as_ptr(state) as usize;
+    let owner = state;
     let theme = ctx.theme();
     let input_metrics = theme.input_field_metrics();
     let disabled = {
@@ -727,15 +714,9 @@ pub fn render_secure_field_parts(
         0.0
     };
     let interaction_motion = theme.interaction_motion();
-    // The label's float animation is a slot of this field — key it on the
-    // retained field state (the same owner the field's interaction key
-    // uses), not on the value signal: two fields whose value bindings share
-    // a nami identity float independently.
-    let label_progress = ctx.renderer_mut().sample_widget_scalar_target(
-        AnimationKey::renderer_local_scalar_with_discriminator(
-            node_id,
-            SECURE_FIELD_LABEL_ANIMATION_KEY,
-        ),
+    let label_progress = ctx.renderer_mut().sample_owned_scalar_target(
+        owner,
+        SECURE_FIELD_LABEL_ANIMATION_KEY,
         label_target,
         if label_target > 0.0 {
             interaction_motion.focus_enter

@@ -267,7 +267,7 @@ impl HydrolysisRenderer {
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
-        self.animation_controller.begin_rebuild_frame();
+        self.begin_animation_rebuild();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
         #[cfg(feature = "accessibility")]
@@ -334,9 +334,7 @@ impl HydrolysisRenderer {
         self.core.record_platform_views();
         self.validate_focused_text_input_after_flush();
 
-        self.core
-            .animation_controller
-            .finish_rebuild_frame_with_inactive_slot_retention(false);
+        self.core.retire_unbound_animation_slots();
         self.core
             .hit_test
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);

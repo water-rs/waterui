@@ -1,4 +1,3 @@
-use crate::animation::AnimationKey;
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, RetainedSubview, WidgetRenderContext,
     circle_arc_path, measure_progress_intrinsic,
@@ -199,9 +198,6 @@ pub fn render_progress_parts(
     env: &Environment,
 ) {
     let theme = ctx.theme();
-    // Stable identity of this progress node: the retained state `Rc`'s address keys
-    // the indeterminate repeating phase so it survives structural changes.
-    let node_id = Rc::as_ptr(state) as usize;
     let mut progress = state.borrow_mut();
     let style = progress.style;
     let four_color = progress.four_color;
@@ -255,15 +251,9 @@ pub fn render_progress_parts(
             // The track leaves a gap around the active indicator, so where the
             // indicator ends has to be resolved before the track is drawn.
             let fill_rect = finite.then(|| {
-                // The determinate-fill animation is a slot of this indicator —
-                // keyed on `node_id` (the retained state `Rc`'s address) so two
-                // indicators whose value signals share a nami identity animate
-                // independently.
-                let animated = ctx.renderer_mut().sample_widget_scalar_target(
-                    AnimationKey::renderer_local_scalar_with_discriminator(
-                        node_id,
-                        LINEAR_DETERMINATE_ANIMATION_KEY,
-                    ),
+                let animated = ctx.renderer_mut().sample_owned_scalar_target(
+                    state,
+                    LINEAR_DETERMINATE_ANIMATION_KEY,
                     clamped,
                     motion.linear_determinate.clone(),
                 );
@@ -292,7 +282,7 @@ pub fn render_progress_parts(
             } else {
                 let elapsed = ctx
                     .renderer_mut()
-                    .sample_repeating_motion(motion.linear_indeterminate_cycle, node_id);
+                    .sample_repeating_motion(motion.linear_indeterminate_cycle, state);
                 ctx.draw_context(|draw| {
                     theme.draw_progress_linear_indeterminate(
                         &mut *draw, bar_rect, elapsed, four_color,
@@ -338,11 +328,9 @@ pub fn render_progress_parts(
                 (ctx.bounds.width().min(ctx.bounds.height()) - stroke_width).max(0.0) / 2.0;
             let motion = theme.progress_motion();
             if finite {
-                let animated = ctx.renderer_mut().sample_widget_scalar_target(
-                    AnimationKey::renderer_local_scalar_with_discriminator(
-                        node_id,
-                        CIRCULAR_DETERMINATE_ANIMATION_KEY,
-                    ),
+                let animated = ctx.renderer_mut().sample_owned_scalar_target(
+                    state,
+                    CIRCULAR_DETERMINATE_ANIMATION_KEY,
                     clamped,
                     motion.circular_determinate,
                 );
@@ -360,7 +348,7 @@ pub fn render_progress_parts(
             } else {
                 let elapsed = ctx
                     .renderer_mut()
-                    .sample_repeating_motion(motion.circular_indeterminate_cycle, node_id);
+                    .sample_repeating_motion(motion.circular_indeterminate_cycle, state);
                 ctx.draw_context(|draw| {
                     theme.draw_progress_circular_indeterminate(
                         &mut *draw,
@@ -381,7 +369,7 @@ pub fn render_progress_parts(
             let bounds = ctx.bounds;
             let elapsed = ctx
                 .renderer_mut()
-                .sample_repeating_motion(motion.loading_cycle, node_id);
+                .sample_repeating_motion(motion.loading_cycle, state);
             ctx.draw_context(|draw| {
                 theme.draw_progress_loading(&mut *draw, bounds, elapsed, four_color);
             });

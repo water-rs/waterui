@@ -14,6 +14,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
+mod animation_slots;
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
@@ -410,9 +411,9 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
 fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
     let mut renderer = test_renderer();
-    let owner = RetainedIdentity::for_rc(&Rc::new(()));
+    let owner = Rc::new(());
 
-    let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, &owner, usize::MAX);
+    let resolved = renderer.resolve_owned_scalar(&signal, &owner, usize::MAX);
 
     assert_eq!(resolved, 0.25);
     assert!(signal.subscribed.get());
@@ -422,7 +423,7 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 fn toggle_progress_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(false, nami::watcher::Context::from(false));
     let mut renderer = test_renderer();
-    let owner = RetainedIdentity::for_rc(&Rc::new(()));
+    let owner = Rc::new(());
 
     let (progress, selected) =
         renderer.resolve_toggle_progress(&signal, &owner, Animation::linear(Duration::ZERO));
@@ -2573,6 +2574,10 @@ pub struct MinimalTestTheme {
     state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
     /// Every `draw_toggle_switch` call.
     toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
+    /// Every `draw_progress_linear_track` call, as `(bounds, active_end)`.
+    progress_linear_track_draws: Rc<RefCell<Vec<(Rect, Option<f64>)>>>,
+    /// Every `draw_radio_indicator` call, as `(center, state)`.
+    radio_indicator_draws: Rc<RefCell<Vec<(Point, RadioIndicatorState)>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2835,10 +2840,13 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_radio_indicator(
         &self,
         _draw: &mut Recorder,
-        _center: Point,
+        center: Point,
         _radius: f64,
-        _state: RadioIndicatorState,
+        state: RadioIndicatorState,
     ) {
+        self.radio_indicator_draws
+            .borrow_mut()
+            .push((center, state));
     }
 
     fn slider_metrics(&self, size: ControlSize) -> SliderMetrics {
@@ -2924,9 +2932,12 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_progress_linear_track(
         &self,
         _draw: &mut Recorder,
-        _bounds: Rect,
-        _active_end: Option<f64>,
+        bounds: Rect,
+        active_end: Option<f64>,
     ) {
+        self.progress_linear_track_draws
+            .borrow_mut()
+            .push((bounds, active_end));
     }
     fn draw_progress_linear_fill(&self, _draw: &mut Recorder, _bounds: Rect) {}
     fn draw_progress_linear_indeterminate(
