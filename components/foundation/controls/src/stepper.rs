@@ -4,10 +4,10 @@
 
 use core::ops::{Bound, RangeBounds, RangeInclusive};
 
-use crate::label::{IntoLabel, Label, impl_label_style_methods};
+use crate::label::{IntoLabel, Label, LabelDisplayMode, impl_label_style_methods};
 use alloc::rc::Rc;
 use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
-use waterui_core::{Environment, configurable};
+use waterui_core::{Environment, configurable, layout::StretchAxis};
 use waterui_text::styled::StyledStr;
 
 #[derive(Debug)]
@@ -36,9 +36,10 @@ configurable!(
     ///
     /// # Layout Behavior
     ///
-    /// With a label: Stepper expands horizontally to fill available space,
-    /// placing the label on the left and buttons on the right.
-    /// Without a label: Stepper is content-sized (just buttons).
+    /// A stepper with a visible label expands horizontally to fill the
+    /// available width, placing the label at the leading edge and the buttons
+    /// at the trailing edge with the free space between. A stepper with a
+    /// hidden label is content-sized (just the buttons).
     ///
     /// # Examples
     ///
@@ -72,15 +73,20 @@ configurable!(
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-    // - stretchAxis: .horizontal (stepper always has a label by default)
-    // - sizeThatFits: Returns proposed width (or minimum), intrinsic height
-    // - Layout: label on left, buttons on right, flexible space between
+    // - Visible label: stretchAxis `.horizontal`; sizeThatFits answers the
+    //   proposed width (never below the row's intrinsic width) and the
+    //   intrinsic height; label leading, buttons trailing, flexible space
+    //   between.
+    // - Hidden label: stretchAxis `.none`; sizeThatFits answers the intrinsic
+    //   size — the buttons alone.
+    // - Read the axis from `NativeView::stretch_axis` on the payload; do not
+    //   restate the rule in the backend.
     //
     // ═══════════════════════════════════════════════════════════════════════════
     //
     Stepper,
     StepperConfig,
-    waterui_core::layout::StretchAxis::Horizontal,
+    |config| config.layout_stretch_axis(),
     resolve | config,
     env | config.resolve(env)
 );
@@ -90,6 +96,23 @@ impl StepperConfig {
     fn resolve(mut self, env: &Environment) -> Self {
         self.label = self.label.resolve(env);
         self
+    }
+
+    /// `docs/layout-spec.md` §3: a stepper is `Horizontal` when its label is
+    /// visible, and `None` otherwise.
+    ///
+    /// Before resolution only the label's own display mode is known — an
+    /// environment-wide [`LabelDisplayMode`] is not — so an unresolved label
+    /// counts as visible; the resolved payload answers exactly.
+    const fn layout_stretch_axis(&self) -> StretchAxis {
+        if matches!(
+            self.label.display_mode_preference(),
+            LabelDisplayMode::Hidden
+        ) {
+            StretchAxis::None
+        } else {
+            StretchAxis::Horizontal
+        }
     }
 }
 
@@ -169,4 +192,60 @@ impl_label_style_methods!(Stepper);
 #[must_use]
 pub fn stepper(label: impl IntoLabel, value: &Binding<i32>) -> Stepper {
     Stepper::new(label.into_label(), value)
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Binding;
+    use waterui_core::layout::StretchAxis;
+    use waterui_core::{Environment, NativeView, View};
+    use waterui_locale::locales;
+
+    use super::stepper;
+    use crate::label::LabelDisplayMode;
+
+    /// `docs/layout-spec.md` §3 over label visibility, both as the static
+    /// answer a container reads before `body` and as the resolved payload a
+    /// backend receives — an environment-wide hidden mode included.
+    #[test]
+    fn stretch_axis_follows_label_visibility() {
+        let quantity = Binding::i32(0);
+        let env = test_env();
+        for (visible, expected) in [(true, StretchAxis::Horizontal), (false, StretchAxis::None)] {
+            let make = || {
+                let stepper = stepper("Quantity", &quantity);
+                if visible {
+                    stepper
+                } else {
+                    stepper.hide_label()
+                }
+            };
+            assert_eq!(
+                View::stretch_axis(&make()),
+                expected,
+                "label visible: {visible} (static)"
+            );
+            let resolved = make().0.resolve(&env);
+            assert_eq!(
+                NativeView::stretch_axis(&resolved),
+                expected,
+                "label visible: {visible} (resolved payload)"
+            );
+        }
+
+        let mut env = test_env();
+        env.insert(LabelDisplayMode::Hidden);
+        let resolved = stepper("Quantity", &quantity).0.resolve(&env);
+        assert_eq!(
+            NativeView::stretch_axis(&resolved),
+            StretchAxis::None,
+            "an environment-hidden label stops the stretch"
+        );
+    }
+
+    fn test_env() -> Environment {
+        let mut env = Environment::new();
+        env.insert(locales::EN);
+        env
+    }
 }

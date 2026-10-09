@@ -12,6 +12,7 @@ use crate::{header, line, success};
 use waterui_cli::framework::FrameworkChannel;
 use waterui_cli::project::{CreateOptions, Project, ProjectDraft, WebScaffold};
 use waterui_cli::project_types::{BundleIdentifier, default_bundle_identifier};
+use waterui_cli::toolchain::Host;
 use waterui_cli::web::PackageManager;
 
 /// Arguments for the create command.
@@ -79,17 +80,14 @@ enum CreateTemplate {
 
 /// Run the create command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
-    let plan = resolve_create_plan(shell, &args)?;
+    let host = Host::current();
+    let plan = resolve_create_plan(shell, &host, &args)?;
     if plan.template == CreateTemplate::Web {
         // The declared manager must exist before anything touches disk.
-        super::web::ensure_installed(
-            &waterui_cli::toolchain::Host::current(),
-            plan.package_manager,
-        )
-        .await?;
+        super::web::ensure_installed(&host, plan.package_manager).await?;
     }
     header!(shell, "Creating WaterUI project: {}", plan.name);
-    let draft = create_project(shell, &plan).await?;
+    let draft = create_project(shell, &host, &plan).await?;
     if plan.template == CreateTemplate::Web
         && let Err(error) = scaffold_web_frontend(shell, &plan, draft.project()).await
     {
@@ -107,11 +105,11 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     Ok(())
 }
 
-fn resolve_create_plan(shell: &Shell, args: &Args) -> Result<CreatePlan> {
+fn resolve_create_plan(shell: &Shell, host: &Host, args: &Args) -> Result<CreatePlan> {
     let interactive = shell.is_interactive();
     let name = resolve_project_name(args, interactive)?;
     let folder_name = name.to_kebab_case();
-    let project_path = std::env::current_dir()?.join(&folder_name);
+    let project_path = host.cwd().join(&folder_name);
     let waterui_path = args.waterui_path.clone();
     let bundle_id = resolve_bundle_id(args, interactive, &name)?;
 
@@ -164,10 +162,10 @@ fn resolve_bundle_id(args: &Args, interactive: bool, name: &str) -> Result<Strin
     }
 }
 
-async fn create_project(shell: &Shell, plan: &CreatePlan) -> Result<ProjectDraft> {
+async fn create_project(shell: &Shell, host: &Host, plan: &CreatePlan) -> Result<ProjectDraft> {
     let spinner = shell.spinner("Creating project files...");
     let draft = ProjectDraft::create(
-        &waterui_cli::toolchain::Host::current(),
+        host,
         &plan.project_path,
         CreateOptions {
             name: plan.name.clone(),
@@ -268,7 +266,7 @@ const fn next_run_command() -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Args, FrameworkChannel, resolve_create_plan};
+    use super::{Args, FrameworkChannel, Host, resolve_create_plan};
     use crate::shell::Shell;
     use clap::Parser;
     use std::path::{Path, PathBuf};
@@ -469,9 +467,10 @@ mod tests {
     #[test]
     fn default_bundle_id_is_platform_neutral() {
         let shell = Shell::new(true);
+        let host = Host::current();
         for name in ["Menu Example", "menu-example", "menu_example"] {
             let command = CreateCommand::try_parse_from(["water", name]).expect("args");
-            let plan = resolve_create_plan(&shell, &command.args).expect("create plan");
+            let plan = resolve_create_plan(&shell, &host, &command.args).expect("create plan");
             assert_eq!(plan.bundle_id, "dev.waterui.menuExample");
         }
         let command = CreateCommand::try_parse_from([
@@ -481,8 +480,22 @@ mod tests {
             "com.example.my-app",
         ])
         .expect("args");
-        let plan = resolve_create_plan(&shell, &command.args).expect("create plan");
+        let plan = resolve_create_plan(&shell, &host, &command.args).expect("create plan");
         assert_eq!(plan.bundle_id, "com.example.my-app");
+    }
+
+    /// The project lands under the host's declared working directory: a
+    /// host carrying another cwd re-roots `create` where the process
+    /// working directory cannot.
+    #[test]
+    fn project_path_is_rooted_at_the_host_working_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let host =
+            Host::new(Vec::<PathBuf>::new(), Vec::<(&str, &str)>::new()).with_cwd(temp.path());
+        let command = CreateCommand::try_parse_from(["water", "My App"]).expect("args");
+        let plan =
+            resolve_create_plan(&Shell::new(true), &host, &command.args).expect("create plan");
+        assert_eq!(plan.project_path, temp.path().join("my-app"));
     }
 
     /// A name that cannot derive an identifier every platform accepts —
@@ -492,7 +505,8 @@ mod tests {
     #[test]
     fn an_underivable_default_bundle_id_is_an_actionable_error() {
         let command = CreateCommand::try_parse_from(["water", "3D Printer"]).expect("args");
-        let Err(error) = resolve_create_plan(&Shell::new(true), &command.args) else {
+        let Err(error) = resolve_create_plan(&Shell::new(true), &Host::current(), &command.args)
+        else {
             panic!("an underivable default must be rejected")
         };
         assert!(format!("{error:#}").contains("Android"), "{error:#}");
@@ -501,10 +515,11 @@ mod tests {
     #[test]
     fn framework_selection_never_implicitly_uses_a_local_checkout() {
         let shell = Shell::new(true);
+        let host = Host::current();
         for channel in ["dev", "nightly", "stable"] {
             let command = CreateCommand::try_parse_from(["water", "Example", "--channel", channel])
                 .expect("channel arguments");
-            let plan = resolve_create_plan(&shell, &command.args).expect("create plan");
+            let plan = resolve_create_plan(&shell, &host, &command.args).expect("create plan");
             assert_eq!(
                 plan.channel,
                 Some(channel.parse::<FrameworkChannel>().expect("channel"))
@@ -513,7 +528,7 @@ mod tests {
         }
         let command = CreateCommand::try_parse_from(["water", "Example", "--waterui-path", ".."])
             .expect("local source arguments");
-        let plan = resolve_create_plan(&shell, &command.args).expect("local create plan");
+        let plan = resolve_create_plan(&shell, &host, &command.args).expect("local create plan");
         assert_eq!(plan.waterui_path, Some(PathBuf::from("..")));
         assert_eq!(plan.channel, None);
         // The removed package types left no `--mode` flag behind.

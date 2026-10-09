@@ -198,12 +198,26 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        let Some(profiler) = self
-            .cherenkov_window
-            .as_ref()
-            .filter(|window| window.context_id() == gpu_context_id)
-            .and_then(|window| window.gpu_profiler.as_ref())
-        else {
+        let Some(window) = self.cherenkov_window.take() else {
+            return;
+        };
+        if window.context_id() == gpu_context_id {
+            self.finish_gpu_frame_profile_with(window.gpu_profiler.as_ref(), device, queue);
+        }
+        self.cherenkov_window = Some(window);
+    }
+
+    /// Resolves `profiler`'s markers into `frame_stage_times`, blocking
+    /// until the GPU drains the frame's submits; a no-op without a profiler.
+    /// The engine-presented macOS window calls it with its own window's
+    /// profiler, which lives outside the renderer.
+    pub(crate) fn finish_gpu_frame_profile_with(
+        &mut self,
+        profiler: Option<&GpuFrameProfiler>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let Some(profiler) = profiler else {
             return;
         };
         let wait_started_at = Instant::now();

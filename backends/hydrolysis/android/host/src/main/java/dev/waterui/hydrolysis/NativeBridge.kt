@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis
 
 import android.content.Context
+import android.os.Looper
 import android.view.Surface
 
 /**
@@ -34,9 +35,12 @@ object NativeBridge {
      * `WindowInsetsAnimationCompat` progress pushes each IME animation frame;
      * 11 = [nativeUiThreadServices] creates the one executor per UI thread
      * at load time, and [nativeCreateSession] takes its handle so every
-     * session shares it.
+     * session shares it; 12 = [nativeSetHighRefresh] takes a typed `active`
+     * flag in place of the `-1f` sentinel float the native side decoded as a
+     * release, and [nativeSurfaceAttached] carries the display's peak
+     * refresh rate that flag asks for.
      */
-    private const val SCHEMA: Int = 11
+    private const val SCHEMA: Int = 12
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -50,7 +54,8 @@ object NativeBridge {
     /** [nativeBackEvent] phase: the gesture committed, or a back button was pressed. */
     const val BACK_INVOKED: Int = 3
 
-    private var initialized = false
+    /** The `System.loadLibrary` name [load] mounted, or null before it. */
+    private var loadedLibraryName: String? = null
 
     /**
      * Opaque handle for the UI-thread services the load hook created once:
@@ -69,7 +74,15 @@ object NativeBridge {
      */
     @Synchronized
     fun load(libraryName: String, logLevel: String?) {
-        if (initialized) return
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "hydrolysis: load must run on the main thread, whose looper the executor registers with"
+        }
+        loadedLibraryName?.let { loaded ->
+            check(loaded == libraryName) {
+                "hydrolysis: the process already mounted '$loaded'; a second library '$libraryName' cannot share it"
+            }
+            return
+        }
         System.loadLibrary(libraryName)
         val nativeSchema = nativeInit(SCHEMA, logLevel)
         check(nativeSchema == SCHEMA) {
@@ -77,7 +90,7 @@ object NativeBridge {
         }
         uiThreadServices = nativeUiThreadServices()
         check(uiThreadServices != 0L) { "hydrolysis: the UI-thread executor was not created" }
-        initialized = true
+        loadedLibraryName = libraryName
     }
 
     @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int
@@ -139,10 +152,16 @@ object NativeBridge {
 
     @JvmStatic external fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long
 
+    /**
+     * A band surface was created. `peakRefreshHz` is the highest rate the
+     * band's display offers at its current resolution — what a
+     * [nativeSetHighRefresh] demand asks this surface for.
+     */
     @JvmStatic
     external fun nativeSurfaceAttached(
         sessionPtr: Long,
         surface: Surface,
+        peakRefreshHz: Float,
         width: Int,
         height: Int,
         generation: Long,
@@ -164,7 +183,13 @@ object NativeBridge {
      */
     @JvmStatic external fun nativeSetVisible(sessionPtr: Long, visible: Boolean)
 
-    @JvmStatic external fun nativeSetHighRefresh(sessionPtr: Long, fps: Float)
+    /**
+     * The scheduler's high-refresh demand. `active` asks the surface for the
+     * peak rate its attach reported, for as long as the pump runs or a touch
+     * is held; `false` releases the request. The native side holds the
+     * demand across surface re-creations.
+     */
+    @JvmStatic external fun nativeSetHighRefresh(sessionPtr: Long, active: Boolean)
 
     /**
      * One system-back phase. `phase` is a `BACK_*` constant. `edge` is

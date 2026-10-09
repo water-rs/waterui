@@ -64,7 +64,9 @@ fn compute_animated_colors(time: f32) -> [WorkingColor; 9] {
 }
 
 async fn animate_mesh_colors(colors: Binding<[WorkingColor; 9]>) {
-    let start = std::time::Instant::now();
+    // `std::time::Instant` panics on wasm32-unknown-unknown; web-time is the
+    // same clock natively and `performance.now()` in a browser.
+    let start = web_time::Instant::now();
     loop {
         let elapsed = start.elapsed().as_secs_f32();
         colors.set(compute_animated_colors(elapsed));

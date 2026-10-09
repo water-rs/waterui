@@ -2217,13 +2217,17 @@ Automatic meson installation failed: {install_err}\n\n{}",
     /// `self.triple` names an Apple platform — the triple is the compilation
     /// target whether the build crosses or the host is the Apple target
     /// itself.
-    fn apply_default_envs(&self, cmd: &mut Command) {
+    async fn apply_default_envs(&self, cmd: &mut Command) -> eyre::Result<()> {
         with_managed_tools_path(&self.host, cmd);
-        if let Some((key, value)) =
-            crate::apple::platform::apple_deployment_target_env(&self.triple)
+        if let Some(project) = &self.project
+            && let Some((key, value)) = crate::apple::platform::apple_deployment_target_env(
+                project.resolved_framework().await?,
+                &self.triple,
+            )?
         {
             cmd.env(key, value);
         }
+        Ok(())
     }
 
     async fn cargo_build_output(
@@ -2275,7 +2279,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
         if let Some(target_dir) = &self.target_dir {
             cmd = cmd.arg("--target-dir").arg(target_dir);
         }
-        self.apply_default_envs(cmd);
+        self.apply_default_envs(cmd).await.map_err(|error| {
+            RustBuildError::FailToBuildRustLibrary(std::io::Error::other(error.to_string()))
+        })?;
         // Apply extra environment variables (caller-provided values override defaults).
         for (key, value) in &self.envs {
             cmd.env(key, value);

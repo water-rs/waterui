@@ -58,8 +58,8 @@ impl Backend for AndroidBackend {
     const DEFAULT_PATH: &'static str = "android";
 
     // Preserve Gradle build caches during re-scaffolding: `app` is the
-    // entry-owning module, `waterui` the embedded-mode library module.
-    const CACHE_PATHS: &'static [&'static str] = &[".gradle", "build", "app", "waterui"];
+    // entry-owning module.
+    const CACHE_PATHS: &'static [&'static str] = &[".gradle", "build", "app"];
 
     fn path(&self) -> &Path {
         &self.project_path
@@ -85,6 +85,13 @@ impl Backend for AndroidBackend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
 
+        if manifest.package.embedded {
+            return Err(crate::backend::FailToInitBackend::Config(eyre::eyre!(
+                "{}",
+                crate::hydrolysis::android::embedded::EMBEDDED_REQUIRES_HYDROLYSIS
+            )));
+        }
+
         // Extract enabled permissions from the manifest
         let android_permissions = manifest_permissions(manifest);
 
@@ -93,7 +100,7 @@ impl Backend for AndroidBackend {
             manifest,
             project.crate_name().clone(),
             app_name,
-            &project
+            project
                 .resolved_framework()
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,
@@ -103,24 +110,9 @@ impl Backend for AndroidBackend {
         .with_project_root_path(project.root().to_path_buf())
         .with_android_permissions(android_permissions);
 
-        if manifest.package.embedded {
-            let ctx = ctx.with_crate_version(
-                crate::android::embedded::read_crate_version(project.root())
-                    .await
-                    .map_err(crate::backend::FailToInitBackend::Config)?,
-            );
-            templates::android_embedded::scaffold(
-                project.host(),
-                &project.backend_path::<Self>(),
-                &ctx,
-            )
+        templates::android::scaffold(project.host(), &project.backend_path::<Self>(), &ctx)
             .await
             .map_err(crate::backend::FailToInitBackend::Io)?;
-        } else {
-            templates::android::scaffold(project.host(), &project.backend_path::<Self>(), &ctx)
-                .await
-                .map_err(crate::backend::FailToInitBackend::Io)?;
-        }
 
         Ok(Self {
             project_path: default_android_project_path(),
@@ -234,6 +226,65 @@ mod tests {
                 .join("app")
                 .exists(),
             "no Gradle module was scaffolded"
+        );
+    }
+
+    /// An embedded manifest never reaches the Kotlin scaffold: embedded
+    /// Android libraries are Hydrolysis artifacts, and the error says so.
+    #[test]
+    fn init_rejects_an_embedded_manifest() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
+        let root = dir.path().join("embedded-lib");
+        smol::block_on(Project::create(
+            &host,
+            &root,
+            CreateOptions {
+                name: "Embedded Lib".to_string(),
+                bundle_identifier: BundleIdentifier::try_from("dev.waterui.embeddedlib")
+                    .expect("identifier"),
+                waterui_path: None,
+                channel: None,
+                framework_manifest: None,
+                framework: Some(crate::framework::test_fixtures::stable_framework()),
+                framework_lock: None,
+                author: "Lexo Liu".to_string(),
+                web: None,
+            },
+        ))
+        .expect("project creation must succeed");
+
+        // `embedded` is a manifest flag; flip it in Water.toml and reopen.
+        let water_toml = root.join("Water.toml");
+        let mut manifest = crate::project::Manifest::parse(
+            &std::fs::read_to_string(&water_toml).expect("Water.toml reads"),
+        )
+        .expect("manifest parses");
+        manifest.package.embedded = true;
+        std::fs::write(
+            &water_toml,
+            toml::to_string(&manifest).expect("manifest serializes"),
+        )
+        .expect("Water.toml writes");
+        let project = smol::block_on(Project::open(
+            &host,
+            &root,
+            crate::project::ManagedBackends::NONE,
+        ))
+        .expect("project reopens");
+
+        let error = smol::block_on(AndroidBackend::init(&project))
+            .expect_err("an embedded manifest has no Kotlin scaffold");
+        assert!(
+            format!("{error}").contains("embedded Android libraries are built by Hydrolysis"),
+            "{error}"
+        );
+        assert!(
+            !project
+                .backend_path::<AndroidBackend>()
+                .join("waterui")
+                .exists(),
+            "no library module was scaffolded"
         );
     }
 }

@@ -286,6 +286,11 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 type parameter. `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. Switch and checkbox map to different
 accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to tests.
+`ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
+checkbox on macOS — so a test that must pass on every host queries a default toggle
+with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
+width it is offered (label leading, switch trailing); a checkbox and a toggle with a
+hidden label are content-sized.
 
 `Label` composes text with an icon; `Label::new` makes a whole composed row read as one
 accessibility node:
