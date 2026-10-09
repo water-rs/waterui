@@ -42,6 +42,7 @@ use crate::renderer::{
 };
 use crate::runner::android_executor::AndroidMainThreadExecutor;
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
+use crate::runner::android_metrics::InsetsMetrics;
 use crate::runner::window::{
     RuntimeWindow, advance_runtime, handle_input_events, render_window, reports_ui_idle,
 };
@@ -87,6 +88,20 @@ pub struct MetricsSnapshot {
     /// host, so the creation-time snapshot's `0.0` reads as "not yet
     /// populated" until the first `nativeSetMetrics` lands.
     pub(crate) scroll_friction: f64,
+}
+
+impl MetricsSnapshot {
+    /// The metrics value `set_metrics` compares for the container region
+    /// — the pushed pixel edges AND the density the region's logical
+    /// insets derive from, as one value.
+    const fn container_metrics(&self) -> InsetsMetrics {
+        InsetsMetrics::new(self.container_insets_px, self.density)
+    }
+
+    /// The same for the keyboard region.
+    const fn keyboard_metrics(&self) -> InsetsMetrics {
+        InsetsMetrics::new(self.keyboard_insets_px, self.density)
+    }
 }
 
 /// The session's JNI handle back into the Kotlin host — a cached `JavaVM`,
@@ -819,14 +834,18 @@ impl AndroidSession {
     pub(crate) fn set_metrics(&mut self, metrics: MetricsSnapshot) {
         let container_insets_px = metrics.container_insets_px;
         let keyboard_insets_px = metrics.keyboard_insets_px;
-        let density = metrics.density;
+        let container = metrics.container_metrics();
+        let keyboard = metrics.keyboard_metrics();
         let (size_changed, container_changed, keyboard_changed) = {
             let platform = &mut self.runtime.platform;
             let size_changed = platform.metrics.width_px != metrics.width_px
                 || platform.metrics.height_px != metrics.height_px
                 || platform.metrics.density.to_bits() != metrics.density.to_bits();
-            let container_changed = platform.metrics.container_insets_px != container_insets_px;
-            let keyboard_changed = platform.metrics.keyboard_insets_px != keyboard_insets_px;
+            // A region's logical insets derive from the region's pixel
+            // edges AND the density, so the compared value is that whole
+            // pair — a density-only push still re-publishes both regions.
+            let container_changed = platform.metrics.container_metrics() != container;
+            let keyboard_changed = platform.metrics.keyboard_metrics() != keyboard;
             platform.metrics = metrics;
             if size_changed {
                 let (w, h) = platform.content_size();
@@ -838,23 +857,11 @@ impl AndroidSession {
             // Each binding write re-lays out through its own subscription, so
             // a region only re-sets when its own value moved — an IME
             // progress frame alone does not re-publish the container band.
-            if container_changed || keyboard_changed {
-                let density = crate::num_cast::f64_as_f32(density);
-                let to_insets = |px: [i32; 4]| {
-                    let [leading, top, trailing, bottom] = px;
-                    waterui_layout::padding::EdgeInsets::new(
-                        crate::num_cast::i32_as_f32(top) / density,
-                        crate::num_cast::i32_as_f32(bottom) / density,
-                        crate::num_cast::i32_as_f32(leading) / density,
-                        crate::num_cast::i32_as_f32(trailing) / density,
-                    )
-                };
-                if container_changed {
-                    self.safe_area.set(to_insets(container_insets_px));
-                }
-                if keyboard_changed {
-                    self.keyboard_area.set(to_insets(keyboard_insets_px));
-                }
+            if container_changed {
+                self.safe_area.set(container.logical());
+            }
+            if keyboard_changed {
+                self.keyboard_area.set(keyboard.logical());
             }
             (size_changed, container_changed, keyboard_changed)
         };

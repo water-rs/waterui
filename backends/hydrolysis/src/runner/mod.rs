@@ -58,6 +58,11 @@ pub mod android_methods;
 /// Linux host for the fd tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, target_os = "linux")))]
 pub mod android_executor;
+/// The insets-region metrics the Android session's `set_metrics`
+/// change-detects on — compiled on Android for the session and on host
+/// for its tests; dead elsewhere.
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+pub mod android_metrics;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the

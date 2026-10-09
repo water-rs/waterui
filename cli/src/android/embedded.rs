@@ -90,12 +90,15 @@ pub async fn build_aar(
         fs::remove_dir_all(&jni_libs).await?;
     }
 
+    // The companion render, permission audit and font staging do not
+    // depend on the ABI — run them once for the whole set.
+    AndroidPlatform::prepare_for_build(project).await?;
     let mut built: Option<BuiltTarget> = None;
     for abi in abis {
         let abi_options = options.clone().with_output_dir(jni_libs.join(abi.as_str()));
         built = Some(
             AndroidPlatform::new(*abi)
-                .build(project, abi_options)
+                .build_prepared(project, abi_options)
                 .await?,
         );
     }
@@ -118,7 +121,11 @@ pub async fn build_aar(
         &project.ffi_crate_path().join("Cargo.toml"),
         &module_dir,
         crate::assets::AndroidDependencyScope::Api,
-        &android_ffi_dependency_features(project).await?,
+        &android_ffi_dependency_features(
+            project,
+            &abis.iter().map(|abi| abi.triple()).collect::<Vec<_>>(),
+        )
+        .await?,
     )
     .await?;
 

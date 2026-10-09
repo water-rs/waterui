@@ -384,6 +384,15 @@ pub struct SemanticCore {
     /// mount, so a menu's Close Window row reads it when the row is built
     /// and needs no signal.
     window_closable: bool,
+    /// The window's declared logical frame — the semantic walk's only
+    /// geometry fact. The semantic runner writes it at mount and on every
+    /// move/resize, so emit paths that resolve a viewport-dependent
+    /// decision (a navigation split's collapsed-column mode) read what a
+    /// layout would have seen. Renderers no runner claimed keep
+    /// `Rect::ZERO` — below every compact threshold, the "smallest window"
+    /// presentation.
+    #[cfg(feature = "accessibility")]
+    window_frame: kurbo::Rect,
     render_depth: usize,
     /// The retained nodes whose subtrees are currently flushing, innermost
     /// last — the ancestry chain input registration reads to tell a gesture
@@ -644,6 +653,22 @@ impl SemanticCore {
         self.window_closable
     }
 
+    /// Assigns the window's declared logical frame — the semantic runner
+    /// writes it at mount and on every move/resize, so emit paths that
+    /// resolve a viewport-dependent decision (a navigation split's
+    /// collapsed-column mode) read what a layout would have seen.
+    #[cfg(feature = "accessibility")]
+    pub(crate) const fn set_window_frame(&mut self, frame: kurbo::Rect) {
+        self.window_frame = frame;
+    }
+
+    /// The window's declared logical frame — `Rect::ZERO` until a runner's
+    /// window declares one.
+    #[cfg(feature = "accessibility")]
+    pub(crate) const fn window_frame(&self) -> kurbo::Rect {
+        self.window_frame
+    }
+
     /// Enters an `OnKeyPress` scope for the subtree now flushing; targets
     /// registered inside snapshot it as their bubble chain.
     pub(crate) fn push_key_handler_scope(
@@ -718,6 +743,8 @@ impl SemanticCore {
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
             window_closable: true,
+            #[cfg(feature = "accessibility")]
+            window_frame: kurbo::Rect::ZERO,
             render_depth: 0,
             owner_stack: Vec::new(),
             root_core,

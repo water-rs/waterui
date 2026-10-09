@@ -10,7 +10,7 @@ fn app(env: Environment) -> App {
 
 #[cfg(not(target_vendor = "apple"))]
 waterui_ffi::export!();
-{% if ctx.apple_backend_selected %}
+{% if ctx.apple_pieces %}
 #[cfg(target_vendor = "apple")]
 waterui_apple::export_app!(app);
 {% endif %}
