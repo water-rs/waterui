@@ -11,6 +11,8 @@ pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
 #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 pub use runtime::inspector;
+#[cfg(feature = "dialog")]
+pub use runtime::dialog;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
 pub use runtime::{app, entry, error, fullscreen, metadata, realization, task, window};
@@ -61,6 +63,8 @@ pub mod prelude {
 
     pub use super::color::*;
     pub use super::fullscreen::*;
+    #[cfg(feature = "dialog")]
+    pub use super::dialog::{Dialog, DialogAction, DialogRole};
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
 
@@ -78,6 +82,7 @@ pub mod prelude {
     pub use super::theme::{
         self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color,
     };
+    pub use super::theme::color::Scrim;
 
     pub use super::text::{TextConfig, font, highlight, styled};
 

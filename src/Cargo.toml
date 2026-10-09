@@ -82,6 +82,7 @@ cpu-time.workspace = true
 default = [
     "gpu",
     "assets",
+    "dialog",
     "snackbar",
     "highlight",
     "locale-datetime",
@@ -108,6 +109,9 @@ inspector = ["dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
 # notification. Off by default so release builds pay nothing — see
 # `nami_core::observe`.
 inspector-signals = ["inspector", "nami/observability"]
+# Window-modal confirmation / alert dialogs: the `Dialog` semantic and its
+# composed card realization for self-drawn backends.
+dialog = []
 # Window-owned transient notifications. Embedded apps that do not select this
 # feature omit the manager, overlay, timers, and code-widget feedback path.
 snackbar = []
@@ -203,6 +207,7 @@ all = [
     "video-gpu",
     "navigation-restoration",
     "snackbar",
+    "dialog",
     "remote",
 ]
 
