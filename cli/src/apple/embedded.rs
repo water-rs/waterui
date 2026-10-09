@@ -118,8 +118,8 @@ pub async fn build_xcframework(
     architecture: Option<Architecture>,
 ) -> Result<EmbeddedArtifact> {
     let selected = slices(architecture)?;
-    let host = Host::current();
-    check_toolchain(&host, &selected).await?;
+    let host = project.host();
+    check_toolchain(host, &selected).await?;
     let package_parent = project.root().join("target/package");
     fs::create_dir_all(&package_parent).await?;
     let temporary_parent = package_parent.clone();
@@ -138,8 +138,7 @@ pub async fn build_xcframework(
         source.join("Embedding.swift"),
     )
     .await?;
-    let (links, manifests) =
-        assemble_slices(project, options, &host, &selected, temporary.path()).await?;
+    let (links, manifests) = assemble_slices(project, options, &selected, temporary.path()).await?;
     stage_resources(project, &source.join("Resources"), manifests).await?;
     write_package(project, &package, &links).await?;
     let destination = package_parent.join(format!("{}-apple", project.crate_name()));
@@ -168,13 +167,13 @@ async fn check_toolchain(host: &Host, selected: &[Slice]) -> Result<()> {
 async fn assemble_slices(
     project: &Project,
     options: &BuildOptions,
-    host: &Host,
     selected: &[Slice],
     staging: &Path,
 ) -> Result<(
     Vec<PlatformLinks>,
     Vec<waterui_assets_planner::BundleManifest>,
 )> {
+    let host = project.host();
     let mut arguments = vec![OsString::from("-create-xcframework")];
     let mut links: Vec<PlatformLinks> = Vec::new();
     let mut manifests = Vec::new();
@@ -215,7 +214,6 @@ async fn assemble_slices(
             .await?;
         let archive = closure
             .compose(
-                host,
                 slice.platform,
                 project,
                 &archive,
@@ -266,7 +264,7 @@ async fn stage_resources(
     assets::write_library_resources(&manifest, destination).await?;
     let declarations =
         assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let mut fonts = assets::resolve_fonts(declarations).await?;
+    let mut fonts = assets::resolve_fonts(project.host(), declarations).await?;
     fonts.extend(assets::scan_project_font_assets(&manifest)?);
     let font_dir = destination.join("fonts");
     fs::create_dir_all(&font_dir).await?;

@@ -912,12 +912,12 @@ jobs:
           TAG: ${{ steps.snapshot.outputs.tag }}
         run: gh release edit "$TAG" --draft=false --prerelease --latest=false
 
-  # One issue per broken nightly, updated in place while it stays red, so a
+  # One issue per broken nightly on dev, updated in place while it stays red, so a
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
     needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
-    if: failure()
+    if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

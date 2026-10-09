@@ -124,6 +124,13 @@ pub struct Args {
     yes: bool,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 struct BuildContext {
     project: Project,
     backend: TargetBackend,
@@ -193,11 +200,11 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
     success!(shell, "Toolchain ready");
 
     let spinner = shell.spinner("Compiling...");
-    let result = Box::pin(shell.display_output(embedded::build_aar(
-        &context.project,
+    let result = Box::pin(embedded::build_aar(
+        &context.project.with_std_output(shell.is_interactive()),
         &context.build_options,
         &abis,
-    )))
+    ))
     .await;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
@@ -240,13 +247,11 @@ async fn run_embedded_apple_build(
 ) -> Result<()> {
     let architecture = args.arch.map(TargetArch::architecture);
     let spinner = shell.spinner("Building embedded Apple package...");
-    let result = Box::pin(
-        shell.display_output(waterui_cli::apple::embedded::build_xcframework(
-            &context.project,
-            &context.build_options,
-            architecture,
-        )),
-    )
+    let result = Box::pin(waterui_cli::apple::embedded::build_xcframework(
+        &context.project.with_std_output(shell.is_interactive()),
+        &context.build_options,
+        architecture,
+    ))
     .await;
     if let Some(progress) = spinner {
         progress.finish_and_clear();
@@ -284,7 +289,12 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         } else {
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
-    let mut project = Project::open(&project_path, managed_backends).await?;
+    let mut project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        managed_backends,
+    )
+    .await?;
 
     if backend.is_experimental()
         && !super::confirm_experimental_backend(shell, backend_name(backend), args.yes)?
@@ -407,53 +417,47 @@ async fn check_build_toolchain(
 
 async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Result<BuiltTarget> {
     let spinner = shell.spinner("Compiling...");
-    let result = shell
-        .display_output(Box::pin(async {
-            match context.backend {
-                TargetBackend::Apple => {
-                    build_for_apple(
-                        &context.project,
-                        args.platform,
-                        args.arch,
+    let result = Box::pin(async {
+        // The project clone carries the interactive output policy into every
+        // backend's build.
+        let project = context.project.with_std_output(shell.is_interactive());
+        match context.backend {
+            TargetBackend::Apple => {
+                build_for_apple(
+                    &project,
+                    args.platform,
+                    args.arch,
+                    context.build_options.clone(),
+                )
+                .await
+            }
+            TargetBackend::Android => {
+                build_for_android(&project, args.arch, context.build_options.clone()).await
+            }
+            TargetBackend::Gtk4 => build_gtk4(&project, context.build_options.clone()).await,
+            TargetBackend::Hydrolysis => {
+                if args.platform == TargetPlatform::Android {
+                    let abi = android_abi(args.arch.unwrap_or(TargetArch::Arm64));
+                    waterui_cli::hydrolysis::android::build(
+                        &project,
+                        abi,
+                        context.build_options.clone(),
+                    )
+                    .await
+                } else {
+                    build_hydrolysis(
+                        &project,
+                        lib_platform(args.platform),
                         context.build_options.clone(),
                     )
                     .await
                 }
-                TargetBackend::Android => {
-                    build_for_android(&context.project, args.arch, context.build_options.clone())
-                        .await
-                }
-                TargetBackend::Gtk4 => {
-                    build_gtk4(&context.project, context.build_options.clone()).await
-                }
-                TargetBackend::Hydrolysis => {
-                    if args.platform == TargetPlatform::Android {
-                        let abi = android_abi(args.arch.unwrap_or(TargetArch::Arm64));
-                        waterui_cli::hydrolysis::android::build(
-                            &context.project,
-                            &waterui_cli::toolchain::Host::current(),
-                            abi,
-                            context.build_options.clone(),
-                        )
-                        .await
-                    } else {
-                        build_hydrolysis(
-                            &context.project,
-                            lib_platform(args.platform),
-                            context.build_options.clone(),
-                        )
-                        .await
-                    }
-                }
-                TargetBackend::WinUi => {
-                    build_winui(&context.project, context.build_options.clone()).await
-                }
-                TargetBackend::Dew => {
-                    build_esp32(&context.project, context.build_options.clone()).await
-                }
             }
-        }))
-        .await;
+            TargetBackend::WinUi => build_winui(&project, context.build_options.clone()).await,
+            TargetBackend::Dew => build_esp32(&project, context.build_options.clone()).await,
+        }
+    })
+    .await;
 
     if let Some(pb) = spinner {
         pb.finish_and_clear();

@@ -94,16 +94,20 @@ const fn inspector_target_platform(platform: InspectorPlatform) -> TargetPlatfor
 }
 
 async fn open_inspector_project(
+    host: &crate::toolchain::Host,
     inspector_app_path: &Path,
     platform: InspectorPlatform,
 ) -> Result<Project> {
     match platform {
         // Android runs the support app through Hydrolysis, whose managed
         // launcher crate is generated on demand rather than by `Project::open`.
-        InspectorPlatform::Android => crate::hydrolysis::backend::open_ready(inspector_app_path)
-            .await
-            .wrap_err("Failed to open inspector support app project"),
+        InspectorPlatform::Android => {
+            crate::hydrolysis::backend::open_ready(host, inspector_app_path)
+                .await
+                .wrap_err("Failed to open inspector support app project")
+        }
         InspectorPlatform::Macos | InspectorPlatform::IosSimulator => Project::open(
+            host,
             inspector_app_path,
             ManagedBackends::for_platform(inspector_target_platform(platform)),
         )
@@ -117,17 +121,18 @@ async fn open_inspector_project(
 /// # Errors
 /// Returns an error if the support project cannot be prepared or the inspector app fails to launch.
 pub async fn launch_inspector_session(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     platform: InspectorPlatform,
     options: InspectorLaunchOptions,
     progress: Option<BuildProgress>,
 ) -> Result<InspectorSession> {
-    let requirements = resolve_inspector_requirements(project_path).await?;
+    let requirements = resolve_inspector_requirements(host, project_path).await?;
 
-    let inspector_app_path = inspector_support_path()?;
-    ensure_inspector_support_app(&inspector_app_path, &requirements).await?;
+    let inspector_app_path = inspector_support_path(host)?;
+    ensure_inspector_support_app(host, &inspector_app_path, &requirements).await?;
 
-    let project = open_inspector_project(&inspector_app_path, platform).await?;
+    let project = open_inspector_project(host, &inspector_app_path, platform).await?;
 
     let mut run_options = RunOptions::new();
     run_options.insert_env_var(
@@ -136,14 +141,13 @@ pub async fn launch_inspector_session(
     );
     run_options.insert_env_var("WATERUI_INSPECTOR_TOKEN".to_string(), options.token.clone());
 
-    let host = crate::toolchain::Host::current();
     let running = match platform {
         InspectorPlatform::Macos => {
             let backend = project
                 .apple_backend()
                 .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
             let device = Local;
-            device.launch(&host).await?;
+            device.launch(host).await?;
             info!("Building and running inspector app on macOS...");
             project
                 .run_with_options(
@@ -161,9 +165,9 @@ pub async fn launch_inspector_session(
                 .apple_backend()
                 .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
             let simulator =
-                crate::apple::device::AppleSimulator::select_ios(&host, &project, None).await?;
+                crate::apple::device::AppleSimulator::select_ios(&project, None).await?;
 
-            simulator.launch(&host).await?;
+            simulator.launch(host).await?;
             info!("Building and running inspector app on iOS Simulator...");
             project
                 .run_with_options(
@@ -177,12 +181,11 @@ pub async fn launch_inspector_session(
                 .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
         }
         InspectorPlatform::Android => {
-            let target = AndroidTarget::first_available(&host).await?;
-            target.launch(&host).await?;
+            let target = AndroidTarget::first_available(host).await?;
+            target.launch(host).await?;
             info!("Building and running inspector app on Android...");
             crate::hydrolysis::android::run_on_device(
                 &project,
-                &host,
                 crate::hydrolysis::android::resolve_painter(&project, None),
                 target,
                 run_options,
@@ -201,11 +204,12 @@ pub async fn launch_inspector_session(
     })
 }
 
-fn inspector_support_path() -> Result<PathBuf> {
-    support_app::support_app_path("inspector_support")
+fn inspector_support_path(host: &crate::toolchain::Host) -> Result<PathBuf> {
+    support_app::support_app_path(host, "inspector_support")
 }
 
 async fn ensure_inspector_support_app(
+    host: &crate::toolchain::Host,
     path: &Path,
     requirements: &InspectorRequirements,
 ) -> Result<()> {
@@ -217,12 +221,18 @@ async fn ensure_inspector_support_app(
         INSPECTOR_METADATA_FILE,
         &desired_signature,
         "inspector support",
-        move || async move { scaffold_inspector_app(&scaffold_path, &scaffold_requirements).await },
+        move || async move {
+            scaffold_inspector_app(host, &scaffold_path, &scaffold_requirements).await
+        },
     )
     .await
 }
 
-async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirements) -> Result<()> {
+async fn scaffold_inspector_app(
+    host: &crate::toolchain::Host,
+    path: &Path,
+    requirements: &InspectorRequirements,
+) -> Result<()> {
     use crate::project::Manifest as WaterManifest;
 
     let waterui_path = requirements.waterui_path.clone();
@@ -230,7 +240,7 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
     let options = inspector_create_options(waterui_path.clone());
     let expected_packages = inspector_project_packages(&options);
 
-    let project = Project::create(path, options)
+    let project = Project::create(host, path, options)
         .await
         .map_err(|e| eyre::eyre!("Failed to create inspector app: {e}"))?;
 
@@ -249,6 +259,7 @@ async fn scaffold_inspector_app(path: &Path, requirements: &InspectorRequirement
          but its signature fingerprints {expected_packages:?}"
     );
     let ctx = TemplateContext::for_support_app(
+        host,
         crate::templates::SupportAppIdentity {
             display_name: "WaterUI Inspector".to_string(),
             crate_name: project.crate_name().clone(),
@@ -331,15 +342,16 @@ fn inspector_signature(requirements: &InspectorRequirements) -> String {
     )
 }
 
-async fn resolve_inspector_requirements(project_path: &Path) -> Result<InspectorRequirements> {
-    let current_dir = project_path.to_path_buf();
-    let metadata = smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .current_dir(current_dir)
-            .exec()
-    })
-    .await
-    .wrap_err("Failed to resolve user project Cargo metadata for inspector compatibility")?;
+async fn resolve_inspector_requirements(
+    host: &crate::toolchain::Host,
+    project_path: &Path,
+) -> Result<InspectorRequirements> {
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.current_dir(project_path);
+    let metadata = host
+        .cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to resolve user project Cargo metadata for inspector compatibility")?;
 
     let waterui = select_unique_package(&metadata, "waterui")?;
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;
@@ -352,7 +364,8 @@ async fn resolve_inspector_requirements(project_path: &Path) -> Result<Inspector
             .parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| eyre::eyre!("Failed to derive waterui package root path"))?;
-        let fingerprint = compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
+        let fingerprint =
+            compute_runtime_fingerprint(host, &waterui_root, &runtime_identity).await?;
         return Ok(InspectorRequirements {
             waterui_path: Some(waterui_root),
             runtime_fingerprint: format!("{fingerprint}|profile={}", runtime_profile_tag()),

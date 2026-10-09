@@ -349,6 +349,15 @@ sdkmanager)
     esac
     ;;
 adb)
+    # Every invocation appends its argv to the log a test points
+    # `WATERUI_FAKE_ADB_LOG` at, so sequences can be asserted.
+    if [ -n "${WATERUI_FAKE_ADB_LOG-}" ]; then
+        printf '%s\n' "$*" >> "$WATERUI_FAKE_ADB_LOG"
+    fi
+    # A wedged transport — spin until the caller's bound kills the process.
+    if [ -n "${WATERUI_FAKE_ADB_HANG-}" ]; then
+        while :; do :; done
+    fi
     case "$*" in
         version)
             printf 'Android Debug Bridge version 1.0.41\nVersion %s\n' "${WATERUI_FAKE_ADB_VERSION:-36.0.0-test}"
@@ -369,6 +378,34 @@ adb)
             ;;
         *wait-for-device*)
             exit 0
+            ;;
+        *"pm list packages"*)
+            respond_or_empty ADB_PM_PACKAGES
+            ;;
+        *" install "*)
+            # A failed install still prints its `Failure […]` text before
+            # the exit status — `respond_or_empty` exits 0 itself, so it
+            # runs in a subshell and the status is this branch's own.
+            (respond_or_empty ADB_INSTALL)
+            exit "${WATERUI_FAKE_ADB_INSTALL_STATUS:-0}"
+            ;;
+        *logcat*)
+            respond_or_empty ADB_LOGCAT
+            ;;
+        *"run-as"*cat*)
+            respond_or_empty ADB_CAT
+            ;;
+        *"run-as"*)
+            exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
+            ;;
+        *shell*date*)
+            printf '%s\n' "${WATERUI_FAKE_ADB_DATE:-01-01 00:00:00.000}"
+            ;;
+        *shell*instrument*)
+            respond_or_empty ADB_AM_INSTRUMENT
+            ;;
+        *shell*)
+            exit "${WATERUI_FAKE_ADB_SHELL_STATUS:-0}"
             ;;
         *)
             exit 0
@@ -407,6 +444,17 @@ sccache)
     case "$*" in
         --version | -version | -v)
             printf 'sccache %s (waterui-test)\n' "${WATERUI_FAKE_SCCACHE_VERSION:-1.0.0}"
+            ;;
+        --show-stats)
+            # A socket file still at SCCACHE_SERVER_UDS when connect-or-start
+            # runs is the bind collision the failing host reported. A test
+            # declaring WATERUI_FAKE_SCCACHE_LIVE says that file belongs to a
+            # live server, which the client connects to instead.
+            if [ -n "${SCCACHE_SERVER_UDS-}" ] && [ -e "$SCCACHE_SERVER_UDS" ] && [ -z "${WATERUI_FAKE_SCCACHE_LIVE-}" ]; then
+                printf 'sccache: error: Server startup failed: File exists (os error 17)\n' >&2
+                exit 2
+            fi
+            printf 'Compile requests                      0\n'
             ;;
     esac
     exit 0
@@ -572,6 +620,19 @@ uname)
             ;;
     esac
     exit 0
+    ;;
+bun | npm | pnpm | yarn)
+    case "$1" in
+        run)
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/${tool}_run_$2" ]; then
+                print_file "${WATERUI_FAKE_RESPONSES}/${tool}_run_$2"
+            fi
+            exit "${WATERUI_FAKE_PM_EXIT:-0}"
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
     ;;
 *)
     exit 0

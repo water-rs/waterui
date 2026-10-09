@@ -669,9 +669,10 @@ pub(crate) async fn selected_rustup_toolchain(host: &Host) -> Result<String, Unf
 /// Returns an error when rustup is missing or resolves no toolchain for the
 /// project directory.
 pub(crate) async fn project_rustup_toolchain(
+    host: &Host,
     project_root: &Path,
 ) -> Result<String, UnfixableToolchain> {
-    selected_rustup_toolchain(&Host::current().with_cwd(project_root)).await
+    selected_rustup_toolchain(&host.clone().with_cwd(project_root)).await
 }
 
 /// Targets installed on `toolchain`, via `rustup target list --installed`.
@@ -1168,164 +1169,14 @@ fn is_no_active_toolchain_error(error: &str) -> bool {
     normalized.contains("no active toolchain") || normalized.contains("no default toolchain")
 }
 
-/// A nightly toolchain that can compile the standard library from source.
-///
-/// `-Zbuild-std` needs a nightly cargo and the `rust-src` component. The
-/// Android preview needs both: the only shared `libstd` rustup ships is
-/// 4 KB-aligned, and a device with 16 KB pages refuses to map it, so the
-/// preview runtime builds `std` itself under the page-size link flag.
-///
-/// The choice is deterministic — the plain `nightly` channel first, then the
-/// newest dated nightly — because the support app and the preview module are
-/// separate Cargo invocations that must land on the same `libstd-<hash>.so`.
-///
-/// # Errors
-/// Returns an error when no nightly toolchain is installed, or when the
-/// selected toolchain lacks `rust-src` — the error names the exact
-/// `rustup component add` command rather than mutating the toolchain
-/// silently.
-pub async fn nightly_toolchain_with_rust_src(host: &Host) -> eyre::Result<String> {
-    let list = host
-        .run("rustup", ["toolchain", "list"])
-        .await
-        .map_err(|error| {
-            eyre::eyre!(
-                "Android preview needs a nightly Rust toolchain to build `std` from source, \
-                 and `rustup toolchain list` failed: {error}"
-            )
-        })?;
-    let host_triple = target_lexicon::Triple::host().to_string();
-    let Some(toolchain) = pick_nightly(&list, &host_triple) else {
-        eyre::bail!(
-            "Android preview needs a nightly Rust toolchain to build `std` from source. \
-             Install one with `rustup toolchain install nightly --component rust-src`."
-        );
-    };
-
-    let components = host
-        .run(
-            "rustup",
-            [
-                "component",
-                "list",
-                "--toolchain",
-                &toolchain,
-                "--installed",
-            ],
-        )
-        .await
-        .map_err(|error| {
-            eyre::eyre!("Failed to list components of Rust toolchain `{toolchain}`: {error}")
-        })?;
-    let has_rust_src = components
-        .lines()
-        .map(str::trim)
-        .any(|line| line == "rust-src" || line.starts_with("rust-src "));
-    if !has_rust_src {
-        eyre::bail!(
-            "Android preview needs the `rust-src` component on `{toolchain}` to build `std` from source. \
-             Install it with `rustup component add --toolchain {toolchain} rust-src`."
-        );
-    }
-    Ok(toolchain)
-}
-
-/// The `rustc -vV` identity of `toolchain` — what a cached `-Zbuild-std`
-/// artifact pins to, because a channel name like `nightly` outlives the
-/// compiler it resolves to after `rustup update`.
-///
-/// # Errors
-/// Returns an error when `rustup` cannot run the toolchain's `rustc`.
-pub async fn rustc_verbose_version(host: &Host, toolchain: &str) -> eyre::Result<String> {
-    host.run("rustup", ["run", toolchain, "rustc", "-vV"])
-        .await
-        .map_err(|error| {
-            eyre::eyre!("Failed to read `rustc -vV` of Rust toolchain `{toolchain}`: {error}")
-        })
-}
-
-/// Pick the toolchain a `-Zbuild-std` build should use out of `rustup
-/// toolchain list` output: `nightly-<host>` first, else the newest dated
-/// nightly for the host.
-fn pick_nightly(list_output: &str, host_triple: &str) -> Option<String> {
-    let default_nightly = format!("nightly-{host_triple}");
-    let suffix = format!("-{host_triple}");
-    let mut dated = Vec::new();
-    for name in list_output
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-    {
-        if name == default_nightly {
-            return Some(name.to_string());
-        }
-        let Some(date) = name
-            .strip_prefix("nightly-")
-            .and_then(|rest| rest.strip_suffix(&suffix))
-        else {
-            continue;
-        };
-        // Only the dated shape `nightly-YYYY-MM-DD-<host>` is ordered by
-        // recency: a custom-linked toolchain named `nightly-anything-<host>`
-        // must not sort last and silently outrank every dated nightly.
-        let mut fields = date.split('-');
-        let is_dated = matches!(
-            (fields.next(), fields.next(), fields.next(), fields.next()),
-            (Some(year), Some(month), Some(day), None)
-                if year.len() == 4 && month.len() == 2 && day.len() == 2
-                    && year.bytes().chain(month.bytes()).chain(day.bytes())
-                        .all(|byte| byte.is_ascii_digit())
-        );
-        if is_dated {
-            dated.push(name.to_string());
-        }
-    }
-    dated.sort_unstable();
-    dated.pop()
-}
-
 #[cfg(test)]
 mod tests {
     use semver::Version;
 
     use super::{
         ChannelKind, RustToolchainInstallation, classify_channel, component_is_installed,
-        parse_active_toolchain, parse_host_target, parse_rustc_version, pick_nightly,
+        parse_active_toolchain, parse_host_target, parse_rustc_version,
     };
-
-    #[test]
-    fn pick_nightly_prefers_the_plain_channel_then_the_newest_date() {
-        let host = "aarch64-apple-darwin";
-        let list = "stable-aarch64-apple-darwin (default)\nnightly-aarch64-apple-darwin\nnightly-2026-05-28-aarch64-apple-darwin\n";
-        assert_eq!(
-            pick_nightly(list, host).as_deref(),
-            Some("nightly-aarch64-apple-darwin")
-        );
-
-        let dated =
-            "nightly-2026-05-28-aarch64-apple-darwin\nnightly-2026-09-09-aarch64-apple-darwin\n";
-        assert_eq!(
-            pick_nightly(dated, host).as_deref(),
-            Some("nightly-2026-09-09-aarch64-apple-darwin")
-        );
-
-        assert_eq!(pick_nightly("stable-aarch64-apple-darwin\n", host), None);
-    }
-
-    #[test]
-    fn pick_nightly_ignores_custom_toolchains_shaped_like_dated_ones() {
-        let host = "aarch64-apple-darwin";
-        // A linked toolchain named `nightly-zzz-<host>` sorts after every
-        // dated nightly — without the date-shape check it would win.
-        let list = "nightly-2026-05-28-aarch64-apple-darwin\nnightly-zzz-aarch64-apple-darwin\n";
-        assert_eq!(
-            pick_nightly(list, host).as_deref(),
-            Some("nightly-2026-05-28-aarch64-apple-darwin")
-        );
-        assert_eq!(
-            pick_nightly("nightly-zzz-aarch64-apple-darwin\n", host),
-            None
-        );
-    }
 
     #[test]
     fn parse_rustc_version_accepts_prerelease() {
@@ -1406,10 +1257,7 @@ mod tests {
 
 #[cfg(test)]
 mod host_tests {
-    use super::{
-        CLI_MINIMUM_RUST_VERSION, RustToolchain, nightly_toolchain_with_rust_src,
-        rustc_verbose_version, tool_binary_name,
-    };
+    use super::{CLI_MINIMUM_RUST_VERSION, RustToolchain, tool_binary_name};
     use crate::toolchain::testing::TestMachine;
     use crate::toolchain::{Installation, Toolchain, ToolchainError};
 
@@ -1603,63 +1451,6 @@ mod host_tests {
             }
             other => panic!("a version pin below the floor must be manual: {other:?}"),
         }
-    }
-
-    #[test]
-    fn nightly_with_rust_src_returns_the_selected_toolchain() {
-        let machine = TestMachine::new();
-        machine.install("rustup");
-        let host_triple = target_lexicon::Triple::host().to_string();
-        let nightly = format!("nightly-{host_triple}");
-        machine.file(
-            "home/.fake-rustup-toolchains",
-            &format!("stable-{host_triple}\n{nightly}\n"),
-        );
-        machine.respond("RUSTUP_INSTALLED_COMPONENTS", "cargo\nrust-src\n");
-        let host = machine.host(Vec::<(String, String)>::new());
-        let toolchain = smol::block_on(nightly_toolchain_with_rust_src(&host))
-            .expect("a nightly carrying rust-src must be selected");
-        assert_eq!(toolchain, nightly);
-    }
-
-    #[test]
-    fn nightly_without_rust_src_fails_with_the_exact_component_command() {
-        let machine = TestMachine::new();
-        machine.install("rustup");
-        let host_triple = target_lexicon::Triple::host().to_string();
-        let nightly = format!("nightly-{host_triple}");
-        machine.file(
-            "home/.fake-rustup-toolchains",
-            &format!("stable-{host_triple}\n{nightly}\n"),
-        );
-        // `component list` prints nothing — `rust-src` is absent, and the
-        // check must refuse rather than mutate the toolchain silently.
-        let host = machine.host(Vec::<(String, String)>::new());
-        let error = smol::block_on(nightly_toolchain_with_rust_src(&host))
-            .expect_err("missing rust-src must fail");
-        assert!(
-            error.to_string().contains(&format!(
-                "rustup component add --toolchain {nightly} rust-src"
-            )),
-            "the error must name the exact install command: {error}"
-        );
-    }
-
-    #[test]
-    fn rustc_verbose_version_proxies_through_rustup_run() {
-        let machine = TestMachine::new();
-        machine.install("rustup");
-        machine.install("rustc");
-        let host = machine.host([(
-            String::from("WATERUI_FAKE_RUSTC_HOST"),
-            String::from("aarch64-apple-darwin"),
-        )]);
-        let version = smol::block_on(rustc_verbose_version(&host, "nightly-fake"))
-            .expect("`rustup run` must dispatch to the sibling rustc");
-        assert!(
-            version.contains("host: aarch64-apple-darwin"),
-            "the toolchain's `rustc -vV` identity must come back: {version}"
-        );
     }
 
     #[test]

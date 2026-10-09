@@ -384,26 +384,21 @@ pub async fn seed_managed_crate_lock(
     Ok(true)
 }
 
-/// `cargo metadata` on a manifest, on the blocking pool. `features` mirrors
-/// the feature selection the build invokes with — optional dependencies (and
-/// the metadata they declare) only enter the resolved graph under it; an
-/// empty slice resolves the manifest's default feature set.
+/// `cargo metadata` on a manifest, run on `host`. `features` mirrors the
+/// feature selection the build invokes with — optional dependencies (and the
+/// metadata they declare) only enter the resolved graph under it; an empty
+/// slice resolves the manifest's default feature set.
 pub async fn crate_metadata(
+    host: &crate::toolchain::Host,
     build_manifest: &Path,
     features: &[String],
 ) -> eyre::Result<cargo_metadata::Metadata> {
-    let manifest_path = build_manifest.to_path_buf();
-    let features = features.to_vec();
-    smol::unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command.manifest_path(&manifest_path);
-        if !features.is_empty() {
-            command.features(cargo_metadata::CargoOpt::SomeFeatures(features));
-        }
-        command.exec()
-    })
-    .await
-    .map_err(Into::into)
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(build_manifest);
+    if !features.is_empty() {
+        command.features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
+    }
+    host.cargo_metadata(&command).await.map_err(Into::into)
 }
 
 /// The features cargo resolved on each package of `metadata`'s graph — what
@@ -477,7 +472,9 @@ async fn scan_crate_font_declarations(
 
     let managed = seed_managed_crate_lock(project, build_manifest).await?;
 
-    let metadata = crate_metadata(build_manifest, &[]).await.wrap_err_with(|| {
+    let metadata = crate_metadata(project.host(), build_manifest, &[])
+        .await
+        .wrap_err_with(|| {
         let mut message = format!(
             "Failed to run cargo metadata on {}",
             build_manifest.display()
@@ -567,7 +564,7 @@ pub async fn scan_android_declarations(
     features: &[String],
 ) -> eyre::Result<AndroidDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
-    let metadata = crate_metadata(build_manifest, features)
+    let metadata = crate_metadata(project.host(), build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -691,7 +688,7 @@ pub async fn scan_apple_declarations(
     features: &[String],
 ) -> eyre::Result<AppleDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
-    let metadata = crate_metadata(build_manifest, features)
+    let metadata = crate_metadata(project.host(), build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -1070,13 +1067,16 @@ async fn write_android_keeps(module_dir: &Path, packages: &BTreeSet<String>) -> 
 /// to files already in the font cache — a build performs no network access,
 /// so a declaration that is not already cached is an error naming the font,
 /// its URL, and `water fetch`.
-pub async fn resolve_fonts(declarations: Vec<FontDeclaration>) -> eyre::Result<Vec<ResolvedFont>> {
-    let cache_dir = cache_dir()?;
+pub async fn resolve_fonts(
+    host: &crate::toolchain::Host,
+    declarations: Vec<FontDeclaration>,
+) -> eyre::Result<Vec<ResolvedFont>> {
+    let cache_dir = cache_dir(host)?;
     let registry = FontRegistry::builtin()?;
 
     let mut resolved = Vec::new();
     for decl in resolve_declarations(declarations) {
-        let path = satisfy_font(&decl, &cache_dir, &registry).await?;
+        let path = satisfy_font(host, &decl, &cache_dir, &registry).await?;
         debug!("Resolved font '{}' -> {}", decl.name, path.display());
         resolved.push(ResolvedFont {
             name: decl.name,
@@ -1128,6 +1128,7 @@ fn resolve_declarations(declarations: Vec<FontDeclaration>) -> Vec<FontDeclarati
 /// skipping renders the app in whatever face the shaper falls back to, which
 /// is the silent wrong-typeface this module exists to rule out.
 async fn satisfy_font(
+    host: &crate::toolchain::Host,
     decl: &FontDeclaration,
     cache_dir: &Path,
     registry: &FontRegistry,
@@ -1154,7 +1155,7 @@ async fn satisfy_font(
                 )
             }),
         },
-        FontSource::Remote { url } => cached_font(name, url, cache_dir).await,
+        FontSource::Remote { url } => cached_font(host, name, url, cache_dir).await,
         FontSource::BuiltIn => {
             let Some(url) = registry.url(name) else {
                 // Declared by name alone and the registry has no such
@@ -1163,7 +1164,7 @@ async fn satisfy_font(
                 // face.
                 return Err(unsatisfiable_builtin_font(decl));
             };
-            cached_font(name, url, cache_dir).await
+            cached_font(host, name, url, cache_dir).await
         }
     }
 }
@@ -1193,8 +1194,9 @@ fn unsatisfiable_builtin_font(decl: &FontDeclaration) -> eyre::Report {
 }
 
 /// Gets the cache directory holding fonts fetched out of band.
-fn cache_dir() -> eyre::Result<PathBuf> {
-    let cache = dirs::cache_dir()
+fn cache_dir(host: &crate::toolchain::Host) -> eyre::Result<PathBuf> {
+    let cache = host
+        .cache_dir()
         .map(|root| root.join("waterui").join("fonts"))
         .ok_or_eyre("Could not determine cache directory")?;
     Ok(cache)
@@ -1232,8 +1234,13 @@ fn resolve_local_font_path(
 /// A build performs no network access: when the declaration is not already
 /// cached, this fails naming the font, its URL and the cache directory, so the
 /// user can run `water fetch` and retry the build.
-async fn cached_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<PathBuf> {
-    cached_font_entry(name, url, cache_dir)
+async fn cached_font(
+    host: &crate::toolchain::Host,
+    name: &str,
+    url: &str,
+    cache_dir: &Path,
+) -> eyre::Result<PathBuf> {
+    cached_font_entry(host, name, url, cache_dir)
         .await?
         .ok_or_else(|| uncached_font_error(name, url, cache_dir))
 }
@@ -1244,6 +1251,7 @@ async fn cached_font(name: &str, url: &str, cache_dir: &Path) -> eyre::Result<Pa
 /// nothing usable is cached and `water fetch` can place it. A zero-length
 /// entry is dropped and reported absent.
 async fn cached_font_entry(
+    host: &crate::toolchain::Host,
     name: &str,
     url: &str,
     cache_dir: &Path,
@@ -1251,7 +1259,7 @@ async fn cached_font_entry(
     // Use URL hash as filename to avoid conflicts
     let hash = sha256_hex(url);
     if is_zip_url(url) {
-        return cached_zip_font(name, cache_dir, &hash).await;
+        return cached_zip_font(host, name, cache_dir, &hash).await;
     }
 
     cached_file_font(name, cache_dir, &hash).await
@@ -1264,6 +1272,7 @@ fn is_zip_url(url: &str) -> bool {
 }
 
 async fn cached_zip_font(
+    host: &crate::toolchain::Host,
     name: &str,
     cache_dir: &Path,
     hash: &str,
@@ -1289,7 +1298,7 @@ async fn cached_zip_font(
             let _ = fs::remove_file(&cache_file).await;
         } else {
             debug!("Font '{}' already cached at {}", name, cache_file.display());
-            return find_font_in_extracted_zip(&cache_file, name)
+            return find_font_in_extracted_zip(host, &cache_file, name)
                 .await
                 .map(Some);
         }
@@ -1435,6 +1444,7 @@ async fn seed_font_cache_scoped(
     project: &Project,
     scope: Option<crate::platform::TargetBackend>,
 ) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
+    let host = project.host();
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())
         .map_err(SeedFontCacheError::Fonts)?;
     let manifests = ensure_font_scan_manifests(project, scope)
@@ -1447,8 +1457,8 @@ async fn seed_font_cache_scoped(
                 .map_err(SeedFontCacheError::Fonts)?,
         );
     }
-    let cache_dir = cache_dir().map_err(SeedFontCacheError::Fonts)?;
-    fetch_fonts(declarations, &cache_dir, download_font)
+    let cache_dir = cache_dir(host).map_err(SeedFontCacheError::Fonts)?;
+    fetch_fonts(host, declarations, &cache_dir, download_font)
         .await
         .map_err(SeedFontCacheError::Fonts)
 }
@@ -1623,6 +1633,7 @@ type FontFetch =
 /// URL; a quiet skip would leave the next build failing on a font this run
 /// was supposed to place.
 async fn fetch_fonts(
+    host: &crate::toolchain::Host,
     declarations: Vec<FontDeclaration>,
     cache_dir: &Path,
     fetch: FontFetch,
@@ -1633,7 +1644,8 @@ async fn fetch_fonts(
         let outcome = match &decl.source {
             // Whatever fetching cannot fix — a crate-local file that is not
             // there — is reported exactly as the build reports it.
-            FontSource::Local { .. } => match satisfy_font(&decl, cache_dir, &registry).await {
+            FontSource::Local { .. } => match satisfy_font(host, &decl, cache_dir, &registry).await
+            {
                 Ok(path) => FetchOutcome::Satisfied {
                     name: decl.name.clone(),
                     path,
@@ -1646,13 +1658,16 @@ async fn fetch_fonts(
             FontSource::Remote { .. } | FontSource::BuiltIn => {
                 match declaration_url(&decl, &registry) {
                     Some(url) => {
-                        if let Some(path) = cached_font_entry(&decl.name, url, cache_dir).await? {
+                        if let Some(path) =
+                            cached_font_entry(host, &decl.name, url, cache_dir).await?
+                        {
                             FetchOutcome::Satisfied {
                                 name: decl.name.clone(),
                                 path,
                             }
                         } else {
-                            let path = fetch_remote_font(&decl.name, url, cache_dir, fetch).await?;
+                            let path =
+                                fetch_remote_font(host, &decl.name, url, cache_dir, fetch).await?;
                             FetchOutcome::Fetched {
                                 name: decl.name.clone(),
                                 path,
@@ -1690,6 +1705,7 @@ fn declaration_url<'a>(decl: &'a FontDeclaration, registry: &'a FontRegistry) ->
 /// transfer never reads as a cached font. An archive is extracted the way
 /// the build's first resolution extracts it.
 async fn fetch_remote_font(
+    host: &crate::toolchain::Host,
     name: &str,
     url: &str,
     cache_dir: &Path,
@@ -1718,7 +1734,7 @@ async fn fetch_remote_font(
     })?;
 
     if is_zip_url(url) {
-        find_font_in_extracted_zip(&cache_file, name)
+        find_font_in_extracted_zip(host, &cache_file, name)
             .await
             .wrap_err_with(|| format!("font '{name}' fetched from {url}"))
     } else {
@@ -1745,7 +1761,11 @@ fn download_font<'a>(
 }
 
 /// Finds a font file in an extracted zip archive.
-async fn find_font_in_extracted_zip(zip_path: &Path, name: &str) -> eyre::Result<PathBuf> {
+async fn find_font_in_extracted_zip(
+    host: &crate::toolchain::Host,
+    zip_path: &Path,
+    name: &str,
+) -> eyre::Result<PathBuf> {
     let extract_dir = zip_path.with_extension("");
 
     // Extract if not already done
@@ -1768,7 +1788,7 @@ async fn find_font_in_extracted_zip(zip_path: &Path, name: &str) -> eyre::Result
         // Other font ZIPs do not contain icons.json and must not be treated as
         // damaged Font Awesome distributions.
         if name.to_ascii_lowercase().contains("fontawesome") {
-            copy_fontawesome_icons_json(&extract_dir).await?;
+            copy_fontawesome_icons_json(host, &extract_dir).await?;
         }
     }
 
@@ -1795,7 +1815,10 @@ async fn remove_extracted_font_archive(zip_path: &Path) -> eyre::Result<()> {
 /// Copies Font Awesome icons.json to the fontawesome cache directory.
 ///
 /// This is needed by the fontawesome7 crate's build.rs to generate icon definitions.
-async fn copy_fontawesome_icons_json(extract_dir: &Path) -> eyre::Result<()> {
+async fn copy_fontawesome_icons_json(
+    host: &crate::toolchain::Host,
+    extract_dir: &Path,
+) -> eyre::Result<()> {
     // Look for metadata/icons.json in the extracted archive
     let icons_json = find_file_recursive(extract_dir, "icons.json").await?;
 
@@ -1803,7 +1826,8 @@ async fn copy_fontawesome_icons_json(extract_dir: &Path) -> eyre::Result<()> {
     let version = extract_fontawesome_version(extract_dir);
 
     // Copy to fontawesome cache directory
-    let fontawesome_cache = dirs::cache_dir()
+    let fontawesome_cache = host
+        .cache_dir()
         .map(|root| root.join("waterui").join("fontawesome"))
         .ok_or_eyre("Could not determine cache directory")?;
 
@@ -1950,6 +1974,11 @@ fn sha256_hex(s: &str) -> String {
 
 pub use unified::{build_manifest as plan_library_resources, write_library_resources};
 
+/// The directory name the staged asset bundle carries inside an Android
+/// `src/main/assets/` root.
+pub use unified::ASSET_ROOT_DIR as ANDROID_ASSET_BUNDLE_DIR;
+pub use unified::StagedAndroidAssets;
+
 /// Stage project assets for Apple packaging (Asset Catalog + raw resources).
 ///
 /// `symbols` is the library artifact the target build already produced
@@ -1982,12 +2011,14 @@ pub async fn stage_project_assets_for_android(
 /// (`waterui_assets` + sync stamp only — no app-level `res` files).
 /// `symbols` is the target build's app library — see
 /// [`stage_project_assets_for_apple`].
+///
+/// Returns the manifest and where the bundle was staged.
 pub async fn stage_project_assets_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<BundleManifest> {
+) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
     unified::stage_for_android_library(project, module_dir, symbols, dev_server).await
 }
 
@@ -2075,8 +2106,11 @@ pub async fn stage_hydrolysis_web_fonts(
     backend_path: &Path,
     site_root: &Path,
 ) -> eyre::Result<()> {
-    let mut resolved_fonts =
-        resolve_fonts(scan_fonts(project, &backend_path.join("Cargo.toml")).await?).await?;
+    let mut resolved_fonts = resolve_fonts(
+        project.host(),
+        scan_fonts(project, &backend_path.join("Cargo.toml")).await?,
+    )
+    .await?;
     resolved_fonts.sort_by(|left, right| left.name.cmp(&right.name));
 
     // `default_family` must name a face the manifest actually carries. Roboto
@@ -2154,11 +2188,12 @@ pub async fn write_font_manifest(
 ///
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn package_feature_enabled(
+    host: &crate::toolchain::Host,
     build_manifest: &Path,
     package: &str,
     feature: &str,
 ) -> eyre::Result<bool> {
-    let metadata = crate_metadata(build_manifest, &[])
+    let metadata = crate_metadata(host, build_manifest, &[])
         .await
         .wrap_err_with(|| {
             format!(
@@ -2287,7 +2322,8 @@ pub async fn capability_enabled(
     match capability.feature {
         Some(feature) => {
             seed_managed_crate_lock(project, build_manifest).await?;
-            package_feature_enabled(build_manifest, capability.package, feature).await
+            package_feature_enabled(project.host(), build_manifest, capability.package, feature)
+                .await
         }
         None => project.links_runtime_package(capability.package).await,
     }
@@ -2356,7 +2392,8 @@ pub async fn self_drawn_realization_features(
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
     seed_managed_crate_lock(project, build_manifest).await?;
-    let opted_in = package_feature_enabled(build_manifest, "waterui", "video-gpu").await?
+    let opted_in = package_feature_enabled(project.host(), build_manifest, "waterui", "video-gpu")
+        .await?
         || project.links_runtime_package("waterui-video-gpu").await?;
     if opted_in {
         features.push("video".to_string());
@@ -2469,6 +2506,7 @@ mod tests {
     fn an_uncached_remote_font_names_the_font_url_and_cache_dir() {
         let cache_dir = tempdir().expect("temp cache dir");
         let error = smol::block_on(cached_font(
+            &crate::toolchain::Host::current(),
             "Inter",
             "https://example.com/inter.ttf",
             cache_dir.path(),
@@ -2498,6 +2536,7 @@ mod tests {
         let expected = cache_dir.path().join(format!("{}.ttf", sha256_hex(url)));
 
         let outcomes = smol::block_on(fetch_fonts(
+            &crate::toolchain::Host::current(),
             vec![FontDeclaration {
                 name: "Inter".to_string(),
                 source: FontSource::Remote {
@@ -2523,8 +2562,13 @@ mod tests {
             b"font-bytes"
         );
 
-        let resolved = smol::block_on(cached_font("Inter", url, cache_dir.path()))
-            .expect("the build resolves the font the fetch placed");
+        let resolved = smol::block_on(cached_font(
+            &crate::toolchain::Host::current(),
+            "Inter",
+            url,
+            cache_dir.path(),
+        ))
+        .expect("the build resolves the font the fetch placed");
         assert_eq!(resolved, expected);
     }
 
@@ -2538,6 +2582,7 @@ mod tests {
         fs::write(&cached, b"cached-font").expect("seed the cache entry");
 
         let outcomes = smol::block_on(fetch_fonts(
+            &crate::toolchain::Host::current(),
             vec![FontDeclaration {
                 name: "Inter".to_string(),
                 source: FontSource::Remote {
@@ -2564,6 +2609,7 @@ mod tests {
         let cache_dir = tempdir().expect("temp cache dir");
 
         let error = smol::block_on(fetch_fonts(
+            &crate::toolchain::Host::current(),
             vec![FontDeclaration {
                 name: "Inter".to_string(),
                 source: FontSource::Remote {
@@ -2591,6 +2637,7 @@ mod tests {
         let cache_dir = tempdir().expect("temp cache dir");
 
         let outcomes = smol::block_on(fetch_fonts(
+            &crate::toolchain::Host::current(),
             vec![FontDeclaration {
                 name: "No Such Family".to_string(),
                 source: FontSource::BuiltIn,
@@ -2619,6 +2666,7 @@ mod tests {
         let root = tempdir().expect("temp root");
 
         let outcomes = smol::block_on(fetch_fonts(
+            &crate::toolchain::Host::current(),
             vec![FontDeclaration {
                 name: "Roboto".to_string(),
                 source: FontSource::Local {
@@ -2756,8 +2804,13 @@ mod tests {
         let extracted_font = extracted_dir.join("inter-regular.ttf");
         fs::write(&extracted_font, b"font").expect("write extracted font");
 
-        let resolved = smol::block_on(cached_font("Inter", url, cache_dir.path()))
-            .expect("reuse extracted cache");
+        let resolved = smol::block_on(cached_font(
+            &crate::toolchain::Host::current(),
+            "Inter",
+            url,
+            cache_dir.path(),
+        ))
+        .expect("reuse extracted cache");
 
         assert_eq!(resolved, extracted_font);
     }
@@ -2769,14 +2822,17 @@ mod tests {
     #[test]
     fn a_declared_local_font_that_is_missing_fails_the_build() {
         let root = tempdir().expect("temp root");
-        let error = smol::block_on(resolve_fonts(vec![FontDeclaration {
-            name: "Roboto".to_string(),
-            source: FontSource::Local {
-                crate_root: root.path().to_path_buf(),
-                relative_path: PathBuf::from("assets/fonts/Roboto-Variable.ttf"),
-            },
-            crate_name: "some-theme".to_string(),
-        }]))
+        let error = smol::block_on(resolve_fonts(
+            &crate::toolchain::Host::current(),
+            vec![FontDeclaration {
+                name: "Roboto".to_string(),
+                source: FontSource::Local {
+                    crate_root: root.path().to_path_buf(),
+                    relative_path: PathBuf::from("assets/fonts/Roboto-Variable.ttf"),
+                },
+                crate_name: "some-theme".to_string(),
+            }],
+        ))
         .expect_err("a missing crate-local font must be an error");
 
         let message = format!("{error:#}");
@@ -2899,9 +2955,10 @@ mod tests {
 ///
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn scan_required_permissions(
+    host: &crate::toolchain::Host,
     build_manifest: &Path,
 ) -> eyre::Result<Vec<RequiredPermission>> {
-    let metadata = crate_metadata(build_manifest, &[])
+    let metadata = crate_metadata(host, build_manifest, &[])
         .await
         .wrap_err_with(|| {
             format!(
@@ -3119,8 +3176,11 @@ mod permission_audit_tests {
             "[dependencies]\ntheme = { path = \"../theme\" }\n",
         );
 
-        let required = smol::block_on(scan_required_permissions(&backend_manifest))
-            .expect("scan the built crate's graph");
+        let required = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &backend_manifest,
+        ))
+        .expect("scan the built crate's graph");
         assert!(
             required
                 .iter()
@@ -3130,8 +3190,11 @@ mod permission_audit_tests {
             "the backend graph must report the permission `theme` declares"
         );
 
-        let ffi = smol::block_on(scan_required_permissions(&ffi_manifest))
-            .expect("scan the ffi crate's graph");
+        let ffi = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &ffi_manifest,
+        ))
+        .expect("scan the ffi crate's graph");
         assert!(
             ffi.is_empty(),
             "the ffi graph does not carry `theme` and must stay silent"
@@ -3157,12 +3220,22 @@ mod permission_audit_tests {
         );
 
         assert!(
-            smol::block_on(package_feature_enabled(&backend_manifest, "theme", "extra"))
-                .expect("scan the built crate's graph")
+            smol::block_on(package_feature_enabled(
+                &crate::toolchain::Host::current(),
+                &backend_manifest,
+                "theme",
+                "extra",
+            ))
+            .expect("scan the built crate's graph")
         );
         assert!(
-            !smol::block_on(package_feature_enabled(&ffi_manifest, "theme", "extra"))
-                .expect("scan the ffi crate's graph")
+            !smol::block_on(package_feature_enabled(
+                &crate::toolchain::Host::current(),
+                &ffi_manifest,
+                "theme",
+                "extra",
+            ))
+            .expect("scan the ffi crate's graph")
         );
     }
 
@@ -3302,8 +3375,12 @@ mod permission_audit_tests {
         );
 
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata)
         };
         let block = |declarations: AndroidDeclarations| {
@@ -3389,8 +3466,12 @@ mod permission_audit_tests {
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata)
         };
 
@@ -3426,6 +3507,20 @@ mod permission_audit_tests {
         assert!(message.contains("`other-push`"), "{message}");
     }
 
+    /// The iOS development entitlements `declarations` merge into an empty
+    /// table.
+    fn signed_entitlements(declarations: &AppleDeclarations) -> plist::Dictionary {
+        let mut entitlements = plist::Dictionary::new();
+        declarations
+            .merge_into_entitlements(
+                &mut entitlements,
+                crate::platform::TargetPlatform::IOS,
+                SigningEnvironment::Development,
+            )
+            .expect("merge entitlements");
+        entitlements
+    }
+
     /// Apple declarations are collected across the resolved graph: a
     /// `feature.<name>` table whose cargo feature is disabled contributes
     /// nothing, the same table with the feature on reaches the entitlements
@@ -3455,25 +3550,14 @@ mod permission_audit_tests {
             "app-enabled",
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
+        let host = crate::toolchain::Host::current();
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(&host, manifest, &[]))
+                .expect("resolve the fixture graph");
             collect_apple_declarations(&metadata)
         };
-        let signed = |declarations: &AppleDeclarations| {
-            let mut entitlements = plist::Dictionary::new();
-            declarations
-                .merge_into_entitlements(
-                    &mut entitlements,
-                    crate::platform::TargetPlatform::IOS,
-                    SigningEnvironment::Development,
-                )
-                .expect("merge entitlements");
-            entitlements
-        };
-
         let gated = collect(&gated).expect("collect the gated graph");
-        assert!(signed(&gated).is_empty());
+        assert!(signed_entitlements(&gated).is_empty());
         let mut plist = plist::Dictionary::new();
         gated
             .merge_into_info_plist(&mut plist)
@@ -3481,7 +3565,7 @@ mod permission_audit_tests {
         assert!(plist.is_empty());
 
         let enabled = collect(&enabled).expect("collect the enabled graph");
-        let entitlements = signed(&enabled);
+        let entitlements = signed_entitlements(&enabled);
         assert_eq!(
             entitlements.get("aps-environment"),
             Some(&plist::Value::String("development".to_owned()))
@@ -3565,8 +3649,12 @@ mod permission_audit_tests {
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata).expect("collect the graph")
         };
         let push = ["push".to_owned()];
@@ -3609,8 +3697,12 @@ mod permission_audit_tests {
             "app",
             "[dependencies]\ntypo = { path = \"../typo\" }\n",
         );
-        let metadata =
-            smol::block_on(crate_metadata(&app, &[])).expect("resolve the fixture graph");
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &app,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
         let message = collect_apple_declarations(&metadata)
             .expect_err("an unknown key must fail")
             .to_string();
@@ -3628,8 +3720,12 @@ mod permission_audit_tests {
             "typo",
             "[[package.metadata.waterui.android.providers]]\nname = \"a.B\"\n",
         );
-        let metadata =
-            smol::block_on(crate_metadata(&manifest, &[])).expect("resolve the fixture graph");
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &manifest,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
         let error = collect_android_declarations(&metadata).expect_err("unknown key must fail");
         assert!(error.to_string().contains("providers"), "{error}");
     }

@@ -33,7 +33,7 @@ const JAR: &str = "gradle/wrapper/gradle-wrapper.jar";
 /// [`crate::android::platform::run_gradle_tasks`] invokes it before resolving
 /// `gradlew`, so a scaffold made by an older CLI or one whose jar was deleted
 /// is healed rather than broken.
-pub async fn ensure(project: &Path) -> io::Result<()> {
+pub async fn ensure(host: &crate::toolchain::Host, project: &Path) -> io::Result<()> {
     let jar = project.join(JAR);
     if fs::metadata(&jar).await.is_ok() {
         return Ok(());
@@ -51,7 +51,7 @@ pub async fn ensure(project: &Path) -> io::Result<()> {
         )
     })?;
 
-    let cached = fetch_wrapper_jar(&distribution).await?;
+    let cached = fetch_wrapper_jar(host, &distribution).await?;
     if let Some(parent) = jar.parent() {
         fs::create_dir_all(parent).await?;
     }
@@ -95,9 +95,12 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// fetching the pinned distribution and extracting the jar when absent.
 /// Gradle does not serve the jar bare — it ships as a resource inside the
 /// distribution's `gradle-wrapper-main-<version>.jar`.
-async fn fetch_wrapper_jar(distribution: &(String, String)) -> io::Result<PathBuf> {
+async fn fetch_wrapper_jar(
+    host: &crate::toolchain::Host,
+    distribution: &(String, String),
+) -> io::Result<PathBuf> {
     let (version, flavor) = distribution;
-    let directory = crate::water_dir::build_cache_root()
+    let directory = crate::water_dir::build_cache_root(host)
         .await
         .map_err(io::Error::other)?
         .join("gradle-wrapper")

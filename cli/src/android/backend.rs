@@ -97,7 +97,7 @@ impl Backend for AndroidBackend {
             crate::assets::seed_managed_crate_lock(project, &ffi_manifest)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?;
-            let required = crate::assets::scan_required_permissions(&ffi_manifest)
+            let required = crate::assets::scan_required_permissions(project.host(), &ffi_manifest)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?;
             crate::assets::warn_missing_permissions(project, &required, |key| {
@@ -109,6 +109,7 @@ impl Backend for AndroidBackend {
         let android_permissions = manifest_permissions(manifest);
 
         let ctx = TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,
@@ -128,11 +129,15 @@ impl Backend for AndroidBackend {
                     .await
                     .map_err(crate::backend::FailToInitBackend::Config)?,
             );
-            templates::android_embedded::scaffold(&project.backend_path::<Self>(), &ctx)
-                .await
-                .map_err(crate::backend::FailToInitBackend::Io)?;
+            templates::android_embedded::scaffold(
+                project.host(),
+                &project.backend_path::<Self>(),
+                &ctx,
+            )
+            .await
+            .map_err(crate::backend::FailToInitBackend::Io)?;
         } else {
-            templates::android::scaffold(&project.backend_path::<Self>(), &ctx)
+            templates::android::scaffold(project.host(), &project.backend_path::<Self>(), &ctx)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Io)?;
         }
@@ -218,6 +223,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("liquid-glass");
         let project = smol::block_on(Project::create(
+            &crate::toolchain::Host::current(),
             &root,
             CreateOptions {
                 name: "Liquid Glass".to_string(),
