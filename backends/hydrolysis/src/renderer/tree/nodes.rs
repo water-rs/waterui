@@ -448,17 +448,22 @@ impl RetainedSubview {
             return;
         };
         let built = self.expect_built_mut("place");
-        // Record the sub-view's root as the owner of whatever its flush
-        // registers: a press the caller registered for the whole sub-view
-        // carries the same owner, and the ancestry check tells a gesture
-        // inside the sub-view from one attached to the root itself.
-        if let Some(identity) = built.node.accessibility_identity() {
-            renderer.push_input_owner(&identity);
-            built.node.flush(renderer, child_ctx, env, delta);
-            renderer.pop_input_owner();
-        } else {
-            built.node.flush(renderer, child_ctx, env, delta);
-        }
+        // A retained subtree re-records starting at its own root — a partial
+        // descent — so it first replays the enclosing `.material_group()`
+        // scopes from the node's ancestry (water-rs/waterui#2268). Record the
+        // sub-view's root as the owner of whatever its flush registers: a
+        // press the caller registered for the whole sub-view carries the same
+        // owner, and the ancestry check tells a gesture inside the sub-view
+        // from one attached to the root itself.
+        renderer.with_enclosing_material_group_scopes(built.node.core(), |renderer| {
+            if let Some(identity) = built.node.accessibility_identity() {
+                renderer.push_input_owner(&identity);
+                built.node.flush(renderer, child_ctx, env, delta);
+                renderer.pop_input_owner();
+            } else {
+                built.node.flush(renderer, child_ctx, env, delta);
+            }
+        });
     }
 
     /// [`place`](Self::place) for a subtree displayed outside
@@ -486,14 +491,15 @@ impl RetainedSubview {
         // current placement is the presentation host's own.
         let anchor = renderer.current_placement();
         let index = anchor.take_item();
-        self.expect_built_mut("place_detached").node.flush_anchored(
-            renderer,
-            child_ctx,
-            env,
-            Some(anchor),
-            delta,
-            index,
-        );
+        let built = self.expect_built_mut("place_detached");
+        // Same partial-descent replay as `place` — a detached subtree's
+        // enclosing `.material_group()` scopes come from its ancestry, not
+        // the stack (#2268).
+        renderer.with_enclosing_material_group_scopes(built.node.core(), |renderer| {
+            built
+                .node
+                .flush_anchored(renderer, child_ctx, env, Some(anchor), delta, index);
+        });
     }
 
     /// The shared head of [`place`](Self::place) and
@@ -572,13 +578,15 @@ impl RetainedSubview {
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
-        if let Some(identity) = built.node.accessibility_identity() {
-            renderer.push_input_owner(&identity);
-            built.node.flush(renderer, ctx, env, placement_delta);
-            renderer.pop_input_owner();
-        } else {
-            built.node.flush(renderer, ctx, env, placement_delta);
-        }
+        renderer.with_enclosing_material_group_scopes(built.node.core(), |renderer| {
+            if let Some(identity) = built.node.accessibility_identity() {
+                renderer.push_input_owner(&identity);
+                built.node.flush(renderer, ctx, env, placement_delta);
+                renderer.pop_input_owner();
+            } else {
+                built.node.flush(renderer, ctx, env, placement_delta);
+            }
+        });
     }
 
     /// Builds, lays out and records a navigation page into the open page
@@ -607,14 +615,19 @@ impl RetainedSubview {
             transform: anchor.resolved_transform(true),
         });
         let index = anchor.take_item();
-        built.node.flush_anchored(
-            renderer,
-            local_ctx,
-            env,
-            Some(anchor),
-            kurbo::Affine::IDENTITY,
-            index,
-        );
+        // A page records outside the window walk — the partial descent
+        // replays the enclosing `.material_group()` scopes from the page
+        // root's ancestry so its members join the same scope (#2268).
+        renderer.with_enclosing_material_group_scopes(built.node.core(), |renderer| {
+            built.node.flush_anchored(
+                renderer,
+                local_ctx,
+                env,
+                Some(anchor),
+                kurbo::Affine::IDENTITY,
+                index,
+            );
+        });
         renderer.pop_lazy_viewport("retained page record");
     }
 }

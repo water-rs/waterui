@@ -58,6 +58,11 @@ pub mod android_methods;
 /// Linux host for the fd tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, target_os = "linux")))]
 pub mod android_executor;
+/// The insets-region metrics the Android session's `set_metrics`
+/// change-detects on — compiled on Android for the session and on host
+/// for its tests; dead elsewhere.
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+pub mod android_metrics;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the
@@ -86,8 +91,10 @@ mod web_accessibility;
 mod web_runner;
 // Bare wasm compiles the module for its profile types (the semantic runtime
 // uses them everywhere) but has no window pump to call the rest.
+// `pub` within the private `runner` module: the platform surfaces name
+// `GpuSurfaceFrame` from outside `runner`.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-mod window;
+pub mod window;
 #[cfg(hydrolysis_winit)]
 mod winit_runner;
 #[cfg(hydrolysis_wayland_platform)]
@@ -152,7 +159,7 @@ use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::readback::readback_texture_rgba8;
+use crate::readback::readback_surface_texture_rgba8;
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
     SemanticCore,

@@ -72,7 +72,10 @@ jobs:
   # not prose or repository metadata, so a docs-only change runs the typo
   # check and nothing else; `ffi` is the C ABI and the root manifest whose
   # metadata names its Android floor; `deps` is what the audit, license and
-  # unused-dependency checks read. A workflow change runs the whole gate, because a
+  # unused-dependency checks read; `android` is the CLI's Android paths and
+  # the Hydrolysis Android host, the only changes that can break the
+  # create/build/package cycle the `android-package` job runs. A workflow
+  # change runs the whole gate, because a
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
@@ -95,6 +98,7 @@ jobs:
       ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -114,6 +118,16 @@ jobs:
               - "deny.toml"
             scripts:
               - ".github/scripts/**"
+              - "Cargo.toml"
+            android:
+              - "cli/src/android/**"
+              - "cli/src/hydrolysis/android.rs"
+              - "cli/src/templates/*android*/**"
+              - "cli/src/toolchain/**"
+              - "cli/src/toolchain_checks.rs"
+              - "cli/Cargo.toml"
+              - "backends/hydrolysis/android/**"
+              # `[package.metadata.waterui]`'s Android keys drive the scaffold.
               - "Cargo.toml"
             workflows:
               - ".github/workflows/**"
@@ -323,6 +337,70 @@ jobs:
       - uses: ./.github/actions/setup-android-ndk
       - name: Clippy (aarch64-linux-android)
         run: cargo clippy --profile ci-check -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
+
+  # Packaging is the only signal that drives the CLI's Android path end to
+  # end on a clean machine (#2290): `water create` scaffolds against this
+  # checkout, `water build` compiles the workspace for
+  # `aarch64-linux-android`, and `water package` builds the Hydrolysis
+  # Gradle host into an APK — a defect in that path passes every other leg
+  # and only surfaces on a device. The gate pays for it only when the CLI's
+  # Android paths or the Hydrolysis Android host change; the nightly
+  # `cli-e2e` legs run the same cycle unconditionally.
+  android-package:
+    name: Android package
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      # Its own cache story, like android-ffi: the job builds the workspace
+      # for `aarch64-linux-android` and compiles the CLI for the host, so
+      # sharing the lint jobs' keys would only evict their tarballs.
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-linux-android
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The scaffold declares its JDK toolchain in
+      # `[package.metadata.waterui-scaffold] android-jdk-version`; Gradle
+      # picks it up through JAVA_HOME.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: ./.github/actions/setup-android-ndk
+      # `sdkmanager` is the tool doctor's own remedy text names.
+      - uses: ./.github/actions/install-android-platform
+      # The CLI links libudev (serialport) on the host.
+      - uses: ./.github/actions/setup-linux-deps
+      # The binary under test needs no release optimisation: the ci-check
+      # profile skips the release profile's fat LTO and single codegen unit.
+      - name: Install the CLI under test
+        run: cargo install --locked --profile ci-check --path cli --root /tmp/water-cli
+      - name: Create, build and package a Hydrolysis Android app
+        run: |
+          set -euo pipefail
+          export PATH="/tmp/water-cli/bin:$PATH"
+          mkdir -p e2e-logs
+          water create e2eapp --waterui-path "$GITHUB_WORKSPACE" 2>&1 | tee e2e-logs/create.log
+          cd e2eapp
+          # Inside a project doctor scopes the Android group in, so `--fix`
+          # provisions what the toolchain check wants (the managed Kotlin,
+          # the Rust targets) exactly as on a developer machine.
+          water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix.log
+          if grep -q 'Failed to install' ../e2e-logs/doctor-fix.log; then
+            echo "::error::doctor --fix reported failed installs"
+            exit 1
+          fi
+          water build --platform android --backend hydrolysis --yes 2>&1 | tee ../e2e-logs/build.log
+          water package --platform android --backend hydrolysis --arch arm64 --debug --yes 2>&1 | tee ../e2e-logs/package-debug.log
+          water package --platform android --backend hydrolysis --arch arm64 --release --unsigned --yes 2>&1 | tee ../e2e-logs/package-release.log
+          grep -q 'Packaged at' ../e2e-logs/package-debug.log
+          grep -q 'Packaged at' ../e2e-logs/package-release.log
 
   test:
     name: Test

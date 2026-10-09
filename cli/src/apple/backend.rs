@@ -124,9 +124,6 @@ impl AppleBackend {
                     })
             })
             .collect();
-        let webview_enabled = project.uses_standard_webview().await?;
-        let chromium_enabled = project.links_runtime_package("waterui-chromium").await?;
-        let browser_engine = project.linked_browser_engine().await?;
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
         let launch = crate::assets::project_launch_assets(project)?;
@@ -139,15 +136,12 @@ impl AppleBackend {
             manifest,
             crate_name_for_template,
             app_name,
-            &project.resolved_framework().await?,
+            project.resolved_framework().await?,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
         .with_ios_permissions(ios_permissions)
-        .with_webview_enabled(webview_enabled)
-        .with_chromium_enabled(chromium_enabled)
-        .with_browser_engine(browser_engine)
         .with_launch(launch_entry))
     }
 
@@ -219,7 +213,11 @@ impl Backend for AppleBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         project
-            .browser_runtime_plan(platform, TargetBackend::Apple)
+            .browser_runtime_plan(
+                platform,
+                TargetBackend::Apple,
+                &crate::apple::platform::apple_build_triple(platform, &options),
+            )
             .await?;
         build_rust_lib(project, platform, options).await
     }
@@ -348,9 +346,10 @@ mod tests {
     #[test]
     fn scaffold_without_xcode_project_still_detects_staleness() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
         smol::block_on(Project::create(
-            &crate::toolchain::Host::current(),
+            &host,
             &root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -374,7 +373,7 @@ mod tests {
         );
 
         let project = smol::block_on(Project::open(
-            &crate::toolchain::Host::current(),
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
@@ -423,9 +422,10 @@ mod tests {
     #[test]
     fn template_context_rejects_an_apple_invalid_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("menu-example");
         let project = smol::block_on(Project::create(
-            &crate::toolchain::Host::current(),
+            &host,
             &root,
             CreateOptions {
                 name: "Menu Example".to_string(),
@@ -456,9 +456,10 @@ mod tests {
     #[test]
     fn apple_backend_accepts_and_preserves_a_hyphenated_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("liquid-glass");
         smol::block_on(Project::create(
-            &crate::toolchain::Host::current(),
+            &host,
             &root,
             CreateOptions {
                 name: "Liquid Glass".to_string(),
@@ -482,7 +483,7 @@ mod tests {
         );
 
         let project = smol::block_on(Project::open(
-            &crate::toolchain::Host::current(),
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
@@ -509,9 +510,10 @@ mod tests {
     #[test]
     fn ios_info_plist_opts_out_of_the_promotion_frame_cap() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let host = crate::toolchain::testing::real_toolchain_host(dir.path());
         let root = dir.path().join("water-example");
         smol::block_on(Project::create(
-            &crate::toolchain::Host::current(),
+            &host,
             &root,
             CreateOptions {
                 name: "Water Example".to_string(),
@@ -535,7 +537,7 @@ mod tests {
         );
 
         let project = smol::block_on(Project::open(
-            &crate::toolchain::Host::current(),
+            &host,
             &root,
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))

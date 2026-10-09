@@ -51,12 +51,16 @@ async fn template_context(project: &Project, dir: &Path) -> eyre::Result<Templat
         manifest,
         project.crate_name().clone(),
         app_name,
-        &framework,
+        framework,
         project.local_sources(),
     )
     .with_backend_project_path(dir.to_path_buf())
     .with_project_root_path(project.root().to_path_buf())
-    .with_project_packages(project.project_packages(&framework).await?))
+    .with_project_packages(
+        project
+            .project_packages(framework, &[target_lexicon::Triple::host()])
+            .await?,
+    ))
 }
 
 /// Whether the generated launcher's sources differ from what the current

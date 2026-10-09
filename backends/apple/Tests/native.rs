@@ -167,6 +167,14 @@ fn base_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test("resolve::toggle_leaves_follow_the_stretch_rule", || {
+            resolve::toggle_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
+        Trial::test("resolve::toggle_rows_place_the_control_by_kind", || {
+            resolve::toggle_rows_place_the_control_by_kind();
+            Ok(())
+        }),
         Trial::test(
             "picture::a_laid_out_picture_rasterizes_at_its_bounds",
             || {
@@ -715,6 +723,7 @@ mod resolve {
     use waterui::component::form::secure::{Secure, SecureField};
     use waterui::component::slider::slider;
     use waterui::component::text_field::TextField;
+    use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
@@ -897,6 +906,136 @@ mod resolve {
                 offered.height < 500.0,
                 "{name} must not grow into the offered height"
             );
+        }
+    }
+
+    /// `docs/layout-spec.md` §3 and §6 over the style × label-visibility
+    /// matrix: only a switch with a visible label is `Horizontal` and
+    /// answers the proposed width; a checkbox and a hidden label answer the
+    /// row's intrinsic size. `Automatic` is the platform's default first —
+    /// a switch on iOS, a checkbox on macOS.
+    pub fn toggle_leaves_follow_the_stretch_rule() {
+        let on = binding(false);
+        #[cfg(target_os = "ios")]
+        let automatic = StretchAxis::Horizontal;
+        #[cfg(target_os = "macos")]
+        let automatic = StretchAxis::None;
+        let cases = [
+            (
+                "switch",
+                Toggle::new("Wi-Fi", &on).switch(),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "hidden-label switch",
+                Toggle::new("Wi-Fi", &on).switch().hide_label(),
+                StretchAxis::None,
+            ),
+            (
+                "checkbox",
+                Toggle::new("Wi-Fi", &on).checkbox(),
+                StretchAxis::None,
+            ),
+            (
+                "hidden-label checkbox",
+                Toggle::new("Wi-Fi", &on).checkbox().hide_label(),
+                StretchAxis::None,
+            ),
+            ("automatic", Toggle::new("Wi-Fi", &on), automatic),
+            (
+                "hidden-label automatic",
+                Toggle::new("Wi-Fi", &on).hide_label(),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, toggle, axis) in cases {
+            let leaf = render(toggle);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 400.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(400.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                400.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 400 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
+    /// A switch row puts the label at the leading edge and the switch at
+    /// the trailing edge of the full width; a checkbox row reads box first,
+    /// then the label `LABEL_SPACING` after it.
+    pub fn toggle_rows_place_the_control_by_kind() {
+        #[cfg(target_os = "macos")]
+        use cocoa_ui::appkit::toggle::LABEL_SPACING;
+        #[cfg(target_os = "ios")]
+        use cocoa_ui::uikit::toggle::LABEL_SPACING;
+
+        // Auto Layout snaps frames to the backing scale's pixel grid.
+        fn assert_near(actual: f64, expected: f64, what: &str, name: &str) {
+            assert!(
+                (actual - expected).abs() < 0.5,
+                "{name}: {what} — expected {expected}, got {actual}"
+            );
+        }
+
+        let on = binding(false);
+        for (name, toggle, switch) in [
+            ("switch", Toggle::new("Wi-Fi", &on).switch(), true),
+            ("checkbox", Toggle::new("Wi-Fi", &on).checkbox(), false),
+        ] {
+            let leaf = render(toggle);
+            let height = f64::from(leaf.layout().measure(ProposalSize::UNSPECIFIED).size.height);
+            let row = leaf.view();
+            cocoa_ui::view::set_frame(row, cocoa_ui::Rect::new(0.0, 0.0, 400.0, height));
+            cocoa_ui::view::layout_immediately(row);
+            let subviews = cocoa_ui::view::subviews(row);
+            assert_eq!(
+                subviews.len(),
+                2,
+                "{name}: the row holds the label and the control"
+            );
+            let label = cocoa_ui::view::frame(&subviews[0]);
+            // The constraints pin the control's alignment rect, not its
+            // frame: a UISwitch frame overshoots the pinned trailing edge
+            // by 2 pt, so the edge Auto Layout placed is the alignment
+            // rect's.
+            let control = cocoa_ui::view::alignment_frame(&subviews[1]);
+            let control_trailing = control.origin.x + control.size.width;
+            if switch {
+                assert_near(label.origin.x, 0.0_f64, "label leading", name);
+                assert_near(
+                    control_trailing,
+                    400.0_f64,
+                    "switch at the trailing edge",
+                    name,
+                );
+            } else {
+                assert_near(control.origin.x, 0.0_f64, "box leading", name);
+                assert_near(
+                    label.origin.x,
+                    control_trailing + LABEL_SPACING,
+                    "label after the box",
+                    name,
+                );
+            }
         }
     }
 }

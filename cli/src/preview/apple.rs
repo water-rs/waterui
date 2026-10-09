@@ -129,17 +129,22 @@ pub async fn render_preview_with_apple(
     // runtime's feature forwards and the font declarations the resources
     // scan reads, and its build already lives in the shared target
     // directory.
-    project.scaffold_ffi_companion(true).await?;
+    project.scaffold_ffi_companion().await?;
     ensure_project_dev_feature_for_preview(&project).await?;
     project.scaffold_apple_preview_companion().await?;
     write_apple_preview_target(&project, &request.source).await?;
 
-    let browser_runtime = project
-        .browser_runtime_plan(TargetPlatform::MacOS, TargetBackend::Apple)
-        .await?;
-    let features =
-        apple_build_features(&project, browser_runtime, RustLinkage::SharedRuntime).await?;
     let triple = TargetPlatform::MacOS.triple();
+    let browser_runtime = project
+        .browser_runtime_plan(TargetPlatform::MacOS, TargetBackend::Apple, &triple)
+        .await?;
+    let features = apple_build_features(
+        &project,
+        browser_runtime,
+        RustLinkage::SharedRuntime,
+        &triple,
+    )
+    .await?;
     let target_dir = project.water_target_dir(RustLinkage::SharedRuntime).await?;
     let mut rust_build =
         RustBuild::for_project(&project, project.apple_preview_crate_path(), triple.clone())

@@ -1,8 +1,6 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
 use super::*;
-#[cfg(feature = "frame-profile")]
-use crate::platform::SurfaceProvider as _;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -15,6 +13,10 @@ pub(super) struct HeadlessPlatformWindow {
     inner: OffscreenWindow,
     pending_events: VecDeque<InputEvent>,
     redraw_requested: Cell<bool>,
+    #[cfg(test)]
+    pub(super) frame_wake_count: Rc<Cell<u32>>,
+    #[cfg(test)]
+    pub(super) frame_transaction: Option<Rc<super::window::FrameTransaction>>,
     /// The occlusion report tests drive through [`Self::set_occluded`] —
     /// the default `false` a headless window behaves with in production.
     occluded: Cell<bool>,
@@ -55,6 +57,10 @@ impl HeadlessPlatformWindow {
             inner: OffscreenWindow::on_context(gpu, width, height, format),
             pending_events: VecDeque::new(),
             redraw_requested: Cell::new(false),
+            #[cfg(test)]
+            frame_wake_count: Rc::new(Cell::new(0)),
+            #[cfg(test)]
+            frame_transaction: None,
             occluded: Cell::new(false),
             pointer_position: None,
             touch_scroll_config: Cell::new(None),
@@ -127,6 +133,26 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.redraw_requested.set(true);
     }
 
+    /// The headless pump is driven explicitly by the harness — a request
+    /// recorded on the frame signals is consumed by the next pump the test
+    /// calls, so the wake does nothing in production. Tests count posts and
+    /// can apply Android's transaction gate before mounting the runtime.
+    fn frame_wake(&self) -> Rc<dyn Fn()> {
+        #[cfg(test)]
+        {
+            let count = Rc::clone(&self.frame_wake_count);
+            let wake: Rc<dyn Fn()> = Rc::new(move || {
+                count.set(count.get() + 1);
+            });
+            self.frame_transaction.as_ref().map_or_else(
+                || Rc::clone(&wake),
+                |transaction| transaction.frame_wake(Rc::clone(&wake)),
+            )
+        }
+        #[cfg(not(test))]
+        Rc::new(|| {})
+    }
+
     fn is_occluded(&self) -> bool {
         self.occluded.get()
     }
@@ -146,7 +172,8 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
-    fn surface(&mut self) -> &mut dyn crate::platform::SurfaceProvider {
+    type Presentation = crate::platform::OffscreenSurface;
+    fn surface(&mut self) -> &mut crate::platform::OffscreenSurface {
         crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
     }
 

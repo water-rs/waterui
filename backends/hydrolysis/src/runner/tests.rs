@@ -1005,8 +1005,15 @@ fn runtime_window_sized(
     width: u32,
     height: u32,
 ) -> RuntimeWindow<HeadlessPlatformWindow> {
-    let mut platform =
+    let platform =
         HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
+    runtime_window_with_platform(window, platform)
+}
+
+fn runtime_window_with_platform(
+    window: Window,
+    mut platform: HeadlessPlatformWindow,
+) -> RuntimeWindow<HeadlessPlatformWindow> {
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
@@ -1112,7 +1119,9 @@ fn drive_until_idle_checking(
     mut check: impl FnMut(&RuntimeWindow<HeadlessPlatformWindow>),
 ) -> usize {
     for frame in 0..max_frames {
-        let wake = runtime.mode.is_pending() | runtime.platform.take_redraw_request();
+        let wake = runtime.mode.is_pending()
+            | runtime.platform.take_redraw_request()
+            | runtime.renderer.has_pending_frame_request();
         if !wake {
             return frame;
         }
@@ -1239,7 +1248,7 @@ impl RecoveringSurface {
     }
 }
 
-impl SurfaceProvider for RecoveringSurface {
+impl crate::platform::PresentationSurface for RecoveringSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         self.inner.adapter()
     }
@@ -1256,36 +1265,30 @@ impl SurfaceProvider for RecoveringSurface {
         self.inner.device_loss()
     }
 
-    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        self.acquire_count += 1;
-        self.first_error
-            .take()
-            .map_or_else(|| self.inner.acquire(), Err)
-    }
-
-    fn present(&mut self, frame: SurfaceFrame) {
-        self.inner.present(frame);
-    }
-
     fn size(&self) -> (u32, u32) {
         self.inner.size()
-    }
-
-    fn format(&self) -> wgpu::TextureFormat {
-        self.inner.format()
     }
 
     fn resize(&mut self, width: u32, height: u32) {
         self.resize_count += 1;
         self.inner.resize(width, height);
     }
+}
 
-    fn gpu_context_id(&self) -> u64 {
-        self.inner.gpu_context_id()
+impl SurfaceProvider for RecoveringSurface {
+    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
+        self.acquire_count += 1;
+        self.first_error
+            .take()
+            .map_or_else(|| Ok(self.inner.acquire()), Err)
     }
 
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        self.inner.shared_device()
+    fn present(&mut self, frame: SurfaceFrame) {
+        self.inner.present(frame);
+    }
+
+    fn format(&self) -> wgpu::TextureFormat {
+        self.inner.format()
     }
 }
 
@@ -1349,4 +1352,222 @@ fn debounced_on_change_fires_after_the_quiet_period() {
         &[1],
         "debounce never re-emitted: the upstream watch died with the combinator"
     );
+}
+
+/// A `Binding::set` outside a frame must schedule one
+/// (water-rs/waterui#2286): the host wake installed at mount fires on the
+/// none→some pending-request edge — once per burst — and the pump's drain
+/// re-arms it. The counter is supplied by the platform before mount, not
+/// installed over the runtime's wake, and the binding belongs to content.
+#[test]
+fn a_binding_set_outside_a_frame_fires_the_installed_wake_once() {
+    let value = Binding::i32(0);
+    let content = value.clone();
+    let mut runtime =
+        runtime_window_for(Window::new("", binding(WindowState::Normal), move || {
+            waterui::text!("{content}")
+        }));
+    let env = crate::renderer::tests::test_environment();
+    let mut now = Instant::now();
+    assert!(drive_until_idle(&mut runtime, &env, &mut now, 60) < 60);
+    let fires = Rc::clone(&runtime.platform.frame_wake_count);
+    let initial = fires.get();
+
+    value.set(1);
+    assert_eq!(
+        fires.get(),
+        initial + 1,
+        "the content set fires the platform wake"
+    );
+    assert!(runtime.renderer.has_pending_frame_request());
+    assert!(
+        runtime.renderer.root_is_dirty(),
+        "the content watcher marks its NodeCell"
+    );
+
+    value.set(2);
+    assert_eq!(
+        fires.get(),
+        initial + 1,
+        "a set while the request is pending fires nothing"
+    );
+
+    assert!(drive_until_idle(&mut runtime, &env, &mut now, 60) < 60);
+    assert!(!runtime.renderer.has_pending_frame_request());
+    let drained = fires.get();
+    value.set(3);
+    assert_eq!(fires.get(), drained + 1);
+}
+
+#[test]
+fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
+    use super::window::{FrameDemand, FrameTransaction};
+
+    let transaction = Rc::new(FrameTransaction::default());
+    let mut platform =
+        HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
+    platform.frame_transaction = Some(Rc::clone(&transaction));
+    let mut runtime = runtime_window_with_platform(
+        Window::new("", binding(WindowState::Normal), || ()),
+        platform,
+    );
+    let env = crate::renderer::tests::test_environment();
+    let now = Instant::now();
+    transaction.sync_occlusion(runtime.platform.is_occluded());
+    let _ = pump_frame_transaction(&mut runtime, &transaction, &env, now);
+    assert!(!pump_frame_transaction(
+        &mut runtime,
+        &transaction,
+        &env,
+        now
+    ));
+    let fires = Rc::clone(&runtime.platform.frame_wake_count);
+    let initial = fires.get();
+
+    transaction.begin();
+    transaction.sync_occlusion(false);
+    runtime.renderer.root_cell().mark_layout();
+    assert_eq!(
+        fires.get(),
+        initial,
+        "visibility sync must not reopen a transaction"
+    );
+    assert!(
+        transaction.finish(
+            false,
+            FrameDemand {
+                mode: runtime.mode,
+                redraw_pending: runtime.platform.take_redraw_request(),
+                signals_pending: runtime.renderer.has_pending_frame_request(),
+            }
+        ),
+        "a request raised inside the transaction must schedule continuation"
+    );
+    let _ = pump_frame_transaction(&mut runtime, &transaction, &env, now);
+    assert!(!pump_frame_transaction(
+        &mut runtime,
+        &transaction,
+        &env,
+        now
+    ));
+
+    runtime.renderer.root_cell().mark_layout();
+    assert_eq!(
+        fires.get(),
+        initial + 1,
+        "closing the transaction reopens the gate"
+    );
+    let _ = pump_frame_transaction(&mut runtime, &transaction, &env, now);
+    assert!(!pump_frame_transaction(
+        &mut runtime,
+        &transaction,
+        &env,
+        now
+    ));
+
+    runtime.platform.set_occluded(true);
+    transaction.sync_occlusion(runtime.platform.is_occluded());
+    runtime.sync_occlusion();
+    let before_hide = fires.get();
+    let presented = runtime.presented_frames;
+    runtime.renderer.root_cell().mark_layout();
+    assert_eq!(fires.get(), before_hide);
+    assert!(!pump_frame_transaction(
+        &mut runtime,
+        &transaction,
+        &env,
+        now
+    ));
+    assert!(runtime.renderer.has_pending_frame_request());
+    assert_eq!(runtime.presented_frames, presented);
+
+    runtime.platform.set_occluded(false);
+    transaction.sync_occlusion(runtime.platform.is_occluded());
+    runtime.sync_occlusion_and_post_restore();
+    assert!(
+        runtime.platform.take_redraw_request(),
+        "restore must post its frame"
+    );
+    assert!(runtime.mode.is_pending());
+    let _ = pump_frame_transaction(&mut runtime, &transaction, &env, now);
+    assert!(!pump_frame_transaction(
+        &mut runtime,
+        &transaction,
+        &env,
+        now
+    ));
+    assert_eq!(runtime.presented_frames, presented + 1);
+    assert!(!runtime.renderer.has_pending_frame_request());
+}
+
+#[test]
+fn frame_transaction_consumes_a_focused_fields_caret_redraw() {
+    use super::window::FrameTransaction;
+    use waterui_controls::text_field::TextField;
+    use waterui_core::Str;
+
+    let value = binding(Str::from("Caret"));
+    let mut runtime = runtime_window_sized(
+        Window::new("", binding(WindowState::Normal), move || {
+            TextField::new("Value", &value).hide_label()
+        }),
+        240,
+        120,
+    );
+    let transaction = FrameTransaction::default();
+    let env = crate::renderer::tests::test_environment();
+    let now = Instant::now();
+    let _ = pump_frame_transaction(&mut runtime, &transaction, &env, now);
+    assert!(runtime.renderer.set_focused_text_input(Some(0)));
+    // Settle focus animations before exercising the redraw-only caret path.
+    for second in 0..3 {
+        let _ = pump_frame_transaction(
+            &mut runtime,
+            &transaction,
+            &env,
+            now + Duration::from_secs(second),
+        );
+    }
+    assert!(!runtime.mode.is_pending());
+    let presented = runtime.presented_frames;
+    let tick = now + Duration::from_secs(3);
+    let _ = pump_frame_transaction(&mut runtime, &transaction, &env, tick);
+    assert_eq!(
+        runtime.presented_frames,
+        presented + 1,
+        "the caret tick must render"
+    );
+    assert!(
+        !runtime.renderer.has_pending_frame_request(),
+        "the caret redraw must not latch the pump awake"
+    );
+    assert!(
+        !pump_frame_transaction(&mut runtime, &transaction, &env, tick),
+        "without another caret tick the pump must idle"
+    );
+    assert_eq!(runtime.presented_frames, presented + 1);
+}
+
+fn pump_frame_transaction(
+    runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
+    transaction: &super::window::FrameTransaction,
+    env: &Environment,
+    now: Instant,
+) -> bool {
+    use super::window::{FrameDemand, FrameTransaction};
+
+    transaction.begin();
+    let _ = advance_runtime(runtime, env, now);
+    let surface_attached = !runtime.platform.is_occluded();
+    if FrameTransaction::take_render_request(runtime, surface_attached) {
+        assert!(render_window(runtime, env, &mut || false));
+    }
+    transaction.finish(
+        runtime.platform.is_occluded(),
+        FrameDemand {
+            mode: runtime.mode,
+            redraw_pending: runtime.platform.take_redraw_request(),
+            signals_pending: runtime.renderer.has_pending_frame_request(),
+        },
+    )
 }

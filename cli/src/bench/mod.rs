@@ -94,7 +94,7 @@ pub async fn run_bench_suite(
     } else {
         let temp_dir = tempfile::Builder::new()
             .prefix("waterui-bench-")
-            .tempdir()
+            .tempdir_in(host.temp_dir())
             .wrap_err("failed to create temporary bench report directory")?;
         let path = temp_dir.path().to_path_buf();
         _temp_dir = temp_dir;

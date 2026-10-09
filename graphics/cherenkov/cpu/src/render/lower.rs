@@ -422,6 +422,39 @@ struct BackdropPlan {
 }
 
 impl BackdropPlan {
+    /// A fresh plan for the group `first` joins: the member's bounds
+    /// seed the footprint union, the member's scope seeds the capture
+    /// scope, and every tracking map starts empty.
+    fn new(
+        first: LayerId,
+        member: Rect,
+        spec: cherenkov::BackdropSpec,
+        filter: Option<FrameFilter>,
+        scope: Option<LayerId>,
+    ) -> Self {
+        Self {
+            first,
+            union: member,
+            union_rows: (0, 0),
+            spec,
+            region: IRect {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 0,
+            },
+            apron: 0,
+            device_apron: 0,
+            reach: 0,
+            filter,
+            members: FxHashMap::default(),
+            order: Vec::new(),
+            union_k: 0.0,
+            union_members: Arc::from([]),
+            scope,
+        }
+    }
+
     /// Places the capture on a `width × h` surface: the union's rows, and
     /// the union on the capture grid inflated by the chain `footprint`'s
     /// apron in texels — plus one texel for the bilinear taps of a reduced
@@ -593,6 +626,9 @@ pub struct Lowering<'a, 'b> {
     /// footprint, by layer: a scope that directly contains captures grows
     /// to cover their `apron + reach`.
     scope_aprons: FxHashMap<LayerId, usize>,
+    anchor_scratch: &'a mut AnchorScratch,
+    /// The planning walk's paint-order counter.
+    plan_order: usize,
     /// Source commands resolved this frame.
     pub commands_lowered: u32,
     /// Content layers composed this frame.
@@ -603,6 +639,40 @@ pub struct Lowering<'a, 'b> {
     local: Option<(LayerId, Affine)>,
     /// Projective layers' images placed in this raster, by layer.
     projected: FxHashMap<LayerId, crate::render::projective::Placed>,
+}
+
+/// Reusable state for anchor planning and capture emission, owned by the
+/// surface and lent to each lowering so its capacity carries across
+/// frames.
+#[derive(Default)]
+pub(super) struct AnchorScratch {
+    /// The layers the surface's groups anchor at.
+    refs: FxHashSet<LayerId>,
+    /// Each anchor's compositing canvas (its innermost semantic level),
+    /// paint-order index and innermost filter scope.
+    pos: FxHashMap<LayerId, (Option<LayerId>, usize, Option<LayerId>)>,
+    /// Each anchored group's members as `(group, canvas, paint order)`,
+    /// pushed in paint order.
+    members: Vec<(u64, Option<LayerId>, usize)>,
+    /// `(anchor, group)` capture links, sorted for range lookup.
+    links: Vec<(LayerId, u64)>,
+}
+
+impl AnchorScratch {
+    fn clear(&mut self) {
+        self.refs.clear();
+        self.pos.clear();
+        self.members.clear();
+        self.links.clear();
+    }
+
+    pub(super) fn heap_bytes(&self) -> u64 {
+        (self.refs.capacity() * size_of::<LayerId>()
+            + self.pos.capacity()
+                * size_of::<(LayerId, (Option<LayerId>, usize, Option<LayerId>))>()
+            + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
+            + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
+    }
 }
 
 /// The largest singular value of `t`'s linear part — the worst-case factor
@@ -846,9 +916,9 @@ fn integer_edges(r: Rect) -> Option<IRect> {
 }
 
 impl<'a, 'b> Lowering<'a, 'b> {
-    /// Starts a lowering into `items` for a `w` × `h` surface.
+    /// Starts a lowering for a `w` × `h` surface using its output and anchor buffers.
     pub fn new(
-        items: &'a mut Vec<Item>,
+        buffers: (&'a mut Vec<Item>, &'a mut AnchorScratch),
         size: (u32, u32),
         filters: Option<&'a mut Registry>,
         frame: FrameId,
@@ -856,6 +926,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
         bitmap_cache: &'b mut super::bitmap::BitmapCache,
     ) -> Self {
+        let (items, anchor_scratch) = buffers;
+        anchor_scratch.clear();
         Self {
             items,
             filters,
@@ -876,6 +948,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
             iso_spaces: Vec::new(),
             backdrops: FxHashMap::default(),
             scope_aprons: FxHashMap::default(),
+            anchor_scratch,
+            plan_order: 0,
             commands_lowered: 0,
             layers_composed: 0,
             local: None,
@@ -978,11 +1052,19 @@ impl<'a, 'b> Lowering<'a, 'b> {
         surface: SurfaceId,
         parent: Affine,
         scopes: &mut Vec<LayerId>,
+        canvas: Option<LayerId>,
     ) -> Result<(), RenderError> {
         let node = tree.layer(id);
         if self.projects(id, tree) {
             // Its members plan in its own local lowering.
             return Ok(());
+        }
+        self.plan_order += 1;
+        let order = self.plan_order;
+        if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
+            self.anchor_scratch
+                .pos
+                .insert(id, (canvas, order, scopes.last().copied()));
         }
         let (transform, children) = self.placement(id, node, parent);
         if let Some(sample) = &node.backdrop {
@@ -1014,12 +1096,25 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 prepared,
                 scopes.last().copied(),
             )?;
+            if prepared.spec.anchor_layer().is_some() {
+                self.anchor_scratch.members.push((g, canvas, order));
+            }
         }
+        // A semantically isolating layer — filtered or blended — is its
+        // children's compositing canvas; other layers share their
+        // parent's.
+        let canvas = if node.filter.is_some() || node.blend != BlendMode::Normal {
+            Some(id)
+        } else {
+            canvas
+        };
         if node.filter.is_some() {
             scopes.push(id);
         }
         for child in &node.children {
-            self.plan_layer(*child, tree, groups, filters, surface, children, scopes)?;
+            self.plan_layer(
+                *child, tree, groups, filters, surface, children, scopes, canvas,
+            )?;
         }
         if node.filter.is_some() {
             scopes.pop();
@@ -1079,27 +1174,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
         };
         let member = clip_device_bounds(transform, clip);
-        let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
-            first: id,
-            union: member,
-            union_rows: (0, 0),
-            spec,
-            region: IRect {
-                x0: 0,
-                y0: 0,
-                x1: 0,
-                y1: 0,
-            },
-            apron: 0,
-            device_apron: 0,
-            reach: 0,
-            filter: prepared.filter.clone(),
-            members: FxHashMap::default(),
-            order: Vec::new(),
-            union_k: 0.0,
-            union_members: Arc::from([]),
-            scope,
-        });
+        let plan = self
+            .backdrops
+            .entry(g)
+            .or_insert_with(|| BackdropPlan::new(id, member, spec, prepared.filter.clone(), scope));
         // The capture footprint inflates the clip bounds by the
         // effect's reach — the union pad lands in `plan_union`.
         plan.union = plan.union.union(member.inflate(reach, reach));
@@ -1149,14 +1227,23 @@ impl<'a, 'b> Lowering<'a, 'b> {
         filters: &mut Registry,
     ) -> Result<(), RenderError> {
         let mut groups = FxHashMap::default();
+        self.anchor_scratch.clear();
+        self.anchor_scratch
+            .refs
+            .extend(filters.backdrop_anchors(surface));
+        self.backdrops.clear();
+        self.scope_aprons.clear();
+        self.plan_order = 0;
+        let start = self.start(tree);
         self.plan_layer(
-            self.start(tree),
+            start,
             tree,
             &mut groups,
             filters,
             surface,
             Affine::IDENTITY,
             &mut Vec::new(),
+            None,
         )?;
         if self.backdrops.is_empty() {
             return Ok(());
@@ -1177,6 +1264,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
             plan.place(footprint, (self.width, h));
         }
+        self.plan_anchors(tree)?;
         // The apron a scope needs around each band — its own filter's
         // footprint, or `capture apron + reach` for scopes a capture
         // lands directly in.
@@ -1232,6 +1320,78 @@ impl<'a, 'b> Lowering<'a, 'b> {
             }
         }
         self.scope_aprons = aprons;
+        Ok(())
+    }
+
+    /// Validates every anchored group's member range and sets its capture
+    /// scope to the anchor's. A member can be any layer painting after the
+    /// anchor in the anchor's compositing canvas; anchored groups never
+    /// fall back to a capture at the member.
+    fn plan_anchors(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let result = self.plan_anchors_inner(tree);
+        if result.is_err() {
+            self.anchor_scratch.links.clear();
+        }
+        result
+    }
+
+    fn plan_anchors_inner(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let scratch = &mut *self.anchor_scratch;
+        // Groups in ascending id, each group's members in paint order:
+        // paint-order indices are unique, so the unstable sort is exact.
+        scratch
+            .members
+            .sort_unstable_by_key(|&(gid, _, order)| (gid, order));
+        let mut start = 0;
+        while let Some(&(gid, _, _)) = scratch.members.get(start) {
+            let end = start + scratch.members[start..].partition_point(|m| m.0 == gid);
+            let members = &scratch.members[start..end];
+            start = end;
+            let (anchor, anchor_scope) = {
+                let anchor = self.backdrops[&gid]
+                    .spec
+                    .anchor_layer()
+                    .expect("only anchored groups record members");
+                if anchor == tree.root() {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
+                }
+                if tree.projective_pose(anchor).is_some() {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_PROJECTIVE));
+                }
+                let Some(&(anchor_canvas, anchor_order, anchor_scope)) = scratch.pos.get(&anchor)
+                else {
+                    // The anchor is outside this walk: inside another
+                    // projective image its members here are outside its
+                    // canvas; an `id` nothing carries names nothing.
+                    return Err(RenderError::Unsupported(
+                        if tree.layers().any(|(id, _)| id.raw() == anchor.raw()) {
+                            names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                        } else {
+                            names::BACKDROP_UNKNOWN_ANCHOR
+                        },
+                    ));
+                };
+                for &(_, canvas, order) in members {
+                    if canvas == anchor_canvas && order > anchor_order {
+                        continue;
+                    }
+                    return Err(RenderError::Unsupported(if canvas == anchor_canvas {
+                        names::BACKDROP_MEMBER_BEFORE_ANCHOR
+                    } else {
+                        names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                    }));
+                }
+                (anchor, anchor_scope)
+            };
+            let plan = self.backdrops.get_mut(&gid).expect("planned above");
+            // The capture lands at the anchor — its scope is the
+            // anchor's, not the first member's.
+            plan.scope = anchor_scope;
+            scratch.links.push((anchor, gid));
+        }
+        scratch
+            .links
+            .sort_unstable_by_key(|&(anchor, gid)| (anchor.raw(), gid));
         Ok(())
     }
 
@@ -1603,6 +1763,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.transform = cherenkov::snap_animating(self.transform);
             content_space = cherenkov::snap_animating(content_space);
         }
+        // An anchor's groups capture beneath it, before its own content
+        // and children.
+        self.emit_anchor_captures(id);
         if let Some(gid) = backdrop {
             self.emit_capture(gid, id);
         }
@@ -1703,11 +1866,37 @@ impl<'a, 'b> Lowering<'a, 'b> {
         result
     }
 
-    /// Emits group `gid`'s capture when `id` is its first member in paint
-    /// order and its region is non-empty.
+    /// Emits every group's capture anchored at `id`, in group id order.
+    fn emit_anchor_captures(&mut self, id: LayerId) {
+        let start = self
+            .anchor_scratch
+            .links
+            .partition_point(|&(anchor, _)| anchor.raw() < id.raw());
+        let end = start
+            + self.anchor_scratch.links[start..]
+                .partition_point(|&(anchor, _)| anchor.raw() == id.raw());
+        for i in start..end {
+            let gid = self.anchor_scratch.links[i].1;
+            self.push_capture(gid);
+        }
+    }
+
+    /// Emits group `gid`'s capture when `id` is its capture point — its
+    /// first member for an unanchored group — and its region is
+    /// non-empty.
     fn emit_capture(&mut self, gid: u64, id: LayerId) {
+        if self
+            .backdrops
+            .get(&gid)
+            .is_some_and(|plan| plan.spec.anchor_layer().is_none() && plan.first == id)
+        {
+            self.push_capture(gid);
+        }
+    }
+
+    /// Pushes group `gid`'s capture item at the current position.
+    fn push_capture(&mut self, gid: u64) {
         if let Some(plan) = self.backdrops.get(&gid)
-            && plan.first == id
             && plan.region.x0 < plan.region.x1
             && plan.region.y0 < plan.region.y1
         {
@@ -1948,8 +2137,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
             Some(Emission::Clip(_)) => unreachable!("structural changes replace the cache layout"),
         };
         items.clear();
+        let mut anchor_scratch = AnchorScratch::default();
         let mut compose = Lowering::new(
-            &mut items,
+            (&mut items, &mut anchor_scratch),
             (0, 0),
             None,
             FrameId::new(0),
@@ -2308,4 +2498,50 @@ pub fn silhouette_bytes(content: &ContentData) -> u64 {
                 .sum::<u64>()
         })
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AnchorScratch;
+    use cherenkov::LayerId;
+
+    #[test]
+    fn anchor_scratch_clear_retains_capacity_and_drops_old_links() {
+        let mut scratch = AnchorScratch::default();
+        assert_eq!(scratch.heap_bytes(), 0);
+        let first = LayerId::new(1);
+        scratch.refs.insert(first);
+        scratch.pos.insert(first, (None, 1, None));
+        scratch.members.push((7, None, 2));
+        scratch.links.push((first, 7));
+        let capacity = (
+            scratch.refs.capacity(),
+            scratch.pos.capacity(),
+            scratch.members.capacity(),
+            scratch.links.capacity(),
+        );
+        assert!(scratch.heap_bytes() > 0);
+
+        scratch.clear();
+        assert!(scratch.refs.is_empty());
+        assert!(scratch.pos.is_empty());
+        assert_eq!(scratch.members, [] as [(u64, Option<LayerId>, usize); 0]);
+        assert_eq!(scratch.links, [] as [(cherenkov::LayerId, u64); 0]);
+
+        let next = LayerId::new(2);
+        scratch.refs.insert(next);
+        scratch.pos.insert(next, (None, 2, None));
+        scratch.members.push((8, None, 3));
+        scratch.links.push((next, 8));
+        assert_eq!(scratch.links, [(next, 8)]);
+        assert_eq!(
+            (
+                scratch.refs.capacity(),
+                scratch.pos.capacity(),
+                scratch.members.capacity(),
+                scratch.links.capacity(),
+            ),
+            capacity
+        );
+    }
 }

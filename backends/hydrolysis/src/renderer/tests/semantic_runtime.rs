@@ -210,7 +210,7 @@ fn toggle_emits_and_click_flips() {
     let on = Binding::container(false);
     let on_for_view = on.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
-        AnyView::new(vstack((toggle("Airplane mode", &on_for_view),)))
+        AnyView::new(vstack((toggle("Airplane mode", &on_for_view).switch(),)))
     }));
 
     let update = pumped(&mut runtime);
@@ -905,7 +905,7 @@ fn list_toggle_row_emits_actionable_switch() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let on_for_row = on_for_view.clone();
         AnyView::new(List::content((move || {
-            ListItem::new(toggle("Wi-Fi", &on_for_row))
+            ListItem::new(toggle("Wi-Fi", &on_for_row).switch())
         },)))
     }));
 
@@ -1267,7 +1267,7 @@ fn tab_traverses_the_semantic_tree_and_activation_dispatches_click() {
         let tapped = tapped_for_view.clone();
         AnyView::new(vstack((
             button("First").action(move || tapped.set(true)),
-            toggle("Mode", &on_for_view),
+            toggle("Mode", &on_for_view).switch(),
             field("Name", &value_for_view),
             button("Last"),
         )))

@@ -211,10 +211,6 @@ impl Host {
             self.absolute_env_path("XDG_CACHE_HOME")
                 .or_else(|| self.home_dir().map(|home| home.join(".cache")))
         }
-        #[cfg(not(any(unix, target_os = "windows")))]
-        {
-            None
-        }
     }
 
     /// Temporary directory for this host.
@@ -222,9 +218,8 @@ impl Host {
     /// `std::env::temp_dir` rules, with every variable read from this host's
     /// environment and never the process's:
     /// - Unix: `TMPDIR` when set; otherwise the per-user directory
-    ///   `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports on Apple platforms
-    ///   (`/tmp` if it reports none), `/data/local/tmp` on Android, and
-    ///   `/tmp` elsewhere.
+    ///   `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports on macOS (`/tmp` if it
+    ///   reports none), `/data/local/tmp` on Android, and `/tmp` elsewhere.
     /// - Windows (`GetTempPath2W`): the first of `TMP`, `TEMP` and
     ///   `USERPROFILE` that is set and non-empty, else the Windows directory
     ///   (`SystemRoot`, which every host carries as spawn plumbing).
@@ -234,18 +229,25 @@ impl Host {
     /// no `SystemRoot` either — a host no child process could start on.
     #[must_use]
     pub fn temp_dir(&self) -> PathBuf {
-        #[cfg(unix)]
-        {
-            self.env("TMPDIR")
-                .map_or_else(unix_default_temp_dir, PathBuf::from)
-        }
-        #[cfg(windows)]
+        #[cfg(target_os = "windows")]
         {
             ["TMP", "TEMP", "USERPROFILE", "SystemRoot"]
                 .into_iter()
                 .find_map(|key| self.env(key).filter(|value| !value.is_empty()))
                 .map(PathBuf::from)
                 .expect("a Windows host carries SystemRoot, the temp directory of last resort")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.env("TMPDIR").map_or_else(
+                || darwin_user_temp_dir().unwrap_or_else(|| PathBuf::from("/tmp")),
+                PathBuf::from,
+            )
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            self.env("TMPDIR")
+                .map_or_else(unix_default_temp_dir, PathBuf::from)
         }
     }
 
@@ -318,6 +320,18 @@ impl Host {
         host
     }
 
+    /// A host whose home directory is `home`: `HOME` and `USERPROFILE`
+    /// name it in the environment its children inherit, and
+    /// [`Host::home_dir`] answers it — the Water home and every other
+    /// per-user path follow.
+    #[must_use]
+    pub fn with_home(&self, home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        let mut host = self.with_env("HOME", &home).with_env("USERPROFILE", &home);
+        host.home = Some(home);
+        host
+    }
+
     /// Every environment variable on this host, in map order.
     ///
     /// For resolvers that take the whole environment at once rather than
@@ -371,8 +385,7 @@ impl Host {
     ///
     /// This is the deliberate exception to the null-stdin default of
     /// [`Host::command`] — for the tools that interact with the user's
-    /// terminal: the `create vite` framework picker, `<pm> install`,
-    /// `espflash flash --monitor`, QEMU's `-nographic` serial console, and
+    /// terminal: the `create vite` framework picker, `<pm> install`, and
     /// launchers that take the TTY over entirely. The
     /// `std` type is returned so callers that `exec` or group the child can;
     /// async callers wrap it with `smol::process::Command::from`.
@@ -746,17 +759,13 @@ fn home_dir_from_env(env: &BTreeMap<OsString, OsString>) -> Option<PathBuf> {
 }
 
 /// The temp directory `std` uses on Unix when `TMPDIR` is unset.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn unix_default_temp_dir() -> PathBuf {
-    #[cfg(target_vendor = "apple")]
-    {
-        darwin_user_temp_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
-    }
     #[cfg(target_os = "android")]
     {
         PathBuf::from("/data/local/tmp")
     }
-    #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+    #[cfg(not(target_os = "android"))]
     {
         PathBuf::from("/tmp")
     }
@@ -764,7 +773,7 @@ fn unix_default_temp_dir() -> PathBuf {
 
 /// The per-user temp directory Darwin reports through
 /// `confstr(_CS_DARWIN_USER_TEMP_DIR)`, or `None` when it reports none.
-#[cfg(target_vendor = "apple")]
+#[cfg(target_os = "macos")]
 fn darwin_user_temp_dir() -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt as _;
 
