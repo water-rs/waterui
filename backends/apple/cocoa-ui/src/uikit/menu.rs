@@ -8,113 +8,55 @@
 //! arms a chord — carrying the command's attributes (disabled,
 //! destructive, checked) — and `menu` wraps them into a `UIMenu`. Both
 //! element kinds run the command's Rust callback: a `UIAction` calls its
-//! handler block, while a `UIKeyCommand` has no block and is routed as an
-//! action message through `cocoaUiMenuCommandFired:` on the responder
-//! chain, which resolves the [`MenuCommandTarget`] the command retains as
-//! an associated object and fires the callback.
+//! handler block, while a `UIKeyCommand` has no block and names its
+//! callback through the [`KeyCommands`] scope it is armed in (see
+//! `key_commands`).
 //!
 //! # Safety
 //!
 //! The `unsafe` here builds `UIAction`s from `RcBlock`s and `UIKeyCommand`s
-//! carrying `MenuCommandTarget`s, and calls `objc2`/`UIKit` bindings marked
-//! unsafe because `UIKit` objects are main-thread only, which
-//! [`MainThreadMarker`] guarantees at construction. `UIAction`'s handler
-//! block is `copy`ed by the call that consumes it, so the stack block it
-//! is built from may be dropped once construction returns; and a
-//! `UIKeyCommand`'s `objc_setAssociatedObject` retains the target for the
-//! command's whole lifetime.
+//! from a selector `AppDelegate` implements, and calls `objc2`/`UIKit`
+//! bindings marked unsafe because `UIKit` objects are main-thread only,
+//! which [`MainThreadMarker`] guarantees at construction. `UIAction`'s
+//! handler block is `copy`ed by the call that consumes it, so the stack
+//! block it is built from may be dropped once construction returns.
 
-use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use objc2::ffi::{
-    OBJC_ASSOCIATION_RETAIN_NONATOMIC, objc_getAssociatedObject, objc_setAssociatedObject,
-};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_foundation::{NSArray, NSObject, NSString};
+use objc2::{MainThreadMarker, sel};
+use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{
     UIAction, UIColor, UIImage, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
     UIMenuElementState, UIMenuOptions, UIView,
 };
 
+use super::key_commands::KeyCommands;
 use crate::menu::{Command, MenuTreeNode};
 use crate::uikit::button::{Button, Chrome};
 
-/// `MenuCommandTarget` instance variables: the command's Rust callback.
-pub struct MenuCommandTargetIvars {
-    handler: Rc<dyn Fn()>,
-}
-
-/// The `objc_setAssociatedObject` key under which a `command_element`-built
-/// `UIKeyCommand` retains its `MenuCommandTarget`.
-static TARGET_KEY: u8 = 0;
-
-/// The `MenuCommandTarget` `command_element` attached to `element`, if any.
-pub fn menu_command_target(element: &UIMenuElement) -> Option<&MenuCommandTarget> {
-    // SAFETY: `element` is a live `UIMenuElement` and `TARGET_KEY` is the
-    // association key `command_element` installs under.
-    let target = unsafe {
-        objc_getAssociatedObject(
-            NonNull::from(element).cast::<AnyObject>().as_ptr(),
-            std::ptr::from_ref(&TARGET_KEY).cast::<c_void>(),
-        )
-    };
-    // SAFETY: the only association under `TARGET_KEY` is the retained
-    // `MenuCommandTarget` `command_element` installs, so a non-null result
-    // is a live `AnyObject` reference of that class.
-    unsafe { target.as_ref() }.and_then(AnyObject::downcast_ref::<MenuCommandTarget>)
-}
-
-define_class!(
-    // SAFETY: `NSObject`'s only initializer contract is `init`, which the
-    // allocation below calls, and the class does not implement `Drop`.
-    #[unsafe(super(NSObject))]
-    #[name = "CocoaUiMenuCommandTarget"]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = MenuCommandTargetIvars]
-    /// The callback owner a `UIKeyCommand` carries: `UIKit` routes a key
-    /// command as an action message, so the command's Rust callback cannot
-    /// live behind a block the way `UIAction`'s does. The target rides on
-    /// the element as an associated object and `AppDelegate`'s
-    /// `cocoaUiMenuCommandFired:` — the end of the responder chain — reads
-    /// it back out of the sender to fire the callback.
-    pub struct MenuCommandTarget;
-
-    impl MenuCommandTarget {}
-);
-
-impl MenuCommandTarget {
-    /// A target owning `handler`.
-    fn new(mtm: MainThreadMarker, handler: Rc<dyn Fn()>) -> Retained<Self> {
-        let this = mtm
-            .alloc::<Self>()
-            .set_ivars(MenuCommandTargetIvars { handler });
-        // SAFETY: `init` is `NSObject`'s designated initializer.
-        unsafe { msg_send![super(this), init] }
-    }
-
-    /// Runs the command's callback.
-    pub(crate) fn fire(&self) {
-        let handler = self.ivars().handler.clone();
-        handler();
-    }
-}
-
-/// A `UIMenu` from a menu tree.
+/// A `UIMenu` from a menu tree, its shortcut commands armed in
+/// `key_commands`.
 #[must_use]
-pub fn menu(mtm: MainThreadMarker, title: &Command, nodes: &[MenuTreeNode]) -> Retained<UIMenu> {
-    menu_with_identifier(mtm, title, None, nodes)
+pub fn menu(
+    mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
+    title: &Command,
+    nodes: &[MenuTreeNode],
+) -> Retained<UIMenu> {
+    menu_with_identifier(mtm, key_commands, title, None, nodes)
 }
 
 /// A `UIMenu` from a menu tree, named `identifier` for `UIMenuBuilder`
-/// lookups — the application menu bar relies on that stability.
+/// lookups — the application menu bar relies on that stability — its
+/// shortcut commands armed in `key_commands`.
 #[must_use]
 pub fn menu_with_identifier(
     mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
     title: &Command,
     identifier: Option<&str>,
     nodes: &[MenuTreeNode],
@@ -126,7 +68,7 @@ pub fn menu_with_identifier(
         identifier.map(NSString::from_str).as_deref(),
         UIMenuOptions::empty(),
         &objc2_foundation::NSArray::from_slice(
-            &elements(mtm, nodes)
+            &elements(mtm, key_commands, nodes)
                 .iter()
                 .map(|e| &**e)
                 .collect::<Vec<_>>(),
@@ -136,9 +78,13 @@ pub fn menu_with_identifier(
 }
 
 /// `UIMenuElement`s from a menu tree — dividers split the list into inline
-/// groups.
+/// groups — their shortcut commands armed in `key_commands`.
 #[must_use]
-pub fn elements(mtm: MainThreadMarker, nodes: &[MenuTreeNode]) -> Vec<Retained<UIMenuElement>> {
+pub fn elements(
+    mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
+    nodes: &[MenuTreeNode],
+) -> Vec<Retained<UIMenuElement>> {
     // `MenuTreeNode` is not `Clone`; walk references.
     let mut current: Vec<&MenuTreeNode> = Vec::new();
     let mut group_refs: Vec<Vec<&MenuTreeNode>> = Vec::new();
@@ -157,8 +103,10 @@ pub fn elements(mtm: MainThreadMarker, nodes: &[MenuTreeNode]) -> Vec<Retained<U
     let mut out: Vec<Retained<UIMenuElement>> = Vec::new();
     let single = group_refs.len() == 1;
     for group in group_refs {
-        let children: Vec<Retained<UIMenuElement>> =
-            group.iter().filter_map(|node| element(mtm, node)).collect();
+        let children: Vec<Retained<UIMenuElement>> = group
+            .iter()
+            .filter_map(|node| element(mtm, key_commands, node))
+            .collect();
         if single {
             out.extend(children);
             continue;
@@ -180,18 +128,25 @@ pub fn elements(mtm: MainThreadMarker, nodes: &[MenuTreeNode]) -> Vec<Retained<U
     out
 }
 
-fn element(mtm: MainThreadMarker, node: &MenuTreeNode) -> Option<Retained<UIMenuElement>> {
+fn element(
+    mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
+    node: &MenuTreeNode,
+) -> Option<Retained<UIMenuElement>> {
     match node {
         MenuTreeNode::Divider => None,
-        MenuTreeNode::Submenu(command, children) => Some(menu(mtm, command, children).into_super()),
+        MenuTreeNode::Submenu(command, children) => {
+            Some(menu(mtm, key_commands, command, children).into_super())
+        }
         MenuTreeNode::Command(command, action) => {
-            Some(command_element(mtm, command, action.clone()))
+            Some(command_element(mtm, key_commands, command, action.clone()))
         }
     }
 }
 
 fn command_element(
     mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
     command: &Command,
     action: Rc<dyn Fn()>,
 ) -> Retained<UIMenuElement> {
@@ -213,13 +168,14 @@ fn command_element(
         let block = RcBlock::new(move |_action: NonNull<UIAction>| {
             action();
         });
-        // SAFETY: `actionWithTitle:image:identifier:handler:` retains the block.
+        // SAFETY: `actionWithTitle:image:identifier:handler:` copies the
+        // block, so `block` may be dropped once the call returns.
         let ui_action = unsafe {
             UIAction::actionWithTitle_image_identifier_handler(
                 &title,
                 image.as_deref(),
                 None,
-                block2::RcBlock::into_raw(block),
+                RcBlock::as_ptr(&block).cast(),
                 mtm,
             )
         };
@@ -230,12 +186,11 @@ fn command_element(
         }
         ui_action.into_super()
     } else {
-        let target = MenuCommandTarget::new(mtm, action);
+        let property_list = key_commands.arm(action);
         // SAFETY: `commandWithTitle:...` is `UIKeyCommand`'s designated
-        // constructor and `cocoaUiMenuCommandFired:` is a selector
-        // `AppDelegate` implements. `propertyList` stays `nil`: `UIKit`
-        // asserts it is a property-list type, which `MenuCommandTarget` is
-        // not, so the target attaches as an associated object below.
+        // constructor, `cocoaUiMenuCommandFired:` is a selector
+        // `AppDelegate` implements, and an `NSNumber` is a property-list
+        // object.
         let key_command = unsafe {
             UIKeyCommand::commandWithTitle_image_action_input_modifierFlags_propertyList(
                 &title,
@@ -243,21 +198,10 @@ fn command_element(
                 sel!(cocoaUiMenuCommandFired:),
                 &NSString::from_str(&command.key_equivalent),
                 command.modifiers.native(),
-                None,
+                Some(AsRef::<AnyObject>::as_ref(&*property_list)),
                 mtm,
             )
         };
-        // SAFETY: `key_command` is a live `UIMenuElement` and `target` an
-        // `NSObject`; `OBJC_ASSOCIATION_RETAIN_NONATOMIC` makes the command
-        // retain its callback's owner for the command's whole lifetime.
-        unsafe {
-            objc_setAssociatedObject(
-                NonNull::from(&*key_command).cast::<AnyObject>().as_ptr(),
-                std::ptr::from_ref(&TARGET_KEY).cast::<c_void>(),
-                NonNull::from(&*target).cast::<AnyObject>().as_ptr(),
-                OBJC_ASSOCIATION_RETAIN_NONATOMIC,
-            );
-        }
         key_command.setAttributes(attributes);
         key_command.setState(state);
         if let Some(subtitle) = &command.subtitle {
@@ -342,11 +286,17 @@ pub struct MenuAction {
 
 impl MenuAction {
     /// The element `command` describes, running `handler` when chosen —
-    /// the same shape [`menu`] gives the same command.
+    /// the same shape [`menu`] gives the same command — its shortcut, when
+    /// it declares one, armed in `key_commands`.
     #[must_use]
-    pub fn command(mtm: MainThreadMarker, command: &Command, handler: impl Fn() + 'static) -> Self {
+    pub fn command(
+        mtm: MainThreadMarker,
+        key_commands: &KeyCommands,
+        command: &Command,
+        handler: impl Fn() + 'static,
+    ) -> Self {
         Self {
-            action: command_element(mtm, command, Rc::new(handler)),
+            action: command_element(mtm, key_commands, command, Rc::new(handler)),
         }
     }
 
