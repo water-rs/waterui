@@ -1,8 +1,6 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
 use super::*;
-#[cfg(feature = "frame-profile")]
-use crate::platform::SurfaceProvider as _;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -174,7 +172,8 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
-    fn surface(&mut self) -> &mut dyn crate::platform::SurfaceProvider {
+    type Presentation = crate::platform::OffscreenSurface;
+    fn surface(&mut self) -> &mut crate::platform::OffscreenSurface {
         crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
     }
 

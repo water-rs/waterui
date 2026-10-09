@@ -34,7 +34,7 @@ use super::ime::ImeBridge;
 use super::jni::JniError;
 use crate::engine::WidgetTheme;
 use crate::platform::{
-    GpuSurfaceWindow, InputEvent, PlatformWindow, SurfaceProvider, TextInputState,
+    GpuSurfaceWindow, InputEvent, PlatformWindow, PresentationSurface as _, TextInputState,
     validated_window_frame,
 };
 use crate::renderer::{
@@ -534,7 +534,8 @@ impl PlatformWindow for AndroidHostWindow {
 }
 
 impl GpuSurfaceWindow for AndroidHostWindow {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider {
+    type Presentation = AndroidSurface;
+    fn surface(&mut self) -> &mut AndroidSurface {
         &mut self.surface
     }
 }

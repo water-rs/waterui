@@ -404,6 +404,9 @@ pub struct SemanticCore {
     /// Frame triggers shared with reactive closures; see [`FrameSignals`].
     signals: FrameSignals,
     animation_controller: AnimationController,
+    /// Reserves the address of every owner keying a live renderer-local
+    /// slot in `animation_controller`; begins and retires with it.
+    animation_owner_pins: AnimationOwnerPins,
     frame_instant: Instant,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
@@ -573,7 +576,8 @@ pub struct HydrolysisRenderer {
     /// the stable mounts under it and the resource registrations its content
     /// names. Entries whose device was reported lost are pruned at the next
     /// presented frame.
-    cherenkov_window: Option<crate::renderer::render::CherenkovWindow>,
+    cherenkov_window:
+        Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface>>,
     /// The engine work the last commit did, with the live mounted counts.
     last_mount_stats: mount::MountStats,
     /// The tests' [`MirrorTarget`](tests::mirror::MirrorTarget) mount.
@@ -751,6 +755,7 @@ impl SemanticCore {
             materialized_platform_views: Vec::new(),
             signals,
             animation_controller: AnimationController::default(),
+            animation_owner_pins: AnimationOwnerPins::default(),
             frame_instant,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
