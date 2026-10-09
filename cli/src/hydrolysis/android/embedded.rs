@@ -289,7 +289,12 @@ pub async fn build_aar(
     // dependency's declared font resolves and lands under the module's
     // assets with the table manifest the runtime reads at bootstrap.
     let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-    let font_declarations = assets::scan_fonts(project, &ffi_manifest).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &ffi_manifest,
+        &[waterui_assets_planner::FontPlatform::Android],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
     if !resolved_fonts.is_empty() {
