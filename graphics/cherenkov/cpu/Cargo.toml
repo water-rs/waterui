@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+arrayvec = "0.7"
 cherenkov = { path = ".." }
 filtrate-core = { path = "../../filtrate/core" }
 kurbo = "0.13"

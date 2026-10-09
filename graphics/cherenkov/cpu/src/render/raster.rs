@@ -11,6 +11,7 @@
 //! pixel — the oracle's `pixel_area` is exact even then; this is the known
 //! difference this backend documents.
 
+use arrayvec::ArrayVec;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::ops::Range;
@@ -142,10 +143,14 @@ struct CaptureRows {
 }
 
 /// The rows capture `item` covers for the surface band `band` of a
-/// surface `h` rows tall, `None` when the band samples none of it.
+/// surface `w × h`, `None` when the band samples none of it.
 ///
-/// A 1:1 capture keeps exactly the sampled device rows, and its window
-/// is them `± apron`. A reduced capture keeps the texel rows the
+/// The device rows are the union's rows within the capture's reach of
+/// the band. The item list's last capture, when its members displace
+/// their reads, keeps only the rows its members' taps reach
+/// ([`sample_rows`]); earlier captures keep every device row, because
+/// later captures read the rows their members draw. A 1:1 capture keeps
+/// exactly the sampled device rows, and its window is them `± apron`. A reduced capture keeps the texel rows the
 /// sampled rows' bilinear taps at `(y + ½)·s − ½` reach, plus
 /// [`SAMPLE_MARGIN`], within the region; its window is the device rows
 /// under those texels `± apron` texels.
@@ -155,14 +160,30 @@ struct CaptureRows {
     clippy::cast_precision_loss,
     reason = "rows are bounded by the surface height and clamped before the conversions"
 )]
-fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<CaptureRows> {
-    let (k0, k1) = kept_rows(&item.union, item.reach, band, h);
+fn capture_rows(
+    item: &CaptureItem,
+    items: &[Item],
+    band: (usize, usize),
+    (width, h): (usize, usize),
+) -> Option<CaptureRows> {
+    let (mut k0, mut k1) = kept_rows(&item.union, item.reach, band, h);
+    let device = (k0, k1);
+    if item.displaced
+        && items.iter().rev().find_map(|item| match item {
+            Item::Capture(capture) => Some(capture.group),
+            _ => None,
+        }) == Some(item.group)
+    {
+        let sampled = sample_rows(items, 0..items.len(), item.group, band, (width, h));
+        k0 = k0.max(sampled.0);
+        k1 = k1.min(sampled.1);
+    }
     if k0 >= k1 {
         return None;
     }
     if item.scale.is_full() && item.levels == 1 {
         return Some(CaptureRows {
-            device: (k0, k1),
+            device,
             kept: (k0, k1),
             window: (k0.saturating_sub(item.apron), k1.saturating_add(item.apron)),
             levels: [(0, 0); cherenkov::CaptureLevels::MAX as usize],
@@ -219,7 +240,7 @@ fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<Ca
         kept.1.saturating_add(item.apron),
     );
     Some(CaptureRows {
-        device: (k0, k1),
+        device,
         kept,
         window: (
             (w0 as f64 / s).floor() as usize,
@@ -227,6 +248,83 @@ fn capture_rows(item: &CaptureItem, band: (usize, usize), h: usize) -> Option<Ca
         ),
         levels,
     })
+}
+
+/// Device rows touched by a group's actual member samples. The recursive
+/// walk carries each enclosing filter's expanded draw window. Displaced
+/// reads use the same field and coordinate evaluation as compositing;
+/// plain reads need only their draw-row interval.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "sample coordinates are finite and clamped to surface rows"
+)]
+fn sample_rows(
+    items: &[Item],
+    range: Range<usize>,
+    group: u64,
+    band: (usize, usize),
+    (w, h): (usize, usize),
+) -> (usize, usize) {
+    let mut rows = (h, 0);
+    let mut i = range.start;
+    while i < range.end {
+        match &items[i] {
+            Item::PushFilter { end, apron, .. } => {
+                let end = *end as usize;
+                let nested = sample_rows(
+                    items,
+                    i + 1..end,
+                    group,
+                    (band.0.saturating_sub(*apron), (band.1 + apron).min(h)),
+                    (w, h),
+                );
+                rows = (rows.0.min(nested.0), rows.1.max(nested.1));
+                i = end;
+            }
+            Item::Sample {
+                group: sampled,
+                bounds,
+                clip,
+                effect,
+                union,
+            } if *sampled == group => {
+                let first = (bounds.y0.max(0) as usize).max(band.0);
+                let last = (bounds.y1.max(0) as usize).min(band.1);
+                if first < last {
+                    if let SampleEffect::Sdf(SdfEffect {
+                        kind: SdfKind::Refraction { depth, strength },
+                        ..
+                    }) = effect
+                    {
+                        let x0 = (bounds.x0.max(0) as usize).min(w);
+                        let x1 = (bounds.x1.max(0) as usize).min(w);
+                        for py in first..last {
+                            for px in x0..x1 {
+                                if clip_cov(clip.as_ref(), w, px, py) <= 0.0 {
+                                    continue;
+                                }
+                                let (field, coverage) =
+                                    sample_field(effect, union.as_ref(), px, py);
+                                if coverage <= 0.0 {
+                                    continue;
+                                }
+                                let (_, qy) = refracted(field, *depth, *strength, px, py);
+                                let first = ((qy - 0.5).floor().max(0.0) as usize).min(h - 1);
+                                rows.0 = rows.0.min(first);
+                                rows.1 = rows.1.max(first.saturating_add(2).min(h));
+                            }
+                        }
+                    } else {
+                        rows = (rows.0.min(first), rows.1.max(last));
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    rows
 }
 
 /// This band's captures by backdrop group id.
@@ -614,9 +712,7 @@ fn sdf_sample(
 ) -> [f32; 4] {
     match sdf.kind {
         SdfKind::Refraction { depth, strength } => {
-            let t = d.mul_add(depth.recip(), 1.0).clamp(0.0, 1.0);
-            let qx = (nx * strength * t).mul_add(-t, px as f32 + 0.5);
-            let qy = (ny * strength * t).mul_add(-t, py as f32 + 0.5);
+            let (qx, qy) = refracted((d, nx, ny), depth, strength, px, py);
             capture_sample(capture, qx, qy)
         }
         SdfKind::Rim { width, color, gain } => {
@@ -642,6 +738,49 @@ fn sdf_sample(
     }
 }
 
+/// The refracted read point of pixel `(px, py)` given the field's
+/// distance and unit normal there: `SdfKind::Refraction`'s displacement.
+#[expect(clippy::cast_precision_loss, reason = "pixel coordinates are small")]
+fn refracted(
+    (d, nx, ny): (f32, f32, f32),
+    depth: f32,
+    strength: f32,
+    px: usize,
+    py: usize,
+) -> (f32, f32) {
+    let t = d.mul_add(depth.recip(), 1.0).clamp(0.0, 1.0);
+    (
+        (nx * strength * t).mul_add(-t, px as f32 + 0.5),
+        (ny * strength * t).mul_add(-t, py as f32 + 0.5),
+    )
+}
+
+/// The distance, normal and union coverage of pixel `(px, py)`, shared
+/// by capture planning and member compositing: the union field when the
+/// member is in a union, the SDF effect's own clip distance otherwise.
+#[expect(clippy::cast_precision_loss, reason = "pixel coordinates are small")]
+fn sample_field(
+    effect: &SampleEffect,
+    union: Option<&UnionSample>,
+    px: usize,
+    py: usize,
+) -> ((f32, f32, f32), f32) {
+    let (x, y) = (px as f32 + 0.5, py as f32 + 0.5);
+    union.map_or_else(
+        || match effect {
+            SampleEffect::Sdf(sdf) => (box_sdf_at(&sdf.clip, x, y), 1.0),
+            SampleEffect::None | SampleEffect::Color(_) => {
+                unreachable!("only union members and SDF effects evaluate a field")
+            }
+        },
+        |u| {
+            let (d, nx, ny, own, width) = union_field_at(u, x, y);
+            let coverage = own * (0.5 - (d - u.outer) / width).clamp(0.0, 1.0);
+            ((d, nx, ny), coverage)
+        },
+    )
+}
+
 /// The union field at `(x, y)`: `(field, nx, ny, w_own, w)` — every
 /// member's distance and gradient folded in ascending order with the
 /// quadratic smin, the folded gradient's unit normal, this member's
@@ -658,39 +797,39 @@ fn union_field_at(
     y: f32,
 ) -> (f32, f32, f32, f32, f32) {
     const MAX: usize = cherenkov::BackdropUnion::MAX_MEMBERS as usize;
-    let count = union.members.len();
-    debug_assert!(count <= MAX, "the member cap is enforced at planning");
-    let mut dists = [0.0f32; MAX];
-    let mut grads = [(0.0f32, 0.0f32); MAX];
-    // Every member: the cap is enforced at planning, nothing is
-    // truncated here.
-    for (i, member) in union.members.iter().enumerate() {
-        let (dist, nx, ny) = box_sdf_at(member, x, y);
-        dists[i] = dist;
-        grads[i] = (nx, ny);
+    // The planner enforces the cap. Initialize only the live members:
+    // clearing three maximum-size arrays here otherwise costs a memory
+    // primitive for every pixel, including footprint-planning samples.
+    let mut fields = ArrayVec::<_, MAX>::new();
+    for member in union.members.iter() {
+        fields.push(box_sdf_at(member, x, y));
     }
+    let count = fields.len();
     let ord = union.ord as usize;
     // Insertion sort of member indexes by distance in `total_cmp`
     // order — like the oracle's `sort_by` and the GPU fold: exact ties
     // keep paint order, and a −0.0/+0.0 pair resolves the same on every
     // engine.
-    let mut order = [0usize; MAX];
+    let mut order = ArrayVec::<usize, MAX>::new();
     for i in 0..count {
+        order.push(i);
         let mut j = i;
-        while j > 0 && dists[order[j - 1]].total_cmp(&dists[i]) == std::cmp::Ordering::Greater {
+        while j > 0 && fields[order[j - 1]].0.total_cmp(&fields[i].0) == std::cmp::Ordering::Greater
+        {
             order[j] = order[j - 1];
             j -= 1;
         }
         order[j] = i;
     }
-    let mut field = dists[order[0]];
-    let mut grad = grads[order[0]];
-    for &j in order.iter().take(count).skip(1) {
-        let blend = (union.k - (dists[j] - field)).max(0.0) / union.k;
+    let (mut field, gx, gy) = fields[order[0]];
+    let mut grad = (gx, gy);
+    for &j in order.iter().skip(1) {
+        let (distance, gx, gy) = fields[j];
+        let blend = (union.k - (distance - field)).max(0.0) / union.k;
         field = (blend * blend * union.k).mul_add(-0.25, field);
         let share = 0.5 * blend;
-        grad.0 = share.mul_add(grads[j].0 - grad.0, grad.0);
-        grad.1 = share.mul_add(grads[j].1 - grad.1, grad.1);
+        grad.0 = share.mul_add(gx - grad.0, grad.0);
+        grad.1 = share.mul_add(gy - grad.1, grad.1);
     }
     let width = grad.0.hypot(grad.1).max(1e-6);
     let (nx, ny) = (grad.0 / width, grad.1 / width);
@@ -703,8 +842,8 @@ fn union_field_at(
         let mut own = 0.0f32;
         for j in 0..count {
             let other = if order[0] == j { order[1] } else { order[0] };
-            let f = dists[other] - dists[j];
-            let slope = (grads[other].0 - grads[j].0).hypot(grads[other].1 - grads[j].1);
+            let f = fields[other].0 - fields[j].0;
+            let slope = (fields[other].1 - fields[j].1).hypot(fields[other].2 - fields[j].2);
             let a = if slope < 1e-6 {
                 if f > 0.0 || (f == 0.0 && j == order[0]) {
                     1.0
@@ -1044,7 +1183,8 @@ fn shade(
     // scopes are handled by the scope's own windowed run). A surface that
     // used no backdrop group cannot contain a `Capture`, so the scan is
     // skipped outright.
-    let mut captures: Vec<(usize, (usize, usize))> = Vec::new();
+    let mut last_capture = None;
+    let mut window = surface;
     if has_backdrop {
         let mut i = 0;
         while i < items.len() {
@@ -1054,8 +1194,9 @@ fn shade(
                     continue;
                 }
                 Item::Capture(capture) => {
-                    if let Some(rows) = capture_rows(capture, surface, h) {
-                        captures.push((i, rows.window));
+                    if let Some(rows) = capture_rows(capture, items, surface, (w, h)) {
+                        last_capture = Some(i);
+                        window = (window.0.min(rows.window.0), window.1.max(rows.window.1));
                     }
                 }
                 _ => {}
@@ -1064,10 +1205,7 @@ fn shade(
         }
     }
     let coverage = std::mem::take(&mut scratch.coverage);
-    let result = if let Some(&(last, _)) = captures.last() {
-        let (win0, win1) = captures
-            .iter()
-            .fold(surface, |(w0, w1), &(_, (c0, c1))| (w0.min(c0), w1.max(c1)));
+    let result = if let Some(last) = last_capture {
         shade_windowed(
             items,
             clear,
@@ -1075,7 +1213,7 @@ fn shade(
             w,
             surface,
             h,
-            ((win0, win1), last),
+            (window, last),
             coverage,
             scratch,
         )
@@ -1477,7 +1615,7 @@ fn run(
                 ));
             }
             Item::Capture(capture) => {
-                if let Some(rows) = capture_rows(capture, ctx.surface, h) {
+                if let Some(rows) = capture_rows(capture, items, ctx.surface, (band.w, h)) {
                     capture_band(band, stack.as_slice(), buffers, ctx, capture, rows)?;
                 }
             }
@@ -1931,6 +2069,7 @@ impl Band<'_> {
             }
             acc.draw_line(e.x0, ey0, e.x1, ey1);
         }
+        let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
         for y in y_lo..y_hi {
             let py = self.y0 + y;
             acc.coverage_row(y, rule, x_lo, x_hi, |x, cov| {
@@ -1941,7 +2080,6 @@ impl Band<'_> {
                 let src = paint
                     .eval(x as f32 + 0.5, py as f32 + 0.5)
                     .map(|v| v * cov * cc);
-                let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
                 dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
             });
         }
@@ -2139,10 +2277,6 @@ impl Band<'_> {
     /// strength — the member's own scope attenuates it at composite.
     /// Writes are `clip`-coverage-gated: nothing lands outside the
     /// member clip.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "pixels stay well below f32's integer bound"
-    )]
     fn sample(
         &mut self,
         capture: &Capture,
@@ -2172,6 +2306,7 @@ impl Band<'_> {
         if y_lo >= y_hi || x_lo >= x_hi {
             return;
         }
+        let needs_field = union.is_some() || matches!(effect, SampleEffect::Sdf(_));
         let (dst, space) = top(&mut *self.fb, self.space, stack);
         for py in y_lo..y_hi {
             let row = (py - self.y0) * self.w;
@@ -2184,32 +2319,24 @@ impl Band<'_> {
                 // `field < outer`, replacing the member's clip coverage
                 // (the item's clip then carries the ancestors only);
                 // the field is also what SDF effects read.
-                let mut field = (0.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32);
                 let mut cc = clip_cov(clip, self.w, px, py);
                 if cc <= 0.0 {
                     continue;
                 }
-                if let Some(u) = union {
-                    field = union_field_at(u, px as f32 + 0.5, py as f32 + 0.5);
-                    let (_, _, _, w_own, w) = field;
-                    cc *= w_own * (0.5 - (field.0 - u.outer) / w).clamp(0.0, 1.0);
+                let field = if needs_field {
+                    let (field, coverage) = sample_field(effect, union, px, py);
+                    cc *= coverage;
                     if cc <= 0.0 {
                         continue;
                     }
-                }
-                let (d, nx, ny) = match union {
-                    Some(_) => (field.0, field.1, field.2),
-                    None => match effect {
-                        SampleEffect::Sdf(sdf) => {
-                            box_sdf_at(&sdf.clip, px as f32 + 0.5, py as f32 + 0.5)
-                        }
-                        _ => (0.0, 0.0, 0.0),
-                    },
+                    field
+                } else {
+                    (0.0, 0.0, 0.0)
                 };
                 let c = match effect {
                     SampleEffect::None => pixel_sample(capture, px, py, crow),
                     SampleEffect::Color(m) => color_matrix(m, pixel_sample(capture, px, py, crow)),
-                    SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, (d, nx, ny), px, py, crow),
+                    SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, field, px, py, crow),
                 };
                 let src = c.map(|v| v * cc);
                 dst[row + px] = src_over(dst[row + px], move_space(src, capture.space, space));

@@ -254,6 +254,8 @@ pub struct CaptureItem {
     /// enclosing filter-scope apron plus effect sampling reach over the
     /// group's members.
     pub reach: usize,
+    /// Whether members displace their capture reads.
+    pub displaced: bool,
     /// The prepared chain, when the group is filtered.
     pub filter: Option<FrameFilter>,
     /// Looked-through isolation levels on the stack flattened over the
@@ -279,7 +281,7 @@ pub enum SampleEffect {
 #[derive(Clone, Debug)]
 pub struct SdfEffect {
     /// The member clip the distance and normal are read from.
-    pub clip: BoxClip,
+    pub clip: Arc<BoxClip>,
     /// Which effect the distance and normal feed.
     pub kind: SdfKind,
 }
@@ -682,7 +684,10 @@ fn member_effect(
     };
     let clip = clip.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
     Ok((
-        SampleEffect::Sdf(SdfEffect { clip, kind }),
+        SampleEffect::Sdf(SdfEffect {
+            clip: Arc::new(clip),
+            kind,
+        }),
         f64::from(effect.reach()),
     ))
 }
@@ -1712,6 +1717,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             let reach = plan.reach;
             let spec = plan.spec;
             let filter = plan.filter.clone();
+            let displaced = plan.members.values().any(|member| member.reach > 0.0);
             let flatten = self.iso_kinds.iter().rev().take_while(|&&k| k).count();
             self.items.push(Item::Capture(Box::new(CaptureItem {
                 group: gid,
@@ -1741,6 +1747,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 },
                 apron,
                 reach,
+                displaced,
                 filter,
                 flatten,
             })));

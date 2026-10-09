@@ -762,6 +762,50 @@ fn reduced_multi_band_capture_has_no_band_seams() {
 }
 
 #[test]
+fn refraction_past_the_surface_keeps_the_clamped_edge_row() {
+    for (clip, row) in [
+        (Rect::new(-100.0, 31.0, 100.0, 160.0), 31),
+        (Rect::new(-100.0, -160.0, 100.0, 1.0), 0),
+    ] {
+        let engine = engine();
+        let surface = engine
+            .surface(Offscreen::new((64, 32), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        let group = surface.backdrop_group(
+            filtrate::filters::Brightness(0.25f32),
+            cherenkov::CaptureScale::FULL,
+        );
+        let parent = surface.layer();
+        let member = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 64.0, 32.0),
+                    WorkingColor::new([0.2, 0.3, 0.4, 1.0]),
+                );
+            }));
+            tx[surface.root()].push(&parent);
+            // The inherited coverage mask spans the surface, although
+            // the parent's right edge is strictly inside it.
+            tx[&parent]
+                .clip(RoundedRect::new(4.0, 0.0, 28.0, 32.0, 4.0))
+                .push(&member);
+            tx[&member]
+                .clip(clip)
+                .backdrop(group.sample_with(cherenkov::Refraction {
+                    depth: 4.0,
+                    strength: 128.0,
+                }));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let readback = surface.readback().expect("readback");
+        // Every visible sample is displaced beyond the surface. The
+        // filtered edge row must still be captured for clamped sampling.
+        assert_pixel(pixel(&readback, 16, row), [0.45, 0.55, 0.65, 1.0], 1e-5);
+    }
+}
+
+#[test]
 fn reduced_refraction_samples_the_displaced_point_on_the_capture_grid() {
     let engine = engine();
     let surface = engine
