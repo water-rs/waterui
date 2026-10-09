@@ -27,7 +27,6 @@ use crate::{
 enum AndroidRuntimeEvent {
     Panic(PanicInfo),
     NativeCrash(String),
-    ActivityFinished,
 }
 
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,8 +34,6 @@ const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// `adb wait-for-device` waits until the device is online, so its bound
 /// covers a device mid-boot, not a stalled transport alone.
 const WAIT_FOR_DEVICE_TIMEOUT: Duration = Duration::from_secs(120);
-
-const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 
 /// The launch-intent extra carrying the `--logs` level to a Hydrolysis
 /// Android app — `HydrolysisActivity` reads it and hands it to the native
@@ -624,11 +621,6 @@ fn spawn_android_runtime_tasks(
                         ))))
                         .await;
                 }
-                AndroidRuntimeEvent::ActivityFinished => {
-                    let _ = sender_for_runtime_event
-                        .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
-                        .await;
-                }
             }
         }
     })
@@ -1101,9 +1093,11 @@ fn contains_tombstone_backtrace_marker(line: &str) -> bool {
 
 /// Start log streaming from an Android process using logcat.
 ///
-/// Always streams at minimum info level to capture lifecycle completion and panics.
-/// Returns the receiver that fires when the Activity finishes or the runtime
-/// crashes, alongside the `logcat` child itself.
+/// Always streams at minimum info level to capture panics: the Hydrolysis
+/// panic hook writes its payload at info through `__android_log_write`, so a
+/// stricter display level must not narrow the internal stream below it.
+/// Returns the receiver that fires when the runtime crashes, alongside the
+/// `logcat` child itself.
 ///
 /// The child is spawned with `kill_on_drop` and the reader task only holds its
 /// stdout, so whoever owns the returned handle owns the process's lifetime —
@@ -1125,8 +1119,9 @@ fn start_android_log_stream(
     // Bounded channel with capacity 1 acts as a oneshot for the first terminal event.
     let (runtime_event_tx, runtime_event_rx) = smol::channel::bounded::<AndroidRuntimeEvent>(1);
 
-    // Lifecycle completion is logged at info, so the internal stream must include info even
-    // when terminal log display is disabled or configured for a stricter level.
+    // The Hydrolysis panic hook writes at info through `__android_log_write`,
+    // so the internal stream must include info even when terminal log display
+    // is disabled or configured for a stricter level.
     let priority = match log_level {
         Some(LogLevel::Debug) => 'D',
         Some(LogLevel::Verbose) => 'V',
@@ -1202,9 +1197,6 @@ fn android_runtime_event_from_log_line(line: &str) -> Option<AndroidRuntimeEvent
     }
     if android_log_line_looks_like_crash(line) {
         return Some(AndroidRuntimeEvent::NativeCrash(line.to_string()));
-    }
-    if line.contains(ANDROID_ACTIVITY_FINISHED_MARKER) {
-        return Some(AndroidRuntimeEvent::ActivityFinished);
     }
     None
 }
@@ -1968,11 +1960,15 @@ mod tests {
     }
 
     #[test]
-    fn detects_activity_completion_marker() {
+    fn an_activity_finishing_is_not_a_terminal_event() {
+        // water-rs/waterui#2289: `WATERUI_ACTIVITY_FINISHED` reports the
+        // activity's end, not the process's — `am start --activity-clear-task`
+        // and a launcher relaunch after Back recreate the activity in the live
+        // process, so only the pidof monitor may end the run.
         let event = android_runtime_event_from_log_line(
             "07-26 20:00:00.000 28184 28184 I WaterUI.MainActivity: WATERUI_ACTIVITY_FINISHED",
         );
-        assert!(matches!(event, Some(AndroidRuntimeEvent::ActivityFinished)));
+        assert!(event.is_none());
     }
 
     #[test]

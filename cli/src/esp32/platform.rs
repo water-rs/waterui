@@ -279,12 +279,16 @@ pub async fn build_esp32(project: &Project, options: BuildOptions) -> eyre::Resu
     }
     // Piped stdio strips rustc diagnostics of their colors; restore cargo's
     // coloring while the terminal renders the output.
-    if crate::utils::std_output_enabled() && host.env("CARGO_TERM_COLOR").is_none() {
+    if host.std_output() && host.env("CARGO_TERM_COLOR").is_none() {
         cargo.env("CARGO_TERM_COLOR", "always");
     }
 
-    let output =
-        crate::build::command_output_with_progress(&mut cargo, options.progress().cloned()).await?;
+    let output = crate::build::command_output_with_progress(
+        &mut cargo,
+        options.progress().cloned(),
+        host.std_output(),
+    )
+    .await?;
     if !output.status.success() {
         let details = command_failure_details(&output);
         // A live-rendered stream is tailed rather than re-dumped in full.
@@ -503,7 +507,7 @@ async fn save_flash_image(
 ) -> eyre::Result<()> {
     let espflash = espflash_path(host).await?;
     let mut save = host.command(espflash);
-    let save = command(&mut save);
+    let save = command(&mut save, host.std_output());
     save.current_dir(backend_path)
         .arg("save-image")
         .arg("--chip")

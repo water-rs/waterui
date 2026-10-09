@@ -997,14 +997,14 @@ async fn run_sdkmanager_output_with_java(
         use std::process::Stdio;
 
         cmd.stdin(Stdio::piped());
-        let mut child = command(&mut cmd).spawn()?;
+        let mut child = command(&mut cmd, host.std_output()).spawn()?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(stdin_payload.as_bytes()).await?;
             stdin.flush().await?;
         }
         child.output().await.map_err(AndroidToolchainError::from)
     } else {
-        command(&mut cmd)
+        command(&mut cmd, host.std_output())
             .output()
             .await
             .map_err(AndroidToolchainError::from)

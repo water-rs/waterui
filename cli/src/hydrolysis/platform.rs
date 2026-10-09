@@ -801,7 +801,7 @@ async fn build_hydrolysis_web_bundle(
     fs::create_dir_all(&pkg_dir).await?;
 
     let mut wasm_pack_cmd = host.command(wasm_pack);
-    let wasm_pack_cmd = command(&mut wasm_pack_cmd);
+    let wasm_pack_cmd = command(&mut wasm_pack_cmd, host.std_output());
     wasm_pack_cmd
         .current_dir(backend_path)
         .arg("build")

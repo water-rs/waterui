@@ -857,7 +857,7 @@ async fn build_preview_session_from_launch(
     {
         ConnectionWaitResult::Ready(client) => {
             return Ok(PreviewSession {
-                client,
+                client: *client,
                 platform,
                 dylib_path: None,
                 running: Some(running),
@@ -917,7 +917,7 @@ Try running with WATERUI_CRASH_DEBUG=1 for more details.",
 /// Result of waiting for preview-app readiness.
 enum ConnectionWaitResult {
     /// Preview app accepted a connection and completed the protocol handshake.
-    Ready(PreviewAppClient),
+    Ready(Box<PreviewAppClient>),
     /// App crashed.
     Crashed(Crash),
     /// App exited without crash.
@@ -1021,7 +1021,7 @@ async fn wait_for_registered_preview_ready(
     )
     .await
     {
-        PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+        PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
         PreviewProbe::Rejected(reason) => rejection = Some(reason),
         PreviewProbe::Silent => {}
     }
@@ -1061,7 +1061,7 @@ async fn wait_for_registered_preview_ready(
         )
         .await
         {
-            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
             PreviewProbe::Rejected(reason) => rejection = Some(reason),
             PreviewProbe::Silent => {}
         }
@@ -1135,7 +1135,7 @@ async fn wait_for_polled_preview_ready(
 
     loop {
         match probe_polled_preview(host, tcp_config, expectation, start).await {
-            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
             PreviewProbe::Rejected(reason) => rejection = Some(reason),
             PreviewProbe::Silent => {}
         }
@@ -1269,7 +1269,7 @@ async fn preview_connection_result_from_device_event(
                             "Connected to preview app after {}ms",
                             start.elapsed().as_millis()
                         );
-                        return Some(ConnectionWaitResult::Ready(*client));
+                        return Some(ConnectionWaitResult::Ready(client));
                     }
                     // The app this launch just started announced its own port
                     // and is the wrong build: its protocol is fixed at build
@@ -1529,7 +1529,7 @@ async fn scaffold_preview_app(
     )
     .with_project_packages(requirements.project_packages.clone());
 
-    crate::templates::preview::scaffold(project.root(), &ctx)
+    crate::templates::preview::scaffold(host, project.root(), &ctx)
         .await
         .wrap_err("Failed to scaffold embedded preview app template")?;
 
@@ -1553,15 +1553,11 @@ async fn scaffold_preview_app(
     // versions and adding only the entries the support manifest's own
     // packages need — `generate-lockfile` would re-resolve every crate at
     // its newest and drift the support app off the project's lock.
-    let support_manifest = project.root().join("Cargo.toml");
-    smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .manifest_path(&support_manifest)
-            .exec()
-            .map(|_| ())
-    })
-    .await
-    .wrap_err("Failed to refresh the preview support app's Cargo.lock")?;
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(project.root().join("Cargo.toml"));
+    host.cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to refresh the preview support app's Cargo.lock")?;
 
     info!("Preview app scaffolded at {}", path.display());
     Ok(())
@@ -1764,19 +1760,17 @@ async fn resolve_preview_metadata(
     let app_path = project.root().to_path_buf();
     let project_packages = project.project_packages(&framework).await?;
     let metadata_start = Instant::now();
-    let metadata_manifest_path = manifest_path.clone();
     let abi_feature = PreviewLinkMode::for_platform(platform)
         .abi_feature
         .to_string();
-    let metadata = smol::unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .manifest_path(metadata_manifest_path)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(vec![abi_feature]));
-        command.exec()
-    })
-    .await
-    .wrap_err("Failed to resolve user project Cargo metadata with its dev feature")?;
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command
+        .manifest_path(&manifest_path)
+        .features(cargo_metadata::CargoOpt::SomeFeatures(vec![abi_feature]));
+    let metadata = host
+        .cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to resolve user project Cargo metadata with its dev feature")?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = metadata_start.elapsed().as_millis(),

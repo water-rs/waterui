@@ -15,9 +15,10 @@ use std::{
     process::{Output, Stdio},
 };
 
+use cargo_metadata::{Metadata, MetadataCommand};
 use smol::{io::AsyncReadExt as _, process::Command, unblock};
 
-use crate::utils::{CommandError, format_failure_stream, std_output_enabled};
+use crate::utils::{CommandError, format_failure_stream};
 
 mod detached;
 
@@ -34,6 +35,10 @@ pub struct Host {
     cwd: PathBuf,
     home: Option<PathBuf>,
     app_dirs: Vec<PathBuf>,
+    /// Whether spawned tools' captured output is also echoed to the
+    /// terminal — the policy `crate::utils::command` and [`Host::output`]
+    /// apply per invocation.
+    std_output: bool,
 }
 
 impl Host {
@@ -49,6 +54,7 @@ impl Host {
             cwd: env::current_dir().expect("process must have a working directory"),
             home: dirs::home_dir(),
             app_dirs: default_app_dirs(),
+            std_output: false,
         }
     }
 
@@ -96,6 +102,7 @@ impl Host {
             cwd: env::current_dir().expect("process must have a working directory"),
             home,
             app_dirs: Vec::new(),
+            std_output: false,
         }
     }
 
@@ -111,6 +118,27 @@ impl Host {
     pub fn with_app_dirs(mut self, app_dirs: impl IntoIterator<Item = PathBuf>) -> Self {
         self.app_dirs = app_dirs.into_iter().collect();
         self
+    }
+
+    /// A host whose spawned tools echo their captured output to the
+    /// terminal — or stay silently captured when `enabled` is false.
+    ///
+    /// The policy is off by default so tool probes never print; a command
+    /// the user is watching turns it on for the hosts that build and run
+    /// its artifacts. `water mcp` keeps it off: its stdout is the JSON-RPC
+    /// stream.
+    #[must_use]
+    pub fn with_std_output(&self, enabled: bool) -> Self {
+        let mut host = self.clone();
+        host.std_output = enabled;
+        host
+    }
+
+    /// Whether tools spawned on this host echo their captured output to
+    /// the terminal.
+    #[must_use]
+    pub const fn std_output(&self) -> bool {
+        self.std_output
     }
 
     /// An environment variable on this host.
@@ -399,9 +427,9 @@ impl Host {
     /// Spawn `program` with `args` under this host, capturing output.
     ///
     /// stdin is null (see [`Host::command`]); stdout and stderr are piped and
-    /// always collected for the returned [`Output`]; when the CLI's `--logs` passthrough is
-    /// active each chunk is additionally mirrored to the terminal as it
-    /// arrives, matching the historical `run_command_output_os` behavior.
+    /// always collected for the returned [`Output`]; when this host's
+    /// [`Host::std_output`] policy echoes, each chunk is additionally mirrored
+    /// to the terminal as it arrives.
     ///
     /// # Errors
     /// - [`CommandError::Spawn`] when the program cannot be spawned or awaited.
@@ -434,7 +462,7 @@ impl Host {
             source,
         })?;
 
-        let echo = std_output_enabled();
+        let echo = self.std_output;
         let stdout_task = smol::spawn(drain_child_pipe(
             child.stdout.take().expect("stdout is piped"),
             io::stdout(),
@@ -497,6 +525,51 @@ impl Host {
                 ),
             })
         }
+    }
+
+    /// `cargo metadata` as `command` configures it, run on this host.
+    ///
+    /// [`MetadataCommand::exec`] spawns cargo with the process's own
+    /// environment. This takes the invocation `command` describes — its
+    /// arguments, working directory and environment overrides — and runs it
+    /// through [`Host::command`] instead, so cargo is found on this host's
+    /// `PATH` and sees this host's environment. The output contract is
+    /// `exec`'s: a failed run is [`cargo_metadata::Error::CargoMetadata`]
+    /// carrying cargo's stderr, and the metadata is the first stdout line
+    /// that opens a JSON object, parsed on the blocking pool.
+    ///
+    /// # Errors
+    /// Every error [`MetadataCommand::exec`] reports.
+    pub async fn cargo_metadata(
+        &self,
+        command: &MetadataCommand,
+    ) -> Result<Metadata, cargo_metadata::Error> {
+        let invocation = command.cargo_command();
+        let mut cargo = self.command("cargo");
+        cargo.args(invocation.get_args()).kill_on_drop(true);
+        if let Some(dir) = invocation.get_current_dir() {
+            cargo.current_dir(dir);
+        }
+        for (key, value) in invocation.get_envs() {
+            match value {
+                Some(value) => cargo.env(key, value),
+                None => cargo.env_remove(key),
+            };
+        }
+        let output = cargo.output().await?;
+        unblock(move || {
+            if !output.status.success() {
+                return Err(cargo_metadata::Error::CargoMetadata {
+                    stderr: String::from_utf8(output.stderr)?,
+                });
+            }
+            let json = std::str::from_utf8(&output.stdout)?
+                .lines()
+                .find(|line| line.starts_with('{'))
+                .ok_or(cargo_metadata::Error::NoJson)?;
+            MetadataCommand::parse(json)
+        })
+        .await
     }
 
     /// Run `program` to completion with nothing of this process in its hands:

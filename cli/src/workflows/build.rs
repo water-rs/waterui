@@ -18,7 +18,6 @@ use target_lexicon::{Environment, OperatingSystem, Triple};
 use tracing::{info, warn};
 
 use crate::project::Project;
-use crate::utils::std_output_enabled;
 
 /// Get the dynamic library extension for a target triple.
 #[must_use]
@@ -1434,6 +1433,7 @@ fn classify_compile_line(line: &str) -> CompileEvent {
 pub(crate) async fn command_output_with_progress(
     command: &mut Command,
     progress: Option<BuildProgress>,
+    std_output: bool,
 ) -> io::Result<std::process::Output> {
     let mut child = command
         .kill_on_drop(true)
@@ -1446,7 +1446,7 @@ pub(crate) async fn command_output_with_progress(
 
     // Raw chunk echo reproduces `Stdio::inherit` for a build carrying no
     // progress sink; a sink renders the parsed events itself.
-    let echo = progress.is_none() && std_output_enabled();
+    let echo = progress.is_none() && std_output;
     // The drains run as their own tasks: inlined into this future their read
     // buffers alone would push it past clippy's `large_futures` threshold.
     let stdout_task = smol::spawn(drain_pipe(stdout_pipe));
@@ -2326,14 +2326,14 @@ Automatic meson installation failed: {install_err}\n\n{}",
         // terminal renders them — through the progress sink or the raw
         // passthrough echo — restore cargo's coloring unless the caller
         // configured it explicitly.
-        if std_output_enabled()
+        if self.host.std_output()
             && self.host.env("CARGO_TERM_COLOR").is_none()
             && !self.envs.iter().any(|(key, _)| key == "CARGO_TERM_COLOR")
         {
             cmd.env("CARGO_TERM_COLOR", "always");
         }
 
-        command_output_with_progress(cmd, self.progress.clone())
+        command_output_with_progress(cmd, self.progress.clone(), self.host.std_output())
             .await
             .map_err(RustBuildError::FailToExecuteCargoBuild)
     }
@@ -2429,20 +2429,14 @@ Automatic meson installation failed: {install_err}\n\n{}",
             return Ok(target_dir.clone());
         }
 
-        let build_path = self.path.clone();
-        let metadata = unblock(move || {
-            cargo_metadata::MetadataCommand::new()
-                .no_deps()
-                .current_dir(build_path)
-                .exec()
-                .map_err(|e| {
-                    RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    ))
-                })
-        })
-        .await?;
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command.no_deps().current_dir(&self.path);
+        let metadata = self.host.cargo_metadata(&command).await.map_err(|e| {
+            RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e,
+            ))
+        })?;
         Ok(metadata.target_directory.as_std_path().to_path_buf())
     }
 
