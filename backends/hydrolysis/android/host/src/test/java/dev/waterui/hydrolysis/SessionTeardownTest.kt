@@ -403,6 +403,9 @@ class ShadowNativeBridge {
         /** Every `nativeBackEvent` phase, in order. */
         val backEvents = mutableListOf<Int>()
 
+        /** The accessibility publish `nativeAccessibilityTree` returns. */
+        var accessibilityTree: String? = null
+
         /** Runs inside `nativeDestroySession`, as the runner's drop does. */
         var onDestroy: () -> Unit = {}
 
@@ -415,6 +418,7 @@ class ShadowNativeBridge {
             deadlineQueries = 0
             visibilities.clear()
             backEvents.clear()
+            accessibilityTree = null
             onDestroy = {}
             onFrame = { 0L }
         }
@@ -490,6 +494,13 @@ class ShadowNativeBridge {
         @Implementation
         fun nativeSetHighRefresh(sessionPtr: Long, @Suppress("UNUSED_PARAMETER") active: Boolean) {
             assertLive(sessionPtr)
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeAccessibilityTree(sessionPtr: Long): String? {
+            assertLive(sessionPtr)
+            return accessibilityTree
         }
     }
 }
