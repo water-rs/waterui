@@ -492,7 +492,7 @@ mod ordering {
     /// hosted view, and only one of them moves.
     #[test]
     fn swapped_hosted_planes_move_one_of_them() {
-        let mut installed = vec![98, 0, 10, 1, 11, 2];
+        let mut installed = vec![98, 0, 10, 1, 11, 2, 99];
         let placed = reorder(&[0, 10, 1, 11, 2], &mut installed, &[0, 11, 1, 10, 2]);
         assert_eq!(
             placed.iter().filter(|view| **view >= 10).count(),
