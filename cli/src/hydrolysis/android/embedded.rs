@@ -271,27 +271,18 @@ pub async fn build_aar(
     // `waterui_assets` ships inside the AAR exactly as it ships inside an
     // APK — `HydrolysisEnvironment.prepare` syncs the same tree at runtime.
     // What the app scaffold stages beyond it (`res`, theme, icons) is the
-    // host application's own, never the library's.
-    let (manifest, staged) = assets::stage_project_assets_for_android_library(
+    // host application's own, never the library's. No font tree ships beside
+    // it: the runtime's Android collection scans the platform font
+    // directories (`text::fonts::android_collection`), nothing reads a
+    // packaged `assets/fonts`, and that shared root is the host app's
+    // namespace to win at merge time (#2348).
+    assets::stage_project_assets_for_android_library(
         project,
         &module_dir,
         &built.app_symbols()?,
         false,
     )
     .await?;
-
-    // The library ships the same runtime fonts the app path stages — a
-    // dependency's declared font resolves and lands under the module's
-    // assets with the table manifest the runtime reads at bootstrap.
-    let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-    let font_declarations = assets::scan_fonts(project, &ffi_manifest).await?;
-    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
-    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
-    if !resolved_fonts.is_empty() {
-        let fonts_dest = staged.root.join("fonts");
-        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
-        assets::write_font_manifest(&resolved_fonts, &fonts_dest, None).await?;
-    }
 
     // Kotlin helpers and Maven dependencies likewise belong on the classpath
     // the host app resolves classes from; `api` exports them through the
@@ -300,6 +291,7 @@ pub async fn build_aar(
     // into its own, `${applicationId}` resolving to the host's. The feature
     // set is the one every built ABI's own graph answers, so helpers behind
     // optional features are not missed.
+    let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
     let triples: Vec<_> = abis.iter().map(|abi| abi.triple()).collect();
     assets::stage_android_declarations(
         project,
