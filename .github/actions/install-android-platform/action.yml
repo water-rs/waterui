@@ -14,7 +14,7 @@ runs:
         set -euo pipefail
         compile_sdk="$(grep -oP 'compileSdk = \K[0-9]+' cli/src/templates/hydrolysis_android/app/build.gradle.kts.tpl)"
         sdkm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-        yes | sudo "$sdkm" --licenses >/dev/null || true
+        yes | "$sdkm" --licenses >/dev/null || true
         platform_pkg="$("$sdkm" --list 2>/dev/null | grep -oE "platforms;android-$compile_sdk(\.[0-9]+)?" | sort -uV | tail -1)"
         [ -n "$platform_pkg" ] || { echo "::error::no SDK platform package matching compileSdk $compile_sdk"; exit 1; }
-        sudo "$sdkm" "$platform_pkg"
+        "$sdkm" "$platform_pkg"
