@@ -245,9 +245,7 @@ pub async fn build_aar(
     // linger in the AAR.
     let module_dir = dir.join("waterui");
     let jni_libs = module_dir.join("src/main/jniLibs");
-    if jni_libs.exists() {
-        fs::remove_dir_all(&jni_libs).await?;
-    }
+    super::remove_dir_if_present(&jni_libs).await?;
     let mut built: Option<BuiltTarget> = None;
     for abi in abis {
         let abi_options = options.clone().with_output_dir(jni_libs.join(abi.as_str()));
@@ -339,7 +337,7 @@ async fn embedded_template_context(
     modules: &[&str],
 ) -> Result<crate::templates::TemplateContext> {
     Ok(
-        HydrolysisBackend::template_context(project, &project.resolved_framework().await?)
+        HydrolysisBackend::template_context(project, project.resolved_framework().await?)
             .await?
             .with_crate_version(crate_version)
             .with_android_permissions(manifest_permissions(project.manifest()))
@@ -484,19 +482,19 @@ async fn copy_aar_to_package(
     library: &RenderedLibrary,
 ) -> Result<PathBuf> {
     let source = module_dir.join("build/outputs/aar/waterui-release.aar");
-    if !source.is_file() {
-        bail!(
-            "Gradle assembled no AAR at {}; check the embedded build output above",
-            source.display()
-        );
-    }
     let package_dir = project.root().join("target").join("package");
     fs::create_dir_all(&package_dir).await?;
     let dest = package_dir.join(format!(
         "{}-{}-release.aar",
         library.artifact, library.version
     ));
-    fs::copy(&source, &dest).await?;
+    fs::copy(&source, &dest).await.map_err(|error| {
+        eyre::eyre!(
+            "cannot copy the assembled AAR {} to {}: {error}",
+            source.display(),
+            dest.display()
+        )
+    })?;
     Ok(dest)
 }
 
