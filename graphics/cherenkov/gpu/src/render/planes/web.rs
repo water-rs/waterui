@@ -698,16 +698,31 @@ impl SystemPlanes for DomPlanes {
         ))
     }
 
+    // The stack is the one `compose` last realized, so each plane keeps its
+    // stacking index; only its placement may have moved.
     fn refresh<'a>(
         &mut self,
         frames: impl Iterator<Item = super::Plane<'a>>,
     ) -> Result<(), RenderError> {
-        // A frame-only refresh is admitted only for promoted external
-        // frames, and this realization promotes none.
-        assert!(
-            frames.count() == 0,
-            "the DOM realization promotes no external frames"
-        );
+        let mut scale = None;
+        for plane in frames {
+            let PlaneContent::Hosted { object, extent } = plane.content else {
+                unreachable!("the DOM realization is offered only hosted candidates")
+            };
+            let node = self
+                .hosted
+                .remove(&plane.placement.layer)
+                .expect("refresh names a committed plane");
+            assert!(node.element.is(object), "refresh keeps the bound element");
+            let (_, _, index, _) = node.shown.as_ref().expect("refresh names a shown plane");
+            let index = *index;
+            let scale = match scale {
+                Some(scale) => scale,
+                None => *scale.insert(self.css_scale(self.size)?),
+            };
+            let node = self.place(node, index, plane.placement, extent, scale)?;
+            self.hosted.insert(plane.placement.layer, node);
+        }
         Ok(())
     }
 
