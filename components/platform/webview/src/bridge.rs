@@ -110,24 +110,24 @@ impl From<JsReply> for Reply {
 
 #[derive(Serialize)]
 #[serde(untagged)]
-enum ReplyPayload {
+enum ReplyPayload<'a> {
     /// Held as a `RawValue` so the handler's own bytes go into the envelope
     /// unchanged, rather than being parsed into a `Value` and printed again.
     Json {
-        json: Box<RawValue>,
+        json: &'a RawValue,
     },
     Bytes {
         b64: String,
     },
     Failure {
-        message: String,
+        message: &'a str,
     },
 }
 
 #[derive(Serialize)]
-struct ReplyEnvelope {
+struct ReplyEnvelope<'a> {
     ok: bool,
-    payload: ReplyPayload,
+    payload: ReplyPayload<'a>,
 }
 
 impl Reply {
@@ -168,12 +168,11 @@ impl Reply {
             .expect("WaterUI bridge reply must serialize")
     }
 
-    fn serialized_payload(&self) -> (bool, ReplyPayload) {
+    fn serialized_payload(&self) -> (bool, ReplyPayload<'_>) {
         match self {
             Self::Json(bytes) => {
                 let text = str::from_utf8(bytes).expect("a JSON reply must be UTF-8");
-                let json =
-                    RawValue::from_string(text.to_owned()).expect("a JSON reply must be JSON");
+                let json = serde_json::from_str(text).expect("a JSON reply must be JSON");
                 (true, ReplyPayload::Json { json })
             }
             Self::Bytes(bytes) => (
@@ -182,12 +181,7 @@ impl Reply {
                     b64: STANDARD.encode(bytes),
                 },
             ),
-            Self::Failure(message) => (
-                false,
-                ReplyPayload::Failure {
-                    message: message.clone(),
-                },
-            ),
+            Self::Failure(message) => (false, ReplyPayload::Failure { message }),
         }
     }
 }
