@@ -353,7 +353,7 @@ fn await_load(
     server.wait_for_tag(page, expected_marker, deadline);
 }
 
-fn await_process_identifier(page: &SmokePage, deadline: Instant) -> u64 {
+fn await_process_identifier(page: &SmokePage, deadline: Instant) -> String {
     let identifier = Rc::new(RefCell::new(None));
     let identifier_slot = Rc::clone(&identifier);
     let page_for_future = page.clone();
@@ -498,6 +498,7 @@ pub fn run(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
     );
 
     let excluded_process = await_process_identifier(&page, deadline);
+    assert_eq!(excluded_process, await_process_identifier(&page, deadline));
     page.load_uri(&admitted_url);
     server.wait_for(
         &page,
@@ -569,6 +570,7 @@ pub fn run(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
         deadline,
     );
     assert_eq!(same_document["tag"], "A-same-document");
+    assert_eq!(admitted_process, await_process_identifier(&page, deadline));
 
     let delayed_started = await_page_script(
         &page,

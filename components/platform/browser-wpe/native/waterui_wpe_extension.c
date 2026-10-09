@@ -1,11 +1,11 @@
 #include <gmodule.h>
 #include <jsc/jsc.h>
 #include <string.h>
-#include <unistd.h>
 #include <wpe/webkit-web-process-extension.h>
 
 typedef struct {
     char *initial_origin_wire;
+    char *identifier;
     WebKitScriptWorld *bridge_world;
 } WaterWpeProcess;
 
@@ -33,6 +33,7 @@ static void water_wpe_process_free(gpointer user_data)
     WaterWpeProcess *process = user_data;
     g_object_unref(process->bridge_world);
     g_free(process->initial_origin_wire);
+    g_free(process->identifier);
     g_free(process);
 }
 
@@ -384,7 +385,7 @@ static gboolean water_wpe_user_message_received(
     WebKitUserMessage *message,
     gpointer user_data)
 {
-    (void)user_data;
+    WaterWpeProcess *process = user_data;
     const char *name = webkit_user_message_get_name(message);
     if (g_str_equal(name, "waterui.bridge-origins")) {
         WaterWpeExtensionPage *page =
@@ -405,7 +406,7 @@ static gboolean water_wpe_user_message_received(
             message,
             webkit_user_message_new(
                 "waterui.bridge-process-id",
-                g_variant_new_uint64((guint64)getpid())));
+                g_variant_new_string(process->identifier)));
         return TRUE;
     }
     return FALSE;
@@ -430,7 +431,7 @@ static void water_wpe_page_created(
         web_page,
         "user-message-received",
         G_CALLBACK(water_wpe_user_message_received),
-        NULL);
+        process);
 }
 
 G_MODULE_EXPORT void webkit_web_process_extension_initialize_with_user_data(
@@ -438,6 +439,8 @@ G_MODULE_EXPORT void webkit_web_process_extension_initialize_with_user_data(
     const GVariant *user_data)
 {
     WaterWpeProcess *process = g_new0(WaterWpeProcess, 1);
+    /* Sandbox PID namespaces reuse getpid(); identify the process lifetime. */
+    process->identifier = g_uuid_string_random();
     GVariant *user_data_variant = (GVariant *)user_data;
     const char *initial_wire = "";
     if (user_data_variant &&

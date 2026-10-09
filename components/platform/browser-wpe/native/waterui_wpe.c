@@ -888,13 +888,11 @@ static void water_wpe_process_identifier_received(
     GVariant *parameters =
         reply ? webkit_user_message_get_parameters(reply) : NULL;
     if (parameters &&
-        g_variant_is_of_type(parameters, G_VARIANT_TYPE_UINT64)) {
-        char *identifier = g_strdup_printf(
-            "%" G_GUINT64_FORMAT,
-            g_variant_get_uint64(parameters));
+        g_variant_is_of_type(parameters, G_VARIANT_TYPE_STRING) &&
+        g_uuid_string_is_valid(g_variant_get_string(parameters, NULL))) {
+        const char *identifier = g_variant_get_string(parameters, NULL);
         request->callback(
             request->user_data, true, identifier, strlen(identifier));
-        g_free(identifier);
     } else {
         const char *message =
             error ? error->message : "WPE web process returned no identifier";

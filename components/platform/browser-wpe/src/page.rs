@@ -476,6 +476,8 @@ impl WpePage {
 
     /// Returns the identifier of the `WebProcess` currently serving this page.
     ///
+    /// This opaque UUID identifies a process lifetime, not a sandbox-local PID.
+    ///
     /// # Errors
     ///
     /// Returns an error if the native process query fails or returns an invalid
@@ -488,23 +490,19 @@ impl WpePage {
         clippy::future_not_send,
         reason = "WPE WebKit pages and their callbacks are confined to the UI thread"
     )]
-    pub async fn web_process_identifier(&self) -> Result<u64, String> {
-        let identifier = self
-            .string_result(|callback, context| {
-                // SAFETY: bridge ABI call on the page this type owns; see the module safety
-                // note.
-                unsafe {
-                    (self.inner.state.api.api.page_get_web_process_identifier)(
-                        self.inner.raw.as_ptr(),
-                        callback,
-                        context,
-                    );
-                }
-            })
-            .await?;
-        identifier
-            .parse()
-            .map_err(|error| format!("WPE returned an invalid process identifier: {error}"))
+    pub async fn web_process_identifier(&self) -> Result<String, String> {
+        self.string_result(|callback, context| {
+            // SAFETY: bridge ABI call on the page this type owns; see the module safety
+            // note.
+            unsafe {
+                (self.inner.state.api.api.page_get_web_process_identifier)(
+                    self.inner.raw.as_ptr(),
+                    callback,
+                    context,
+                );
+            }
+        })
+        .await
     }
 
     /// Registers a JavaScript message handler.
