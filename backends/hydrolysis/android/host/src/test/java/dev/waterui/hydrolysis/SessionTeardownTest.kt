@@ -184,7 +184,7 @@ class SessionTeardownTest {
     @Test
     fun aFocusedPlatformViewReleasedByTheDeferredTeardownReachesNoFrame() {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
-        val session = HydrolysisSession(activity)
+        val session = HydrolysisSession(activity, onCloseRequested = { activity.finish() })
         val host = RecordingHostView(activity, session)
         activity.setContentView(host)
         val looper = shadowOf(Looper.getMainLooper())
