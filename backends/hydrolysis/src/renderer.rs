@@ -799,7 +799,7 @@ impl SemanticCore {
     /// measurement reads advances — so each cached layout that measured text
     /// is laid out again — and the window relayouts and repaints.
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
-    pub(crate) fn fonts_changed(&mut self) {
+    pub(crate) fn fonts_changed(&self) {
         self.state.text.fonts_changed();
         self.state.font_revision.with_mut(|revision| *revision += 1);
         self.root.mark_layout();

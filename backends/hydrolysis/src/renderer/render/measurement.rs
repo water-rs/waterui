@@ -562,10 +562,6 @@ impl HydrolysisRenderer {
     }
 
     #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
-    #[expect(
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
@@ -580,10 +576,6 @@ impl HydrolysisRenderer {
         state.measuring_text().shape(&input, max_width)
     }
 
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
