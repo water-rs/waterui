@@ -1302,7 +1302,7 @@ mod tests {
             std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
 
             let project = Project::open(
-                &crate::toolchain::Host::current(),
+                &crate::toolchain::testing::real_toolchain_host(tempdir.path()),
                 &root,
                 ManagedBackends::NONE,
             )

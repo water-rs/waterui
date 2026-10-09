@@ -264,6 +264,9 @@ async fn configure_preview_module_build(
     )
     .await
     .wrap_err("Failed to open the preview support project")?;
+    // The capability feature probe below resolves the support project's own
+    // generated FFI manifest — render it before anything reads it.
+    support_project.scaffold_ffi_companion().await?;
     let support_target_dir = support_project
         .water_target_dir(RustLinkage::SharedRuntime)
         .await?;
@@ -275,14 +278,22 @@ async fn configure_preview_module_build(
         ))
         .with_target_dir(support_target_dir);
     let browser_runtime = support_project
-        .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
+        .browser_runtime_plan(
+            target,
+            crate::platform::TargetBackend::Apple,
+            &target.triple(),
+        )
         .await?;
     // The deployment-target env the module once carried explicitly now
     // comes from the triple inside `cargo_build_output`, so a module and
     // the support app it loads into cannot drift on it.
     Ok(rust_build.with_features(
-        crate::apple::platform::apple_dependency_features(&support_project, browser_runtime)
-            .await?,
+        crate::apple::platform::apple_dependency_features(
+            &support_project,
+            browser_runtime,
+            &target.triple(),
+        )
+        .await?,
     ))
 }
 
@@ -745,6 +756,21 @@ const fn preview_target_platform(platform: PreviewPlatform) -> TargetPlatform {
         PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
         PreviewPlatform::Ios => TargetPlatform::IOS,
     }
+}
+
+/// Every triple the preview support app and its module workspace can build
+/// for — one per [`PreviewPlatform`], the serving set of the support
+/// manifest's shared `[profile]` overrides and the workspace root that
+/// carries them.
+fn preview_targets() -> Vec<target_lexicon::Triple> {
+    [
+        PreviewPlatform::Macos,
+        PreviewPlatform::IosSimulator,
+        PreviewPlatform::Ios,
+    ]
+    .iter()
+    .map(|platform| preview_target_platform(*platform).triple())
+    .collect()
 }
 
 async fn open_preview_support_project(
@@ -1442,7 +1468,11 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             &workspace_root,
             patches,
             Some(project.root()),
-            Some(&project.project_packages(&framework).await?),
+            Some(
+                &project
+                    .project_packages(framework, &preview_targets())
+                    .await?,
+            ),
         )
         .await?;
     }
@@ -1766,7 +1796,9 @@ async fn resolve_preview_metadata(
         .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
-    let project_packages = project.project_packages(&framework).await?;
+    let project_packages = project
+        .project_packages(framework, &preview_targets())
+        .await?;
     let metadata_start = Instant::now();
     let abi_feature = PreviewLinkMode::for_platform(platform)
         .abi_feature
@@ -1786,7 +1818,8 @@ async fn resolve_preview_metadata(
     );
     Ok(ResolvedPreviewMetadata {
         metadata,
-        framework,
+        // The metadata outlives the project opened above, so it owns a copy.
+        framework: framework.clone(),
         app_crate_name,
         app_path,
         project_packages,

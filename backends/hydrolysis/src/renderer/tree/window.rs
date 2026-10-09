@@ -336,7 +336,7 @@ impl SemanticCore {
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
         self.next_gesture_group_id = 0;
-        self.animation_controller.begin_rebuild_frame();
+        self.begin_animation_rebuild();
         self.lazy.begin_rebuild_frame();
         self.navigation.begin_rebuild_frame();
         #[cfg(feature = "accessibility")]
@@ -352,8 +352,7 @@ impl SemanticCore {
     fn finish_semantic_rebuild_frame(&mut self, live_dynamics: &FxHashSet<usize>) {
         self.prune_dynamic_measurements(live_dynamics);
         self.validate_focused_text_input_after_flush();
-        self.animation_controller
-            .finish_rebuild_frame_with_inactive_slot_retention(false);
+        self.retire_unbound_animation_slots();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.relocate_dropped_focus();
@@ -380,8 +379,7 @@ impl SemanticCore {
             // The emit re-bound every live animation slot; drop the slots and
             // cached Dynamic measurements belonging to subtrees the patch
             // removed, before the frame's retained subscriptions release.
-            self.animation_controller
-                .finish_rebuild_frame_with_inactive_slot_retention(false);
+            self.retire_unbound_animation_slots();
             self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
         self.validate_focused_text_input_after_flush();
@@ -459,7 +457,7 @@ impl SemanticCore {
         self.begin_semantic_emit_frame();
         let structural_change = self.take_subview_structural_change() | tree.patch(self);
         if structural_change {
-            self.animation_controller.begin_rebuild_frame();
+            self.begin_animation_rebuild();
         }
         self.reset_semantic_scene();
         // The emit-side half of `begin_redraw_frame`: roll the per-frame
@@ -680,7 +678,7 @@ impl HydrolysisRenderer {
         // bookkeeping window).
         let structural_change = self.take_subview_structural_change() | tree.patch(self);
         if structural_change {
-            self.animation_controller.begin_rebuild_frame();
+            self.begin_animation_rebuild();
         }
         drop(update_span);
         #[cfg(feature = "frame-profile")]
@@ -737,9 +735,7 @@ impl HydrolysisRenderer {
         if structural_change {
             // The flush re-bound every live animation. Drop slots and cached
             // Dynamic measurements belonging to subtrees removed by the patch.
-            self.core
-                .animation_controller
-                .finish_rebuild_frame_with_inactive_slot_retention(false);
+            self.core.retire_unbound_animation_slots();
             self.prune_dynamic_measurements(&tree.collect_dynamic_identities());
         }
         // Drop focus or drag targets that are no longer emitted, relocate the

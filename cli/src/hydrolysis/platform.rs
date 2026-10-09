@@ -217,7 +217,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
     // helper through its own `BuiltTarget`, kept here on the application's
     // — the marked `deps/` artifact path it reports is the only spelling
     // that names this variant's helper.
-    if project.declares_cef_helper().await? {
+    if project.declares_cef_helper(&platform.triple()).await? {
         // Packaging reads the helper's marked `deps/` artifact; nothing
         // execs its shared `<profile>/<name>` uplift, so the artifact lock
         // is released once the marked link exists rather than held while
@@ -344,6 +344,10 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 ///
 /// # Errors
 /// Returns an error if packaging prerequisites are missing, assets cannot be staged, or output artifacts cannot be produced.
+#[expect(
+    clippy::too_many_lines,
+    reason = "packaging is one linear sequence of staging steps per platform; the macOS bundle already has its own function"
+)]
 pub async fn package_hydrolysis(
     project: &Project,
     platform: TargetPlatform,
@@ -384,7 +388,11 @@ pub async fn package_hydrolysis(
     let final_binary_path = &built.artifact;
     let profile_directory = built.profile_dir.as_path();
     let runtime_plan = project
-        .browser_runtime_plan(platform, crate::platform::TargetBackend::Hydrolysis)
+        .browser_runtime_plan(
+            platform,
+            crate::platform::TargetBackend::Hydrolysis,
+            &platform.triple(),
+        )
         .await?;
     let shared_libraries = if options.uses_shared_rust_runtime() {
         Some(RustDynamicLibraries::resolve(built, &platform.triple(), project).await?)
@@ -571,7 +579,7 @@ async fn package_hydrolysis_macos(
         &app_path.join("Contents"),
     )
     .await?;
-    if project.declares_cef_helper().await? {
+    if project.declares_cef_helper(&platform.triple()).await? {
         let helper_binary = cef_helper_binary(cef_helper)?;
         // The helper apps are named after the shipped executable, so they
         // derive from the packaged copy — not the tagged Cargo artifact.
@@ -1009,6 +1017,18 @@ mod tests {
         .with_project_packages(std::collections::BTreeSet::from(["demo".to_string()]))
     }
 
+    /// `ctx` with `answers` recorded for every desktop OS — the hydrolysis
+    /// manifest writes a `cfg` section per OS, so all three must answer
+    /// for a render to compute.
+    fn all_os_browser(
+        ctx: TemplateContext,
+        answers: crate::templates::BrowserAnswers,
+    ) -> TemplateContext {
+        ctx.with_browser(crate::templates::BrowserTemplateContext::desktop(
+            answers, answers, answers,
+        ))
+    }
+
     fn rendered_bin_names(ctx: &TemplateContext, package_name: &str) -> Vec<String> {
         let cargo_toml = crate::templates::hydrolysis::rendered_outputs(ctx, package_name)
             .expect("hydrolysis outputs should render")
@@ -1035,9 +1055,13 @@ mod tests {
     /// instead of at packaging time on a user's machine.
     #[test]
     fn cef_helper_lookup_name_is_a_bin_the_manifest_declares() {
-        let ctx = demo_context()
-            .with_webview_enabled(true)
-            .with_browser_engine(Some(ResolvedWebViewBackend::Cef));
+        let ctx = all_os_browser(
+            demo_context(),
+            crate::templates::BrowserAnswers {
+                webview_enabled: true,
+                engine: Some(ResolvedWebViewBackend::Cef),
+            },
+        );
         let package_name = "demo-hydrolysis-deadbeef";
         let bin_names = rendered_bin_names(&ctx, package_name);
         let helper_name = super::hydrolysis_cef_helper_name(package_name);
@@ -1095,7 +1119,7 @@ mod tests {
             .expect("fixture font");
 
             let project = Project::open(
-                &crate::toolchain::Host::current(),
+                &crate::toolchain::testing::real_toolchain_host(temporary.path()),
                 &root,
                 ManagedBackends::NONE,
             )
@@ -1170,13 +1194,17 @@ mod tests {
 
         // Chromium linked, no engine crate: the runtime plan requires CEF
         // but the manifest declares only the main binary.
-        let ctx = demo_context().with_chromium_enabled(true);
+        let ctx = all_os_browser(demo_context(), crate::templates::BrowserAnswers::default());
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
 
         // Chromium plus a non-CEF engine is the same shape.
-        let ctx = demo_context()
-            .with_chromium_enabled(true)
-            .with_browser_engine(Some(ResolvedWebViewBackend::Wpe));
+        let ctx = all_os_browser(
+            demo_context(),
+            crate::templates::BrowserAnswers {
+                webview_enabled: false,
+                engine: Some(ResolvedWebViewBackend::Wpe),
+            },
+        );
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
 
         // The predicate the build and packaging gates consult agrees with

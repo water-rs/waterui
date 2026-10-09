@@ -325,8 +325,40 @@ impl AndroidAbi {
         }
     }
 
+    /// The Rust target triple this ABI builds for — the one mapping every
+    /// ABI-to-triple question reads; [`AndroidAbi::from_triple`] is its
+    /// inverse.
+    #[must_use]
+    pub const fn triple(self) -> Triple {
+        let (architecture, environment) = match self {
+            Self::Arm64V8a => (
+                Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                Environment::Android,
+            ),
+            Self::X86_64 => (Architecture::X86_64, Environment::Android),
+            // rustc's armv7 Android target carries the `androideabi`
+            // environment (`armv7-linux-androideabi`); `android` alone names
+            // no target.
+            Self::ArmeabiV7a => (
+                Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
+                Environment::Androideabi,
+            ),
+            Self::X86 => (
+                Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
+                Environment::Android,
+            ),
+        };
+        Triple {
+            architecture,
+            vendor: Vendor::Unknown,
+            operating_system: OperatingSystem::Linux,
+            environment,
+            binary_format: BinaryFormat::Elf,
+        }
+    }
+
     /// The ABI a Rust target triple names — the inverse of
-    /// [`AndroidPlatform::triple`], so call sites holding a triple never keep
+    /// [`AndroidAbi::triple`], so call sites holding a triple never keep
     /// a second copy of the architecture mapping.
     #[must_use]
     pub const fn from_triple(triple: &Triple) -> Option<Self> {
@@ -420,6 +452,13 @@ pub const ALL_ABIS: &[AndroidAbi] = &[
     AndroidAbi::X86,
 ];
 
+/// The Rust triples the four ABIs produce — the target set a generated
+/// manifest's `cfg(target_os = "android")` table serves, resolved one
+/// `cargo tree --target` evaluation per ABI.
+pub(crate) fn android_target_triples() -> Vec<Triple> {
+    ALL_ABIS.iter().map(|abi| abi.triple()).collect()
+}
+
 impl AndroidPlatform {
     /// Returns all supported Android platforms (all architectures).
     #[must_use]
@@ -430,31 +469,7 @@ impl AndroidPlatform {
     /// Get the target triple for this Android platform.
     #[must_use]
     pub const fn triple(&self) -> Triple {
-        let (architecture, environment) = match self.abi {
-            AndroidAbi::Arm64V8a => (
-                Architecture::Aarch64(Aarch64Architecture::Aarch64),
-                Environment::Android,
-            ),
-            AndroidAbi::X86_64 => (Architecture::X86_64, Environment::Android),
-            // rustc's armv7 Android target carries the `androideabi`
-            // environment (`armv7-linux-androideabi`); `android` alone names
-            // no target.
-            AndroidAbi::ArmeabiV7a => (
-                Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
-                Environment::Androideabi,
-            ),
-            AndroidAbi::X86 => (
-                Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
-                Environment::Android,
-            ),
-        };
-        Triple {
-            architecture,
-            vendor: Vendor::Unknown,
-            operating_system: OperatingSystem::Linux,
-            environment,
-            binary_format: BinaryFormat::Elf,
-        }
+        self.abi.triple()
     }
 
     /// Build Rust library for this Android platform.
@@ -466,18 +481,59 @@ impl AndroidPlatform {
         project: &Project,
         options: BuildOptions,
     ) -> eyre::Result<BuiltTarget> {
+        Self::prepare_for_build(project).await?;
+        self.build_prepared(project, options).await
+    }
+
+    /// The shared prologue every Android Rust build needs: render the FFI
+    /// companion this build compiles, audit the permissions its graph
+    /// declares, and stage the font assets its crates' `build.rs` scripts
+    /// read. Nothing in it depends on the ABI, so a build over several
+    /// ABIs runs it once and then [`build_prepared`](Self::build_prepared)
+    /// per ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the companion scaffold, the permission audit,
+    /// or the font resolution fails.
+    pub async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
+        // The ffi companion is the crate this builds — render it for the
+        // graph its `cfg` tables serve before anything reads its manifest.
+        project.scaffold_ffi_companion().await?;
+
+        // Android is where a missing declaration actually breaks things, so
+        // surface anything a dependency needs that the app has not enabled.
+        // The audit resolves the ffi companion's graph — the crate the
+        // Android build compiles — so it runs on the render this build made.
+        let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
+        let required =
+            crate::assets::scan_required_permissions(project.host(), &ffi_manifest).await?;
+        crate::assets::warn_missing_permissions(project, &required, |key| {
+            key.android_permission_name().is_some()
+        });
+
+        // Resolve fonts BEFORE cargo build - this ensures icons.json is present
+        // for crates like fontawesome7 that need it during build.rs
+        let font_declarations = crate::assets::scan_fonts(project, &ffi_manifest).await?;
+        crate::assets::resolve_fonts(project.host(), font_declarations).await?;
+        Ok(())
+    }
+
+    /// `build` for a caller that already ran
+    /// [`prepare_for_build`](Self::prepare_for_build) — a multi-ABI loop
+    /// runs the prologue once, then this per ABI.
+    ///
+    /// # Errors
+    /// Returns an error if the build fails.
+    pub async fn build_prepared(
+        &self,
+        project: &Project,
+        options: BuildOptions,
+    ) -> eyre::Result<BuiltTarget> {
         // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
         // prebuilt `libstd.so` (its LOAD segments are 4 KB-aligned and
         // 16 KB-page devices reject the whole package), so every Android
         // build links the runtime in — what a packaged build already does.
         let options = options.with_static_runtime();
-        // Resolve fonts BEFORE cargo build - this ensures icons.json is present
-        // for crates like fontawesome7 that need it during build.rs
-        let font_declarations =
-            crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml"))
-                .await?;
-        let _resolved_fonts =
-            crate::assets::resolve_fonts(project.host(), font_declarations).await?;
 
         let abi = self.abi();
         let triple = self.triple();
@@ -551,6 +607,10 @@ impl AndroidPlatform {
         // an error, never a signing decision.
         let release_signing = prepared.release_signing_for(project.root(), &options)?;
 
+        // The ffi companion is the crate the staged declarations are read
+        // from — render it before the manifest is scanned.
+        project.scaffold_ffi_companion().await?;
+
         // The identifier becomes the app's Java package name in the Gradle
         // build below — reject an Android-invalid one before the SDK runs.
         let _ = project
@@ -580,7 +640,11 @@ impl AndroidPlatform {
             &project.ffi_crate_path().join("Cargo.toml"),
             &backend_path.join("app"),
             crate::assets::AndroidDependencyScope::Implementation,
-            &android_ffi_dependency_features(project).await?,
+            &android_ffi_dependency_features(
+                project,
+                &abis.iter().map(|abi| abi.triple()).collect::<Vec<_>>(),
+            )
+            .await?,
         )
         .await?;
 
@@ -771,20 +835,53 @@ async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBu
 /// # Errors
 ///
 /// Returns an error when the project's enabled capabilities cannot be resolved.
+/// `targets` is the serving set of the feature list — the ABI triples the
+/// Gradle package the caller renders embeds. The answers are read from each
+/// triple's own graph and must agree, because the Gradle classpath and the
+/// ABI `cargo build`s they forward to cannot express a per-ABI difference.
 pub(crate) async fn android_ffi_dependency_features(
     project: &Project,
+    targets: &[Triple],
 ) -> eyre::Result<Vec<String>> {
     let build_manifest = project.ffi_crate_path().join("Cargo.toml");
-    let mut features = vec!["android-jni".to_string()];
-    features.extend(
-        crate::project_model::assets::capability_ffi_features(project, &build_manifest).await?,
-    );
-    // Android has no player or map WaterUI bridges, so it draws both itself.
-    features.extend(
-        crate::project_model::assets::self_drawn_realization_features(project, &build_manifest)
-            .await?,
-    );
-    Ok(features)
+    project
+        .unanimous_graph_answer(
+            targets,
+            "the Android FFI feature set",
+            crate::project::GraphSection {
+                manifest: "the generated FFI companion manifest",
+                table: "the Android `--features` list and the Gradle classpath",
+                remedy: "the dependency graph answers differently per target, so those \
+                         consumers need a per-target answer — resolve the set for \
+                         each ABI's own serving set instead of one shared list",
+            },
+            |features: &Vec<String>| features.join(", "),
+            |project, target| {
+                let build_manifest = build_manifest.clone();
+                async move {
+                    let mut features = vec!["android-jni".to_string()];
+                    features.extend(
+                        crate::project_model::assets::capability_ffi_features(
+                            project,
+                            &build_manifest,
+                            &target,
+                        )
+                        .await?,
+                    );
+                    // Android has no player or map WaterUI bridges, so it draws both itself.
+                    features.extend(
+                        crate::project_model::assets::self_drawn_realization_features(
+                            project,
+                            &build_manifest,
+                            &target,
+                        )
+                        .await?,
+                    );
+                    Ok(features)
+                }
+            },
+        )
+        .await
 }
 
 async fn configure_android_rust_build(
@@ -797,7 +894,9 @@ async fn configure_android_rust_build(
     // Android loads the JNI shared object and nothing else, so build only that crate
     // type instead of also archiving the whole dependency graph into a staticlib.
     let mut build = RustBuild::for_project(project, project.ffi_crate_path(), triple.clone())
-        .with_features(android_ffi_dependency_features(project).await?)
+        .with_features(
+            android_ffi_dependency_features(project, std::slice::from_ref(triple)).await?,
+        )
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG);
     if let Some(sccache_path) = options.sccache_path() {

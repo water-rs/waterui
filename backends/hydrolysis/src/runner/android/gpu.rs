@@ -25,7 +25,7 @@ use ndk::native_window::NativeWindow;
 use raw_window_handle::{AndroidDisplayHandle, DisplayHandle, HasDisplayHandle, RawDisplayHandle};
 
 use crate::platform::{
-    SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
+    PresentationSurface, SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
     select_hydrolysis_surface_format,
 };
 
@@ -85,8 +85,6 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
 
 struct AndroidGpuContextInner {
     instance: wgpu::Instance,
-    /// Identity of this device creation chain for the engine pool.
-    context_id: u64,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -188,7 +186,6 @@ impl AndroidGpuContext {
         Ok(Self {
             inner: Arc::new(AndroidGpuContextInner {
                 instance,
-                context_id,
                 adapter,
                 device,
                 queue,
@@ -445,7 +442,7 @@ impl Drop for AndroidSurface {
     }
 }
 
-impl SurfaceProvider for AndroidSurface {
+impl PresentationSurface for AndroidSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         &self.gpu.inner.adapter
     }
@@ -462,6 +459,25 @@ impl SurfaceProvider for AndroidSurface {
         &self.gpu.inner.device_loss
     }
 
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+        if width == 0 || height == 0 {
+            return;
+        }
+        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
+            config.width = width;
+            config.height = height;
+            surface.configure(&self.gpu.inner.device, config);
+        }
+    }
+}
+
+impl SurfaceProvider for AndroidSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         if self.gpu.inner.device_loss.is_lost() {
             // Device loss is unrecoverable for this attachment — report it as
@@ -489,41 +505,10 @@ impl SurfaceProvider for AndroidSurface {
         self.queue().present(output);
     }
 
-    fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
     fn format(&self) -> wgpu::TextureFormat {
         self.config
             .as_ref()
             .map_or(wgpu::TextureFormat::Rgba8Unorm, |config| config.format)
-    }
-
-    fn gpu_context_id(&self) -> u64 {
-        self.gpu.inner.context_id
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        let inner = &*self.gpu.inner;
-        cherenkov_gpu::interop::SharedDevice {
-            instance: inner.instance.clone(),
-            adapter: inner.adapter.clone(),
-            device: inner.device.clone(),
-            queue: inner.queue.clone(),
-        }
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.width = width;
-        self.height = height;
-        if width == 0 || height == 0 {
-            return;
-        }
-        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
-            config.width = width;
-            config.height = height;
-            surface.configure(&self.gpu.inner.device, config);
-        }
     }
 
     fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {

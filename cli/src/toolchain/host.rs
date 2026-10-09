@@ -318,6 +318,18 @@ impl Host {
         host
     }
 
+    /// A host whose home directory is `home`: `HOME` and `USERPROFILE`
+    /// name it in the environment its children inherit, and
+    /// [`Host::home_dir`] answers it — the Water home and every other
+    /// per-user path follow.
+    #[must_use]
+    pub fn with_home(&self, home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        let mut host = self.with_env("HOME", &home).with_env("USERPROFILE", &home);
+        host.home = Some(home);
+        host
+    }
+
     /// Every environment variable on this host, in map order.
     ///
     /// For resolvers that take the whole environment at once rather than
@@ -371,8 +383,7 @@ impl Host {
     ///
     /// This is the deliberate exception to the null-stdin default of
     /// [`Host::command`] — for the tools that interact with the user's
-    /// terminal: the `create vite` framework picker, `<pm> install`,
-    /// `espflash flash --monitor`, QEMU's `-nographic` serial console, and
+    /// terminal: the `create vite` framework picker, `<pm> install`, and
     /// launchers that take the TTY over entirely. The
     /// `std` type is returned so callers that `exec` or group the child can;
     /// async callers wrap it with `smol::process::Command::from`.

@@ -494,18 +494,12 @@ impl SemanticCore {
     /// Resolves a boolean toggle signal into its animated progress and the
     /// current target value (the direction the animation is heading).
     ///
-    /// The slot keys off `owner` — the retained toggle node — not the signal:
-    /// nami derives a `Binding::mapping`'s identity from its source plus a
-    /// call-site discriminator, so two mappings minted at one call site over
-    /// one source share a `SignalIdentity` and would otherwise collapse onto
-    /// one thumb position (water-rs/waterui#2232). The `InteractionKey` the
-    /// caller registers for the same node keeps the owner `Rc` alive for as
-    /// long as the slot is rebound, so the address cannot be reused while the
-    /// slot lives.
-    pub(crate) fn resolve_toggle_progress<S>(
+    /// The slot is keyed on `owner`, the retained toggle state, never on the
+    /// signal (see [`Self::owned_scalar_key`]).
+    pub(crate) fn resolve_toggle_progress<S, T: 'static>(
         &mut self,
         signal: &S,
-        owner: &RetainedIdentity,
+        owner: &Rc<T>,
         default_animation: Animation,
     ) -> (f32, bool)
     where
@@ -514,10 +508,7 @@ impl SemanticCore {
         let (subscription, selected) = SubscribedSnapshot::new(signal);
         let now = self.frame_instant;
         let target = if selected { 1.0 } else { 0.0 };
-        let key = AnimationKey::renderer_local_scalar_with_discriminator(
-            owner.address(),
-            TOGGLE_PROGRESS_KEY,
-        );
+        let key = self.owned_scalar_key(owner, TOGGLE_PROGRESS_KEY);
         let handle = self.animation_controller.bind_scalar_target(
             key,
             target,
@@ -565,35 +556,73 @@ impl SemanticCore {
         Rc::downgrade(&cell)
     }
 
-    pub(crate) fn sample_widget_scalar_target(
+    /// The renderer-local scalar key for slot `slot` of the view retained as
+    /// `owner`.
+    ///
+    /// Every per-view slot is keyed on the view that draws it, never on the
+    /// signal that drives it: nami derives a mapped signal's identity from its
+    /// source and call site, so views whose signals come from one call site
+    /// would share a signal-keyed slot (water-rs/waterui#2232,
+    /// water-rs/waterui#2240). `owner` must be the view's retained state —
+    /// one allocation per view for the view's lifetime — and the key pins
+    /// that allocation until the slot retires (see [`AnimationOwnerPins`]).
+    pub(crate) fn owned_scalar_key<T: 'static>(
         &mut self,
-        key: AnimationKey,
+        owner: &Rc<T>,
+        slot: usize,
+    ) -> AnimationKey {
+        AnimationKey::renderer_local_scalar_with_discriminator(
+            self.animation_owner_pins.pin(owner),
+            slot,
+        )
+    }
+
+    /// Animates slot `slot` of the view retained as `owner` toward `target`
+    /// and samples it this frame.
+    pub(crate) fn sample_owned_scalar_target<T: 'static>(
+        &mut self,
+        owner: &Rc<T>,
+        slot: usize,
         target: f32,
         animation: Animation,
     ) -> f32 {
+        let key = self.owned_scalar_key(owner, slot);
         let now = self.frame_instant;
         self.animation_controller
             .bind_scalar_target(key, target, animation, now)
             .sample(now)
     }
 
-    pub(crate) fn sample_radio_indicator_state(
+    /// Samples the selection choreography of option `option` of the radio
+    /// group retained as `owner`.
+    pub(crate) fn sample_radio_indicator_state<T: 'static>(
         &mut self,
-        key: AnimationKey,
+        owner: &Rc<T>,
+        option: usize,
         selected: bool,
         motion: &RadioSelectionMotion,
     ) -> RadioIndicatorState {
+        self.animation_owner_pins.pin(owner);
+        // `waterui-backend-core` builds radio-indicator keys only from a
+        // `SignalIdentity`; the owner's allocation stands in for one, pinned
+        // like every other owner key.
+        let key = AnimationKey::radio_indicator_with_discriminator(
+            nami::SignalIdentity::from_rc(owner),
+            option,
+        );
         self.animation_controller
             .bind_radio_indicator(key, selected, motion, self.frame_instant)
     }
 
-    /// Sample a free-running repeating phase (e.g. an indeterminate progress
-    /// indicator). `node_id` is the stable identity of the owning node (its retained
-    /// `Rc` address), so the phase slot keys off node identity and survives across
-    /// frames and structural changes — unlike a positional `render_depth`, which
-    /// shifts when a sibling subtree's node count changes and would reset the phase.
-    pub(crate) fn sample_repeating_motion(&mut self, cycle: Duration, node_id: usize) -> Duration {
-        let key = AnimationKey::renderer_local_repeating(node_id);
+    /// Samples the free-running repeating phase (an indeterminate progress
+    /// indicator) of the view retained as `owner`, so the phase survives
+    /// frames and structural changes around it.
+    pub(crate) fn sample_repeating_motion<T: 'static>(
+        &mut self,
+        cycle: Duration,
+        owner: &Rc<T>,
+    ) -> Duration {
+        let key = AnimationKey::renderer_local_repeating(self.animation_owner_pins.pin(owner));
         self.animation_controller
             .bind_repeating_phase(key, cycle, self.frame_instant)
     }
