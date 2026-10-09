@@ -195,34 +195,97 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     return out;
 }
 
-// Second-order signed distance from `q` (corner-local, both components
-// > 0, in the same units as `r`) to the Lamé quarter curve
-// (q.x/r.x)^n + (q.y/r.y)^n = 1, with n >= 2. Three Newton projections
-// along the implicit gradient land a point `c` on the curve within
-// O(d²κ) of the foot point; the distance is then measured along the
-// curve normal at `c`, which is second-order accurate. Returns
-// (d, unit normal in q space, radius of curvature at c).
-fn lame_corner(q: vec2<f32>, r: vec2<f32>, n: f32) -> vec4<f32> {
-    var c = q;
-    for (var i = 0; i < 3; i++) {
-        let u = max(c / r, vec2<f32>(0.0));
-        let f = pow(u.x, n) + pow(u.y, n) - 1.0;
-        let grad = n * pow(max(u, vec2<f32>(1e-6)), vec2<f32>(n - 1.0)) / r;
-        c = max(c - f * grad / max(dot(grad, grad), 1e-12), vec2<f32>(0.0));
+// Distance evaluations `lame_corner` spends on one point. The solve
+// brackets its root, so the count bounds the cost without bounding the
+// depth it converges at.
+const LAME_EVALS: i32 = 7;
+
+// A point on the Lamé quarter curve (x/r.x)^n + (y/r.y)^n = 1 at the
+// parameter w = (y/r.y) / (x/r.x), w in [0, 1] from the x axis to the
+// diagonal of the normalised curve: c = r·(1, w)·s with
+// s = (1 + w^n)^(-1/n).
+struct LamePoint {
+    c: vec2<f32>,
+    // (r.y, r.x·w^(n-1)): the outward normal, unnormalised.
+    normal: vec2<f32>,
+    // w^(n-2).
+    wm2: f32,
+    s: f32,
+    // 1 + w^n.
+    one: f32,
+}
+
+fn lame_point(r: vec2<f32>, n: f32, w: f32) -> LamePoint {
+    // w^(n-2) is 1 at w = 0 for an ellipse (n = 2) and 0 for n > 2.
+    let wm2 = pow(max(w, 1e-30), n - 2.0);
+    let p = w * wm2;
+    let one = 1.0 + w * p;
+    let s = pow(one, -1.0 / n);
+    return LamePoint(r * vec2<f32>(1.0, w) * s, vec2<f32>(r.y, r.x * p), wm2, s, one);
+}
+
+// Exact signed distance from `q` (corner-local, both components >= 0, in
+// the units of `r`) to the Lamé quarter curve (q.x/r.x)^n + (q.y/r.y)^n = 1,
+// for an elliptical corner (n = 2) or a continuous one (r.x = r.y, n >= 2).
+// Returns (d, unit normal in q space, radius of curvature at the foot).
+//
+// The box is convex, so the tangent at every curve point c(w) supports
+// it: the signed distance g(w) = (q - c)·N̂ from q to that tangent never
+// exceeds the box's signed distance, and equals it at the foot point,
+// where F(w) = (q - c)·T vanishes (T the tangent). Folding the quarter
+// at w = 1 puts the foot in [0, 1] with F(0) >= 0 >= F(1): an ellipse
+// quarter runs between two vertices, and a continuous corner is
+// symmetric about its diagonal with a vertex there, so the half that
+// holds q's foot has monotone curvature and F changes sign on it once.
+// Bracketed Newton converges to that root from any depth: a step that
+// stays in the bracket towards a falling root is taken, anything else
+// bisects. The result is the largest tangent distance among the
+// iterates and the two ends, which covers a foot at either end exactly.
+fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
+    let k = exp2(-1.0 / n);
+    let swap = dot(q_in - r_in * k, vec2<f32>(-r_in.x, r_in.y)) > 0.0;
+    let q = select(q_in, q_in.yx, swap);
+    let r = select(r_in, r_in.yx, swap);
+    // The w = 0 end: the tangent x = r.x. Curvature from the implicit
+    // form, κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
+    var best = vec4<f32>(q.x - r.x, 1.0, 0.0, select(0.0, r.x / (r.y * r.y), n <= 2.0));
+    // The w = 1 end.
+    let len1 = length(r);
+    let normal1 = r.yx / len1;
+    let g1 = dot(q - r * k, normal1);
+    if g1 > best.x {
+        best = vec4<f32>(g1, normal1, 2.0 * (n - 1.0) * r.x * r.y / (k * len1 * len1 * len1));
     }
-    let u = max(c / r, vec2<f32>(1e-6));
-    let g1 = n * pow(u, vec2<f32>(n - 1.0)) / r;           // f_x, f_y
-    let g2 = n * (n - 1.0) * pow(u, vec2<f32>(n - 2.0)) / (r * r); // f_xx, f_yy
-    let len = max(length(g1), 1e-12);
-    let normal = g1 / len;
-    let d = dot(q - c, normal);
-    // Implicit-curve curvature with f_xy = 0: (f_xx f_y² + f_yy f_x²)/|∇f|³.
-    let kappa = (g2.x * g1.y * g1.y + g2.y * g1.x * g1.x) / (len * len * len);
-    return vec4<f32>(d, normal, 1.0 / max(kappa, 1e-6));
+    var lo = 0.0;
+    var hi = 1.0;
+    var w = 0.5;
+    for (var i = 0; i < LAME_EVALS; i++) {
+        let pt = lame_point(r, n, w);
+        let len = length(pt.normal);
+        let normal = pt.normal / len;
+        let qc = q - pt.c;
+        let g = dot(qc, normal);
+        if g > best.x {
+            let p = pt.normal.y / r.x;
+            let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
+            best = vec4<f32>(g, normal, kappa);
+        }
+        let t = vec2<f32>(-pt.normal.y, pt.normal.x);
+        let f = dot(qc, t);
+        let df = -pt.s / pt.one * dot(t, t) - qc.x * r.x * (n - 1.0) * pt.wm2;
+        if f > 0.0 {
+            lo = w;
+        } else {
+            hi = w;
+        }
+        let step = w - f / df;
+        w = select(0.5 * (lo + hi), step, df < 0.0 && step >= lo && step <= hi);
+    }
+    return vec4<f32>(best.x, select(best.yz, best.zy, swap), 1.0 / max(best.w, 1e-6));
 }
 
 // Distance and differential geometry evaluated at the same local point.
-// In particular, a Lamé corner needs only one Newton projection.
+// In particular, a Lamé corner needs only one foot-point solve.
 struct DistanceSample {
     distance: f32,
     gradient: vec4<f32>,
@@ -251,8 +314,8 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
         return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
     }
     let q = a + vec2<f32>(rx, ry);
-    if q.x > 0.0 && q.y > 0.0 {
-        if abs(s.exponent - 2.0) < 1e-4 && abs(s.aspect - 1.0) < 1e-4 {
+    if abs(s.exponent - 2.0) < 1e-4 && abs(s.aspect - 1.0) < 1e-4 {
+        if q.x > 0.0 && q.y > 0.0 {
             let u = q / vec2<f32>(rx, ry);
             let len = length(u);
             let grad = length(u / vec2<f32>(rx, ry)) / max(len, 1e-6);
@@ -261,9 +324,13 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
             let normal = v / max(length(v), 1e-12);
             return DistanceSample(d, vec4<f32>(sgn * normal, rx, 0.0));
         }
+    } else if q.x >= 0.0 && q.y >= 0.0 {
+        // A Lamé corner owns the lines through its centre too: on an
+        // ellipse's major axis, a point deeper than the vertex's radius
+        // of curvature is nearest to the curve on either side of the
+        // axis, not to the vertex the straight-edge distance measures.
         // Coverage replay knows the common ellipse exponent exactly. Give
-        // compilation a constant argument without changing the solver's
-        // projections, clamps, normal, or curvature calculation.
+        // compilation a constant argument without changing the solve.
         var l: vec4<f32>;
         if specialize_quadratic && s.exponent == 2.0 {
             l = lame_corner(q, vec2<f32>(rx, ry), 2.0);

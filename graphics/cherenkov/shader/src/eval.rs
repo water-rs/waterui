@@ -27,14 +27,17 @@ pub enum Value {
     Int(i64),
     /// A boolean.
     Bool(bool),
+    /// A boolean vector, the result of a component-wise comparison.
+    Bools(Vec<bool>),
     /// A struct, its members in order.
     Struct(Vec<Self>),
     /// A texture registered with [`Eval::texture`].
     Texture(usize),
     /// A sampler with its filter mode.
     Sampler(SamplerFilter),
-    /// A pointer to a local variable.
-    Pointer(Handle<LocalVariable>),
+    /// A pointer into a local variable: the variable, then the member or
+    /// component index taken at each level below it.
+    Pointer(Handle<LocalVariable>, Vec<u32>),
 }
 
 impl Value {
@@ -55,6 +58,40 @@ impl Value {
             Self::Float(value) => vec![*value],
             Self::Vector(values) => values.clone(),
             other => panic!("not numeric: {other:?}"),
+        }
+    }
+
+    /// The member or component at `path` below this value.
+    fn at(&self, path: &[u32]) -> Self {
+        let Some((&index, rest)) = path.split_first() else {
+            return self.clone();
+        };
+        match self {
+            Self::Vector(values) => {
+                assert!(rest.is_empty(), "a vector component has no members");
+                Self::Float(values[index as usize])
+            }
+            Self::Struct(fields) => fields[index as usize].at(rest),
+            other => panic!("cannot index {other:?}"),
+        }
+    }
+
+    /// Replaces the member or component at `path` below this value.
+    fn set(&mut self, path: &[u32], value: Self) {
+        let Some((&index, rest)) = path.split_first() else {
+            *self = value;
+            return;
+        };
+        match self {
+            Self::Vector(values) => {
+                assert!(rest.is_empty(), "a vector component has no members");
+                let Self::Float(component) = value else {
+                    panic!("store of {value:?} into a vector component");
+                };
+                values[index as usize] = component;
+            }
+            Self::Struct(fields) => fields[index as usize].set(rest, value),
+            other => panic!("cannot index {other:?}"),
         }
     }
 }
@@ -167,6 +204,15 @@ pub struct Eval<'m> {
     textures: Vec<Texture<'m>>,
 }
 
+/// How a block finished: by running to its end, by leaving the innermost
+/// loop or its iteration, or by returning from the function.
+enum Flow {
+    Next,
+    Break,
+    Continue,
+    Return(Option<Value>),
+}
+
 struct Frame<'f> {
     function: &'f Function,
     args: Vec<Value>,
@@ -236,24 +282,28 @@ impl<'m> Eval<'m> {
             );
             frame.locals.insert(handle, value);
         }
-        self.block(&function.body, &mut frame)
-            .expect("the function returns a value")
+        match self.block(&function.body, &mut frame) {
+            Flow::Return(Some(value)) => value,
+            _ => panic!("the function returns no value"),
+        }
     }
 
-    fn block(&self, block: &Block, frame: &mut Frame<'_>) -> Option<Value> {
+    fn block(&self, block: &Block, frame: &mut Frame<'_>) -> Flow {
         for statement in block {
             match statement {
                 Statement::Emit(range) => {
                     for handle in range.clone() {
+                        // A loop emits the same expressions every
+                        // iteration: drop the previous iteration's value.
+                        frame.values.remove(&handle);
                         let value = self.expression(&frame.function.expressions, handle, frame);
                         frame.values.insert(handle, value);
                     }
                 }
-                Statement::Block(inner) => {
-                    if let Some(value) = self.block(inner, frame) {
-                        return Some(value);
-                    }
-                }
+                Statement::Block(inner) => match self.block(inner, frame) {
+                    Flow::Next => {}
+                    flow => return flow,
+                },
                 Statement::If {
                     condition,
                     accept,
@@ -265,18 +315,50 @@ impl<'m> Eval<'m> {
                             other => panic!("condition is {other:?}"),
                         };
                     let branch = if taken { accept } else { reject };
-                    if let Some(value) = self.block(branch, frame) {
-                        return Some(value);
+                    match self.block(branch, frame) {
+                        Flow::Next => {}
+                        flow => return flow,
                     }
                 }
+                Statement::Loop {
+                    body,
+                    continuing,
+                    break_if,
+                } => loop {
+                    match self.block(body, frame) {
+                        Flow::Next | Flow::Continue => {}
+                        Flow::Break => break,
+                        Flow::Return(value) => return Flow::Return(value),
+                    }
+                    match self.block(continuing, frame) {
+                        Flow::Next => {}
+                        Flow::Break => break,
+                        Flow::Continue | Flow::Return(_) => {
+                            panic!("a loop's continuing block only falls through or breaks")
+                        }
+                    }
+                    if let Some(condition) = break_if {
+                        match self.expression(&frame.function.expressions, *condition, frame) {
+                            Value::Bool(true) => break,
+                            Value::Bool(false) => {}
+                            other => panic!("break-if condition is {other:?}"),
+                        }
+                    }
+                },
+                Statement::Break => return Flow::Break,
+                Statement::Continue => return Flow::Continue,
                 Statement::Store { pointer, value } => {
-                    let Value::Pointer(local) =
+                    let Value::Pointer(local, path) =
                         self.expression(&frame.function.expressions, *pointer, frame)
                     else {
                         panic!("store through a non-local pointer");
                     };
                     let value = self.expression(&frame.function.expressions, *value, frame);
-                    frame.locals.insert(local, value);
+                    frame
+                        .locals
+                        .get_mut(&local)
+                        .expect("locals are initialised on entry")
+                        .set(&path, value);
                 }
                 Statement::Call {
                     function,
@@ -295,13 +377,16 @@ impl<'m> Eval<'m> {
                     }
                 }
                 Statement::Return { value } => {
-                    return value
-                        .map(|value| self.expression(&frame.function.expressions, value, frame));
+                    return Flow::Return(
+                        value.map(|value| {
+                            self.expression(&frame.function.expressions, value, frame)
+                        }),
+                    );
                 }
                 other => panic!("the evaluator does not support {other:?}"),
             }
         }
-        None
+        Flow::Next
     }
 
     fn global(&self, handle: Handle<Expression>) -> Value {
@@ -373,9 +458,11 @@ impl<'m> Eval<'m> {
                 }
             }
             Expression::AccessIndex { base, index } => match sub(base, frame) {
-                Value::Vector(values) => Value::Float(values[index as usize]),
-                Value::Struct(fields) => fields[index as usize].clone(),
-                other => panic!("cannot index {other:?}"),
+                Value::Pointer(local, mut path) => {
+                    path.push(index);
+                    Value::Pointer(local, path)
+                }
+                value => value.at(&[index]),
             },
             Expression::Splat { size, value } => {
                 let Value::Float(value) = sub(value, frame) else {
@@ -397,12 +484,12 @@ impl<'m> Eval<'m> {
                 )
             }
             Expression::FunctionArgument(index) => frame.args[index as usize].clone(),
-            Expression::LocalVariable(local) => Value::Pointer(local),
+            Expression::LocalVariable(local) => Value::Pointer(local, Vec::new()),
             Expression::Load { pointer } => {
-                let Value::Pointer(local) = sub(pointer, frame) else {
+                let Value::Pointer(local, path) = sub(pointer, frame) else {
                     panic!("load through a non-local pointer");
                 };
-                frame.locals[&local].clone()
+                frame.locals[&local].at(&path)
             }
             Expression::ImageSample {
                 image,
@@ -485,6 +572,17 @@ impl<'m> Eval<'m> {
             } => match sub(condition, frame) {
                 Value::Bool(true) => sub(accept, frame),
                 Value::Bool(false) => sub(reject, frame),
+                Value::Bools(lanes) => {
+                    let accept = sub(accept, frame).components();
+                    let reject = sub(reject, frame).components();
+                    Value::Vector(
+                        lanes
+                            .iter()
+                            .zip(accept.iter().zip(&reject))
+                            .map(|(&lane, (&yes, &no))| if lane { yes } else { no })
+                            .collect(),
+                    )
+                }
                 other => panic!("select on {other:?}"),
             },
             Expression::Math {
@@ -553,14 +651,62 @@ fn zip(left: &Value, right: &Value, combine: impl Fn(f32, f32) -> f32) -> Value 
 }
 
 fn binary(op: BinaryOperator, left: &Value, right: &Value) -> Value {
+    if let (Value::Int(lhs), Value::Int(rhs)) = (left, right) {
+        return integer(op, *lhs, *rhs);
+    }
+    if let (Value::Bool(lhs), Value::Bool(rhs)) = (left, right) {
+        return match op {
+            BinaryOperator::LogicalAnd | BinaryOperator::And => Value::Bool(*lhs && *rhs),
+            BinaryOperator::LogicalOr | BinaryOperator::InclusiveOr => Value::Bool(*lhs || *rhs),
+            BinaryOperator::Equal => Value::Bool(lhs == rhs),
+            BinaryOperator::NotEqual => Value::Bool(lhs != rhs),
+            other => panic!("the evaluator does not support {other:?} on booleans"),
+        };
+    }
     match op {
         BinaryOperator::Add => zip(left, right, |lhs, rhs| lhs + rhs),
         BinaryOperator::Subtract => zip(left, right, |lhs, rhs| lhs - rhs),
         BinaryOperator::Multiply => zip(left, right, |lhs, rhs| lhs * rhs),
         BinaryOperator::Divide => zip(left, right, |lhs, rhs| lhs / rhs),
-        BinaryOperator::Less => Value::Bool(left.components()[0] < right.components()[0]),
-        BinaryOperator::Greater => Value::Bool(left.components()[0] > right.components()[0]),
+        #[expect(clippy::float_cmp, reason = "WGSL `==` compares exactly")]
+        BinaryOperator::Equal => compare(left, right, |lhs, rhs| lhs == rhs),
+        #[expect(clippy::float_cmp, reason = "WGSL `!=` compares exactly")]
+        BinaryOperator::NotEqual => compare(left, right, |lhs, rhs| lhs != rhs),
+        BinaryOperator::Less => compare(left, right, |lhs, rhs| lhs < rhs),
+        BinaryOperator::LessEqual => compare(left, right, |lhs, rhs| lhs <= rhs),
+        BinaryOperator::Greater => compare(left, right, |lhs, rhs| lhs > rhs),
+        BinaryOperator::GreaterEqual => compare(left, right, |lhs, rhs| lhs >= rhs),
         other => panic!("the evaluator does not support {other:?}"),
+    }
+}
+
+/// A component-wise float comparison: a boolean for scalars, a boolean
+/// vector otherwise.
+fn compare(left: &Value, right: &Value, test: impl Fn(f32, f32) -> bool) -> Value {
+    let lanes = zip(
+        left,
+        right,
+        |lhs, rhs| if test(lhs, rhs) { 1.0 } else { 0.0 },
+    );
+    match lanes {
+        Value::Float(lane) => Value::Bool(lane != 0.0),
+        lanes => Value::Bools(lanes.components().iter().map(|&lane| lane != 0.0).collect()),
+    }
+}
+
+/// An operator on two integer scalars, such as a loop counter.
+fn integer(op: BinaryOperator, lhs: i64, rhs: i64) -> Value {
+    match op {
+        BinaryOperator::Add => Value::Int(lhs + rhs),
+        BinaryOperator::Subtract => Value::Int(lhs - rhs),
+        BinaryOperator::Multiply => Value::Int(lhs * rhs),
+        BinaryOperator::Equal => Value::Bool(lhs == rhs),
+        BinaryOperator::NotEqual => Value::Bool(lhs != rhs),
+        BinaryOperator::Less => Value::Bool(lhs < rhs),
+        BinaryOperator::LessEqual => Value::Bool(lhs <= rhs),
+        BinaryOperator::Greater => Value::Bool(lhs > rhs),
+        BinaryOperator::GreaterEqual => Value::Bool(lhs >= rhs),
+        other => panic!("the evaluator does not support {other:?} on integers"),
     }
 }
 
@@ -590,6 +736,14 @@ fn math(fun: MathFunction, first: &Value, second: Option<&Value>, third: Option<
             let scaled = zip(&difference, weight, |delta, amount| delta * amount);
             zip(first, &scaled, |from, step| from + step)
         }
+        MathFunction::Length => Value::Float(
+            first
+                .components()
+                .iter()
+                .map(|component| component * component)
+                .sum::<f32>()
+                .sqrt(),
+        ),
         MathFunction::Dot => {
             let products = zip(first, second.expect("dot takes two"), |lhs, rhs| lhs * rhs);
             Value::Float(products.components().iter().sum())

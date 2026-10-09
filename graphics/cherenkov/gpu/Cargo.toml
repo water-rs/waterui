@@ -102,6 +102,8 @@ libc = "0.2"
 [dev-dependencies]
 toml.workspace = true
 cherenkov-oracle = { path = "../oracle" }
+# `tests/corner_distance.rs` runs `shared.wgsl` functions on the CPU.
+cherenkov-shader = { path = "../shader", features = ["eval"] }
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 cherenkov-scene = { path = "../scene" }
 
