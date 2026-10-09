@@ -17,6 +17,7 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 const JS = new URL("../../src/js/", import.meta.url).pathname;
 const source = (name) => readFileSync(JS + name, "utf8");
@@ -235,6 +236,83 @@ describe("replies that arrive after a navigation", () => {
     // Sanity: the ids really are drawn from different ranges.
     expect(second.sent[0].id).not.toBe(staleId);
     void firstCall;
+  });
+});
+
+describe("WPE isolated transport", () => {
+  const transport = readFileSync(
+    new URL("../../../browser-wpe/src/transport.js", import.meta.url),
+    "utf8",
+  );
+
+  function loadWpePage() {
+    const context = vm.createContext({ atob: globalThis.atob, btoa: globalThis.btoa });
+    vm.runInContext(
+      `${source("bridge.js")}
+       globalThis.__wateruiNativeSend = function () {
+         return new Promise(function (resolve, reject) {
+           globalThis.__reply = { resolve: resolve, reject: reject };
+         });
+       };
+       ${transport}`,
+      context,
+    );
+    return context;
+  }
+
+  test("settles JSON and binary replies in the sending document", async () => {
+    const page = loadWpePage();
+    const json = vm.runInContext(`waterui.invoke("json")`, page);
+    page.__reply.resolve(JSON.stringify({ ok: true, payload: { json: { answer: 42 } } }));
+    await expect(json).resolves.toEqual({ answer: 42 });
+
+    const bytes = vm.runInContext(`waterui.invoke("bytes")`, page);
+    page.__reply.resolve(JSON.stringify({ ok: true, payload: { b64: "AAEC" } }));
+    await expect(bytes).resolves.toEqual(new Uint8Array([0, 1, 2]));
+  });
+
+  test("rejects handler failures delivered through the native promise", async () => {
+    const page = loadWpePage();
+    const reply = vm.runInContext(`waterui.invoke("failure")`, page);
+    page.__reply.reject("handler failed");
+    await expect(reply).rejects.toThrow("handler failed");
+  });
+
+  test("captures the resolver for both outcomes before a pending reply", async () => {
+    const page = loadWpePage();
+    const fulfilled = vm.runInContext(`waterui.invoke("fulfilled")`, page);
+    const fulfilledReply = page.__reply;
+    const rejected = vm.runInContext(`waterui.invoke("rejected")`, page);
+    const rejectedReply = page.__reply;
+    const replacementCalls = [];
+    const originalResolve = page.__wateruiResolve;
+    page.__wateruiResolve = (...args) => {
+      replacementCalls.push(args);
+      return originalResolve(...args);
+    };
+    const fulfilledResult = fulfilled.then(
+      (value) => ({ status: "resolved", value }),
+      (error) => ({ status: "rejected", message: String(error) }),
+    );
+    const rejectedResult = rejected.then(
+      (value) => ({ status: "resolved", value }),
+      (error) => ({ status: "rejected", message: String(error) }),
+    );
+
+    fulfilledReply.resolve(
+      JSON.stringify({ ok: true, payload: { json: "original resolver" } }),
+    );
+    rejectedReply.reject("original rejection");
+
+    expect(await fulfilledResult).toEqual({
+      status: "resolved",
+      value: "original resolver",
+    });
+    expect(await rejectedResult).toEqual({
+      status: "rejected",
+      message: "Error: original rejection",
+    });
+    expect(replacementCalls).toHaveLength(0);
   });
 });
 

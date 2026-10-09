@@ -12788,6 +12788,7 @@ dependencies = [
  "serde_json",
  "suiteki",
  "tracing",
+ "tracing-subscriber",
  "waterui-core",
  "waterui-graphics",
  "waterui-url",
