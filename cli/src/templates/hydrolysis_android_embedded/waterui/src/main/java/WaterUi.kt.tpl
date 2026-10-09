@@ -19,19 +19,22 @@ object WaterUi {
     /** The `System.loadLibrary` name of the app's Hydrolysis cdylib. */
     const val NATIVE_LIBRARY: String = "{{ ctx.hydrolysis_android_embedded().app.native_library_name }}"
 
-    /** Mounts the library's app as a View owned by [activity]. */
+    /**
+     * Mounts the library's app as a View owned by [activity]. The app's
+     * close requests reach [onCloseRequested] while the view is attached.
+     */
     fun createView(
         activity: ComponentActivity,
-        onCloseRequested: () -> Unit,
         key: String = NATIVE_LIBRARY,
+        onCloseRequested: () -> Unit,
     ): View =
         createView(
             activity,
             activity,
             activity,
             activity.onBackPressedDispatcher,
-            onCloseRequested,
             key,
+            onCloseRequested,
         )
 
     /**
@@ -44,18 +47,18 @@ object WaterUi {
         lifecycleOwner: LifecycleOwner,
         viewModelStoreOwner: ViewModelStoreOwner,
         onBackPressedDispatcher: OnBackPressedDispatcher,
-        onCloseRequested: () -> Unit,
         key: String = NATIVE_LIBRARY,
+        onCloseRequested: () -> Unit,
     ): View = HydrolysisEmbedding.createView(
         context,
         lifecycleOwner,
         viewModelStoreOwner,
         onBackPressedDispatcher,
         NATIVE_LIBRARY,
-        onCloseRequested,
         key = key,
         createContentView = { session ->
             {% include "partials/hydrolysis_android_content_view.kt.tpl" %}
         },
+        onCloseRequested = onCloseRequested,
     )
 }

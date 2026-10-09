@@ -40,9 +40,9 @@ abstract class HydrolysisActivity : ComponentActivity() {
                 this,
                 onBackPressedDispatcher,
                 nativeLibraryName,
-                onCloseRequested = ::finish,
-                createContentView = ::createContentView,
                 logLevel = intent.getStringExtra(LOG_LEVEL_EXTRA),
+                createContentView = ::createContentView,
+                onCloseRequested = ::finish,
             ),
         )
     }

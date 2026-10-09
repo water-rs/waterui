@@ -19,7 +19,7 @@ import androidx.lifecycle.findViewTreeLifecycleOwner
  */
 class HydrolysisSession internal constructor(
     context: Context,
-    internal var onCloseRequested: () -> Unit,
+    private val onCloseRequested: () -> Unit,
 ) {
     /**
      * The opaque native pointer, owned on the UI thread only. It is never

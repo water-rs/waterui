@@ -266,35 +266,73 @@ class SessionTeardownTest {
     }
 
     @Test
-    fun aCloseBetweenMountsKeepsItsHandlerAndTheNextMountReplacesIt() {
+    fun aCloseBetweenMountsWaitsForTheNextMount() {
         val activity = Robolectric.buildActivity(ClosingActivity::class.java).setup().get()
         lateinit var session: HydrolysisSession
         var firstCloses = 0
         var nextCloses = 0
         fun mount(onClose: () -> Unit): View = HydrolysisEmbedding.createView(
             activity, activity, activity, activity.onBackPressedDispatcher, "waterui_app",
-            onCloseRequested = onClose,
             createContentView = {
                 session = it
                 HydrolysisHostView(activity, it)
             },
+            onCloseRequested = onClose,
         )
         val first = mount { firstCloses++ }
         activity.setContentView(first)
         (first.parent as ViewGroup).removeView(first)
+
+        // The detached mount's handler is gone: the close waits.
         session.onNativeCloseRequested()
         shadowOf(Looper.getMainLooper()).idle()
-        assertEquals(1, firstCloses)
+        assertEquals(0, firstCloses)
+
         val retained = session
         val next = mount { nextCloses++ }
         assertTrue(retained === session)
+        assertEquals(0, nextCloses)
+        // The next mount's view attaching delivers the waiting close once.
+        activity.setContentView(next)
+        assertEquals(1, nextCloses)
+
         session.onNativeCloseRequested()
         shadowOf(Looper.getMainLooper()).idle()
-        assertEquals(1, firstCloses)
-        assertEquals(1, nextCloses)
-        activity.setContentView(next)
+        assertEquals(0, firstCloses)
+        assertEquals(2, nextCloses)
         activity.viewModelStore.clear()
         (next.parent as ViewGroup).removeView(next)
+    }
+
+    @Test
+    fun aRecreatedActivityKeepsItsSessionAndRebindsIt() {
+        val controller = Robolectric.buildActivity(RecordingHydrolysisActivity::class.java).setup()
+        val first = controller.get()
+        val session = first.sessions.single()
+        session.onNativeBackAvailable(true)
+        assertTrue(first.onBackPressedDispatcher.hasEnabledCallbacks())
+
+        controller.recreate()
+        val recreated = controller.get()
+
+        assertTrue(recreated !== first)
+        // The ViewModel carried the one live session across the change.
+        assertTrue(recreated.sessions.single() === session)
+        assertFalse(ShadowNativeBridge.destroyed)
+        // The new activity's host view is the bound one.
+        val host = recreated.window.decorView.findViewById<ViewGroup>(android.R.id.content)
+            .getChildAt(0)
+        assertTrue(host.isAttachedToWindow)
+        assertTrue(session.hostView === host)
+        // The retained back answer re-enabled the new activity's callback,
+        // and back reaches the session through it.
+        assertTrue(recreated.onBackPressedDispatcher.hasEnabledCallbacks())
+        assertFalse(first.onBackPressedDispatcher.hasEnabledCallbacks())
+        recreated.onBackPressedDispatcher.onBackPressed()
+        assertEquals(listOf(NativeBridge.BACK_INVOKED), ShadowNativeBridge.backEvents)
+
+        controller.destroy()
+        assertTrue(ShadowNativeBridge.destroyed)
     }
 
     @Test
@@ -314,6 +352,18 @@ class SessionTeardownTest {
         /** `nativeOnFrame`'s outcome bits: more work, a deadline frame due. */
         const val WANTS_NEXT_FRAME = 1L
         const val HAS_DEADLINE = 4L
+    }
+}
+
+/** The standalone host over the shadowed library, recording its sessions. */
+class RecordingHydrolysisActivity : HydrolysisActivity() {
+    val sessions = mutableListOf<HydrolysisSession>()
+
+    override val nativeLibraryName: String = "waterui_app"
+
+    override fun createContentView(session: HydrolysisSession): View {
+        sessions += session
+        return HydrolysisHostView(this, session)
     }
 }
 
@@ -350,6 +400,9 @@ class ShadowNativeBridge {
         /** Every `nativeSetVisible` call, in order. */
         val visibilities = mutableListOf<Boolean>()
 
+        /** Every `nativeBackEvent` phase, in order. */
+        val backEvents = mutableListOf<Int>()
+
         /** Runs inside `nativeDestroySession`, as the runner's drop does. */
         var onDestroy: () -> Unit = {}
 
@@ -361,6 +414,7 @@ class ShadowNativeBridge {
             destroyed = false
             deadlineQueries = 0
             visibilities.clear()
+            backEvents.clear()
             onDestroy = {}
             onFrame = { 0L }
         }
@@ -418,6 +472,18 @@ class ShadowNativeBridge {
         fun nativeSetVisible(sessionPtr: Long, visible: Boolean) {
             assertLive(sessionPtr)
             visibilities += visible
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeBackEvent(
+            sessionPtr: Long,
+            phase: Int,
+            @Suppress("UNUSED_PARAMETER") edge: Int,
+            @Suppress("UNUSED_PARAMETER") progress: Double,
+        ) {
+            assertLive(sessionPtr)
+            backEvents += phase
         }
 
         @JvmStatic
