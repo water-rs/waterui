@@ -6,7 +6,6 @@ pub mod artifact_symbols;
 pub mod bench;
 mod browser_runtime;
 mod dependencies;
-pub mod esp32;
 pub mod gtk4;
 pub mod hydrolysis;
 pub mod mcp;

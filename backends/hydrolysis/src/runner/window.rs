@@ -94,6 +94,12 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
         mut renderer: HydrolysisRenderer,
         render_diagnostics_config: RenderDiagnosticsConfig,
     ) -> Self {
+        // The window's host wake, installed before any subscription can
+        // record a request: from here on, a `Binding::set` outside a frame
+        // — an executor drain, a platform-view callback, an accessibility
+        // action — fires it on the none→some edge and schedules the frame
+        // the request needs, by construction.
+        renderer.install_host_wake(platform.frame_wake());
         if let Some(handle) = platform.gpu_surface_redraw_handle() {
             renderer.set_host_redraw_handle(handle);
         }
@@ -188,6 +194,82 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             self.platform.request_redraw();
         }
     }
+}
+
+/// Android's frame transaction and the gate shared with its installed wake.
+/// Requests made during a transaction join its continuation; occluded requests
+/// wait for the restore frame. Winit and web retain their own scheduling rules.
+#[cfg(any(target_os = "android", test))]
+#[derive(Debug, Default)]
+pub(super) struct FrameTransaction {
+    open: Cell<bool>,
+    wake_gate: Rc<Cell<bool>>,
+}
+
+#[cfg(any(target_os = "android", test))]
+impl FrameTransaction {
+    /// Wraps the host's frame post in the gate: the returned wake posts only
+    /// while no transaction is open and the window is not occluded.
+    pub(super) fn frame_wake(&self, post: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
+        let gate = Rc::clone(&self.wake_gate);
+        Rc::new(move || {
+            if gate.get() {
+                post();
+            }
+        })
+    }
+
+    /// Re-derives the gate from the host's occlusion report; an open
+    /// transaction keeps it closed.
+    pub(super) fn sync_occlusion(&self, occluded: bool) {
+        self.wake_gate.set(!self.open.get() && !occluded);
+    }
+
+    /// Opens the transaction: requests raised until [`Self::finish`] post no
+    /// wake and count toward its continuation instead.
+    pub(super) fn begin(&self) {
+        self.open.set(true);
+        self.wake_gate.set(false);
+    }
+
+    /// Whether this transaction renders: armed work, or a redraw-only
+    /// request (a caret blink) that the render consumes so it cannot latch
+    /// the continuation awake. A window that cannot present consumes
+    /// nothing — its requests stay armed for the restore frame.
+    pub(super) fn take_render_request<P: PlatformWindow>(
+        runtime: &mut RuntimeWindow<P>,
+        surface_attached: bool,
+    ) -> bool {
+        surface_attached
+            && !runtime.is_hidden()
+            && (runtime.mode.is_pending() || runtime.renderer.take_redraw_request())
+    }
+
+    /// Closes the transaction, reopens the gate unless occluded, and returns
+    /// whether another frame is owed.
+    pub(super) fn finish(&self, occluded: bool, demand: FrameDemand) -> bool {
+        let next = wants_next_frame(occluded, demand);
+        self.open.set(false);
+        self.sync_occlusion(occluded);
+        next
+    }
+}
+
+/// Work still pending when Android closes its frame transaction.
+#[cfg(any(target_os = "android", test))]
+#[derive(Clone, Copy)]
+pub(super) struct FrameDemand {
+    pub(super) mode: FrameMode,
+    pub(super) redraw_pending: bool,
+    pub(super) signals_pending: bool,
+}
+
+/// A request raised after the pump drained the flags fired no wake while the
+/// transaction was open, so it must count toward continuation. Hidden work waits
+/// for the restore frame instead.
+#[cfg(any(target_os = "android", test))]
+const fn wants_next_frame(hidden: bool, demand: FrameDemand) -> bool {
+    !hidden && (demand.mode.is_pending() || demand.redraw_pending || demand.signals_pending)
 }
 
 /// Whether a frame transaction may report the pump's "first frame presented;

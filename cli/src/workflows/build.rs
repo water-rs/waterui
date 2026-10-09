@@ -265,7 +265,7 @@ pub struct SharedExecutable {
 
 impl SharedExecutable {
     /// An `executable` report carrying no artifact lock — the bundled
-    /// executable and ESP32 firmware paths platform packaging hands out
+    /// executable paths platform packaging hands out
     /// itself, which no same-named build can re-uplift under it.
     #[must_use]
     pub const fn unlocked(path: PathBuf) -> Self {

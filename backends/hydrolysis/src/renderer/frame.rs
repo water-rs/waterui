@@ -481,6 +481,24 @@ impl HydrolysisRenderer {
         self.program = saved;
     }
 
+    /// Runs `record` with every `.material_group()` scope enclosing `node`'s
+    /// cell in the retained tree replayed onto `material_group_scopes`,
+    /// outermost first, then restores the stack exactly. A partial descent —
+    /// a `RetainedSubview` subtree re-recorded starting at the changed node —
+    /// calls this so a member reads the same scope as under a full flush:
+    /// scope membership never depends on where a flush starts (#2268).
+    pub(crate) fn with_enclosing_material_group_scopes(
+        &mut self,
+        core: &NodeCore,
+        record: impl FnOnce(&mut Self),
+    ) {
+        let base = self.material_group_scopes.len();
+        self.material_group_scopes
+            .extend(core.cell.enclosing_material_group_scopes());
+        record(self);
+        self.material_group_scopes.truncate(base);
+    }
+
     /// Opens the named scope `key` on the recording node's program (§C):
     /// its layer groups at `alpha` under `clip`, and a placement scope with
     /// the caller's record-space `scope` delta resolves the registrations

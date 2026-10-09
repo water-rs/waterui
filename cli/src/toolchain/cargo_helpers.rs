@@ -2,7 +2,7 @@
 //!
 //! These are binaries cargo puts on `PATH` (an entry under
 //! `$CARGO_HOME/bin`), not rustup components: `cargo-nextest` for
-//! `water bench`, `espflash`/`ldproxy` for the ESP32 backend. The check probes
+//! `water bench`. The check probes
 //! `PATH` and the repair is the `cargo install`/`cargo binstall` command that
 //! produces the binary.
 

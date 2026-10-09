@@ -289,6 +289,66 @@ pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::Layer
     members.0
 }
 
+pub fn mounted_anchor_parent_children(
+    runtime: &crate::HeadlessRuntime,
+    scope: usize,
+    canvas: Option<cherenkov::LayerId>,
+    child: cherenkov::LayerId,
+) -> Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)> {
+    struct Parent {
+        scope: usize,
+        canvas: Option<cherenkov::LayerId>,
+        child: cherenkov::LayerId,
+        children: Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)>,
+    }
+    impl mount::layers::LayerVisitor for Parent {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if self.children.is_none()
+                && let Some(children) =
+                    layers.committed_anchor_parent_children(self.scope, self.canvas, self.child)
+            {
+                self.children = Some(children);
+            }
+        }
+    }
+    let window = window_mount(runtime);
+    if window.window_children().contains(&child) {
+        return Some((window.window().id(), window.window_children(), true));
+    }
+    let mut visitor = Parent {
+        scope,
+        canvas,
+        child,
+        children: None,
+    };
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut visitor);
+    visitor.children
+}
+
+pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
+    struct Inner(Vec<cherenkov::LayerId>);
+    impl mount::layers::LayerVisitor for Inner {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if let Some(inner) = layers.inner_id() {
+                self.0.push(inner);
+            }
+        }
+    }
+    let mut visitor = Inner(Vec::new());
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut visitor);
+    visitor.0
+}
+
 /// The window's mount — the test renders one window.
 pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov_gpu::Gpu> {
     &runtime

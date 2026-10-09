@@ -2405,11 +2405,11 @@ fn resolve_packages(
         }
         let package = match candidates.as_slice() {
             [package] => *package,
-            // An extracted crate the framework no longer builds never enters
-            // its lock — `waterui-dew` releases from water-rs/dew (#614) — so
-            // the scaffold's declared requirement is the resolution, the same
-            // `=<version>` the registry-source arm below produces for a crate
-            // the framework still carries.
+            // An extracted crate the framework does not build never enters
+            // its lock, so the scaffold's declared registry version is the
+            // resolution — the same `=<version>` the registry-source arm
+            // below produces for a crate the framework still carries. (A
+            // declared git pin took the branch above.)
             [] => {
                 packages.insert(
                     name.to_owned(),
@@ -2724,7 +2724,7 @@ pub(crate) mod test_fixtures {
     }
 
     /// The git-pinned scaffold packages the checkout fixture's
-    /// `[workspace.dependencies]` declares — `waterui-dew`, `waterui-gtk` and
+    /// `[workspace.dependencies]` declares — `waterui-gtk` and
     /// `waterui-winui` are git pins, so `stable` withholds them
     /// under `experimental-packages` while `dev`/`nightly` distribute the
     /// pins through `scaffold`.
@@ -2735,10 +2735,6 @@ pub(crate) mod test_fixtures {
             rev: seed.to_string().repeat(40),
         };
         BTreeMap::from([
-            (
-                "waterui-dew".to_owned(),
-                experimental("0.2.1", "https://github.com/water-rs/dew", 'b'),
-            ),
             (
                 "waterui-gtk".to_owned(),
                 experimental("0.2.0", "https://github.com/water-rs/gtk-backend", 'g'),
@@ -2769,7 +2765,7 @@ pub(crate) mod test_fixtures {
         let mut emitted =
             framework_scaffold(&manifest).expect("the checkout fixture emits its scaffold");
         let mut experimental_packages = BTreeMap::new();
-        for name in ["waterui-dew", "waterui-gtk", "waterui-winui"] {
+        for name in ["waterui-gtk", "waterui-winui"] {
             experimental_packages.insert(
                 name.to_owned(),
                 ExperimentalPackage {
@@ -4605,7 +4601,7 @@ mod tests {
         let gtk_revision = "b".repeat(40);
         let scaffold = BTreeMap::from([
             ("waterui-version".to_string(), "0.3.0".to_string()),
-            ("waterui-dew-version".to_string(), "0.2.1".to_string()),
+            ("hydrolysis-m3-version".to_string(), "0.2.1".to_string()),
             ("waterui-gtk-version".to_string(), "0.2.0".to_string()),
             (
                 "waterui-gtk-git".to_string(),
@@ -4616,9 +4612,9 @@ mod tests {
         let packages =
             resolve_packages(&scaffold, &lock, framework_repository(), &"a".repeat(40)).unwrap();
         assert!(packages["waterui"].git.is_some());
-        let dew = &packages["waterui-dew"];
-        assert!(dew.git.is_none());
-        assert_eq!(dew.version.as_ref().unwrap().to_string(), "=0.2.1");
+        let m3 = &packages["hydrolysis-m3"];
+        assert!(m3.git.is_none());
+        assert_eq!(m3.version.as_ref().unwrap().to_string(), "=0.2.1");
         let gtk = &packages["waterui-gtk"];
         assert_eq!(
             gtk.git.as_deref(),
@@ -4720,9 +4716,6 @@ mod tests {
         framework
             .scaffold
             .insert("waterui-gtk-rev".to_owned(), revision.clone());
-        framework
-            .scaffold
-            .insert("waterui-dew-version".to_owned(), "0.2.1".to_owned());
         let gtk = framework.dependency("waterui-gtk");
         assert_eq!(
             gtk.git.as_deref(),
@@ -4732,19 +4725,19 @@ mod tests {
         assert_eq!(gtk.version.as_ref().unwrap().to_string(), "^0.1.2");
         // A scaffold package declared by version alone still resolves the
         // registry pin.
-        let dew = framework.dependency("waterui-dew");
-        assert!(dew.git.is_none());
-        assert_eq!(dew.version.as_ref().unwrap().to_string(), "=0.2.1");
+        let m3 = framework.dependency("hydrolysis-m3");
+        assert!(m3.git.is_none());
+        assert_eq!(m3.version.as_ref().unwrap().to_string(), "=0.2.0");
     }
 
     #[test]
     fn stable_withholds_the_git_pinned_scaffold_packages() {
-        // `waterui-dew`, `waterui-gtk` and `waterui-winui` are git pins, so a
+        // `waterui-gtk` and `waterui-winui` are git pins, so a
         // stable manifest withholds them — recorded under
         // `experimental-packages`, absent from `scaffold` — and scaffolding
         // one fails naming the package, the channel and the fix.
         let framework = stable_framework();
-        for name in ["waterui-dew", "waterui-gtk", "waterui-winui"] {
+        for name in ["waterui-gtk", "waterui-winui"] {
             let package = &framework.experimental_packages[name];
             assert_eq!(package.rev.len(), 40);
             assert!(!framework.scaffold.contains_key(&format!("{name}-version")));
@@ -4775,7 +4768,7 @@ mod tests {
     #[test]
     fn dev_and_nightly_distribute_the_experimental_packages() {
         for framework in [dev_framework(), nightly_framework()] {
-            for name in ["waterui-dew", "waterui-gtk", "waterui-winui"] {
+            for name in ["waterui-gtk", "waterui-winui"] {
                 framework
                     .require_distributable(name)
                     .unwrap_or_else(|error| panic!("{name} must scaffold off stable: {error}"));
@@ -4809,7 +4802,7 @@ mod tests {
         framework.experimental_packages.clear();
 
         let framework = framework.validated().expect("fixture validates");
-        assert_eq!(framework.experimental_packages.len(), 3);
+        assert_eq!(framework.experimental_packages.len(), 2);
         assert!(
             framework.require_distributable("waterui-winui").is_err(),
             "a stale `waterui-winui-git` entry must not resurrect the package"
@@ -4906,7 +4899,7 @@ mod tests {
             },
         );
         framework.packages.insert(
-            "waterui-dew".to_owned(),
+            "hydrolysis-m3".to_owned(),
             DependencyDetail {
                 version: Some("=0.2.1".parse().unwrap()),
                 ..Default::default()
@@ -4940,8 +4933,8 @@ mod tests {
         )));
         // The registry pin holds only its exact version.
         let registry = || "registry+https://github.com/rust-lang/crates.io-index".to_owned();
-        assert!(framework.sanctioned_source(&identity("waterui-dew", "0.2.1", registry())));
-        assert!(!framework.sanctioned_source(&identity("waterui-dew", "0.2.2", registry())));
+        assert!(framework.sanctioned_source(&identity("hydrolysis-m3", "0.2.1", registry())));
+        assert!(!framework.sanctioned_source(&identity("hydrolysis-m3", "0.2.2", registry())));
     }
 
     /// The exact requirement a stable channel writes for one scaffold entry.
@@ -5730,7 +5723,6 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             "scaffold": {
                 "hydrolysis-path": "backends/hydrolysis",
                 "hydrolysis-m3-version": "0.2.0",
-                "waterui-dew-version": "0.2.1",
                 "waterui-gtk-version": "0.1.2",
                 "apple-backend-path": "backends/apple",
                 "android-backend-url": "https://github.com/water-rs/android-backend.git",
@@ -5791,15 +5783,6 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 (
                     "hydrolysis-m3-version".to_owned(),
                     workspace("hydrolysis-m3")
-                ),
-                ("waterui-dew-version".to_owned(), workspace("waterui-dew")),
-                (
-                    "waterui-dew-git".to_owned(),
-                    "https://github.com/water-rs/dew".to_owned()
-                ),
-                (
-                    "waterui-dew-rev".to_owned(),
-                    "b64f6759a3ebe7ac621bad84be00fe431f978119".to_owned()
                 ),
                 ("waterui-gtk-version".to_owned(), workspace("waterui-gtk")),
                 (
