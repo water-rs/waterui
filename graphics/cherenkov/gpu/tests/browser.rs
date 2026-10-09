@@ -1429,7 +1429,8 @@ async fn dom_planes_stack_a_hosted_element_between_parts() {
     let style = frame.style();
     let property = |name: &str| style.get_property_value(name).expect(name);
     assert!(property("transform").starts_with("matrix("));
-    assert!(property("clip-path").starts_with("url(#cherenkov-clip-"));
+    // CSSOM serializes the reference quoted: `url("#…")`.
+    assert!(property("clip-path").contains("#cherenkov-clip-"));
     assert_eq!(property("width"), "320px");
     wasm_bindgen_test::console_log!("DOM_PLANES_READY");
 
