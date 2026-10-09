@@ -116,9 +116,11 @@ pub fn frame(view: &PlatformView) -> Rect {
     view.frame().into()
 }
 
-/// The alignment rectangle `view`'s frame maps to — the edge Auto Layout
-/// pins when it solves the view's anchors. A control's frame can overshoot
-/// it: a `UISwitch` frame runs 2 pt past its pinned trailing edge.
+/// The alignment rectangle `view`'s frame maps to.
+///
+/// This is the edge Auto Layout pins when it solves the view's anchors. A
+/// control's frame can overshoot it: a `UISwitch` frame runs 2 pt past its
+/// pinned trailing edge.
 #[must_use]
 pub fn alignment_frame(view: &PlatformView) -> Rect {
     #[cfg(target_os = "ios")]
