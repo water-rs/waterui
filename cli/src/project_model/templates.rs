@@ -4027,11 +4027,12 @@ mod tests {
             .map(|value| value.as_str().expect("crate type should be a string"))
             .collect::<Vec<_>>();
 
-        // Apple embedders link the staticlib, and the entry-owning
-        // `waterui-apple-main` bin imports the companion crate through the
-        // rlib — the dependency that carries both its exports and its
-        // `#[link]` native declarations into the executable.
-        assert_eq!(crate_types, ["staticlib", "rlib"]);
+        // Apple embedders and packaged builds link the staticlib, a
+        // shared-runtime development build loads the cdylib, and the
+        // entry-owning `waterui-apple-main` bin imports the companion crate
+        // through the rlib — the dependency that carries both its exports and
+        // its `#[link]` native declarations into the executable.
+        assert_eq!(crate_types, ["staticlib", "cdylib", "rlib"]);
     }
 
     #[test]
@@ -7432,15 +7433,20 @@ pub mod apple_companion {
         manifest.package = Some(package);
         manifest.profile = generated_profiles(ctx.project_packages.as_ref())?;
 
-        // Apple links `lib<crate>.a`, and `rlib` is required for the
+        // A packaged Apple build links `lib<crate>.a` and a shared-runtime
+        // development build loads the `cdylib`; `rlib` is required for the
         // entry-owning binary's dependency emission: the bin must link the
         // crate statically so `_waterui_init`/`_waterui_app` live inside the
         // executable image rather than in a second dylib carrying duplicate
         // ObjC classes.
-        // Each build then narrows to the single crate type it links, via
-        // `RustBuild::with_crate_type_override`.
+        // Each build picks the artifact it links out of Cargo's report, or
+        // narrows to it via `RustBuild::with_crate_type_override`.
         manifest.lib = Some(Product {
-            crate_type: vec!["staticlib".to_string(), "rlib".to_string()],
+            crate_type: vec![
+                "staticlib".to_string(),
+                "cdylib".to_string(),
+                "rlib".to_string(),
+            ],
             ..Default::default()
         });
         // Entry-owning Apple packaging installs this binary as the
