@@ -23,7 +23,8 @@ use waterui_cli::{
     },
     package_output::place_in_project,
     platform::{
-        DeviceSigning, PackageAudience, PackageOptions, TargetPlatform as LibTargetPlatform,
+        DeviceSigning, PackageAudience, PackageOptions, TargetBackend as LibTargetBackend,
+        TargetPlatform as LibTargetPlatform,
     },
     project::{ManagedBackends, Project},
     winui::platform::{build_winui, package_winui},
@@ -65,6 +66,16 @@ pub enum TargetBackend {
 }
 
 impl TargetBackend {
+    const fn from_lib(backend: LibTargetBackend) -> Self {
+        match backend {
+            LibTargetBackend::Apple => Self::Apple,
+            LibTargetBackend::Android => Self::Android,
+            LibTargetBackend::Gtk4 => Self::Gtk4,
+            LibTargetBackend::Hydrolysis => Self::Hydrolysis,
+            LibTargetBackend::WinUi => Self::WinUi,
+        }
+    }
+
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     const fn is_experimental(self) -> bool {
@@ -115,10 +126,9 @@ pub struct Args {
     #[arg(short, long, value_enum)]
     platform: TargetPlatform,
 
-    /// Backend to use (overrides default for platform).
-    /// Required: `water package` always needs an explicit backend.
+    /// Backend to use (must agree with any Water.toml platform declaration).
     #[arg(short, long, value_enum)]
-    backend: TargetBackend,
+    backend: Option<TargetBackend>,
 
     /// Android painter the Hydrolysis host draws with (gpu, hwui).
     /// Only valid with `--platform android --backend hydrolysis`; the
@@ -246,7 +256,13 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
 async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<PackagingContext>> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let backend = resolve_backend(args.platform, args.backend)?;
+    let manifest = waterui_cli::project::Manifest::open(project_path.join("Water.toml")).await?;
+    let backend = TargetBackend::from_lib(waterui_cli::project::resolve_backend(
+        &manifest,
+        lib_platform(args.platform),
+        args.backend
+            .map(|backend| backend.cli_backend().lib_backend()),
+    )?);
     // Hydrolysis on Android opens no managed backend — the old widget-FFI
     // backend is not its runtime; the Hydrolysis launcher crate
     // `ensure_generated_backend` produces is.
@@ -704,45 +720,6 @@ async fn package_artifact_inner(
     }
 }
 
-fn resolve_backend(platform: TargetPlatform, backend: TargetBackend) -> Result<TargetBackend> {
-    let supported = matches!(
-        (platform, backend),
-        (
-            TargetPlatform::Ios | TargetPlatform::IosSimulator,
-            TargetBackend::Apple
-        ) | (
-            TargetPlatform::Macos,
-            TargetBackend::Apple | TargetBackend::Hydrolysis
-        ) | (
-            TargetPlatform::Android,
-            TargetBackend::Android | TargetBackend::Hydrolysis
-        ) | (
-            TargetPlatform::Linux,
-            TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-        ) | (
-            TargetPlatform::Windows,
-            TargetBackend::Hydrolysis | TargetBackend::WinUi
-        ) | (TargetPlatform::Web, TargetBackend::Hydrolysis)
-    );
-
-    if !supported {
-        bail!(
-            "Backend {:?} does not support platform {:?}.\n\
-             Valid combinations:\n  \
-             - iOS/iOS Simulator: apple\n  \
-             - Android: hydrolysis, android\n  \
-             - macOS: apple, hydrolysis\n  \
-             - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis, winui\n  \
-             - Web: hydrolysis",
-            backend,
-            platform
-        );
-    }
-
-    Ok(backend)
-}
-
 fn validate_unsigned_args(
     platform: TargetPlatform,
     backend: TargetBackend,
@@ -925,8 +902,8 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        AndroidArch, BuildProfile, TargetBackend, TargetPlatform, resolve_backend,
-        validate_arch_args, validate_unsigned_args,
+        AndroidArch, BuildProfile, TargetBackend, TargetPlatform, validate_arch_args,
+        validate_unsigned_args,
     };
 
     #[test]
@@ -1043,36 +1020,6 @@ mod tests {
                 &[AndroidArch::Arm64]
             )
             .is_ok()
-        );
-    }
-
-    #[test]
-    fn resolve_backend_validates_explicit_backend() {
-        assert_eq!(
-            resolve_backend(TargetPlatform::Android, TargetBackend::Android)
-                .expect("android backend"),
-            TargetBackend::Android
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Android, TargetBackend::Hydrolysis)
-                .expect("hydrolysis on android backend"),
-            TargetBackend::Hydrolysis
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Windows, TargetBackend::Hydrolysis)
-                .expect("windows backend"),
-            TargetBackend::Hydrolysis
-        );
-        assert!(resolve_backend(TargetPlatform::Windows, TargetBackend::Gtk4).is_err());
-        assert_eq!(
-            resolve_backend(TargetPlatform::Windows, TargetBackend::WinUi)
-                .expect("windows winui backend"),
-            TargetBackend::WinUi
-        );
-        assert!(resolve_backend(TargetPlatform::Linux, TargetBackend::WinUi).is_err());
-        assert_eq!(
-            resolve_backend(TargetPlatform::Web, TargetBackend::Hydrolysis).expect("web backend"),
-            TargetBackend::Hydrolysis
         );
     }
 }

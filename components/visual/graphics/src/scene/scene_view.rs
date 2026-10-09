@@ -295,9 +295,12 @@ fn scale_across(named: f32, natural_along: f32, natural_across: f32) -> f32 {
 ///
 /// Content with no size of its own takes whatever it is offered, exactly as it
 /// always has. Content that *is* a size is content-sized and claims no leftover
-/// space: an icon in a row must not eat the row, and a container that wants it
-/// bigger says so with a frame, which [`resolve_scene_proposal`] then honours.
-/// This is the rule `waterui-image` already measures its own surfaces by.
+/// space: an icon in a row must not eat the row. [`resolve_scene_proposal`]
+/// honours finite proposals for the scene itself; `waterui-image` adds its own
+/// non-resizable layout, which answers the natural size to an unspecified
+/// proposal and only scales down under smaller finite proposals, preserving
+/// the aspect ratio. It never scales up and remains `StretchAxis::None`.
+/// A `.resizable()` image instead fills the proposal per its `content_mode`.
 #[must_use]
 pub const fn scene_stretch_axis(intrinsic: Option<Size>) -> StretchAxis {
     if intrinsic.is_some() {
