@@ -8,16 +8,19 @@ name: Affected scope
 # outside-package path no rule names selects everything; uncertainty
 # always widens the gate instead of narrowing it.
 #
-# Callers pass the comparison base — a pull request's base sha or a push's
-# `before` sha. Empty means "no diff": the whole workspace is in scope.
+# Callers pass the comparison base — a pull request's base branch as
+# fetched by the full checkout (`origin/<base>`), or a push's `before` sha.
+# The diff runs from its merge-base with `HEAD`. Empty means "no diff": the
+# whole workspace is in scope.
 
 on:
   workflow_call:
     inputs:
       base:
         description: >
-          Revision the diff is measured from (PR base sha, push `before`
-          sha). Empty selects the whole workspace.
+          Revision the diff is measured from, through its merge-base with
+          HEAD (`origin/<base branch>` for a pull request, the push's
+          `before` sha). Empty selects the whole workspace.
         type: string
         required: false
         default: ""

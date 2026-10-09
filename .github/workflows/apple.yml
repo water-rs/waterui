@@ -71,9 +71,14 @@ on:
       - ".github/actions/cargo-sources/**"
       - ".github/actions/retire-cargo-caches/**"
 
+# A pull request cancels its superseded run. An integration push queues
+# instead: its `rust` job is the cache writer for that ref, and cancelling
+# it mid-sweep or mid-save leaves no `apple-target` archive for the runs
+# after it (#2338). The group still drops a queued run that a newer push
+# supersedes.
 concurrency:
   group: apple-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Same toolchain policy as ci.yml (#328): no compile wrapper and no
