@@ -232,17 +232,33 @@ impl FrameTransaction {
         self.wake_gate.set(false);
     }
 
-    /// Whether this transaction renders: armed work, or a redraw-only
-    /// request (a caret blink) that the render consumes so it cannot latch
-    /// the continuation awake. A window that cannot present consumes
-    /// nothing — its requests stay armed for the restore frame.
+    /// Whether a request raised now may post to the host's scheduler —
+    /// `false` while a transaction is open (the request joins its
+    /// continuation instead) and while the window is occluded (it stays
+    /// armed for the restore frame).
+    #[allow(dead_code)] // read by the Android host's request_redraw
+    pub(super) fn may_post(&self) -> bool {
+        self.wake_gate.get()
+    }
+
+    /// Whether this transaction renders: armed work, a host redraw request
+    /// latched before the render, or a redraw-only engine request (a caret
+    /// blink). Every one is demand the render itself serves, so the request
+    /// flags are consumed here at the render boundary — a request that
+    /// survived into the transaction's close would count work this frame
+    /// already did toward its continuation (water-rs/waterui#2325). A window
+    /// that cannot present consumes nothing — its requests stay armed for
+    /// the restore frame.
     pub(super) fn take_render_request<P: PlatformWindow>(
         runtime: &mut RuntimeWindow<P>,
         surface_attached: bool,
+        redraw_pending: bool,
     ) -> bool {
-        surface_attached
-            && !runtime.is_hidden()
-            && (runtime.mode.is_pending() || runtime.renderer.take_redraw_request())
+        if !surface_attached || runtime.is_hidden() {
+            return false;
+        }
+        let redraw_requested = runtime.renderer.take_redraw_request();
+        redraw_pending || runtime.mode.is_pending() || redraw_requested
     }
 
     /// Closes the transaction, reopens the gate unless occluded, and returns
