@@ -23,7 +23,128 @@ use super::super::DeclaredFonts;
 #[cfg(target_os = "android")]
 pub use super::android_fonts::android_collection;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
-pub use super::web_fonts::web_collection;
+pub use super::web_fonts::WebFonts;
+
+/// The fallback role a resource face plays, recognized from its name.
+///
+/// The name is normalized (lowercased, spaces stripped) so the same rules
+/// cover native file names (`NotoSansCJKsc-Regular.otf`) and web manifest
+/// family names (`Noto Sans CJK SC`).
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FontRole {
+    /// The generic sans-serif face (Roboto).
+    Generic,
+    /// The emoji face.
+    Emoji,
+    /// Han in its Simplified Chinese design.
+    HaniSimplified,
+    /// Han in its Traditional Chinese design.
+    HaniTraditional,
+    /// Han in its Japanese design.
+    HaniJapanese,
+    /// Han in its Korean design, and Hangul.
+    HaniKorean,
+    /// Arabic script.
+    Arabic,
+    /// Hebrew script.
+    Hebrew,
+    /// Thai script.
+    Thai,
+    /// Devanagari script.
+    Devanagari,
+}
+
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
+impl FontRole {
+    /// The role the face `name` plays; `None` for a face that answers only
+    /// to its own family name — an icon face, a text face a theme names.
+    pub(super) fn of(name: &str) -> Option<Self> {
+        let key = name.to_ascii_lowercase().replace(' ', "");
+        let rules = [
+            ("emoji", Self::Emoji),
+            ("roboto", Self::Generic),
+            ("notosanscjksc", Self::HaniSimplified),
+            ("notosanscjktc", Self::HaniTraditional),
+            ("notosanscjkjp", Self::HaniJapanese),
+            ("notosanscjkkr", Self::HaniKorean),
+            ("notosansarabic", Self::Arabic),
+            ("notosanshebrew", Self::Hebrew),
+            ("notosansthai", Self::Thai),
+            ("notosansdevanagari", Self::Devanagari),
+        ];
+        rules
+            .into_iter()
+            .find(|(pattern, _)| key.contains(pattern))
+            .map(|(_, role)| role)
+    }
+}
+
+#[cfg(any(test, all(target_arch = "wasm32", feature = "web")))]
+impl FontRole {
+    /// Whether a reader whose language is `tag` — a BCP 47 tag, as
+    /// `navigator.languages` lists them — reads text this role's face draws.
+    ///
+    /// The generic face draws Latin for every reader; the emoji face belongs
+    /// to no language. Chinese reads the Traditional design under the `Hant`
+    /// script or a Traditional region, and the Simplified one otherwise.
+    pub(super) fn serves(self, tag: &str) -> bool {
+        let mut subtags = tag.split(['-', '_']);
+        let language = subtags.next().unwrap_or_default().to_ascii_lowercase();
+        let mut script = None;
+        let mut region = None;
+        for subtag in subtags {
+            if subtag.len() == 4 && subtag.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+                script = Some(subtag.to_ascii_lowercase());
+            } else if subtag.len() == 2 && subtag.bytes().all(|byte| byte.is_ascii_alphabetic())
+                || subtag.len() == 3 && subtag.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                region = Some(subtag.to_ascii_uppercase());
+            }
+        }
+        let traditional_chinese = language == "zh"
+            && (script.as_deref() == Some("hant")
+                || script.is_none()
+                    && region
+                        .as_deref()
+                        .is_some_and(|region| matches!(region, "TW" | "HK" | "MO")));
+        match self {
+            Self::Generic => true,
+            Self::Emoji => false,
+            Self::HaniSimplified => language == "zh" && !traditional_chinese,
+            Self::HaniTraditional => traditional_chinese,
+            Self::HaniJapanese => language == "ja",
+            Self::HaniKorean => language == "ko",
+            Self::Arabic => matches!(
+                language.as_str(),
+                "ar" | "fa" | "ur" | "ps" | "sd" | "ug" | "ckb"
+            ),
+            Self::Hebrew => matches!(language.as_str(), "he" | "iw" | "yi"),
+            Self::Thai => language == "th",
+            Self::Devanagari => matches!(
+                language.as_str(),
+                "hi" | "mr" | "ne" | "sa" | "mai" | "kok" | "bho" | "doi"
+            ),
+        }
+    }
+}
+
+/// Whether the face `name` loads before a web page's first frame, for a
+/// visitor whose preferred languages are `languages`.
+///
+/// The page's default family, every face with no fallback role (selected by
+/// its own name, so the first frame may draw it) and the generic face load
+/// first; a script face loads first when one of the visitor's languages reads
+/// that script. Every other face — the scripts the visitor does not read, and
+/// the emoji face — loads after the first frame.
+#[cfg(any(test, all(target_arch = "wasm32", feature = "web")))]
+#[must_use]
+pub fn loads_before_first_frame(name: &str, default_family: &str, languages: &[String]) -> bool {
+    name == default_family
+        || FontRole::of(name).is_none_or(|role| {
+            role == FontRole::Generic || languages.iter().any(|language| role.serves(language))
+        })
+}
 
 /// Font-family buckets recognized from `WaterUI`'s bundled resource fonts.
 #[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
@@ -42,11 +163,6 @@ pub(super) struct ResourceFontFamilies {
 }
 
 #[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
-fn extend_family_ids(target: &mut Vec<FamilyId>, families: &[(FamilyId, Vec<FontInfo>)]) {
-    target.extend(families.iter().map(|(family_id, _)| *family_id));
-}
-
-#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 fn set_fallbacks(collection: &mut Collection, key: impl Into<FallbackKey>, families: &[FamilyId]) {
     if families.is_empty() {
         return;
@@ -59,34 +175,25 @@ fn set_fallbacks(collection: &mut Collection, key: impl Into<FallbackKey>, famil
 
 #[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 impl ResourceFontFamilies {
-    /// Classify registered font families into fallback buckets by font name.
-    ///
-    /// The name is normalized (lowercased, spaces stripped) so the same rules
-    /// cover native file names (`NotoSansCJKsc-Regular.otf`) and web manifest
-    /// family names (`Noto Sans CJK SC`).
+    /// Classify registered font families into fallback buckets by font name
+    /// (see [`FontRole::of`]).
     pub(super) fn classify(&mut self, name: &str, families: &[(FamilyId, Vec<FontInfo>)]) {
-        let key = name.to_ascii_lowercase().replace(' ', "");
-        if key.contains("emoji") {
-            extend_family_ids(&mut self.emoji, families);
-        } else if key.contains("roboto") {
-            extend_family_ids(&mut self.generic, families);
-        } else if key.contains("notosanscjksc") {
-            extend_family_ids(&mut self.hani_simplified, families);
-        } else if key.contains("notosanscjktc") {
-            extend_family_ids(&mut self.hani_traditional, families);
-        } else if key.contains("notosanscjkjp") {
-            extend_family_ids(&mut self.hani_japanese, families);
-        } else if key.contains("notosanscjkkr") {
-            extend_family_ids(&mut self.hani_korean, families);
-        } else if key.contains("notosansarabic") {
-            extend_family_ids(&mut self.arabic, families);
-        } else if key.contains("notosanshebrew") {
-            extend_family_ids(&mut self.hebrew, families);
-        } else if key.contains("notosansthai") {
-            extend_family_ids(&mut self.thai, families);
-        } else if key.contains("notosansdevanagari") {
-            extend_family_ids(&mut self.devanagari, families);
-        }
+        let Some(role) = FontRole::of(name) else {
+            return;
+        };
+        let bucket = match role {
+            FontRole::Generic => &mut self.generic,
+            FontRole::Emoji => &mut self.emoji,
+            FontRole::HaniSimplified => &mut self.hani_simplified,
+            FontRole::HaniTraditional => &mut self.hani_traditional,
+            FontRole::HaniJapanese => &mut self.hani_japanese,
+            FontRole::HaniKorean => &mut self.hani_korean,
+            FontRole::Arabic => &mut self.arabic,
+            FontRole::Hebrew => &mut self.hebrew,
+            FontRole::Thai => &mut self.thai,
+            FontRole::Devanagari => &mut self.devanagari,
+        };
+        bucket.extend(families.iter().map(|(family_id, _)| *family_id));
     }
 
     /// Install the classified families as generic-family defaults and Han
@@ -245,7 +352,7 @@ fn register_font_file(
 
 /// A collection carrying only the faces fontique discovers on the system —
 /// for a wasm32 window without a font manifest, where there is no resource
-/// directory to scan and no `web_collection` result to build on.
+/// directory to scan and no `WebFonts` collection to build on.
 #[cfg(target_arch = "wasm32")]
 pub fn system_collection() -> FontCollection {
     FontCollection::new(parley::FontContext::new())
@@ -273,4 +380,50 @@ pub fn installed_font_bytes(family: &str) -> std::sync::Arc<[u8]> {
             .unwrap_or_else(|| panic!("the installed `{family}` face failed to load"))
             .as_ref(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FontRole, loads_before_first_frame};
+
+    fn languages(tags: &[&str]) -> Vec<String> {
+        tags.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn chinese_reads_the_simplified_or_traditional_design_by_script_and_region() {
+        for tag in ["zh", "zh-CN", "zh-Hans", "zh-Hans-HK", "zh-SG"] {
+            assert!(FontRole::HaniSimplified.serves(tag), "{tag}");
+            assert!(!FontRole::HaniTraditional.serves(tag), "{tag}");
+        }
+        for tag in ["zh-TW", "zh-HK", "zh-Hant", "zh-Hant-CN", "zh-MO"] {
+            assert!(FontRole::HaniTraditional.serves(tag), "{tag}");
+            assert!(!FontRole::HaniSimplified.serves(tag), "{tag}");
+        }
+        assert!(FontRole::HaniJapanese.serves("ja-JP"));
+        assert!(FontRole::HaniKorean.serves("ko"));
+        assert!(!FontRole::HaniJapanese.serves("zh-CN"));
+    }
+
+    #[test]
+    fn the_first_frame_waits_for_the_faces_the_visitor_reads() {
+        let zh = languages(&["zh-CN", "en-US"]);
+        assert!(loads_before_first_frame("Roboto", "Roboto", &zh));
+        assert!(loads_before_first_frame("Noto Sans CJK SC", "Roboto", &zh));
+        assert!(!loads_before_first_frame("Noto Sans CJK JP", "Roboto", &zh));
+        assert!(!loads_before_first_frame("Noto Sans Arabic", "Roboto", &zh));
+        assert!(!loads_before_first_frame("Noto Color Emoji", "Roboto", &zh));
+        // A face with no fallback role is selected by name, so the first
+        // frame may draw it.
+        assert!(loads_before_first_frame("Material Icons", "Roboto", &zh));
+        // The default family loads first whatever its role.
+        assert!(loads_before_first_frame(
+            "Noto Sans CJK JP",
+            "Noto Sans CJK JP",
+            &zh
+        ));
+        // With no preferred language only the generic face is needed.
+        assert!(loads_before_first_frame("Roboto", "Inter", &[]));
+        assert!(!loads_before_first_frame("Noto Sans Hebrew", "Roboto", &[]));
+    }
 }
