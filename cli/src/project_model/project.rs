@@ -308,6 +308,16 @@ impl Project {
         &self.host
     }
 
+    /// A project whose spawned tools echo their captured output to the
+    /// terminal — [`Host::with_std_output`] applied to the host this
+    /// project was opened with, for the commands the user is watching.
+    #[must_use]
+    pub fn with_std_output(&self, enabled: bool) -> Self {
+        let mut project = self.clone();
+        project.host = project.host.with_std_output(enabled);
+        project
+    }
+
     /// Get the target directory for Rust build artifacts.
     ///
     /// # Errors
@@ -1714,7 +1724,7 @@ impl Project {
 
         let mut cmd = host.command("git");
 
-        let is_in_git = command(&mut cmd)
+        let is_in_git = command(&mut cmd, host.std_output())
             .args(["rev-parse", "--git-dir"])
             .current_dir(path)
             .output()
@@ -1726,7 +1736,7 @@ impl Project {
         if !is_in_git {
             // Initialize a new git repository
             let mut cmd = host.command("git");
-            command(&mut cmd)
+            command(&mut cmd, host.std_output())
                 .args(["init"])
                 .current_dir(path)
                 .status()

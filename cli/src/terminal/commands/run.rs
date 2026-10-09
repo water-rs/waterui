@@ -473,15 +473,15 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
 
         // The dev-server guard is held for the app's whole run. Cancelling
         // this future drops it and the app's monitor acknowledges the kill.
-        let (running, dev_server) = Box::pin(shell.display_output(build_and_run(
+        let (running, dev_server) = Box::pin(build_and_run(
             shell,
-            &host,
-            &context.project,
+            &host.with_std_output(shell.is_interactive()),
+            &context.project.with_std_output(shell.is_interactive()),
             context.platform,
             context.backend,
             selection,
             config,
-        )))
+        ))
         .await?;
         Ok(Some(RunReady {
             backend: context.backend,
@@ -553,14 +553,13 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     let launcher_dir = Box::pin(waterui_cli::tui::ensure_launcher(&project)).await?;
 
     let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
-    let built = shell
-        .display_output(Box::pin(waterui_cli::tui::build(
-            &project,
-            &launcher_dir,
-            sccache_path,
-            Some(shell.build_progress()),
-        )))
-        .await?;
+    let built = Box::pin(waterui_cli::tui::build(
+        &project.with_std_output(shell.is_interactive()),
+        &launcher_dir,
+        sccache_path,
+        Some(shell.build_progress()),
+    ))
+    .await?;
 
     note!(
         shell,
