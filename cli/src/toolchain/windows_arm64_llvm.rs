@@ -150,7 +150,8 @@ impl Installation for WindowsArm64LlvmInstallation {
             }
             Self::Msi => {
                 use std::ffi::OsStr;
-                let staging = smol::unblock(tempfile::tempdir).await?;
+                let temp_root = host.temp_dir();
+                let staging = smol::unblock(move || tempfile::tempdir_in(temp_root)).await?;
                 let msi = staging.path().join("LLVM-23.1.1-woa64.msi");
                 fetch_pinned(LLVM_ARM64_MSI_URL, LLVM_ARM64_MSI_SHA256, &msi).await?;
                 let output = host

@@ -63,7 +63,7 @@ pub fn trials() -> Vec<Trial> {
                 Ok(())
             }),
             Trial::test("migration::uikit::compact_split", || {
-                uikit_surface::compact_split_shows_the_sidebar();
+                uikit_surface::compact_split_follows_selection();
                 Ok(())
             }),
             Trial::test("migration::uikit::stable_id_row_replace", || {
@@ -606,9 +606,38 @@ mod uikit_surface {
         }
     }
 
-    pub fn compact_split_shows_the_sidebar() {
-        use cocoa_ui::objc2_ui_kit::{UISplitViewController, UISplitViewControllerColumn};
+    pub fn compact_split_follows_selection() {
+        use cocoa_ui::objc2_ui_kit::{
+            UINavigationController, UISplitViewController, UISplitViewControllerColumn,
+            UIViewController,
+        };
         use waterui::navigation::{NavigationSplitView, NavigationView};
+
+        fn column_root(
+            split: &UISplitViewController,
+            column: UISplitViewControllerColumn,
+        ) -> Retained<UIViewController> {
+            let controller = split
+                .viewControllerForColumn(column)
+                .expect("column exists");
+            controller
+                .downcast_ref::<UINavigationController>()
+                .map_or_else(
+                    || controller.clone(),
+                    |nav| {
+                        nav.viewControllers()
+                            .firstObject()
+                            .expect("column root exists")
+                    },
+                )
+        }
+
+        fn visible(controller: &UIViewController) -> bool {
+            controller.viewIfLoaded().is_some_and(|view| {
+                view.window().is_some() && !cocoa_ui::view::is_hidden_in_hierarchy(&view)
+            })
+        }
+
         let selection = binding(Some(1_i32));
         let split = NavigationSplitView::new(&selection, text("Sidebar"), |id: i32| {
             NavigationView::new(format!("Detail {id}"), text("detail"))
@@ -631,25 +660,54 @@ mod uikit_surface {
             controller.isCollapsed(),
             "a compact window collapses the split"
         );
-        let sidebar = controller
-            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
-            .expect("the primary column exists");
+        let sidebar = column_root(&controller, UISplitViewControllerColumn::Primary);
+        let detail = column_root(&controller, UISplitViewControllerColumn::Secondary);
         assert!(
-            sidebar
-                .viewIfLoaded()
-                .is_some_and(|view| view.window().is_some()),
-            "the collapsed sidebar is attached to the window"
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&detail)
+                && !visible(&sidebar)
+                && detail.transitionCoordinator().is_none()),
+            "Some initially shows only the detail"
         );
-        if let Some(detail) =
-            controller.viewControllerForColumn(UISplitViewControllerColumn::Secondary)
-        {
-            assert!(
-                detail
-                    .viewIfLoaded()
-                    .is_none_or(|view| view.window().is_none()),
-                "an existing secondary column must not be visible"
-            );
-        }
+        assert_eq!(selection.snapshot(), Some(1));
+
+        selection.set(None);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&sidebar)
+                && !visible(&detail)
+                && sidebar.transitionCoordinator().is_none()),
+            "setting None returns to only the sidebar"
+        );
+
+        selection.set(Some(2));
+        assert!(
+            drain_main_queue(mtm()),
+            "the selection update drains the main queue"
+        );
+        let detail = column_root(&controller, UISplitViewControllerColumn::Secondary);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&detail)
+                && !visible(&sidebar)
+                && detail.transitionCoordinator().is_none()),
+            "setting Some opens only the new detail"
+        );
+        assert_eq!(selection.snapshot(), Some(2));
+
+        let nav = controller
+            .childViewControllers()
+            .firstObject()
+            .expect("the compact split has a child controller")
+            .downcast::<UINavigationController>()
+            .expect("the compact split navigates between its columns");
+        assert!(
+            nav.popViewControllerAnimated(false).is_some(),
+            "native back pops the detail column"
+        );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || selection.snapshot().is_none()
+                && visible(&sidebar)
+                && !visible(&detail)),
+            "native back clears selection and returns to only the sidebar"
+        );
     }
 
     /// `items.set` on a surviving `ItemId` is a `replaced` change: the row's

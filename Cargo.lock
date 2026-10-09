@@ -12873,7 +12873,6 @@ dependencies = [
  "ctrlc",
  "der",
  "dialoguer",
- "dirs 7.0.0",
  "dunce",
  "eyre",
  "filetime",

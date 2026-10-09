@@ -27,6 +27,7 @@ on:
       - "backends/core/**"
       - "core/**"
       - "components/**"
+      - "graphics/**"
       - "src/**"
       - "macros/**"
       - "ffi/**"
@@ -40,6 +41,7 @@ on:
       - .github/workflows/apple.yml
       - ".github/scripts/**"
       - ".github/actions/metal-toolchain/**"
+      - ".github/actions/generate-scene-assets/**"
       - ".github/actions/setup-rust/**"
       - ".github/actions/cargo-sources/**"
       - ".github/actions/retire-cargo-caches/**"
@@ -54,6 +56,7 @@ on:
       - "backends/core/**"
       - "core/**"
       - "components/**"
+      - "graphics/**"
       - "src/**"
       - "macros/**"
       - "ffi/**"
@@ -67,6 +70,7 @@ on:
       - .github/workflows/apple.yml
       - ".github/scripts/**"
       - ".github/actions/metal-toolchain/**"
+      - ".github/actions/generate-scene-assets/**"
       - ".github/actions/setup-rust/**"
       - ".github/actions/cargo-sources/**"
       - ".github/actions/retire-cargo-caches/**"
@@ -345,6 +349,23 @@ jobs:
           echo "non-GPU feature set: ${features}"
           cargo clippy -p waterui-apple --locked \
             --no-default-features --features "${features}" -- -D warnings
+      # cherenkov-gpu's `cfg(target_vendor = "apple")` surface — the
+      # system-compositor planes (`render/planes/apple*`), the IOSurface
+      # and CVPixelBuffer import, and the macOS `planes` suite — is
+      # compiled away on every Linux lint leg, and the legs above build
+      # the crate only as a `waterui-apple` dependency, which never lints
+      # it (#2352). Its `#[cfg(test)]` modules `include_bytes!` the
+      # generated scene fonts, so `mode: fonts` runs first. The iOS
+      # device triple compiles the same cfg paths as the simulator, so
+      # these two legs cover all three Apple targets.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
+      - name: Clippy (cherenkov-gpu, macOS)
+        run: cargo clippy -p cherenkov-gpu --all-targets --locked -- -D warnings
+      - name: Clippy (cherenkov-gpu, iOS simulator)
+        run: cargo clippy -p cherenkov-gpu --all-targets --locked --target aarch64-apple-ios-sim -- -D warnings
       # The `apple-target` cache holds this directory for the next run; the
       # number is evidence for the repository's 10 GB budget review, not a
       # gate.

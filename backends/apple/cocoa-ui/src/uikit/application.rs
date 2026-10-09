@@ -25,11 +25,13 @@ use objc2::{
 };
 use objc2_foundation::{NSDictionary, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UIMainMenuSystem, UIMenu,
-    UIMenuBuilder, UIMenuRoot, UIResponder, UIScene, UISceneConnectionOptions, UISceneDelegate,
-    UISceneSession, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UICommand,
+    UIMainMenuSystem, UIMenu, UIMenuBuilder, UIMenuRoot, UIResponder, UIScene,
+    UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIWindow, UIWindowScene,
+    UIWindowSceneDelegate,
 };
 
+use super::key_commands::{KeyCommandRegistry, KeyCommands};
 use super::window::Window;
 use crate::callback::guarded;
 
@@ -86,9 +88,11 @@ impl ApplicationHandlers {
 }
 
 /// The `UIMenuBuilder` `build_menus` runs against, restricted to the two
-/// operations an application menu bar needs.
+/// operations an application menu bar needs, and the scope the bar's key
+/// commands are armed in.
 pub struct MenuBuilder<'a> {
     builder: &'a ProtocolObject<dyn UIMenuBuilder>,
+    key_commands: &'a KeyCommands,
 }
 
 impl fmt::Debug for MenuBuilder<'_> {
@@ -98,6 +102,14 @@ impl fmt::Debug for MenuBuilder<'_> {
 }
 
 impl MenuBuilder<'_> {
+    /// The scope this build's menus arm their key commands in. It replaces
+    /// the previous build's scope once the build returns, retiring that
+    /// bar's commands.
+    #[must_use]
+    pub const fn key_commands(&self) -> &KeyCommands {
+        self.key_commands
+    }
+
     /// Whether a menu identified `identifier` already exists.
     #[must_use]
     pub fn contains(&self, identifier: &str) -> bool {
@@ -178,6 +190,11 @@ struct AppDelegateIvars {
     did_finish_launching: Cell<Option<LaunchHandler>>,
     connect_scene: SceneHandler,
     build_menus: Option<MenuHandler>,
+    /// Every armed key command's callback; `cocoaUiMenuCommandFired:`
+    /// resolves its sender here.
+    key_commands: Rc<KeyCommandRegistry>,
+    /// The scope the current menu bar's key commands are armed in.
+    menu_bar_commands: RefCell<Option<KeyCommands>>,
 }
 
 define_class!(
@@ -201,6 +218,8 @@ define_class!(
                     did_finish_launching: Cell::new(handlers.did_finish_launching),
                     connect_scene: handlers.connect_scene,
                     build_menus: handlers.build_menus,
+                    key_commands: Rc::default(),
+                    menu_bar_commands: RefCell::new(None),
                 });
                 // SAFETY: `init` is `UIResponder`'s designated initializer.
                 unsafe { msg_send![super(this), init] }
@@ -242,8 +261,28 @@ define_class!(
         ) {
             guarded("application:buildMenuWith:", || {
                 if let Some(handler) = &self.ivars().build_menus {
-                    handler(&MenuBuilder { builder });
+                    let key_commands =
+                        KeyCommands::in_registry(Rc::clone(&self.ivars().key_commands));
+                    handler(&MenuBuilder {
+                        builder,
+                        key_commands: &key_commands,
+                    });
+                    // The bar `UIKit` now holds is the one just built: the
+                    // previous build's commands retire with their scope.
+                    self.ivars().menu_bar_commands.replace(Some(key_commands));
                 }
+            });
+        }
+
+        // `UIKeyCommand`s cannot carry a block: `UIKit` sends the command's
+        // action untargeted up the responder chain, which ends here, with a
+        // copy of the armed command as the sender. Its `propertyList` names
+        // the callback in the registry (see `key_commands`).
+        // SAFETY: see the module safety note.
+        #[unsafe(method(cocoaUiMenuCommandFired:))]
+        fn menu_command_fired(&self, sender: &UICommand) {
+            guarded("cocoaUiMenuCommandFired:", || {
+                self.ivars().key_commands.fire(sender);
             });
         }
     }
@@ -254,12 +293,21 @@ impl AppDelegate {
     fn current(mtm: MainThreadMarker) -> Retained<Self> {
         // SAFETY: see the module safety note.
         let delegate = unsafe { UIApplication::sharedApplication(mtm).delegate() }
-            .expect("UIKit reached a scene delegate before creating the application delegate");
+            .expect("UIKit has not created the application delegate yet");
         AsRef::<AnyObject>::as_ref(&*delegate)
             .downcast_ref::<Self>()
             .expect("the application delegate must be the one `uikit::run` registered")
             .retain()
     }
+}
+
+/// The running application's key-command registry.
+///
+/// # Panics
+///
+/// If the application was not started through [`run`].
+pub(super) fn key_command_registry(mtm: MainThreadMarker) -> Rc<KeyCommandRegistry> {
+    Rc::clone(&AppDelegate::current(mtm).ivars().key_commands)
 }
 
 #[derive(Default)]

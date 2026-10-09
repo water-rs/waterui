@@ -47,6 +47,7 @@ use waterui_cli::debug;
 
 #[cfg(target_os = "macos")]
 struct CrashReportContext {
+    host: waterui_cli::toolchain::Host,
     started_at: Timestamp,
     device_identifier: String,
     bundle_id: String,
@@ -72,6 +73,7 @@ impl CrashReportContext {
         let process_name = waterui_cli::apple::backend::apple_product_name(project)?.to_string();
 
         Ok(Some(Self {
+            host: project.host().clone(),
             started_at: Timestamp::now(),
             device_identifier,
             bundle_id: project.bundle_identifier().to_string(),
@@ -85,12 +87,9 @@ impl CrashReportContext {
 }
 
 #[cfg(target_os = "macos")]
-async fn find_latest_ips_report(
-    host: &waterui_cli::toolchain::Host,
-    ctx: &CrashReportContext,
-) -> Option<debug::CrashReport> {
+async fn find_latest_ips_report(ctx: &CrashReportContext) -> Option<debug::CrashReport> {
     debug::find_macos_ips_crash_report_since(
-        host,
+        &ctx.host,
         "macOS",
         &ctx.device_identifier,
         &ctx.bundle_id,
@@ -435,13 +434,18 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         .map(|_| ());
     }
 
-    let host = waterui_cli::toolchain::Host::current();
     let launch = Box::pin(async {
         let Some(context) = Box::pin(prepare_run_context(shell, &args)).await? else {
             return Ok(None);
         };
         print_run_header(shell, &context);
-        check_run_toolchain(shell, &host, context.platform, context.backend).await?;
+        check_run_toolchain(
+            shell,
+            context.project.host(),
+            context.platform,
+            context.backend,
+        )
+        .await?;
 
         if context.platform == TargetPlatform::Web {
             run_web_app(shell, &context.project).await?;
@@ -449,14 +453,13 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         }
         let selection = Box::pin(select_run_device(
             shell,
-            &host,
             context.platform,
             context.backend,
             &context.project,
             args.device.as_deref(),
         ))
         .await?;
-        let config = build_run_config(shell, &host, &args, &context.project, context.backend).await;
+        let config = build_run_config(shell, &args, &context.project, context.backend).await;
 
         #[cfg(target_os = "macos")]
         let crash_ctx = match CrashReportContext::try_new(
@@ -475,7 +478,6 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         // this future drops it and the app's monitor acknowledges the kill.
         let (running, dev_server) = Box::pin(build_and_run(
             shell,
-            &host.with_std_output(shell.is_interactive()),
             &context.project.with_std_output(shell.is_interactive()),
             context.platform,
             context.backend,
@@ -485,6 +487,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         .await?;
         Ok(Some(RunReady {
             backend: context.backend,
+            host: context.project.host().clone(),
             running,
             dev_server,
             #[cfg(target_os = "macos")]
@@ -494,6 +497,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
 
     let Some(Some(RunReady {
         backend,
+        host,
         running,
         dev_server: _dev_server,
         #[cfg(target_os = "macos")]
@@ -511,13 +515,14 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
     #[cfg(target_os = "macos")]
     stream_running_events(shell, &host, running, interrupts, backend, &mut crash_ctx).await?;
     #[cfg(not(target_os = "macos"))]
-    stream_running_events(shell, running, interrupts, backend).await?;
+    stream_running_events(shell, &host, running, interrupts, backend).await?;
 
     Ok(())
 }
 
 struct RunReady {
     backend: TargetBackend,
+    host: waterui_cli::toolchain::Host,
     running: Running,
     dev_server: Option<web::WebDevServer>,
     #[cfg(target_os = "macos")]
@@ -552,7 +557,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     .await?;
     let launcher_dir = Box::pin(waterui_cli::tui::ensure_launcher(&project)).await?;
 
-    let sccache_path = detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
+    let sccache_path = detect_sccache_path(shell, project.host()).await;
     let built = Box::pin(waterui_cli::tui::build(
         &project.with_std_output(shell.is_interactive()),
         &launcher_dir,
@@ -660,13 +665,12 @@ async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
 
 async fn select_run_device(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
     project: &Project,
     device_id: Option<&str>,
 ) -> Result<DeviceSelection> {
-    let device = find_device(shell, host, platform, backend, project, device_id).await?;
+    let device = find_device(shell, platform, backend, project, device_id).await?;
 
     let needs_launch = device.needs_launch();
     if needs_launch {
@@ -683,12 +687,11 @@ async fn select_run_device(
 
 async fn build_run_config(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     args: &Args,
     project: &Project,
     backend: TargetBackend,
 ) -> BuildRunConfig {
-    let sccache_path = detect_sccache_path(shell, host).await;
+    let sccache_path = detect_sccache_path(shell, project.host()).await;
     let mut run_options = RunOptions::new();
     if let Some(level) = args.logs.map(LogLevel::from) {
         run_options.set_log_level(level);
@@ -758,12 +761,12 @@ async fn stream_running_events(
         }
 
         let event = if let Some(ctx) = crash_ctx.as_ref() {
-            augment_event_with_crash_report(host, event, ctx).await
+            augment_event_with_crash_report(event, ctx).await
         } else {
             event
         };
 
-        handle_device_event(shell, event, backend_log_name)?;
+        handle_device_event(shell, host, event, backend_log_name)?;
     }
     monitor_errors.into_result()
 }
@@ -773,6 +776,7 @@ async fn stream_running_events(
 #[cfg(not(target_os = "macos"))]
 async fn stream_running_events(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     running: Running,
     interrupts: smol::channel::Receiver<()>,
     backend: TargetBackend,
@@ -783,7 +787,7 @@ async fn stream_running_events(
 
     while let Some(event) = events.next().await {
         monitor_errors.observe(&event);
-        handle_device_event(shell, event, backend_log_name)?;
+        handle_device_event(shell, host, event, backend_log_name)?;
     }
     monitor_errors.into_result()
 }
@@ -810,12 +814,11 @@ impl MonitorErrors {
 
 #[cfg(target_os = "macos")]
 async fn augment_event_with_crash_report(
-    host: &waterui_cli::toolchain::Host,
     event: DeviceEvent,
     ctx: &CrashReportContext,
 ) -> DeviceEvent {
     match event {
-        DeviceEvent::Exited(exit) => find_latest_ips_report(host, ctx)
+        DeviceEvent::Exited(exit) => find_latest_ips_report(ctx)
             .await
             .map_or(DeviceEvent::Exited(exit), |report| {
                 DeviceEvent::Crashed(Crash::new(CrashCause::Report(Box::new(report))))
@@ -823,7 +826,7 @@ async fn augment_event_with_crash_report(
         DeviceEvent::Crashed(crash)
             if crash.report.is_none() && !matches!(crash.cause, CrashCause::Report(_)) =>
         {
-            let Some(report) = find_latest_ips_report(host, ctx).await else {
+            let Some(report) = find_latest_ips_report(ctx).await else {
                 return DeviceEvent::Crashed(crash);
             };
             DeviceEvent::Crashed(Crash {
@@ -838,7 +841,6 @@ async fn augment_event_with_crash_report(
 /// Build, package, and run on device.
 async fn build_and_run(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     project: &Project,
     cli_platform: TargetPlatform,
     backend: TargetBackend,
@@ -854,8 +856,11 @@ async fn build_and_run(
         SelectedDevice::ApplePhysical(device) => Some(device.udid.clone()),
         _ => None,
     };
-    let launch_task =
-        spawn_device_launch_task(host.clone(), selection.device, selection.needs_launch);
+    let launch_task = spawn_device_launch_task(
+        project.host().clone(),
+        selection.device,
+        selection.needs_launch,
+    );
 
     // The package options and the release-signing plan are resolved before
     // the Rust build: a release run without a valid `[signing.android]`
@@ -911,7 +916,7 @@ async fn build_and_run(
     }
 
     let _ = shell.status(">", format!("Running {}", artifact.path().display()));
-    let running = run_with_options(host, device, artifact, run_options).await?;
+    let running = run_with_options(project.host(), device, artifact, run_options).await?;
 
     Ok((running, dev_server))
 }
@@ -1248,10 +1253,8 @@ const fn device_memory_key(backend: TargetBackend, platform: TargetPlatform) -> 
 
 /// The device last used for `key`, if the config records one. A config read
 /// failure is a warning, not a run failure.
-async fn remembered_device(key: &str) -> Option<String> {
-    match waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
-        .await
-    {
+async fn remembered_device(host: &waterui_cli::toolchain::Host, key: &str) -> Option<String> {
+    match waterui_cli::water_dir::ensure_global_config(host).await {
         Ok(config) => config.last_used_device.get(key).cloned(),
         Err(error) => {
             tracing::warn!("could not read the Water config for device memory: {error:#}");
@@ -1262,10 +1265,8 @@ async fn remembered_device(key: &str) -> Option<String> {
 
 /// Record `id` as the last-used device for `key`. Best-effort: a config
 /// write failure must not break a run.
-async fn persist_device_choice(key: &str, id: &str) {
-    match waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
-        .await
-    {
+async fn persist_device_choice(host: &waterui_cli::toolchain::Host, key: &str, id: &str) {
+    match waterui_cli::water_dir::ensure_global_config(host).await {
         Ok(mut config) => {
             if config.last_used_device.get(key).map(String::as_str) == Some(id) {
                 return;
@@ -1273,12 +1274,7 @@ async fn persist_device_choice(key: &str, id: &str) {
             config
                 .last_used_device
                 .insert(key.to_owned(), id.to_owned());
-            if let Err(error) = waterui_cli::water_dir::write_global_config(
-                &waterui_cli::toolchain::Host::current(),
-                &config,
-            )
-            .await
-            {
+            if let Err(error) = waterui_cli::water_dir::write_global_config(host, &config).await {
                 tracing::warn!("could not persist the last-used device: {error:#}");
             }
         }
@@ -1353,6 +1349,7 @@ fn prompt_for_device(
 /// stale memory.
 async fn choose_device_candidate(
     shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
     memory_key: &str,
     prompt: &str,
     candidates: Vec<DeviceCandidate>,
@@ -1360,7 +1357,7 @@ async fn choose_device_candidate(
 ) -> Result<SelectedDevice> {
     debug_assert!(!candidates.is_empty());
 
-    let mut remembered = remembered_device(memory_key).await;
+    let mut remembered = remembered_device(host, memory_key).await;
     let mut stale_memory = false;
     let (index, persist) = loop {
         match device_choice(&candidates, remembered.as_deref()) {
@@ -1384,7 +1381,7 @@ async fn choose_device_candidate(
         .nth(index)
         .expect("the index came from the candidate list");
     if persist {
-        persist_device_choice(memory_key, &candidate.id).await;
+        persist_device_choice(host, memory_key, &candidate.id).await;
     }
     Ok(candidate.device)
 }
@@ -1395,12 +1392,11 @@ async fn choose_device_candidate(
 /// candidate, then the picker.
 async fn select_ios_device(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     project: &Project,
     device_id: Option<&str>,
     spinner: Option<&indicatif::ProgressBar>,
 ) -> Result<SelectedDevice> {
-    let physical = ApplePhysicalDevice::scan(host)
+    let physical = ApplePhysicalDevice::scan(project.host())
         .await
         .unwrap_or_else(|error| {
             tracing::warn!("devicectl device scan failed: {error:#}");
@@ -1408,8 +1404,9 @@ async fn select_ios_device(
         });
 
     if let Some(query) = device_id {
-        if let Some(device) = select_physical_ios(host, &physical, project, query).await? {
+        if let Some(device) = select_physical_ios(&physical, project, query).await? {
             persist_device_choice(
+                project.host(),
                 device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
                 &device.identifier,
             )
@@ -1418,6 +1415,7 @@ async fn select_ios_device(
         }
         let sim = AppleSimulator::select_ios(project, Some(query)).await?;
         persist_device_choice(
+            project.host(),
             device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
             &sim.udid,
         )
@@ -1425,7 +1423,7 @@ async fn select_ios_device(
         return Ok(SelectedDevice::AppleSimulator(sim));
     }
 
-    let candidates = ios_device_candidates(host, project, &physical).await?;
+    let candidates = ios_device_candidates(project, &physical).await?;
     if candidates.is_empty() {
         // Reuse the simulator path's diagnosis — it lists every simulator and
         // the required runtime.
@@ -1435,6 +1433,7 @@ async fn select_ios_device(
     }
     choose_device_candidate(
         shell,
+        project.host(),
         device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
         "Select an iOS device",
         candidates,
@@ -1446,7 +1445,6 @@ async fn select_ios_device(
 /// Every device that can run the app on iOS: qualifying simulators (booted
 /// first, the historic preference), then usable paired devices.
 async fn ios_device_candidates(
-    host: &waterui_cli::toolchain::Host,
     project: &Project,
     physical: &[ApplePhysicalDevice],
 ) -> Result<Vec<DeviceCandidate>> {
@@ -1463,7 +1461,7 @@ async fn ios_device_candidates(
     let sim_target = deployment_target(LibTargetPlatform::IOSSimulator).await?;
     let device_target = deployment_target(LibTargetPlatform::IOS).await?;
 
-    let mut simulators = AppleSimulator::scan_ios(host).await?;
+    let mut simulators = AppleSimulator::scan_ios(project.host()).await?;
     simulators.retain(|sim| sim.supports_deployment_target(&sim_target));
     simulators.sort_by_key(|sim| usize::from(sim.state != "Booted"));
     let mut candidates: Vec<DeviceCandidate> = simulators
@@ -1511,7 +1509,6 @@ async fn ios_device_candidates(
 /// Developer Mode, too-old OS) is an error naming the remedy rather than a
 /// silent miss.
 async fn select_physical_ios(
-    host: &waterui_cli::toolchain::Host,
     devices: &[ApplePhysicalDevice],
     project: &Project,
     query: &str,
@@ -1561,7 +1558,7 @@ async fn select_physical_ios(
 
     // A device build must be signed; check the keychain has a development
     // identity now rather than after a multi-minute build.
-    waterui_cli::apple::toolchain::development_team_id(host).await?;
+    waterui_cli::apple::toolchain::development_team_id(project.host()).await?;
 
     Ok(Some(device.clone()))
 }
@@ -1629,7 +1626,6 @@ async fn check_toolchain_for_backend(
 
 async fn find_device(
     shell: &Shell,
-    host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
     project: &Project,
@@ -1647,15 +1643,13 @@ async fn find_device(
 
     let spinner = shell.spinner("Scanning for devices...");
     let device = match platform {
-        TargetPlatform::Ios => {
-            select_ios_device(shell, host, project, device_id, spinner.as_ref()).await
-        }
+        TargetPlatform::Ios => select_ios_device(shell, project, device_id, spinner.as_ref()).await,
         TargetPlatform::Macos => {
             // macOS with Apple backend uses the local machine
             Ok(SelectedDevice::Local(Local))
         }
         TargetPlatform::Android => {
-            select_android_device(shell, host, backend, device_id, spinner.as_ref()).await
+            select_android_device(shell, project.host(), backend, device_id, spinner.as_ref()).await
         }
         TargetPlatform::Linux | TargetPlatform::Windows => {
             // Linux and Windows run on the local machine
@@ -1691,12 +1685,12 @@ async fn select_android_device(
     if let Some(query) = device_id {
         for dev in devices {
             if dev.identifier() == query {
-                persist_device_choice(key, dev.identifier()).await;
+                persist_device_choice(host, key, dev.identifier()).await;
                 return Ok(SelectedDevice::AndroidDevice(dev));
             }
         }
         if avds.iter().any(|avd| avd == query) {
-            persist_device_choice(key, query).await;
+            persist_device_choice(host, key, query).await;
             return Ok(SelectedDevice::AndroidEmulator(
                 AndroidEmulator::open(host, query.to_string()).await?,
             ));
@@ -1725,7 +1719,15 @@ async fn select_android_device(
             "No Android devices connected and no emulators available. Create an emulator with Android Studio or `avdmanager`, or connect a device."
         );
     }
-    choose_device_candidate(shell, key, "Select an Android device", candidates, spinner).await
+    choose_device_candidate(
+        shell,
+        host,
+        key,
+        "Select an Android device",
+        candidates,
+        spinner,
+    )
+    .await
 }
 
 fn device_name(device: &SelectedDevice) -> String {
@@ -1810,7 +1812,12 @@ fn validate_log_pipeline_args(
 
 /// Handle a device event.
 ///
-fn handle_device_event(shell: &Shell, event: DeviceEvent, platform_name: &str) -> Result<()> {
+fn handle_device_event(
+    shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
+    event: DeviceEvent,
+    platform_name: &str,
+) -> Result<()> {
     match event {
         DeviceEvent::Started => {
             let _ = shell.status("*", "Application started");
@@ -1844,6 +1851,7 @@ fn handle_device_event(shell: &Shell, event: DeviceEvent, platform_name: &str) -
             if let CrashCause::Panic(panic) = &crash.cause {
                 let extra = crash.panic_note();
                 shell.panic(
+                    host,
                     panic,
                     extra.as_deref(),
                     crash
@@ -2055,6 +2063,7 @@ mod tests {
         let shell = crate::shell::Shell::new(false);
         handle_device_event(
             &shell,
+            &waterui_cli::toolchain::Host::current(),
             DeviceEvent::Exited(ApplicationExit::completed()),
             "test",
         )
@@ -2093,21 +2102,15 @@ mod tests {
         .detach();
 
         let backend = TargetBackend::Hydrolysis;
+        let host = waterui_cli::toolchain::Host::current();
         #[cfg(target_os = "macos")]
-        let result = {
-            let host = waterui_cli::toolchain::Host::current();
-            let mut crash_ctx = None;
-            smol::block_on(stream_running_events(
-                &shell,
-                &host,
-                running,
-                interrupts,
-                backend,
-                &mut crash_ctx,
-            ))
-        };
+        let result = smol::block_on(stream_running_events(
+            &shell, &host, running, interrupts, backend, &mut None,
+        ));
         #[cfg(not(target_os = "macos"))]
-        let result = smol::block_on(stream_running_events(&shell, running, interrupts, backend));
+        let result = smol::block_on(stream_running_events(
+            &shell, &host, running, interrupts, backend,
+        ));
 
         let request = request_rx.try_recv().ok().flatten();
         (result, request)

@@ -250,13 +250,19 @@ pub async fn sign_macos_app(
             } else {
                 "-"
             };
-            let plan = codesign_plan(app_path, identity, bundle_id.as_str(), None).await?;
+            let plan = codesign_plan(host, app_path, identity, bundle_id.as_str(), None).await?;
             run_sign_plan(host, plan).await
         }
         MacOsSigning::Distribution(distribution) => {
             let identity = developer_id_identity(host, &distribution.team_id).await?;
-            let plan =
-                codesign_plan(app_path, &identity, bundle_id.as_str(), Some(distribution)).await?;
+            let plan = codesign_plan(
+                host,
+                app_path,
+                &identity,
+                bundle_id.as_str(),
+                Some(distribution),
+            )
+            .await?;
             run_sign_plan(host, plan).await?;
             notarize_app(host, app_path, &distribution.notary_profile).await?;
             staple_app(host, app_path).await
@@ -380,8 +386,8 @@ struct HelperEntitlements {
 
 #[cfg(target_os = "macos")]
 impl HelperEntitlements {
-    fn new() -> eyre::Result<Self> {
-        let scratch = tempfile::tempdir()
+    fn new(host: &crate::toolchain::Host) -> eyre::Result<Self> {
+        let scratch = tempfile::tempdir_in(host.temp_dir())
             .wrap_err("a scratch directory for helper entitlements must be writable")?;
         let cef_jit = scratch.path().join("cef-helper.entitlements");
         plist::Value::Dictionary(plist::Dictionary::from_iter([(
@@ -414,6 +420,7 @@ struct CodesignPlan {
 /// on `smol::unblock` rather than the async executor.
 #[cfg(target_os = "macos")]
 async fn codesign_plan(
+    host: &Host,
     app_path: &Path,
     identity: &str,
     bundle_id: &str,
@@ -428,6 +435,7 @@ async fn codesign_plan(
         Seal::Development
     };
     let app_entitlements = distribution.and_then(|d| d.entitlements.clone());
+    let host = host.clone();
     smol::unblock(move || {
         let mut invocations = Vec::new();
         let mut helpers: Option<HelperEntitlements> = None;
@@ -435,7 +443,7 @@ async fn codesign_plan(
             let entitlements = match nested_entitlements(&nested) {
                 Some(NestedEntitlements::CefJit) => {
                     if helpers.is_none() {
-                        helpers = Some(HelperEntitlements::new()?);
+                        helpers = Some(HelperEntitlements::new(&host)?);
                     }
                     helpers.as_ref().map(|h| h.cef_jit.as_path())
                 }
@@ -1418,6 +1426,11 @@ mod tests {
         args
     }
 
+    /// A declared host whose temporary directory is `temp`.
+    fn host_with_temp_dir(temp: &std::path::Path) -> crate::toolchain::Host {
+        crate::toolchain::Host::new(std::iter::empty::<&std::path::Path>(), [("TMPDIR", temp)])
+    }
+
     #[test]
     fn codesign_plan_signs_nested_code_inside_out() {
         smol::block_on(async {
@@ -1439,36 +1452,30 @@ mod tests {
             }
             write_info_plist(&contents, "Demo");
             write_info_plist(&login_item.join("Contents"), "LoginItem");
-            std::fs::write(macos_dir.join("Demo"), MACH_O_64)
-                .expect("main executable must be written");
-            std::fs::write(macos_dir.join("agent"), MACH_O_64)
-                .expect("extra executable must be written");
             std::fs::write(macos_dir.join("notes.txt"), b"not code")
                 .expect("data file must be written");
-            std::fs::write(
-                macos_dir.join("swiftshader/libvk_swiftshader.dylib"),
-                MACH_O_64,
-            )
-            .expect("flat-runtime library must be written");
             let cef = write_cef_framework(&frameworks);
             let helper = write_cef_helper(&frameworks, "Demo Helper");
             let gpu_helper = write_cef_helper(&frameworks, "Demo Helper (GPU)");
             let renderer_helper = write_cef_helper(&frameworks, "Demo Helper (Renderer)");
-            std::fs::write(frameworks.join("libfoo.dylib"), MACH_O_64)
-                .expect("library must be written");
+            // The main and extra executables, a flat-runtime library, a
+            // framework library, the login item's executable and a helper tool.
+            for code in [
+                macos_dir.join("Demo"),
+                macos_dir.join("agent"),
+                macos_dir.join("swiftshader/libvk_swiftshader.dylib"),
+                frameworks.join("libfoo.dylib"),
+                login_item.join("Contents/MacOS/LoginItem"),
+                contents.join("Helpers/helper-tool"),
+            ] {
+                std::fs::write(code, MACH_O_64).expect("Mach-O fixture must be written");
+            }
             std::os::unix::fs::symlink("libfoo.dylib", frameworks.join("liblink.dylib"))
                 .expect("symlink must be created");
-            std::fs::write(
-                login_item.join("Contents/MacOS").join("LoginItem"),
-                MACH_O_64,
-            )
-            .expect("login item executable must be written");
             std::fs::create_dir_all(contents.join("PlugIns/Share.appex"))
                 .expect("plug-in bundle must be created");
             std::fs::create_dir_all(contents.join("XPCServices/Agent.xpc"))
                 .expect("xpc bundle must be created");
-            std::fs::write(contents.join("Helpers/helper-tool"), MACH_O_64)
-                .expect("helper tool must be written");
             let entitlements = temporary.path().join("Demo.entitlements");
             let distribution = super::DistributionSigning {
                 team_id: String::from("TEAMID1234"),
@@ -1476,15 +1483,20 @@ mod tests {
                 entitlements: Some(entitlements.clone()),
             };
 
-            let plan = super::codesign_plan(&app, "HASH", "dev.waterui.demo", Some(&distribution))
-                .await
-                .expect("the sign plan must build");
+            let host = host_with_temp_dir(temporary.path());
+            let plan =
+                super::codesign_plan(&host, &app, "HASH", "dev.waterui.demo", Some(&distribution))
+                    .await
+                    .expect("the sign plan must build");
 
             let jit = plan
                 .helpers
                 .as_ref()
                 .map(|helpers| helpers.cef_jit.as_path())
-                .expect("the CEF JIT helpers must carry generated entitlements");
+                .filter(|jit| jit.starts_with(temporary.path()))
+                .expect(
+                    "the CEF JIT helpers must carry entitlements generated in the host temp dir",
+                );
             assert!(
                 std::fs::read_to_string(jit)
                     .expect("the generated entitlements must be readable")
@@ -1553,7 +1565,8 @@ mod tests {
             std::fs::write(frameworks.join("libfoo.dylib"), MACH_O_64)
                 .expect("library must be written");
 
-            let plan = super::codesign_plan(&app, "-", "dev.waterui.demo", None)
+            let host = host_with_temp_dir(temporary.path());
+            let plan = super::codesign_plan(&host, &app, "-", "dev.waterui.demo", None)
                 .await
                 .expect("the sign plan must build");
 
