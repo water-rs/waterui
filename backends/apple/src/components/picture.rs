@@ -260,10 +260,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Re-rasterize on every bounds-affecting event the kit reports —
         // `layout`/`layoutSubviews`, `viewDidMoveToWindow`/`didMoveToWindow`
         // and `viewDidChangeBackingProperties`/the `UITraitDisplayScale`
-        // registration, the same hooks the Swift leaf re-rasterized on.
-        // The handlers take
-        // the view as their argument: capturing it here would retain it
-        // through its own ivars.
+        // registration, the same hooks the Swift leaf re-rasterized on. The
+        // handlers take the view as their argument: capturing it here would
+        // retain it through its own ivars.
         view.set_layout_handler({
             let state = state.clone();
             let picture = picture.clone();

@@ -508,10 +508,13 @@ impl SurfaceView {
     /// The handler decides whether the change matters to it. Replaces any
     /// handler set before.
     pub fn set_backing_changed_handler(&self, handler: impl Fn() + 'static) {
-        let registration =
-            register_trait_change(self, UITraitDisplayScale::class().as_ref(), move |_| {
+        let registration = register_trait_change::<UIView, _>(
+            self,
+            UITraitDisplayScale::class().as_ref(),
+            move |_| {
                 handler();
-            });
+            },
+        );
         self.ivars().backing_changed.replace(Some(registration));
     }
 

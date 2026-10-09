@@ -14,10 +14,10 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSObjectProtocol, NSString};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIColor, UIImage, UIImageSymbolConfiguration, UIImageView,
-    UITraitDisplayScale, UIViewContentMode,
+    UIResponder, UITraitDisplayScale, UIView, UIViewContentMode,
 };
 
 use super::trait_change::{TraitChangeObservation, register_trait_change};
@@ -59,7 +59,7 @@ impl fmt::Debug for ImageViewIvars {
 define_class!(
     // SAFETY: `UIImageView` inherits `initWithFrame:` as a valid initializer,
     // which `ImageView::new` calls, and the class does not implement `Drop`.
-    #[unsafe(super(UIImageView))]
+    #[unsafe(super(UIImageView, UIView, UIResponder, NSObject))]
     #[name = "CocoaUiImageView"]
     #[thread_kind = MainThreadOnly]
     #[ivars = ImageViewIvars]
@@ -153,24 +153,11 @@ impl ImageView {
     /// `UITraitDisplayScale` trait, which a backing-scale change rides on.
     /// The handler decides whether the change matters to it. Replaces any
     /// handler set before.
-    ///
-    /// # Panics
-    ///
-    /// When the observed view is not this `ImageView` — unreachable: the
-    /// registration holds the view it was created on.
     pub fn set_backing_changed_handler(&self, handler: impl Fn(&Self) + 'static) {
-        // `UITraitChangeObservable` is declared on `UIView`: the
-        // registration goes through this view's `UIImageView` face and the
-        // handler sees the same object back through a downcast.
-        let registration = register_trait_change(
-            &**self,
+        let registration = register_trait_change::<UIView, _>(
+            self,
             UITraitDisplayScale::class().as_ref(),
-            move |view| {
-                handler(
-                    view.downcast_ref::<Self>()
-                        .expect("the observable is the ImageView it was registered on"),
-                );
-            },
+            handler,
         );
         self.ivars().backing_changed.replace(Some(registration));
     }
