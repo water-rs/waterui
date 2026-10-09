@@ -7301,7 +7301,10 @@ mod webview {
     ///
     /// The first leg loads under `BridgeOrigins::Any` so the globals are
     /// expected present — without it, a build that simply never installed
-    /// anything would pass too.
+    /// anything would pass too. Both legs load `data:` documents, so the
+    /// policy is the only difference between them. The first is not
+    /// `about:blank`: a fresh view's first `about:blank` navigation reuses
+    /// the initial empty document, which runs no document-start script.
     fn a_non_admitted_document_gets_no_bridge_globals() {
         let webview = waterui_apple::native_test_support::webview::open(mtm());
         let handle = webview.handle().clone();
@@ -7330,7 +7333,7 @@ mod webview {
 
         let initial: Url = "https://waterui.dev".parse().expect("parses");
         handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Any, &initial));
-        navigate(&handle, "about:blank", &loaded);
+        navigate(&handle, "data:text/html,admitted", &loaded);
         assert_eq!(
             bridge_globals(&handle),
             r#"["object","function","object","boolean"]"#,
