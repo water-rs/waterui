@@ -378,7 +378,7 @@ async fn stage_device_payload(
         .backend_path::<HydrolysisBackend>()
         .join("android-preview")
         .join("stage");
-    let (_manifest, staged) = assets::stage_project_assets_for_android_library(
+    let (_manifest, bundle) = assets::stage_project_assets_for_android_library(
         project,
         &stage_dir,
         &build.built.app_symbols()?,
@@ -388,15 +388,13 @@ async fn stage_device_payload(
     let resources = device_dir.join("resources");
     fs::create_dir_all(&resources).await?;
     let assets_dest = resources.join(assets::ANDROID_ASSET_BUNDLE_DIR);
-    fs::rename(&staged.bundle, &assets_dest)
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "failed to move {} to {}",
-                staged.bundle.display(),
-                assets_dest.display()
-            )
-        })?;
+    fs::rename(&bundle, &assets_dest).await.wrap_err_with(|| {
+        format!(
+            "failed to move {} to {}",
+            bundle.display(),
+            assets_dest.display()
+        )
+    })?;
 
     Ok(build.staged_libraries)
 }

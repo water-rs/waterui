@@ -2030,7 +2030,6 @@ pub use unified::{build_manifest as plan_library_resources, write_library_resour
 /// The directory name the staged asset bundle carries inside an Android
 /// `src/main/assets/` root.
 pub use unified::ASSET_ROOT_DIR as ANDROID_ASSET_BUNDLE_DIR;
-pub use unified::StagedAndroidAssets;
 
 /// Stage project assets for Apple packaging (Asset Catalog + raw resources).
 ///
@@ -2065,13 +2064,13 @@ pub async fn stage_project_assets_for_android(
 /// `symbols` is the target build's app library — see
 /// [`stage_project_assets_for_apple`].
 ///
-/// Returns the manifest and where the bundle was staged.
+/// Returns the manifest and the staged `waterui_assets` directory.
 pub async fn stage_project_assets_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
+) -> eyre::Result<(BundleManifest, PathBuf)> {
     unified::stage_for_android_library(project, module_dir, symbols, dev_server).await
 }
 
