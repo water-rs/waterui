@@ -24,20 +24,22 @@ dependencyResolutionManagement {
     // included host build uses; this build applies the same one.
     versionCatalogs {
         create("libs") {
-            from(files("{{ ctx.hydrolysis_android_host_project_dir() }}/gradle/libs.versions.toml"))
+            from(files("{{ ctx.hydrolysis_android_embedded().app.host_project_dir }}/gradle/libs.versions.toml"))
         }
     }
 }
 
-rootProject.name = "{{ ctx.app_name }}"
-include(":app")
+rootProject.name = "{{ ctx.app_name }}-embedded"
+include(":waterui")
 
 // The Hydrolysis Android host is a pinned framework checkout the CLI fetches
-// and owns; its host and painter libraries substitute the coordinates the app
-// module declares.
-includeBuild("{{ ctx.hydrolysis_android_host_project_dir() }}") {
+// and owns; its host and painter libraries substitute the coordinates the
+// library module declares at the version this build publishes them under.
+includeBuild("{{ ctx.hydrolysis_android_embedded().app.host_project_dir }}") {
+    name = "hydrolysis-host"
     dependencySubstitution {
-        substitute(module("dev.waterui.hydrolysis:host")).using(project(":host"))
-        substitute(module("{{ ctx.hydrolysis_android_painter_dependency() }}")).using(project(":{{ ctx.hydrolysis_android_painter_module() }}"))
+{% for module in ctx.hydrolysis_android_embedded().host_modules -%}
+        substitute(module("dev.waterui.hydrolysis:{{ module }}")).using(project(":{{ module }}"))
+{% endfor -%}
     }
 }

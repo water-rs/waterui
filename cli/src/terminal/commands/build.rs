@@ -11,14 +11,12 @@ use crate::shell::Shell;
 use crate::{error, header, line, success};
 use waterui_cli::toolchain_checks;
 use waterui_cli::{
-    android::{
-        embedded,
-        platform::{AndroidAbi, AndroidPlatform},
-    },
+    android::platform::{AndroidAbi, AndroidPlatform},
     apple::{platform::build_rust_lib, toolchain::AppleSdk},
     build::{BuildOptions, BuildProfile, BuiltTarget},
     gtk4::platform::build_gtk4,
     hydrolysis::platform::build_hydrolysis,
+    hydrolysis::{self, android::embedded},
     platform::TargetPlatform as LibTargetPlatform,
     project::{ManagedBackends, Project},
     winui::platform::build_winui,
@@ -175,6 +173,7 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
     if args.platform != TargetPlatform::Android {
         bail!("embedded projects support the Apple and Android backends");
     }
+    embedded::require_hydrolysis_backend(context.backend == TargetBackend::Hydrolysis)?;
 
     let abis: Vec<AndroidAbi> = args.arch.map_or_else(
         || embedded::ALL_ABIS.to_vec(),
@@ -195,6 +194,7 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
     let spinner = shell.spinner("Compiling...");
     let result = Box::pin(embedded::build_aar(
         &context.project.with_std_output(shell.is_interactive()),
+        hydrolysis::android::resolve_painter(&context.project, None),
         &context.build_options,
         &abis,
         &kotlin,
@@ -206,25 +206,43 @@ async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) 
 
     match result {
         Ok(artifact) => {
+            let library = &artifact.library;
             success!(
                 shell,
                 "Embedded artifact at {}",
                 artifact.aar_path.display()
             );
-            success!(shell, "Published to mavenLocal as {}", artifact.coordinate);
+            success!(shell, "Published to mavenLocal as {}", library.coordinate());
+            for host_coordinate in &library.host_coordinates {
+                line!(shell, "    published {}", host_coordinate);
+            }
             line!(shell, "In the host Gradle project, add:");
             line!(shell, "    mavenLocal() to repositories");
             line!(
                 shell,
                 "    implementation(\"{}\") to dependencies",
-                artifact.coordinate
+                library.coordinate()
             );
             line!(
                 shell,
-                "then mount the WaterUI root with WaterUiEmbedding + WaterUiRootView:"
+                "then mount the WaterUI root with `WaterUi` (in `{}.waterui`):",
+                library.group
             );
-            line!(shell, "    val waterui = WaterUiEmbedding(this)");
-            line!(shell, "    setContentView(WaterUiRootView(this, waterui))");
+            line!(
+                shell,
+                "    setContentView(WaterUi.createView(this) {{ finish() }})"
+            );
+            line!(
+                shell,
+                "The host app needs compileSdk {} and minSdk {} or higher.",
+                library.compile_sdk,
+                library.min_sdk
+            );
+            line!(
+                shell,
+                "The dev.waterui.hydrolysis artifacts exist only in this machine's mavenLocal: \
+                 build the library on each machine that builds the host, rather than copying the AAR."
+            );
             Ok(())
         }
         Err(err) => {
