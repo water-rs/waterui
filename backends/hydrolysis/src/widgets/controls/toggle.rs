@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::layout::{ProposalSize, ViewDimensions};
+use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
 use crate::renderer::local_interaction_state;
@@ -76,8 +76,9 @@ pub fn toggle_accessibility(
             AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
                 env,
                 match toggle.style {
-                    ToggleStyle::Automatic | ToggleStyle::Switch => AccessibilityNodeRole::Switch,
+                    ToggleStyle::Switch => AccessibilityNodeRole::Switch,
                     ToggleStyle::Checkbox => AccessibilityNodeRole::CheckBox,
+                    ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
                     _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
                 },
             ));
@@ -117,11 +118,21 @@ pub fn toggle_accessibility(
     }
 }
 
+/// The native payload's style is resolved before a backend sees it
+/// (`ToggleConfig`'s resolver owns the platform default), so `Automatic`
+/// reaching a match here is a broken contract, not a style to draw.
+const UNRESOLVED_STYLE: &str =
+    "the toggle payload reached hydrolysis with an unresolved Automatic style";
+
 /// Measures a retained toggle leaf from its [`ToggleRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and render agree.
+///
+/// A switch with a visible label (`StretchAxis::Horizontal`) answers a finite
+/// width proposal, never below its intrinsic width; every other toggle
+/// answers its intrinsic size (`docs/layout-spec.md` §6).
 pub fn measure_toggle_node(
     render_state: &ToggleRenderState,
-    _proposal: ProposalSize,
+    proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
@@ -135,6 +146,15 @@ pub fn measure_toggle_node(
         metrics.width
     };
     let height = f64::from(label_size.height).max(metrics.height);
+    let width = match (
+        waterui_core::NativeView::stretch_axis(&render_state.config),
+        proposal.width,
+    ) {
+        (StretchAxis::Horizontal, Some(proposed)) if proposed.is_finite() => {
+            f64::from(proposed).max(width)
+        }
+        _ => width,
+    };
     ViewDimensions::new(LayoutSize::new(
         crate::num_cast::f64_as_f32(width),
         crate::num_cast::f64_as_f32(height),
@@ -253,7 +273,7 @@ pub fn render_toggle_parts(
     let interaction = local_interaction_state(interaction, hit_transform);
     {
         ctx.draw_context(|draw| match style {
-            ToggleStyle::Automatic | ToggleStyle::Switch => {
+            ToggleStyle::Switch => {
                 theme.draw_toggle_switch(
                     &mut *draw,
                     control_bounds,
@@ -278,6 +298,7 @@ pub fn render_toggle_parts(
                     interaction,
                 );
             }
+            ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
             _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
         });
     }
@@ -383,7 +404,7 @@ fn toggle_control_and_label_bounds(
                 ),
             )
         }
-        ToggleStyle::Automatic | ToggleStyle::Switch => {
+        ToggleStyle::Switch => {
             let control_x0 = (bounds.x1 - metrics.width).max(bounds.x0);
             let control = kurbo::Rect::new(
                 control_x0,
@@ -407,6 +428,7 @@ fn toggle_control_and_label_bounds(
                 ),
             )
         }
+        ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
         _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
     }
 }
@@ -469,11 +491,7 @@ mod tests {
     fn label_shares_the_control_centre_line() {
         let metrics = ToggleMetrics::new(52.0, 32.0, 8.0);
         let bounds = Rect::new(16.0, 20.0, 320.0, 60.0);
-        for style in [
-            ToggleStyle::Automatic,
-            ToggleStyle::Switch,
-            ToggleStyle::Checkbox,
-        ] {
+        for style in [ToggleStyle::Switch, ToggleStyle::Checkbox] {
             let metrics = match style {
                 ToggleStyle::Checkbox => ToggleMetrics::new(18.0, 18.0, 8.0),
                 _ => metrics,
