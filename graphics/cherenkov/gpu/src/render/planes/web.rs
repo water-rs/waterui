@@ -169,8 +169,8 @@ struct PartCanvas {
 /// frame that moves nothing writes nothing.
 struct HostedNode {
     element: HostedElement,
-    /// The `<clipPath>` elements of its chain, outermost first.
-    clips: Vec<Element>,
+    /// Its clip chain, outermost first.
+    clips: Vec<Clip>,
     /// The placement, extent, stacking index and CSS scale last written;
     /// `None` while hidden.
     shown: Option<(Placement, Size, usize, (f64, f64))>,
@@ -370,9 +370,15 @@ impl DomPlanes {
         &mut self,
         planes: impl Iterator<Item = (usize, &'p Placement, &'p HostedElement, Size)>,
     ) -> Result<(), RenderError> {
-        let scale = self.css_scale()?;
+        // Reading the used size flushes the page's style, so a frame
+        // without hosted planes does not.
+        let mut scale = None;
         self.epoch += 1;
         for (index, placement, object, extent) in planes {
+            let scale = match scale {
+                Some(scale) => scale,
+                None => *scale.insert(self.css_scale()?),
+            };
             let node = match self.hosted.remove(&placement.layer) {
                 Some(node) if node.element.is(object) => node,
                 previous => {
@@ -413,21 +419,22 @@ impl DomPlanes {
         extent: Size,
         scale: (f64, f64),
     ) -> Result<HostedNode, RenderError> {
-        let shown = (placement.clone(), extent, index, scale);
-        if node.shown.as_ref() == Some(&shown) {
+        if node.shown.as_ref().is_some_and(|shown| {
+            shown.0 == *placement && shown.1 == extent && shown.2 == index && shown.3 == scale
+        }) {
             return Ok(node);
         }
         let device = placement.content_to_device();
         let css = Affine::scale_non_uniform(scale.0, scale.1) * device;
-        for clip in node.clips.drain(..) {
-            clip.remove();
-        }
         // A singular placement maps the element onto a line or a point,
         // which the browser does not render: no clip space exists to
         // express, and none is needed.
         let clip = if device.determinant().is_normal() {
             self.clip_chain(&mut node.clips, &placement.path, device.inverse())?
         } else {
+            for clip in node.clips.drain(..) {
+                clip.clip_path.remove();
+            }
             None
         };
         let element = &node.element.element;
@@ -453,47 +460,35 @@ impl DomPlanes {
                 ),
             ],
         );
-        node.shown = Some(shown);
+        node.shown = Some((placement.clone(), extent, index, scale));
         Ok(node)
     }
 
-    /// Builds the `<clipPath>` chain of `path`'s clipped levels in the
+    /// Writes the `<clipPath>` chain of `path`'s clipped levels in the
     /// element's own space — `element_from_device` maps device space there
     /// — each intersected with the one before through its own `clip-path`.
-    /// Returns the innermost id, which clips by every level, or `None` when
-    /// no level clips.
+    /// The chain's elements are reused in place, so a scroll that moves the
+    /// element under its clips only rewrites their shapes. Returns the
+    /// innermost id, which clips by every level, or `None` when no level
+    /// clips.
     fn clip_chain(
         &mut self,
-        clips: &mut Vec<Element>,
+        clips: &mut Vec<Clip>,
         path: &[Level],
         element_from_device: Affine,
     ) -> Result<Option<String>, RenderError> {
-        let document = self
-            .root
-            .owner_document()
-            .ok_or_else(|| RenderError::Render("the stacking root left its document".into()))?;
         let mut device_from_parent = Affine::IDENTITY;
-        let mut previous: Option<String> = None;
+        let mut count = 0;
         for level in path {
             let device_from_level = device_from_parent * level.transform;
             if let Some(shape) = &level.clip {
-                let id = format!("cherenkov-clip-{}-{}", self.serial, self.next_clip);
-                self.next_clip += 1;
-                let clip_path = document
-                    .create_element_ns(Some(SVG), "clipPath")
-                    .map_err(|_| RenderError::Render("cannot create a clip path".into()))?;
-                attributes(
-                    &clip_path,
-                    &[("id", &id), ("clipPathUnits", "userSpaceOnUse")],
-                );
-                if let Some(outer) = &previous {
-                    attributes(&clip_path, &[("clip-path", &format!("url(#{outer})"))]);
+                if clips.len() == count {
+                    let outer = clips.last().map(|clip: &Clip| clip.id.as_str());
+                    let clip = self.new_clip(outer)?;
+                    clips.push(clip);
                 }
-                let shape_element = document
-                    .create_element_ns(Some(SVG), "path")
-                    .map_err(|_| RenderError::Render("cannot create a clip shape".into()))?;
                 attributes(
-                    &shape_element,
+                    &clips[count].shape,
                     &[
                         ("d", &shape.to_path(CLIP_TOLERANCE).to_svg()),
                         ("clip-rule", clip_rule(shape)),
@@ -503,15 +498,54 @@ impl DomPlanes {
                         ),
                     ],
                 );
-                append(&clip_path, &shape_element).map_err(render)?;
-                append(&self.defs, &clip_path).map_err(render)?;
-                clips.push(clip_path);
-                previous = Some(id);
+                count += 1;
             }
             device_from_parent = device_from_level * Affine::translate(-level.scroll);
         }
-        Ok(previous)
+        for clip in clips.drain(count..) {
+            clip.clip_path.remove();
+        }
+        Ok(clips.last().map(|clip| clip.id.clone()))
     }
+
+    /// A `<clipPath>` with one `<path>`, intersected with `outer` when
+    /// given.
+    fn new_clip(&mut self, outer: Option<&str>) -> Result<Clip, RenderError> {
+        let document = self
+            .root
+            .owner_document()
+            .ok_or_else(|| RenderError::Render("the stacking root left its document".into()))?;
+        let id = format!("cherenkov-clip-{}-{}", self.serial, self.next_clip);
+        self.next_clip += 1;
+        let clip_path = document
+            .create_element_ns(Some(SVG), "clipPath")
+            .map_err(|_| RenderError::Render("cannot create a clip path".into()))?;
+        attributes(
+            &clip_path,
+            &[("id", &id), ("clipPathUnits", "userSpaceOnUse")],
+        );
+        if let Some(outer) = outer {
+            attributes(&clip_path, &[("clip-path", &format!("url(#{outer})"))]);
+        }
+        let shape = document
+            .create_element_ns(Some(SVG), "path")
+            .map_err(|_| RenderError::Render("cannot create a clip shape".into()))?;
+        append(&clip_path, &shape).map_err(render)?;
+        append(&self.defs, &clip_path).map_err(render)?;
+        Ok(Clip {
+            id,
+            clip_path,
+            shape,
+        })
+    }
+}
+
+/// One `<clipPath>` of a hosted element's chain.
+struct Clip {
+    id: String,
+    clip_path: Element,
+    /// Its one `<path>`.
+    shape: Element,
 }
 
 /// Where a child of the root stacks: part `n` below plane `n`, plane `n`
@@ -543,7 +577,7 @@ fn page_unique() -> String {
 /// another element took its layer.
 fn release(node: HostedNode) {
     for clip in node.clips {
-        clip.remove();
+        clip.clip_path.remove();
     }
     node.element.element.remove();
 }
