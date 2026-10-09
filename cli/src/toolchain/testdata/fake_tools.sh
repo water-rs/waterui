@@ -484,6 +484,17 @@ sccache)
         --version | -version | -v)
             printf 'sccache %s (waterui-test)\n' "${WATERUI_FAKE_SCCACHE_VERSION:-1.0.0}"
             ;;
+        --show-stats)
+            # A socket file still at SCCACHE_SERVER_UDS when connect-or-start
+            # runs is the bind collision the failing host reported. A test
+            # declaring WATERUI_FAKE_SCCACHE_LIVE says that file belongs to a
+            # live server, which the client connects to instead.
+            if [ -n "${SCCACHE_SERVER_UDS-}" ] && [ -e "$SCCACHE_SERVER_UDS" ] && [ -z "${WATERUI_FAKE_SCCACHE_LIVE-}" ]; then
+                printf 'sccache: error: Server startup failed: File exists (os error 17)\n' >&2
+                exit 2
+            fi
+            printf 'Compile requests                      0\n'
+            ;;
     esac
     exit 0
     ;;

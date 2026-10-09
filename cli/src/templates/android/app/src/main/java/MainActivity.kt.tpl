@@ -100,12 +100,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        val reportActivityFinished = !isChangingConfigurations
         super.onDestroy()
         check(::androidRuntimeLease.isInitialized) { "Android runtime lease is not initialized" }
-        val releasedActiveRuntime = androidRuntimeLease.close()
-        if (reportActivityFinished && releasedActiveRuntime) {
-            Log.i(TAG, "WATERUI_ACTIVITY_FINISHED")
-        }
+        androidRuntimeLease.close()
     }
 }

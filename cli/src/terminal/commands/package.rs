@@ -430,6 +430,9 @@ async fn build_android_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let mut built = None;
+    // Every tool the build spawns, the prologue's included, echoes to the
+    // terminal the user is watching.
+    let project = &project.with_std_output(shell.is_interactive());
     AndroidPlatform::clean_jni_libs(project).await?;
     // The companion render, permission audit and font staging do not
     // depend on the ABI — run them once for the whole set.
@@ -439,10 +442,9 @@ async fn build_android_packaging_artifacts(
         let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
         // The Android build future crosses clippy's `large_futures` threshold
         // (16 KiB) on Windows, so it is pinned on the heap.
-        let target = Box::pin(shell.display_output(
-            AndroidPlatform::new(abi).build_prepared(project, build_options.clone()),
-        ))
-        .await?;
+        let target =
+            Box::pin(AndroidPlatform::new(abi).build_prepared(project, build_options.clone()))
+                .await?;
         built = Some(target);
         if let Some(pb) = spinner {
             pb.finish_and_clear();
@@ -459,13 +461,12 @@ async fn build_apple_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let spinner = shell.spinner("Building Rust library...");
-    let built = shell
-        .display_output(Box::pin(build_rust_lib(
-            project,
-            lib_platform(platform),
-            build_options,
-        )))
-        .await?;
+    let built = Box::pin(build_rust_lib(
+        &project.with_std_output(shell.is_interactive()),
+        lib_platform(platform),
+        build_options,
+    ))
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -479,9 +480,11 @@ async fn build_gtk4_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let spinner = shell.spinner("Building GTK4 app...");
-    let built = shell
-        .display_output(build_gtk4(project, build_options))
-        .await?;
+    let built = build_gtk4(
+        &project.with_std_output(shell.is_interactive()),
+        build_options,
+    )
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -495,9 +498,11 @@ async fn build_winui_packaging_artifacts(
     build_options: BuildOptions,
 ) -> Result<Option<BuiltTarget>> {
     let spinner = shell.spinner("Building WinUI app...");
-    let built = shell
-        .display_output(build_winui(project, build_options))
-        .await?;
+    let built = build_winui(
+        &project.with_std_output(shell.is_interactive()),
+        build_options,
+    )
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -522,13 +527,12 @@ async fn build_hydrolysis_packaging_artifacts(
         for arch in arch {
             let abi = arch.to_abi();
             let spinner = shell.spinner(format!("Building Rust library ({})...", abi.as_str()));
-            let target = shell
-                .display_output(hydrolysis_android::build(
-                    project,
-                    abi,
-                    build_options.clone(),
-                ))
-                .await?;
+            let target = hydrolysis_android::build(
+                &project.with_std_output(shell.is_interactive()),
+                abi,
+                build_options.clone(),
+            )
+            .await?;
             built = Some(target);
             if let Some(pb) = spinner {
                 pb.finish_and_clear();
@@ -539,13 +543,12 @@ async fn build_hydrolysis_packaging_artifacts(
     }
 
     let spinner = shell.spinner("Building hydrolysis app...");
-    let built = shell
-        .display_output(Box::pin(build_hydrolysis(
-            project,
-            hydrolysis_platform(platform),
-            build_options,
-        )))
-        .await?;
+    let built = Box::pin(build_hydrolysis(
+        &project.with_std_output(shell.is_interactive()),
+        hydrolysis_platform(platform),
+        build_options,
+    ))
+    .await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -560,9 +563,7 @@ async fn package_artifact(
     built: Option<&BuiltTarget>,
 ) -> Result<()> {
     let spinner = shell.spinner("Packaging application...");
-    let artifact = shell
-        .display_output(package_artifact_inner(args, context, built))
-        .await?;
+    let artifact = package_artifact_inner(args, context, built, shell.is_interactive()).await?;
     let artifact = place_in_project(&context.project, artifact).await?;
     // Consumers read the host library beside the `.app` this command reports,
     // so it stages against the placed path, which only exists after the move.
@@ -598,7 +599,11 @@ async fn package_artifact_inner(
     args: &Args,
     context: &PackagingContext,
     built: Option<&BuiltTarget>,
+    std_output: bool,
 ) -> Result<Artifact> {
+    // The only project in scope carries the output policy the packaging
+    // tools run under.
+    let project = &context.project.with_std_output(std_output);
     let package_options = context.package_options.clone();
     match context.backend {
         TargetBackend::Android => {
@@ -607,7 +612,7 @@ async fn package_artifact_inner(
                 eyre::eyre!("Internal error: Android packaging has no build result")
             })?;
             AndroidPlatform::package_with_abis(
-                &context.project,
+                project,
                 package_options,
                 &abis,
                 built,
@@ -621,17 +626,11 @@ async fn package_artifact_inner(
             let built = built.ok_or_else(|| {
                 eyre::eyre!("Internal error: Apple packaging has no build result")
             })?;
-            package_apple(
-                &context.project,
-                lib_platform(args.platform),
-                package_options,
-                built,
-            )
-            .await
+            package_apple(project, lib_platform(args.platform), package_options, built).await
         }
         TargetBackend::Gtk4 => {
             package_gtk4(
-                &context.project,
+                project,
                 package_options,
                 built.ok_or_else(|| {
                     eyre::eyre!("Internal error: GTK4 packaging has no build result")
@@ -641,7 +640,7 @@ async fn package_artifact_inner(
         }
         TargetBackend::WinUi => {
             package_winui(
-                &context.project,
+                project,
                 package_options,
                 built.ok_or_else(|| {
                     eyre::eyre!("Internal error: WinUI packaging has no build result")
@@ -652,9 +651,9 @@ async fn package_artifact_inner(
         TargetBackend::Hydrolysis => {
             if args.platform == TargetPlatform::Android {
                 let abis: Vec<AndroidAbi> = args.arch.iter().map(|arch| arch.to_abi()).collect();
-                let painter = hydrolysis_android::resolve_painter(&context.project, args.painter);
+                let painter = hydrolysis_android::resolve_painter(project, args.painter);
                 hydrolysis_android::package_with_abis(
-                    &context.project,
+                    project,
                     painter,
                     &package_options,
                     &abis,
@@ -670,7 +669,7 @@ async fn package_artifact_inner(
                 .await
             } else {
                 package_hydrolysis(
-                    &context.project,
+                    project,
                     hydrolysis_platform(args.platform),
                     package_options,
                     built,

@@ -211,7 +211,8 @@ async fn toolchain_output(
     args: &[&str],
 ) -> eyre::Result<String> {
     let mut process = host.command(program);
-    let output = command(&mut process)
+    // The answer is the captured stdout, so it is never echoed.
+    let output = command(&mut process, false)
         .args(args)
         .current_dir(project_root)
         .output()
@@ -718,6 +719,16 @@ impl Project {
     #[must_use]
     pub const fn host(&self) -> &Host {
         &self.host
+    }
+
+    /// A project whose spawned tools echo their captured output to the
+    /// terminal — [`Host::with_std_output`] applied to the host this
+    /// project was opened with, for the commands the user is watching.
+    #[must_use]
+    pub fn with_std_output(&self, enabled: bool) -> Self {
+        let mut project = self.clone();
+        project.host = project.host.with_std_output(enabled);
+        project
     }
 
     /// Get the target directory for Rust build artifacts.
@@ -2504,7 +2515,7 @@ impl Project {
 
         let mut cmd = host.command("git");
 
-        let is_in_git = command(&mut cmd)
+        let is_in_git = command(&mut cmd, host.std_output())
             .args(["rev-parse", "--git-dir"])
             .current_dir(path)
             .output()
@@ -2516,7 +2527,7 @@ impl Project {
         if !is_in_git {
             // Initialize a new git repository
             let mut cmd = host.command("git");
-            command(&mut cmd)
+            command(&mut cmd, host.std_output())
                 .args(["init"])
                 .current_dir(path)
                 .status()
