@@ -364,17 +364,7 @@ impl LayerTarget for cherenkov_gpu::Gpu {
             },
             (
                 move |params, scale| {
-                    let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels);
-                    // A scoped chrome group captures beneath its scope's
-                    // anchor layer, like a material group
-                    // (water-rs/waterui#2097).
-                    if let Some(anchor) = key.anchor() {
-                        spec = spec.anchor(anchor);
-                    }
-                    if let Some(union) = union_of(params, scale, key.class()) {
-                        spec = spec.union(union);
-                    }
-                    surface.backdrop_group_unfiltered(spec)
+                    surface.backdrop_group_unfiltered(chrome_spec(params, scale, key))
                 },
                 |tx: &mut Transaction<'_, Self>,
                  member: &Layer,
@@ -391,6 +381,30 @@ impl LayerTarget for cherenkov_gpu::Gpu {
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
         tx[layer].clear_backdrop();
     }
+}
+
+/// The spec a chrome group of `key` is created with at display `scale`:
+/// the class's capture scale, levels and member blend space, its union
+/// field converted at `scale`, and — for a scoped group — its scope's
+/// anchor layer, beneath which it captures like a material group
+/// (water-rs/waterui#2097).
+///
+/// # Panics
+/// Panics as [`union_of`] does for a union smoothing invalid at `scale`.
+pub fn chrome_spec(
+    params: &cherenkov_record::MaterialCapture,
+    scale: f64,
+    key: ChromeGroupKey,
+) -> cherenkov::BackdropSpec {
+    let mut spec =
+        cherenkov::BackdropSpec::new(params.scale, params.levels).blend_space(params.blend_space);
+    if let Some(anchor) = key.anchor() {
+        spec = spec.anchor(anchor);
+    }
+    if let Some(union) = union_of(params, scale, key.class()) {
+        spec = spec.union(union);
+    }
+    spec
 }
 
 /// The union field `params` declares for a group built at `scale`:

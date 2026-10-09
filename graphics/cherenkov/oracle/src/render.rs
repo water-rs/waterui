@@ -1179,6 +1179,7 @@ impl Renderer {
             RenderError::Backdrop(format!("backdrop group {gid} member layer has no clip"))
         })?;
         let union = backdrops.group(gid)?.union;
+        let member_space = backdrops.group(gid)?.blend_space;
         let outer = child.backdrop_outer;
         let field_member = union.is_some() || outer > 0.0;
         // The union composite's clip is the ancestors' alone; the
@@ -1260,7 +1261,19 @@ impl Renderer {
                     continue;
                 }
                 let src = sample_backdrop(child, capture, p, sdf_clip.as_ref(), field);
-                *dst = src_over(*dst, move_space(src.map(|v| v * c), cap_space, space));
+                // The sample at its coverage blends source-over in the
+                // group's member space: the canvas converts into it and
+                // the result back.
+                let src = move_space(src.map(|v| v * c), cap_space, member_space);
+                *dst = if member_space == space {
+                    src_over(*dst, src)
+                } else {
+                    move_space(
+                        src_over(move_space(*dst, space, member_space), src),
+                        member_space,
+                        space,
+                    )
+                };
             }
         }
         Ok(())

@@ -185,8 +185,10 @@ pub struct Instance {
     /// `exponent` (unused by its SDF) carry the mask cell size.
     pub clip: Shape,
     /// Straight-alpha working-space colour. `PAINT_BACKDROP`: x the
-    /// member's recording scale (device pixels per logical pixel); its
-    /// alpha stays 0, so a member span is never an opaque span.
+    /// member's recording scale (device pixels per logical pixel), yz the
+    /// device origin of the backdrop copy when the member composites in
+    /// the space the pass does not store (`FLAG_BLEND_SRC`); its alpha
+    /// stays 0, so a member span is never an opaque span.
     pub color: [f32; 4],
     /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
     /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.

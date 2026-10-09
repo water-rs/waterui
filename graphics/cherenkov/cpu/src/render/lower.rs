@@ -167,6 +167,9 @@ pub enum Item {
         /// The union field the member folds into, when the group has one
         /// (or the member draws an `outer` band on its own).
         union: Option<UnionSample>,
+        /// The space the sample blends onto the canvas in: the group's
+        /// member blend space.
+        space: cherenkov::BlendSpace,
     },
 }
 
@@ -1509,6 +1512,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             clip,
             effect,
             union,
+            space: plan.spec.member_blend_space(),
         });
     }
 

@@ -71,6 +71,7 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
                     scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
                     levels: CaptureLevels::new(2).expect("2 is a valid level count"),
                     grouping: MaterialGrouping::Shared,
+                    blend_space: cherenkov::BlendSpace::Linear,
                 },
             ),
             (
@@ -79,6 +80,7 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
                     scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
                     levels: CaptureLevels::ONE,
                     grouping: MaterialGrouping::Solo,
+                    blend_space: cherenkov::BlendSpace::Linear,
                 },
             ),
         ],
@@ -100,6 +102,7 @@ fn union_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
                 smoothing: UnionSmoothing::new(UNION_SMOOTHING)
                     .expect("the test smoothing is valid"),
             },
+            blend_space: cherenkov::BlendSpace::Linear,
         },
     ));
     plan
@@ -696,6 +699,7 @@ fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
                 scale: CaptureScale::FULL,
                 levels: CaptureLevels::ONE,
                 grouping: MaterialGrouping::Shared,
+                blend_space: cherenkov::BlendSpace::Linear,
             },
         ));
         MinimalTestTheme {
@@ -828,6 +832,36 @@ fn a_no_program_commit_keeps_a_filtered_members_canvas() {
         "the idle commit built no group",
     );
     assert_eq!(renderer.mirror().chrome_groups().chrome_group_count(), 1);
+}
+
+/// A capture class's member blend space reaches its group's spec, so an
+/// `SrgbEncoded` class's members composite in encoded space.
+#[test]
+fn a_capture_classes_blend_space_reaches_its_group() {
+    const ENCODED_GLASS: CaptureClass = CaptureClass::new(4);
+    let mut plan = glass_plan(vec![chrome_draw(ENCODED_GLASS, GLASS_SHADER, vec![])]);
+    plan.captures.push((
+        ENCODED_GLASS,
+        MaterialCapture {
+            scale: CaptureScale::FULL,
+            levels: CaptureLevels::ONE,
+            grouping: MaterialGrouping::Solo,
+            blend_space: cherenkov::BlendSpace::SrgbEncoded,
+        },
+    ));
+    let renderer = mirrored(
+        tap_color("#27272A"),
+        MinimalTestTheme {
+            chrome: plan,
+            ..Default::default()
+        },
+    );
+    let specs = renderer.mirror().spec_log();
+    assert_eq!(specs.len(), 1, "one group for the one member");
+    assert_eq!(
+        specs[0].member_blend_space(),
+        cherenkov::BlendSpace::SrgbEncoded,
+    );
 }
 
 /// A display-scale change rebuilds the group: the capture terms are in
@@ -1166,6 +1200,7 @@ fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
                     grouping: MaterialGrouping::Union {
                         smoothing: UnionSmoothing::new(1e38).expect("finite and positive"),
                     },
+                    blend_space: cherenkov::BlendSpace::Linear,
                 },
             ));
             plan
