@@ -31,6 +31,8 @@ pub mod control_size;
 pub mod cursor;
 #[cfg(feature = "date_picker")]
 pub mod date_picker;
+#[cfg(feature = "dialog")]
+pub mod dialog;
 #[cfg(feature = "draggable")]
 pub mod draggable;
 #[cfg(feature = "drop_destination")]

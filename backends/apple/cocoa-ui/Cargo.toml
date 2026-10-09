@@ -46,6 +46,9 @@ avkit = ["dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-av-kit"]
 # The `WebKit` surface (`web_kit` module) carries the `WebKit` and `Security`
 # framework links; opt-in so apps without a web view link neither.
 webview = ["dep:objc2-web-kit", "dep:objc2-security"]
+# The alert surfaces (`appkit::alert` `NSAlert`, `uikit::alert`
+# `UIAlertController`) — the `dialog` leaf's platform objects.
+dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 # Harness-only reach for `tests/native`: compiles the doc(hidden)
 # test-support entry points that touch implementation-private surfaces
 # (`accessory_overlay_window_for_test`), the harnesses' shared
@@ -283,6 +286,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "objc2-core-foundation",
     "NSAppearance",
+    "NSAlert",
     "NSApplication",
     "NSAccessibility",
     "NSAccessibilityConstants",
@@ -408,6 +412,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "std",
     "objc2-core-foundation",
     "objc2-quartz-core",
+    "UIAlertController",
     "UIApplication",
     "UIColor",
     "UIControl",

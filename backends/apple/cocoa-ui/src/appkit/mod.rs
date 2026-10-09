@@ -35,6 +35,7 @@ mod animate;
 mod appearance;
 mod application;
 mod badge;
+pub mod alert;
 pub mod button;
 mod color_view;
 mod color_well;
@@ -64,6 +65,8 @@ mod toolbar;
 mod view_controller;
 mod window;
 
+#[cfg(feature = "dialog")]
+pub use alert::SheetAlert;
 pub use animate::{run_animation, set_animated_alpha};
 pub use appearance::ColorSchemeObservation;
 pub use application::{
