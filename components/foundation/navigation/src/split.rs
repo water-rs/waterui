@@ -79,6 +79,10 @@ pub enum NavigationSplitColumnVisibility {
     DetailOnly = 3,
 }
 
+// A constant visibility is a signal too, so `column_visibility` takes a plain
+// value as readily as a binding.
+nami::impl_constant!(NavigationSplitColumnVisibility);
+
 /// Native split presentation selected by a public split style.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -18,7 +18,6 @@ use target_lexicon::{Environment, OperatingSystem, Triple};
 use tracing::{info, warn};
 
 use crate::project::Project;
-use crate::utils::std_output_enabled;
 
 /// Get the dynamic library extension for a target triple.
 #[must_use]
@@ -266,7 +265,7 @@ pub struct SharedExecutable {
 
 impl SharedExecutable {
     /// An `executable` report carrying no artifact lock — the bundled
-    /// executable and ESP32 firmware paths platform packaging hands out
+    /// executable paths platform packaging hands out
     /// itself, which no same-named build can re-uplift under it.
     #[must_use]
     pub const fn unlocked(path: PathBuf) -> Self {
@@ -1434,6 +1433,7 @@ fn classify_compile_line(line: &str) -> CompileEvent {
 pub(crate) async fn command_output_with_progress(
     command: &mut Command,
     progress: Option<BuildProgress>,
+    std_output: bool,
 ) -> io::Result<std::process::Output> {
     let mut child = command
         .kill_on_drop(true)
@@ -1446,7 +1446,7 @@ pub(crate) async fn command_output_with_progress(
 
     // Raw chunk echo reproduces `Stdio::inherit` for a build carrying no
     // progress sink; a sink renders the parsed events itself.
-    let echo = progress.is_none() && std_output_enabled();
+    let echo = progress.is_none() && std_output;
     // The drains run as their own tasks: inlined into this future their read
     // buffers alone would push it past clippy's `large_futures` threshold.
     let stdout_task = smol::spawn(drain_pipe(stdout_pipe));
@@ -2326,14 +2326,14 @@ Automatic meson installation failed: {install_err}\n\n{}",
         // terminal renders them — through the progress sink or the raw
         // passthrough echo — restore cargo's coloring unless the caller
         // configured it explicitly.
-        if std_output_enabled()
+        if self.host.std_output()
             && self.host.env("CARGO_TERM_COLOR").is_none()
             && !self.envs.iter().any(|(key, _)| key == "CARGO_TERM_COLOR")
         {
             cmd.env("CARGO_TERM_COLOR", "always");
         }
 
-        command_output_with_progress(cmd, self.progress.clone())
+        command_output_with_progress(cmd, self.progress.clone(), self.host.std_output())
             .await
             .map_err(RustBuildError::FailToExecuteCargoBuild)
     }
@@ -5381,7 +5381,7 @@ mod tests {
             let temporary = tempdir().expect("tempdir");
             let root = temporary.path().join("release-app");
             let project = crate::project::Project::create(
-                &crate::toolchain::Host::current(),
+                &crate::toolchain::testing::real_toolchain_host(temporary.path()),
                 &root,
                 crate::project::CreateOptions {
                     name: "Release App".to_string(),

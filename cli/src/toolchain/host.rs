@@ -18,7 +18,7 @@ use std::{
 use cargo_metadata::{Metadata, MetadataCommand};
 use smol::{io::AsyncReadExt as _, process::Command, unblock};
 
-use crate::utils::{CommandError, format_failure_stream, std_output_enabled};
+use crate::utils::{CommandError, format_failure_stream};
 
 mod detached;
 
@@ -35,6 +35,10 @@ pub struct Host {
     cwd: PathBuf,
     home: Option<PathBuf>,
     app_dirs: Vec<PathBuf>,
+    /// Whether spawned tools' captured output is also echoed to the
+    /// terminal — the policy `crate::utils::command` and [`Host::output`]
+    /// apply per invocation.
+    std_output: bool,
 }
 
 impl Host {
@@ -50,6 +54,7 @@ impl Host {
             cwd: env::current_dir().expect("process must have a working directory"),
             home: dirs::home_dir(),
             app_dirs: default_app_dirs(),
+            std_output: false,
         }
     }
 
@@ -97,6 +102,7 @@ impl Host {
             cwd: env::current_dir().expect("process must have a working directory"),
             home,
             app_dirs: Vec::new(),
+            std_output: false,
         }
     }
 
@@ -112,6 +118,27 @@ impl Host {
     pub fn with_app_dirs(mut self, app_dirs: impl IntoIterator<Item = PathBuf>) -> Self {
         self.app_dirs = app_dirs.into_iter().collect();
         self
+    }
+
+    /// A host whose spawned tools echo their captured output to the
+    /// terminal — or stay silently captured when `enabled` is false.
+    ///
+    /// The policy is off by default so tool probes never print; a command
+    /// the user is watching turns it on for the hosts that build and run
+    /// its artifacts. `water mcp` keeps it off: its stdout is the JSON-RPC
+    /// stream.
+    #[must_use]
+    pub fn with_std_output(&self, enabled: bool) -> Self {
+        let mut host = self.clone();
+        host.std_output = enabled;
+        host
+    }
+
+    /// Whether tools spawned on this host echo their captured output to
+    /// the terminal.
+    #[must_use]
+    pub const fn std_output(&self) -> bool {
+        self.std_output
     }
 
     /// An environment variable on this host.
@@ -291,6 +318,18 @@ impl Host {
         host
     }
 
+    /// A host whose home directory is `home`: `HOME` and `USERPROFILE`
+    /// name it in the environment its children inherit, and
+    /// [`Host::home_dir`] answers it — the Water home and every other
+    /// per-user path follow.
+    #[must_use]
+    pub fn with_home(&self, home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        let mut host = self.with_env("HOME", &home).with_env("USERPROFILE", &home);
+        host.home = Some(home);
+        host
+    }
+
     /// Every environment variable on this host, in map order.
     ///
     /// For resolvers that take the whole environment at once rather than
@@ -344,8 +383,7 @@ impl Host {
     ///
     /// This is the deliberate exception to the null-stdin default of
     /// [`Host::command`] — for the tools that interact with the user's
-    /// terminal: the `create vite` framework picker, `<pm> install`,
-    /// `espflash flash --monitor`, QEMU's `-nographic` serial console, and
+    /// terminal: the `create vite` framework picker, `<pm> install`, and
     /// launchers that take the TTY over entirely. The
     /// `std` type is returned so callers that `exec` or group the child can;
     /// async callers wrap it with `smol::process::Command::from`.
@@ -398,9 +436,9 @@ impl Host {
     /// Spawn `program` with `args` under this host, capturing output.
     ///
     /// stdin is null (see [`Host::command`]); stdout and stderr are piped and
-    /// always collected for the returned [`Output`]; when the CLI's `--logs` passthrough is
-    /// active each chunk is additionally mirrored to the terminal as it
-    /// arrives, matching the historical `run_command_output_os` behavior.
+    /// always collected for the returned [`Output`]; when this host's
+    /// [`Host::std_output`] policy echoes, each chunk is additionally mirrored
+    /// to the terminal as it arrives.
     ///
     /// # Errors
     /// - [`CommandError::Spawn`] when the program cannot be spawned or awaited.
@@ -433,7 +471,7 @@ impl Host {
             source,
         })?;
 
-        let echo = std_output_enabled();
+        let echo = self.std_output;
         let stdout_task = smol::spawn(drain_child_pipe(
             child.stdout.take().expect("stdout is piped"),
             io::stdout(),

@@ -643,6 +643,30 @@ async fn exclusive_lock_file(
     .await
 }
 
+/// The lock serializing connect-or-start of the per-user sccache server
+/// across `water` processes.
+///
+/// `crate::toolchain::sccache` holds it across the client run and says why.
+/// `~/.water/locks/` keeps the lock beside the socket's Water home; like
+/// `.build-lease` the file is never deleted — it is the thing being locked —
+/// so `water clean` dropping the build cache cannot unlink it under a
+/// running startup.
+///
+/// # Errors
+/// Returns an error if the Water home cannot be resolved, the lock
+/// directory or the lock file cannot be created, or the lock cannot be
+/// taken.
+pub async fn sccache_server_lock(host: &crate::toolchain::Host) -> eyre::Result<std::fs::File> {
+    let water_home = water_home_dir(host)?;
+    exclusive_lock_file(
+        locks_dir_in(&water_home).join("sccache-server.lock"),
+        || {
+            info!("Waiting for another sccache server startup to finish");
+        },
+    )
+    .await
+}
+
 /// The lock serializing `water preview --platform android` runs of one
 /// project.
 ///
@@ -839,6 +863,7 @@ pub async fn ensure_project_build_cache(
     let project_root = canonicalize_project_root(project_root)?;
     let water_home = water_home_dir(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
+
     ensure_project_build_cache_in(&project_root, &cache_root, &config).await
 }
 

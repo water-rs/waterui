@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use askama::Template;
 use eyre::{Context, bail};
+use futures_util::StreamExt as _;
 use image::ImageEncoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -34,6 +35,45 @@ const APPLE_LAUNCH_IMAGE_SET: &str = "LaunchImage";
 const ANDROID_VALUES_DIR: &str = "app/src/main/res/values";
 const ANDROID_VALUES_NIGHT_DIR: &str = "app/src/main/res/values-night";
 const ANDROID_DRAWABLE_DIR: &str = "app/src/main/res/drawable";
+/// File name of the staged sync stamp inside the asset bundle.
+const SYNC_STAMP_FILE: &str = "waterui-sync-stamp";
+/// Asset-catalog directory name the generated Xcode project refers to.
+const APPLE_APP_ICON_SET: &str = "AppIcon.appiconset";
+/// The accent color set's name inside the generated asset catalog.
+const APPLE_ACCENT_COLOR_SET: &str = "AccentColor";
+/// The scales `Launch.*` artwork renders at inside the launch image set.
+const APPLE_LAUNCH_SCALES: &[(&str, u32)] = &[("1x", 1), ("2x", 2), ("3x", 3)];
+/// The `AppIcon.appiconset` spec: `(idiom, size, scale, rendered pixels)`.
+const APPLE_APP_ICON_SPECS: &[(&str, &str, &str, u32)] = &[
+    ("iphone", "20x20", "2x", 40),
+    ("iphone", "20x20", "3x", 60),
+    ("iphone", "29x29", "2x", 58),
+    ("iphone", "29x29", "3x", 87),
+    ("iphone", "40x40", "2x", 80),
+    ("iphone", "40x40", "3x", 120),
+    ("iphone", "60x60", "2x", 120),
+    ("iphone", "60x60", "3x", 180),
+    ("ipad", "20x20", "1x", 20),
+    ("ipad", "20x20", "2x", 40),
+    ("ipad", "29x29", "1x", 29),
+    ("ipad", "29x29", "2x", 58),
+    ("ipad", "40x40", "1x", 40),
+    ("ipad", "40x40", "2x", 80),
+    ("ipad", "76x76", "1x", 76),
+    ("ipad", "76x76", "2x", 152),
+    ("ipad", "83.5x83.5", "2x", 167),
+    ("mac", "16x16", "1x", 16),
+    ("mac", "16x16", "2x", 32),
+    ("mac", "32x32", "1x", 32),
+    ("mac", "32x32", "2x", 64),
+    ("mac", "128x128", "1x", 128),
+    ("mac", "128x128", "2x", 256),
+    ("mac", "256x256", "1x", 256),
+    ("mac", "256x256", "2x", 512),
+    ("mac", "512x512", "1x", 512),
+    ("mac", "512x512", "2x", 1024),
+    ("ios-marketing", "1024x1024", "1x", 1024),
+];
 const ANDROID_MIPMAP_DIRS: &[(&str, u32)] = &[
     ("mipmap-mdpi", 48),
     ("mipmap-hdpi", 72),
@@ -54,8 +94,15 @@ pub async fn stage_for_apple(
 ) -> eyre::Result<BundleManifest> {
     let manifest = stage_library_resources(project, dest_dir, symbols, dev_server).await?;
 
+    let launch = launch_assets_from(project, &manifest)?;
+    let plan = launch.plan();
+
     let xcassets_dest = dest_dir.join("WaterUIAssets.xcassets");
-    reset_dir(&xcassets_dest).await?;
+    fs::create_dir_all(&xcassets_dest).await?;
+    // Everything the catalog does not keep is a stale set or file from an
+    // earlier run: prune it once up front, then write through the
+    // if-changed helpers so an unchanged build touches no mtime.
+    prune_unlisted(&xcassets_dest, &apple_catalog_files(&launch)).await?;
     write_apple_root_contents(&xcassets_dest).await?;
     let accent = project
         .manifest()
@@ -66,7 +113,7 @@ pub async fn stage_for_apple(
     let icon = load_project_icon(&manifest)?;
     write_apple_app_icon(&icon, &xcassets_dest).await?;
     write_apple_color_set(
-        "AccentColor",
+        APPLE_ACCENT_COLOR_SET,
         accent.unwrap_or(DEFAULT_ACCENT),
         None,
         &xcassets_dest,
@@ -76,8 +123,6 @@ pub async fn stage_for_apple(
     // The launch screen: a color set with a dark appearance when one differs,
     // and the artwork as a universal image set. Neither exists when nothing
     // is configured, and the generated project then names neither.
-    let launch = launch_assets_from(project, &manifest)?;
-    let plan = launch.plan();
     if let Some(background) = plan.background(ColorScheme::Light) {
         let dark = plan
             .has_distinct_dark_background()
@@ -116,9 +161,23 @@ pub async fn write_library_resources(
     dest_dir: &Path,
 ) -> eyre::Result<()> {
     let assets_dest = dest_dir.join(ASSET_ROOT_DIR);
-    reset_dir(&assets_dest).await?;
-    copy_manifest_assets(manifest, &assets_dest).await?;
-    write_manifest_stamp(manifest, &assets_dest).await
+    stage_bundle(manifest, &assets_dest, &[]).await
+}
+
+/// Stage `manifest`'s bundle into `dest_root`: drop whatever the plan no
+/// longer names, then write the assets and the sync stamp through the
+/// if-changed helpers — an unchanged build leaves every file byte- and
+/// mtime-identical (#2252). `extras` names further files the caller
+/// writes beside them, like the runtime window icon.
+async fn stage_bundle(
+    manifest: &BundleManifest,
+    dest_root: &Path,
+    extras: &[&str],
+) -> eyre::Result<()> {
+    fs::create_dir_all(dest_root).await?;
+    prune_unlisted(dest_root, &staged_bundle_files(manifest, extras)).await?;
+    copy_manifest_assets(manifest, dest_root).await?;
+    write_manifest_stamp(manifest, dest_root).await
 }
 
 /// The project's launch screen, resolved, with the artwork it shows.
@@ -232,9 +291,7 @@ pub async fn stage_for_android(
     let assets_dest = backend_path
         .join("app/src/main/assets")
         .join(ASSET_ROOT_DIR);
-    reset_dir(&assets_dest).await?;
-    copy_manifest_assets(&manifest, &assets_dest).await?;
-    write_manifest_stamp(&manifest, &assets_dest).await?;
+    stage_bundle(&manifest, &assets_dest, &[]).await?;
 
     let res_root = backend_path.join("app/src/main/res");
     fs::create_dir_all(&res_root).await?;
@@ -271,9 +328,7 @@ pub async fn stage_for_android_library(
     let manifest = build_manifest(project, symbols, dev_server).await?;
     let root = module_dir.join("src/main/assets");
     let bundle = root.join(ASSET_ROOT_DIR);
-    reset_dir(&bundle).await?;
-    copy_manifest_assets(&manifest, &bundle).await?;
-    write_manifest_stamp(&manifest, &bundle).await?;
+    stage_bundle(&manifest, &bundle, &[]).await?;
 
     Ok((manifest, StagedAndroidAssets { root, bundle }))
 }
@@ -328,9 +383,12 @@ pub async fn stage_for_gtk(
 ) -> eyre::Result<BundleManifest> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
     let assets_dest = resources_dir.join(ASSET_ROOT_DIR);
-    reset_dir(&assets_dest).await?;
-    copy_manifest_assets(&manifest, &assets_dest).await?;
-    write_manifest_stamp(&manifest, &assets_dest).await?;
+    stage_bundle(
+        &manifest,
+        &assets_dest,
+        &[waterui_assets_core::WINDOW_ICON_FILE],
+    )
+    .await?;
 
     // Self-drawn desktop backends read this at startup to set the runtime
     // window icon (taskbars on X11 and Windows show it; macOS uses the
@@ -558,18 +616,111 @@ async fn write_manifest_stamp(manifest: &BundleManifest, dest_root: &Path) -> ey
     }
     let stamp = hex::encode(hasher.finalize());
     super::super::templates::write_file_if_changed(
-        &dest_root.join("waterui-sync-stamp"),
+        &dest_root.join(SYNC_STAMP_FILE),
         stamp.as_bytes(),
     )
     .await?;
     Ok(())
 }
 
-async fn reset_dir(path: &Path) -> eyre::Result<()> {
-    if path.exists() {
-        fs::remove_dir_all(path).await?;
+/// The relative file set a staged bundle holds once `manifest` is written:
+/// every planned asset's logical path, the sync stamp, and any `extras`
+/// the caller adds beside them.
+fn staged_bundle_files(manifest: &BundleManifest, extras: &[&str]) -> BTreeSet<PathBuf> {
+    manifest
+        .assets
+        .iter()
+        .map(|asset| asset.logical_path.clone())
+        .chain(
+            std::iter::once(SYNC_STAMP_FILE)
+                .chain(extras.iter().copied())
+                .map(PathBuf::from),
+        )
+        .collect()
+}
+
+/// The relative file set a generated `WaterUIAssets.xcassets` holds once
+/// staging finishes: the root `Contents.json`, the app-icon and accent
+/// sets, and whichever launch sets `launch` produces.
+fn apple_catalog_files(launch: &LaunchAssets) -> BTreeSet<PathBuf> {
+    let mut files = BTreeSet::from([
+        PathBuf::from("Contents.json"),
+        PathBuf::from(APPLE_APP_ICON_SET).join("Contents.json"),
+        PathBuf::from(apple_color_set_dir(APPLE_ACCENT_COLOR_SET)).join("Contents.json"),
+    ]);
+    for &(idiom, size, scale, _) in APPLE_APP_ICON_SPECS {
+        files.insert(
+            PathBuf::from(APPLE_APP_ICON_SET).join(apple_app_icon_file(idiom, size, scale)),
+        );
     }
-    fs::create_dir_all(path).await?;
+    if launch.plan().background(ColorScheme::Light).is_some() {
+        files.insert(
+            PathBuf::from(apple_color_set_dir(APPLE_LAUNCH_BACKGROUND_SET)).join("Contents.json"),
+        );
+    }
+    if launch.has_artwork() {
+        let set_dir = PathBuf::from(apple_launch_image_set_dir());
+        for &(scale, _) in APPLE_LAUNCH_SCALES {
+            files.insert(set_dir.join(apple_launch_image_file(scale)));
+        }
+        files.insert(set_dir.join("Contents.json"));
+    }
+    files
+}
+
+/// Directory of the named color set inside the asset catalog.
+fn apple_color_set_dir(name: &str) -> String {
+    format!("{name}.colorset")
+}
+
+/// Directory of the launch image set inside the asset catalog.
+fn apple_launch_image_set_dir() -> String {
+    format!("{APPLE_LAUNCH_IMAGE_SET}.imageset")
+}
+
+/// File name of the launch artwork rendered at `scale`.
+fn apple_launch_image_file(scale: &str) -> String {
+    format!("{APPLE_LAUNCH_IMAGE_SET}@{scale}.png")
+}
+
+/// File name of one `AppIcon.appiconset` entry.
+fn apple_app_icon_file(idiom: &str, size: &str, scale: &str) -> String {
+    format!("AppIcon-{idiom}-{size}@{scale}.png")
+}
+
+/// Removes every file under `dir` that `keep` does not name, where `keep`
+/// holds the relative paths the run is about to write. A directory
+/// survives only while a kept path sits under it, so the tree ends
+/// holding exactly the produced files — the same guarantee `reset_dir`
+/// gave by deleting everything, except unchanged files keep their bytes
+/// and mtimes and a stale entry blocking a produced path is still
+/// cleared before the write.
+async fn prune_unlisted(dir: &Path, keep: &BTreeSet<PathBuf>) -> eyre::Result<()> {
+    // Directories that are a proper ancestor of a kept path descend.
+    let keep_dirs: BTreeSet<&Path> = keep
+        .iter()
+        .flat_map(|path| path.ancestors().skip(1))
+        .collect();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let mut entries = fs::read_dir(&current).await?;
+        while let Some(entry) = entries.next().await {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(dir)
+                .expect("read_dir yields entries under the walked root");
+            if entry.file_type().await?.is_dir() {
+                if keep_dirs.contains(relative) {
+                    stack.push(path);
+                } else {
+                    fs::remove_dir_all(&path).await?;
+                }
+            } else if !keep.contains(relative) {
+                fs::remove_file(&path).await?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -686,7 +837,7 @@ async fn write_apple_color_set(
             }],
         ));
     }
-    let set_dir = xcassets_dest.join(format!("{name}.colorset"));
+    let set_dir = xcassets_dest.join(apple_color_set_dir(name));
     fs::create_dir_all(&set_dir).await?;
     let json = serde_json::to_vec_pretty(&Contents {
         colors,
@@ -721,11 +872,11 @@ async fn write_apple_launch_image(source: &IconSource, xcassets_dest: &Path) -> 
         info: Info,
     }
 
-    let set_dir = xcassets_dest.join(format!("{APPLE_LAUNCH_IMAGE_SET}.imageset"));
-    reset_dir(&set_dir).await?;
+    let set_dir = xcassets_dest.join(apple_launch_image_set_dir());
+    fs::create_dir_all(&set_dir).await?;
     let mut images = Vec::new();
-    for (scale, factor) in [("1x", 1_u32), ("2x", 2), ("3x", 3)] {
-        let filename = format!("{APPLE_LAUNCH_IMAGE_SET}@{scale}.png");
+    for &(scale, factor) in APPLE_LAUNCH_SCALES {
+        let filename = apple_launch_image_file(scale);
         write_png(
             &source.render(APPLE_LAUNCH_IMAGE_POINTS * factor)?,
             &set_dir.join(&filename),
@@ -792,43 +943,12 @@ async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre
         info: Info<'a>,
     }
 
-    let appicon_dir = xcassets_dest.join("AppIcon.appiconset");
-    reset_dir(&appicon_dir).await?;
-
-    let specs = [
-        ("iphone", "20x20", "2x", 40_u32),
-        ("iphone", "20x20", "3x", 60),
-        ("iphone", "29x29", "2x", 58),
-        ("iphone", "29x29", "3x", 87),
-        ("iphone", "40x40", "2x", 80),
-        ("iphone", "40x40", "3x", 120),
-        ("iphone", "60x60", "2x", 120),
-        ("iphone", "60x60", "3x", 180),
-        ("ipad", "20x20", "1x", 20),
-        ("ipad", "20x20", "2x", 40),
-        ("ipad", "29x29", "1x", 29),
-        ("ipad", "29x29", "2x", 58),
-        ("ipad", "40x40", "1x", 40),
-        ("ipad", "40x40", "2x", 80),
-        ("ipad", "76x76", "1x", 76),
-        ("ipad", "76x76", "2x", 152),
-        ("ipad", "83.5x83.5", "2x", 167),
-        ("mac", "16x16", "1x", 16),
-        ("mac", "16x16", "2x", 32),
-        ("mac", "32x32", "1x", 32),
-        ("mac", "32x32", "2x", 64),
-        ("mac", "128x128", "1x", 128),
-        ("mac", "128x128", "2x", 256),
-        ("mac", "256x256", "1x", 256),
-        ("mac", "256x256", "2x", 512),
-        ("mac", "512x512", "1x", 512),
-        ("mac", "512x512", "2x", 1024),
-        ("ios-marketing", "1024x1024", "1x", 1024),
-    ];
+    let appicon_dir = xcassets_dest.join(APPLE_APP_ICON_SET);
+    fs::create_dir_all(&appicon_dir).await?;
 
     let mut images = Vec::new();
-    for (idiom, size, scale, pixels) in specs {
-        let file_name = format!("AppIcon-{idiom}-{size}@{scale}.png");
+    for &(idiom, size, scale, pixels) in APPLE_APP_ICON_SPECS {
+        let file_name = apple_app_icon_file(idiom, size, scale);
         write_png(
             &render_apple_icon(source, idiom, pixels)?,
             &appicon_dir.join(&file_name),
@@ -1182,7 +1302,7 @@ mod tests {
             std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
 
             let project = Project::open(
-                &crate::toolchain::Host::current(),
+                &crate::toolchain::testing::real_toolchain_host(tempdir.path()),
                 &root,
                 ManagedBackends::NONE,
             )
@@ -1387,5 +1507,80 @@ mod tests {
             mounts: Vec::new(),
             assets: Vec::new(),
         }
+    }
+
+    /// Re-staging an unchanged manifest must rewrite nothing: a full
+    /// rewrite re-stamps every file's mtime on each no-op build, and every
+    /// watcher then treats the bundle as fresh input (#2252). Entries the
+    /// plan dropped still disappear, and a changed input still lands.
+    #[test]
+    fn restaging_an_unchanged_bundle_rewrites_nothing() {
+        smol::block_on(async {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let source = tempdir.path().join("note.txt");
+            std::fs::write(&source, b"asset bytes").expect("write source");
+            let manifest = BundleManifest {
+                crate_root: tempdir.path().to_path_buf(),
+                assets_root: tempdir.path().to_path_buf(),
+                mounts: Vec::new(),
+                assets: vec![PlannedAsset {
+                    mount: String::new(),
+                    source_path: source.clone(),
+                    relative_path: PathBuf::from("note.txt"),
+                    logical_path: PathBuf::from("note.txt"),
+                    kind: AssetKind::Data,
+                    role: AssetRole::Regular,
+                }],
+            };
+            let bundle = tempdir.path().join("staged").join(ASSET_ROOT_DIR);
+            write_library_resources(&manifest, &tempdir.path().join("staged"))
+                .await
+                .expect("first stage");
+
+            let staged_file = bundle.join("note.txt");
+            let stamp = bundle.join(SYNC_STAMP_FILE);
+            let stale_file = bundle.join("dropped.txt");
+            let stale_dir = bundle.join("dropped/nested.txt");
+            std::fs::write(&stale_file, b"no longer planned").expect("write stale file");
+            std::fs::create_dir_all(stale_dir.parent().expect("stale dir"))
+                .expect("create stale dir");
+            std::fs::write(&stale_dir, b"no longer planned").expect("write stale nested");
+            let old = filetime::FileTime::from_unix_time(1_500_000_000, 0);
+            for path in [&staged_file, &stamp, &stale_file, &stale_dir] {
+                filetime::set_file_mtime(path, old).expect("backdate mtime");
+            }
+
+            write_library_resources(&manifest, &tempdir.path().join("staged"))
+                .await
+                .expect("unchanged re-stage");
+            assert!(
+                !stale_file.exists() && !stale_dir.exists(),
+                "an entry the plan no longer names is pruned"
+            );
+            for path in [&staged_file, &stamp] {
+                let modified = filetime::FileTime::from_system_time(
+                    std::fs::metadata(path)
+                        .expect("metadata")
+                        .modified()
+                        .expect("mtime"),
+                );
+                assert_eq!(
+                    modified,
+                    old,
+                    "an unchanged stage must not rewrite {}",
+                    path.display()
+                );
+            }
+
+            std::fs::write(&source, b"changed bytes").expect("change the source");
+            write_library_resources(&manifest, &tempdir.path().join("staged"))
+                .await
+                .expect("changed re-stage");
+            assert_eq!(
+                std::fs::read(&staged_file).expect("staged asset"),
+                b"changed bytes",
+                "a changed input is still written"
+            );
+        });
     }
 }

@@ -22,6 +22,24 @@ categories = ["gui"]
 android-kotlin-version = "2.3.21"
 android-jdk-version = "21"
 
+# The host triples dist builds and ships the CLI for (Rust target-triple
+# syntax). The musl target is what makes Alpine installable: dist offers a
+# `*-linux-musl` archive to `*-linux-musl-dynamic` hosts natively and keeps
+# it as the fallback for `*-linux-gnu` hosts whose glibc is below
+# `min-glibc-version`. The list lives here rather than in
+# dist-workspace.toml because `build.rs` embeds it: the Linux and Windows
+# tables of every generated manifest serve exactly these hosts, and a
+# packaged build still carries its own manifest.
+[package.metadata.dist]
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+]
+
 [[bin]]
 name = "water"
 path = "src/terminal/main.rs"
@@ -66,7 +84,6 @@ semver = "1.0"
 # Reads DT_NEEDED out of staged Android native libraries so packaging only
 # ships libc++_shared.so when a library actually links it.
 object = { version = "0.37", features = ["wasm"] }
-serialport = { version = "4", optional = true }
 which = "8.0.6"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"], optional = true }
 
@@ -136,8 +153,6 @@ pathdiff = "0.2"
 plist = "1.10"
 url = "2.5"
 fs4 = "1.1.0"
-fontcull-klippa = { version = "0.1.2", optional = true }
-fontcull-write-fonts = { version = "0.44.3", optional = true }
 toml_edit = { version = "=0.25.13", features = ["serde"] }
 cargo-lock = { version = "=10.1.0", default-features = false }
 rustc-demangle = "0.1"
@@ -151,12 +166,7 @@ axoupdater = "0.10.2"
 tokio = { version = "1.48", default-features = false, features = ["rt", "net", "time"] }
 
 [features]
-default = ["esp32", "svg-icons", "preview"]
-# ESP32 board serial-port detection and `[esp32] font_ranges`
-# subsetting. Without it, `water devices` lists no serial ports, board
-# auto-detection is skipped (QEMU and `--device <port>` still work), and
-# font subsetting is unsupported.
-esp32 = ["dep:serialport", "dep:fontcull-klippa", "dep:fontcull-write-fonts"]
+default = ["svg-icons", "preview"]
 # SVG app-icon sources rasterized through usvg/resvg. Without it only raster
 # icon sources are accepted and the bundled default icon is a PNG.
 svg-icons = ["dep:resvg"]
@@ -225,7 +235,6 @@ toml = "1.1.5"
 workspace = true
 
 [dev-dependencies]
-fontcull-skrifa = "0.39.2"
 syn = { version = "2", features = ["full"] }
 
 [package.metadata.cargo-machete]

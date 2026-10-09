@@ -1555,6 +1555,94 @@ mod front {
                 }),
         })
     }
+
+    /// A built engine layer a scene `Layer::id` can name as a backdrop
+    /// group's anchor: the GPU and CPU adapters' `ContentLayer`.
+    pub trait AnchorLayer<T: cherenkov::Backdrop> {
+        /// The engine layer handle (`None`-backed layers resolve to the
+        /// surface root, as each adapter's `ContentLayer::handle` does).
+        fn handle<'a>(&'a self, surface: &'a cherenkov::Surface<T>) -> &'a cherenkov::Layer;
+        /// The scene `Layer::id` this layer was built under, if any.
+        fn scene_id(&self) -> Option<u32>;
+    }
+
+    /// Builds the scene's engine backdrop groups. A group's `anchor`
+    /// names the `Layer::id` of a layer in `content_layers`, so the
+    /// groups exist only once every layer is built.
+    ///
+    /// # Errors
+    /// [`BenchError::Engine`] when an anchor names no built layer.
+    pub fn build_backdrop_groups<T, L>(
+        surface: &cherenkov::Surface<T>,
+        groups: &[cherenkov_scene::BackdropGroup],
+        content_layers: &[L],
+        engine: &'static str,
+        make: impl Fn(
+            &cherenkov::Surface<T>,
+            &cherenkov_scene::BackdropGroup,
+            Option<&cherenkov::Layer>,
+        ) -> Result<cherenkov::BackdropGroup, BenchError>,
+    ) -> Result<HashMap<u32, cherenkov::BackdropGroup>, BenchError>
+    where
+        T: cherenkov::Backdrop,
+        L: AnchorLayer<T>,
+    {
+        let anchors: HashMap<u32, usize> = content_layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, cl)| cl.scene_id().map(|id| (id, i)))
+            .collect();
+        let mut backdrop_groups = HashMap::new();
+        for group in groups {
+            let anchor = group
+                .anchor
+                .map(|id| {
+                    anchors
+                        .get(&id.get())
+                        .map(|&i| content_layers[i].handle(surface))
+                        .ok_or_else(|| {
+                            BenchError::Engine(format!(
+                                "{engine}: backdrop group {} anchors at an unbuilt layer {}",
+                                group.id, id
+                            ))
+                        })
+                })
+                .transpose()?;
+            backdrop_groups.insert(group.id, make(surface, group, anchor)?);
+        }
+        Ok(backdrop_groups)
+    }
+
+    /// A backdrop member deferred to `apply_backdrop_members`: the
+    /// layer's `ContentLayer` index, its group's id, its sample effect
+    /// and outer band.
+    pub type PendingMember = (
+        usize,
+        u32,
+        Option<cherenkov::BackdropEffect>,
+        cherenkov::BackdropOuter,
+    );
+
+    /// Points each pending member layer's backdrop at its group.
+    pub fn apply_backdrop_members<T, L>(
+        surface: &cherenkov::Surface<T>,
+        pending: Vec<PendingMember>,
+        content_layers: &[L],
+        backdrop_groups: &HashMap<u32, cherenkov::BackdropGroup>,
+    ) where
+        T: cherenkov::Backdrop,
+        L: AnchorLayer<T>,
+    {
+        surface.update(|tx| {
+            for (index, gid, effect, outer) in pending {
+                let edit = &mut tx[content_layers[index].handle(surface)];
+                let group = &backdrop_groups[&gid];
+                let sample =
+                    effect.map_or_else(|| group.sample(), |effect| group.sample_with(effect));
+                edit.backdrop(sample.outer(outer));
+            }
+        });
+    }
 }
 
 #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
@@ -1610,6 +1698,7 @@ mod tests {
             filters: Vec::new(),
             scale,
             levels: 1,
+            anchor: None,
             union: None,
         };
         let quarter = capture_scale(&group(0.25)).expect("0.25 is exact in f32");
