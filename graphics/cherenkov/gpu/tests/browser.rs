@@ -1336,3 +1336,132 @@ async fn web_frame_idle_and_coalesced_wake() {
         Next::Idle
     );
 }
+
+/// A hosted element sits between the engine part below it and the part
+/// above it (#2334): each part is a canvas, the element stacks between them,
+/// and the path's transforms and clips reach its style.
+#[wasm_bindgen_test(async)]
+#[expect(
+    clippy::future_not_send,
+    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+)]
+async fn dom_planes_stack_a_hosted_element_between_parts() {
+    use cherenkov::Hosted;
+    use cherenkov::kurbo::{Affine, RoundedRect, Size};
+    use cherenkov_gpu::interop::web::{DomTarget, HostedElement};
+
+    let window = web_sys::window().expect("a browser window");
+    let document = window.document().expect("a document");
+    let scale = window.device_pixel_ratio();
+    let host: web_sys::HtmlElement = document
+        .create_element("div")
+        .expect("div")
+        .unchecked_into();
+    host.style()
+        .set_css_text("position:fixed;left:0;top:0;width:480px;height:320px");
+    document
+        .body()
+        .expect("a body")
+        .append_child(&host)
+        .expect("host appended");
+    let frame: web_sys::HtmlIFrameElement = document
+        .create_element("iframe")
+        .expect("iframe")
+        .unchecked_into();
+    frame.set_srcdoc(
+        "<body style='margin:0;background:#2e7d32;color:#fff;font:600 28px system-ui'>\
+         <p style='margin:24px'>hosted iframe</p></body>",
+    );
+    frame.style().set_css_text("border:0");
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the host box times the device pixel ratio is a small pixel count"
+    )]
+    let size = ((480.0 * scale) as u32, (320.0 * scale) as u32);
+    let engine = Engine::<Gpu>::new(GpuConfig::default())
+        .await
+        .expect("engine");
+    let surface = engine
+        .surface(DomTarget::new(host.clone(), size), || {})
+        .await
+        .expect("DOM surface");
+    let card = surface.layer();
+    let web = surface.layer();
+    let menu = surface.layer();
+    let points = Affine::scale(scale);
+    surface.update(|tx| {
+        tx[surface.root()]
+            .push(&card)
+            .push(&menu)
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0., 0., f64::from(size.0), f64::from(size.1)),
+                    WorkingColor::new([0.05, 0.08, 0.3, 1.]),
+                );
+            }));
+        tx[&card]
+            .transform(points * Affine::translate((40., 40.)))
+            .clip(RoundedRect::new(0., 0., 300., 200., 32.))
+            .scroll_offset(cherenkov::kurbo::Vec2::new(0., 10.))
+            .push(&web);
+        tx[&web]
+            .transform(Affine::translate((20., 30.)) * Affine::rotate(0.08))
+            .content(
+                Hosted::<Gpu>::new(HostedElement::new(frame.clone().into()))
+                    .at(Size::new(320., 220.)),
+            );
+        tx[&menu]
+            .transform(points * Affine::translate((250., 150.)))
+            .content(surface.record(|r| {
+                r.fill(
+                    RoundedRect::new(0., 0., 190., 130., 16.),
+                    WorkingColor::new([0.8, 0.1, 0.1, 1.]),
+                );
+            }));
+    });
+    engine.render(FrameTime::now()).await.expect("render");
+
+    let root = host.first_element_child().expect("the stacking root");
+    let stacked = |selector: &str| -> Vec<String> {
+        let found = root.query_selector_all(selector).expect("a selector");
+        (0..found.length())
+            .map(|i| {
+                found
+                    .item(i)
+                    .expect("listed")
+                    .unchecked_into::<web_sys::HtmlElement>()
+                    .style()
+                    .get_property_value("z-index")
+                    .expect("z-index")
+            })
+            .collect()
+    };
+    assert_eq!(stacked("canvas"), ["0", "2"], "a part below and one above");
+    assert_eq!(stacked("iframe"), ["1"], "the element between the parts");
+    let style = frame.style();
+    let property = |name: &str| style.get_property_value(name).expect(name);
+    assert!(property("transform").starts_with("matrix("));
+    assert!(property("clip-path").starts_with("url(#cherenkov-clip-"));
+    assert_eq!(property("width"), "320px");
+    wasm_bindgen_test::console_log!("DOM_PLANES_READY");
+
+    // Moving the element rewrites its style in place: it is never
+    // reinserted, which would reload its document.
+    let before = property("transform");
+    surface.update(|tx| {
+        tx[&web].transform(Affine::translate((24., 30.)) * Affine::rotate(0.08));
+    });
+    engine.render(FrameTime::now()).await.expect("render");
+    assert_ne!(property("transform"), before);
+    assert!(frame.parent_element().is_some_and(|parent| parent == root));
+
+    drop(surface);
+    engine.render(FrameTime::now()).await.expect("render");
+    assert!(
+        host.first_element_child().is_none(),
+        "the surface's stacking root leaves with it"
+    );
+    host.remove();
+}

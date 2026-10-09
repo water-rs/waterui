@@ -113,6 +113,11 @@ pub trait Compositor {
     /// Whether a hosted system layer carries an opacity below one.
     const HOSTS_OPACITY: bool;
 
+    /// Whether a system layer shows an immutable capture of a recorded
+    /// layer ([`Source::Recorded`]). Without it the renderer neither
+    /// observes static layers nor offers them as candidates.
+    const CAPTURES: bool = true;
+
     /// Whether a system layer shows `frame` itself, with the colour the
     /// frame declares: its planes are a buffer the system compositor can
     /// scan out. Only such frames are candidates.
@@ -229,7 +234,7 @@ impl Placement {
     /// transform.
     #[must_use]
     #[cfg_attr(
-        not(any(test, target_os = "android")),
+        not(any(test, target_os = "android", target_arch = "wasm32")),
         expect(
             dead_code,
             reason = "a flattened placement, for realizations without nested layers"
@@ -883,7 +888,7 @@ pub fn frames_only<C: Compositor>(
 /// The content a plane shows.
 #[derive(Debug)]
 #[cfg_attr(
-    not(any(target_vendor = "apple", target_os = "android")),
+    not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
     expect(
         dead_code,
         reason = "read by the platform realizations of `SystemPlanes`"
@@ -928,13 +933,17 @@ pub type Hosted = crate::interop::apple::HostedLayer;
 /// (`cherenkov::HostedLayers::Object`).
 #[cfg(target_os = "android")]
 pub type Hosted = crate::interop::android::HostedSurface;
+/// The platform object a hosted plane shows
+/// (`cherenkov::HostedLayers::Object`).
+#[cfg(target_arch = "wasm32")]
+pub type Hosted = web::HostedElement;
 /// No hosted object exists where the platform has no plane realization.
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 pub type Hosted = NoHosted;
 
 /// Stands in for a hosted object on platforms without plane realization:
 /// no value exists, so no layer there hosts one.
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 #[derive(Debug)]
 pub enum NoHosted {}
 
@@ -972,7 +981,7 @@ impl HostedBinding {
 /// One promoted plane of a [`Composition`].
 #[derive(Debug)]
 #[cfg_attr(
-    not(any(target_vendor = "apple", target_os = "android")),
+    not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
     expect(
         dead_code,
         reason = "read by the platform realizations of `SystemPlanes`"
@@ -989,7 +998,7 @@ pub struct Plane<'a> {
 /// the surface size.
 #[derive(Debug)]
 #[cfg_attr(
-    not(any(target_vendor = "apple", target_os = "android")),
+    not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
     expect(
         dead_code,
         reason = "read by the platform realizations of `SystemPlanes`"
@@ -1005,7 +1014,7 @@ pub struct Part<'a> {
 /// part above the last plane. Without promoted planes there is exactly one
 /// part, the whole surface.
 #[cfg_attr(
-    not(any(target_vendor = "apple", target_os = "android")),
+    not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
     expect(
         dead_code,
         reason = "read by the platform realizations of `SystemPlanes`"
@@ -1163,6 +1172,8 @@ pub trait SystemPlanes: Compositor {
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;
+#[cfg(target_arch = "wasm32")]
+pub mod web;
 
 /// The realization on this platform: Core Animation layer planes.
 #[cfg(target_vendor = "apple")]
@@ -1170,17 +1181,20 @@ pub type Platform = apple::LayerPlanes;
 /// The realization on this platform: child surface controls on Android.
 #[cfg(target_os = "android")]
 pub type Platform = super::surface_control::planes::Planes;
+/// The realization on this platform: DOM elements in the browser.
+#[cfg(target_arch = "wasm32")]
+pub type Platform = web::DomPlanes;
 /// The realization on this platform.
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 pub type Platform = NoPlanes;
 
 /// Stands in for [`SystemPlanes`] on platforms without a realization yet:
 /// no value exists, so a surface there never has planes.
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 #[derive(Debug)]
 pub enum NoPlanes {}
 
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 impl Compositor for NoPlanes {
     const BUDGET: usize = 0;
     const HOSTS_OPACITY: bool = false;
@@ -1195,7 +1209,7 @@ impl Compositor for NoPlanes {
     }
 }
 
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 impl SystemPlanes for NoPlanes {
     type Commit = ();
 
