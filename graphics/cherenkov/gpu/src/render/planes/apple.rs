@@ -61,8 +61,6 @@
 
 use std::cell::RefCell;
 use std::ptr::NonNull;
-#[cfg(target_os = "macos")]
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak, mpsc};
 
@@ -314,7 +312,11 @@ impl std::fmt::Debug for HostedView {
 
 // An `NSView` the engine places: flipped, so its coordinate space matches
 // the engine's y-down space, and transparent to clicks — `hitTest:`
-// declines the view itself while its subviews stay hittable.
+// declines the view itself while its subviews stay hittable. Parts and
+// frame planes are engine views too, so the engine never answers a hit:
+// a click over engine content reaches the hosted view below it or the
+// host view, and which content occludes a hosted view is the host's
+// decision, made in the view it hosts.
 #[cfg(target_os = "macos")]
 objc2::define_class!(
     // SAFETY: `NSView` has no subclassing requirements for a flipped,
@@ -333,9 +335,9 @@ objc2::define_class!(
             true
         }
 
-        /// A view that never answers a hit itself: AppKit walks subviews
-        /// first, so clicks on engine content land on the hosted view and
-        /// clicks beside it fall through to the host view below.
+        /// A view that never answers a hit itself: `AppKit` walks
+        /// subviews first, so a click inside a hosted view lands on it
+        /// and every other click falls through to the host view below.
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: CGPoint) -> *mut NSView {
             // SAFETY: `hitTest:` returns a view the hierarchy owns; a
@@ -350,67 +352,16 @@ objc2::define_class!(
     }
 );
 
-// A layer-hosting `NSView` — the view of a part or a frame-plane
-// container. The engine creates the `CALayer`, hands it to `setLayer`
-// before `setWantsLayer`, and owns its contents; the view never gets
-// subviews. Its pixels are engine content, so a hit inside its hit
-// region — the clips of the layers painting into the part, or of the
-// promoted plane's own clip — is the host view's: `hitTest:` delivers it
-// there, keeping an overlap above a hosted view out of the hosted view's
-// responder chain, while a point over no painted content passes through.
+/// A new, unconfigured [`EngineView`].
 #[cfg(target_os = "macos")]
-objc2::define_class!(
-    // SAFETY: `NSView` has no subclassing requirements for a flipped,
-    // layer-hosting element; the class implements no Drop.
-    #[unsafe(super(NSView))]
-    #[name = "CherenkovPartView"]
-    #[thread_kind = objc2::MainThreadOnly]
-    #[ivars = RefCell<Vec<CGRect>>]
-    struct PartView;
-
-    impl PartView {
-        /// The engine's space is y-down.
-        #[unsafe(method(isFlipped))]
-        fn is_flipped(&self) -> bool {
-            true
-        }
-
-        /// A point inside the hit region claims the hit for the view's
-        /// superview — the host view, every top-level engine view's
-        /// parent — so engine pixels answer hits a hosted subview would
-        /// otherwise take; a point the region does not cover passes
-        /// through to whatever lies below.
-        #[unsafe(method(hitTest:))]
-        fn hit_test(&self, point: CGPoint) -> *mut NSView {
-            let claims = self.hit_region().iter().any(|rect| {
-                point.x >= rect.origin.x
-                    && point.x <= rect.origin.x + rect.size.width
-                    && point.y >= rect.origin.y
-                    && point.y <= rect.origin.y + rect.size.height
-            });
-            if claims {
-                // SAFETY: the superview accessor is a main-thread call;
-                // an autoreleased borrow is the return contract.
-                unsafe { self.superview() }
-                    .map_or(std::ptr::null_mut(), Retained::autorelease_return)
-            } else {
-                std::ptr::null_mut()
-            }
-        }
-    }
-);
-
-#[cfg(target_os = "macos")]
-impl PartView {
-    /// The rects the view's painted content covers, in its superview's —
-    /// the host view's — coordinates.
-    fn hit_region(&self) -> std::cell::Ref<'_, Vec<CGRect>> {
-        self.ivars().borrow()
-    }
-
-    fn hit_region_mut(&self) -> std::cell::RefMut<'_, Vec<CGRect>> {
-        self.ivars().borrow_mut()
-    }
+fn new_engine_view(mtm: MainThreadMarker) -> Retained<NSView> {
+    let this = EngineView::alloc(mtm).set_ivars(());
+    // SAFETY: `msg_send!` to `super.init` is the designated superclass
+    // initializer for a `define_class!` type.
+    let view: Retained<EngineView> = unsafe { objc2::msg_send![super(this), init] };
+    let view = Retained::into_super(view);
+    view.setAutoresizesSubviews(false);
+    view
 }
 
 /// A new engine-owned layer-backed view: flipped, click-transparent, and
@@ -418,28 +369,20 @@ impl PartView {
 /// hosted view's frame where `place` put it.
 #[cfg(target_os = "macos")]
 fn engine_view(mtm: MainThreadMarker) -> Retained<NSView> {
-    let this = EngineView::alloc(mtm).set_ivars(());
-    // SAFETY: `msg_send!` to `super.init` is the designated superclass
-    // initializer for a `define_class!` type.
-    let view: Retained<EngineView> = unsafe { objc2::msg_send![super(this), init] };
-    let view = Retained::into_super(view);
+    let view = new_engine_view(mtm);
     view.setWantsLayer(true);
-    view.setAutoresizesSubviews(false);
     view
 }
 
 /// A new layer-hosting part or plane view: the engine's own `layer` is
 /// the view's layer, set before `wantsLayer` so the view hosts rather
-/// than backs it.
+/// than backs it. It never gets subviews, so — an [`EngineView`] that
+/// declines hits itself — it is transparent to every click.
 #[cfg(target_os = "macos")]
-fn part_view(mtm: MainThreadMarker, layer: &CALayer) -> Retained<PartView> {
-    let this = PartView::alloc(mtm).set_ivars(RefCell::new(Vec::new()));
-    // SAFETY: `msg_send!` to `super.init` is the designated superclass
-    // initializer for a `define_class!` type.
-    let view: Retained<PartView> = unsafe { objc2::msg_send![super(this), init] };
+fn part_view(mtm: MainThreadMarker, layer: &CALayer) -> Retained<NSView> {
+    let view = new_engine_view(mtm);
     view.setLayer(Some(layer));
     view.setWantsLayer(true);
-    view.setAutoresizesSubviews(false);
     view
 }
 
@@ -626,26 +569,6 @@ fn view_rect(acc: Affine, bounds: Rect) -> CGRect {
     )
 }
 
-/// Maps a hit-region rect in device pixels into the host view's points.
-#[cfg(target_os = "macos")]
-fn host_rect(rect: Rect, points: CGRect, scale: f64, host_flipped: bool) -> CGRect {
-    let rect = Rect::new(
-        rect.x0 / scale,
-        rect.y0 / scale,
-        rect.x1 / scale,
-        rect.y1 / scale,
-    );
-    let y = if host_flipped {
-        rect.y0
-    } else {
-        points.size.height - rect.y1
-    };
-    CGRect::new(
-        CGPoint::new(rect.x0, y),
-        CGSize::new(rect.width(), rect.height()),
-    )
-}
-
 /// Applies the clip's corner geometry to the clip view's own layer —
 /// `masksToBounds`, `cornerRadius`, `maskedCorners` and `cornerCurve`,
 /// none of which is on a layer-backed view's restricted list.
@@ -794,7 +717,7 @@ impl Parent {
                 objc2_app_kit::NSWindowOrderingMode::Below,
                 None,
             );
-            (flipped, layer, Retained::into_super(view))
+            (flipped, layer, view)
         };
         #[cfg(not(target_os = "macos"))]
         let layer = match handle.window_handle().expect("window handle").as_raw() {
@@ -909,7 +832,7 @@ enum PlaneNodes {
     /// A frame or raster plane: a layer-hosting full-surface view whose
     /// layer holds the nested level chain and its display.
     Layers {
-        view: Retained<PartView>,
+        view: Retained<NSView>,
         container: Retained<CALayer>,
         levels: Vec<LevelLayers>,
     },
@@ -946,7 +869,7 @@ impl LevelLayers {
 /// subview order is the paint order — its layer, and its metal layer.
 #[cfg(target_os = "macos")]
 struct Part {
-    view: Retained<PartView>,
+    view: Retained<NSView>,
     container: Retained<CALayer>,
     metal: Retained<CAMetalLayer>,
 }
@@ -984,9 +907,9 @@ struct LayerScene {
     #[cfg(target_os = "macos")]
     spare_planes: Vec<PlaneLayers>,
     #[cfg(target_os = "macos")]
-    ordered_views: Vec<Retained<NSView>>,
+    ordered_views: Vec<StackView>,
     #[cfg(target_os = "macos")]
-    desired_views: Vec<Retained<NSView>>,
+    desired_views: Vec<StackView>,
     displays: FxHashMap<LayerId, DisplayLayer>,
     /// Displays of demoted candidates, logically gone from `displays` at
     /// once but detached from the hierarchy only inside the next `place`'s
@@ -997,27 +920,6 @@ struct LayerScene {
     retired_rasters: Vec<Retained<CALayer>>,
     /// The hosted objects the last composition placed, by tree layer.
     hosted: FxHashMap<LayerId, HostedNode>,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Default)]
-struct RegionPacket {
-    regions: Vec<Vec<Option<Rect>>>,
-    plane_regions: Vec<Option<Rect>>,
-}
-
-#[cfg(target_os = "macos")]
-impl RegionPacket {
-    fn copy_from(&mut self, regions: &[Vec<Option<Rect>>], plane_regions: &[Option<Rect>]) {
-        self.regions.resize_with(regions.len(), Vec::new);
-        self.regions.truncate(regions.len());
-        for (destination, source) in self.regions.iter_mut().zip(regions) {
-            destination.clear();
-            destination.extend_from_slice(source);
-        }
-        self.plane_regions.clear();
-        self.plane_regions.extend_from_slice(plane_regions);
-    }
 }
 
 impl Drop for LayerScene {
@@ -1054,44 +956,101 @@ fn append_view_stack<T>(
     }
 }
 
+/// Reorders the views `previous` last left in place into `desired`,
+/// placing each moved view directly above its predecessor in `desired`
+/// (`None` for the first). A steady order places nothing.
+///
+/// The views that stay put are a heaviest subsequence of `desired` that
+/// keeps its `previous` order, where a `pinned` view outweighs every
+/// unpinned view together: re-placing a view takes it out of its
+/// superview, which resigns a first responder inside it, so a pinned
+/// view — a hosted plane's — moves only when the pinned views themselves
+/// change order. Everything else is placed around the views that stay.
 #[cfg(target_os = "macos")]
 fn reconcile_view_order<T: Clone>(
     previous: &mut Vec<T>,
     desired: &[T],
     same: impl Fn(&T, &T) -> bool,
+    pinned: impl Fn(&T) -> bool,
     mut place: impl FnMut(&T, Option<&T>),
 ) {
-    let divergence = previous
+    if previous.len() == desired.len() && previous.iter().zip(desired).all(|(p, d)| same(p, d)) {
+        return;
+    }
+    let placed: Vec<Option<usize>> = desired
         .iter()
-        .zip(desired)
-        .position(|(previous, desired)| !same(previous, desired))
-        .unwrap_or_else(|| previous.len().min(desired.len()));
-    for index in divergence..desired.len() {
-        place(
-            &desired[index],
-            index.checked_sub(1).map(|above| &desired[above]),
-        );
+        .map(|view| previous.iter().position(|old| same(old, view)))
+        .collect();
+    let weight = |i: usize| {
+        if pinned(&desired[i]) {
+            desired.len() + 1
+        } else {
+            1
+        }
+    };
+    // `chain[i]`: the weight of the heaviest order-keeping run of placed
+    // views ending at `i`, and the view before `i` in it.
+    let mut chain: Vec<(usize, Option<usize>)> = vec![(0, None); desired.len()];
+    for i in 0..desired.len() {
+        let Some(at) = placed[i] else {
+            continue;
+        };
+        chain[i] = (weight(i), None);
+        for j in 0..i {
+            if placed[j].is_some_and(|before| before < at) && chain[j].0 + weight(i) > chain[i].0 {
+                chain[i] = (chain[j].0 + weight(i), Some(j));
+            }
+        }
+    }
+    let mut stays = vec![false; desired.len()];
+    let mut next = (0..desired.len())
+        .max_by_key(|&i| chain[i].0)
+        .filter(|&i| chain[i].0 > 0);
+    while let Some(i) = next {
+        stays[i] = true;
+        next = chain[i].1;
+    }
+    for (index, view) in desired.iter().enumerate() {
+        if !stays[index] {
+            place(view, index.checked_sub(1).map(|above| &desired[above]));
+        }
     }
     previous.clear();
     previous.extend_from_slice(desired);
+}
+
+/// A top-level engine view under the host view: a part's, or a plane's
+/// outermost view — `hosted` for a hosted plane's, whose subtree may hold
+/// the window's first responder.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct StackView {
+    view: Retained<NSView>,
+    hosted: bool,
 }
 
 #[cfg(target_os = "macos")]
 fn reconcile_views(
     host: &NSView,
     probes: &NSView,
-    previous: &mut Vec<Retained<NSView>>,
-    desired: &[Retained<NSView>],
+    previous: &mut Vec<StackView>,
+    desired: &[StackView],
 ) {
     reconcile_view_order(
         previous,
         desired,
-        |previous, desired| std::ptr::eq(Retained::as_ptr(previous), Retained::as_ptr(desired)),
+        |previous, desired| {
+            std::ptr::eq(
+                Retained::as_ptr(&previous.view),
+                Retained::as_ptr(&desired.view),
+            )
+        },
+        |view| view.hosted,
         |view, above| {
             host.addSubview_positioned_relativeTo(
-                view,
+                &view.view,
                 objc2_app_kit::NSWindowOrderingMode::Above,
-                Some(above.map_or(probes, |above| &**above)),
+                Some(above.map_or(probes, |above| &*above.view)),
             );
         },
     );
@@ -1153,7 +1112,7 @@ struct ReadinessIvars {
     scene: Weak<MainThreadBound<RefCell<LayerScene>>>,
     layer: LayerId,
     ready: Weak<AtomicBool>,
-    waker: Option<cherenkov::CompletionWaker>,
+    waker: cherenkov::CompletionWaker,
 }
 
 objc2::define_class!(
@@ -1187,13 +1146,13 @@ objc2::define_class!(
                 if let Some(flag) = ready.upgrade() {
                     flag.store(is_ready, Ordering::Release);
                 }
-                if let Some(waker) = waker {
-                    waker.wake();
-                }
+                waker.wake();
             });
         }
     }
 
+    // SAFETY: `NSObjectProtocol` has no requirements beyond being an
+    // `NSObject` subclass, which `ReadinessObserver` is.
     unsafe impl NSObjectProtocol for ReadinessObserver {}
 );
 
@@ -1202,7 +1161,7 @@ impl ReadinessObserver {
         scene: &MainOwned<LayerScene>,
         layer: LayerId,
         ready: Weak<AtomicBool>,
-        waker: Option<cherenkov::CompletionWaker>,
+        waker: cherenkov::CompletionWaker,
     ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(ReadinessIvars {
             scene: scene.downgrade(),
@@ -1250,8 +1209,6 @@ pub struct LayerPlanes {
     /// The layers the last composed frame hosted — the plane kind the
     /// native nodes were built with, which reuse compares against.
     hosted: FxHashSet<LayerId>,
-    #[cfg(target_os = "macos")]
-    region_packets: Arc<Mutex<Vec<RegionPacket>>>,
     motion: MotionState,
 }
 
@@ -1801,7 +1758,7 @@ impl LayerScene {
             display.setPreventsDisplaySleepDuringVideoPlayback(false);
         }
         self.park(&display);
-        let observer = ReadinessObserver::new(scene, layer, ready, Some(waker));
+        let observer = ReadinessObserver::new(scene, layer, ready, waker);
         // SAFETY: the immutable name selects this layer's own readiness
         // notification; the selector is the observer's and the object
         // filter is the layer it watches.
@@ -1905,10 +1862,16 @@ impl LayerScene {
     /// The plane's outermost view, ordered under `host_view` by subview
     /// order.
     #[cfg(target_os = "macos")]
-    fn top_view(plane: &PlaneLayers) -> Retained<NSView> {
+    fn top_view(plane: &PlaneLayers) -> StackView {
         match &plane.nodes {
-            PlaneNodes::Layers { view, .. } => Retained::into_super(view.clone()),
-            PlaneNodes::Views { container, .. } => container.clone(),
+            PlaneNodes::Layers { view, .. } => StackView {
+                view: view.clone(),
+                hosted: false,
+            },
+            PlaneNodes::Views { container, .. } => StackView {
+                view: container.clone(),
+                hosted: true,
+            },
         }
     }
 
@@ -1917,18 +1880,12 @@ impl LayerScene {
     /// subview order is the paint order — each plane carrying its own
     /// flipped contents in its node chain.
     #[cfg(target_os = "macos")]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the frame's full stack description travels together"
-    )]
     fn place(
         &mut self,
         placements: &[Placement],
         size: (u32, u32),
         scale: f64,
         parts: usize,
-        regions: &[Vec<Option<Rect>>],
-        plane_regions: &[Option<Rect>],
         mtm: MainThreadMarker,
     ) {
         // The host's layer can change orientation when the view joins a
@@ -1995,16 +1952,6 @@ impl LayerScene {
             }
         }
         self.spare_planes = old;
-        let host_flipped = self.host_view.isFlipped();
-        for (i, plane) in self.planes.iter().enumerate() {
-            if let PlaneNodes::Layers { view, .. } = &plane.nodes {
-                let mut region = view.hit_region_mut();
-                region.clear();
-                if let Some(rect) = plane_regions[i] {
-                    region.push(host_rect(rect, points, scale, host_flipped));
-                }
-            }
-        }
         for (&layer, raster) in &self.rasters {
             if !placements.iter().any(|placement| placement.layer == layer) {
                 // SAFETY: main-thread CALayer; removing the last native
@@ -2020,7 +1967,7 @@ impl LayerScene {
                 self.park(&display.display);
             }
         }
-        self.order(points, scale, parts, regions, host_flipped);
+        self.order(points, scale, parts);
     }
 
     /// Places one plane's nodes: `points` and `pixels` are the surface's
@@ -2084,30 +2031,18 @@ impl LayerScene {
     /// Paint order is subview order: each top-level element — a part's
     /// or a plane's outermost view — sits in `host_view`'s `subviews` at
     /// its paint index, above the element before it. The probes view,
-    /// added first, stays bottommost. Only out-of-place views move, so a
-    /// steady frame writes nothing to the hierarchy — and never disturbs
-    /// a hosted view's first-responder state.
+    /// added first, stays bottommost. A steady frame writes nothing to
+    /// the hierarchy, and a reorder moves the part and frame-plane views,
+    /// which hold no responder state, around the hosted planes' views, so
+    /// a hosted view keeps its first-responder state
+    /// ([`reconcile_view_order`]).
     #[cfg(target_os = "macos")]
-    fn order(
-        &mut self,
-        points: CGRect,
-        scale: f64,
-        parts: usize,
-        regions: &[Vec<Option<Rect>>],
-        host_flipped: bool,
-    ) {
-        for (i, part) in self.parts[..parts].iter().enumerate() {
+    fn order(&mut self, points: CGRect, scale: f64, parts: usize) {
+        for part in &self.parts[..parts] {
             part.view.setFrame(points);
             part.container.setBounds(points);
             part.metal.setFrame(points);
             part.metal.setContentsScale(scale);
-            {
-                let mut current = part.view.hit_region_mut();
-                current.clear();
-                current.extend(regions[i].iter().filter_map(|rect| {
-                    rect.map(|rect| host_rect(rect, points, scale, host_flipped))
-                }));
-            }
         }
         self.desired_views.clear();
         let (scene_parts, scene_planes, desired) =
@@ -2116,17 +2051,18 @@ impl LayerScene {
             desired,
             parts,
             scene_planes.len(),
-            |i| scene_parts[i].view.clone().into_super(),
+            |i| StackView {
+                view: scene_parts[i].view.clone(),
+                hosted: false,
+            },
             |i| Self::top_view(&scene_planes[i]),
         );
         // A part the plan no longer uses leaves the stack: its view
-        // detaches — along with its hit region, which a stale claim
-        // would keep answering — and the `Part` stays for reuse.
+        // detaches, and the `Part` stays for reuse.
         for part in self.parts.iter().skip(parts) {
             // SAFETY: `superview` is a main-thread accessor.
             if unsafe { part.view.superview() }.is_some() {
                 part.view.removeFromSuperview();
-                part.view.hit_region_mut().clear();
             }
         }
         reconcile_views(
@@ -2286,6 +2222,52 @@ impl LayerScene {
         );
     }
 
+    /// The window's first responder when it is a hosted view or lies
+    /// inside one: the responder a commit that re-parents the hosted
+    /// view's ancestors would resign.
+    #[cfg(target_os = "macos")]
+    fn hosted_responder(&self) -> Option<Retained<NSView>> {
+        let responder = self.host_view.window()?.firstResponder()?;
+        let view = responder.downcast::<NSView>().ok()?;
+        self.hosted
+            .values()
+            .any(|node| view.isDescendantOf(&node.view))
+            .then_some(view)
+    }
+
+    /// Hands first responder back to `responder`, the hosted responder
+    /// before this commit, when the commit's re-parenting resigned it.
+    /// `order` never moves a hosted plane's views to reorder the stack,
+    /// but a path whose shape changed rebuilds the views around the
+    /// leaf, and re-parenting the leaf resigns a responder inside it. A
+    /// responder that left the window — its hosted view released — keeps
+    /// the resignation `AppKit` made.
+    #[cfg(target_os = "macos")]
+    fn restore_responder(&self, responder: Option<Retained<NSView>>) {
+        let Some(responder) = responder else {
+            return;
+        };
+        let Some(window) = self.host_view.window() else {
+            return;
+        };
+        if responder
+            .window()
+            .is_none_or(|own| !own.isEqual(Some(&*window)))
+            || window
+                .firstResponder()
+                .is_some_and(|current| current.isEqual(Some(&*responder)))
+        {
+            return;
+        }
+        let responder: &objc2_app_kit::NSResponder = &responder;
+        if !window.makeFirstResponder(Some(responder)) {
+            tracing::warn!(
+                target: "cherenkov::planes",
+                "a re-parented hosted view refused first responder back"
+            );
+        }
+    }
+
     /// Hands `frame` to `layer`'s display layer.
     ///
     /// # Panics
@@ -2389,12 +2371,64 @@ impl LayerPlanes {
             buffers: FxHashMap::default(),
             placements: Vec::new(),
             hosted: FxHashSet::default(),
-            #[cfg(target_os = "macos")]
-            region_packets: Arc::new(Mutex::new(Vec::new())),
             motion: MotionState::default(),
         };
         result.request_parts(1, probe);
         result
+    }
+
+    /// The raster planes' `IOSurface` contents, converting each new
+    /// capture into a buffer of its own; `None` while any buffer's
+    /// conversion is still running. The immutable `IOSurface` is published
+    /// only after the GPU has finished its presentation conversion — until
+    /// then the committed scene and all of its old buffers stay visible
+    /// together.
+    fn raster_contents(
+        &mut self,
+        c: &mut Composition<'_>,
+    ) -> Result<Option<Vec<(LayerId, raster::Contents)>>, RenderError> {
+        let mut ready = true;
+        let mut contents = Vec::new();
+        self.buffers.retain(|layer, _| {
+            c.planes.iter().any(|plane| {
+                plane.placement.layer == *layer
+                    && matches!(plane.content, PlaneContent::Raster { .. })
+            })
+        });
+        for plane in c.planes {
+            let PlaneContent::Raster { view, generation } = &plane.content else {
+                continue;
+            };
+            let layer = plane.placement.layer;
+            if self.buffers.get(&layer).is_none_or(|buffer| {
+                buffer.generation != *generation
+                    || buffer.headroom.to_bits() != c.display.headroom.to_bits()
+            }) {
+                let buffer = raster::Buffer::new(
+                    c.device,
+                    plane.placement.size,
+                    *generation,
+                    c.display.headroom,
+                )?;
+                buffer.completing(c.queue, self.waker.clone());
+                c.presenter.texture(
+                    c.device,
+                    c.queue,
+                    view.expect("a new native capture has engine pixels"),
+                    crate::interop::TextureOutput {
+                        texture: &buffer.texture,
+                        color: crate::interop::OutputColor::LinearDisplayP3,
+                        alpha: crate::interop::OutputAlpha::Premultiplied,
+                        headroom: c.display.headroom,
+                    },
+                );
+                self.buffers.insert(layer, buffer);
+            }
+            let buffer = &self.buffers[&layer];
+            ready &= buffer.ready.load(Ordering::Acquire);
+            contents.push((layer, raster::Contents(buffer.surface.clone())));
+        }
+        Ok(ready.then_some(contents))
     }
 
     fn request_parts(
@@ -2568,12 +2602,6 @@ struct MainCommit {
     frames: Vec<wgpu::SurfaceTexture>,
     /// The queue the drawables present through.
     queue: wgpu::Queue,
-    /// The frame's hit regions.
-    #[cfg(target_os = "macos")]
-    region_packet: RegionPacket,
-    /// The pool `region_packet` returns to once placed.
-    #[cfg(target_os = "macos")]
-    region_packets: Arc<Mutex<Vec<RegionPacket>>>,
 }
 
 impl CommitApply for MainCommit {
@@ -2587,32 +2615,19 @@ impl CommitApply for MainCommit {
             scale,
             frames,
             queue,
-            #[cfg(target_os = "macos")]
-            region_packet,
-            #[cfg(target_os = "macos")]
-            region_packets,
         } = *self;
         scene.with(mtm, |scene, mtm| {
             let _tx = Transaction::begin();
+            #[cfg(target_os = "macos")]
+            let responder = scene.hosted_responder();
             for (layer, contents) in contents {
                 contents.set(scene.display(layer));
             }
             scene.host(hosted, mtm);
             #[cfg(target_os = "macos")]
             {
-                scene.place(
-                    &placements,
-                    size,
-                    scale,
-                    frames.len(),
-                    &region_packet.regions,
-                    &region_packet.plane_regions,
-                    mtm,
-                );
-                region_packets
-                    .lock()
-                    .expect("region packet pool is not poisoned")
-                    .push(region_packet);
+                scene.place(&placements, size, scale, frames.len(), mtm);
+                scene.restore_responder(responder);
             }
             #[cfg(not(target_os = "macos"))]
             scene.place(&placements, size, scale, frames.len());
@@ -2738,61 +2753,13 @@ impl SystemPlanes for LayerPlanes {
         self.owned_animations.clear();
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one frame's compose is a single pass over the plan"
-    )]
     fn compose(
         &mut self,
-        c: Composition<'_>,
+        mut c: Composition<'_>,
     ) -> Result<(super::Presentation, Self::Commit), RenderError> {
-        // The immutable IOSurface is published only after the GPU has
-        // finished its presentation conversion. Until then the committed
-        // scene and all of its old buffers stay visible together.
-        let mut ready = true;
-        let mut contents = Vec::new();
-        self.buffers.retain(|layer, _| {
-            c.planes.iter().any(|plane| {
-                plane.placement.layer == *layer
-                    && matches!(plane.content, PlaneContent::Raster { .. })
-            })
-        });
-        for plane in c.planes {
-            let PlaneContent::Raster { view, generation } = &plane.content else {
-                continue;
-            };
-            let layer = plane.placement.layer;
-            if self.buffers.get(&layer).is_none_or(|buffer| {
-                buffer.generation != *generation
-                    || buffer.headroom.to_bits() != c.display.headroom.to_bits()
-            }) {
-                let buffer = raster::Buffer::new(
-                    c.device,
-                    plane.placement.size,
-                    *generation,
-                    c.display.headroom,
-                )?;
-                buffer.completing(c.queue, self.waker.clone());
-                c.presenter.texture(
-                    c.device,
-                    c.queue,
-                    view.expect("a new native capture has engine pixels"),
-                    crate::interop::TextureOutput {
-                        texture: &buffer.texture,
-                        color: crate::interop::OutputColor::LinearDisplayP3,
-                        alpha: crate::interop::OutputAlpha::Premultiplied,
-                        headroom: c.display.headroom,
-                    },
-                );
-                self.buffers.insert(layer, buffer);
-            }
-            let buffer = &self.buffers[&layer];
-            ready &= buffer.ready.load(Ordering::Acquire);
-            contents.push((layer, raster::Contents(buffer.surface.clone())));
-        }
-        if !ready {
+        let Some(contents) = self.raster_contents(&mut c)? else {
             return Ok((super::Presentation::Pending, None));
-        }
+        };
         self.collect_parts()?;
         self.request_parts(c.parts.len(), None);
         if self.parts.len() < c.parts.len() {
@@ -2817,15 +2784,6 @@ impl SystemPlanes for LayerPlanes {
         let next_hosted: FxHashSet<LayerId> = hosted.iter().map(|(id, ..)| *id).collect();
         let size = c.size;
         let scale = c.display.scale;
-        #[cfg(target_os = "macos")]
-        let mut region_packet = self
-            .region_packets
-            .lock()
-            .expect("region packet pool is not poisoned")
-            .pop()
-            .unwrap_or_default();
-        #[cfg(target_os = "macos")]
-        region_packet.copy_from(c.regions, c.plane_regions);
         let tree_changed = placements.iter().any(|placement| {
             self.motion.owns(placement.layer)
                 && !self.placements.iter().any(|built| {
@@ -2850,10 +2808,6 @@ impl SystemPlanes for LayerPlanes {
             scale,
             frames,
             queue: c.queue.clone(),
-            #[cfg(target_os = "macos")]
-            region_packet,
-            #[cfg(target_os = "macos")]
-            region_packets: self.region_packets.clone(),
         };
         for plane in c.planes {
             if let Some(update) = Update::from_plane(plane) {

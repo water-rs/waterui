@@ -173,8 +173,6 @@ mod hosted {
             root: anchored(),
             parts: (0..parts).map(|_| CAMetalLayer::new()).collect(),
             planes: Vec::new(),
-            #[cfg(target_os = "macos")]
-            spare_planes: Vec::new(),
             displays: FxHashMap::default(),
             retired: Vec::new(),
             motions: FxHashMap::default(),
@@ -347,13 +345,15 @@ mod hosted {
     fn a_layer_switching_between_frame_and_hosted_rebuilds_its_nodes() {
         let _tx = Transaction::begin();
         let web = CALayer::new();
+        // SAFETY: the layer is created and used only on this thread, inside
+        // the test's own transaction.
         let display = unsafe { AVSampleBufferDisplayLayer::new() };
         let mut state_ref = scene(1);
         let this = ReadinessObserver::alloc().set_ivars(ReadinessIvars {
             scene: Weak::new(),
             layer: WEB,
             ready: Weak::new(),
-            waker: None,
+            waker: cherenkov::testing::unhosted_waker(),
         });
         // SAFETY: the inactive observer is an NSObject subclass initialized
         // without a scene; this headless test never receives notifications.
@@ -399,40 +399,14 @@ mod hosted {
 
 #[cfg(target_os = "macos")]
 mod ordering {
-    use kurbo::Rect;
-
-    use super::super::{RegionPacket, append_view_stack, reconcile_view_order};
-
-    #[test]
-    fn a_reused_region_packet_keeps_nested_storage() {
-        let regions = vec![
-            vec![Some(Rect::new(1.0, 2.0, 3.0, 4.0)), None],
-            vec![Some(Rect::new(5.0, 6.0, 7.0, 8.0))],
-        ];
-        let planes = vec![None, Some(Rect::new(9.0, 10.0, 11.0, 12.0))];
-        let mut packet = RegionPacket::default();
-        packet.copy_from(&regions, &planes);
-        let outer = packet.regions.as_ptr();
-        let inners: Vec<_> = packet.regions.iter().map(Vec::as_ptr).collect();
-        let planes_ptr = packet.plane_regions.as_ptr();
-        crate::render::planes::tests::start_tracking();
-        packet.copy_from(&regions, &planes);
-        let allocations = crate::render::planes::tests::stop_tracking();
-        assert_eq!(allocations, (0, 0));
-        assert_eq!(packet.regions.as_ptr(), outer);
-        assert_eq!(
-            packet.regions.iter().map(Vec::as_ptr).collect::<Vec<_>>(),
-            inners
-        );
-        assert_eq!(packet.plane_regions.as_ptr(), planes_ptr);
-    }
+    use super::super::{append_view_stack, reconcile_view_order};
 
     #[test]
     fn a_warmed_view_order_reconciliation_allocates_nothing() {
         let mut previous = vec![0, 1, 2, 3];
         let desired = [0, 1, 2, 3];
         let reconcile = |previous: &mut Vec<usize>| {
-            reconcile_view_order(previous, &desired, |a, b| a == b, |_, _| {});
+            reconcile_view_order(previous, &desired, |a, b| a == b, |_| false, |_, _| {});
         };
         reconcile(&mut previous);
         crate::render::planes::tests::start_tracking();
@@ -462,21 +436,25 @@ mod ordering {
         }
     }
 
-    #[test]
-    fn an_installed_arbitrary_engine_permutation_is_reordered() {
-        let mut previous = vec![2, 3, 0, 1];
-        let mut installed = vec![98, 99, 2, 3, 0, 1];
-        let desired = [0, 1, 2, 3];
+    /// Reconciles `installed` — the host's subviews, 98 the probes view
+    /// and 99 a foreign sibling — from `previous` to `desired`, with views
+    /// of 10 and above pinned, and returns the views it placed.
+    fn reorder(previous: &[usize], installed: &mut Vec<usize>, desired: &[usize]) -> Vec<usize> {
+        let mut previous = previous.to_vec();
+        let mut placed = Vec::new();
         reconcile_view_order(
             &mut previous,
-            &desired,
+            desired,
             |left, right| left == right,
+            |view| *view >= 10,
             |view, above| {
-                let current = installed.iter().position(|value| value == view).unwrap();
-                let view = installed.remove(current);
+                placed.push(*view);
+                if let Some(current) = installed.iter().position(|value| value == view) {
+                    installed.remove(current);
+                }
                 let anchor = above.copied().unwrap_or(98);
                 let index = installed.iter().position(|value| *value == anchor).unwrap() + 1;
-                installed.insert(index, view);
+                installed.insert(index, *view);
             },
         );
         assert_eq!(previous, desired);
@@ -485,9 +463,41 @@ mod ordering {
             installed
                 .iter()
                 .copied()
-                .filter(|identity| (0..4).contains(identity))
+                .filter(|identity| desired.contains(identity))
                 .collect::<Vec<_>>(),
             desired
+        );
+        placed
+    }
+
+    #[test]
+    fn an_installed_arbitrary_engine_permutation_is_reordered() {
+        let mut installed = vec![98, 99, 2, 3, 0, 1];
+        let placed = reorder(&[2, 3, 0, 1], &mut installed, &[0, 1, 2, 3]);
+        assert_eq!(placed.len(), 2, "two views move around the two kept");
+    }
+
+    /// A plane inserted below the hosted plane — a quiet layer becoming a
+    /// capture, say — moves parts around the hosted plane's view, never
+    /// the view itself: re-placing it would resign a first responder
+    /// inside it.
+    #[test]
+    fn a_plane_inserted_below_a_hosted_plane_leaves_it_in_place() {
+        let mut installed = vec![98, 0, 10, 1, 99];
+        let placed = reorder(&[0, 10, 1], &mut installed, &[0, 5, 1, 10, 2]);
+        assert!(!placed.contains(&10), "the hosted view stays: {placed:?}");
+    }
+
+    /// Hosted planes that trade places are the one reorder that moves a
+    /// hosted view, and only one of them moves.
+    #[test]
+    fn swapped_hosted_planes_move_one_of_them() {
+        let mut installed = vec![98, 0, 10, 1, 11, 2];
+        let placed = reorder(&[0, 10, 1, 11, 2], &mut installed, &[0, 11, 1, 10, 2]);
+        assert_eq!(
+            placed.iter().filter(|view| **view >= 10).count(),
+            1,
+            "one hosted view moves: {placed:?}"
         );
     }
 }

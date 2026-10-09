@@ -177,20 +177,24 @@ mod macos {
                 a_hosted_layer_sits_between_its_parts_and_moves_in_place,
             ),
             case(
-                "a_part_over_the_hosted_view_claims_the_overlap",
-                a_part_over_the_hosted_view_claims_the_overlap,
+                "engine_views_are_transparent_to_hits",
+                engine_views_are_transparent_to_hits,
             ),
             case(
-                "unclipped_paint_bounds_route_hits_over_a_hosted_view",
-                unclipped_paint_bounds_route_hits_over_a_hosted_view,
-            ),
-            case(
-                "a_part_between_two_hosted_views_claims_only_where_it_paints",
-                a_part_between_two_hosted_views_claims_only_where_it_paints,
+                "a_part_between_two_hosted_views_is_transparent_to_hits",
+                a_part_between_two_hosted_views_is_transparent_to_hits,
             ),
             case(
                 "a_steady_frame_mutates_no_views_and_keeps_the_first_responder",
                 a_steady_frame_mutates_no_views_and_keeps_the_first_responder,
+            ),
+            case(
+                "a_plane_inserted_below_the_responder_leaves_its_views_in_place",
+                a_plane_inserted_below_the_responder_leaves_its_views_in_place,
+            ),
+            case(
+                "a_rebuilt_hosted_path_gives_first_responder_back",
+                a_rebuilt_hosted_path_gives_first_responder_back,
             ),
             case(
                 "contents_orientation_updates_engine_layer_geometry_in_place",
@@ -2037,8 +2041,7 @@ mod macos {
     /// the same part. The holder's clip is smaller than the hosted view
     /// — px (12,8)-(42,26) against the hosted (12,8)-(52.5,32) — with a
     /// corner radius of 8 that a pixel inside the hosted rect escapes;
-    /// the bars' own clips bound where they paint, and the px 28..30
-    /// gap between them paints nothing.
+    /// the bars' own clips bound where they paint.
     fn hosted_scene(fixture: &Fixture, web: &Retained<NSView>) -> [Layer; 5] {
         let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let surface = &fixture.window;
@@ -2489,12 +2492,11 @@ mod macos {
         );
     }
 
-    /// A part painted above the hosted view claims a hit only where its
-    /// layers paint: inside a bar's clip the host view answers — the
-    /// engine's pixels, not the hosted view beneath them — while the
-    /// transparent gap between the two bars, and the hosted area beside
-    /// them, reach the hosted view itself.
-    fn a_part_over_the_hosted_view_claims_the_overlap() {
+    /// The engine's views never answer a hit: a part painted above the
+    /// hosted view lets every point through to it — which content
+    /// occludes a hosted view is the host's decision, made in the view
+    /// it hosts — and outside the hosted view the host view answers.
+    fn engine_views_are_transparent_to_hits() {
         let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let fixture = Fixture::new();
         let web = hosted_view(mtm, (0.1, 0.9, 0.2));
@@ -2513,34 +2515,20 @@ mod macos {
         };
         // The host view is y-up: engine point (x,y) is host (x, 32-y).
         // The hosted view's clip is px (12,8)-(42,26) — pt (6,4)-(21,13)
-        // — and the part's hit region is the bars' own clips, pt
-        // (12,5)-(14,13) and (15,5)-(20,13).
-        // Inside the overlap: the part claims the hit for the host view.
+        // — and the bar above it paints pt (15,5)-(20,13).
         assert!(
-            is_host(hit(16.0, 22.0)),
-            "the bar's paint answers for the host view"
+            is_web(hit(16.0, 22.0)),
+            "the part painted over the hosted view lets the hit through"
         );
-        // Just inside the hosted rect, beside the bars: the hosted view
-        // answers — the part's region stops at the bar's clip.
         assert!(
             is_web(hit(10.0, 22.0)),
             "the hosted view answers beside the bar"
         );
-        // The transparent gap between the two bars — px 28..30, pt
-        // 14..15 — paints nothing: the hit passes through to the hosted
-        // view.
-        assert!(
-            is_web(hit(14.5, 22.0)),
-            "the gap between painted layers reaches the hosted view"
-        );
-        // Outside the hosted view the backdrop's part claims the hit —
-        // an engine view never answers directly.
         assert!(
             is_host(hit(46.0, 17.0)),
             "outside the hosted view the host view takes the hit"
         );
-        // Reorder the hosted plane above the part: inside its leaf the
-        // hosted view takes the hit itself.
+        // Reorder the hosted plane above the part: the answers stay.
         let surface = &fixture.window;
         surface.update(|tx| {
             tx[surface.root()].push(&holder);
@@ -2560,48 +2548,10 @@ mod macos {
         );
     }
 
-    /// An unclipped small mark claims only its painted bounds; elsewhere
-    /// inside the hosted view, the hit reaches the hosted leaf.
-    fn unclipped_paint_bounds_route_hits_over_a_hosted_view() {
-        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
-        let fixture = Fixture::new();
-        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
-        let surface = &fixture.window;
-        let hosted = surface.layer();
-        let label = surface.layer();
-        let mark = surface.record(|c| {
-            c.fill(
-                Rect::new(4.0, 4.0, 10.0, 8.0),
-                WorkingColor::new([0.7, 0.1, 0.1, 1.0]),
-            );
-        });
-        let object = Hosted::<Gpu>::new(HostedView::new(web.clone(), mtm));
-        surface.update(|tx| {
-            tx[surface.root()].push(&hosted).push(&label);
-            tx[&hosted].content(object.at(EXTENT));
-            tx[&label].content(mark);
-        });
-        render_until(
-            &fixture,
-            &|| view_superview(&web).is_some(),
-            "the hosted view",
-        );
-        let hit = |x, y| fixture.view.hitTest(CGPoint::new(x, y));
-        assert_eq!(
-            hit(3.5, 29.0).as_ref().map(Retained::as_ptr),
-            Some(Retained::as_ptr(&fixture.view)),
-            "painted content answers for the host"
-        );
-        assert_eq!(
-            hit(15.0, 26.0).as_ref().map(Retained::as_ptr),
-            Some(Retained::as_ptr(&web)),
-            "an unclipped transparent point reaches the hosted view"
-        );
-    }
-
-    /// A part bounded below and above by hosted planes claims hits the
-    /// same way: inside its painted bar for the host view, nowhere else.
-    fn a_part_between_two_hosted_views_claims_only_where_it_paints() {
+    /// A part bounded below and above by hosted planes is transparent
+    /// the same way: over its painted bar the hosted view below it
+    /// answers, and the hosted view above it answers inside its own leaf.
+    fn a_part_between_two_hosted_views_is_transparent_to_hits() {
         let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
         let fixture = Fixture::new();
         let web = hosted_view(mtm, (0.1, 0.9, 0.2));
@@ -2642,20 +2592,12 @@ mod macos {
             "both hosted views",
         );
         let hit = |x: f64, y: f64| fixture.view.hitTest(CGPoint::new(x, y));
-        // The part between the planes claims the bar's clip — pt
-        // (15,5)-(20,13), host (16,22) — for the host view, even though
-        // it is bounded by hosted views on both sides.
+        // The bar between the planes paints pt (15,5)-(20,13), host
+        // (16,22): the lower hosted view under it answers.
         assert_eq!(
             hit(16.0, 22.0).as_ref().map(Retained::as_ptr),
-            Some(Retained::as_ptr(&fixture.view)),
-            "the bar between the hosted views answers for the host view"
-        );
-        // Beside the bar, inside the lower hosted leaf: the first hosted
-        // view — the part's region never covers it.
-        assert_eq!(
-            hit(10.0, 22.0).as_ref().map(Retained::as_ptr),
             Some(Retained::as_ptr(&web)),
-            "the lower hosted view answers beside the bar"
+            "the bar between the hosted views lets the hit through"
         );
         // The upper hosted view's leaf — pt (30,4)-(36,13), engine
         // (32,10) — answers above the part.
@@ -2914,6 +2856,99 @@ mod macos {
                 .firstResponder()
                 .is_some_and(|r| r.isEqual(Some(&**web))),
             "the hosted view kept first responder"
+        );
+    }
+
+    /// A plane inserted below the hosted plane that holds first responder
+    /// moves the engine's views around the hosted plane's own, which
+    /// stay where they are: the responder keeps its status through the
+    /// reorder, with no resignation in between.
+    fn a_plane_inserted_below_the_responder_leaves_its_views_in_place() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let [_below, _holder, _hosted, _above, _above2] = hosted_scene(&fixture, &web);
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view",
+        );
+        let responder: &objc2_app_kit::NSResponder = &web;
+        assert!(fixture.app_window.makeFirstResponder(Some(responder)));
+        let stable_host = top_ancestor(&web, &fixture.view);
+        let inserted_web = hosted_view(mtm, (0.2, 0.2, 0.9));
+        let inserted = fixture.window.layer();
+        let object = Hosted::<Gpu>::new(HostedView::new(inserted_web.clone(), mtm));
+        fixture.counting.reset_writes();
+        fixture.window.update(|tx| {
+            tx[fixture.window.root()].insert(1, &inserted);
+            tx[&inserted].content(object.at(EXTENT));
+        });
+        render_until(
+            &fixture,
+            &|| view_superview(&inserted_web).is_some(),
+            "the inserted plane",
+        );
+        let order = direct_subviews(&fixture.view);
+        let position = |view: *const NSView| {
+            order
+                .iter()
+                .position(|installed| std::ptr::eq(*installed, view))
+                .expect("an installed engine view")
+        };
+        assert!(
+            position(top_ancestor(&inserted_web, &fixture.view)) < position(stable_host),
+            "the inserted plane sits below the responder's"
+        );
+        assert!(
+            fixture
+                .counting
+                .hierarchy_changes()
+                .iter()
+                .all(|(_, identity)| *identity != stable_host.addr()),
+            "the reorder never moved the responder's hosted plane"
+        );
+        assert!(
+            fixture
+                .app_window
+                .firstResponder()
+                .is_some_and(|r| r.isEqual(Some(&*web))),
+            "the hosted view kept first responder"
+        );
+    }
+
+    /// A clip added on the hosted layer's own level changes its path's
+    /// shape: the plane's views are rebuilt and the leaf moves under the
+    /// new clip view, which resigns a first responder inside it — the
+    /// frame's commit hands the status back.
+    fn a_rebuilt_hosted_path_gives_first_responder_back() {
+        let mtm = MainThreadMarker::new().expect("the cases run on the main thread");
+        let fixture = Fixture::new();
+        let web = hosted_view(mtm, (0.1, 0.9, 0.2));
+        let [_below, _holder, hosted, _above, _above2] = hosted_scene(&fixture, &web);
+        render_until(
+            &fixture,
+            &|| view_superview(&web).is_some(),
+            "the hosted view",
+        );
+        let responder: &objc2_app_kit::NSResponder = &web;
+        assert!(fixture.app_window.makeFirstResponder(Some(responder)));
+        let leaf = as_view(view_superview(&web).expect("the leaf"));
+        let clip = view_superview(leaf).expect("the holder's clip view");
+        fixture.window.update(|tx| {
+            tx[&hosted].clip(RoundedRect::new(0.0, 0.0, 20.0, 12.0, 0.0));
+        });
+        render_until(
+            &fixture,
+            &|| view_superview(leaf).is_some_and(|parent| parent != clip),
+            "the rebuilt path",
+        );
+        assert!(
+            fixture
+                .app_window
+                .firstResponder()
+                .is_some_and(|r| r.isEqual(Some(&*web))),
+            "the hosted view has first responder back"
         );
     }
 

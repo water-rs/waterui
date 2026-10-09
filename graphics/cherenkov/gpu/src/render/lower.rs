@@ -465,8 +465,6 @@ fn cover_strips(b: Rect, c: Cover) -> impl Iterator<Item = Rect> {
 pub struct ContentData {
     pub(crate) retained: cherenkov::lowering::Content<Op, Emission>,
     pub(crate) storage: EmissionStorage,
-    pub(crate) paint_bounds: Option<Rect>,
-    pub(crate) bounds_dirty: bool,
 }
 
 impl ContentData {
@@ -474,14 +472,11 @@ impl ContentData {
         Self {
             retained: cherenkov::lowering::Content::new(list),
             storage: EmissionStorage::default(),
-            paint_bounds: None,
-            bounds_dirty: true,
         }
     }
 
     pub fn replace(&mut self, list: cherenkov::Picture) -> cherenkov::Picture {
         let previous = self.retained.replace(list);
-        self.bounds_dirty = true;
         self.storage.instances.clear();
         self.storage.stops.clear();
         self.storage.templates.clear();
@@ -501,20 +496,16 @@ impl ContentData {
         Self {
             retained: cherenkov::lowering::Content::picture(list),
             storage: EmissionStorage::default(),
-            paint_bounds: None,
-            bounds_dirty: true,
         }
     }
 
     pub fn update(&mut self, updates: Vec<cherenkov::SlotUpdate>) {
         self.retained.update(updates);
-        self.bounds_dirty = true;
     }
 
     pub fn invalidate(&mut self) {
         self.retained.invalidate();
         self.storage = EmissionStorage::default();
-        self.bounds_dirty = true;
     }
 
     /// Whether the content samples `resource`.
@@ -527,40 +518,13 @@ impl ContentData {
     pub fn invalidate_image(&mut self, id: cherenkov::ImageId) {
         if self.retained.invalidate_image(id) {
             self.storage = EmissionStorage::default();
-            self.bounds_dirty = true;
         }
-    }
-
-    pub fn refresh_paint_bounds(
-        &mut self,
-        fonts: &FxHashMap<u64, glyph::FontData>,
-    ) -> Result<(), RenderError> {
-        if !self.bounds_dirty {
-            return Ok(());
-        }
-        let (ops, source) = self
-            .retained
-            .current()
-            .expect("prepared content has current operations");
-        self.paint_bounds = super::planes::static_layer::paint_bounds(ops, source, fonts)?;
-        self.bounds_dirty = false;
-        Ok(())
     }
 
     pub fn trim(&mut self) {
         self.retained.trim();
         self.storage = EmissionStorage::default();
     }
-}
-
-pub fn refresh_paint_bounds(
-    layers: &mut FxHashMap<LayerId, ContentData>,
-    fonts: &FxHashMap<u64, glyph::FontData>,
-) -> Result<(), RenderError> {
-    for content in layers.values_mut() {
-        content.refresh_paint_bounds(fonts)?;
-    }
-    Ok(())
 }
 
 /// A layer's device data. Leaf ranges remain independent for dirty updates.
@@ -5852,8 +5816,6 @@ mod tests {
             unplaced: Vec::new(),
             rejected: Vec::new(),
             trailing,
-            regions: Vec::new(),
-            plane_regions: Vec::new(),
         }
     }
 

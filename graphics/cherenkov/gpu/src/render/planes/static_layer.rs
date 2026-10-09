@@ -7,7 +7,7 @@ use skrifa::MetadataProvider;
 
 use crate::render::{
     bitmap, glyph,
-    prepared::{ClipShape, Op, Outline, ResolvedPaint},
+    prepared::{Op, Outline, ResolvedPaint},
 };
 
 /// A local source domain. Its integer origin and dimensions include the
@@ -202,156 +202,99 @@ fn bounds(
     list: &DisplayList,
     fonts: &FxHashMap<u64, glyph::FontData>,
 ) -> Result<Option<Rect>, RenderError> {
-    bounds_with(ops, list, fonts, true)
-}
-
-pub fn paint_bounds(
-    ops: &[Op],
-    list: &DisplayList,
-    fonts: &FxHashMap<u64, glyph::FontData>,
-) -> Result<Option<Rect>, RenderError> {
-    bounds_with(ops, list, fonts, false)
-}
-
-fn geometry_bounds(
-    op: &Op,
-    list: &DisplayList,
-    fonts: &FxHashMap<u64, glyph::FontData>,
-) -> Result<(Affine, Rect), RenderError> {
-    match op {
-        Op::Shaped {
-            local,
-            bounds,
-            extra_margin,
-            ..
-        } => Ok((*local, bounds.inflate(*extra_margin, *extra_margin))),
-        Op::Shadow {
-            local,
-            bounds,
-            sigma_eff,
-            ..
-        } => {
-            let margin = sigma_eff.mul_add(3.0, 1.0);
-            Ok((*local, bounds.inflate(margin, margin)))
-        }
-        Op::Path { local, outline, .. } => Ok((*local, path_bounds(outline, list))),
-        Op::Glyphs { local, run, .. } => Ok((*local, glyph_bounds(run.get(list), fonts)?)),
-        Op::BitmapGlyph {
-            local,
-            font,
-            glyph,
-            origin,
-            size,
-        } => {
-            let font = &fonts[font];
-            let bitmap = font.bitmap.as_ref().expect("prepared bitmap font");
-            let Some(decoded) =
-                bitmap::decode(&font.data, font.index, bitmap, bitmap.select(*size), *glyph)?
-            else {
-                return Ok((*local, Rect::ZERO));
-            };
-            Ok((
-                *local
-                    * Affine::translate((f64::from(origin[0]), f64::from(origin[1])))
-                    * Affine::scale(f64::from(*size)),
-                decoded.em,
-            ))
-        }
-        _ => unreachable!("scope operation is handled before geometry"),
-    }
-}
-
-fn update_scope_bounds(
-    op: &Op,
-    margins: &mut Vec<kurbo::Vec2>,
-    mut clips: Option<&mut Vec<Option<Rect>>>,
-) -> bool {
-    match op {
-        Op::BeginShadow { parameters, .. } => {
-            let margin = 6.0_f64.mul_add(parameters.sigma, parameters.spread.max(0.0));
-            let [a, b, c, d, _, _] = parameters.transform.as_coeffs();
-            margins.push(kurbo::Vec2::new(a.hypot(c) * margin, b.hypot(d) * margin));
-            if let Some(clips) = clips.as_mut() {
-                clips.push(None);
-            }
-        }
-        Op::BeginClip { local, shape, .. } => {
-            margins.push(kurbo::Vec2::ZERO);
-            if let Some(clips) = clips.as_mut() {
-                let clip = match shape {
-                    ClipShape::Empty => Rect::ZERO,
-                    ClipShape::Boxed { extra, shape, .. } => {
-                        let [width, height] = shape.half;
-                        (*local * *extra).transform_rect_bbox(Rect::new(
-                            -f64::from(width),
-                            -f64::from(height),
-                            f64::from(width),
-                            f64::from(height),
-                        ))
-                    }
-                    ClipShape::Path { elements, .. } => local.transform_rect_bbox(
-                        kurbo::BezPath::from_vec(elements.to_vec()).bounding_box(),
-                    ),
-                };
-                clips.push(Some(clip));
-            }
-        }
-        Op::BeginIsolate { .. } => {
-            margins.push(kurbo::Vec2::ZERO);
-            if let Some(clips) = clips.as_mut() {
-                clips.push(None);
-            }
-        }
-        Op::End => {
-            margins.pop().expect("prepared scopes pair");
-            if let Some(clips) = clips.as_mut() {
-                clips.pop().expect("prepared scopes pair");
-            }
-        }
-        _ => return false,
-    }
-    true
-}
-
-fn bounds_with(
-    ops: &[Op],
-    list: &DisplayList,
-    fonts: &FxHashMap<u64, glyph::FontData>,
-    reject_unbounded: bool,
-) -> Result<Option<Rect>, RenderError> {
     let mut result = None;
-    let mut margins: Vec<kurbo::Vec2> = Vec::new();
-    let mut clips: Vec<Option<Rect>> = Vec::new();
+    let mut margins = Vec::new();
     for op in ops {
-        if reject_unbounded
-            && match op {
-                Op::Shaped { paint, .. } | Op::Path { paint, .. } | Op::Glyphs { paint, .. } => {
-                    matches!(paint, ResolvedPaint::Shader(_))
+        let (local, rect) = match op {
+            Op::Shaped {
+                local,
+                bounds,
+                extra_margin,
+                paint,
+                ..
+            } => {
+                if matches!(paint, ResolvedPaint::Shader(_)) {
+                    return Ok(None);
                 }
-                Op::BeginIsolate { filter, .. } => filter.is_some(),
-                _ => false,
+                (*local, bounds.inflate(*extra_margin, *extra_margin))
             }
-        {
-            return Ok(None);
-        }
-        if update_scope_bounds(op, &mut margins, (!reject_unbounded).then_some(&mut clips)) {
-            continue;
-        }
-        let (local, rect) = geometry_bounds(op, list, fonts)?;
+            Op::Shadow {
+                local,
+                bounds,
+                sigma_eff,
+                ..
+            } => {
+                let margin = sigma_eff.mul_add(3.0, 1.0);
+                (*local, bounds.inflate(margin, margin))
+            }
+            Op::Path {
+                local,
+                outline,
+                paint,
+                ..
+            } => {
+                if matches!(paint, ResolvedPaint::Shader(_)) {
+                    return Ok(None);
+                }
+                (*local, path_bounds(outline, list))
+            }
+            Op::Glyphs { local, run, paint } => {
+                if matches!(paint, ResolvedPaint::Shader(_)) {
+                    return Ok(None);
+                }
+                (*local, glyph_bounds(run.get(list), fonts)?)
+            }
+            Op::BitmapGlyph {
+                local,
+                font,
+                glyph,
+                origin,
+                size,
+            } => {
+                let font = &fonts[font];
+                let bitmap = font.bitmap.as_ref().expect("prepared bitmap font");
+                let Some(decoded) =
+                    bitmap::decode(&font.data, font.index, bitmap, bitmap.select(*size), *glyph)?
+                else {
+                    continue;
+                };
+                (
+                    *local
+                        * Affine::translate((f64::from(origin[0]), f64::from(origin[1])))
+                        * Affine::scale(f64::from(*size)),
+                    decoded.em,
+                )
+            }
+            Op::BeginShadow { parameters, .. } => {
+                let margin = 6.0_f64.mul_add(parameters.sigma, parameters.spread.max(0.0));
+                let [a, b, c, d, _, _] = parameters.transform.as_coeffs();
+                margins.push(kurbo::Vec2::new(a.hypot(c) * margin, b.hypot(d) * margin));
+                continue;
+            }
+            Op::BeginClip { .. } => {
+                margins.push(kurbo::Vec2::ZERO);
+                continue;
+            }
+            Op::BeginIsolate { filter, .. } => {
+                if filter.is_some() {
+                    return Ok(None);
+                }
+                margins.push(kurbo::Vec2::ZERO);
+                continue;
+            }
+            Op::End => {
+                margins.pop().expect("prepared scopes pair");
+                continue;
+            }
+        };
         if rect.is_zero_area() {
             continue;
         }
         let margin: kurbo::Vec2 = margins.iter().copied().sum();
-        let mut rect = local.transform_rect_bbox(rect).inflate(margin.x, margin.y);
-        if !reject_unbounded {
-            for clip in clips.iter().flatten() {
-                rect = rect.intersect(*clip);
-                if rect.is_zero_area() {
-                    break;
-                }
-            }
-        }
-        union(&mut result, rect);
+        union(
+            &mut result,
+            local.transform_rect_bbox(rect).inflate(margin.x, margin.y),
+        );
     }
     Ok(result)
 }
@@ -397,13 +340,6 @@ pub fn domain(
 
 #[cfg(test)]
 mod tests {
-    use kurbo::{Affine, Rect};
-
-    use crate::render::{
-        instance::Shape,
-        prepared::{ClipShape, Op, ResolvedPaint},
-    };
-
     use super::Observation;
 
     #[test]
@@ -481,71 +417,6 @@ mod tests {
         .unwrap();
         assert_eq!(domain.density, 1.25);
         assert!(domain.raster().is_finite());
-    }
-
-    #[test]
-    fn capture_bounds_ignore_clips_while_paint_bounds_intersect_them() {
-        let picture = cherenkov::Picture::record(|_| {});
-        let clip = Op::BeginClip {
-            local: Affine::IDENTITY,
-            shape: ClipShape::Boxed {
-                extra: Affine::translate((10.0, 10.0)),
-                shape: Shape::rect([5.0, 5.0]),
-                rect: None,
-            },
-            end: 2,
-        };
-        let draw = Op::Shaped {
-            kind: 0,
-            local: Affine::IDENTITY,
-            ambient: Affine::IDENTITY,
-            shape: Shape::rect([10.0, 10.0]),
-            inner: None,
-            bounds: Rect::new(0.0, 0.0, 20.0, 20.0),
-            extra_margin: 0.0,
-            paint: ResolvedPaint::Solid([1.0; 4]),
-            param_x: 0.0,
-            flags: 0,
-        };
-        let clipped = [clip, draw, Op::End];
-        let unbounded = [Op::Shaped {
-            kind: 0,
-            local: Affine::IDENTITY,
-            ambient: Affine::IDENTITY,
-            shape: Shape::rect([10.0, 10.0]),
-            inner: None,
-            bounds: Rect::new(0.0, 0.0, 20.0, 20.0),
-            extra_margin: 0.0,
-            paint: ResolvedPaint::Solid([1.0; 4]),
-            param_x: 0.0,
-            flags: 0,
-        }];
-        let list = picture.display_list();
-        let fonts = rustc_hash::FxHashMap::default();
-
-        assert_eq!(
-            super::bounds(&clipped, list, &fonts).unwrap(),
-            super::bounds(&unbounded, list, &fonts).unwrap()
-        );
-        assert_eq!(
-            super::paint_bounds(&clipped, list, &fonts).unwrap(),
-            Some(Rect::new(5.0, 5.0, 15.0, 15.0))
-        );
-
-        let disjoint = [
-            Op::BeginClip {
-                local: Affine::IDENTITY,
-                shape: ClipShape::Boxed {
-                    extra: Affine::translate((40.0, 40.0)),
-                    shape: Shape::rect([5.0, 5.0]),
-                    rect: None,
-                },
-                end: 2,
-            },
-            unbounded.into_iter().next().expect("one draw op"),
-            Op::End,
-        ];
-        assert_eq!(super::paint_bounds(&disjoint, list, &fonts).unwrap(), None);
     }
 
     #[test]
