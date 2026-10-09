@@ -18,16 +18,16 @@ on:
   push:
     tags: ["browser-wpe-runtime/v*"]
     branches: [dev]
-    # GitHub restores caches only from the run's own ref or the default
-    # branch, and every release tag is a new ref — so the WebKit prefix can
-    # only ever be warm if it was saved from `dev`. A dev push that does not
-    # touch one of the cache-key inputs changes nothing the key covers, so
-    # it neither rewrites nor needs the cache.
+    # A dev push exists to pre-build the WebKit prefix into the GHCR store
+    # (see the `webkit` job), so the next release tag finds it there. A dev
+    # push that touches none of the prefix digest's inputs cannot change the
+    # digest, so it neither needs nor produces a new prefix.
     paths:
       - components/platform/browser-wpe/runtime/source.toml
       - components/platform/browser-wpe/runtime/build-webkit.sh
       - .github/actions/setup-linux-deps/action.yml
       - .github/actions/refresh-apt-index/refresh.sh
+      - .github/actions/wpe-webkit-prefix/**
       - .github/workflows/browser-runtime-wpe.yml
 
 concurrency:
@@ -35,24 +35,33 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The persistent work directory build-runtime.sh builds inside; the cache
-  # below restores its install prefix, nothing else.
+  # The persistent work directory build-runtime.sh builds inside; the GHCR
+  # store holds its install prefix, nothing else.
   WPE_WORK_DIRECTORY: wpe-runtime
 
+# WPE WebKit is a multi-hour from-source compile, so its install prefix lives
+# in GHCR as the public OCI artifact `ghcr.io/<owner>/wpe-webkit-prefix:<digest>`
+# (`.github/actions/wpe-webkit-prefix` defines the digest and the layout).
+# The prefix is the only stored output: the ~20 GB build tree is never
+# reused, and nothing downstream of the install reads it.
 jobs:
-  # Warms the WebKit prefix cache on `dev`, the only ref whose cache a
-  # release tag can restore. Nothing else runs here: a miss builds and saves
-  # the prefix, a hit stops after the restore. The runtime job below cannot
-  # warm this entry — pushes on a tag or branch write under that ref, which
-  # later tags cannot read.
-  webkit-cache:
-    name: Warm WebKit cache ${{ matrix.architecture }}
-    if: github.ref == 'refs/heads/dev'
+  # The only job that writes the store, and only on `dev` and release tags,
+  # so a topic branch can never plant a prefix that a release then ships. A
+  # dev push pre-builds the prefix so the next tag hits; a tag whose prefix
+  # is missing builds it here before the runtime job reads it. A hit stops
+  # after the lookup.
+  webkit:
+    name: WPE WebKit prefix ${{ matrix.architecture }}
+    if: github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/browser-wpe-runtime/v')
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
     # &compiler-env and &wpe-matrix are anchored here and aliased in the
     # runtime job below so the two jobs can never drift: every leg builds
-    # the same WebKit under the same toolchain.
+    # the same WebKit under the same toolchain, and so addresses the same
+    # stored prefix.
     env: &compiler-env
       CC: gcc-12
       CXX: g++-12
@@ -67,42 +76,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # WPE WebKit is a multi-hour from-source compile whose result depends
-      # only on inputs this key covers: the pinned version and tarball digest
-      # in source.toml, the CMake options and dependency handling in
-      # build-webkit.sh, the dependency list in the setup action files, and
-      # the runner image plus the CC/CXX toolchain this job selects. Editing
-      # the shim or packaging — anything outside build-webkit.sh — rebuilds
-      # only the shim. The prefix is the only cached output: the ~20 GB
-      # build tree cannot fit the 10 GB cache quota and nothing downstream
-      # of the install reads it. &webkit-key is anchored here and aliased in
-      # the runtime job's restore, so the two jobs address the same entry.
-      - uses: actions/cache/restore@v4
-        id: webkit-cache
+      - uses: ./.github/actions/wpe-webkit-prefix
+        id: prefix
         with:
-          path: ${{ env.WPE_WORK_DIRECTORY }}/runtime
-          key: &webkit-key wpe-webkit-${{ matrix.runner }}-${{ env.CC }}-${{ env.CXX }}-${{ hashFiles('components/platform/browser-wpe/runtime/source.toml', 'components/platform/browser-wpe/runtime/build-webkit.sh', '.github/actions/setup-linux-deps/action.yml', '.github/actions/refresh-apt-index/refresh.sh') }}
+          runner: ${{ matrix.runner }}
+          work-directory: ${{ env.WPE_WORK_DIRECTORY }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       # gcc-12 is the only shared package the WebKit build needs; the rest of
       # its dependency list is installed by build-webkit.sh itself.
       - uses: ./.github/actions/setup-linux-deps
+        if: steps.prefix.outputs.hit != 'true'
         with:
           gcc-version: "12"
 
       - name: Build WPE WebKit
+        if: steps.prefix.outputs.hit != 'true'
         run: components/platform/browser-wpe/runtime/build-webkit.sh "${{ env.WPE_WORK_DIRECTORY }}"
 
-      - uses: actions/cache/save@v4
-        if: steps.webkit-cache.outputs.cache-hit != 'true'
+      - uses: ./.github/actions/wpe-webkit-prefix/push
+        if: steps.prefix.outputs.hit != 'true'
         with:
-          path: ${{ env.WPE_WORK_DIRECTORY }}/runtime
-          key: ${{ steps.webkit-cache.outputs.cache-primary-key }}
+          reference: ${{ steps.prefix.outputs.reference }}
+          work-directory: ${{ env.WPE_WORK_DIRECTORY }}
 
   runtime:
     name: Build WPE runtime ${{ matrix.architecture }}
-    # Branch pushes exist only to warm the cache job above — the full
-    # pipeline stays on dispatch and release tags.
-    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    # On a tag this waits for the `webkit` job, which leaves the prefix in
+    # the store. On dispatch that job is skipped and this job only reads the
+    # store: a miss compiles WebKit inside build-runtime.sh and keeps it to
+    # this run. Dev pushes stop at the `webkit` job; the full pipeline stays
+    # on dispatch and release tags.
+    needs: webkit
+    if: >-
+      !cancelled() && !failure()
+      && (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag')
     # 22.04 is the declared artifact floor: `source.toml` sets
     # `maximum_glibc = "2.35"` and `build-runtime.sh` refuses to package
     # against a newer glibc, so the runner image cannot move. The image ships
@@ -112,6 +120,9 @@ jobs:
     # PPA is needed.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: read
     env: *compiler-env
     strategy:
       fail-fast: false
@@ -120,36 +131,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Same cache entry the warmer job above fills — see its comment for
-      # what the key covers.
-      - uses: actions/cache/restore@v4
-        id: webkit-cache
+      - uses: ./.github/actions/wpe-webkit-prefix
+        id: prefix
         with:
-          path: ${{ env.WPE_WORK_DIRECTORY }}/runtime
-          key: *webkit-key
+          runner: ${{ matrix.runner }}
+          work-directory: ${{ env.WPE_WORK_DIRECTORY }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: ./.github/actions/setup-linux-deps
         with:
           gcc-version: "12"
 
-      # Compiles WebKit and installs it into the work directory's prefix —
-      # skipped inside the script when the cache restored a completed install.
-      - name: Build WPE WebKit
-        run: components/platform/browser-wpe/runtime/build-webkit.sh "${{ env.WPE_WORK_DIRECTORY }}"
-
-      # Saves the install prefix the moment the WebKit build completes —
-      # before the shim and packaging — so a later-stage failure can never
-      # cost a multi-hour build its cache entry.
-      - uses: actions/cache/save@v4
-        if: steps.webkit-cache.outputs.cache-hit != 'true'
-        with:
-          path: ${{ env.WPE_WORK_DIRECTORY }}/runtime
-          key: ${{ steps.webkit-cache.outputs.cache-primary-key }}
-
       # Builds the bridge against a staging copy of the prefix and packages
       # the runtime zip with its .artifact.json metadata. build-runtime.sh
-      # re-runs build-webkit.sh first, which the completion marker turns
-      # into a no-op here.
+      # runs build-webkit.sh first, which installs the host dependencies the
+      # packaging vendors from and, on a store hit, skips the compile through
+      # the completion marker inside the restored prefix.
       - name: Build self-contained WPE runtime
         run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts "${{ env.WPE_WORK_DIRECTORY }}"
 

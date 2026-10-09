@@ -2,16 +2,17 @@
 
 # Fetches, builds and installs WPE WebKit into <work-directory>/runtime —
 # the multi-hour stage of build-runtime.sh, kept as its own entry point so the
-# CI workflow can wrap exactly this stage in an actions/cache pair. Everything
-# this script does is idempotent: an extraction marker guards the tarball work,
-# and a completion marker written into the install prefix after a successful
-# `cmake --install` guards the build itself. Because the marker lives inside
-# the cached prefix, a cache-restored prefix skips straight past the compile.
+# CI workflow can build exactly this stage and store its prefix in GHCR.
+# Everything this script does is idempotent: an extraction marker guards the
+# tarball work, and a completion marker written into the install prefix after
+# a successful `cmake --install` guards the build itself. Because the marker
+# lives inside the stored prefix, a restored prefix skips straight past the
+# compile.
 #
 # The dependency install runs on every invocation, marker or not: later
 # stages vendor the host's runtime libraries into the packaged artifact, and
 # the WebKit source tree is needed for the license bundle — neither is part
-# of the cached prefix.
+# of the stored prefix.
 
 set -euo pipefail
 
@@ -138,7 +139,7 @@ sudo apt-get install -y --no-install-recommends \
 # (`wpe_display_headless_new`), so the DRM display is dead code here.
 # The completion marker — not the files cmake installed — records a finished
 # build, so a run interrupted mid-install rebuilds instead of trusting a
-# partial prefix, and a cache-restored prefix skips the compile entirely.
+# partial prefix, and a restored prefix skips the compile entirely.
 installed_marker="$prefix/.webkit-installed-$version"
 if [[ ! -f "$installed_marker" ]]; then
     cmake \

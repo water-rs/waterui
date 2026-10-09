@@ -81,8 +81,9 @@ if [[ "$highest_glibc" != "$maximum_glibc" ]]; then
     exit 1
 fi
 
-# A work directory passed by the caller persists across runs — the layout the
-# CI cache restores into. Without one the build stays as ephemeral as before.
+# A work directory passed by the caller persists across runs — the layout CI
+# restores the stored WebKit prefix into. Without one the build stays as
+# ephemeral as before.
 if [[ $# -eq 2 ]]; then
     work_directory="$(mkdir -p "$2" && cd "$2" && pwd)"
 else
@@ -95,15 +96,15 @@ stage="$work_directory/stage"
 
 # The WebKit build is the expensive stage by hours. build-webkit.sh skips it
 # whenever the install prefix carries its completion marker — which is what
-# lets a shim-only change rebuild only the shim, and what the CI cache relies
-# on. It also installs the host dependencies the packaging stage vendors
+# lets a shim-only change rebuild only the shim, and what the CI prefix store
+# relies on. It also installs the host dependencies the packaging stage vendors
 # from, so it runs on every invocation, marker or not.
 "$runtime_directory/build-webkit.sh" "$work_directory"
 
 # Everything downstream mutates the tree it works on: the bridge installs its
 # shim, package-runtime.py vendors libraries and rewrites rpaths. Stage a
 # throwaway copy of the install prefix so the prefix itself stays exactly what
-# `cmake --install` produced — re-runs and cache saves see a pristine tree.
+# `cmake --install` produced — re-runs and stored prefixes see a pristine tree.
 rm -rf "$stage"
 cp -a "$prefix" "$stage"
 
