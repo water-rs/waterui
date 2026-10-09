@@ -13262,7 +13262,7 @@ dependencies = [
  "waterui-shape",
  "waterui-svg",
  "waterui-text",
- "waterui-ts-schema",
+ "waterui-ts",
  "waterui-url",
  "waterui-video",
  "waterui-video-gpu",
@@ -13607,9 +13607,17 @@ dependencies = [
 name = "waterui-ts"
 version = "0.1.0"
 dependencies = [
+ "nami",
+ "suiteki",
+ "thiserror 2.0.21",
+ "tracing",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-locale",
  "waterui-ts-engine",
  "waterui-ts-engine-jsc",
  "waterui-ts-engine-quickjs",
+ "waterui-ts-schema",
 ]
 
 [[package]]
