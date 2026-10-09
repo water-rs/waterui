@@ -118,8 +118,7 @@ pub async fn build_aar(
         &project.ffi_crate_path().join("Cargo.toml"),
         &module_dir,
         crate::assets::AndroidDependencyScope::Api,
-        &android_ffi_dependency_features(project, None).await?,
-        None,
+        &android_ffi_dependency_features(project).await?,
     )
     .await?;
 
@@ -158,7 +157,7 @@ async fn stage_embedded_assets(
             .await?;
 
     let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml"), None).await?;
+        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

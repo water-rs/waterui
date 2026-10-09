@@ -210,9 +210,6 @@ struct PackagingContext {
     /// the Rust builds — bound to this project and `package_options`.
     /// `None` on every other platform.
     prepared_signing: Option<waterui_cli::android::signing::PreparedSigning>,
-    /// The framework resolution a hydrolysis-Android package resolved once
-    /// and passes through its builds and packaging — `None` everywhere else.
-    framework: Option<waterui_cli::framework::ResolvedFramework>,
 }
 
 /// Run the package command.
@@ -313,16 +310,6 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         return Ok(None);
     }
     let project = super::ensure_generated_backend(shell, project, backend.cli_backend()).await?;
-    // One framework resolution serves the whole hydrolysis-Android
-    // package: the per-arch Rust builds' API floor, the host checkout and
-    // the rendered scaffold all read the same `resolved`.
-    let framework = if backend == TargetBackend::Hydrolysis
-        && lib_platform(args.platform) == LibTargetPlatform::Android
-    {
-        Some(project.resolved_framework().await?)
-    } else {
-        None
-    };
 
     let mut build_options =
         BuildOptions::packaging(args.profile()).with_progress(shell.build_progress());
@@ -338,7 +325,6 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         build_options,
         package_options,
         prepared_signing,
-        framework,
     }))
 }
 
@@ -425,7 +411,6 @@ async fn build_packaging_artifacts(
                 args.platform,
                 &args.arch,
                 context.build_options.clone(),
-                context.framework.as_ref(),
             ))
             .await
         }
@@ -521,16 +506,12 @@ async fn build_hydrolysis_packaging_artifacts(
     platform: TargetPlatform,
     arch: &[AndroidArch],
     build_options: BuildOptions,
-    framework: Option<&waterui_cli::framework::ResolvedFramework>,
 ) -> Result<Option<BuiltTarget>> {
     if platform == TargetPlatform::Web {
         return Ok(None);
     }
 
     if platform == TargetPlatform::Android {
-        let resolved = framework.ok_or_else(|| {
-            eyre::eyre!("Internal error: hydrolysis Android packaging has no framework resolution")
-        })?;
         let mut built = None;
         hydrolysis_android::clean_jni_libs(project).await?;
         for arch in arch {
@@ -539,7 +520,6 @@ async fn build_hydrolysis_packaging_artifacts(
             let target = shell
                 .display_output(hydrolysis_android::build(
                     project,
-                    resolved,
                     abi,
                     build_options.clone(),
                 ))
@@ -668,14 +648,8 @@ async fn package_artifact_inner(
             if args.platform == TargetPlatform::Android {
                 let abis: Vec<AndroidAbi> = args.arch.iter().map(|arch| arch.to_abi()).collect();
                 let painter = hydrolysis_android::resolve_painter(&context.project, args.painter);
-                let resolved = context.framework.as_ref().ok_or_else(|| {
-                    eyre::eyre!(
-                        "Internal error: hydrolysis Android packaging has no framework resolution"
-                    )
-                })?;
                 hydrolysis_android::package_with_abis(
                     &context.project,
-                    resolved,
                     painter,
                     &package_options,
                     &abis,

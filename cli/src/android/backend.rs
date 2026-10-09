@@ -94,7 +94,7 @@ impl Backend for AndroidBackend {
         // graph is resolved by the build that follows anyway.
         let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
         if project.ffi_companion_preexisting && ffi_manifest.exists() {
-            crate::assets::seed_managed_crate_lock(project, &ffi_manifest, None)
+            crate::assets::seed_managed_crate_lock(project, &ffi_manifest)
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?;
             let required = crate::assets::scan_required_permissions(project.host(), &ffi_manifest)
@@ -113,7 +113,7 @@ impl Backend for AndroidBackend {
             manifest,
             project.crate_name().clone(),
             app_name,
-            &project
+            project
                 .resolved_framework()
                 .await
                 .map_err(crate::backend::FailToInitBackend::Config)?,

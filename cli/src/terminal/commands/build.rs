@@ -441,10 +441,8 @@ async fn execute_build(shell: &Shell, args: &Args, context: &BuildContext) -> Re
                 TargetBackend::Hydrolysis => {
                     if args.platform == TargetPlatform::Android {
                         let abi = android_abi(args.arch.unwrap_or(TargetArch::Arm64));
-                        let resolved = context.project.resolved_framework().await?;
                         waterui_cli::hydrolysis::android::build(
                             &context.project,
-                            &resolved,
                             abi,
                             context.build_options.clone(),
                         )

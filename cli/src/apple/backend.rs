@@ -139,7 +139,7 @@ impl AppleBackend {
             manifest,
             crate_name_for_template,
             app_name,
-            &project.resolved_framework().await?,
+            project.resolved_framework().await?,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())

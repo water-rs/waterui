@@ -225,8 +225,7 @@ pub(crate) async fn apple_dependency_features(
     let build_manifest = project.ffi_crate_path().join("Cargo.toml");
     let mut features = Vec::new();
     features.extend(
-        crate::project_model::assets::capability_ffi_features(project, &build_manifest, None)
-            .await?,
+        crate::project_model::assets::capability_ffi_features(project, &build_manifest).await?,
     );
     if browser_runtime.chromium {
         features.push("chromium".to_string());
@@ -307,8 +306,7 @@ pub(crate) async fn build_rust_lib_with_links(
     // Resolve fonts BEFORE cargo build - this ensures icons.json is present
     // for crates like fontawesome7 that need it during build.rs
     let font_declarations =
-        crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml"), None)
-            .await?;
+        crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple)
@@ -484,7 +482,6 @@ pub(crate) async fn build_rust_lib_with_links(
         project,
         &project.ffi_crate_path().join("Cargo.toml"),
         "media",
-        None,
     )
     .await?
     {
@@ -807,7 +804,6 @@ pub async fn package_apple(
         project,
         &project.ffi_crate_path().join("Cargo.toml"),
         &apple_dependency_features(project, browser_runtime_plan).await?,
-        None,
     )
     .await?;
     apple_declarations.supply_app_values(&project.manifest().app_values)?;
@@ -993,7 +989,7 @@ async fn copy_assets_and_fonts(
 
     // Scan and resolve dependency fonts
     let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml"), None).await?;
+        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

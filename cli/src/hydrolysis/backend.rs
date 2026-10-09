@@ -59,7 +59,7 @@ impl HydrolysisBackend {
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
     pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
         let backend_dir = project.backend_path::<Self>();
-        let ctx = Self::template_context(project, &project.resolved_framework().await?).await?;
+        let ctx = Self::template_context(project, project.resolved_framework().await?).await?;
         let outputs = templates::hydrolysis::rendered_outputs(
             &ctx,
             &project.hydrolysis_backend_crate_name(),
@@ -145,7 +145,7 @@ impl Backend for HydrolysisBackend {
             .resolved_framework()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
-        let ctx = Self::template_context(project, &framework)
+        let ctx = Self::template_context(project, framework)
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
 
@@ -174,14 +174,7 @@ impl Backend for HydrolysisBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         if platform == TargetPlatform::Android {
-            let resolved = project.resolved_framework().await?;
-            return crate::hydrolysis::android::build(
-                project,
-                &resolved,
-                AndroidAbi::Arm64V8a,
-                options,
-            )
-            .await;
+            return crate::hydrolysis::android::build(project, AndroidAbi::Arm64V8a, options).await;
         }
         project
             .browser_runtime_plan(platform, TargetBackend::Hydrolysis)
@@ -198,10 +191,8 @@ impl Backend for HydrolysisBackend {
     ) -> eyre::Result<Artifact> {
         if platform == TargetPlatform::Android {
             let prepared = crate::android::signing::PreparedSigning::resolve(project, &options)?;
-            let resolved = project.resolved_framework().await?;
             return crate::hydrolysis::android::package_with_abis(
                 project,
-                &resolved,
                 crate::hydrolysis::android::resolve_painter(project, None),
                 &options,
                 &[AndroidAbi::Arm64V8a],

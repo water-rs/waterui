@@ -918,16 +918,6 @@ async fn build_and_run(
     let prepared_signing = (build_plan.lib_platform == LibTargetPlatform::Android)
         .then(|| waterui_cli::android::signing::PreparedSigning::resolve(project, &package_options))
         .transpose()?;
-    // One framework resolution serves the whole hydrolysis-Android run:
-    // the Rust build's API floor, the host checkout and the rendered
-    // scaffold all read the same `resolved`.
-    let framework = if backend == TargetBackend::Hydrolysis
-        && build_plan.lib_platform == LibTargetPlatform::Android
-    {
-        Some(project.resolved_framework().await?)
-    } else {
-        None
-    };
 
     let _ = shell.status(">", "Building...");
     let built = Box::pin(build_for_backend(
@@ -935,7 +925,6 @@ async fn build_and_run(
         backend,
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
-        framework.as_ref(),
     ))
     .await?;
 
@@ -957,10 +946,7 @@ async fn build_and_run(
         &built,
         package_options,
         prepared_signing.as_ref(),
-        HydrolysisAndroidInputs {
-            painter: config.painter,
-            framework: framework.as_ref(),
-        },
+        config.painter,
     ))
     .await?;
 
@@ -1128,7 +1114,6 @@ async fn build_for_backend(
     backend: TargetBackend,
     plan: &BuildPlan,
     build_options: BuildOptions,
-    framework: Option<&waterui_cli::framework::ResolvedFramework>,
 ) -> Result<waterui_cli::build::BuiltTarget> {
     match backend {
         TargetBackend::Apple => {
@@ -1147,19 +1132,8 @@ async fn build_for_backend(
                 let abi = plan
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
-                let resolved = framework.ok_or_else(|| {
-                    eyre::eyre!(
-                        "Internal error: hydrolysis Android build has no framework resolution"
-                    )
-                })?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                Box::pin(hydrolysis_android::build(
-                    project,
-                    resolved,
-                    abi,
-                    build_options,
-                ))
-                .await
+                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
             } else {
                 Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
@@ -1178,15 +1152,6 @@ fn package_options(config: &BuildRunConfig, progress: BuildProgress) -> PackageO
         .with_progress(progress)
 }
 
-/// The hydrolysis-Android inputs a `water run` resolves once for the
-/// whole build: the selected painter and the framework resolution the
-/// Rust build, the host checkout and the rendered scaffold all share.
-/// Unused on every other backend and platform.
-struct HydrolysisAndroidInputs<'a> {
-    painter: HydrolysisAndroidPainter,
-    framework: Option<&'a waterui_cli::framework::ResolvedFramework>,
-}
-
 async fn package_for_backend(
     project: &Project,
     backend: TargetBackend,
@@ -1194,7 +1159,7 @@ async fn package_for_backend(
     built: &waterui_cli::build::BuiltTarget,
     package_options: PackageOptions,
     prepared_signing: Option<&waterui_cli::android::signing::PreparedSigning>,
-    hydrolysis: HydrolysisAndroidInputs<'_>,
+    painter: HydrolysisAndroidPainter,
 ) -> Result<Artifact> {
     match backend {
         TargetBackend::Apple => {
@@ -1227,15 +1192,9 @@ async fn package_for_backend(
                 let abi = plan.android_abi.ok_or_else(|| {
                     eyre::eyre!("Internal error: missing Android ABI for packaging")
                 })?;
-                let resolved = hydrolysis.framework.ok_or_else(|| {
-                    eyre::eyre!(
-                        "Internal error: hydrolysis Android packaging has no framework resolution"
-                    )
-                })?;
                 Box::pin(hydrolysis_android::package_with_abis(
                     project,
-                    resolved,
-                    hydrolysis.painter,
+                    painter,
                     &package_options,
                     &[abi],
                     built,

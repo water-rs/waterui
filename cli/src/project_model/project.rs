@@ -146,6 +146,9 @@ pub struct Project {
     cargo_layout: Shared<BoxFuture<'static, Result<CargoLayout, String>>>,
     linked_packages: Arc<async_lock::OnceCell<Result<LinkedPackages, String>>>,
     enabled_features: Arc<async_lock::OnceCell<Result<BTreeSet<String>, String>>>,
+    /// The framework selection, resolved once per project and shared by
+    /// every backend, scaffold and asset scan this project drives.
+    framework: Arc<async_lock::OnceCell<Result<ResolvedFramework, String>>>,
     managed_backends_root: PathBuf,
     /// The runtime backends this open generated — project-owned state, never
     /// persisted. Persisted backend-facing configuration lives in the
@@ -616,17 +619,33 @@ impl Project {
     /// channel selection `Water.toml` records, or the checkout `waterui_path`
     /// names.
     ///
+    /// The selection is a function of the manifest and the checkout it
+    /// names, so it is resolved once per project and every caller reads that
+    /// one answer: a build never observes the resolution disagree with
+    /// itself, and no layer pays for it twice.
+    ///
     /// # Errors
     ///
     /// Returns an error when the manifest records no framework source, its
     /// saved selection is invalid, or the local checkout's framework facts
     /// cannot be read.
-    pub async fn resolved_framework(&self) -> eyre::Result<ResolvedFramework> {
-        tracing::debug!(
-            root = %self.root.display(),
-            "resolving the project's framework selection"
-        );
-        ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root).await
+    pub async fn resolved_framework(&self) -> eyre::Result<&ResolvedFramework> {
+        let framework = self
+            .framework
+            .get_or_init(|| async {
+                tracing::debug!(
+                    root = %self.root.display(),
+                    "resolving the project's framework selection"
+                );
+                ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root)
+                    .await
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .await;
+        match framework {
+            Ok(framework) => Ok(framework),
+            Err(error) => Err(eyre::eyre!(error.clone())),
+        }
     }
 
     /// Assert the selected framework channel distributes every scaffold
@@ -1376,8 +1395,7 @@ impl Project {
         &self,
         apple_selected: bool,
         backend_project_path: PathBuf,
-        framework: &ResolvedFramework,
-    ) -> Result<TemplateContext, crate::backend::FailToInitBackend> {
+    ) -> Result<(TemplateContext, &ResolvedFramework), crate::backend::FailToInitBackend> {
         let apple_selected = apple_selected && cfg!(target_os = "macos");
         let manifest = self.manifest();
         let app_name = manifest
@@ -1396,6 +1414,10 @@ impl Project {
             .map_err(crate::backend::FailToInitBackend::Config)?;
         let browser_engine = self
             .linked_browser_engine()
+            .await
+            .map_err(crate::backend::FailToInitBackend::Config)?;
+        let framework = self
+            .resolved_framework()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
         let ctx = TemplateContext::for_project_manifest(
@@ -1417,7 +1439,7 @@ impl Project {
         .with_webview_enabled(webview_enabled)
         .with_chromium_enabled(chromium_enabled)
         .with_browser_engine(browser_engine);
-        Ok(ctx)
+        Ok((ctx, framework))
     }
 
     /// Seed `crate_dir`'s `Cargo.lock` from the project's lock and the
@@ -1449,10 +1471,9 @@ impl Project {
     pub(crate) async fn scaffold_ffi_companion(
         &self,
         apple_selected: bool,
-        framework: &ResolvedFramework,
     ) -> Result<(), crate::backend::FailToInitBackend> {
-        let ctx = self
-            .apple_managed_crate_context(apple_selected, self.ffi_crate_path(), framework)
+        let (ctx, framework) = self
+            .apple_managed_crate_context(apple_selected, self.ffi_crate_path())
             .await?;
 
         templates::ffi::scaffold(
@@ -1482,10 +1503,9 @@ impl Project {
     /// Returns an error when the generated crate cannot be written.
     pub(crate) async fn scaffold_apple_preview_companion(
         &self,
-        framework: &ResolvedFramework,
     ) -> Result<(), crate::backend::FailToInitBackend> {
-        let ctx = self
-            .apple_managed_crate_context(true, self.apple_preview_crate_path(), framework)
+        let (ctx, framework) = self
+            .apple_managed_crate_context(true, self.apple_preview_crate_path())
             .await?;
 
         templates::apple_preview::scaffold(
@@ -1526,7 +1546,7 @@ impl Project {
             manifest,
             self.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             self.local_sources(),
         )
         .with_backend_project_path(self.preview_ffi_crate_path(workspace_root))
@@ -1705,6 +1725,7 @@ impl Project {
             cargo_layout,
             linked_packages: Arc::new(async_lock::OnceCell::new()),
             enabled_features: Arc::new(async_lock::OnceCell::new()),
+            framework: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
@@ -2029,6 +2050,7 @@ impl Project {
             cargo_layout,
             linked_packages: Arc::new(async_lock::OnceCell::new()),
             enabled_features: Arc::new(async_lock::OnceCell::new()),
+            framework: Arc::new(async_lock::OnceCell::new()),
             managed_backends_root,
             backends: Backends::default(),
             local_sources,
@@ -2059,11 +2081,8 @@ impl Project {
                 project.ffi_companion_preexisting =
                     project.ffi_crate_path().join("Cargo.toml").exists();
                 let ffi_companion_start = std::time::Instant::now();
-                let framework = project.resolved_framework().await.map_err(|error| {
-                    FailToOpenProject::BackendInit(crate::backend::FailToInitBackend::Config(error))
-                })?;
                 project
-                    .scaffold_ffi_companion(backends.apple(), &framework)
+                    .scaffold_ffi_companion(backends.apple())
                     .await
                     .map_err(FailToOpenProject::BackendInit)?;
                 info!(
@@ -4105,8 +4124,7 @@ mod scaffold_tests {
         let root = dir.path().join("water-example");
         let project = create_project(&root, dir.path(), true);
 
-        let framework = smol::block_on(project.resolved_framework()).expect("framework resolves");
-        smol::block_on(project.scaffold_ffi_companion(true, &framework))
+        smol::block_on(project.scaffold_ffi_companion(true))
             .expect("an apple-selected scaffold must succeed");
 
         let rendered = std::fs::read_to_string(project.ffi_crate_path().join("Cargo.toml"))

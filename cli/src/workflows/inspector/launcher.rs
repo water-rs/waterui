@@ -249,7 +249,7 @@ async fn scaffold_inspector_app(
     manifest.save(project.root()).await?;
 
     let framework = project.resolved_framework().await?;
-    let project_packages = project.project_packages(&framework).await?;
+    let project_packages = project.project_packages(framework).await?;
     // `inspector_signature` fingerprints the set derived from the display
     // name before the project exists; the manifest must carry that same set,
     // or the stored signature would describe a manifest that was not written.
@@ -269,7 +269,7 @@ async fn scaffold_inspector_app(
             .expect("inspector support bundle identifier must be valid"),
         },
         waterui_path,
-        &framework,
+        framework,
         false,
         None,
         project.local_sources(),

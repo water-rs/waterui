@@ -1442,7 +1442,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             &workspace_root,
             patches,
             Some(project.root()),
-            Some(&project.project_packages(&framework).await?),
+            Some(&project.project_packages(framework).await?),
         )
         .await?;
     }
@@ -1766,7 +1766,7 @@ async fn resolve_preview_metadata(
         .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
-    let project_packages = project.project_packages(&framework).await?;
+    let project_packages = project.project_packages(framework).await?;
     let metadata_start = Instant::now();
     let abi_feature = PreviewLinkMode::for_platform(platform)
         .abi_feature
