@@ -4,19 +4,26 @@ perf scenes.
 
 Each profile runs `cherenkov-bench measure --pause-at P` under Callgrind with
 instrumentation off. At the pause (a fixed frame index, not wall-clock time)
-instrumentation is switched on and the bench resumes. `--dump-before` and
-`--dump-after` on each root cut a dump at every entry and return. Callgrind
-keeps one cost table for all threads (`--separate-threads=no`), so every dump
-holds every thread's events since the previous one and the dumps partition
-the run. One call of a root is the span between consecutive `--dump-after`
-triggers of that root, and it must hold exactly one `--dump-before` of it: a
-root nested inside it (`run_transaction` runs inside `encode`) and the other
-roots write their own dumps within the span, so a sample sums the root's
-incoming edge and the allocator calls over every dump in its span. The k-th
-call is sample k; sample 2 is the gate's "second steady frame" and sample 3
-its stability check. Only the first span may hold no complete call — the call
-in flight when instrumentation switched on — so any later skip is an error,
-never a silent shift of which frame is sampled.
+instrumentation is switched on and the bench resumes. `--dump-after` on each
+root cuts a dump at every return. Callgrind keeps one cost table for all
+threads (`--separate-threads=no`), so every dump holds every thread's events
+since the previous one and the dumps partition the run. One call of a root is
+the span between consecutive `--dump-after` triggers of that root, holding
+exactly one incoming call of it: a root nested inside it (`run_transaction`
+runs inside `encode`) and the other roots write their own dumps within the
+span, so a sample sums the root's incoming edge and the allocator calls over
+every dump in its span. The k-th call is sample k; sample 2 is the gate's
+"second steady frame" and sample 3 its stability check. Only the first span
+may hold no complete call — the call in flight when instrumentation switched
+on — so any later skip is an error, never a silent shift of which frame is
+sampled.
+
+Every Callgrind option names a function at most once. Callgrind 3.18 keeps
+function options in a prefix trie whose insertion, once another name has split
+a node on the path, adds a second node for a name already present instead of
+reusing the first, and a lookup applies only the newest: of `--dump-before=S`
+and `--dump-after=S`, only the latter takes effect, so a `--dump-before` on a
+root never fires.
 
 Per sample it reports the root's inclusive Ir; the allocator's share of it
 (the inclusive cost of every call from other code into the Rust allocator
@@ -168,32 +175,37 @@ def measure(path, symbol):
             'rust_ir': ir - alloc_ir - mem_ir, **counts}
 
 
-def separate_callers():
-    """The Callgrind options that key every subtracted function by its caller chain."""
-    return [f'--separate-callers{CALLERS}={pattern}' for pattern in [p for p, _ in ALLOCATOR] + MEMORY]
+def function_options(roots):
+    """The Callgrind options that key every subtracted function by its caller
+    chain and cut a dump at every return of a root; each names one function."""
+    named = [(f'--separate-callers{CALLERS}', pattern) for pattern in [p for p, _ in ALLOCATOR] + MEMORY]
+    named += [('--dump-after', symbol) for symbol in roots]
+    names = [name for _, name in named]
+    assert len(set(names)) == len(names), ('Callgrind applies only the last option naming a function', names)
+    return [f'{option}={name}' for option, name in named]
 
 
-def call_samples(out, prefix, symbol, before, after):
+def call_samples(out, prefix, symbol, after):
     """The root's first three calls, each merged over the dumps of its span.
 
     One call is the span after the root's previous --dump-after up to its
-    next one, holding exactly one --dump-before of it. Nested roots and the
+    next one, holding exactly one incoming call of it. Nested roots and the
     other roots cut dumps inside the span, so the root's incoming edge and
     its allocator and memory-primitive calls are spread over all of them.
     """
     samples = []; prev = 0
     for index, number in enumerate(sorted(after)):
         span = [out / f'{prefix}.{n}' for n in range(prev + 1, number + 1)]
-        entries = [n for n in before if prev < n <= number]
         prev = number
-        if index == 0 and not entries:
-            # The call in flight when instrumentation switched on was
-            # entered unseen: not a sample. Only the first span can be one;
-            # skipping a later one would shift every sample to a later frame.
-            continue
         found = [m for m in (measure(p, symbol) for p in span) if m]
-        assert len(entries) == 1 and found and sum(m['ncalls'] for m in found) == 1, \
-            (prefix, symbol, number, entries, [m['ncalls'] for m in found], 'a span must hold exactly one call')
+        ncalls = sum(m['ncalls'] for m in found)
+        if index == 0 and ncalls == 0:
+            # The call in flight when instrumentation switched on was
+            # entered unseen and has no incoming edge: not a sample. Only
+            # the first span can be one; skipping a later one would shift
+            # every sample to a later frame.
+            continue
+        assert ncalls == 1, (prefix, symbol, number, [m['ncalls'] for m in found], 'a span must hold exactly one call')
         merged = {k: sum(m[k] for m in found)
                   for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls', 'rust_ir', *KINDS)}
         merged['path'] = str(span[-1])
@@ -258,13 +270,12 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     env = os.environ.copy()
     env.update(layer_env(layer_dir), XDG_RUNTIME_DIR='/tmp/runtime-ubuntu', RUST_LOG='error')
     os.makedirs(env['XDG_RUNTIME_DIR'], exist_ok=True)
-    dumps = [f'--dump-{when}={sym}' for sym in roots.values() for when in ('before', 'after')]
     command = ['valgrind', '--tool=callgrind', '--demangle=no', '--instr-atstart=no', '--separate-threads=no',
-               *separate_callers(), *dumps,
+               *function_options(roots.values()),
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov',
                '--scene', f'scenes/perf/{scene}', '--frames', '100000', '--warmup', str(warmup),
                '--pause-at', str(pause_at), '--out', str(prefix) + '.unused-timing.json']
-    before = {phase: [] for phase in roots}; after = {phase: [] for phase in roots}
+    after = {phase: [] for phase in roots}
     monitor = selectors.DefaultSelector(); fds = []
     watch = LIBC.inotify_init1(os.O_CLOEXEC)
     if watch < 0:
@@ -313,8 +324,6 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
                             number = int(match[1]); seen.add(number)
                             head = (out / name).read_text().split('\n\nob=', 1)[0]
                             for phase, symbol in roots.items():
-                                if f'desc: Trigger: --dump-before={symbol}\n' in head:
-                                    before[phase].append(number)
                                 if f'desc: Trigger: --dump-after={symbol}\n' in head:
                                     after[phase].append(number)
         finally:
@@ -329,7 +338,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     result = {'tag': tag, 'scene': scene, 'binary': str(binary), 'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'pause_at': pause_at, 'command': command}
     for phase, symbol in roots.items():
-        samples = call_samples(out, prefix.name, symbol, before[phase], after[phase])
+        samples = call_samples(out, prefix.name, symbol, after[phase])
         assert len(samples) == 3, (tag, scene, phase, len(samples))
         second, third = samples[1], samples[2]
         result[phase] = {'root': symbol, 'first': samples[0], 'second': second, 'third': third,

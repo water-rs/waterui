@@ -17,10 +17,11 @@ ROOT = '_RNvCs1_5bench4root'
 class Sampling(unittest.TestCase):
     def test_span_subtracts_only_calls_under_the_root(self):
         # run.1 closes the call in flight when instrumentation switched on,
-        # run.2 enters the root, run.3 and run.4 are cut by a nested root,
-        # run.5 returns. Another thread frees through the same deallocate
-        # node in run.3, and code outside the root frees through it in run.2.
-        [sample] = ir_gate.call_samples(DATA, 'run', ROOT, before=[2], after=[1, 5])
+        # run.2 is another root's return before the root is entered, run.3
+        # and run.4 are cut by a nested root, run.5 returns. Another thread
+        # frees through the same deallocate node in run.3, and code outside
+        # the root frees through it in run.2.
+        [sample] = ir_gate.call_samples(DATA, 'run', ROOT, after=[1, 5])
         self.assertEqual(sample['ir'], 50 + 40 + 30)
         self.assertEqual(sample['ncalls'], 1)
         # free under drop (30) and __rust_dealloc (20); the free inside
@@ -30,11 +31,26 @@ class Sampling(unittest.TestCase):
         self.assertEqual((sample['mem_ir'], sample['mem_calls']), (12, 2))
         self.assertEqual(sample['rust_ir'], 120 - 50 - 12)
 
-    def test_later_span_without_one_entry_fails(self):
+    def test_first_span_holding_a_whole_call_is_the_first_sample(self):
+        # Callgrind writes only --dump-after triggers: when instrumentation
+        # switches on between calls, the first span already holds a whole
+        # call and is sample 1, not a skipped call in flight.
+        samples = ir_gate.call_samples(DATA, 'first', ROOT, after=[2, 4])
+        self.assertEqual([(s['ir'], s['ncalls'], s['alloc_ir'], s['allocs'], s['rust_ir']) for s in samples],
+                         [(65, 1, 10, 1, 55)] * 2)
+
+    def test_later_span_without_one_call_fails(self):
         with self.assertRaises(AssertionError):
-            ir_gate.call_samples(DATA, 'run', ROOT, before=[], after=[1, 5])
+            ir_gate.call_samples(DATA, 'run', ROOT, after=[1, 2])
         with self.assertRaises(AssertionError):
-            ir_gate.call_samples(DATA, 'run', ROOT, before=[2, 3], after=[1, 5])
+            ir_gate.call_samples(DATA, 'first', ROOT, after=[1, 4])
+
+    def test_options_name_each_function_once(self):
+        options = ir_gate.function_options(['_RNvCs1_5bench4root', '_RNvCs1_5bench6nested'])
+        self.assertIn('--dump-after=_RNvCs1_5bench4root', options)
+        self.assertFalse([o for o in options if o.startswith('--dump-before=')])
+        with self.assertRaises(AssertionError):
+            ir_gate.function_options(['free'])
 
     def test_truncated_chain_without_the_root_fails(self):
         with mock.patch.object(ir_gate, 'CALLERS', 3), self.assertRaises(AssertionError):
@@ -55,7 +71,7 @@ class Sampling(unittest.TestCase):
                  'freelist': None, '_RNvCs1_5alloc10deallocate': None}
         for name, share in cases.items():
             self.assertEqual(ir_gate.subtracted(name), share, name)
-        options = ir_gate.separate_callers()
+        options = ir_gate.function_options([])
         self.assertIn(f'--separate-callers{ir_gate.CALLERS}=*___rust_dealloc', options)
         self.assertIn(f'--separate-callers{ir_gate.CALLERS}=__memset_*', options)
 
