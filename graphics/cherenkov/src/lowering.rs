@@ -9,6 +9,7 @@ use kurbo::Affine;
 use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, ShapeData};
 
 pub mod projective;
+pub mod rounded_box;
 pub mod shadow;
 
 /// `shape`'s outline flattened to `tolerance` where it is curved, with its

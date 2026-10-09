@@ -16,10 +16,11 @@ use rustc_hash::FxHashMap;
 use std::ops::Range;
 
 use cherenkov::FillRule;
+use cherenkov::lowering::rounded_box::RoundedBox;
 
 use crate::render::lower::{
-    BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, MemberClip, SampleEffect,
-    SdfEffect, SdfKind, UnionSample,
+    BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
+    SdfKind, UnionSample,
 };
 use crate::render::paint::PaintData;
 use crate::{Band as BandOut, BandPixels};
@@ -723,52 +724,20 @@ fn union_field_at(
     (field, nx, ny, w_own, width)
 }
 
-/// Signed distance and unit outward normal of `(x, y)` to a closed edge
-/// boundary: `d < 0` inside; the normal points away from the interior.
-/// Points on the boundary get distance `1e-6` and a zero normal (no
-/// displacement — the measure-zero set).
-fn sdf_at(edges: &[Edge], x: f32, y: f32) -> (f32, f32, f32) {
-    let mut dist = f32::MAX;
-    let (mut qx, mut qy) = (0.0f32, 0.0f32);
-    let mut inside = false;
-    for e in edges {
-        let dx = e.x1 - e.x0;
-        let dy = e.y1 - e.y0;
-        let len2 = dx.mul_add(dx, dy * dy);
-        let t = if len2 > 0.0 {
-            ((x - e.x0).mul_add(dx, (y - e.y0) * dy)).clamp(0.0, len2) / len2
-        } else {
-            0.0
-        };
-        let cx = dx.mul_add(t, e.x0);
-        let cy = dy.mul_add(t, e.y0);
-        let dd = (x - cx).hypot(y - cy);
-        if dd < dist {
-            dist = dd;
-            qx = cx;
-            qy = cy;
-        }
-        if (e.y0 > y) != (e.y1 > y) {
-            let xi = e.x0 + (y - e.y0) * (e.x1 - e.x0) / (e.y1 - e.y0);
-            if x < xi {
-                inside = !inside;
-            }
-        }
-    }
-    let d = dist.max(1e-6);
-    let (nx, ny) = ((x - qx) / d, (y - qy) / d);
-    if inside { (-d, -nx, -ny) } else { (d, nx, ny) }
+/// The Euclidean length of `(x, y)` — WGSL's `length`.
+fn length(x: f32, y: f32) -> f32 {
+    x.mul_add(x, y * y).sqrt()
 }
 
 /// Three Newton projections of `q` onto the Lamé quarter curve
 /// `(u/rx)ⁿ + (v/ry)ⁿ = 1`, then `q`'s distance measured along the
-/// curve's normal at the foot — the shader's `lame_corner` in f32
-/// (its curvature term, unused by the union field's reads, drops out).
+/// curve's normal at the foot, with that unit normal — the shader's
+/// `lame_corner` in f32, less the radius of curvature no SDF read uses.
 fn lame_corner(q: (f32, f32), r: (f32, f32), n: f32) -> (f32, f32, f32) {
     let (mut cx, mut cy) = q;
     for _ in 0..3 {
         let (ux, uy) = ((cx / r.0).max(0.0), (cy / r.1).max(0.0));
-        let f = ux.powf(n).mul_add(1.0, uy.powf(n) - 1.0);
+        let f = ux.powf(n) + uy.powf(n) - 1.0;
         let (gx, gy) = (
             n * ux.max(1e-6).powf(n - 1.0) / r.0,
             n * uy.max(1e-6).powf(n - 1.0) / r.1,
@@ -778,9 +747,9 @@ fn lame_corner(q: (f32, f32), r: (f32, f32), n: f32) -> (f32, f32, f32) {
         cy = (cy - f * gy / gg).max(0.0);
     }
     let (ux, uy) = ((cx / r.0).max(1e-6), (cy / r.1).max(1e-6));
-    let (nx, ny) = (n * ux.powf(n - 1.0) / r.0, n * uy.powf(n - 1.0) / r.1);
-    let len = nx.hypot(ny).max(1e-12);
-    let (nx, ny) = (nx / len, ny / len);
+    let (gx, gy) = (n * ux.powf(n - 1.0) / r.0, n * uy.powf(n - 1.0) / r.1);
+    let len = length(gx, gy).max(1e-12);
+    let (nx, ny) = (gx / len, gy / len);
     ((q.0 - cx).mul_add(nx, (q.1 - cy) * ny), nx, ny)
 }
 
@@ -788,28 +757,24 @@ fn lame_corner(q: (f32, f32), r: (f32, f32), n: f32) -> (f32, f32, f32) {
 /// `(x, y)` — the shader's `sdf_sample` in f32: a sharp corner's
 /// axis-aligned distance, a circular corner's closed form, or the
 /// Lamé corner's Newton projection.
-#[expect(
-    clippy::many_single_char_names,
-    reason = "the shader's own names keep the port checkable against shared.wgsl"
-)]
-fn box_sdf_sample(b: &BoxClip, x: f32, y: f32) -> (f32, f32, f32) {
+fn box_sdf_sample(shape: &RoundedBox, x: f32, y: f32) -> (f32, f32, f32) {
     let (sx, sy) = (
         if x >= 0.0 { 1.0 } else { -1.0 },
         if y >= 0.0 { 1.0 } else { -1.0 },
     );
-    let r = match (x > 0.0, y > 0.0) {
-        (false, false) => b.radii[0],
-        (true, false) => b.radii[1],
-        (true, true) => b.radii[2],
-        (false, true) => b.radii[3],
+    let radius = match (x > 0.0, y > 0.0) {
+        (false, false) => shape.radii[0],
+        (true, false) => shape.radii[1],
+        (true, true) => shape.radii[2],
+        (false, true) => shape.radii[3],
     };
-    let rx = r.max(0.0);
-    let ry = rx * b.aspect;
-    let (ax, ay) = (x.abs() - b.half[0], y.abs() - b.half[1]);
+    let rx = radius.max(0.0);
+    let ry = rx * shape.aspect;
+    let (ax, ay) = (x.abs() - shape.half[0], y.abs() - shape.half[1]);
     if rx <= 0.0 || ry <= 0.0 {
-        let d = ax.max(0.0).hypot(ay.max(0.0)) + ax.max(ay).min(0.0);
+        let d = length(ax.max(0.0), ay.max(0.0)) + ax.max(ay).min(0.0);
         let (gx, gy) = if ax > 0.0 && ay > 0.0 {
-            let l = ax.hypot(ay);
+            let l = length(ax, ay);
             (ax / l, ay / l)
         } else if ax > ay {
             (1.0, 0.0)
@@ -820,37 +785,37 @@ fn box_sdf_sample(b: &BoxClip, x: f32, y: f32) -> (f32, f32, f32) {
     }
     let (qx, qy) = (ax + rx, ay + ry);
     if qx > 0.0 && qy > 0.0 {
-        if (b.exponent - 2.0).abs() < 1e-4 && (b.aspect - 1.0).abs() < 1e-4 {
+        if (shape.exponent - 2.0).abs() < 1e-4 && (shape.aspect - 1.0).abs() < 1e-4 {
             let (ux, uy) = (qx / rx, qy / ry);
-            let len = ux.hypot(uy);
-            let grad = (ux / rx).hypot(uy / ry) / len.max(1e-6);
+            let len = length(ux, uy);
+            let grad = length(ux / rx, uy / ry) / len.max(1e-6);
             let d = (len - 1.0) / grad.max(1e-6);
             let (vx, vy) = (qx / (rx * rx), qy / (ry * ry));
-            let vlen = vx.hypot(vy).max(1e-12);
+            let vlen = length(vx, vy).max(1e-12);
             return (d, sx * vx / vlen, sy * vy / vlen);
         }
-        let (d, nx, ny) = lame_corner((qx, qy), (rx, ry), b.exponent);
+        let (d, nx, ny) = lame_corner((qx, qy), (rx, ry), shape.exponent);
         return (d, sx * nx, sy * ny);
     }
     let (gx, gy) = if ax > ay { (1.0, 0.0) } else { (0.0, 1.0) };
     (ax.max(ay), sx * gx, sy * gy)
 }
 
-/// The signed distance and unit outward normal of `(x, y)` to `b`'s box
-/// boundary — the shader's `device_sdf` in f32: the point mapped to
-/// box-local space by `inv`, the box distance and outward normal
-/// evaluated there, the normal mapped back by the transpose and
-/// normalised, and the distance scaled by the same stretch.
-fn box_sdf_at(b: &BoxClip, x: f32, y: f32) -> (f32, f32, f32) {
+/// The signed distance and unit outward normal of device point `(x, y)`
+/// to `clip`'s boundary — the shader's `device_sdf` in f32: the point
+/// mapped into box-local space by `inv`, the box's distance and outward
+/// normal evaluated there, the normal mapped back by `inv`'s transpose
+/// and normalised, and the distance divided by the same stretch.
+fn box_sdf_at(clip: &BoxClip, x: f32, y: f32) -> (f32, f32, f32) {
+    let m = &clip.inv;
     let (px, py) = (
-        b.inv[0].mul_add(x, b.inv[2].mul_add(y, b.inv[4])),
-        b.inv[1].mul_add(x, b.inv[3].mul_add(y, b.inv[5])),
+        m[0].mul_add(x, m[2].mul_add(y, m[4])),
+        m[1].mul_add(x, m[3].mul_add(y, m[5])),
     );
-    let (d, gx, gy) = box_sdf_sample(b, px, py);
-    let dgx = b.inv[0].mul_add(gx, b.inv[1] * gy);
-    let dgy = b.inv[2].mul_add(gx, b.inv[3] * gy);
-    let len = dgx.hypot(dgy).max(1e-6);
-    (d / len, dgx / len, dgy / len)
+    let (d, gx, gy) = box_sdf_sample(&clip.shape, px, py);
+    let (dx, dy) = (m[0].mul_add(gx, m[1] * gy), m[2].mul_add(gx, m[3] * gy));
+    let len = length(dx, dy).max(1e-6);
+    (d / len, dx / len, dy / len)
 }
 
 /// The plain sample of `capture` at device pixel `(px, py)`, whose kept
@@ -2235,12 +2200,9 @@ impl Band<'_> {
                 let (d, nx, ny) = match union {
                     Some(_) => (field.0, field.1, field.2),
                     None => match effect {
-                        SampleEffect::Sdf(sdf) => match &sdf.clip {
-                            MemberClip::Box(b) => box_sdf_at(b, px as f32 + 0.5, py as f32 + 0.5),
-                            MemberClip::Edges(edges) => {
-                                sdf_at(edges, px as f32 + 0.5, py as f32 + 0.5)
-                            }
-                        },
+                        SampleEffect::Sdf(sdf) => {
+                            box_sdf_at(&sdf.clip, px as f32 + 0.5, py as f32 + 0.5)
+                        }
                         _ => (0.0, 0.0, 0.0),
                     },
                 };
