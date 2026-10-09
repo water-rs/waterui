@@ -154,8 +154,6 @@ void water_wpe_page_key(
     uint32_t keyval,
     uint32_t modifiers,
     uint32_t time_ms);
-/* Evaluates `script` in the main frame and discards its result. */
-void water_wpe_page_evaluate(WaterWpePage *page, const char *script);
 /* Installs a document script under `key`, replacing whatever script that key
  * already names. The scripts are injected into the top frame only: the bridge is
  * a capability, and embedding a document does not grant it one. */

@@ -636,21 +636,6 @@ static gboolean water_wpe_tls_failed(
     return FALSE;
 }
 
-static void water_wpe_evaluate_without_result(
-    WaterWpePage *page,
-    const char *script)
-{
-    webkit_web_view_evaluate_javascript(
-        page->web_view,
-        script,
-        -1,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        NULL);
-}
-
 /* Drops the reference a page's script table holds. A wrapper rather than a cast
  * of `webkit_user_script_unref` to `GDestroyNotify`, which is a function-pointer
  * cast the build refuses. */
@@ -659,6 +644,15 @@ static void water_wpe_user_script_free(gpointer script)
     webkit_user_script_unref(script);
 }
 
+/* Receives one bridge call from the web-process extension.
+ *
+ * The handler is registered in the `waterui.bridge` script world only, which
+ * page script cannot reach, so every message comes from the extension's binding
+ * for one main-frame document. `origin` is the origin that binding captured
+ * when the document's window object was created, so it names the committed
+ * document that sent the call regardless of any provisional load or process
+ * swap in flight. The reply token answers that document's own promise, and is
+ * dropped with it. */
 static gboolean water_wpe_script_message(
     WebKitUserContentManager *manager,
     JSCValue *value,
@@ -1208,13 +1202,6 @@ void water_wpe_page_key(
         keyval);
     wpe_view_event(page->view, event);
     wpe_event_unref(event);
-}
-
-void water_wpe_page_evaluate(WaterWpePage *page, const char *script)
-{
-    g_assert(page != NULL);
-    g_assert(script != NULL);
-    water_wpe_evaluate_without_result(page, script);
 }
 
 void water_wpe_page_add_script(

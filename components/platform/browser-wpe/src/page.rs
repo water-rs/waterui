@@ -735,10 +735,10 @@ unsafe extern "C" fn message_callback(
     // note.
     let context = unsafe { &*context.cast::<ClientContext>() };
     let reply = PendingReply::new(std::sync::Arc::clone(&context.api), reply);
-    let Some(state) = context.state.upgrade() else {
-        reply.return_json(&bridge::Reply::failure("the WPE page is no longer available").to_json());
-        return;
-    };
+    let state = context
+        .state
+        .upgrade()
+        .expect("WPE invoked a message after page destruction");
     // SAFETY: bridge ABI call on the page this type owns; see the module safety
     // note.
     let envelope = unsafe { CStr::from_ptr(envelope) };
@@ -761,8 +761,10 @@ unsafe extern "C" fn message_callback(
         }
     };
 
-    // This Rust check is defense in depth for policy changes; the WebProcess
-    // extension authenticates the captured document origin before dispatch.
+    // The web-process extension authenticated `origin`: it is the origin of the
+    // committed main-frame document whose binding sent this message. Its own
+    // policy check is an early filter against a copy of the rules that can lag a
+    // policy change, so the current policy is decided here.
     let allowed = origin.to_str().is_ok_and(|origin| {
         state
             .bridge_origins
