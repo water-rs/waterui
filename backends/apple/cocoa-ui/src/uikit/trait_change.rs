@@ -18,7 +18,6 @@
 //! `UIKit` copies the block and calls it on the main thread.
 
 use std::fmt;
-use std::ops::Deref;
 use std::ptr::NonNull;
 
 use block2::RcBlock;
@@ -40,21 +39,22 @@ use crate::callback::guarded;
 /// change. A panic in it aborts the process (see the
 /// [crate documentation](crate)).
 ///
-/// `E` is the concrete view or controller class; its `Deref` target is the
-/// `UIKit` class that implements `UITraitChangeObservable` —
-/// `UIView` or `UIViewController`.
+/// `E` is the concrete view or controller class, and `O` the `UIKit` class
+/// in its inheritance chain that implements `UITraitChangeObservable` —
+/// `UIView` or `UIViewController`. `handler` receives `E` itself, however
+/// far below `O` it sits.
 ///
 /// # Panics
 ///
 /// If `UIKit` reports a trait change off the main thread.
-pub(super) fn register_trait_change<E>(
+pub(super) fn register_trait_change<O, E>(
     observable: &E,
     trait_class: &AnyObject,
     handler: impl Fn(&E) + 'static,
 ) -> TraitChangeObservation
 where
-    E: Message + MainThreadOnly + Deref,
-    E::Target: Message + UITraitChangeObservable,
+    E: Message + MainThreadOnly + AsRef<O>,
+    O: Message + UITraitChangeObservable,
 {
     // The block may be released wherever `UIKit` lets it go, so what it
     // captures is bound to the main thread and dropped there. The
@@ -84,7 +84,7 @@ where
         ]
     };
     TraitChangeObservation {
-        observable: Weak::new(ProtocolObject::from_ref(&**observable)),
+        observable: Weak::new(ProtocolObject::from_ref(AsRef::<O>::as_ref(observable))),
         registration,
     }
 }

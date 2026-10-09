@@ -865,7 +865,7 @@ async fn build_preview_session_from_launch(
     {
         ConnectionWaitResult::Ready(client) => {
             return Ok(PreviewSession {
-                client,
+                client: *client,
                 platform,
                 dylib_path: None,
                 running: Some(running),
@@ -925,7 +925,7 @@ Try running with WATERUI_CRASH_DEBUG=1 for more details.",
 /// Result of waiting for preview-app readiness.
 enum ConnectionWaitResult {
     /// Preview app accepted a connection and completed the protocol handshake.
-    Ready(PreviewAppClient),
+    Ready(Box<PreviewAppClient>),
     /// App crashed.
     Crashed(Crash),
     /// App exited without crash.
@@ -1029,7 +1029,7 @@ async fn wait_for_registered_preview_ready(
     )
     .await
     {
-        PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+        PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
         PreviewProbe::Rejected(reason) => rejection = Some(reason),
         PreviewProbe::Silent => {}
     }
@@ -1069,7 +1069,7 @@ async fn wait_for_registered_preview_ready(
         )
         .await
         {
-            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
             PreviewProbe::Rejected(reason) => rejection = Some(reason),
             PreviewProbe::Silent => {}
         }
@@ -1143,7 +1143,7 @@ async fn wait_for_polled_preview_ready(
 
     loop {
         match probe_polled_preview(host, tcp_config, expectation, start).await {
-            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
             PreviewProbe::Rejected(reason) => rejection = Some(reason),
             PreviewProbe::Silent => {}
         }
@@ -1277,7 +1277,7 @@ async fn preview_connection_result_from_device_event(
                             "Connected to preview app after {}ms",
                             start.elapsed().as_millis()
                         );
-                        return Some(ConnectionWaitResult::Ready(*client));
+                        return Some(ConnectionWaitResult::Ready(client));
                     }
                     // The app this launch just started announced its own port
                     // and is the wrong build: its protocol is fixed at build
