@@ -722,6 +722,10 @@ fn math(fun: MathFunction, first: &Value, second: Option<&Value>, third: Option<
         MathFunction::Saturate => unary(|value| value.clamp(0.0, 1.0)),
         MathFunction::Cos => unary(f32::cos),
         MathFunction::Sin => unary(f32::sin),
+        MathFunction::Tan => unary(f32::tan),
+        MathFunction::Acos => unary(f32::acos),
+        // WGSL's `sign` is zero at zero, unlike `f32::signum`.
+        MathFunction::Sign => unary(|value| if value == 0.0 { 0.0 } else { value.signum() }),
         MathFunction::Min => zip(first, second.expect("min takes two"), f32::min),
         MathFunction::Max => zip(first, second.expect("max takes two"), f32::max),
         MathFunction::Pow => zip(first, second.expect("pow takes two"), f32::powf),
