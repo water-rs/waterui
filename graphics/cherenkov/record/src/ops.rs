@@ -176,6 +176,63 @@ pub enum LayerOp {
     },
 }
 
+impl LayerOp {
+    /// The layer the op edits: the op's own id, or the parent for child
+    /// list ops.
+    pub(crate) const fn layer(&self) -> LayerId {
+        match *self {
+            Self::Create(id)
+            | Self::Remove(id)
+            | Self::Transform(id, _)
+            | Self::Translation(id, _)
+            | Self::Rotation(id, _)
+            | Self::Scale(id, _)
+            | Self::Skew(id, _)
+            | Self::Pivot(id, _)
+            | Self::Projection(id, _)
+            | Self::Tilt(id, _)
+            | Self::Depth(id, _)
+            | Self::ClearProjection(id)
+            | Self::Opacity(id, _)
+            | Self::ScrollOffset(id, _)
+            | Self::Clip(id, _)
+            | Self::Blend(id, _)
+            | Self::Filter(id, _)
+            | Self::Backdrop(id, _)
+            | Self::Content(id, _)
+            | Self::Push { parent: id, .. }
+            | Self::Insert { parent: id, .. }
+            | Self::Detach { parent: id, .. } => id,
+        }
+    }
+
+    /// The animation slot of the op's animatable prop, if it carries
+    /// one: [`LayerEdit::animation`] retargets the last queued op
+    /// through it. `None` for the projection matrix and every
+    /// non-animatable op.
+    ///
+    /// [`LayerEdit::animation`]: crate::LayerEdit::animation
+    #[expect(
+        clippy::match_same_arms,
+        reason = "each animatable Prop is a different type; the arms cannot merge"
+    )]
+    pub(crate) const fn animation_mut(&mut self) -> Option<&mut Option<Animation>> {
+        match self {
+            Self::Transform(_, prop) => Some(&mut prop.animation),
+            Self::Translation(_, prop) => Some(&mut prop.animation),
+            Self::Rotation(_, prop) => Some(&mut prop.animation),
+            Self::Scale(_, prop) => Some(&mut prop.animation),
+            Self::Skew(_, prop) => Some(&mut prop.animation),
+            Self::Pivot(_, prop) => Some(&mut prop.animation),
+            Self::Tilt(_, prop) => Some(&mut prop.animation),
+            Self::Depth(_, prop) => Some(&mut prop.animation),
+            Self::Opacity(_, prop) => Some(&mut prop.animation),
+            Self::ScrollOffset(_, prop) => Some(&mut prop.animation),
+            _ => None,
+        }
+    }
+}
+
 /// A target's sealed render-side install payload.
 ///
 /// Only a [`GpuInstalls`] target can wrap one, through
@@ -230,6 +287,16 @@ impl<T: Target> std::fmt::Debug for Op<T> {
         match self {
             Self::Layer(op) => f.debug_tuple("Layer").field(op).finish(),
             Self::Install(..) => f.write_str("Install(..)"),
+        }
+    }
+}
+
+impl<T: Target> Op<T> {
+    /// The layer the op edits.
+    pub(crate) const fn layer(&self) -> LayerId {
+        match *self {
+            Self::Layer(ref op) => op.layer(),
+            Self::Install(id, _) => id,
         }
     }
 }

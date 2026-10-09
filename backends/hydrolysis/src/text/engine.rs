@@ -157,6 +157,11 @@ pub trait TextEngine: Send + Sync + 'static {
         scene: &mut Recording,
         counters: &mut FrameWorkCounters,
     );
+
+    /// The collection the engine shapes with gained faces: drops every
+    /// result the engine keeps that was made against the old set.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    fn fonts_changed(&self);
 }
 
 /// How a named font family the collection cannot resolve is treated.

@@ -11,55 +11,76 @@
 #
 # `url` may point at an archive or at a single face. When it is an archive, only
 # the one face matching `name` is extracted and bundled, never the whole
-# distribution.
+# distribution. `url` names an immutable release or tag, and `sha256` is the
+# digest of what it serves: `water fetch` refuses a download that does not
+# match it.
 
 # Popular text fonts
 
 [[font]]
 name = "Inter"
 url = "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip"
+sha256 = "ff970a5d4561a04f102a7cb781adbd6ac4e9b6c460914c7a101f15acb7f7d1a4"
 
 [[font]]
 name = "Roboto"
 url = "https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip"
+sha256 = "c825453253f590cfe62557733e7173f9a421fff103b00f57d33c4ad28ae53baf"
 
 [[font]]
 name = "Noto Sans CJK JP"
 url = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/06_NotoSansCJKjp.zip"
+sha256 = "bf5b26feb83ee02533d4eb4a127bd90ed9d42bdd7ca7cb6e4030b2f21ef55cc5"
 
 [[font]]
 name = "Noto Sans CJK KR"
 url = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/07_NotoSansCJKkr.zip"
+sha256 = "e26fcf98e75176d24984875377ab921dbb46055b88ed4a39454d91d6146c5654"
 
 [[font]]
 name = "Noto Sans CJK SC"
 url = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/08_NotoSansCJKsc.zip"
+sha256 = "a927e56f53bd6c3b920bc139c0b94aa36c7d9ad0cf009b159437a1a003581140"
 
 [[font]]
 name = "Noto Sans CJK TC"
 url = "https://github.com/notofonts/noto-cjk/releases/download/Sans2.004/09_NotoSansCJKtc.zip"
+sha256 = "8ea0d6feb8e092c250710cdc75c138090832ddaa98d8ccb37cd89b03b72c331b"
 
 [[font]]
 name = "Noto Sans Arabic"
 url = "https://github.com/notofonts/arabic/releases/download/NotoSansArabic-v2.013/NotoSansArabic-v2.013.zip"
+sha256 = "1301aceaea84c501cf2e6dcfb3182e2328c8eae5725817fcb239672bda7154f1"
 
 [[font]]
 name = "Noto Sans Hebrew"
 url = "https://github.com/notofonts/hebrew/releases/download/NotoSansHebrew-v3.001/NotoSansHebrew-v3.001.zip"
+sha256 = "df0a71814b4e63644cf40fcc4529111b61266b7a2dafbe95068b29a7520cc3cb"
+
+# Emoji. The COLRv1 build: colour glyphs as vector paint graphs, which scale
+# without the bitmap strikes of the CBDT build.
+
+[[font]]
+name = "Noto Color Emoji"
+url = "https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/Noto-COLRv1.ttf"
+sha256 = "0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2"
 
 # Monospace fonts
 
 [[font]]
 name = "JetBrainsMono"
 url = "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip"
+sha256 = "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf"
 
 [[font]]
 name = "FiraCode"
 url = "https://github.com/tonsky/FiraCode/releases/download/6.2/Fira_Code_v6.2.zip"
+sha256 = "0949915ba8eb24d89fd93d10a7ff623f42830d7c5ffc3ecbf960e4ecad3e3e79"
 
 [[font]]
 name = "SourceCodePro"
 url = "https://github.com/adobe-fonts/source-code-pro/releases/download/2.042R-u%2F1.062R-i%2F1.026R-vf/OTF-source-code-pro-2.042R-u_1.062R-i.zip"
+sha256 = "754a2e3ebb945ae905d720ac5896b3b34acc9546dd6551ef9536869788629dae"
 
 # Math fonts.
 #
@@ -76,3 +97,4 @@ url = "https://github.com/adobe-fonts/source-code-pro/releases/download/2.042R-u
 [[font]]
 name = "STIX Two Math"
 url = "https://raw.githubusercontent.com/stipub/stixfonts/v2.13b171/zipfiles/static_otf.zip"
+sha256 = "b5ec34636e117ec97e71e6b89ad2718618184329bbb3d3be5d1e3b0f8ed52789"

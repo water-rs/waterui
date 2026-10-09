@@ -201,6 +201,7 @@ impl HydrolysisRenderer {
                 &target,
                 state,
                 Arc::clone(&self.applied_filter_metrics),
+                Rc::clone(&self.material_registry),
             ));
         }
         let mut window = self
@@ -266,6 +267,7 @@ impl HydrolysisRenderer {
                 target,
                 state,
                 Arc::clone(&self.applied_filter_metrics),
+                Rc::clone(&self.material_registry),
             ));
         }
         let mut window = window_slot
@@ -418,20 +420,26 @@ impl<S> CherenkovWindow<S> {
 }
 
 impl<S: crate::engine::EngineSurface> CherenkovWindow<S> {
-    /// Wraps `surface` with its window mount.
+    /// Wraps `surface` with its window mount. `materials` is the theme's
+    /// material registry: attaching this window's engine registers every
+    /// shader it names, so a chrome member's group binds an engine handle
+    /// (water-rs/waterui#1788). A rejected source panics at attach,
+    /// naming the key.
     fn new(
         surface: S,
         target: &FrameRenderTarget<'_>,
         state: Rc<crate::engine::SharedEngineState>,
         metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
+        materials: Rc<cherenkov_record::MaterialRegistry>,
     ) -> Self {
         let core = surface.core();
-        let mount = mount::Mount::new(Rc::clone(&core.engine_surface().shared));
+        let mount = mount::Mount::new(Rc::clone(&core.engine_surface().shared), &materials);
         let host = mount::CherenkovHost {
             engine: Rc::clone(&state.engine),
             resources: Rc::clone(&state.resources),
             metrics,
             surface: core.engine_surface_weak(),
+            materials: mount::MaterialTerms::resolve(&state.engine, materials),
             device: target.device.clone(),
             queue: target.queue.clone(),
         };
