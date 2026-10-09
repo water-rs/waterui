@@ -58,7 +58,6 @@ struct LocalHttpServer {
     workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
     listener: Option<JoinHandle<()>>,
     response_gate: Arc<ResponseGate>,
-    provisional_start_gate: Arc<ResponseGate>,
 }
 
 impl LocalHttpServer {
@@ -70,12 +69,10 @@ impl LocalHttpServer {
         let shutdown = Arc::new(AtomicBool::new(false));
         let workers = Arc::new(Mutex::new(Vec::new()));
         let response_gate = Arc::new(ResponseGate::new());
-        let provisional_start_gate = Arc::new(ResponseGate::new());
 
         let listener_shutdown = Arc::clone(&shutdown);
         let listener_workers = Arc::clone(&workers);
         let listener_gate = Arc::clone(&response_gate);
-        let listener_provisional_start_gate = Arc::clone(&provisional_start_gate);
         let listener = thread::spawn(move || {
             loop {
                 if listener_shutdown.load(Ordering::Acquire) {
@@ -85,9 +82,8 @@ impl LocalHttpServer {
                     Ok((stream, _)) => {
                         let sender = sender.clone();
                         let gate = Arc::clone(&listener_gate);
-                        let provisional_start_gate = Arc::clone(&listener_provisional_start_gate);
                         let worker = thread::spawn(move || {
-                            serve_request(stream, &sender, &gate, &provisional_start_gate);
+                            serve_request(stream, &sender, &gate);
                         });
                         listener_workers
                             .lock()
@@ -108,7 +104,6 @@ impl LocalHttpServer {
             workers,
             listener: Some(listener),
             response_gate,
-            provisional_start_gate,
         }
     }
 
@@ -170,7 +165,6 @@ impl LocalHttpServer {
 impl Drop for LocalHttpServer {
     fn drop(&mut self) {
         self.response_gate.release();
-        self.provisional_start_gate.release();
         self.shutdown.store(true, Ordering::Release);
         let _ = TcpStream::connect(self.address);
         if let Some(listener) = self.listener.take() {
@@ -193,7 +187,6 @@ fn serve_request(
     mut stream: TcpStream,
     events: &Sender<ServerRequest>,
     response_gate: &ResponseGate,
-    provisional_start_gate: &ResponseGate,
 ) {
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
@@ -222,13 +215,8 @@ fn serve_request(
         path: path.clone(),
         tag,
     });
-    match path.as_str() {
-        "/provisional-start" => provisional_start_gate.block_response(),
-        "/hold-a" => {
-            provisional_start_gate.release();
-            response_gate.block_response();
-        }
-        _ => {}
+    if path == "/hold-a" {
+        response_gate.block_response();
     }
 
     let body = match path.as_str() {
@@ -510,30 +498,6 @@ pub fn run(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
     );
 
     let excluded_process = await_process_identifier(&page, deadline);
-    await_page_script(
-        &page,
-        r#"
-          globalThis.__wateruiProvisional = (async () => {
-            await fetch("/provisional-start", {cache: "no-store"});
-            let result = "resolved";
-            try {
-              await waterui.invoke("probe", {tag: "E-provisional"});
-            } catch {
-              result = "rejected";
-            }
-            await fetch(`/marker?tag=E-provisional-${result}`, {cache: "no-store"});
-            await fetch("/marker?tag=E-provisional-attempted", {cache: "no-store"});
-          })();
-          return {started: true};
-        "#,
-        deadline,
-    );
-    server.wait_for(
-        &page,
-        |request| request.path == "/provisional-start",
-        deadline,
-        "E provisional-start gate",
-    );
     page.load_uri(&admitted_url);
     server.wait_for(
         &page,
@@ -541,6 +505,24 @@ pub fn run(runtime: &WpeRuntime, executor: &SmokeExecutor, deadline: Instant) {
         deadline,
         "held admitted A response",
     );
+    let provisional = await_page_script(
+        &page,
+        r#"
+          const origin = location.origin;
+          let result = "resolved";
+          try {
+            await waterui.invoke("probe", {tag: "E-provisional"});
+          } catch {
+            result = "rejected";
+          }
+          await fetch(`/marker?tag=E-provisional-${result}`, {cache: "no-store"});
+          await fetch("/marker?tag=E-provisional-attempted", {cache: "no-store"});
+          return {origin, result};
+        "#,
+        deadline,
+    );
+    assert_eq!(provisional["origin"], format!("http://localhost:{port}"));
+    assert_eq!(provisional["result"], "rejected");
     let provisional_outcome = server.wait_for(
         &page,
         |request| {
