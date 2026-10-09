@@ -19,7 +19,6 @@ const IO_TIMEOUT: Duration = Duration::from_secs(10);
 struct ServerRequest {
     path: String,
     tag: Option<String>,
-    at: Instant,
 }
 
 struct ResponseGate {
@@ -57,6 +56,7 @@ struct LocalHttpServer {
     workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
     listener: Option<JoinHandle<()>>,
     response_gate: Arc<ResponseGate>,
+    provisional_start_gate: Arc<ResponseGate>,
 }
 
 impl LocalHttpServer {
@@ -68,10 +68,12 @@ impl LocalHttpServer {
         let shutdown = Arc::new(AtomicBool::new(false));
         let workers = Arc::new(Mutex::new(Vec::new()));
         let response_gate = Arc::new(ResponseGate::new());
+        let provisional_start_gate = Arc::new(ResponseGate::new());
 
         let listener_shutdown = Arc::clone(&shutdown);
         let listener_workers = Arc::clone(&workers);
         let listener_gate = Arc::clone(&response_gate);
+        let listener_provisional_start_gate = Arc::clone(&provisional_start_gate);
         let listener = thread::spawn(move || {
             loop {
                 if listener_shutdown.load(Ordering::Acquire) {
@@ -81,7 +83,10 @@ impl LocalHttpServer {
                     Ok((stream, _)) => {
                         let sender = sender.clone();
                         let gate = Arc::clone(&listener_gate);
-                        let worker = thread::spawn(move || serve_request(stream, &sender, &gate));
+                        let provisional_start_gate = Arc::clone(&listener_provisional_start_gate);
+                        let worker = thread::spawn(move || {
+                            serve_request(stream, &sender, &gate, &provisional_start_gate);
+                        });
                         listener_workers
                             .lock()
                             .expect("HTTP worker list lock")
@@ -101,6 +106,7 @@ impl LocalHttpServer {
             workers,
             listener: Some(listener),
             response_gate,
+            provisional_start_gate,
         }
     }
 
@@ -147,20 +153,12 @@ impl LocalHttpServer {
         }
     }
 
-    fn wait_for_tag(
-        &mut self,
-        page: &WpePage,
-        tag: &str,
-        after: Option<Instant>,
-        deadline: Instant,
-    ) -> ServerRequest {
+    fn wait_for_tag(&mut self, page: &WpePage, tag: &str, deadline: Instant) -> ServerRequest {
         let tag = tag.to_owned();
         let purpose = format!("marker {tag}");
         self.wait_for(
             page,
-            move |request| {
-                request.tag.as_deref() == Some(&tag) && after.is_none_or(|after| request.at > after)
-            },
+            move |request| request.tag.as_deref() == Some(&tag),
             deadline,
             &purpose,
         )
@@ -170,6 +168,7 @@ impl LocalHttpServer {
 impl Drop for LocalHttpServer {
     fn drop(&mut self) {
         self.response_gate.release();
+        self.provisional_start_gate.release();
         self.shutdown.store(true, Ordering::Release);
         let _ = TcpStream::connect(self.address);
         if let Some(listener) = self.listener.take() {
@@ -188,7 +187,12 @@ impl Drop for LocalHttpServer {
     }
 }
 
-fn serve_request(mut stream: TcpStream, events: &Sender<ServerRequest>, gate: &ResponseGate) {
+fn serve_request(
+    mut stream: TcpStream,
+    events: &Sender<ServerRequest>,
+    response_gate: &ResponseGate,
+    provisional_start_gate: &ResponseGate,
+) {
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let mut reader = BufReader::new(stream);
@@ -215,10 +219,14 @@ fn serve_request(mut stream: TcpStream, events: &Sender<ServerRequest>, gate: &R
     let _ = events.send(ServerRequest {
         path: path.clone(),
         tag,
-        at: Instant::now(),
     });
-    if path == "/hold-a" {
-        gate.block_response();
+    match path.as_str() {
+        "/provisional-start" => provisional_start_gate.block_response(),
+        "/hold-a" => {
+            provisional_start_gate.release();
+            response_gate.block_response();
+        }
+        _ => {}
     }
 
     let body = match path.as_str() {
@@ -352,7 +360,7 @@ fn await_load(
         );
         thread::yield_now();
     }
-    server.wait_for_tag(page, expected_marker, None, deadline);
+    server.wait_for_tag(page, expected_marker, deadline);
 }
 
 fn await_process_identifier(page: &WpePage, deadline: Instant) -> u64 {
@@ -484,8 +492,8 @@ pub fn run(runtime: &WpeRuntime, deadline: Instant) {
     );
     assert_eq!(excluded["result"], "rejected");
     assert_eq!(excluded["historyResult"], "rejected");
-    server.wait_for_tag(&page, "E-loaded-rejected", None, deadline);
-    server.wait_for_tag(&page, "E-after-history-rejected", None, deadline);
+    server.wait_for_tag(&page, "E-loaded-rejected", deadline);
+    server.wait_for_tag(&page, "E-after-history-rejected", deadline);
     assert!(
         handler_calls
             .lock()
@@ -499,38 +507,52 @@ pub fn run(runtime: &WpeRuntime, deadline: Instant) {
         &page,
         r#"
           globalThis.__wateruiProvisional = (async () => {
-            while (true) {
-              try {
-                await waterui.invoke("probe", {tag: "E-provisional"});
-              } catch {}
-              await fetch("/marker?tag=E-provisional-attempted", {cache: "no-store"});
+            await fetch("/provisional-start", {cache: "no-store"});
+            let result = "resolved";
+            try {
+              await waterui.invoke("probe", {tag: "E-provisional"});
+            } catch {
+              result = "rejected";
             }
+            await fetch(`/marker?tag=E-provisional-${result}`, {cache: "no-store"});
+            await fetch("/marker?tag=E-provisional-attempted", {cache: "no-store"});
           })();
           return {started: true};
         "#,
         deadline,
     );
+    server.wait_for(
+        &page,
+        |request| request.path == "/provisional-start",
+        deadline,
+        "E provisional-start gate",
+    );
     page.load_uri(&admitted_url);
-    let held_request = server.wait_for(
+    server.wait_for(
         &page,
         |request| request.path == "/hold-a",
         deadline,
         "held admitted A response",
     );
-    server.wait_for_tag(
+    let provisional_outcome = server.wait_for(
         &page,
-        "E-provisional-attempted",
-        Some(held_request.at),
+        |request| {
+            matches!(
+                request.tag.as_deref(),
+                Some("E-provisional-rejected" | "E-provisional-resolved")
+            )
+        },
         deadline,
+        "E provisional bridge rejection",
     );
+    assert_eq!(
+        provisional_outcome.tag.as_deref(),
+        Some("E-provisional-rejected"),
+        "excluded E resolved its provisional bridge call"
+    );
+    server.wait_for_tag(&page, "E-provisional-attempted", deadline);
     server.response_gate.release();
-    await_load(
-        &page,
-        &mut server,
-        &admitted_url,
-        "loaded-A-hold-a",
-        deadline,
-    );
+    server.wait_for_tag(&page, "loaded-A-hold-a", deadline);
 
     let admitted_process = await_process_identifier(&page, deadline);
     assert_ne!(
@@ -603,8 +625,8 @@ pub fn run(runtime: &WpeRuntime, deadline: Instant) {
     );
     assert_eq!(rejected_after_swap["result"], "rejected");
     assert_eq!(rejected_after_swap["calls"], 1);
-    server.wait_for_tag(&page, "spoof-resolver-invoked", None, deadline);
-    server.wait_for_tag(&page, "E-after-navigation-rejected", None, deadline);
+    server.wait_for_tag(&page, "spoof-resolver-invoked", deadline);
+    server.wait_for_tag(&page, "E-after-navigation-rejected", deadline);
 
     release_reply
         .send(())
@@ -631,7 +653,7 @@ pub fn run(runtime: &WpeRuntime, deadline: Instant) {
         after_reply_roundtrip["calls"], 1,
         "the A reply invoked E's replacement resolver"
     );
-    server.wait_for_tag(&page, "E-after-reply-roundtrip", None, deadline);
+    server.wait_for_tag(&page, "E-after-reply-roundtrip", deadline);
 
     let calls = handler_calls
         .lock()

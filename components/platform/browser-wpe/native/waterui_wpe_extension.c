@@ -438,9 +438,11 @@ G_MODULE_EXPORT void webkit_web_process_extension_initialize_with_user_data(
     const GVariant *user_data)
 {
     WaterWpeProcess *process = g_new0(WaterWpeProcess, 1);
+    GVariant *user_data_variant = (GVariant *)user_data;
     const char *initial_wire = "";
-    if (user_data && g_variant_is_of_type(user_data, G_VARIANT_TYPE_STRING))
-        initial_wire = g_variant_get_string(user_data, NULL);
+    if (user_data_variant &&
+        g_variant_is_of_type(user_data_variant, G_VARIANT_TYPE_STRING))
+        initial_wire = g_variant_get_string(user_data_variant, NULL);
     process->initial_origin_wire = g_strdup(initial_wire);
     process->bridge_world = webkit_script_world_new_with_name("waterui.bridge");
     g_object_set_data_full(
