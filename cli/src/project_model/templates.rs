@@ -941,14 +941,19 @@ impl TemplateContext {
 
     /// Whether the app bridges the system `WebView` — the pinned host's
     /// `webview/` module substitutes and joins the classpath.
-    #[must_use]
-    pub fn hydrolysis_android_has_system_webview(&self) -> bool {
-        // The Cargo.toml renderer asks for every project; a context that
-        // never scaffolds Android has no entry and no bridge.
-        self.hydrolysis_android.is_some()
-            && self
-                .webview_backend_feature()
-                .is_ok_and(|feature| feature.is_some())
+    ///
+    /// A context without the Hydrolysis Android entry scaffolds no Android
+    /// host and so bridges nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the context carries the Android entry but was built
+    /// without Android's browser answers.
+    pub fn hydrolysis_android_has_system_webview(&self) -> io::Result<bool> {
+        if self.hydrolysis_android.is_none() {
+            return Ok(false);
+        }
+        Ok(self.webview_backend_feature()?.is_some())
     }
 
     #[must_use]

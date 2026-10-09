@@ -1617,7 +1617,10 @@ mod tests {
             )
             .await
             .expect("android template context builds");
-            assert!(ctx.hydrolysis_android_has_system_webview());
+            assert!(
+                ctx.hydrolysis_android_has_system_webview()
+                    .expect("android context carries Android browser answers")
+            );
         });
     }
 

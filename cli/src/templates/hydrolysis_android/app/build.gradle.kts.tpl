@@ -181,7 +181,7 @@ dependencies {
     // `includeBuild`s; the substitutions are declared in settings.gradle.kts.
     implementation("dev.waterui.hydrolysis:host")
     implementation("{{ ctx.hydrolysis_android_painter_dependency() }}")
-{% if ctx.hydrolysis_android_has_system_webview() %}    // The system-WebView bridge, from the same pinned checkout.
+{% if ctx.hydrolysis_android_has_system_webview()? %}    // The system-WebView bridge, from the same pinned checkout.
     implementation("dev.waterui.hydrolysis:webview")
 {% endif %}
 
