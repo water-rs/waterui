@@ -631,12 +631,12 @@ impl HydrolysisRenderer {
     /// Empty text still measures the one line a caret occupies, so a field
     /// keeps its height as text is entered.
     pub(crate) fn measure_editable_text_size(
-        state: &mut HydroState,
-        styled: StyledStr,
+        state: &HydroState,
+        styled: &StyledStr,
         env: &Environment,
         max_lines: Option<usize>,
     ) -> LayoutSize {
-        let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
+        let input = resolve_text_layout_input(styled, HorizontalAlignment::Leading, env);
         let layout = state.text.shape_editable(&input, None);
         state.text.dimensions(&layout, max_lines).size
     }
@@ -1101,7 +1101,7 @@ pub fn measure_text_field_size_with_label_size(
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
     );
-    let value_size = HydrolysisRenderer::measure_editable_text_size(state, value, env, line_limit);
+    let value_size = HydrolysisRenderer::measure_editable_text_size(state, &value, env, line_limit);
     let label_height = measured_input_label_height(label_size, metrics.label_height);
     let text_height = prompt_size.height.max(value_size.height);
     let label_width = metrics
@@ -1178,7 +1178,7 @@ pub fn measure_secure_field_size_with_label_size(
         .chars()
         .count();
     let masked = StyledStr::plain("*".repeat(secure_len));
-    let value_size = HydrolysisRenderer::measure_editable_text_size(state, masked, env, None);
+    let value_size = HydrolysisRenderer::measure_editable_text_size(state, &masked, env, None);
     let label_height = measured_input_label_height(label_size, metrics.label_height);
     let label_width = metrics
         .horizontal_inset
