@@ -4,7 +4,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::driver::{DriverPumpResult, ResourceSampler};
-use accesskit::{ActionRequest as AccessibilityActionRequest, NodeId as AccessibilityNodeId};
+use accesskit::{
+    ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
+    NodeId as AccessibilityNodeId, Role as AccessibilityRole, TreeId as AccessibilityTreeId,
+    TreeInfo as AccessibilityTreeInfo, TreeUpdate as AccessibilityTreeUpdate,
+};
 use hydrolysis::InputEvent;
 use waterui::Binding;
 use waterui::ViewExt as _;
@@ -140,14 +144,82 @@ fn scoped_tree() -> TreeSnapshot {
 }
 
 fn mounted(tree: TreeSnapshot) -> SemanticApp<NoopDriver> {
+    mounted_on(NoopDriver, tree)
+}
+
+fn mounted_on<R: RuntimeDriver>(runtime: R, tree: TreeSnapshot) -> SemanticApp<R> {
     SemanticApp {
-        runtime: NoopDriver,
+        runtime,
         tree,
         ui_focus: None,
         revision: 2,
         viewport: (0, 0),
         clock: None,
         resources: ResourceSampler::new(),
+    }
+}
+
+/// A driver whose `emit_at`-th pump emits `update` and reports settled from
+/// that pump on — busy before, quiescent after.
+///
+/// This is the case a frame-bounded wait must not misread: the pump that
+/// quiesces the runtime can itself carry the awaited node, so reporting
+/// quiescence before re-evaluating would call a landed mount a timeout
+/// (water-rs/waterui#2501).
+struct EmitThenSettleDriver {
+    pumps: usize,
+    emit_at: usize,
+    update: AccessibilityTreeUpdate,
+}
+
+impl RuntimeDriver for EmitThenSettleDriver {
+    fn pump_at(&mut self, _at: std::time::Instant, _capture_snapshot: bool) -> DriverPumpResult {
+        self.pumps += 1;
+        DriverPumpResult {
+            rebuilt: false,
+            profile: hydrolysis::FrameProfile::default(),
+            tree_update: (self.pumps == self.emit_at).then(|| self.update.clone()),
+            content_types: hydrolysis::AccessibilityContentTypes::new(),
+            snapshot: None,
+            ui_focus: None,
+        }
+    }
+
+    fn is_settled(&self) -> bool {
+        self.pumps >= self.emit_at
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        false
+    }
+
+    fn perform_accessibility_action(&mut self, _request: AccessibilityActionRequest) -> bool {
+        false
+    }
+
+    fn push_input_event(&mut self, _event: InputEvent) {}
+
+    fn request_redraw(&mut self) {}
+
+    fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+}
+
+/// A full-tree update carrying a `role`/`label` node under the root.
+fn update_with_node(id: u64, role: AccessibilityRole, label: &str) -> AccessibilityTreeUpdate {
+    let mut root = AccessibilityNode::new(AccessibilityRole::Group);
+    root.set_children([AccessibilityNodeId(id)]);
+    let mut child = AccessibilityNode::new(role);
+    child.set_label(label);
+    AccessibilityTreeUpdate {
+        nodes: vec![
+            (AccessibilityNodeId(1), root),
+            (AccessibilityNodeId(id), child),
+        ],
+        tree: Some(AccessibilityTreeInfo::new(AccessibilityNodeId(1))),
+        tree_id: AccessibilityTreeId::ROOT,
+        focus: AccessibilityNodeId(1),
     }
 }
 
@@ -1229,6 +1301,48 @@ fn wait_for_ordered_expectations_skip_inverted_positions() {
         WaitOptions::new(Duration::from_millis(10)).enforce_order(true),
     );
     assert_eq!(result, WaitResult::Completed);
+}
+
+#[test]
+fn wait_for_frames_completes_when_the_expectation_is_met() {
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::IMAGE, Some("Video content"), None, true),
+    ]));
+
+    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
+    assert_eq!(app.wait_for_frames(&[motion], 4), WaitResult::Completed);
+}
+
+#[test]
+fn wait_for_frames_stops_when_a_quiescent_runtime_cannot_produce_the_node() {
+    let mut app = mounted(tree(vec![node(1, Role::LIST, Some("root"), None, true)]));
+
+    // `NoopDriver` is settled from the start: with nothing in flight the wait
+    // must not burn its frame budget before answering TimedOut.
+    let missing = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
+    assert_eq!(app.wait_for_frames(&[missing], 60), WaitResult::TimedOut);
+}
+
+#[test]
+fn wait_for_frames_observes_the_pump_that_settled_the_runtime() {
+    // The mount lands inside the pump that quiesces the runtime — the
+    // sequence behind water-rs/waterui#2501: the press's gesture deadline
+    // fires, `is_playing` flips, the `Dynamic` rebuild mounts the motion and
+    // the window goes idle in that same frame. A wait that reported
+    // quiescence before re-evaluating would call this a timeout.
+    let update = update_with_node(2, AccessibilityRole::Image, "Video content");
+    let mut app = mounted_on(
+        EmitThenSettleDriver {
+            pumps: 0,
+            emit_at: 2,
+            update,
+        },
+        tree(vec![node(1, Role::LIST, Some("root"), None, true)]),
+    );
+
+    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
+    assert_eq!(app.wait_for_frames(&[motion], 60), WaitResult::Completed);
 }
 
 #[test]
