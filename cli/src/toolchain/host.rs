@@ -507,7 +507,47 @@ impl Host {
         program: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> Result<Output, CommandError> {
-        let program = program.as_ref();
+        self.collect_output(program.as_ref(), args, None::<smol::io::Empty>)
+            .await
+    }
+
+    /// [`Host::output`] with `input` streamed into the child's stdin, which
+    /// is closed once `input` reaches its end so the child sees end-of-file.
+    ///
+    /// The feed runs alongside the stdout/stderr drains, so a child that
+    /// writes while it reads cannot deadlock against a full pipe. A child
+    /// that exits without reading all of `input` closes its end of the pipe;
+    /// the feed then stops, and the exit status in the returned [`Output`]
+    /// is the verdict on the run.
+    ///
+    /// # Errors
+    /// - [`CommandError::Spawn`] when the program cannot be spawned or awaited.
+    /// - [`CommandError::Input`] when reading `input` or writing it to the
+    ///   child fails for any reason other than the child having closed stdin.
+    pub async fn output_with_input(
+        &self,
+        program: impl AsRef<OsStr>,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        input: impl smol::io::AsyncRead,
+    ) -> Result<Output, CommandError> {
+        self.collect_output(program.as_ref(), args, Some(input))
+            .await
+    }
+
+    /// The spawn-feed-drain behind [`Host::output`] and
+    /// [`Host::output_with_input`]: stdin is piped only when there is
+    /// `input` to feed, and null otherwise (see [`Host::command`]).
+    ///
+    /// # Panics
+    /// Panics if the piped-stdio invariant is violated — the streams are
+    /// configured `piped` immediately before spawn, so `take()` always sees
+    /// `Some`.
+    async fn collect_output(
+        &self,
+        program: &OsStr,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        input: Option<impl smol::io::AsyncRead>,
+    ) -> Result<Output, CommandError> {
         let program_name = program.to_string_lossy().into_owned();
         let args = args
             .into_iter()
@@ -521,10 +561,14 @@ impl Host {
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if input.is_some() {
+            command.stdin(Stdio::piped());
+        }
         let mut child = command.spawn().map_err(|source| CommandError::Spawn {
             program: program_name.clone(),
             source,
         })?;
+        let feed = feed_child_stdin(input.zip(child.stdin.take()));
 
         let echo = self.std_output;
         let stdout_task = smol::spawn(drain_child_pipe(
@@ -538,7 +582,12 @@ impl Host {
             echo,
         ));
 
-        let status = child.status().await.map_err(|source| CommandError::Spawn {
+        let (input_fed, status) = futures_util::future::join(feed, child.status()).await;
+        let status = status.map_err(|source| CommandError::Spawn {
+            program: program_name.clone(),
+            source,
+        })?;
+        input_fed.map_err(|source| CommandError::Input {
             program: program_name.clone(),
             source,
         })?;
@@ -757,6 +806,43 @@ const fn withhold_std_handles_from_children() {
     // POSIX children receive only the descriptors we pass: every descriptor
     // the standard library opens is close-on-exec, and daemons detach through
     // fork rather than handle inheritance.
+}
+
+/// Copy `input` into a child's piped stdin, then close it so the child sees
+/// end-of-file. `None` — no input, or stdin was not piped — feeds nothing.
+///
+/// A `BrokenPipe` on the write side means the child closed its stdin, so
+/// the feed stops there and leaves the verdict to the child's exit status;
+/// any other read or write failure is the feed's own error.
+async fn feed_child_stdin(
+    feed: Option<(impl smol::io::AsyncRead, smol::process::ChildStdin)>,
+) -> io::Result<()> {
+    use smol::io::AsyncWriteExt as _;
+
+    /// A write failure, unless it is the child having closed its stdin.
+    fn unless_closed(result: io::Result<()>) -> io::Result<()> {
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            result => result,
+        }
+    }
+
+    let Some((input, mut stdin)) = feed else {
+        return Ok(());
+    };
+    let mut input = std::pin::pin!(input);
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let read = input.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        let written = stdin.write_all(&chunk[..read]).await;
+        if written.is_err() {
+            return unless_closed(written);
+        }
+    }
+    unless_closed(stdin.close().await)
 }
 
 /// Drain a piped child stream to EOF.

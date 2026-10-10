@@ -425,8 +425,8 @@ async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
 
 /// The artifacts and toolchain context produced by an Android launcher build.
 ///
-/// Includes the cargo result, the resolved NDK/SDK context for steps like
-/// `llvm-strip`, and the staged shared libraries in `System.load` order.
+/// Includes the cargo result and the resolved NDK/SDK context for steps like
+/// `llvm-strip` and [`stage_runtime_libraries`]. Nothing is staged yet.
 #[derive(Debug)]
 pub struct HydrolysisAndroidBuild {
     /// The cargo build result — the cdylib artifact and its app symbols.
@@ -435,10 +435,6 @@ pub struct HydrolysisAndroidBuild {
     /// friends — so a caller post-processing the artifact never resolves
     /// the same toolchain a second time.
     pub(crate) context: AndroidBuildContext,
-    /// The staged shared-library file names in load order:
-    /// `libc++_shared.so` first when the staged libraries needed the STL,
-    /// the launcher cdylib last.
-    pub staged_libraries: Vec<String>,
 }
 
 /// Build the Hydrolysis launcher crate's cdylib for one Android ABI.
@@ -461,13 +457,37 @@ pub async fn build(
     options: BuildOptions,
     kotlin: &KotlinToolchain,
 ) -> eyre::Result<BuiltTarget> {
-    Ok(build_with_features(project, abi, options, &[], kotlin)
+    prepare_for_build(project).await?;
+    Ok(build_prepared_into_jni_libs(project, abi, options, kotlin)
         .await?
         .built)
 }
 
-/// [`build`] with extra Cargo features — the preview entry compiles the
-/// launcher cdylib with `waterui-preview-mode`.
+/// [`build_prepared`] without extra features, then the cdylib staged where
+/// a Gradle module packages it: `app/src/main/jniLibs/<abi>/`, or
+/// `options.output_dir()`.
+///
+/// # Errors
+///
+/// Returns an error when the build or the staging fails.
+pub(crate) async fn build_prepared_into_jni_libs(
+    project: &Project,
+    abi: AndroidAbi,
+    options: BuildOptions,
+    kotlin: &KotlinToolchain,
+) -> eyre::Result<HydrolysisAndroidBuild> {
+    let build = build_prepared(project, abi, options.clone(), &[], kotlin).await?;
+    copy_build_outputs(project, &options, abi, &build.context, &build.built).await?;
+    Ok(build)
+}
+
+/// Compile the launcher cdylib for one Android ABI with extra Cargo
+/// features, staging it nowhere.
+///
+/// The preview entry compiles with `waterui-preview-mode`, places the
+/// artifact itself and completes the directory with
+/// [`stage_runtime_libraries`]; [`build`] is this plus the Gradle
+/// `jniLibs` staging.
 ///
 /// # Errors
 ///
@@ -554,26 +574,29 @@ pub(crate) async fn build_prepared(
         .await
         .wrap_err("failed to build the hydrolysis android launcher with cargo")?;
 
-    let staged_libraries = copy_build_outputs(project, &options, abi, &context, &built).await?;
-    Ok(HydrolysisAndroidBuild {
-        built,
-        context,
-        staged_libraries,
-    })
+    Ok(HydrolysisAndroidBuild { built, context })
+}
+
+/// The file name the launcher cdylib is staged and loaded under.
+pub(crate) fn launcher_library_name(project: &Project) -> String {
+    format!(
+        "lib{}.so",
+        templates::hydrolysis::hydrolysis_library_target_name(
+            &project.hydrolysis_backend_crate_name()
+        )
+    )
 }
 
 /// Stage the built cdylib where the generated Gradle project packages it:
-/// `app/src/main/jniLibs/<abi>/`, plus `libc++_shared.so` when the staged
-/// libraries need the STL, with 16 KiB `LOAD`-segment alignment enforced.
-/// Returns the staged library file names in load order — `libc++_shared.so`
-/// first, the launcher cdylib last.
+/// `app/src/main/jniLibs/<abi>/` (or `options.output_dir()`), completed by
+/// [`stage_runtime_libraries`].
 async fn copy_build_outputs(
     project: &Project,
     options: &BuildOptions,
     abi: AndroidAbi,
     context: &AndroidBuildContext,
     built: &BuiltTarget,
-) -> eyre::Result<Vec<String>> {
+) -> eyre::Result<()> {
     let output_dir = options.output_dir().map_or_else(
         || {
             android_dir(&project.backend_path::<HydrolysisBackend>())
@@ -584,20 +607,32 @@ async fn copy_build_outputs(
     );
     fs::create_dir_all(&output_dir).await?;
 
-    let library_name = format!(
-        "lib{}.so",
-        templates::hydrolysis::hydrolysis_library_target_name(
-            &project.hydrolysis_backend_crate_name()
-        )
-    );
-    let library = output_dir.join(&library_name);
-    crate::utils::copy_file_if_changed(&built.artifact, &library).await?;
+    let library_name = launcher_library_name(project);
+    crate::utils::copy_file_if_changed(&built.artifact, output_dir.join(&library_name)).await?;
+    stage_runtime_libraries(&output_dir, library_name, abi, context).await?;
+    Ok(())
+}
 
+/// Complete a directory that holds the launcher cdylib `library_name`:
+/// `libc++_shared.so` joins it when the staged libraries need the STL, and
+/// every staged library's 16 KiB `LOAD`-segment alignment is enforced.
+/// Returns the staged library file names in `System.load` order —
+/// `libc++_shared.so` first, the launcher cdylib last.
+///
+/// # Errors
+/// Returns an error when a library cannot be read or copied, or a staged
+/// library is misaligned.
+pub(crate) async fn stage_runtime_libraries(
+    output_dir: &Path,
+    library_name: String,
+    abi: AndroidAbi,
+    context: &AndroidBuildContext,
+) -> eyre::Result<Vec<String>> {
     // The NDK's shared STL follows the libraries that actually need it —
     // a Rust-only build never does — and loads first, ahead of the cdylib
     // that depends on it.
     let mut staged = Vec::new();
-    if staged_libs_need_libcxx(&output_dir).await? {
+    if staged_libs_need_libcxx(output_dir).await? {
         let libcxx = "libc++_shared.so".to_string();
         crate::utils::copy_file_if_changed(
             ndk_libcxx_path(&context.ndk_path, abi),
@@ -607,7 +642,7 @@ async fn copy_build_outputs(
         staged.push(libcxx);
     }
     staged.push(library_name);
-    crate::elf::require_aligned_shared_libraries(&output_dir).await?;
+    crate::elf::require_aligned_shared_libraries(output_dir).await?;
     Ok(staged)
 }
 
@@ -667,7 +702,12 @@ pub async fn package_with_abis(
     let host_project_dir = require_painter_module(project, painter).await?;
     scaffold_android_project(project, painter, &host_project_dir).await?;
 
-    copy_assets(project, &built.app_symbols()?, options.uses_dev_server()).await?;
+    copy_assets(
+        project,
+        &built.app_symbols().await?,
+        options.uses_dev_server(),
+    )
+    .await?;
 
     let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
 
