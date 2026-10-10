@@ -160,6 +160,14 @@ impl SemanticCore {
 
     /// Whether hosted content (`AppKit` or DOM) holds platform focus: it then
     /// receives key and IME delivery itself, so Hydrolysis dispatches none.
+    #[cfg_attr(
+        not(hydrolysis_hosted),
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "no hosted content exists on targets without system-compositor planes"
+        )
+    )]
     fn hosted_has_focus(&self) -> bool {
         #[cfg(hydrolysis_hosted)]
         return self
