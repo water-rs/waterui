@@ -1782,8 +1782,10 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
         fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
             self.watchers.insert(f)
         }
-        fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> {
-            ready(Vec::new())
+        fn get_cookies(
+            &self,
+        ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
+            ready(Ok(Vec::new()))
         }
         #[expect(
             clippy::future_not_send,

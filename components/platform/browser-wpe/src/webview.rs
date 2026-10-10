@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use cookie::{Cookie, SameSite, time::OffsetDateTime};
+use cookie::{Cookie, SameSite};
 use nami::watcher::BoxWatcherGuard;
 use serde::Deserialize;
 use waterui_core::{Computed, Signal};
@@ -246,19 +246,17 @@ impl WebViewHandle for WpeWebViewHandle {
         clippy::future_not_send,
         reason = "WPE WebKit and WaterUI view state are confined to the UI thread"
     )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
-        let json = self.page.cookies_json().await;
-        // The store holds whatever the pages this view visited put there, so a
-        // record this crate cannot read is the web's business, not a reason to
-        // abort the application.
-        let records: Vec<CookieRecord> = match serde_json::from_str(&json) {
-            Ok(records) => records,
-            Err(error) => {
-                tracing::warn!(%error, "WPE returned cookies this backend cannot read");
-                return Vec::new();
-            }
-        };
-        records.into_iter().map(CookieRecord::into_cookie).collect()
+    async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
+        let json = self.page.cookies_json().await.map_err(|error| {
+            waterui_core::Error::msg(format!("WPE cookie query failed: {error}"))
+        })?;
+        let records: Vec<CookieRecord> = serde_json::from_str(&json).map_err(|error| {
+            waterui_core::Error::new(error).context("WPE returned cookies this backend cannot read")
+        })?;
+        records
+            .into_iter()
+            .map(CookieRecord::into_cookie)
+            .collect::<Result<Vec<_>, _>>()
     }
 
     #[expect(
@@ -287,12 +285,13 @@ struct CookieRecord {
     secure: bool,
     http_only: bool,
     same_site: Option<String>,
-    expires: Option<i64>,
+    expires: Option<f64>,
 }
 
 impl CookieRecord {
-    fn into_cookie(self) -> Cookie<'static> {
-        let mut builder = Cookie::build((self.name, self.value))
+    fn into_cookie(self) -> Result<Cookie<'static>, waterui_core::Error> {
+        let name = self.name;
+        let mut builder = Cookie::build((name.clone(), self.value))
             .domain(self.domain)
             .path(self.path)
             .secure(self.secure)
@@ -310,16 +309,9 @@ impl CookieRecord {
                 ),
             }
         }
-        if let Some(expires) = self.expires {
-            match OffsetDateTime::from_unix_timestamp(expires) {
-                Ok(expires) => builder = builder.expires(expires),
-                Err(error) => tracing::warn!(
-                    %error,
-                    expires,
-                    "ignoring a cookie expiry that is outside the representable range"
-                ),
-            }
+        if let Some(seconds) = self.expires {
+            builder = builder.expires(waterui_webview::cookie_expiry(&name, seconds)?);
         }
-        builder.build()
+        Ok(builder.build())
     }
 }

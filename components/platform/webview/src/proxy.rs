@@ -118,11 +118,15 @@ impl WebViewProxy {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Retrieves current cookies without blocking the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// As documented on [`WebViewHandle::get_cookies`](crate::WebViewHandle::get_cookies).
     #[expect(
         clippy::future_not_send,
         reason = "native web views and cookie stores are main-thread-affine"
     )]
-    pub fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> + '_ {
+    pub fn get_cookies(&self) -> impl Future<Output = Result<Vec<Cookie<'static>>, Error>> + '_ {
         self.handle.get_cookies()
     }
 

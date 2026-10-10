@@ -36,6 +36,7 @@ pub mod assets;
 #[cfg(not(target_arch = "wasm32"))]
 mod bundled;
 mod controller;
+mod cookies;
 
 pub use assets::{
     ASSET_HOST, ASSET_HTTPS_HOST, ASSET_HTTPS_ORIGIN, ASSET_ORIGIN, ASSET_SCHEME, AssetMethod,
@@ -46,6 +47,7 @@ pub use bundled::{DEFAULT_CSP, DirectoryServer, dev_url};
 pub use controller::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cookie::Cookie;
+pub use cookies::cookie_expiry;
 use std::{cell::Cell, fmt, rc::Rc};
 #[macro_use]
 mod handle_layers;
@@ -679,11 +681,20 @@ impl WebView {
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Retrieves the current cookies without blocking the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// As documented on [`WebViewHandle::get_cookies`]: a store that cannot be
+    /// read, or a cookie it returns that cannot be represented, fails rather
+    /// than reporting an empty list.
     #[expect(
         clippy::future_not_send,
         reason = "native web views and cookie stores are main-thread-affine"
     )]
-    pub fn get_cookies(&self) -> impl core::future::Future<Output = Vec<Cookie<'static>>> + '_ {
+    pub fn get_cookies(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> + '_
+    {
         self.handle.get_cookies()
     }
 

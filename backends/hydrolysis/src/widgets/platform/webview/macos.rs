@@ -23,7 +23,6 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use cookie::time::{OffsetDateTime, SignedDuration};
 use futures::channel::oneshot;
 use nami::Signal;
 use objc2::rc::Retained;
@@ -948,30 +947,22 @@ impl MacSystemWebViewHandle {
         cookies.objectAtIndex(0)
     }
 
-    fn cookie_from_native(cookie: &NSHTTPCookie) -> Cookie<'static> {
-        let mut builder = Cookie::build((cookie.name().to_string(), cookie.value().to_string()))
+    fn cookie_from_native(cookie: &NSHTTPCookie) -> Result<Cookie<'static>, waterui_core::Error> {
+        let name = cookie.name().to_string();
+        let mut builder = Cookie::build((name.clone(), cookie.value().to_string()))
             .domain(cookie.domain().to_string())
             .path(cookie.path().to_string())
             .secure(cookie.isSecure())
             .http_only(cookie.isHTTPOnly());
         if let Some(expires) = cookie.expiresDate() {
             // `expiresDate` is an `NSDate`: `NSTimeInterval` seconds since 1970.
-            // A non-finite interval names no date and leaves the expiry unset.
-            // The cookie keeps whole seconds, truncated toward zero; a finite
-            // date past `OffsetDateTime`'s range breaks WebKit's contract.
+            // A cookie with no `expiresDate` is a session cookie and keeps the
+            // expiry unset; one whose interval names no representable date
+            // fails the whole query rather than silently dropping the expiry.
             let seconds = expires.timeIntervalSince1970();
-            if seconds.is_finite() {
-                let expires = SignedDuration::checked_seconds_f64(seconds.trunc())
-                    .and_then(|offset| OffsetDateTime::UNIX_EPOCH.checked_add(offset))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Hydrolysis WKWebView cookie expiry {seconds} s since 1970 is not a representable date"
-                        )
-                    });
-                builder = builder.expires(expires);
-            }
+            builder = builder.expires(waterui_webview::cookie_expiry(&name, seconds)?);
         }
-        builder.build()
+        Ok(builder.build())
     }
 }
 
@@ -1128,7 +1119,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         clippy::future_not_send,
         reason = "the cookie query runs on the macOS main thread: the future holds the `MainThreadOnly` cookie store and the non-`Send` completion block until WebKit answers"
     )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let store = unsafe {
@@ -1149,7 +1140,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
                     let cookie = cookies.objectAtIndex(index);
                     Self::cookie_from_native(&cookie)
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>();
             let sender = sender
                 .borrow_mut()
                 .take()
