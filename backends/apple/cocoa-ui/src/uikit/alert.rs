@@ -3,8 +3,9 @@
 //! An [`AlertController`] wraps one `UIAlertController` in `.alert` style:
 //! actions carry `UIAlertActionStyle` — the platform's own Default /
 //! Cancel / Destructive arrangement — and [`AlertController::present`]
-//! presents it from the topmost controller of the host's window so a second
-//! presented alert chains instead of being dropped.
+//! presents it from the topmost controller of the host's window. One alert
+//! per window at a time is the caller's rule: the `dialog` leaf queues a
+//! second one until the first is gone.
 
 use std::cell::RefCell;
 
@@ -88,13 +89,11 @@ impl AlertController {
         self.controller.setPreferredAction(Some(action));
     }
 
-    /// Presents the alert from the topmost controller of `host`'s window —
-    /// an alert presented over a live alert chains above it instead of
-    /// being dropped. Returns `false` when `host` is not in a window with a
-    /// root view controller.
+    /// Presents the alert from the topmost controller of `host`'s window.
+    /// Returns `false` when `host` is not in a window with a root view
+    /// controller.
     #[must_use]
     pub fn present(&self, host: &UIView) -> bool {
-        let _ = self.mtm;
         let Some(window) = window_of(host) else {
             return false;
         };
@@ -110,9 +109,15 @@ impl AlertController {
     }
 
     /// Dismisses the controller — the app-side close path; a user's button
-    /// tap dismisses it itself.
-    pub fn dismiss(&self) {
+    /// tap dismisses it itself. `finished` runs once the alert is gone.
+    pub fn dismiss(&self, finished: impl FnOnce() + 'static) {
+        let finished = RefCell::new(Some(finished));
+        let completion = RcBlock::new(move || {
+            if let Some(finished) = finished.borrow_mut().take() {
+                finished();
+            }
+        });
         self.controller
-            .dismissViewControllerAnimated_completion(true, None);
+            .dismissViewControllerAnimated_completion(true, Some(&completion));
     }
 }

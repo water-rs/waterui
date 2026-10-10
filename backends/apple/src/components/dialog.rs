@@ -8,13 +8,22 @@
 //! `Dialog::run_action` runs an action's handler and writes the binding
 //! back to `false`, and the reactive title/message keep streaming into the
 //! live alert.
+//!
+//! One alert per window at a time: an [`AlertQueue`] shared by every leaf the
+//! dispatcher renders keeps each window's presented dialogs in presentation
+//! order, and a dialog presented while another is up in its window waits
+//! until that one is gone — on `UIKit`, which would otherwise stack the
+//! second alert on top, and on `AppKit` alike.
 
-use alloc::rc::Rc;
-#[cfg(target_os = "macos")]
+use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use cocoa_ui::geometry::Rect as KitRect;
+#[cfg(target_os = "macos")]
+use cocoa_ui::objc2_app_kit::NSWindow as PlatformWindow;
+#[cfg(target_os = "ios")]
+use cocoa_ui::objc2_ui_kit::UIWindow as PlatformWindow;
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Retained};
 #[cfg(target_os = "macos")]
@@ -46,6 +55,8 @@ struct DialogState {
     mtm: cocoa_ui::MainThreadMarker,
     /// The wrapper's own view — the window the alert presents from.
     host: Retained<HostView>,
+    /// The dispatcher's alert queue — one alert per window at a time.
+    queue: Rc<AlertQueue>,
     /// The mounted content — the dialog presents beside it.
     child: Mounted,
     /// The environment handlers resolve in — the environment the wrapper
@@ -70,6 +81,118 @@ struct DialogState {
 impl core::fmt::Debug for DialogState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DialogState").finish_non_exhaustive()
+    }
+}
+
+/// One presented dialog in its window's line.
+struct QueuedAlert {
+    /// The window the dialog presents in.
+    window: Retained<PlatformWindow>,
+    /// The dialog's leaf — compared by identity, so an entry whose leaf was
+    /// dropped still answers for the alert it left on screen.
+    state: Weak<DialogState>,
+}
+
+/// Every window's presented dialogs, in presentation order: the first entry
+/// of a window is the alert on screen, every later one waits for the
+/// entries before it to close.
+#[derive(Default)]
+struct AlertQueue {
+    entries: RefCell<Vec<QueuedAlert>>,
+}
+
+impl AlertQueue {
+    /// The dialog's binding reads `true` with its host in a window: it joins
+    /// that window's line, and comes up when nothing is ahead of it.
+    fn request(&self, state: &Rc<DialogState>) {
+        let Some(window) = view::window(&state.host) else {
+            // Not in a window yet: `attachment_changed` requests on attach.
+            return;
+        };
+        let front = {
+            let mut entries = self.entries.borrow_mut();
+            if entries
+                .iter()
+                .any(|entry| Weak::as_ptr(&entry.state) == Rc::as_ptr(state))
+            {
+                return;
+            }
+            let front = !entries
+                .iter()
+                .any(|entry| Retained::as_ptr(&entry.window) == Retained::as_ptr(&window));
+            entries.push(QueuedAlert {
+                window,
+                state: Rc::downgrade(state),
+            });
+            front
+        };
+        if front {
+            present(state);
+        }
+    }
+
+    /// The dialog closed without a button — its binding wrote `false`, or
+    /// its host left the window. An alert on screen is dismissed, and its
+    /// end ([`Self::finished`]) brings the next one up; a waiting dialog
+    /// leaves the line.
+    fn withdraw(&self, state: &Rc<DialogState>) {
+        // Bound before the dismissal so the alert drops after it ends: the
+        // dismissal may run the end handler synchronously.
+        let alert = state.alert.borrow_mut().take();
+        if let Some(alert) = alert {
+            dismiss_alert(state, &alert);
+            return;
+        }
+        let mut entries = self.entries.borrow_mut();
+        let Some(index) = entries
+            .iter()
+            .position(|entry| Weak::as_ptr(&entry.state) == Rc::as_ptr(state))
+        else {
+            return;
+        };
+        let window = Retained::as_ptr(&entries[index].window);
+        let in_front = entries
+            .iter()
+            .position(|entry| Retained::as_ptr(&entry.window) == window)
+            == Some(index);
+        // The front entry without a live alert is one whose end is running
+        // right now — the button that answered it; `finished` removes it.
+        if !in_front {
+            entries.remove(index);
+        }
+    }
+
+    /// An alert ended — a button answered it or a dismissal closed it. Its
+    /// entry leaves the line and the next dialog in its window still
+    /// presented comes up.
+    fn finished(&self, state: &Weak<DialogState>) {
+        let next = {
+            let mut entries = self.entries.borrow_mut();
+            let Some(index) = entries
+                .iter()
+                .position(|entry| Weak::ptr_eq(&entry.state, state))
+            else {
+                return;
+            };
+            let window = entries.remove(index).window;
+            loop {
+                let Some(index) = entries
+                    .iter()
+                    .position(|entry| Retained::as_ptr(&entry.window) == Retained::as_ptr(&window))
+                else {
+                    break None;
+                };
+                match entries[index].state.upgrade() {
+                    Some(next) if next.is_presented.snapshot() => break Some(next),
+                    _ => {
+                        entries.remove(index);
+                    }
+                }
+            }
+        };
+        if let Some(next) = next {
+            present(&next);
+        }
     }
 }
 
@@ -112,14 +235,12 @@ struct ActionRun {
     ordered: Vec<DialogAction>,
 }
 
+/// Puts the dialog's alert on screen — the dialog is at the front of its
+/// window's line in the [`AlertQueue`].
 #[cfg(target_os = "macos")]
 fn present(state: &Rc<DialogState>) {
-    let Some(window) = window_of(&state.host) else {
-        // Not in a window yet — nothing to sheet against; the binding stays
-        // true and the next present call retries, matching the
-        // anchored-overlay's early-window contract.
-        return;
-    };
+    let window = window_of(&state.host)
+        .expect("a dialog reaches the front of its window's line only from a host in a window");
     let title = state.title.snapshot().to_semantic().to_string();
     let message = state
         .message
@@ -148,7 +269,16 @@ fn present(state: &Rc<DialogState>) {
     );
 
     let actions = Rc::new(ActionRun { ordered });
-    for action in &actions.ordered {
+    // A dialog declared without actions answers with `NSAlert`'s own
+    // acknowledgement: the alert adds its localized OK button, bound to
+    // Return, and reports it as the first button — the single resolved
+    // acknowledgement action.
+    let platform_buttons: &[DialogAction] = if state.dialog.actions().is_empty() {
+        &[]
+    } else {
+        &actions.ordered
+    };
+    for action in platform_buttons {
         let button = alert.add_button(
             action
                 .title()
@@ -166,23 +296,28 @@ fn present(state: &Rc<DialogState>) {
             DialogRole::Default => {}
         }
     }
+    // The sheet's end — a button, or `endSheet` from a dismissal, whose
+    // stop code is no button index — runs the answered action, then hands
+    // the window to the next dialog in line.
     alert.begin_sheet(&window, {
-        let state = Rc::downgrade(state);
+        let weak = Rc::downgrade(state);
+        let queue = Rc::clone(&state.queue);
         let actions = Rc::clone(&actions);
         move |index| {
-            let Some(state) = state.upgrade() else {
-                return;
-            };
-            let Some(action) = actions.ordered.get(index) else {
-                return;
-            };
-            state.alert.borrow_mut().take();
-            state.dialog.run_action(action, &state.env);
+            if let Some(state) = weak.upgrade() {
+                state.alert.borrow_mut().take();
+                if let Some(action) = actions.ordered.get(index) {
+                    state.dialog.run_action(action, &state.env);
+                }
+            }
+            queue.finished(&weak);
         }
     });
     *state.alert.borrow_mut() = Some(alert);
 }
 
+/// Puts the dialog's alert on screen — the dialog is at the front of its
+/// window's line in the [`AlertQueue`].
 #[cfg(target_os = "ios")]
 fn present(state: &Rc<DialogState>) {
     let title = state.title.snapshot().to_semantic().to_string();
@@ -210,15 +345,18 @@ fn present(state: &Rc<DialogState>) {
             .snapshot()
             .to_semantic()
             .to_string();
+        // `UIKit` runs an action's handler once the alert has dismissed
+        // itself, so the window is free for the next dialog in line.
         let run = {
-            let state = Rc::downgrade(state);
+            let weak = Rc::downgrade(state);
+            let queue = Rc::clone(&state.queue);
             let action = action.clone();
             move || {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
-                state.alert.borrow_mut().take();
-                state.dialog.run_action(&action, &state.env);
+                if let Some(state) = weak.upgrade() {
+                    state.alert.borrow_mut().take();
+                    state.dialog.run_action(&action, &state.env);
+                }
+                queue.finished(&weak);
             }
         };
         let platform_action = controller.add_action(&title, style, run);
@@ -229,17 +367,44 @@ fn present(state: &Rc<DialogState>) {
     if let Some(preferred) = preferred {
         controller.set_preferred(&preferred);
     }
-    if !controller.present(&state.host) {
-        return;
-    }
+    assert!(
+        controller.present(&state.host),
+        "a dialog reaches the front of its window's line only from a host in a window with a root view controller"
+    );
     *state.alert.borrow_mut() = Some(controller);
 }
 
-/// Ends a live presentation — the binding wrote `false` without a button.
-fn dismiss(state: &Rc<DialogState>) {
-    if let Some(alert) = state.alert.borrow_mut().take() {
-        alert.dismiss();
+/// The host moved into or out of a window: a presentation bound before the
+/// host had a window joins its window's line on attach, and a host that left
+/// the window closes its dialog with it — the binding is written back to
+/// `false`.
+fn attachment_changed(state: &Rc<DialogState>) {
+    if !state.is_presented.snapshot() {
+        return;
     }
+    if view::has_window(&state.host) {
+        state.queue.request(state);
+    } else {
+        state.queue.withdraw(state);
+        state.is_presented.set(false);
+    }
+}
+
+/// Ends a live alert without a button; its end handler hands the window to
+/// the next dialog in line.
+#[cfg(target_os = "macos")]
+fn dismiss_alert(_state: &Rc<DialogState>, alert: &SheetAlert) {
+    // `endSheet` runs the sheet's end handler, which reports the end.
+    alert.dismiss();
+}
+
+/// Ends a live alert without a button; its end hands the window to the next
+/// dialog in line.
+#[cfg(target_os = "ios")]
+fn dismiss_alert(state: &Rc<DialogState>, alert: &AlertController) {
+    let weak = Rc::downgrade(state);
+    let queue = Rc::clone(&state.queue);
+    alert.dismiss(move || queue.finished(&weak));
 }
 
 /// Pushes the current resolved texts into a live alert — `text!` content
@@ -262,7 +427,8 @@ fn refresh_texts(state: &Rc<DialogState>) {
 /// to a transparent container that presents the platform alert while the
 /// binding reads `true`.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Dialog>>(|metadata, ctx| {
+    let queue = Rc::new(AlertQueue::default());
+    dispatcher.register_view::<Metadata<Dialog>>(move |metadata, ctx| {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, KitRect::ZERO);
         let host_view: &PlatformView = &host;
@@ -275,6 +441,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let state = Rc::new(DialogState {
             mtm,
             host: host.clone(),
+            queue: Rc::clone(&queue),
             child: mounted,
             env: ctx.env().clone(),
             is_presented: dialog.is_presented().clone(),
@@ -290,6 +457,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let state = Rc::clone(&state);
             move |host| {
                 view::set_frame(state.child.view(), view::bounds(host));
+            }
+        });
+        host.set_window_handler({
+            let state = Rc::downgrade(&state);
+            move |_| {
+                if let Some(state) = state.upgrade() {
+                    attachment_changed(&state);
+                }
             }
         });
         let sink_guard = proposal::register_sink(host_view, {
@@ -315,9 +490,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     return;
                 };
                 if *ctx.value() {
-                    present(&state);
+                    state.queue.request(&state);
                 } else {
-                    dismiss(&state);
+                    state.queue.withdraw(&state);
                 }
             }
         });
@@ -341,7 +516,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }
 
         if state.is_presented.snapshot() {
-            present(&state);
+            state.queue.request(&state);
         }
 
         leaf

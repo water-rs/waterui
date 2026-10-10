@@ -30,10 +30,10 @@
 //! );
 //! ```
 
+pub mod alert;
 mod appearance;
 mod application;
 mod badge;
-pub mod alert;
 pub mod button;
 mod calendar_view;
 mod color_view;

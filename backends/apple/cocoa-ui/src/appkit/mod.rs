@@ -31,11 +31,11 @@
 //! );
 //! ```
 
+pub mod alert;
 mod animate;
 mod appearance;
 mod application;
 mod badge;
-pub mod alert;
 pub mod button;
 mod color_view;
 mod color_well;
