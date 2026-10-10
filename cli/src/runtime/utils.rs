@@ -251,6 +251,31 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
     unblock(move || copy_file_overwriting(&from, &to)).await
 }
 
+/// The lowercase hex SHA-256 of the file at `path`, read in chunks off the
+/// executor thread.
+///
+/// # Errors
+/// - If the file cannot be read.
+pub async fn file_sha256(path: &Path) -> io::Result<String> {
+    use sha2::{Digest as _, Sha256};
+    use std::io::Read as _;
+    let path = path.to_path_buf();
+    unblock(move || {
+        let mut file = std::fs::File::open(path)?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
+}
+
 /// Copy `from` onto `to` only when its bytes differ.
 ///
 /// The write-on-change path for file-to-file copies — the counterpart of

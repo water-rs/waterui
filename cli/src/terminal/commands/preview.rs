@@ -235,8 +235,11 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let request = args.preview_args(target).resolve(&manifest, &crate_name)?;
     header!(shell, "Preview: {}", request.target.display_name());
 
-    request::check_toolchain_for_backend(&waterui_cli::toolchain::Host::current(), request.backend)
-        .await?;
+    let kotlin_toolchain = request::check_toolchain_for_backend(
+        &waterui_cli::toolchain::Host::current(),
+        request.backend,
+    )
+    .await?;
 
     // Detect sccache for compilation caching
     let sccache_path =
@@ -261,6 +264,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             },
             &args.output,
             scenario.as_ref(),
+            kotlin_toolchain.as_ref(),
         ))
         .await?;
         if let Some(s) = spinner {

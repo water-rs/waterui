@@ -661,16 +661,16 @@ glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6
 # apply downstream, so without these entries this graph resolves the crashing
 # crates.io build while cherenkov resolves the fork. Drop them once wgpu-hal
 # 30.0.2 ships the backport.
-naga = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-naga-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core-deps-apple = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core-deps-emscripten = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+naga = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+naga-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-core = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-core-deps-apple = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-core-deps-emscripten = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
 
 # Split component repositories, pinned to commits on their `dev`; the six
 # that name nami directly (barcode, canvas, chart, map-gpu, math, video-gpu)
@@ -679,31 +679,31 @@ waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "45db548f
 waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "639957374ed6eac16ac410249b6ba7d9f06c3978" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "1062c5058f488b7edd302ee065ae3a2776847227" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "db9e70ac9b4ff8050b961144566f8866b5bf9abf" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "2772f7fe261e3a1c8b9959bb1ca76292bec3f1ea" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "a36e16c555bd78ade9e28fad947af66a52f8f071" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
-waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
 # Unreleased, so there is no registry version to resolve: the pin is a commit
 # on waterkit's `dev` carrying the crate (water-rs/waterkit#223), the same rev
 # as the rest of the family. Drop the pin once a release exists.
-waterkit-menu = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "bf0c693b73892badfe0a1a4c179ab3cc1dc4fa87" }
+waterkit-menu = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "d780cf01082d6b24db12535ec6199a5dcbfc6ee5" }
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki dev
 # at the merge of water-rs/suiteki#27 implements 0.4's. Drop once a release

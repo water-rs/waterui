@@ -95,9 +95,12 @@ fn rendered_at_scale(view: impl Fn() -> AnyView + 'static, scale: f64) -> Headle
     runtime
 }
 
-/// The `.material_group()` scope `member` flushed under — the cell address
-/// its key's `Scoped` identity carries — `None` outside every group.
-fn member_scope(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> Option<usize> {
+/// The `.material_group()` scope `member` flushed under — the cell
+/// identity its key's `Scoped` carries — `None` outside every group.
+fn member_scope(
+    runtime: &HeadlessRuntime,
+    member: cherenkov::LayerId,
+) -> Option<std::num::NonZeroU64> {
     match mounts(runtime).backdrop_scope(member)? {
         BackdropScope::Scoped(scope) => Some(scope),
         BackdropScope::Solo(_) => None,
@@ -153,8 +156,9 @@ fn assert_anchor_children_match(runtime: &mut HeadlessRuntime, anchor: cherenkov
     let members = material_layers(runtime);
     assert_eq!(members.len(), 1, "the fixture has one material member");
     let member = members[0];
-    let (scope, canvas, _) = mounts(runtime)
-        .anchor_registrations()
+    let (scope, canvas, _) = window_mount(runtime)
+        .scope_anchors()
+        .registrations()
         .into_iter()
         .find(|(_, _, layer)| *layer == anchor)
         .expect("the anchor has a registration");
@@ -1045,7 +1049,7 @@ fn a_scopes_anchor_releases_with_the_scope() {
     assert_eq!(material_layers(&runtime), Vec::<cherenkov::LayerId>::new());
     assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
     assert_eq!(
-        mounts(&runtime).anchor_registration_count(),
+        window_mount(&runtime).scope_anchors().registration_count(),
         0,
         "the scope's anchor registration released with it"
     );
@@ -1215,7 +1219,10 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
         runtime
     };
     assert_eq!(material_layers(&runtime).len(), 1);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
     let old_member = material_layers(&runtime)[0];
     let old_anchor = mounts(&runtime)
         .backdrop_anchor(old_member)
@@ -1231,7 +1238,7 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
     for step in 0..64 {
         let _ = runtime.pump_at(false, start + Duration::from_millis(step * 15));
     }
-    let registrations = mounts(&runtime).anchor_registrations();
+    let registrations = window_mount(&runtime).scope_anchors().registrations();
     assert_eq!(
         registrations.len(),
         1,
@@ -1255,7 +1262,10 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
     pump_until_settled(&mut runtime);
     assert_eq!(material_layers(&runtime).len(), 0);
     assert_eq!(mounts(&runtime).backdrop_group_count(), 0);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 0);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        0
+    );
 }
 
 #[test]
@@ -1291,7 +1301,10 @@ fn a_scope_enter_completion_keeps_one_direct_owner() {
     }
     let mid_member = material_layers(&runtime);
     assert_eq!(mid_member.len(), 1);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
     let mid_member = mid_member[0];
     let mid_anchor = mounts(&runtime)
         .backdrop_anchor(mid_member)
@@ -1302,12 +1315,15 @@ fn a_scope_enter_completion_keeps_one_direct_owner() {
     let final_members = material_layers(&runtime);
     assert_eq!(final_members.len(), 1);
     assert_eq!(final_members[0], mid_member);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
     let final_anchor = mounts(&runtime)
         .backdrop_anchor(final_members[0])
         .expect("the settled member has an anchor");
     assert_ne!(final_anchor, mid_anchor);
-    let registrations = mounts(&runtime).anchor_registrations();
+    let registrations = window_mount(&runtime).scope_anchors().registrations();
     assert_eq!(registrations.len(), 1);
     assert_eq!(registrations[0].2, final_anchor);
     assert!(
@@ -1345,11 +1361,17 @@ fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
         let _ = runtime.pump_at(false, start + Duration::from_millis(step * 16));
     }
     assert_eq!(material_layers(&runtime).len(), 1);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
 
     let _ = rows.remove(0);
     let _ = runtime.pump_at(false, start + Duration::from_millis(1_300));
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
 
     rows.push(SelfId::new(1));
     for step in 90..=160 {
@@ -1357,11 +1379,14 @@ fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
     }
     let members = material_layers(&runtime);
     assert_eq!(members.len(), 1);
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
     let anchor = mounts(&runtime)
         .backdrop_anchor(members[0])
         .expect("the reinserted row has an anchor");
-    let registrations = mounts(&runtime).anchor_registrations();
+    let registrations = window_mount(&runtime).scope_anchors().registrations();
     assert_eq!(registrations.len(), 1);
     assert_eq!(registrations[0].2, anchor);
     assert!(
@@ -1415,7 +1440,10 @@ fn a_scope_returning_after_unmount_reanchors() {
         Some(first),
         "the group re-keyed onto the remounted scope's fresh anchor layer"
     );
-    assert_eq!(mounts(&runtime).anchor_registration_count(), 1);
+    assert_eq!(
+        window_mount(&runtime).scope_anchors().registration_count(),
+        1
+    );
 }
 
 /// Members of a scope that mount inside a filtered node's canvas anchor
@@ -1493,8 +1521,9 @@ fn a_scope_enclosing_a_filtered_view_anchors_at_the_filter_start() {
         .expect("the members' group anchors");
     // The anchor item the filtered program pushes at its start registers
     // under the filtered canvas — the one registration naming a canvas.
-    let f_start = mounts(&runtime)
-        .anchor_registrations()
+    let f_start = window_mount(&runtime)
+        .scope_anchors()
+        .registrations()
         .into_iter()
         .find(|(_, canvas, _)| canvas.is_some())
         .map(|(_, _, layer)| layer);
@@ -1570,8 +1599,9 @@ fn a_scope_inside_a_scroll_view_anchors_under_the_inner_layer() {
         .expect("the scrolled member's group anchors");
     // The spec anchor is a child of the inner layer: it and the member's
     // frame are siblings under the same parent.
-    let (scope, canvas, _) = mounts(&runtime)
-        .anchor_registrations()
+    let (scope, canvas, _) = window_mount(&runtime)
+        .scope_anchors()
+        .registrations()
         .into_iter()
         .find(|(_, _, layer)| *layer == anchor)
         .expect("the scrolled anchor has a registration");
@@ -1672,7 +1702,9 @@ fn a_partial_descent_replays_the_enclosing_material_group_scope() {
         .scope;
     assert_eq!(
         scope,
-        Some(Rc::as_ptr(&group.core().cell) as usize),
+        Some(crate::renderer::mount::backdrop::scope_id(
+            &group.core().cell
+        )),
         "the member keys into the enclosing `.material_group()` scope — \
          the shared group, not a solo fallback"
     );

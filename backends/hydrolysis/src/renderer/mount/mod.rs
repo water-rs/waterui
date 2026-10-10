@@ -35,7 +35,7 @@ pub use registry::{
     RetainedRegistry, SetRegistrationOwner,
 };
 pub use scopes::RetainedScopes;
-pub use target::CherenkovHost;
+pub use target::{CherenkovHost, MaterialTerms};
 
 /// Identity of a producer owner: a counter the renderer hands out through
 /// `producer_wake` — never a pointer, so a dropped cell's address cannot

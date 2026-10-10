@@ -33,7 +33,35 @@ OUT = Path(__file__).resolve().parent / "live-photo-motion.mp4"
 WIDTH, HEIGHT, FRAMES, RATE = 96, 64, 9, 12
 
 
+def verify() -> None:
+    """Read-back gate: exactly FRAMES frames of WIDTHxHEIGHT through dav1d."""
+    try:
+        decoded = 0
+        with av.open(str(OUT)) as container:
+            stream = container.streams.video[0]
+            assert stream.codec_context.name == "libdav1d", stream.codec_context.name
+            for frame in container.decode(video=0):
+                assert (frame.width, frame.height) == (WIDTH, HEIGHT), (
+                    frame.width,
+                    frame.height,
+                )
+                decoded += 1
+    except av.error.FFmpegError as error:
+        raise SystemExit(f"{OUT.name}: not a readable AV1 clip: {error}") from error
+    if decoded != FRAMES:
+        raise SystemExit(f"decoded {decoded} frames, expected {FRAMES}")
+
+
 def main() -> None:
+    if OUT.is_file():
+        verify()
+        print(
+            f"{OUT.name} already generated ({OUT.stat().st_size} bytes, "
+            f"sha256 {hashlib.sha256(OUT.read_bytes()).hexdigest()[:12]}…, "
+            f"{FRAMES} frames verified)"
+        )
+        return
+
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     # Deterministic moving content: `testsrc2` is a synthetic source, so the
     # nine frames carry real inter-frame change for the decoder to deliver.
@@ -63,20 +91,7 @@ def main() -> None:
         check=True,
     )
 
-    # Read-back gate: exactly FRAMES frames of WIDTHxHEIGHT.
-    decoded = 0
-    with av.open(str(OUT)) as container:
-        stream = container.streams.video[0]
-        assert stream.codec_context.name == "libdav1d", stream.codec_context.name
-        for frame in container.decode(video=0):
-            assert (frame.width, frame.height) == (WIDTH, HEIGHT), (
-                frame.width,
-                frame.height,
-            )
-            decoded += 1
-    if decoded != FRAMES:
-        raise SystemExit(f"decoded {decoded} frames, expected {FRAMES}")
-
+    verify()
     print(
         f"wrote {OUT.name} ({OUT.stat().st_size} bytes, "
         f"sha256 {hashlib.sha256(OUT.read_bytes()).hexdigest()[:12]}…, "

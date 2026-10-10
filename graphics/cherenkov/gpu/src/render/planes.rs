@@ -113,6 +113,11 @@ pub trait Compositor {
     /// Whether a hosted system layer carries an opacity below one.
     const HOSTS_OPACITY: bool;
 
+    /// Whether a system layer shows an immutable capture of a recorded
+    /// layer ([`Source::Recorded`]). Without it the renderer neither
+    /// observes static layers nor offers them as candidates.
+    const CAPTURES: bool = true;
+
     /// Whether a system layer shows `frame` itself, with the colour the
     /// frame declares: its planes are a buffer the system compositor can
     /// scan out. Only such frames are candidates.
@@ -171,10 +176,11 @@ pub enum Ineligible {
     /// layer.
     #[error("layer {0:?}'s clip is not expressible by the system compositor")]
     Clip(LayerId),
-    /// A clip on the path to the layer nests inside another clip that is not
-    /// a device-aligned rectangle; the engine composites that pair through a
-    /// clip offscreen, which the layer would then sit in.
-    #[error("layer {0:?}'s clip nests inside another non-rectangular clip")]
+    /// An ancestor's clip nests inside the clips already in force in a way
+    /// the engine composites through a clip offscreen
+    /// (`Lowering::run_clipped`), which the layer would then sit in at its
+    /// paint position.
+    #[error("layer {0:?}'s clip nests inside an ancestor clip the engine isolates")]
     NestedClip(LayerId),
     /// The surface's plane budget is spent.
     #[error("the plane budget of {0} per surface is spent")]
@@ -229,7 +235,7 @@ impl Placement {
     /// transform.
     #[must_use]
     #[cfg_attr(
-        not(any(test, target_os = "android")),
+        not(any(test, target_os = "android", target_arch = "wasm32")),
         expect(
             dead_code,
             reason = "a flattened placement, for realizations without nested layers"
@@ -771,20 +777,35 @@ fn invisible<C: Compositor>(
     size: Candidate,
     device: &[VisitDevice],
 ) -> Result<(), Ineligible> {
-    // The engine merges nested clips in place only while at most one of
-    // them is not a device-aligned rectangle (`Lowering::run_clipped`).
-    let mut shaped_clip = false;
+    // `Lowering::run_clipped` merges a clip into the one in force only
+    // where its merge arms accept the pair and isolates it into a clip
+    // offscreen otherwise; model that exactly over the candidate's
+    // ancestors — `(masked, aligned)` is what each merge arm tests. The
+    // candidate's own clip is excluded: the part it opens starts ahead
+    // of that scope, which holds only content painted above the plane.
+    let mut merged: Option<(bool, bool)> = None;
     let mut space = Affine::IDENTITY;
-    for id in path(order, &order[i]) {
+    for &a in &order[i].ancestors {
+        let id = order[a].id;
         let level = tree.layer(id);
         let own = space * level.transform;
-        if let Some(clip) = &level.clip
-            && !(matches!(clip, ShapeData::Rect(_)) && axis_aligned(own))
-        {
-            if shaped_clip {
-                return Err(Ineligible::NestedClip(id));
+        if let Some(clip) = &level.clip {
+            // `with_clip` never reaches `run_clipped` for a shape with no
+            // area; a path clip rasterizes into a mask over a device rect.
+            let new = match clip {
+                ShapeData::Line(_) => None,
+                ShapeData::Circle(c) if c.radius <= 0.0 => None,
+                ShapeData::Ellipse(e) if e.radii().x <= 0.0 || e.radii().y <= 0.0 => None,
+                ShapeData::Path { .. } => Some((true, true)),
+                ShapeData::Rect(_) => Some((false, axis_aligned(own))),
+                _ => Some((false, false)),
+            };
+            if let Some(new) = new {
+                merged = match merged {
+                    None => Some(new),
+                    Some(cur) => Some(merge_clip(cur, new).ok_or(Ineligible::NestedClip(id))?),
+                };
             }
-            shaped_clip = true;
         }
         space = own * Affine::translate(-level.scroll_offset);
     }
@@ -810,6 +831,23 @@ fn invisible<C: Compositor>(
         }
     }
     Ok(())
+}
+
+/// `Lowering::run_clipped`'s merge decision over `(masked, aligned)`
+/// clip summaries: `Some` of the merged clip, `None` when the pair
+/// isolates into a clip offscreen.
+const fn merge_clip(cur: (bool, bool), new: (bool, bool)) -> Option<(bool, bool)> {
+    match (cur, new) {
+        // A masked clip merges only with an unmasked aligned rect,
+        // keeping the mask.
+        ((true, true), (false, true)) => Some((true, true)),
+        ((true, _), _) => None,
+        // A raster mask attaches to the current clip's shape; the merged
+        // clip keeps the current clip's alignment.
+        ((_, aligned), (true, _)) => Some((true, aligned)),
+        ((_, true), (false, true)) => Some((false, true)),
+        _ => None,
+    }
 }
 
 /// The layers from the root to `visit`, root first.
@@ -886,7 +924,7 @@ pub fn frames_only<C: Compositor>(
     not(any(target_vendor = "apple", target_os = "android")),
     expect(
         dead_code,
-        reason = "read by the platform realizations of `SystemPlanes`"
+        reason = "read by the platform realizations of `SystemPlanes`; the DOM realization shows only hosted content"
     )
 )]
 pub enum PlaneContent<'a> {
@@ -928,13 +966,17 @@ pub type Hosted = crate::interop::apple::HostedLayer;
 /// (`cherenkov::HostedLayers::Object`).
 #[cfg(target_os = "android")]
 pub type Hosted = crate::interop::android::HostedSurface;
+/// The platform object a hosted plane shows
+/// (`cherenkov::HostedLayers::Object`).
+#[cfg(target_arch = "wasm32")]
+pub type Hosted = web::HostedElement;
 /// No hosted object exists where the platform has no plane realization.
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 pub type Hosted = NoHosted;
 
 /// Stands in for a hosted object on platforms without plane realization:
 /// no value exists, so no layer there hosts one.
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 #[derive(Debug)]
 pub enum NoHosted {}
 
@@ -972,7 +1014,7 @@ impl HostedBinding {
 /// One promoted plane of a [`Composition`].
 #[derive(Debug)]
 #[cfg_attr(
-    not(any(target_vendor = "apple", target_os = "android")),
+    not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
     expect(
         dead_code,
         reason = "read by the platform realizations of `SystemPlanes`"
@@ -989,7 +1031,7 @@ pub struct Plane<'a> {
 /// the surface size.
 #[derive(Debug)]
 #[cfg_attr(
-    not(any(target_vendor = "apple", target_os = "android")),
+    not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
     expect(
         dead_code,
         reason = "read by the platform realizations of `SystemPlanes`"
@@ -1005,7 +1047,7 @@ pub struct Part<'a> {
 /// part above the last plane. Without promoted planes there is exactly one
 /// part, the whole surface.
 #[cfg_attr(
-    not(any(target_vendor = "apple", target_os = "android")),
+    not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
     expect(
         dead_code,
         reason = "read by the platform realizations of `SystemPlanes`"
@@ -1163,6 +1205,8 @@ pub trait SystemPlanes: Compositor {
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;
+#[cfg(target_arch = "wasm32")]
+pub mod web;
 
 /// The realization on this platform: Core Animation layer planes.
 #[cfg(target_vendor = "apple")]
@@ -1170,17 +1214,20 @@ pub type Platform = apple::LayerPlanes;
 /// The realization on this platform: child surface controls on Android.
 #[cfg(target_os = "android")]
 pub type Platform = super::surface_control::planes::Planes;
+/// The realization on this platform: DOM elements in the browser.
+#[cfg(target_arch = "wasm32")]
+pub type Platform = web::DomPlanes;
 /// The realization on this platform.
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 pub type Platform = NoPlanes;
 
 /// Stands in for [`SystemPlanes`] on platforms without a realization yet:
 /// no value exists, so a surface there never has planes.
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 #[derive(Debug)]
 pub enum NoPlanes {}
 
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 impl Compositor for NoPlanes {
     const BUDGET: usize = 0;
     const HOSTS_OPACITY: bool = false;
@@ -1195,7 +1242,7 @@ impl Compositor for NoPlanes {
     }
 }
 
-#[cfg(not(any(target_vendor = "apple", target_os = "android")))]
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 impl SystemPlanes for NoPlanes {
     type Commit = ();
 
