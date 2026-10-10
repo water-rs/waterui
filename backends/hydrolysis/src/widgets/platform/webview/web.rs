@@ -62,6 +62,9 @@ struct Inner {
     watchers: WatcherSet<BackendEvent>,
     focused: Binding<bool>,
     listeners: RefCell<Vec<Listener>>,
+    /// Surfaces over the frame where Hydrolysis content painted above it
+    /// takes the input, while the frame is mounted.
+    shields: RefCell<Option<crate::platform::OcclusionShields>>,
 }
 
 impl std::fmt::Debug for WebIframeHandle {
@@ -90,6 +93,7 @@ impl WebIframeHandle {
                 watchers: WatcherSet::new(),
                 focused: nami::binding(false),
                 listeners: RefCell::new(Vec::new()),
+                shields: RefCell::new(None),
             }),
         };
         handle.listen();
@@ -141,7 +145,12 @@ impl WebViewHandle for WebIframeHandle {
 }
 
 impl HostedContent for WebIframeHandle {
-    fn mount(&self, _occlusion: HostedOcclusion) -> HostedObject {
+    /// The frame's input never reaches the page, so the occluded rects get
+    /// shields of their own (`OcclusionShields`) instead of a hit test.
+    fn mount(&self, occlusion: HostedOcclusion) -> HostedObject {
+        self.inner
+            .shields
+            .replace(Some(crate::platform::OcclusionShields::new(&occlusion)));
         let element: HtmlElement = self.inner.iframe.clone().unchecked_into();
         cherenkov_gpu::interop::web::HostedElement::new(element)
     }
@@ -149,6 +158,7 @@ impl HostedContent for WebIframeHandle {
     /// Stops the page: the frame leaves the page with its binding, and a
     /// blank document releases whatever the page was doing until then.
     fn unmount(&self) {
+        self.inner.shields.take();
         self.inner.iframe.set_src("about:blank");
     }
 

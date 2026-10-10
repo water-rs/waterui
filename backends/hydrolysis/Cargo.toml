@@ -390,6 +390,9 @@ webview-system = [
     "dep:objc2-web-kit",
     "dep:serde_json",
     "web-sys?/HtmlIFrameElement",
+    "web-sys?/MouseEvent",
+    "web-sys?/PointerEventInit",
+    "web-sys?/WheelEventInit",
 ]
 winit = [
     "accessibility",
