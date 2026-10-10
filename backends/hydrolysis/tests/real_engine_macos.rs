@@ -720,7 +720,7 @@ mod real {
         let mut context = Context::from_waker(Waker::noop());
         let deadline = Instant::now() + CONFORMANCE_TIMEOUT;
         loop {
-            if let Poll::Ready(()) = future.as_mut().poll(&mut context) {
+            if future.as_mut().poll(&mut context) == Poll::Ready(()) {
                 return;
             }
             assert!(

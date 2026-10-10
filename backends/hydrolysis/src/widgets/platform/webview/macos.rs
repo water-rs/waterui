@@ -54,14 +54,14 @@ use waterui_webview::{
     bridge,
 };
 
-/// The reply channel WebKit hands a `WKScriptMessageHandlerWithReply`
+/// The reply channel `WebKit` hands a `WKScriptMessageHandlerWithReply`
 /// callback.
 ///
-/// WebKit requires the reply handler block to be invoked exactly once, so the
+/// `WebKit` requires the reply handler block to be invoked exactly once, so the
 /// copied block lives here and the consuming [`Self::resolve`]/[`Self::reject`]
 /// are the only answers; `Drop` answers with an error for a handler future
 /// that was dropped because its web view went away. The channel is bound to
-/// the document that sent the message, so WebKit itself drops the reply when
+/// the document that sent the message, so `WebKit` itself drops the reply when
 /// that document has already navigated away.
 struct ScriptReply {
     /// Taken by the one answer, so a second cannot happen.
@@ -69,7 +69,7 @@ struct ScriptReply {
 }
 
 impl ScriptReply {
-    /// Copies the reply handler WebKit passed the callback, so it can be held
+    /// Copies the reply handler `WebKit` passed the callback, so it can be held
     /// across an `await`.
     fn new(reply_handler: &block2::DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>) -> Self {
         Self {
@@ -92,7 +92,7 @@ impl ScriptReply {
         }
     }
 
-    /// Invokes the block; the borrows are enough because WebKit reads both
+    /// Invokes the block; the borrows are enough because `WebKit` reads both
     /// arguments synchronously.
     fn answer(
         block: &RcBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
@@ -951,9 +951,9 @@ impl MacSystemWebViewHandle {
 
     /// Registers the single `WebKit` message handler the bridge transports over.
     ///
-    /// One handler serves every WaterUI handler name, so this runs once rather
+    /// One handler serves every `WaterUI` handler name, so this runs once rather
     /// than per registration. The registration is the reply-capable
-    /// `WKScriptMessageHandlerWithReply` kind: WebKit binds each answer to the
+    /// `WKScriptMessageHandlerWithReply` kind: `WebKit` binds each answer to the
     /// document that sent the message and drops it when that document is gone,
     /// so a reply can never land in a successor document the policy never
     /// admitted.

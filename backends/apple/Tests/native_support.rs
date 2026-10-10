@@ -557,11 +557,12 @@ pub mod webview {
     use cocoa_ui::MainThreadMarker;
     use waterui_backend_core::Environment;
 
-    /// The `WebViewController` the leaf's `install_service` puts into a
-    /// fresh environment — the same construction `open` drives, so a case
-    /// that opens several views shares the one service install.
-    /// `mtm` is the proof the call happened on the real main thread,
-    /// which `WKWebView` requires.
+    /// The `WebViewController` the leaf's `install_service` installs.
+    ///
+    /// This is the same construction `open` drives, so a case that opens
+    /// several views shares the one service install. `mtm` is the proof
+    /// the call happened on the real main thread, which `WKWebView`
+    /// requires.
     #[must_use]
     pub fn controller(_mtm: MainThreadMarker) -> waterui_webview::WebViewController {
         let mut env = Environment::new();
