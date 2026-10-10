@@ -414,7 +414,7 @@ impl WebView {
     ///
     /// `server` is [`AssetServer`]: GET and HEAD only, paths handed over still
     /// percent-encoded, traversal refused before the server is consulted. See
-    /// [`assets`](crate::assets) for the contract every engine routes through.
+    /// [`assets`] for the contract every engine routes through.
     ///
     /// # Panics
     ///
