@@ -23,7 +23,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use cookie::time::OffsetDateTime;
+use cookie::time::{OffsetDateTime, SignedDuration};
 use futures::channel::oneshot;
 use nami::Signal;
 use objc2::rc::Retained;
@@ -188,10 +188,9 @@ impl SharedState {
                 // The URL that failed is the one the navigation started at;
                 // `WKWebView::URL` still points at the document being replaced.
                 url: Self::parse_url(
-                    &self
-                        .last_navigation_url
+                    self.last_navigation_url
                         .borrow()
-                        .clone()
+                        .as_deref()
                         .unwrap_or_default(),
                 ),
                 message,
@@ -367,13 +366,9 @@ define_class!(
             _navigation: Option<&WKNavigation>,
         ) {
             self.ivars().shared.emit(WebViewEvent::Loading {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "WebKit progress is in 0..=1; the event uses f32"
-                )]
                 // SAFETY: main-thread message send to an object this wrapper
                 // retains; see the module safety note.
-                progress: unsafe { web_view.estimatedProgress() } as f32,
+                progress: crate::num_cast::f64_as_f32(unsafe { web_view.estimatedProgress() }),
             });
         }
 
@@ -957,15 +952,19 @@ impl MacSystemWebViewHandle {
             .secure(cookie.isSecure())
             .http_only(cookie.isHTTPOnly());
         if let Some(expires) = cookie.expiresDate() {
+            // `expiresDate` is an `NSDate`: `NSTimeInterval` seconds since 1970.
+            // A non-finite interval names no date and leaves the expiry unset.
+            // The cookie keeps whole seconds, truncated toward zero; a finite
+            // date past `OffsetDateTime`'s range breaks WebKit's contract.
             let seconds = expires.timeIntervalSince1970();
             if seconds.is_finite() {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "HTTP cookies use whole seconds"
-                )]
-                let timestamp = seconds as i64;
-                let expires = OffsetDateTime::from_unix_timestamp(timestamp)
-                    .expect("Hydrolysis WKWebView cookie expiration must fit OffsetDateTime");
+                let expires = SignedDuration::checked_seconds_f64(seconds.trunc())
+                    .and_then(|offset| OffsetDateTime::UNIX_EPOCH.checked_add(offset))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Hydrolysis WKWebView cookie expiry {seconds} s since 1970 is not a representable date"
+                        )
+                    });
                 builder = builder.expires(expires);
             }
         }
@@ -1124,7 +1123,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
 
     #[expect(
         clippy::future_not_send,
-        reason = "WebKit objects and callbacks are main-thread bound"
+        reason = "the cookie query runs on the macOS main thread: the future holds the `MainThreadOnly` cookie store and the non-`Send` completion block until WebKit answers"
     )]
     async fn get_cookies(&self) -> Vec<Cookie<'static>> {
         // SAFETY: main-thread message send to an object this wrapper retains; see
@@ -1166,7 +1165,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
 
     #[expect(
         clippy::future_not_send,
-        reason = "WebKit objects and callbacks are main-thread bound"
+        reason = "the evaluation runs on the macOS main thread: the future holds the `MainThreadOnly` web view's non-`Send` completion block until WebKit answers"
     )]
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         let (sender, receiver) = oneshot::channel();
@@ -1186,7 +1185,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
 
     #[expect(
         clippy::future_not_send,
-        reason = "WebKit objects and callbacks are main-thread bound"
+        reason = "the evaluation runs on the macOS main thread: the future holds the `MainThreadMarker` and the non-`Send` completion block until WebKit answers"
     )]
     async fn call_async_javascript(&self, body: &str) -> Result<Str, Str> {
         let mtm = MainThreadMarker::new()

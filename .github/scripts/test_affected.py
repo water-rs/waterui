@@ -275,3 +275,43 @@ def test_gaining_a_testing_edge_flags_the_rule():
         'missing (their tests link waterui-testing): ["waterui-meta"]'
         in result.stderr
     )
+
+
+# The `macos` matrix: a leg exists only for a target with an Apple-gated
+# crate in scope, so no macOS runner starts to find nothing to lint.
+from apple_gated import IOS_SIM, crates_for, legs
+
+
+def leg_targets(scope):
+    return [leg["target"] for leg in legs(scope)]
+
+
+def test_no_apple_gated_crate_starts_no_leg():
+    assert legs("") == []
+    assert legs("waterui-core waterui-layout") == []
+
+
+def test_workspace_starts_both_legs():
+    assert leg_targets("workspace") == ["", IOS_SIM]
+    assert all(leg["hydrolysis"] for leg in legs("workspace"))
+
+
+def test_host_only_crates_start_only_the_host_leg():
+    assert leg_targets("waterui-cli") == [""]
+    assert legs("waterui-cli")[0]["waterui-cli"]
+    assert leg_targets("waterui-testing cherenkov-bench") == [""]
+
+
+def test_simulator_compatible_crates_start_both_legs():
+    assert leg_targets("cherenkov-oracle") == ["", IOS_SIM]
+    assert not any(leg["hydrolysis"] for leg in legs("cherenkov-oracle"))
+
+
+def test_simulator_splits_library_only_crates():
+    assert crates_for(IOS_SIM, "waterui cherenkov") == (["cherenkov"], ["waterui"])
+    assert crates_for("", "waterui cherenkov") == (["waterui", "cherenkov"], [])
+
+
+def test_an_unknown_target_is_an_error():
+    with pytest.raises(ValueError):
+        crates_for("x86_64-apple-ios", "workspace")

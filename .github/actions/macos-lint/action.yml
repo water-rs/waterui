@@ -1,15 +1,17 @@
-name: macOS clippy (hydrolysis, waterui-cli)
+name: macOS clippy (Apple-target crates)
 
 description: >
-  The macOS-host clippy legs, shared so the fast gate's `macos` job and
+  The Apple-target clippy legs, shared so the fast gate's `macos` jobs and
   the nightly's `cef` job run the identical commands and cannot drift.
-  The Linux lint compiles `cfg(target_os = "macos")` code away, so these
-  legs are the only lint coverage of it: hydrolysis under the feature
-  combination its own CI swept (#1428) — `webview-system`'s WKWebView
-  bridge is the entry point no other leg sees — and waterui-cli, whose
-  Apple backend and platform plumbing are likewise `cfg`-gated. Each leg
-  is gated by its input; the nightly leaves both on, the gate enables
-  only the crates the affected scope reaches.
+  The Linux lint compiles `cfg(target_os = "macos")` and
+  `cfg(target_os = "ios")` code away, so these legs are the only lint
+  coverage of it (#2476): hydrolysis under the feature combination its own
+  CI swept (#1428), waterui-cli, whose Apple backend and platform plumbing
+  are likewise `cfg`-gated, and every other crate with Apple-gated code
+  (.github/scripts/apple_gated.py), test targets included, on the macOS
+  host and on the iOS simulator. Each leg is gated by its input; the
+  nightly leaves them on, the gate enables only the crates the affected
+  scope reaches.
 
 inputs:
   hydrolysis:
@@ -20,15 +22,74 @@ inputs:
     description: '"true" runs the waterui-cli clippy.'
     required: false
     default: "true"
+  affected:
+    description: >
+      The affected scope from affected.yml: `workspace`, or the
+      space-separated package names. The Apple-gated crates it names are
+      linted together.
+    required: false
+    default: "workspace"
+  target:
+    description: >
+      Empty lints the macOS host; `aarch64-apple-ios-sim` lints the iOS
+      simulator, where only the Apple-gated crates run.
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
+    - name: Check target
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: |
+        case "$TARGET" in
+          ""|aarch64-apple-ios-sim) ;;
+          *)
+            echo "macos-lint: target must be empty or aarch64-apple-ios-sim, got: ${TARGET}" >&2
+            exit 1
+            ;;
+        esac
     - name: Clippy (hydrolysis, checked feature set)
-      if: inputs.hydrolysis == 'true'
+      if: inputs.target == '' && inputs.hydrolysis == 'true'
       shell: bash
       run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+    # Library targets only on the simulator: the test targets need
+    # waterui-testing, whose sysinfo 0.39.6 does not compile there against
+    # libc 0.2.190 (see the step below).
+    - name: Clippy (hydrolysis, checked feature set, iOS simulator)
+      if: inputs.target != '' && inputs.hydrolysis == 'true'
+      shell: bash
+      env:
+        TARGET: ${{ inputs.target }}
+      run: cargo clippy --locked --profile ci-check -p hydrolysis --target "$TARGET" --features accessibility,inspector-signals,testing,web,winit -- -D warnings
     - name: Clippy (waterui-cli)
-      if: inputs['waterui-cli'] == 'true'
+      if: inputs.target == '' && inputs['waterui-cli'] == 'true'
       shell: bash
       run: cargo clippy --locked --profile ci-check -p waterui-cli --all-targets -- -D warnings
+    # The crates whose own sources carry Apple `cfg`s, listed in
+    # .github/scripts/apple_gated.py with affected.py's matrix. On the
+    # simulator a group of them lints library targets only — a sysinfo
+    # 0.39.6 / libc 0.2.190 defect: libc declares `mach_host_self` and
+    # `mach_task_self` for macOS only, so test targets reaching sysinfo
+    # through waterui-testing do not compile for aarch64-apple-ios-sim.
+    - name: Clippy (affected Apple-gated crates)
+      shell: bash
+      env:
+        AFFECTED: ${{ inputs.affected }}
+        TARGET: ${{ inputs.target }}
+      run: |
+        lists=$(python3 "$GITHUB_WORKSPACE/.github/scripts/apple_gated.py" "$TARGET" "$AFFECTED")
+        read -ra args <<< "$(sed -n 1p <<< "$lists")"
+        read -ra lib_args <<< "$(sed -n 2p <<< "$lists")"
+        target_args=()
+        if [ -n "$TARGET" ]; then
+          target_args=(--target "$TARGET")
+        fi
+        if [ ${#args[@]} -gt 0 ]; then
+          cargo clippy --locked --profile ci-check "${args[@]}" "${target_args[@]}" --all-targets -- -D warnings
+        fi
+        if [ ${#lib_args[@]} -gt 0 ]; then
+          cargo clippy --locked --profile ci-check "${lib_args[@]}" "${target_args[@]}" -- -D warnings
+        fi
