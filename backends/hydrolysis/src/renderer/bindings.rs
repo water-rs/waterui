@@ -158,6 +158,50 @@ impl SemanticCore {
         self.set_focused_text_input(None)
     }
 
+    /// Whether hosted content (`AppKit` or DOM) holds platform focus: it then
+    /// receives key and IME delivery itself, so Hydrolysis dispatches none.
+    #[cfg_attr(
+        not(hydrolysis_hosted),
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "no hosted content exists on targets without system-compositor planes"
+        )
+    )]
+    fn hosted_has_focus(&self) -> bool {
+        #[cfg(hydrolysis_hosted)]
+        return self
+            .hit_test
+            .native_view_occlusions
+            .iter()
+            .any(|target| target.hosted.1.focused.snapshot());
+        #[cfg(not(hydrolysis_hosted))]
+        false
+    }
+
+    /// Releases Hydrolysis's own keyboard, text and embedded focus while
+    /// hosted content holds platform focus, so exactly one owner has it.
+    /// Returns whether hosted content holds it.
+    pub(crate) fn sync_hosted_focus(&mut self) -> bool {
+        let hosted = self.hosted_has_focus();
+        if hosted {
+            self.set_focused_text_input(None);
+            self.set_focused_embedded_key(None);
+            self.set_keyboard_focus(None, false);
+        }
+        hosted
+    }
+
+    /// Whether the pointer is over hosted content that no Hydrolysis content
+    /// covers: the hosted view sets the cursor there itself.
+    pub(crate) fn hosted_owns_cursor(&self, x: f32, y: f32) -> bool {
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
+        self.hit_test.native_view_occlusions.iter().any(|target| {
+            target.bounds.contains(point)
+                && !target.sink.borrow().iter().any(|rect| rect.contains(point))
+        })
+    }
+
     #[must_use]
     pub fn cursor_style_at(&self, x: f32, y: f32) -> CursorStyle {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));

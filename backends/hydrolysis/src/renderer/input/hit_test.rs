@@ -228,6 +228,10 @@ pub struct ScrollTarget {
 /// decided here.
 #[derive(Clone)]
 pub struct NativeViewOcclusion {
+    /// The hosted content's interaction key and runtime: focus requests
+    /// for the key move platform focus into it.
+    #[cfg(hydrolysis_hosted)]
+    pub(crate) hosted: (InteractionKey, Rc<crate::hosted::HostedRuntime>),
     /// The subview's rect in window hit-test space.
     pub bounds: kurbo::Rect,
     /// The hit-test order the subview was flushed at. Anything registered later
@@ -970,7 +974,6 @@ impl SemanticCore {
         for chain_snapshot in self.accessibility.focus_key_handlers.values() {
             fold(chain_snapshot);
         }
-        drop(fold);
         self.hit_test.root_key_chain_seen = chain_seen;
         self.hit_test.root_key_handlers = chain;
 
@@ -2659,6 +2662,19 @@ impl SemanticCore {
         #[cfg(feature = "accessibility")] node: Option<AccessibilityNodeId>,
         visible: bool,
     ) -> bool {
+        #[cfg(hydrolysis_hosted)]
+        if let Some(focus) = &focus {
+            for (key, runtime) in self
+                .hit_test
+                .native_view_occlusions
+                .iter()
+                .map(|target| &target.hosted)
+            {
+                if key == focus {
+                    runtime.content.request_focus();
+                }
+            }
+        }
         let visible = focus.is_some() && visible;
         #[cfg(feature = "accessibility")]
         let node_changed = self.accessibility.focus != node.unwrap_or(ACCESSIBILITY_ROOT_NODE_ID);

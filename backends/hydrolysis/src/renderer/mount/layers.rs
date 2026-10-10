@@ -1099,6 +1099,10 @@ fn commit_producer<T: LayerTarget>(
     producer: Option<&ProducerContent>,
 ) -> Option<HeldResources> {
     match producer {
+        #[cfg(hydrolysis_hosted)]
+        Some(ProducerContent::Hosted { runtime, bounds }) => {
+            mount_hosted(cx, layers, runtime, *bounds);
+        }
         Some(ProducerContent::Scene(source)) => {
             return Some(mount_scene(cx, cell, &layers.frame, source));
         }
@@ -1173,6 +1177,33 @@ fn ensure_install<T: LayerTarget>(
     }
     layers.install_gpu = gpu;
     fresh
+}
+
+/// Binds hosted content to the install layer at the node's extent; the
+/// engine places the platform object from the layer tree's geometry.
+#[cfg(hydrolysis_hosted)]
+fn mount_hosted<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    layers: &mut NodeLayers,
+    runtime: &crate::hosted::HostedRuntime,
+    bounds: kurbo::Rect,
+) {
+    if ensure_install(cx, layers, false) {
+        runtime.binding.replace(None);
+    }
+    let (install, props) = layers.install.as_mut().expect("install ensured");
+    if T::mount_hosted(cx.tx, install, runtime, bounds.size()) {
+        cx.stats.installs += 1;
+    }
+    write_props(
+        cx.tx,
+        install,
+        props,
+        LayerProps {
+            transform: kurbo::Affine::translate((bounds.x0, bounds.y0)),
+            ..LayerProps::DEFAULT
+        },
+    );
 }
 
 /// Binds a GPU producer to the install layer at the node's pixel size.
