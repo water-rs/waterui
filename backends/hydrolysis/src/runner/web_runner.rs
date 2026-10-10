@@ -1,4 +1,4 @@
-//! Browser event loop: canvas surface, RAF scheduling, DOM input listeners.
+//! Browser event loop: the page surface, RAF scheduling, DOM input listeners.
 
 // Compiles only into wasm32 + `web`: the fetch/frame futures hold `Rc`,
 // `Closure` and JS-object handles that are `!Send` by design on the

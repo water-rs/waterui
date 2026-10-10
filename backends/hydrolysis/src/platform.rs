@@ -707,14 +707,6 @@ pub enum SurfaceFrame {
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
-    /// A surface frame acquired from a browser canvas (the `web` feature).
-    #[cfg(all(target_arch = "wasm32", feature = "web"))]
-    Browser {
-        /// The acquired surface texture, handed to the frame's renderer.
-        output: wgpu::SurfaceTexture,
-        /// A view of `texture` to render into or read from.
-        view: wgpu::TextureView,
-    },
 }
 
 impl SurfaceFrame {
@@ -727,8 +719,6 @@ impl SurfaceFrame {
             Self::Window { output, .. } => &output.texture,
             #[cfg(target_os = "android")]
             Self::Android { output, .. } => &output.texture,
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            Self::Browser { output, .. } => &output.texture,
         }
     }
 
@@ -741,8 +731,6 @@ impl SurfaceFrame {
             Self::Window { view, .. } => view,
             #[cfg(target_os = "android")]
             Self::Android { view, .. } => view,
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            Self::Browser { view, .. } => view,
         }
     }
 }
@@ -797,11 +785,7 @@ fn normalize_surface_format(
     format
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 #[cfg(not(target_os = "macos"))]
 pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
@@ -1820,10 +1804,6 @@ impl OffscreenSurface {
             #[cfg(target_os = "android")]
             SurfaceFrame::Android { .. } => {
                 panic!("hydrolysis offscreen surface received an android frame");
-            }
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            SurfaceFrame::Browser { .. } => {
-                panic!("hydrolysis offscreen surface received a browser frame");
             }
         }
     }
@@ -5588,6 +5568,8 @@ mod winit_impl {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::ExportedBrowserSurface as BrowserSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
 

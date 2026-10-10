@@ -69,6 +69,7 @@ pub struct DomTarget {
     pub(crate) parent: HtmlElement,
     pub(crate) size: (u32, u32),
     pub(crate) transparent: bool,
+    pub(crate) color_space: Option<wgpu::SurfaceColorSpace>,
     pub(crate) refresh: cherenkov::RefreshRange,
 }
 
@@ -80,6 +81,7 @@ impl DomTarget {
             parent,
             size,
             transparent: false,
+            color_space: None,
             refresh: cherenkov::DEFAULT_REFRESH,
         }
     }
@@ -89,6 +91,18 @@ impl DomTarget {
     #[must_use]
     pub const fn transparent(mut self, transparent: bool) -> Self {
         self.transparent = transparent;
+        self
+    }
+
+    /// Requires every part canvas's colour space, as
+    /// [`WindowTarget::require_color_space`](crate::WindowTarget::require_color_space)
+    /// does for a window's swapchain. Without it each canvas negotiates the
+    /// browser's best advertised pair, an extended-range one where offered.
+    /// A canvas that advertises no format for the space fails the surface
+    /// with [`SurfaceError::UnsupportedTarget`].
+    #[must_use]
+    pub const fn require_color_space(mut self, color_space: wgpu::SurfaceColorSpace) -> Self {
+        self.color_space = Some(color_space);
         self
     }
 
@@ -273,7 +287,7 @@ impl DomPlanes {
             size: target.size,
             request: OutputRequest {
                 transparent: target.transparent,
-                color_space: None,
+                color_space: target.color_space,
                 sync: crate::DisplaySync::Synchronized,
             },
             serial: page_unique(),
