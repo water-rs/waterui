@@ -864,7 +864,7 @@ struct VideoContent {
 impl HostedContent for VideoContent {
     fn mount(&self, occlusion: HostedOcclusion) -> HostedObject {
         let element: HtmlElement = self.player.element.clone().unchecked_into();
-        let redirect = crate::platform::redirect_occluded_input(&element, occlusion);
+        let redirect = crate::platform::redirect_occluded_input(&element, occlusion, true);
         self.player.listeners.borrow_mut().extend(redirect);
         cherenkov_gpu::interop::web::HostedElement::new(element)
     }

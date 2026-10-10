@@ -1180,10 +1180,15 @@ const REDIRECTED_INPUT: [&str; 8] = [
 /// element were not there. Clicks are only stopped: Hydrolysis reads presses,
 /// not clicks.
 ///
+/// An element with no wheel behaviour of its own — a `<video>` — passes
+/// `yields_wheel`, and yields every wheel event the same way, so a scroll
+/// view keeps scrolling under the pointer wherever the element sits.
+///
 /// The returned listeners stay registered while they are held.
 pub fn redirect_occluded_input(
     element: &HtmlElement,
     occlusion: crate::HostedOcclusion,
+    yields_wheel: bool,
 ) -> Vec<Closure<dyn FnMut(Event)>> {
     let occlusion = Rc::new(occlusion);
     REDIRECTED_INPUT
@@ -1205,7 +1210,8 @@ pub fn redirect_occluded_input(
                     f64::from(mouse.client_x()),
                     f64::from(mouse.client_y()),
                 );
-                if !occlusion.covers(kurbo::Point::new(f64::from(x), f64::from(y))) {
+                let yielded = yields_wheel && event.dyn_ref::<WheelEvent>().is_some();
+                if !yielded && !occlusion.covers(kurbo::Point::new(f64::from(x), f64::from(y))) {
                     return;
                 }
                 event.stop_immediate_propagation();
