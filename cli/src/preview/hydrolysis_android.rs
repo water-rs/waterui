@@ -87,11 +87,13 @@ const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 /// the PNG lands in the preview host's private files and is read back into
 /// `output_path` — or `scenario.output_dir`/`frame-*ms.png` for a scenario.
 /// `kotlin` is the toolchain the caller's toolchain check resolved — the
-/// launcher build reuses it rather than probing `kotlinc` again.
+/// launcher build reuses it rather than probing `kotlinc` again. `target`
+/// is the device the caller's selection resolved: every adb call below
+/// addresses its serial.
 ///
 /// # Errors
-/// Returns an error when no device or AVD is usable, the host APK cannot be
-/// built or installed, the launcher build or staging fails, the
+/// Returns an error when the target cannot be brought up, the host APK
+/// cannot be built or installed, the launcher build or staging fails, the
 /// instrumentation reports a failure, or the produced PNG cannot be read
 /// back.
 pub async fn render_preview_with_hydrolysis_android(
@@ -99,6 +101,7 @@ pub async fn render_preview_with_hydrolysis_android(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
     kotlin: &crate::android::KotlinToolchain,
+    target: &AndroidTarget,
 ) -> Result<()> {
     let host = request.host;
     let project = crate::hydrolysis::backend::open_ready(host, request.project_path).await?;
@@ -108,10 +111,7 @@ pub async fn render_preview_with_hydrolysis_android(
     // waits until the first finishes; the lease is held for the whole run.
     let _project_lease = water_dir::android_preview_project_lock(host, project.root()).await?;
 
-    let ((), target) = futures_util::try_join!(
-        write_preview_bindings(&project, request.source, request.theme, None),
-        AndroidTarget::first_available(host),
-    )?;
+    write_preview_bindings(&project, request.source, request.theme, None).await?;
 
     // Everything local — the host APK and the launcher payload — builds
     // before the device is claimed, so a second preview waiting on this
