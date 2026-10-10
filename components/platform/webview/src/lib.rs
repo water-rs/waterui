@@ -196,10 +196,11 @@ mod state;
 pub use state::{FieldEntry, JsField, StateWriteError};
 
 use suiteki::Str;
+#[cfg(not(target_arch = "wasm32"))]
+use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{
     AnyView, Binding, Computed, Environment, Native, Signal, View, binding,
     layout::StretchAxis,
-    reactive::signal::IntoComputed,
     view::{Hook, ViewConfiguration},
 };
 use waterui_layout::spacer;
@@ -976,7 +977,18 @@ impl WebViewOpen {
         })
     }
 
-    fn create(self, controller: &WebViewController, environment: &Environment) -> WebView {
+    fn create(
+        self,
+        controller: &WebViewController,
+        #[cfg_attr(
+            target_arch = "wasm32",
+            expect(
+                unused_variables,
+                reason = "the environment reaches only the page's handlers, which the web has none of"
+            )
+        )]
+        environment: &Environment,
+    ) -> WebView {
         let Self {
             target,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1053,10 +1065,10 @@ impl WebViewOpen {
             // case `WatcherGuard::forget` documents.
             webview
                 .handle()
-                .watch(move |backend_event| {
-                    if let BackendEvent::Event(event) = backend_event {
-                        watcher(event);
-                    }
+                .watch(move |backend_event| match backend_event {
+                    BackendEvent::Event(event) => watcher(event),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    BackendEvent::NavigationState { .. } => {}
                 })
                 .forget();
         }

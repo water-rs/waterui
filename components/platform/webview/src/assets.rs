@@ -150,9 +150,10 @@ pub struct WebViewConfig {
 
 impl std::fmt::Debug for WebViewConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebViewConfig")
-            .field("asset_server", &self.asset_server.as_ref().map(|_| ".."))
-            .finish()
+        let mut debug = f.debug_struct("WebViewConfig");
+        #[cfg(not(target_arch = "wasm32"))]
+        debug.field("asset_server", &self.asset_server.as_ref().map(|_| ".."));
+        debug.finish()
     }
 }
 
