@@ -891,7 +891,7 @@ pub struct GpuRenderer {
     /// system-compositor parent. Platform objects stay on the render
     /// thread, outside the surface states lowering moves to its workers.
     #[cfg_attr(
-        not(any(target_vendor = "apple", target_os = "android")),
+        not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
         expect(
             clippy::zero_sized_map_values,
             reason = "no plane realization exists on this platform, so the map stays empty"
@@ -2362,7 +2362,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             adapter,
             presenter: None,
             #[cfg_attr(
-                not(any(target_vendor = "apple", target_os = "android")),
+                not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
                 expect(
                     clippy::zero_sized_map_values,
                     reason = "no plane realization exists on this platform, so the map stays empty"
@@ -2686,7 +2686,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         adapter,
         presenter: None,
         #[cfg_attr(
-            not(any(target_vendor = "apple", target_os = "android")),
+            not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
             expect(
                 clippy::zero_sized_map_values,
                 reason = "no plane realization exists on this platform, so the map stays empty"
@@ -2948,6 +2948,8 @@ impl Renderer for GpuRenderer {
             }
             #[cfg(target_os = "linux")]
             GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
+            #[cfg(target_arch = "wasm32")]
+            GpuTarget::Dom(target) => (None, None, self.dom_planes(id, &target)?, true),
             GpuTarget::Window(window) => {
                 let refresh = window.refresh.clone();
                 // Only Apple windows complete work after a render: a
@@ -4121,6 +4123,8 @@ impl GpuRenderer {
             GpuTarget::SurfaceControl(target) => target.size(),
             #[cfg(target_os = "linux")]
             GpuTarget::Dmabuf(target) => target.size(),
+            #[cfg(target_arch = "wasm32")]
+            GpuTarget::Dom(target) => target.size(),
         };
         if size.0 == 0 || size.1 == 0 {
             return Err(SurfaceError::ZeroSize);
@@ -4163,6 +4167,22 @@ impl GpuRenderer {
         self.presenter
             .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
         Ok(target.refresh)
+    }
+
+    /// Realizes surface `id` under a `DomTarget`'s element and returns its
+    /// refresh range.
+    #[cfg(target_arch = "wasm32")]
+    fn dom_planes(
+        &mut self,
+        id: SurfaceId,
+        target: &crate::interop::web::DomTarget,
+    ) -> Result<cherenkov::RefreshRange, SurfaceError> {
+        let system =
+            planes::web::DomPlanes::new(&self.instance, &self.adapter, &self.device, target)?;
+        self.planes.insert(id, system);
+        self.presenter
+            .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
+        Ok(target.refresh.clone())
     }
 
     /// Realizes surface `id`'s bounded pool of exportable dma-buf images
@@ -5109,7 +5129,7 @@ impl GpuRenderer {
     /// content kind at a time. The object shows in one place: a binding of
     /// it on another layer — of this surface or another — is released, and
     /// that surface lowers again so its planes let it go.
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))]
     pub fn bind_hosted(
         &mut self,
         surface: SurfaceId,
@@ -5977,7 +5997,7 @@ impl GpuRenderer {
     /// another capture is admitted.
     fn observe_static(&mut self, sf: &SurfaceFrame<'_>) -> Result<(), RenderError> {
         let surf = self.surfaces.get_mut(&sf.id).expect("registered surface");
-        if !surf.promotes {
+        if !surf.promotes || !<planes::Platform as planes::Compositor>::CAPTURES {
             return Ok(());
         }
         let output_changed = sf.display.headroom.to_bits() != surf.display.headroom.to_bits()

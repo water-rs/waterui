@@ -1,19 +1,51 @@
 #!/usr/bin/env python3
-"""Callgrind Ir gate for `lower` and `encode` on the five perf scenes.
+"""Callgrind Ir gate for `lower`, `encode` and `run_transaction` on the five
+perf scenes.
 
 Each profile runs `cherenkov-bench measure --pause-at P` under Callgrind with
 instrumentation off. At the pause (a fixed frame index, not wall-clock time)
-instrumentation is switched on and the bench resumes. `--dump-before` and
-`--dump-after` on each root make every dump cover exactly one call of that
-root on its thread. The k-th dump after a root returns is sample k; sample 2
-is the gate's "second steady frame" and sample 3 its stability check.
+instrumentation is switched on and the bench resumes. `--dump-after` on each
+root cuts a dump at every return. Callgrind keeps one cost table for all
+threads (`--separate-threads=no`), so every dump holds every thread's events
+since the previous one and the dumps partition the run. One call of a root is
+the span between consecutive `--dump-after` triggers of that root, holding
+exactly one incoming call of it: a root nested inside it (`run_transaction`
+runs inside `encode`) and the other roots write their own dumps within the
+span, so a sample sums the root's incoming edge and the allocator calls over
+every dump in its span. The k-th call is sample k; sample 2 is the gate's
+"second steady frame" and sample 3 its stability check. Only the first span
+may hold no complete call — the call in flight when instrumentation switched
+on — so any later skip is an error, never a silent shift of which frame is
+sampled.
+
+Every Callgrind option names a function at most once. Callgrind 3.18 keeps
+function options in a prefix trie whose insertion, once another name has split
+a node on the path, adds a second node for a name already present instead of
+reusing the first, and a lookup applies only the newest: of `--dump-before=S`
+and `--dump-after=S`, only the latter takes effect, so a `--dump-before` on a
+root never fires.
 
 Per sample it reports the root's inclusive Ir; the allocator's share of it
 (the inclusive cost of every call from other code into the Rust allocator
 shims and the libc malloc family) with the number of alloc, realloc and
 dealloc calls; the libc memory primitives' share (memcpy, memmove, memset,
 memcmp, bcmp), whose Ir depends on buffer addresses the allocator chooses,
-with their call count; and the Rust Ir: inclusive Ir minus both shares.
+with their call count; and the Rust Ir: inclusive Ir minus both shares. A
+subtracted call made inside another one, directly or through frames the gate
+keeps, is already in the outer call's inclusive cost and is not counted again.
+
+A share counts only calls made under the root, decided by calling context:
+`--separate-callers<N>` keys every allocator and memory-primitive function by
+the N functions above it on the calling thread's stack, so each call edge into
+one names its caller chain, and a call is the root's exactly when the root is
+in that chain. A chain shorter than N reached the bottom of the thread's
+stack, so a root missing from it is outside the root; a chain of full length
+without the root is undecidable and fails the run. Neither the plain call
+graph nor per-thread dumps can decide it: the graph merges every caller of a
+shared function such as `RawVecInner::deallocate`, and `--separate-threads=yes`
+does not isolate threads — after instrumentation switches on mid-run, a
+thread's call-stack underflow can attach its calls to a record another thread
+owns, so another thread's frees land in the root thread's dumps.
 
   ir_gate.py profile --binary B --tag T --scene S --repo R --out O
   ir_gate.py batch   --binary B --tag T --repo R --out O
@@ -28,18 +60,29 @@ sits outside the measured lower/encode roots, so skipping it cannot change
 the counted Ir. NODEVICE_SELECT disables the MESA device_select layer, whose
 teardown crashes when another instance layer sits in front of it.
 """
-import argparse, collections, concurrent.futures, ctypes, hashlib, json, os, pathlib, re, selectors, struct, subprocess, sys
+import argparse, collections, concurrent.futures, ctypes, fnmatch, hashlib, json, os, pathlib, re, selectors, struct, subprocess, sys
 
 SCENES = ['map', 'chart', 'text-page', 'ui-list', 'effects']
-ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad')}
+ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad'),
+         'run_transaction': ('15run_transaction', 'cherenkov_record')}
 PAUSE = 'cherenkov-bench: paused before frame {}'
-ALLOC = re.compile(r"(___rust_(alloc|dealloc|realloc|alloc_zeroed)|___rdl_(alloc|dealloc|realloc|alloc_zeroed)"
-                   r"|___rust_no_alloc_shim_is_unstable\w*"
-                   r"|^(malloc|free|realloc|calloc|posix_memalign|aligned_alloc|memalign|valloc|pvalloc))('\d+)?$")
-KIND = [(re.compile(r"(___rust_alloc|___rust_alloc_zeroed|^malloc|^calloc|^posix_memalign|^aligned_alloc|^memalign|^valloc|^pvalloc)('\d+)?$"), 'allocs'),
-        (re.compile(r"(___rust_realloc|^realloc)('\d+)?$"), 'reallocs'),
-        (re.compile(r"(___rust_dealloc|^free)('\d+)?$"), 'deallocs')]
-MEM = re.compile(r"^(__)?(memcpy|memmove|mempcpy|memset|memcmp|bcmp)(_\w+)?('\d+)?$")
+# Callgrind name patterns (`*` matches any run) of the functions a sample
+# subtracts, with the call count each one adds to; Callgrind separates these
+# by caller chain and the gate classifies them, from this one table. Names
+# are mangled (`--demangle=no`): a Rust allocator shim keeps its crate path
+# ahead of the name, so it matches as a suffix.
+ALLOCATOR = ([(f'*___rust_{name}', kind) for name, kind in
+              (('alloc', 'allocs'), ('alloc_zeroed', 'allocs'), ('realloc', 'reallocs'), ('dealloc', 'deallocs'))]
+             + [(f'*___rdl_{name}', None) for name in ('alloc', 'alloc_zeroed', 'realloc', 'dealloc')]
+             + [('*___rust_no_alloc_shim_is_unstable*', None)]
+             + [(name, 'allocs') for name in ('malloc', 'calloc', 'posix_memalign', 'aligned_alloc', 'memalign', 'valloc', 'pvalloc')]
+             + [('realloc', 'reallocs'), ('free', 'deallocs')])
+MEMORY = [pattern for name in ('memcpy', 'memmove', 'mempcpy', 'memset', 'memcmp', 'bcmp')
+          for pattern in (name, f'{name}_*', f'__{name}', f'__{name}_*')]
+KINDS = ('allocs', 'reallocs', 'deallocs')
+# Caller-chain depth of every allocator and memory-primitive function: deep
+# enough to reach the root from any call under it, or the run fails.
+CALLERS = 256
 LIBC = ctypes.CDLL(None, use_errno=True)
 
 
@@ -61,8 +104,8 @@ def timer(seconds):
 
 
 def parse(path):
-    """Function names, self Ir, and per-edge inclusive Ir and call counts."""
-    names = {}; own = collections.Counter(); edge = collections.Counter(); calls = collections.Counter(); total = None
+    """Function names and per-edge inclusive Ir and call counts."""
+    names = {}; edge = collections.Counter(); calls = collections.Counter()
     current = callee = None; pending = None
     for line in path.read_text().splitlines():
         m = re.match(r'(c?fn)=\((\d+)\)(?: (.*))?$', line)
@@ -76,56 +119,107 @@ def parse(path):
                 callee = n
         elif line.startswith('calls='):
             pending = int(line[6:].split()[0])
-        elif line.startswith('totals:') or line.startswith('summary:'):
-            total = int(line.split()[1])
-        elif current is not None and re.match(r'^[0-9+*\-]', line):
+        elif pending is not None and current is not None and re.match(r'^[0-9+*\-]', line):
             parts = line.split()
             if len(parts) != 2 or not parts[-1].isdigit():
                 continue
-            if pending is not None:
-                edge[(current, callee)] += int(parts[-1]); calls[(current, callee)] += pending; pending = None
-            else:
-                own[current] += int(parts[-1])
-    return names, own, edge, calls, total
+            edge[(current, callee)] += int(parts[-1]); calls[(current, callee)] += pending; pending = None
+    return names, edge, calls
+
+
+def context(name):
+    """A Callgrind context name, `fn['rec]'caller1'caller2…`, as the function and its caller chain."""
+    parts = name.split("'")
+    callers = parts[1:]
+    if callers and callers[0].isdigit():
+        callers = callers[1:]
+    return parts[0], callers
+
+
+def subtracted(function):
+    """('alloc', kind) or ('mem', None) for a function a sample subtracts, else None."""
+    for pattern, kind in ALLOCATOR:
+        if fnmatch.fnmatchcase(function, pattern):
+            return 'alloc', kind
+    if any(fnmatch.fnmatchcase(function, pattern) for pattern in MEMORY):
+        return 'mem', None
+    return None
 
 
 def measure(path, symbol):
-    names, own, edge, calls, total = parse(path)
+    names, edge, calls = parse(path)
     ids = [k for k, v in names.items() if v == symbol]
     if len(ids) != 1:
         return None
     root = ids[0]
     ncalls = sum(c for (a, b), c in calls.items() if b == root)
     ir = sum(c for (a, b), c in edge.items() if b == root)
-    assert ncalls == 1 and ir > 0, (path, ncalls, ir)
-    is_alloc = lambda k: bool(ALLOC.search(names.get(k, '')))
-    is_mem = lambda k: bool(MEM.search(names.get(k, '')))
-    excluded = lambda k: is_alloc(k) or is_mem(k)
-    kids = collections.defaultdict(set)
-    for a, b in edge:
-        kids[a].add(b)
-    inside = set(); stack = [root]
-    while stack:
-        f = stack.pop()
-        if f not in inside:
-            inside.add(f); stack += [g for g in kids[f] if not excluded(g)]
-    alloc_ir = mem_ir = mem_calls = 0; counts = collections.Counter({k: 0 for _, k in KIND})
+    if ir == 0:
+        return None
+    alloc_ir = mem_ir = mem_calls = 0; counts = collections.Counter({kind: 0 for kind in KINDS})
     for (a, b), cost in edge.items():
-        if a not in inside or excluded(a):
+        function, callers = context(names[b])
+        share = subtracted(function)
+        if share is None:
             continue
-        if is_alloc(b):
+        assert callers, (path, names[b], 'not separated by caller chain: add it to the Callgrind patterns')
+        if symbol not in callers:
+            assert len(callers) < CALLERS, (path, names[b], f'caller chain truncated at {CALLERS} without the root')
+            continue
+        # A call made inside another subtracted call is part of that call's
+        # cost, whether its caller is the outer function or a frame the gate
+        # keeps between them (glibc's realloc reaches memcpy through
+        # `_int_realloc` and an unnamed local function).
+        if any(subtracted(caller) is not None for caller in callers[:callers.index(symbol)]):
+            continue
+        if share[0] == 'alloc':
             alloc_ir += cost
-            for pattern, kind in KIND:
-                if pattern.search(names[b]):
-                    counts[kind] += calls[(a, b)]
-        elif is_mem(b):
+            if share[1] is not None:
+                counts[share[1]] += calls[(a, b)]
+        else:
             mem_ir += cost; mem_calls += calls[(a, b)]
-    return {'path': str(path), 'ir': ir, 'alloc_ir': alloc_ir, 'mem_ir': mem_ir, 'mem_calls': mem_calls,
-            'rust_ir': ir - alloc_ir - mem_ir, 'outside_ir': total - ir if total is not None else None, **counts}
+    return {'path': str(path), 'ir': ir, 'ncalls': ncalls, 'alloc_ir': alloc_ir, 'mem_ir': mem_ir, 'mem_calls': mem_calls,
+            'rust_ir': ir - alloc_ir - mem_ir, **counts}
 
 
-def dump_files(out, prefix, number):
-    return sorted(out.glob(f'{prefix}.{number}-*'))
+def function_options(roots):
+    """The Callgrind options that key every subtracted function by its caller
+    chain and cut a dump at every return of a root; each names one function."""
+    named = [(f'--separate-callers{CALLERS}', pattern) for pattern in [p for p, _ in ALLOCATOR] + MEMORY]
+    named += [('--dump-after', symbol) for symbol in roots]
+    names = [name for _, name in named]
+    assert len(set(names)) == len(names), ('Callgrind applies only the last option naming a function', names)
+    return [f'{option}={name}' for option, name in named]
+
+
+def call_samples(out, prefix, symbol, after):
+    """The root's first three calls, each merged over the dumps of its span.
+
+    One call is the span after the root's previous --dump-after up to its
+    next one, holding exactly one incoming call of it. Nested roots and the
+    other roots cut dumps inside the span, so the root's incoming edge and
+    its allocator and memory-primitive calls are spread over all of them.
+    """
+    samples = []; prev = 0
+    for index, number in enumerate(sorted(after)):
+        span = [out / f'{prefix}.{n}' for n in range(prev + 1, number + 1)]
+        prev = number
+        found = [m for m in (measure(p, symbol) for p in span) if m]
+        ncalls = sum(m['ncalls'] for m in found)
+        if index == 0 and ncalls == 0:
+            # The call in flight when instrumentation switched on was
+            # entered unseen and has no incoming edge: not a sample. Only
+            # the first span can be one; skipping a later one would shift
+            # every sample to a later frame.
+            continue
+        assert ncalls == 1, (prefix, symbol, number, [m['ncalls'] for m in found], 'a span must hold exactly one call')
+        merged = {k: sum(m[k] for m in found)
+                  for k in ('ir', 'ncalls', 'alloc_ir', 'mem_ir', 'mem_calls', 'rust_ir', *KINDS)}
+        merged['path'] = str(span[-1])
+        samples.append(merged)
+        if len(samples) == 3:
+            break
+    return samples
 
 
 LAYER_NAME = 'VK_LAYER_CHERENKOV_no_raster'
@@ -167,6 +261,14 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     roots = {}
     for phase, (suffix, crate) in ROOTS.items():
         hits = [line.split()[-1] for line in symbols if line.split()[-1].endswith(suffix) and crate in line]
+        if not hits:
+            # A generic method's symbol keeps the fn name inside its own
+            # path, ahead of the `NC`-delimited instantiation suffix
+            # (`…Shared<Gpu>E15run_transactionNC<closure>`): match the
+            # name there instead.
+            hits = [s for s in (line.split()[-1] for line in symbols)
+                    if suffix in s.split('NC', 1)[0] and crate in s]
+            hits = list(dict.fromkeys(hits))
         assert len(hits) == 1, (tag, phase, hits)
         roots[phase] = hits[0]
     layer_dir = out / 'vk_layer'
@@ -175,12 +277,12 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     env = os.environ.copy()
     env.update(layer_env(layer_dir), XDG_RUNTIME_DIR='/tmp/runtime-ubuntu', RUST_LOG='error')
     os.makedirs(env['XDG_RUNTIME_DIR'], exist_ok=True)
-    dumps = [f'--dump-{when}={sym}' for sym in roots.values() for when in ('before', 'after')]
-    command = ['valgrind', '--tool=callgrind', '--instr-atstart=no', '--separate-threads=yes', *dumps,
+    command = ['valgrind', '--tool=callgrind', '--demangle=no', '--instr-atstart=no', '--separate-threads=no',
+               *function_options(roots.values()),
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov',
                '--scene', f'scenes/perf/{scene}', '--frames', '100000', '--warmup', str(warmup),
                '--pause-at', str(pause_at), '--out', str(prefix) + '.unused-timing.json']
-    after = {phase: [] for phase in roots}; latest = -1
+    after = {phase: [] for phase in roots}
     monitor = selectors.DefaultSelector(); fds = []
     watch = LIBC.inotify_init1(os.O_CLOEXEC)
     if watch < 0:
@@ -196,9 +298,11 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
         pending = b''
         print(tag, scene, 'pid', process.pid, 'running to frame', pause_at, flush=True)
 
+        # Three calls of every root, and the one in flight when
+        # instrumentation switched on. Callgrind writes its dumps one after
+        # another, so every dump up to a --dump-after is closed once it is.
         def done():
-            used = max(after[p][2] for p in after) if all(len(v) >= 3 for v in after.values()) else None
-            return used is not None and latest > used
+            return all(len(v) > 3 for v in after.values())
         try:
             while not done():
                 for event, _ in monitor.select():
@@ -221,10 +325,10 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
                         while offset < len(data):
                             _, _, _, size = struct.unpack_from('iIII', data, offset); offset += 16
                             name = os.fsdecode(data[offset:offset + size].split(b'\0', 1)[0]); offset += size
-                            match = re.fullmatch(re.escape(prefix.name) + r'\.(\d+)-(\d+)', name)
+                            match = re.fullmatch(re.escape(prefix.name) + r'\.(\d+)', name)
                             if not match or int(match[1]) in seen:
                                 continue
-                            number = int(match[1]); seen.add(number); latest = max(latest, number)
+                            number = int(match[1]); seen.add(number)
                             head = (out / name).read_text().split('\n\nob=', 1)[0]
                             for phase, symbol in roots.items():
                                 if f'desc: Trigger: --dump-after={symbol}\n' in head:
@@ -241,11 +345,8 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     result = {'tag': tag, 'scene': scene, 'binary': str(binary), 'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'pause_at': pause_at, 'command': command}
     for phase, symbol in roots.items():
-        samples = []
-        for number in sorted(after[phase])[:3]:
-            found = [m for m in (measure(p, symbol) for p in dump_files(out, prefix.name, number)) if m]
-            assert len(found) == 1, (tag, scene, phase, number, len(found))
-            samples.append(found[0])
+        samples = call_samples(out, prefix.name, symbol, after[phase])
+        assert len(samples) == 3, (tag, scene, phase, len(samples))
         second, third = samples[1], samples[2]
         result[phase] = {'root': symbol, 'first': samples[0], 'second': second, 'third': third,
                          'third_delta_percent': 100 * (third['rust_ir'] / second['rust_ir'] - 1)}
@@ -256,7 +357,13 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
 
 
 def load(out, tag, scene):
-    return json.loads((pathlib.Path(out) / f'{tag}-{scene}.result.json').read_text())
+    # `batch` writes each tag into its own subdirectory (--out per tag); a
+    # flat out dir with the files side by side is accepted too.
+    for root in (pathlib.Path(out) / tag, pathlib.Path(out)):
+        candidate = root / f'{tag}-{scene}.result.json'
+        if candidate.exists():
+            return json.loads(candidate.read_text())
+    raise FileNotFoundError(f'no result for {tag}/{scene} under {out}')
 
 
 def batch(args):

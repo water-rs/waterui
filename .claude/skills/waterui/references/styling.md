@@ -359,6 +359,10 @@ Material roles only where the design is specifically Material.
 
 To see it:
 
+Declare `backend = "hydrolysis"` under `[platforms.<platform>]` in `Water.toml`,
+or use the flag below if that platform has no declaration. A conflicting declaration
+is an error; see [backend selection](project.md#platforms-and-backends).
+
 ```bash
 water preview my_view --backend hydrolysis --theme material3 --output preview.png
 ```

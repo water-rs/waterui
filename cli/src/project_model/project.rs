@@ -1,5 +1,7 @@
 //! Project management and build utilities for `WaterUI` CLI.
 
+pub use super::platforms::{PlatformConfig, PlatformName, resolve_backend};
+
 use std::fmt::Write as _;
 
 use cargo_toml::Manifest as CargoManifest;
@@ -19,6 +21,7 @@ use crate::toolchain::Host;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenMode {
     Full,
+    Build,
     PreviewBuild,
 }
 
@@ -113,6 +116,9 @@ struct CargoLayout {
     /// `cargo tree` evaluation passes so the application crate, not the
     /// workspace root, roots the printed graph.
     root_package_id: String,
+    /// The application package's resolved `[package] version`, workspace
+    /// inheritance already applied by Cargo.
+    root_package_version: String,
 }
 
 enum CargoResolution {
@@ -746,6 +752,16 @@ impl Project {
     /// Returns an error when Cargo metadata cannot resolve the workspace.
     pub async fn lockfile_path(&self) -> eyre::Result<PathBuf> {
         Ok(self.cargo_layout().await?.workspace_root.join("Cargo.lock"))
+    }
+
+    /// The application crate's `[package] version` as Cargo resolves it —
+    /// a workspace-inherited `version.workspace = true` included.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo metadata cannot resolve the package.
+    pub(crate) async fn crate_version(&self) -> eyre::Result<String> {
+        Ok(self.cargo_layout().await?.root_package_version)
     }
 
     async fn cargo_layout(&self) -> eyre::Result<CargoLayout> {
@@ -1699,6 +1715,9 @@ pub enum FailToOpenProject {
     /// Failed to open the Water.toml manifest.
     #[error("Failed to open project manifest: {0}")]
     Manifest(FailToOpenManifest),
+    /// The project's declared fonts are not available for a build.
+    #[error("{0:#}")]
+    Fonts(eyre::Report),
     /// Failed to read the Cargo.toml file.
     #[error("Failed to read Cargo.toml: {0}")]
     CargoManifest(cargo_toml::Error),
@@ -2472,6 +2491,7 @@ impl Project {
                 accessory: false,
                 embedded: false,
             },
+            platforms: BTreeMap::new(),
             hydrolysis: None,
             waterui_path: options
                 .waterui_path
@@ -2545,6 +2565,23 @@ impl Project {
         backends: ManagedBackends,
     ) -> Result<Self, FailToOpenProject> {
         Self::open_with_mode(host, path, OpenMode::Full, backends).await
+    }
+
+    /// Open a project for building, running, or packaging.
+    ///
+    /// Validates the project's own font declarations before invoking Cargo or
+    /// initializing backends. Dependency fonts still need post-build validation.
+    /// Use [`Self::open`] for operations such as fetching missing fonts.
+    ///
+    /// # Errors
+    /// Returns [`FailToOpenProject::Fonts`] for unavailable declared fonts, or
+    /// any error returned by [`Self::open`].
+    pub async fn open_for_build(
+        host: &Host,
+        path: impl AsRef<Path>,
+        backends: ManagedBackends,
+    ) -> Result<Self, FailToOpenProject> {
+        Self::open_with_mode(host, path, OpenMode::Build, backends).await
     }
 
     /// Open a project for preview dylib builds without initializing native app backends.
@@ -2675,6 +2712,11 @@ impl Project {
         let manifest = Manifest::open(path.join("Water.toml"))
             .await
             .map_err(FailToOpenProject::Manifest)?;
+        if open_mode == OpenMode::Build {
+            crate::assets::validate_manifest_fonts(host, &manifest, &path)
+                .await
+                .map_err(FailToOpenProject::Fonts)?;
+        }
         if let Some(framework) = &manifest.framework {
             framework
                 .validate_cli(host)
@@ -2776,7 +2818,7 @@ impl Project {
             || project.host().env("ACTION").is_some() // Xcode sets this during builds
             || project.host().env("XCODE_PRODUCT_BUILD_VERSION").is_some();
 
-        if !skip_backend_init && open_mode == OpenMode::Full {
+        if !skip_backend_init && matches!(open_mode, OpenMode::Full | OpenMode::Build) {
             // Rendering target-derived scaffolds is not part of opening a
             // project: the ffi companion is rendered by the path that builds
             // it (`scaffold_ffi_companion`), so `water clean`, `water fetch`
@@ -2910,14 +2952,15 @@ async fn resolve_cargo_layout(
     // metadata` reports the plain one — comparing the two would never
     // match the application package (part of #152).
     let application_manifest = dunce::canonicalize(current_dir.join("Cargo.toml"))?;
-    let root_package_id = package_at_manifest(&metadata, &application_manifest)?
-        .id
-        .to_string();
+    let root_package = package_at_manifest(&metadata, &application_manifest)?;
+    let root_package_id = root_package.id.to_string();
+    let root_package_version = root_package.version.to_string();
 
     Ok(CargoLayout {
         target_dir: metadata.target_directory.into_std_path_buf(),
         workspace_root: metadata.workspace_root.into_std_path_buf(),
         root_package_id,
+        root_package_version,
     })
 }
 
@@ -3584,6 +3627,13 @@ struct WateruiPatchesRecord<'a> {
 pub struct Manifest {
     /// Package information.
     pub package: Package,
+    /// Per-platform backend declarations (`[platforms.<platform>]`).
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "super::platforms::deserialize"
+    )]
+    pub platforms: BTreeMap<PlatformName, PlatformConfig>,
     /// Hydrolysis backend selections (`[hydrolysis]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hydrolysis: Option<crate::backend::HydrolysisConfig>,
@@ -3777,6 +3827,7 @@ impl Manifest {
     pub fn new(package: Package) -> Self {
         Self {
             package,
+            platforms: BTreeMap::new(),
             hydrolysis: None,
             waterui_path: None,
             waterui_patches: cargo_toml::PatchSet::new(),
@@ -3937,6 +3988,10 @@ pub struct FontConfig {
     /// pre-seeding the font cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_path: Option<String>,
+    /// The platforms whose builds bundle the font; absent bundles it on
+    /// every platform. An unknown name fails to parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<Vec<waterui_assets_planner::FontPlatform>>,
 }
 
 /// App-specific configuration in `Water.toml`.
@@ -4664,6 +4719,78 @@ mod target_graph_tests {
         );
         machine.respond("CARGO_METADATA", &cargo_metadata_json(&root, &root));
         root
+    }
+
+    #[test]
+    fn build_open_rejects_missing_manifest_fonts_before_any_cargo_invocation() {
+        let machine = TestMachine::new();
+        let root = fixture(&machine);
+        let log = machine.file("invocations.log", "");
+        let host = machine.host([("WATERUI_FAKE_LOG", log.as_os_str())]);
+        let cache = host.cache_dir().unwrap().join("waterui/fonts");
+        std::fs::create_dir_all(&cache).unwrap();
+        smol::block_on(async {
+            let mut manifest = Manifest::open(root.join("Water.toml")).await.unwrap();
+            manifest.assets = Some(super::AssetsConfig {
+                font: vec![super::FontConfig {
+                    name: "Inter".into(),
+                    local_path: None,
+                    remote_path: Some("https://example.com/inter.ttf".into()),
+                    platforms: None,
+                }],
+            });
+            manifest.save(&root).await.unwrap();
+            let error = Project::open_for_build(&host, &root, ManagedBackends::NONE)
+                .await
+                .expect_err("uncached manifest font must fail before cargo");
+            assert!(matches!(error, super::FailToOpenProject::Fonts(_)));
+            let message = error.to_string();
+            assert!(
+                message.contains("font 'Inter' is declared remote (https://example.com/inter.ttf)"),
+                "{message}"
+            );
+            assert!(message.contains(&cache.display().to_string()), "{message}");
+            assert!(message.contains("run `water fetch`"), "{message}");
+            assert_eq!(std::fs::read_to_string(&log).unwrap(), "");
+
+            Project::open(&host, &root, ManagedBackends::NONE)
+                .await
+                .expect("fetch must still be able to open a project with missing fonts");
+            assert!(std::fs::read_to_string(&log).unwrap().contains("cargo "));
+        });
+    }
+
+    #[test]
+    fn build_open_accepts_cached_manifest_fonts_and_no_declarations() {
+        use sha2::{Digest as _, Sha256};
+
+        for cached_font in [false, true] {
+            let machine = TestMachine::new();
+            let root = fixture(&machine);
+            let host = machine.host(std::iter::empty::<(&str, &str)>());
+            smol::block_on(async {
+                if cached_font {
+                    let url = "https://example.com/inter.ttf";
+                    let cache = host.cache_dir().unwrap().join("waterui/fonts");
+                    std::fs::create_dir_all(&cache).unwrap();
+                    let hash = hex::encode(Sha256::digest(url.as_bytes()));
+                    std::fs::write(cache.join(format!("{hash}.ttf")), b"cached font").unwrap();
+                    let mut manifest = Manifest::open(root.join("Water.toml")).await.unwrap();
+                    manifest.assets = Some(super::AssetsConfig {
+                        font: vec![super::FontConfig {
+                            name: "Inter".into(),
+                            local_path: None,
+                            remote_path: Some(url.into()),
+                            platforms: None,
+                        }],
+                    });
+                    manifest.save(&root).await.unwrap();
+                }
+                Project::open_for_build(&host, &root, ManagedBackends::NONE)
+                    .await
+                    .expect("available declared fonts do not prevent building");
+            });
+        }
     }
 
     /// A workspace fixture: `ws/Cargo.toml` carries `[workspace]` over the

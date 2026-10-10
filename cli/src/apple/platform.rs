@@ -326,8 +326,12 @@ pub(crate) async fn build_rust_lib_with_links(
 
     // Resolve fonts BEFORE cargo build - this ensures icons.json is present
     // for crates like fontawesome7 that need it during build.rs
-    let font_declarations =
-        crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = crate::assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
@@ -836,6 +840,7 @@ pub async fn package_apple(
     let staging_dir = project_path.join("DerivedData/AssetStaging");
     copy_assets_and_fonts(
         project,
+        platform,
         &staging_dir,
         &built.app_symbols()?,
         options.uses_dev_server(),
@@ -988,6 +993,7 @@ pub async fn package_apple(
 /// `waterui_meta_bundle_*` statics declare the asset mounts.
 async fn copy_assets_and_fonts(
     project: &Project,
+    platform: TargetPlatform,
     dest_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
@@ -997,8 +1003,12 @@ async fn copy_assets_and_fonts(
         assets::stage_project_assets_for_apple(project, dest_dir, symbols, dev_server).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

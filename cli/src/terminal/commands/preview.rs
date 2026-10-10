@@ -22,18 +22,19 @@ use waterui_cli::preview::{
     HydrolysisPreviewTheme, discover_hydrolysis_preview_exports, launch_preview_session,
     render_preview_with_apple, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
-use waterui_cli::project::read_project_crate_name;
+use waterui_cli::project::{Manifest, read_project_crate_name};
 
 async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
+    let project_path = crate::project_path::canonicalize(&args.path)?;
+    let manifest = Manifest::open(project_path.join("Water.toml")).await?;
     let platform = request::resolve_preview_platform(args.platform)?;
-    let target_platform = request::resolve_hydrolysis_test_platform(platform)?;
+    let target_platform = request::resolve_hydrolysis_test_platform(&manifest, platform)?;
     request::check_toolchain_for_backend(
         &waterui_cli::toolchain::Host::current(),
         ResolvedPreviewBackend::Hydrolysis(target_platform),
     )
     .await?;
     let (width, height) = request::parse_frame(&args.frame)?;
-    let project_path = crate::project_path::canonicalize(&args.path)?;
     let crate_name = read_project_crate_name(&project_path).await?;
     let sccache_path =
         super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
@@ -104,7 +105,7 @@ pub struct Args {
     #[arg(short, long, value_enum)]
     platform: Option<CliPreviewPlatform>,
 
-    /// Rendering backend.
+    /// Rendering backend (must agree with any Water.toml platform declaration).
     #[arg(long, value_enum)]
     backend: Option<CliPreviewBackend>,
 
@@ -230,11 +231,15 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     // Resolve through the shared `PreviewArgs` contract — the same arguments
     // the MCP `preview` tool takes.
-    let request = args.preview_args(target).resolve(&crate_name)?;
+    let manifest = Manifest::open(project_path.join("Water.toml")).await?;
+    let request = args.preview_args(target).resolve(&manifest, &crate_name)?;
     header!(shell, "Preview: {}", request.target.display_name());
 
-    request::check_toolchain_for_backend(&waterui_cli::toolchain::Host::current(), request.backend)
-        .await?;
+    let kotlin_toolchain = request::check_toolchain_for_backend(
+        &waterui_cli::toolchain::Host::current(),
+        request.backend,
+    )
+    .await?;
 
     // Detect sccache for compilation caching
     let sccache_path =
@@ -259,6 +264,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             },
             &args.output,
             scenario.as_ref(),
+            kotlin_toolchain.as_ref(),
         ))
         .await?;
         if let Some(s) = spinner {
@@ -604,6 +610,10 @@ fn emit_child_output(shell: &Shell, output: &str) {
 
 #[cfg(test)]
 mod tests {
+    fn project_manifest() -> Manifest {
+        Manifest::parse("[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.linux]\nbackend = 'hydrolysis'").unwrap()
+    }
+
     use clap::Parser;
 
     use super::*;
@@ -651,7 +661,7 @@ mod tests {
         ]);
         let cli_request = cli_args
             .preview_args(cli_args.target.as_deref().expect("target"))
-            .resolve("demo_app")
+            .resolve(&project_manifest(), "demo_app")
             .expect("cli resolve");
 
         let mcp_args: PreviewArgs = serde_json::from_value(serde_json::json!({
@@ -663,7 +673,9 @@ mod tests {
             "platform": platform,
         }))
         .expect("mcp args parse");
-        let mcp_request = mcp_args.resolve("demo_app").expect("mcp resolve");
+        let mcp_request = mcp_args
+            .resolve(&project_manifest(), "demo_app")
+            .expect("mcp resolve");
 
         assert_eq!(cli_request, mcp_request);
     }
@@ -674,7 +686,7 @@ mod tests {
         let cli_args = parse(&["preview", "views::home", "--platform", platform]);
         let cli_request = cli_args
             .preview_args(cli_args.target.as_deref().expect("target"))
-            .resolve("demo_app")
+            .resolve(&project_manifest(), "demo_app")
             .expect("cli resolve");
 
         let mcp_args: PreviewArgs = serde_json::from_value(serde_json::json!({
@@ -682,7 +694,9 @@ mod tests {
             "platform": platform,
         }))
         .expect("mcp args parse");
-        let mcp_request = mcp_args.resolve("demo_app").expect("mcp resolve");
+        let mcp_request = mcp_args
+            .resolve(&project_manifest(), "demo_app")
+            .expect("mcp resolve");
 
         assert_eq!(cli_request, mcp_request);
     }
