@@ -179,7 +179,7 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
     "WKNavigationDelegate",
     "WKNavigationResponse",
     "WKScriptMessage",
-    "WKScriptMessageHandler",
+    "WKScriptMessageHandlerWithReply",
     "WKURLSchemeHandler",
     "WKURLSchemeTask",
     "WKUserContentController",
@@ -347,6 +347,8 @@ base64 = "0.22"
 approx = "0.5"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
+# The macOS real-engine suite drives the shared mirrored-state case.
+waterui-webview = { workspace = true, features = ["conformance"] }
 # Two crates that only exist to let the segmentation test see what it asserts
 # about: `icu_provider/logging` routes ICU4X data warnings through `log`
 # instead of the `eprintln` shim debug builds get otherwise, and `tracing-log`

@@ -169,7 +169,9 @@ impl HydrolysisRenderer {
                 wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
             ) || matches!(
                 format,
-                wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+                wgpu::TextureFormat::Rgba16Float
+                    | wgpu::TextureFormat::Rgba32Float
+                    | wgpu::TextureFormat::Rgb10a2Unorm
             ),
             "hydrolysis renderer: unsupported surface format {format:?}"
         );
@@ -259,7 +261,7 @@ impl HydrolysisRenderer {
                 Rc::clone(&state.engine),
                 Arc::clone(native_window),
                 (target.width, target.height),
-                transparent,
+                crate::platform::hydrolysis_output_request(transparent),
                 self.host_wake(),
             );
             *window_slot = Some(CherenkovWindow::new(

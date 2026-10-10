@@ -52,6 +52,14 @@ mod real {
     /// than they look.
     const TIMEOUT: Duration = Duration::from_secs(60);
 
+    /// The bound the whole mirrored-state conformance scenario gets.
+    ///
+    /// The case walks several real navigations across two server origins —
+    /// each a full load cycle through `WebKit`'s web and network processes —
+    /// so its bound covers the scenario, not the single engine wait
+    /// [`TIMEOUT`] gives.
+    const CONFORMANCE_TIMEOUT: Duration = Duration::from_secs(180);
+
     /// `2^53 + 1`: the smallest integer a JavaScript number cannot hold.
     const UNREPRESENTABLE: u64 = 9_007_199_254_740_993;
 
@@ -288,6 +296,20 @@ mod real {
         }
     }
 
+    /// One turn of the main run loop.
+    ///
+    /// `WKWebView`'s delegate callbacks — and the main-queue work the
+    /// executor's tasks can land on — only advance while the run loop is
+    /// pumped, so every wait in the suite goes through here.
+    fn pump_main_run_loop() {
+        let deadline = NSDate::dateWithTimeIntervalSinceNow(0.02);
+        // SAFETY: the main run loop is pumped from the main thread, which
+        // `main` below is.
+        unsafe {
+            NSRunLoop::currentRunLoop().runMode_beforeDate(NSDefaultRunLoopMode, &deadline);
+        }
+    }
+
     impl<H: WebViewHandle> RealEngine<H> {
         /// Answers whatever the engine has asked for, without blocking on it.
         fn serve(&self) {
@@ -323,12 +345,7 @@ mod real {
         /// delegate callbacks on the main run loop, and the handler executor.
         fn step(&self) {
             self.serve();
-            let deadline = NSDate::dateWithTimeIntervalSinceNow(0.02);
-            // SAFETY: the main run loop is pumped from the main thread, which
-            // `main` below is.
-            unsafe {
-                NSRunLoop::currentRunLoop().runMode_beforeDate(NSDefaultRunLoopMode, &deadline);
-            }
+            pump_main_run_loop();
             while self.executor.0.try_tick() {}
         }
 
@@ -684,6 +701,37 @@ mod real {
         );
     }
 
+    /// Mirrored state and bridge replies reach only the documents the
+    /// admission policy admits — the shared conformance case on the system
+    /// `WKWebView` controller this backend installs.
+    ///
+    /// The case serves its own pages from its own threads and drives two
+    /// views through the controller, so this loop owes it only the main run
+    /// loop (the same turn `RealEngine::step` takes) and the executor's
+    /// ticks — bounded by [`CONFORMANCE_TIMEOUT`], which covers the whole
+    /// multi-navigation scenario rather than one wait.
+    fn mirrored_state_reaches_only_admitted_documents(executor: &TestExecutor) {
+        let controller = waterui_webview::WebViewController::new(MacSystemWebViewController);
+        let mut future = pin!(
+            waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
+                &controller
+            )
+        );
+        let mut context = Context::from_waker(Waker::noop());
+        let deadline = Instant::now() + CONFORMANCE_TIMEOUT;
+        loop {
+            if future.as_mut().poll(&mut context) == Poll::Ready(()) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out after {CONFORMANCE_TIMEOUT:?} waiting for the mirrored-state admission conformance case"
+            );
+            pump_main_run_loop();
+            while executor.0.try_tick() {}
+        }
+    }
+
     pub fn run() {
         let executor = TestExecutor(Rc::new(AsyncLocalExecutor::new()));
         executor_core::init_local_executor(executor.clone());
@@ -698,6 +746,7 @@ mod real {
         a_keyed_injection_replaces_its_predecessor(&executor);
         a_local_file_document_receives_the_bridge(&executor);
         an_any_policy_admits_an_opaque_document(&executor);
+        mirrored_state_reaches_only_admitted_documents(&executor);
     }
 }
 

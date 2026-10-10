@@ -67,8 +67,8 @@ pub enum SelectionReason {
     /// sRGB SDR: the explicit negotiation result when nothing wider is
     /// advertised.
     Sdr,
-    /// The colour space the host required through
-    /// `WindowTarget::require_color_space`.
+    /// The exact colour space the host required —
+    /// [`ColorSpaceRequest::Exact`].
     Required,
 }
 
@@ -80,7 +80,8 @@ pub struct OutputSelection {
     /// The swapchain's texture format.
     pub format: wgpu::TextureFormat,
     /// The configured colour space — resolved, never `Auto` unless the
-    /// surface advertised no explicit pair at all.
+    /// surface advertised no explicit pair the request admits, or the
+    /// request was `ColorSpaceRequest::Exact(Auto)`.
     pub color_space: wgpu::SurfaceColorSpace,
     /// The primaries the present pass converts to.
     pub primaries: DestinationPrimaries,
@@ -214,6 +215,7 @@ fn preferred_candidates(backend: wgpu::Backend) -> Vec<Want> {
         wgpu::Backend::BrowserWebGpu => vec![
             Want::Pair(f16, Cs::ExtendedDisplayP3),
             Want::Pair(f16, Cs::ExtendedSrgb),
+            Want::Pair(f16, Cs::DisplayP3),
             Want::AnyFormat(Cs::DisplayP3),
             Want::AnyFormat(Cs::Srgb),
         ],
@@ -272,6 +274,129 @@ const fn space_characteristics(
     }
 }
 
+/// The dynamic-range class a surface colour space belongs to — the rungs
+/// a [`ColorRangeInterval`] spans (#2445).
+///
+/// Ordered `Standard < WideGamut < HighDynamicRange`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ColorRange {
+    /// sRGB — `Srgb`, and `Auto`, which resolves as the SDR-safe default
+    /// on every configurable surface.
+    #[default]
+    Standard,
+    /// Display P3 at standard dynamic range (`DisplayP3`).
+    WideGamut,
+    /// Extended-range and BT.2100 output: `ExtendedSrgbLinear`,
+    /// `ExtendedSrgb`, `ExtendedDisplayP3`, `Bt2100Pq` and `Bt2100Hlg`.
+    HighDynamicRange,
+}
+
+impl ColorRange {
+    /// The class `color_space` belongs to.
+    #[must_use]
+    pub const fn of(color_space: wgpu::SurfaceColorSpace) -> Self {
+        use wgpu::SurfaceColorSpace as Cs;
+        match color_space {
+            Cs::Auto | Cs::Srgb => Self::Standard,
+            Cs::DisplayP3 => Self::WideGamut,
+            Cs::ExtendedSrgbLinear
+            | Cs::ExtendedSrgb
+            | Cs::ExtendedDisplayP3
+            | Cs::Bt2100Pq
+            | Cs::Bt2100Hlg => Self::HighDynamicRange,
+        }
+    }
+}
+
+/// A non-empty, inclusive interval of [`ColorRange`] classes — the
+/// classes a [`ColorSpaceRequest::Range`] admits, endpoints included
+/// (#2445).
+///
+/// The interval is never inverted: [`ColorRangeInterval::new`] refuses
+/// a lower bound above the upper one, so every interval admits at least
+/// one class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ColorRangeInterval {
+    at_least: ColorRange,
+    at_most: ColorRange,
+}
+
+impl ColorRangeInterval {
+    /// Every class, `Standard..=HighDynamicRange` — the interval
+    /// [`ColorSpaceRequest::Best`] negotiates over.
+    pub const ALL: Self = Self {
+        at_least: ColorRange::Standard,
+        at_most: ColorRange::HighDynamicRange,
+    };
+
+    /// The classes from `at_least` up to `at_most`, both included.
+    ///
+    /// # Panics
+    /// If `at_least` is above `at_most`: an inverted interval admits no
+    /// class, a request no surface can meet. In a `const` the panic is a
+    /// compile error.
+    #[must_use]
+    #[track_caller]
+    pub const fn new(at_least: ColorRange, at_most: ColorRange) -> Self {
+        assert!(
+            at_least as u8 <= at_most as u8,
+            "ColorRangeInterval::new: `at_least` is above `at_most`, an inverted interval admits no colour range"
+        );
+        Self { at_least, at_most }
+    }
+
+    /// The lowest admitted class.
+    #[must_use]
+    pub const fn at_least(self) -> ColorRange {
+        self.at_least
+    }
+
+    /// The highest admitted class.
+    #[must_use]
+    pub const fn at_most(self) -> ColorRange {
+        self.at_most
+    }
+
+    /// Whether `class` lies inside the interval.
+    #[must_use]
+    pub const fn contains(self, class: ColorRange) -> bool {
+        self.at_least as u8 <= class as u8 && class as u8 <= self.at_most as u8
+    }
+}
+
+/// The colour space a host asks a window's swapchain for —
+/// [`OutputRequest::color_space`], set through `WindowTarget::color_space`
+/// (#2445).
+///
+/// Every case is resolved against the surface's advertised pairs by
+/// [`select_output`]; what the surface cannot meet is
+/// [`SurfaceError::UnsupportedTarget`], never a substituted pair.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorSpaceRequest {
+    /// The best advertised (format, colour space) pair — an extended or
+    /// HDR space where the surface offers one, otherwise a reported SDR
+    /// selection. The default; the same as
+    /// `Range(ColorRangeInterval::ALL)`.
+    #[default]
+    Best,
+    /// The best advertised pair inside an interval of classes: the
+    /// backend's preference order restricted to the spaces whose
+    /// [`ColorRange`] the interval contains.
+    ///
+    /// An interval containing [`Standard`](ColorRange::Standard) is met
+    /// by every surface that offers an sRGB pair, and by a surface that
+    /// reports no admitted explicit space through its `Auto` pair. An
+    /// interval excluding `Standard` fails on an sRGB-only surface — a
+    /// request that must reach a class is never met by a lesser one.
+    Range(ColorRangeInterval),
+    /// Exactly this space. `Exact(Auto)` selects the surface's `Auto`
+    /// pair — its first advertised format with no explicit space —
+    /// which is the only literal reading of `Auto`: a space request can
+    /// only be met by what the surface advertises, and `Auto` is never
+    /// advertised.
+    Exact(wgpu::SurfaceColorSpace),
+}
+
 /// What a host asked of a window's swapchain — the `WindowTarget`
 /// options output negotiation runs against.
 #[derive(Clone, Copy, Debug)]
@@ -279,9 +404,9 @@ pub struct OutputRequest {
     /// `WindowTarget::transparent`: a composite alpha mode the compositor
     /// sees through.
     pub transparent: bool,
-    /// `WindowTarget::require_color_space`: the required colour space, or
-    /// `None` to negotiate the best advertised pair.
-    pub color_space: Option<wgpu::SurfaceColorSpace>,
+    /// `WindowTarget::color_space`: the colour-space request the
+    /// swapchain is configured by.
+    pub color_space: ColorSpaceRequest,
     /// `WindowTarget::display_sync`: how presentation is paced against
     /// the display.
     pub sync: DisplaySync,
@@ -309,19 +434,141 @@ fn select_present_mode(
         })
 }
 
+/// Why a pair off the backend's preference table was selected, for the
+/// record.
+const fn selection_reason(color_space: wgpu::SurfaceColorSpace) -> SelectionReason {
+    if color_space.is_hdr() {
+        SelectionReason::PreferredHdr
+    } else if matches!(color_space, wgpu::SurfaceColorSpace::DisplayP3) {
+        SelectionReason::WideGamutSdr
+    } else {
+        SelectionReason::Sdr
+    }
+}
+
+/// The error for a colour-space request the surface cannot meet, naming
+/// the request and every (format, colour spaces) pair it advertises.
+fn unmet_color_space(caps: &wgpu::SurfaceCapabilities, request: ColorSpaceRequest) -> SurfaceError {
+    SurfaceError::UnsupportedTarget(format!(
+        "colour-space request {request:?} cannot be met: the surface advertises the pairs {:?} and the formats {:?}",
+        caps.format_capabilities, caps.formats
+    ))
+}
+
+/// The `Auto` pair: the surface's first advertised format configured
+/// with `SurfaceColorSpace::Auto` — the historical configuration of a
+/// surface that reports no explicit colour space, and `Auto`'s only
+/// resolution.
+fn auto_pair(
+    caps: &wgpu::SurfaceCapabilities,
+    request: ColorSpaceRequest,
+) -> Result<wgpu::TextureFormat, SurfaceError> {
+    caps.formats
+        .first()
+        .copied()
+        .ok_or_else(|| unmet_color_space(caps, request))
+}
+
+/// A negotiated (format, colour space) pair and why it was selected.
+type ColorPair = (
+    wgpu::TextureFormat,
+    wgpu::SurfaceColorSpace,
+    SelectionReason,
+);
+
+/// The (format, colour space, reason) triple `request` resolves to among
+/// the surface's advertised pairs (#2445).
+///
+/// `Best` and `Range` walk the backend's preference table restricted to
+/// the admitted [`ColorRange`] classes; `Exact` takes the required space
+/// in the preferred format order, then the surface's own.
+///
+/// # Errors
+/// [`SurfaceError::UnsupportedTarget`] when the surface advertises no
+/// pair the request admits — the error names the request and the offer.
+fn select_color_pair(
+    caps: &wgpu::SurfaceCapabilities,
+    backend: wgpu::Backend,
+    request: ColorSpaceRequest,
+) -> Result<ColorPair, SurfaceError> {
+    match request {
+        ColorSpaceRequest::Best => {
+            select_in_interval(caps, backend, request, ColorRangeInterval::ALL)
+        }
+        ColorSpaceRequest::Range(interval) => select_in_interval(caps, backend, request, interval),
+        ColorSpaceRequest::Exact(space) => select_exact(caps, request, space)
+            .map(|format| (format, space, SelectionReason::Required)),
+    }
+}
+
+/// The backend's most preferred advertised pair whose class `interval`
+/// contains. `Auto` counts as Standard: when no advertised explicit pair
+/// is admitted, an interval containing Standard is met by the surface's
+/// `Auto` pair.
+fn select_in_interval(
+    caps: &wgpu::SurfaceCapabilities,
+    backend: wgpu::Backend,
+    request: ColorSpaceRequest,
+    interval: ColorRangeInterval,
+) -> Result<ColorPair, SurfaceError> {
+    let admits = |space: wgpu::SurfaceColorSpace| interval.contains(ColorRange::of(space));
+    let selected = preferred_candidates(backend)
+        .into_iter()
+        .find_map(|want| match want {
+            Want::Pair(format, space) => {
+                (admits(space) && advertised(caps, format, space)).then_some((format, space))
+            }
+            Want::AnyFormat(space) if admits(space) => {
+                first_for_space(caps, space).map(|format| (format, space))
+            }
+            Want::AnyFormat(_) => None,
+        });
+    match selected {
+        Some((format, space)) => Ok((format, space, selection_reason(space))),
+        None if admits(wgpu::SurfaceColorSpace::Auto) => Ok((
+            auto_pair(caps, request)?,
+            wgpu::SurfaceColorSpace::Auto,
+            SelectionReason::Sdr,
+        )),
+        None => Err(unmet_color_space(caps, request)),
+    }
+}
+
+/// The advertised format for exactly `space`: the space's preferred
+/// format order first, then the surface's own; `Auto` takes the `Auto`
+/// pair's format.
+fn select_exact(
+    caps: &wgpu::SurfaceCapabilities,
+    request: ColorSpaceRequest,
+    space: wgpu::SurfaceColorSpace,
+) -> Result<wgpu::TextureFormat, SurfaceError> {
+    if matches!(space, wgpu::SurfaceColorSpace::Auto) {
+        auto_pair(caps, request)
+    } else {
+        required_format_order(space)
+            .iter()
+            .copied()
+            .find(|&format| advertised(caps, format, space))
+            .or_else(|| first_for_space(caps, space))
+            .ok_or_else(|| unmet_color_space(caps, request))
+    }
+}
+
 /// Selects the swapchain's (format, colour space) pair and present mode
 /// from the surface's advertised capabilities — output negotiation, not a
-/// fallback (#98, #214).
+/// fallback (#98, #214, #2445).
 ///
-/// `request.color_space` is the host's explicit colour-space requirement
-/// (`WindowTarget::require_color_space`) and `request.sync` its pacing
+/// `request.color_space` is the host's [`ColorSpaceRequest`] — the best
+/// advertised pair, the best pair inside a range-class interval, or one
+/// exact space — and `request.sync` its pacing
 /// (`WindowTarget::display_sync`); when either cannot be met the surface
 /// is `Unsupported`, never silently substituted.
 ///
 /// # Errors
 /// [`SurfaceError::UnsupportedTarget`] when the surface offers no present
 /// mode for `request.sync`, no transparency-capable alpha mode for a
-/// transparent request, the required colour space, or any format at all.
+/// transparent request, or no (format, colour space) pair the request
+/// admits — the error names the request and what the surface offers.
 ///
 /// # Panics
 /// If the surface reports no composite alpha mode, which a configurable
@@ -336,6 +583,7 @@ pub fn select_output(
         [
             wgpu::CompositeAlphaMode::PreMultiplied,
             wgpu::CompositeAlphaMode::PostMultiplied,
+            wgpu::CompositeAlphaMode::Inherit,
         ]
         .into_iter()
         .find(|mode| caps.alpha_modes.contains(mode))
@@ -353,67 +601,7 @@ pub fn select_output(
             .first()
             .expect("a configurable surface reports at least one alpha mode")
     };
-    let (format, color_space, reason) = match request.color_space {
-        Some(wgpu::SurfaceColorSpace::Auto) | None => {
-            let mut selected = None;
-            for want in preferred_candidates(backend) {
-                let pair = match want {
-                    Want::Pair(format, space) => {
-                        advertised(caps, format, space).then_some((format, space))
-                    }
-                    Want::AnyFormat(space) => {
-                        first_for_space(caps, space).map(|format| (format, space))
-                    }
-                };
-                if let Some(pair) = pair {
-                    selected = Some(pair);
-                    break;
-                }
-            }
-            match selected {
-                Some((format, space)) => (
-                    format,
-                    space,
-                    if space.is_hdr() {
-                        SelectionReason::PreferredHdr
-                    } else if space == wgpu::SurfaceColorSpace::DisplayP3 {
-                        SelectionReason::WideGamutSdr
-                    } else {
-                        SelectionReason::Sdr
-                    },
-                ),
-                // A surface that advertises no explicit colour space —
-                // the historical `formats.first()` + `Auto` configuration.
-                None => (
-                    caps.formats.first().copied().ok_or_else(|| {
-                        SurfaceError::UnsupportedTarget(
-                            "adapter cannot present to the window".into(),
-                        )
-                    })?,
-                    wgpu::SurfaceColorSpace::Auto,
-                    SelectionReason::Sdr,
-                ),
-            }
-        }
-        Some(required_space) => {
-            let mut format = None;
-            for &preferred in required_format_order(required_space) {
-                if advertised(caps, preferred, required_space) {
-                    format = Some(preferred);
-                    break;
-                }
-            }
-            let format = match format {
-                Some(format) => format,
-                None => first_for_space(caps, required_space).ok_or_else(|| {
-                    SurfaceError::UnsupportedTarget(format!(
-                        "colour space {required_space:?} is not advertised for this surface"
-                    ))
-                })?,
-            };
-            (format, required_space, SelectionReason::Required)
-        }
-    };
+    let (format, color_space, reason) = select_color_pair(caps, backend, request.color_space)?;
     let (primaries, transfer, tone_map_ceiling) = space_characteristics(color_space);
     Ok(OutputSelection {
         format,
@@ -1119,18 +1307,29 @@ mod tests {
     };
 
     use super::{
-        DestinationPrimaries, OutputAlpha, OutputColor, OutputRequest, SelectionReason,
-        TransferEncoding, select_output, surface_output_alpha,
+        ColorRange, ColorRangeInterval, ColorSpaceRequest, DestinationPrimaries, OutputAlpha,
+        OutputColor, OutputRequest, SelectionReason, TransferEncoding, select_output,
+        surface_output_alpha,
     };
     use crate::DisplaySync;
 
     /// A display-synchronized request.
-    const fn request(transparent: bool, color_space: Option<Cs>) -> OutputRequest {
+    const fn request(transparent: bool, color_space: ColorSpaceRequest) -> OutputRequest {
         OutputRequest {
             transparent,
             color_space,
             sync: DisplaySync::Synchronized,
         }
+    }
+
+    /// A display-synchronized request for the best advertised pair.
+    const fn best(transparent: bool) -> OutputRequest {
+        request(transparent, ColorSpaceRequest::Best)
+    }
+
+    /// A display-synchronized request for one exact colour space.
+    const fn exact(transparent: bool, space: Cs) -> OutputRequest {
+        request(transparent, ColorSpaceRequest::Exact(space))
     }
 
     /// A synthetic surface: `fc` is the (format, colour spaces) list, in
@@ -1173,7 +1372,7 @@ mod tests {
             &[F::Bgra8UnormSrgb, F::Rgba16Float],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Metal, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Metal, best(false)).unwrap();
         assert_eq!(sel.format, F::Rgba16Float);
         assert_eq!(sel.color_space, Cs::ExtendedDisplayP3);
         assert_eq!(sel.primaries, DestinationPrimaries::DisplayP3);
@@ -1195,7 +1394,7 @@ mod tests {
             &[F::Bgra8UnormSrgb],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Metal, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Metal, best(false)).unwrap();
         assert_eq!(
             (sel.format, sel.color_space),
             (F::Rgba16Float, Cs::ExtendedSrgbLinear)
@@ -1214,7 +1413,7 @@ mod tests {
             &[F::Bgra8UnormSrgb],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Vulkan, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Vulkan, best(false)).unwrap();
         assert_eq!(
             (sel.format, sel.color_space),
             (F::Rgba16Float, Cs::Bt2100Pq)
@@ -1237,7 +1436,7 @@ mod tests {
             &[F::Bgra8UnormSrgb, F::Rgba16Float],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Vulkan, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Vulkan, best(false)).unwrap();
         assert_eq!(
             (sel.format, sel.color_space),
             (F::Rgba16Float, Cs::ExtendedSrgbLinear)
@@ -1255,7 +1454,7 @@ mod tests {
             &[F::Bgra8UnormSrgb, F::Rgba16Float, F::Rgb10a2Unorm],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Dx12, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Dx12, best(false)).unwrap();
         assert_eq!(
             (sel.format, sel.color_space),
             (F::Rgb10a2Unorm, Cs::Bt2100Pq)
@@ -1271,7 +1470,7 @@ mod tests {
             &[F::Bgra8Unorm],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Metal, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Metal, best(false)).unwrap();
         assert_eq!(sel.color_space, Cs::DisplayP3);
         assert_eq!(sel.reason, SelectionReason::WideGamutSdr);
         assert_eq!(sel.primaries, DestinationPrimaries::DisplayP3);
@@ -1287,7 +1486,7 @@ mod tests {
             opaque(),
         );
         for backend in [Backend::Metal, Backend::Vulkan, Backend::Dx12] {
-            let sel = select_output(&caps, backend, request(false, None)).unwrap();
+            let sel = select_output(&caps, backend, best(false)).unwrap();
             assert_eq!(sel.color_space, Cs::Srgb);
             assert_eq!(sel.reason, SelectionReason::Sdr, "{backend:?}");
         }
@@ -1298,7 +1497,7 @@ mod tests {
         // A backend that reports formats but no format_capabilities:
         // the historical formats.first() + Auto configuration.
         let caps = surface(&[], &[F::Bgra8UnormSrgb], opaque());
-        let sel = select_output(&caps, Backend::Metal, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Metal, best(false)).unwrap();
         assert_eq!((sel.format, sel.color_space), (F::Bgra8UnormSrgb, Cs::Auto));
         assert_eq!(sel.reason, SelectionReason::Sdr);
     }
@@ -1307,7 +1506,7 @@ mod tests {
     fn an_empty_surface_is_unsupported() {
         let caps = surface(&[], &[], opaque());
         assert!(matches!(
-            select_output(&caps, Backend::Metal, request(false, None)),
+            select_output(&caps, Backend::Metal, best(false)),
             Err(cherenkov::SurfaceError::UnsupportedTarget(_))
         ));
     }
@@ -1325,8 +1524,7 @@ mod tests {
             &[F::Bgra8UnormSrgb, F::Rgba16Float],
             opaque(),
         );
-        let sel =
-            select_output(&caps, Backend::Metal, request(false, Some(Cs::Bt2100Hlg))).unwrap();
+        let sel = select_output(&caps, Backend::Metal, exact(false, Cs::Bt2100Hlg)).unwrap();
         assert_eq!(
             (sel.format, sel.color_space),
             (F::Rgba16Float, Cs::Bt2100Hlg)
@@ -1346,7 +1544,7 @@ mod tests {
         for space in [Cs::Bt2100Pq, Cs::Bt2100Hlg, Cs::ExtendedDisplayP3] {
             assert!(
                 matches!(
-                    select_output(&caps, Backend::Metal, request(false, Some(space))),
+                    select_output(&caps, Backend::Metal, exact(false, space)),
                     Err(cherenkov::SurfaceError::UnsupportedTarget(_))
                 ),
                 "{space:?} must not be silently substituted"
@@ -1366,9 +1564,246 @@ mod tests {
             &[F::Bgra8Unorm],
             opaque(),
         );
-        let sel =
-            select_output(&caps, Backend::Metal, request(false, Some(Cs::DisplayP3))).unwrap();
+        let sel = select_output(&caps, Backend::Metal, exact(false, Cs::DisplayP3)).unwrap();
         assert_eq!(sel.format, F::Bgra8Unorm);
+    }
+
+    #[test]
+    fn a_required_space_failure_names_the_request_and_the_offer() {
+        let caps = surface(
+            &[(F::Bgra8UnormSrgb, Spaces::SRGB)],
+            &[F::Bgra8UnormSrgb],
+            opaque(),
+        );
+        let error = select_output(&caps, Backend::Metal, exact(false, Cs::Bt2100Pq))
+            .expect_err("an unadvertised space cannot be met");
+        let message = format!("{error}");
+        assert!(message.contains("Bt2100Pq"), "{message}");
+        assert!(message.contains("Bgra8UnormSrgb"), "{message}");
+    }
+
+    #[test]
+    fn a_range_selects_the_best_pair_inside_it() {
+        // Vulkan advertises sRGB plus the extended-linear and PQ pairs.
+        let caps = surface(
+            &[
+                (F::Bgra8UnormSrgb, Spaces::SRGB),
+                (
+                    F::Rgba16Float,
+                    Spaces::EXTENDED_SRGB_LINEAR | Spaces::BT2100_PQ,
+                ),
+                (F::Rgb10a2Unorm, Spaces::BT2100_PQ),
+            ],
+            &[F::Bgra8UnormSrgb, F::Rgba16Float, F::Rgb10a2Unorm],
+            opaque(),
+        );
+        // Standard..=WideGamut keeps the HDR pairs out; no Display P3 is
+        // advertised, so the surface's sRGB pair is the best in range.
+        let sel = select_output(
+            &caps,
+            Backend::Vulkan,
+            request(
+                false,
+                ColorSpaceRequest::Range(ColorRangeInterval::new(
+                    ColorRange::Standard,
+                    ColorRange::WideGamut,
+                )),
+            ),
+        )
+        .unwrap();
+        assert_eq!((sel.format, sel.color_space), (F::Bgra8UnormSrgb, Cs::Srgb));
+        assert_eq!(sel.reason, SelectionReason::Sdr);
+        // WideGamut..=HDR keeps Standard out: the backend's preferred
+        // HDR pair is the answer.
+        let sel = select_output(
+            &caps,
+            Backend::Vulkan,
+            request(
+                false,
+                ColorSpaceRequest::Range(ColorRangeInterval::new(
+                    ColorRange::WideGamut,
+                    ColorRange::HighDynamicRange,
+                )),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            (sel.format, sel.color_space),
+            (F::Rgba16Float, Cs::ExtendedSrgbLinear)
+        );
+    }
+
+    #[test]
+    fn a_range_can_stop_below_an_advertised_class() {
+        // Display P3 is advertised, but the request caps at Standard.
+        let caps = surface(
+            &[
+                (F::Bgra8UnormSrgb, Spaces::SRGB),
+                (F::Bgra8Unorm, Spaces::DISPLAY_P3),
+            ],
+            &[F::Bgra8UnormSrgb, F::Bgra8Unorm],
+            opaque(),
+        );
+        let sel = select_output(
+            &caps,
+            Backend::Metal,
+            request(
+                false,
+                ColorSpaceRequest::Range(ColorRangeInterval::new(
+                    ColorRange::Standard,
+                    ColorRange::Standard,
+                )),
+            ),
+        )
+        .unwrap();
+        assert_eq!((sel.format, sel.color_space), (F::Bgra8UnormSrgb, Cs::Srgb));
+        // The same surface under Standard..=WideGamut takes the P3 pair.
+        let sel = select_output(
+            &caps,
+            Backend::Metal,
+            request(
+                false,
+                ColorSpaceRequest::Range(ColorRangeInterval::new(
+                    ColorRange::Standard,
+                    ColorRange::WideGamut,
+                )),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            (sel.format, sel.color_space),
+            (F::Bgra8Unorm, Cs::DisplayP3)
+        );
+        assert_eq!(sel.reason, SelectionReason::WideGamutSdr);
+    }
+
+    #[test]
+    fn an_unmet_range_names_the_request_and_the_offer() {
+        let caps = surface(
+            &[(F::Bgra8UnormSrgb, Spaces::SRGB)],
+            &[F::Bgra8UnormSrgb],
+            opaque(),
+        );
+        let error = select_output(
+            &caps,
+            Backend::Metal,
+            request(
+                false,
+                ColorSpaceRequest::Range(ColorRangeInterval::new(
+                    ColorRange::WideGamut,
+                    ColorRange::HighDynamicRange,
+                )),
+            ),
+        )
+        .expect_err("an sRGB-only surface cannot reach WideGamut");
+        let message = format!("{error}");
+        assert!(message.contains("WideGamut"), "{message}");
+        assert!(message.contains("HighDynamicRange"), "{message}");
+        assert!(message.contains("Bgra8UnormSrgb"), "{message}");
+    }
+
+    #[test]
+    fn a_range_admitting_standard_is_met_by_the_auto_pair() {
+        // The surface reports formats but no explicit colour space:
+        // `Auto` is its Standard pair, so a range that admits Standard
+        // resolves to it — a range that does not is unsupported.
+        let caps = surface(&[], &[F::Bgra8UnormSrgb], opaque());
+        for color_space in [
+            ColorSpaceRequest::Best,
+            ColorSpaceRequest::Range(ColorRangeInterval::new(
+                ColorRange::Standard,
+                ColorRange::WideGamut,
+            )),
+        ] {
+            let sel = select_output(&caps, Backend::Metal, request(false, color_space)).unwrap();
+            assert_eq!((sel.format, sel.color_space), (F::Bgra8UnormSrgb, Cs::Auto));
+            assert_eq!(sel.reason, SelectionReason::Sdr);
+        }
+        assert!(matches!(
+            select_output(
+                &caps,
+                Backend::Metal,
+                request(
+                    false,
+                    ColorSpaceRequest::Range(ColorRangeInterval::new(
+                        ColorRange::WideGamut,
+                        ColorRange::HighDynamicRange
+                    )),
+                ),
+            ),
+            Err(cherenkov::SurfaceError::UnsupportedTarget(_))
+        ));
+    }
+
+    #[test]
+    fn an_exact_auto_request_configures_the_auto_pair() {
+        // `Auto` is never an advertised space: `Exact(Auto)` selects the
+        // surface's `Auto` pair literally — its first format, no space.
+        let caps = surface(
+            &[(F::Bgra8UnormSrgb, Spaces::SRGB)],
+            &[F::Bgra8UnormSrgb],
+            opaque(),
+        );
+        let sel = select_output(&caps, Backend::Metal, exact(false, Cs::Auto)).unwrap();
+        assert_eq!((sel.format, sel.color_space), (F::Bgra8UnormSrgb, Cs::Auto));
+        assert_eq!(sel.reason, SelectionReason::Required);
+    }
+
+    #[test]
+    #[should_panic(expected = "inverted interval")]
+    fn an_inverted_interval_cannot_be_constructed() {
+        let _ = ColorRangeInterval::new(ColorRange::HighDynamicRange, ColorRange::WideGamut);
+    }
+
+    #[test]
+    fn a_web_sdr_range_prefers_the_half_float_display_p3_pair() {
+        // A browser canvas lists its preferred 8-bit format first and
+        // offers Display P3 on every format; the half-float pair keeps
+        // the wide gamut's precision.
+        let caps = surface(
+            &[
+                (F::Bgra8Unorm, Spaces::SRGB | Spaces::DISPLAY_P3),
+                (F::Rgba8Unorm, Spaces::SRGB | Spaces::DISPLAY_P3),
+                (
+                    F::Rgba16Float,
+                    Spaces::SRGB
+                        | Spaces::DISPLAY_P3
+                        | Spaces::EXTENDED_SRGB
+                        | Spaces::EXTENDED_DISPLAY_P3,
+                ),
+            ],
+            &[F::Bgra8Unorm, F::Rgba8Unorm, F::Rgba16Float],
+            opaque(),
+        );
+        let sel = select_output(
+            &caps,
+            Backend::BrowserWebGpu,
+            request(
+                false,
+                ColorSpaceRequest::Range(ColorRangeInterval::new(
+                    ColorRange::Standard,
+                    ColorRange::WideGamut,
+                )),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            (sel.format, sel.color_space),
+            (F::Rgba16Float, Cs::DisplayP3)
+        );
+    }
+
+    #[test]
+    fn inherit_is_a_transparency_alpha_mode() {
+        // X11's ARGB visuals report Inherit — the composite inherits the
+        // window's alpha convention — so a transparent window may take it.
+        let caps = surface(
+            &[(F::Bgra8UnormSrgb, Spaces::SRGB)],
+            &[F::Bgra8UnormSrgb],
+            vec![CompositeAlphaMode::Opaque, CompositeAlphaMode::Inherit],
+        );
+        let sel = select_output(&caps, Backend::Vulkan, best(true)).unwrap();
+        assert_eq!(sel.alpha_mode, CompositeAlphaMode::Inherit);
     }
 
     #[test]
@@ -1381,7 +1816,7 @@ mod tests {
             &[F::Bgra8UnormSrgb, F::Rgba16Float],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Metal, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Metal, best(false)).unwrap();
         assert_eq!(sel.effective_headroom(4.0).to_bits(), 4.0f32.to_bits());
         assert_eq!(sel.effective_headroom(0.0).to_bits(), 0.0f32.to_bits());
 
@@ -1390,7 +1825,7 @@ mod tests {
             &[F::Bgra8UnormSrgb],
             opaque(),
         );
-        let sdr = select_output(&sdr_caps, Backend::Metal, request(false, None)).unwrap();
+        let sdr = select_output(&sdr_caps, Backend::Metal, best(false)).unwrap();
         assert_eq!(sdr.effective_headroom(8.0).to_bits(), 1.0f32.to_bits());
 
         let pq_caps = surface(
@@ -1401,7 +1836,7 @@ mod tests {
             &[F::Bgra8UnormSrgb, F::Rgba16Float],
             opaque(),
         );
-        let pq = select_output(&pq_caps, Backend::Vulkan, request(false, None)).unwrap();
+        let pq = select_output(&pq_caps, Backend::Vulkan, best(false)).unwrap();
         assert!((pq.effective_headroom(1e6) - 10000.0 / 203.0).abs() < 1e-3);
         assert_eq!(pq.effective_headroom(2.0).to_bits(), 2.0f32.to_bits());
     }
@@ -1416,7 +1851,7 @@ mod tests {
             &[F::Rgba16Float],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Metal, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Metal, best(false)).unwrap();
         assert!(sel.reported_headroom.is_none());
     }
 
@@ -1433,7 +1868,7 @@ mod tests {
                 CompositeAlphaMode::PreMultiplied,
             ],
         );
-        let sel = select_output(&premul, Backend::Metal, request(true, None)).unwrap();
+        let sel = select_output(&premul, Backend::Metal, best(true)).unwrap();
         assert_eq!(sel.alpha_mode, CompositeAlphaMode::PreMultiplied);
 
         let postmul = surface(
@@ -1444,7 +1879,7 @@ mod tests {
                 CompositeAlphaMode::PostMultiplied,
             ],
         );
-        let sel = select_output(&postmul, Backend::Metal, request(true, None)).unwrap();
+        let sel = select_output(&postmul, Backend::Metal, best(true)).unwrap();
         assert_eq!(sel.alpha_mode, CompositeAlphaMode::PostMultiplied);
 
         let opaque_only = surface(
@@ -1453,7 +1888,7 @@ mod tests {
             vec![CompositeAlphaMode::Opaque],
         );
         assert!(matches!(
-            select_output(&opaque_only, Backend::Metal, request(true, None)),
+            select_output(&opaque_only, Backend::Metal, best(true)),
             Err(cherenkov::SurfaceError::UnsupportedTarget(_))
         ));
     }
@@ -1468,7 +1903,7 @@ mod tests {
                 CompositeAlphaMode::Opaque,
             ],
         );
-        let sel = select_output(&caps, Backend::Metal, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Metal, best(false)).unwrap();
         assert_eq!(sel.alpha_mode, CompositeAlphaMode::Opaque);
     }
 
@@ -1481,7 +1916,7 @@ mod tests {
             &[],
             opaque(),
         );
-        let sel = select_output(&caps, Backend::Metal, request(false, None)).unwrap();
+        let sel = select_output(&caps, Backend::Metal, best(false)).unwrap();
         assert_eq!(sel.transfer, TransferEncoding::ExtendedSrgb);
         assert!(matches!(sel.output_color(), OutputColor::ExtendedDisplayP3));
     }
@@ -1501,7 +1936,7 @@ mod tests {
     fn sync_request(sync: DisplaySync) -> OutputRequest {
         OutputRequest {
             sync,
-            ..request(false, None)
+            ..best(false)
         }
     }
 
