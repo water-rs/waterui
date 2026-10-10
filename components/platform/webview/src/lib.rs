@@ -36,6 +36,7 @@ pub mod assets;
 #[cfg(not(target_arch = "wasm32"))]
 mod bundled;
 mod controller;
+#[cfg(not(target_arch = "wasm32"))]
 mod cookies;
 
 pub use assets::{
@@ -47,6 +48,7 @@ pub use bundled::{DEFAULT_CSP, DirectoryServer, dev_url};
 pub use controller::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cookie::Cookie;
+#[cfg(not(target_arch = "wasm32"))]
 pub use cookies::cookie_expiry;
 use std::{cell::Cell, fmt, rc::Rc};
 #[macro_use]
