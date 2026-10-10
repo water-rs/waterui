@@ -470,8 +470,11 @@ impl GpuSurfaceWindow for BrowserWindow {
     }
 }
 
+/// The id of the page's root element, which the CLI's page template carries.
+const ROOT_ID: &str = "waterui-root";
+
 fn find_or_create_root(document: &Document) -> HtmlElement {
-    if let Some(element) = document.get_element_by_id("waterui-root") {
+    if let Some(element) = document.get_element_by_id(ROOT_ID) {
         return element
             .dyn_into::<HtmlElement>()
             .expect("hydrolysis web platform: #waterui-root is not an HTML element");
@@ -482,7 +485,7 @@ fn find_or_create_root(document: &Document) -> HtmlElement {
         .expect("hydrolysis web platform: failed to create the root element")
         .dyn_into::<HtmlElement>()
         .expect("hydrolysis web platform: created node is not an HTML element");
-    root.set_id("waterui-root");
+    root.set_id(ROOT_ID);
     let style = root.style();
     // The layout viewport exactly: `100vh` is taller than the visible area on
     // mobile browsers, which makes the page itself pannable under the root.
@@ -1148,6 +1151,137 @@ fn add_event_listener(
             panic!("hydrolysis web platform: failed to register {event_name} listener")
         });
     closure
+}
+
+#[cfg(feature = "video")]
+/// The pointer and wheel events a hosted element yields to Hydrolysis
+/// content painted above it.
+const REDIRECTED_INPUT: [&str; 8] = [
+    "pointerdown",
+    "pointerup",
+    "pointermove",
+    "pointercancel",
+    "wheel",
+    "click",
+    "dblclick",
+    "contextmenu",
+];
+
+#[cfg(feature = "video")]
+/// Makes `element`, an element the engine hosts in the page, refuse every
+/// hit `occlusion` covers: interactive Hydrolysis content painted above the
+/// element takes it instead.
+///
+/// The engine's canvases take no pointer events, so a press over content
+/// painted above a hosted element lands on the element. A capture listener
+/// on the element sees it before the element's own handlers do, stops it
+/// there, and dispatches a copy of a pointer or wheel event to the root
+/// element, whose listeners deliver it to Hydrolysis's hit testing as if the
+/// element were not there. Clicks are only stopped: Hydrolysis reads presses,
+/// not clicks.
+///
+/// The returned listeners stay registered while they are held.
+pub(crate) fn redirect_occluded_input(
+    element: &HtmlElement,
+    occlusion: crate::HostedOcclusion,
+) -> Vec<Closure<dyn FnMut(Event)>> {
+    let occlusion = Rc::new(occlusion);
+    REDIRECTED_INPUT
+        .into_iter()
+        .map(|name| {
+            let element = element.clone();
+            let occlusion = Rc::clone(&occlusion);
+            let closure = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+                let mouse = event.dyn_ref::<web_sys::MouseEvent>().unwrap_or_else(|| {
+                    panic!("hydrolysis web platform: {name} is not a mouse event")
+                });
+                let root: HtmlElement = element
+                    .closest(&format!("#{ROOT_ID}"))
+                    .expect("hydrolysis web platform: #waterui-root is not a valid selector")
+                    .expect("hydrolysis web platform: a hosted element is outside the root element")
+                    .unchecked_into();
+                let (x, y) = event_position(
+                    &root,
+                    f64::from(mouse.client_x()),
+                    f64::from(mouse.client_y()),
+                );
+                if !occlusion.covers(kurbo::Point::new(f64::from(x), f64::from(y))) {
+                    return;
+                }
+                event.stop_immediate_propagation();
+                event.prevent_default();
+                let copy: Option<Event> = if let Some(pointer) = event.dyn_ref::<PointerEvent>() {
+                    Some(pointer_event_copy(pointer).into())
+                } else {
+                    event
+                        .dyn_ref::<WheelEvent>()
+                        .map(|wheel| wheel_event_copy(wheel).into())
+                };
+                if let Some(copy) = copy {
+                    root.dispatch_event(&copy)
+                        .expect("hydrolysis web platform: failed to redirect occluded input");
+                }
+            });
+            element
+                .add_event_listener_with_callback_and_bool(
+                    name,
+                    closure.as_ref().unchecked_ref(),
+                    true,
+                )
+                .unwrap_or_else(|_| {
+                    panic!("hydrolysis web platform: failed to register the {name} redirect")
+                });
+            closure
+        })
+        .collect()
+}
+
+#[cfg(feature = "video")]
+/// A dispatchable copy of `event`, carrying everything the root's pointer
+/// listeners read.
+fn pointer_event_copy(event: &PointerEvent) -> PointerEvent {
+    let init = web_sys::PointerEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_client_x(event.client_x());
+    init.set_client_y(event.client_y());
+    init.set_screen_x(event.screen_x());
+    init.set_screen_y(event.screen_y());
+    init.set_button(event.button());
+    init.set_buttons(event.buttons());
+    init.set_alt_key(event.alt_key());
+    init.set_ctrl_key(event.ctrl_key());
+    init.set_meta_key(event.meta_key());
+    init.set_shift_key(event.shift_key());
+    init.set_pointer_id(event.pointer_id());
+    init.set_pointer_type(&event.pointer_type());
+    init.set_is_primary(event.is_primary());
+    init.set_pressure(event.pressure());
+    init.set_width(event.width());
+    init.set_height(event.height());
+    PointerEvent::new_with_event_init_dict(&event.type_(), &init)
+        .expect("hydrolysis web platform: failed to copy a pointer event")
+}
+
+#[cfg(feature = "video")]
+/// A dispatchable copy of `event`, carrying everything the root's wheel
+/// listener reads.
+fn wheel_event_copy(event: &WheelEvent) -> WheelEvent {
+    let init = web_sys::WheelEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_client_x(event.client_x());
+    init.set_client_y(event.client_y());
+    init.set_alt_key(event.alt_key());
+    init.set_ctrl_key(event.ctrl_key());
+    init.set_meta_key(event.meta_key());
+    init.set_shift_key(event.shift_key());
+    init.set_delta_x(event.delta_x());
+    init.set_delta_y(event.delta_y());
+    init.set_delta_z(event.delta_z());
+    init.set_delta_mode(event.delta_mode());
+    WheelEvent::new_with_event_init_dict(&event.type_(), &init)
+        .expect("hydrolysis web platform: failed to copy a wheel event")
 }
 
 /// Whether `event` was dispatched to the root element itself. The engine's
