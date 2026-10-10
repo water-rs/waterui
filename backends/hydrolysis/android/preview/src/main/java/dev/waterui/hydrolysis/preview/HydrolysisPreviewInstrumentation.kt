@@ -54,9 +54,13 @@ class HydrolysisPreviewInstrumentation : Instrumentation() {
             ).serve()
         } catch (error: Throwable) {
             // The host serves until it dies, so reaching this catch means
-            // the process never came up — the next run's probe finds no
-            // host and starts a fresh one, which reads this in logcat.
-            Log.e(TAG, "preview host failed to start", error)
+            // it never came up: the CLI waiting for the start reads this
+            // line and fails with it.
+            Log.e(
+                PreviewHostServer.TAG,
+                "${PreviewHostServer.START_FAILED}: stamp ${arguments.getString("payloadStamp")}",
+                error,
+            )
             finish(
                 Activity.RESULT_CANCELED,
                 Bundle().apply { putString("error", error.stackTraceToString()) },
@@ -71,8 +75,4 @@ class HydrolysisPreviewInstrumentation : Instrumentation() {
             ?: throw IllegalArgumentException(
                 "hydrolysis preview: missing required instrumentation argument `$name`",
             )
-
-    private companion object {
-        const val TAG = "HydrolysisPreview"
-    }
 }

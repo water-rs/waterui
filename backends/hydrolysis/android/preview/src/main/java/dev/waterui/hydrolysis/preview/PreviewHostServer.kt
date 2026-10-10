@@ -5,6 +5,7 @@ import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.system.Os
 import android.util.Log
+import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.File
 import java.io.InputStream
@@ -40,19 +41,22 @@ class PreviewHostServer(
     private val stamp: String,
 ) {
     /**
-     * Accept and serve connections until the process dies. A bound socket
-     * is the readiness signal the CLI waits on — it exists only once the
-     * payload libraries are loaded, because the instrumentation starts
-     * this server after [PreviewBridge.initialize].
+     * Accept and serve connections until the process dies. Once the socket
+     * is bound it logs [SERVING] with the stamp — the readiness signal the
+     * CLI waits on with `logcat -m 1`. It is reached only after the payload
+     * libraries loaded, because the instrumentation starts this server
+     * after [PreviewBridge.initialize].
      */
     fun serve(): Nothing {
-        LocalServerSocket(SOCKET_NAME).use { server ->
-            Log.d(TAG, "preview host serving on $SOCKET_NAME (stamp $stamp)")
+        val server = LocalServerSocket(SOCKET_NAME)
+        try {
+            Log.i(TAG, "$SERVING: stamp $stamp")
             while (true) {
                 exchange(server.accept())
             }
+        } finally {
+            server.close()
         }
-        throw IllegalStateException("unreachable")
     }
 
     private fun exchange(socket: LocalSocket) {
@@ -123,29 +127,41 @@ class PreviewHostServer(
         }
     }
 
-    private companion object {
+    companion object {
+        /**
+         * The tag the host logs under — the CLI's readiness wait filters
+         * `logcat` on it.
+         */
         const val TAG = "HydrolysisPreview"
+
+        /**
+         * The start outcomes the CLI waits for, each logged as
+         * `<outcome>: stamp <stamp>` — keep them in step with
+         * `HOST_SERVING`/`HOST_START_FAILED` on the CLI side.
+         */
+        const val SERVING = "preview host serving"
+        const val START_FAILED = "preview host failed to start"
 
         /**
          * The abstract-domain name `adb forward` reaches this server
          * through — `localabstract:<name>` on the CLI side.
          */
-        const val SOCKET_NAME = "dev.waterui.hydrolysis.preview"
+        private const val SOCKET_NAME = "dev.waterui.hydrolysis.preview"
 
         /**
          * The wire schema this server speaks; the CLI refuses a greeting
          * naming another one.
          */
-        const val PROTOCOL_SCHEMA = 1
+        private const val PROTOCOL_SCHEMA = 1
 
         /**
          * The request's bound after the greeting: a connected peer that
          * never sends one would otherwise pin this connection open, leaving
          * every later probe queued behind it.
          */
-        const val REQUEST_DEADLINE_MS = 30_000
+        private const val REQUEST_DEADLINE_MS = 30_000
 
-        const val RENDERED = "{\"type\":\"rendered\"}"
+        private const val RENDERED = "{\"type\":\"rendered\"}"
 
         private fun writeLine(output: OutputStream, line: String) {
             output.write("$line\n".toByteArray(Charsets.UTF_8))
@@ -153,15 +169,15 @@ class PreviewHostServer(
         }
 
         private fun readLine(input: InputStream): String {
-            val builder = StringBuilder()
+            val line = ByteArrayOutputStream()
             while (true) {
                 when (val byte = input.read()) {
                     -1 ->
                         throw EOFException(
-                            "the preview channel closed before a request arrived"
+                            "the preview channel closed before a request arrived",
                         )
-                    '\n'.code -> return builder.toString()
-                    else -> builder.append(byte.toChar())
+                    '\n'.code -> return line.toString(Charsets.UTF_8.name())
+                    else -> line.write(byte)
                 }
             }
         }

@@ -6,11 +6,13 @@
 //! Each connection carries one render as single-line JSON frames: the host
 //! greets first with the payload stamp it loaded, the CLI sends a
 //! [`HostCommand`], and the host answers [`HostEvent::Rendered`] or
-//! [`HostEvent::Failed`]. The greeting is the liveness and readiness
-//! signal — the socket exists only once the libraries are loaded — so a
-//! run learns from it whether the live host carries this payload's stamp
-//! (reuse), carries a stale one (force-stop and start a fresh host) or is
-//! absent (start one).
+//! [`HostEvent::Failed`]. The greeting is the liveness and identity
+//! signal, so a run learns from it whether the live host carries this
+//! payload's stamp (reuse), carries a stale one or none (force-stop and
+//! start a fresh host) or is absent (start one). A fresh host's readiness
+//! is its own `logcat` line, logged once the libraries loaded and the
+//! socket is bound; the run waits on it with `logcat -m 1`, then connects
+//! once.
 //!
 //! A loaded library cannot be swapped, so a changed libraries stamp is the
 //! one transition that must kill the host; the resources part is re-read
@@ -18,7 +20,7 @@
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eyre::{Context as _, Result, bail};
 use futures_util::{FutureExt as _, pin_mut, select};
@@ -28,7 +30,7 @@ use smol::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use smol::net::TcpStream;
 use tracing::{debug, info};
 
-use crate::android::adb::Adb;
+use crate::android::adb::{Adb, recent_crash_log};
 use crate::hydrolysis::android::{PREVIEW_HOST_INSTRUMENTATION, PREVIEW_HOST_PACKAGE};
 use crate::toolchain::Host;
 
@@ -47,13 +49,18 @@ const FORWARD_DEADLINE: Duration = Duration::from_secs(30);
 const GREETING_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The bound on a host start: the process fork, its `System.load` of the
-/// debug launcher and the socket bind.
+/// debug launcher and the socket bind — the backstop for a host that dies
+/// without logging, not the start's expected duration.
 const HOST_START_DEADLINE: Duration = Duration::from_secs(120);
 
-/// The spacing between a refused or wrong-answer and the next connect —
-/// the wait for the *new* host to bind the socket, not a readiness delay:
-/// readiness is the greeting the host itself sends.
-const CONNECT_DELAY: Duration = Duration::from_millis(50);
+/// The tag the host logs its start outcome under.
+const HOST_LOG_TAG: &str = "HydrolysisPreview";
+
+/// The start outcome the host logs once its socket is bound.
+const HOST_SERVING: &str = "serving";
+
+/// The start outcome the host logs when loading or binding failed.
+const HOST_START_FAILED: &str = "failed to start";
 
 /// The reply bound for a render request — the same wall the instrumentation
 /// `-w` wait carried.
@@ -122,124 +129,32 @@ impl HostLink {
                 "the preview host did not answer the render request within {} seconds",
                 RENDER_DEADLINE.as_secs()
             ),
-            LineRead::Line(line) => match parse_event(&line)? {
+            LineRead::Line(frame) => match parse_event(&frame)? {
                 HostEvent::Rendered => Ok(()),
                 HostEvent::Failed { error } => {
                     bail!("the preview host reported a render failure: {error}")
                 }
-                other => {
-                    bail!("the preview host answered the render request with {other:?}: {line}")
+                HostEvent::Hello { .. } => {
+                    bail!("the preview host answered the render request with a greeting: {frame}")
                 }
             },
         }
     }
 }
 
-/// What the probe of the forwarded port found.
+/// The `adb forward` registration for the host socket — the local port a
+/// run connects to.
 #[derive(Debug)]
-enum Probe {
-    /// A host greeted with this run's payload stamp — reuse it.
-    Live(HostLink),
-    /// Nothing answered: no listener, or a forward whose far end is gone.
-    Absent,
-    /// A host greeted with a different stamp — its loaded payload is stale.
-    Stale(String),
-    /// A socket accepted the connection but sent no greeting in time —
-    /// something is there and wedged.
-    Silent,
-}
-
-/// The outcome of [`check_for_live_host`]: the forward's local port and
-/// what the probe learned. A run probes beside its payload push and turns
-/// the probe into a [`HostLink`] once the push lands — a fresh host must
-/// start only after the payload it will report as loaded is in place.
-#[derive(Debug)]
-pub(super) struct HostCheck {
+pub(super) struct HostForward {
     port: u16,
-    probe: Probe,
 }
 
-/// Ensure the `adb forward` for the host socket exists, then probe it for
-/// a live host carrying `stamp`.
+/// Ensure the adb server holds a forward from a local TCP port to the
+/// host socket on `serial`, creating it when none is registered.
 ///
 /// # Errors
-/// Returns an error when the forward cannot be listed or created, or the
-/// host's greeting is malformed or speaks another schema.
-pub(super) async fn check_for_live_host(
-    host: &Host,
-    adb: &Adb,
-    serial: &str,
-    stamp: &str,
-) -> Result<HostCheck> {
-    let port = ensure_forward(host, adb, serial).await?;
-    let probe = match connect_and_greet(port).await? {
-        Greet::Ready(link, held) if held == stamp => {
-            debug!(%held, "the live preview host carries this payload's stamp");
-            Probe::Live(link)
-        }
-        Greet::Ready(_, held) => {
-            debug!(%held, expected = %stamp, "the live preview host carries a stale payload");
-            Probe::Stale(held)
-        }
-        Greet::Absent => Probe::Absent,
-        Greet::Silent => Probe::Silent,
-    };
-    Ok(HostCheck { port, probe })
-}
-
-impl HostCheck {
-    /// Turn the probe into a link: reuse a live host, or — once the caller's
-    /// payload push has landed — stop whatever answered and start a fresh
-    /// host for `libraries`.
-    ///
-    /// # Errors
-    /// Returns an error when the force-stop, the `am instrument` start, or
-    /// the wait for the new host's greeting fails.
-    pub(super) async fn into_link(
-        self,
-        host: &Host,
-        adb: &Adb,
-        serial: &str,
-        libraries: &[String],
-        stamp: &str,
-    ) -> Result<HostLink> {
-        match self.probe {
-            Probe::Live(link) => {
-                info!("reusing the live preview host");
-                Ok(link)
-            }
-            probe => {
-                // `am instrument` itself force-stops the package, but it
-                // returns before the kill completes: stop deliberately so
-                // the dying host's socket cannot answer the wait below.
-                let stop = match &probe {
-                    Probe::Absent => {
-                        info!("starting a preview host: none is running");
-                        false
-                    }
-                    Probe::Stale(held) => {
-                        info!(%held, "restarting the preview host: the payload changed");
-                        true
-                    }
-                    Probe::Silent => {
-                        info!("restarting the preview host: it accepts but answers nothing");
-                        true
-                    }
-                    Probe::Live(_) => unreachable!("handled above"),
-                };
-                if stop {
-                    force_stop_host(host, adb, serial).await?;
-                }
-                start_host(host, adb, serial, libraries, stamp).await?;
-                await_host(self.port, stamp).await
-            }
-        }
-    }
-}
-
-/// The `adb forward` local port for the host socket, creating the
-/// registration when the adb server does not already hold one.
-async fn ensure_forward(host: &Host, adb: &Adb, serial: &str) -> Result<u16> {
+/// Returns an error when the forward cannot be listed or created.
+pub(super) async fn open_forward(host: &Host, adb: &Adb, serial: &str) -> Result<HostForward> {
     let remote = format!("localabstract:{HOST_SOCKET_NAME}");
     if let Some(forward) = adb
         .forwards(host, serial, FORWARD_DEADLINE)
@@ -248,15 +163,79 @@ async fn ensure_forward(host: &Host, adb: &Adb, serial: &str) -> Result<u16> {
         .find(|forward| forward.remote == remote)
     {
         debug!(port = forward.local_port, "reusing the adb forward");
-        return Ok(forward.local_port);
+        return Ok(HostForward {
+            port: forward.local_port,
+        });
     }
     let port = adb.forward(host, serial, &remote, FORWARD_DEADLINE).await?;
     debug!(port, "created the adb forward");
-    Ok(port)
+    Ok(HostForward { port })
+}
+
+impl HostForward {
+    /// A link to a host that loaded `stamp`'s libraries: the live host when
+    /// its greeting names `stamp`, otherwise a fresh host started for
+    /// `libraries` — once whatever answered with another stamp, or answered
+    /// nothing, is force-stopped. Call it only after the payload push has
+    /// landed: a fresh host loads what the device holds at its start.
+    ///
+    /// `since` is the run's `logcat -T` bound: the fresh host's readiness
+    /// line must be newer than it.
+    ///
+    /// # Errors
+    /// Returns an error when the probe's greeting is malformed or speaks
+    /// another schema, when the force-stop or the `am instrument` start
+    /// fails, when the fresh host reports a failed start or no readiness
+    /// inside [`HOST_START_DEADLINE`], or when its greeting does not name
+    /// `stamp`.
+    pub(super) async fn link(
+        &self,
+        host: &Host,
+        adb: &Adb,
+        serial: &str,
+        libraries: &[String],
+        stamp: &str,
+        since: &str,
+    ) -> Result<HostLink> {
+        match connect_and_greet(self.port).await? {
+            Greet::Ready(link, held) if held == stamp => {
+                info!(%stamp, "reusing the live preview host");
+                return Ok(link);
+            }
+            Greet::Ready(_, held) => {
+                info!(%held, %stamp, "restarting the preview host: the payload changed");
+                force_stop_host(host, adb, serial).await?;
+            }
+            Greet::Silent => {
+                info!(%stamp, "restarting the preview host: it accepts but sends no greeting");
+                force_stop_host(host, adb, serial).await?;
+            }
+            Greet::Absent => info!(%stamp, "starting a preview host: none is running"),
+        }
+        start_host(host, adb, serial, libraries, stamp).await?;
+        await_host_ready(host, adb, serial, stamp, since).await?;
+        match connect_and_greet(self.port).await? {
+            Greet::Ready(link, held) if held == stamp => Ok(link),
+            Greet::Ready(_, held) => bail!(
+                "the preview host started for stamp {stamp} reported ready, but the socket \
+                 greeted with stamp {held}"
+            ),
+            Greet::Absent => bail!(
+                "the preview host for stamp {stamp} reported ready, but the forwarded socket \
+                 accepted no connection"
+            ),
+            Greet::Silent => bail!(
+                "the preview host for stamp {stamp} reported ready, but sent no greeting within \
+                 {} seconds",
+                GREETING_DEADLINE.as_secs()
+            ),
+        }
+    }
 }
 
 /// `am force-stop` the preview host package — the deliberate stop a
-/// stamp change or a wedged host calls for.
+/// stamp change or a wedged host calls for, so the old process is gone
+/// before the fresh one binds the socket name.
 async fn force_stop_host(host: &Host, adb: &Adb, serial: &str) -> Result<()> {
     adb.shell_run(
         host,
@@ -285,21 +264,21 @@ async fn start_host(
         .iter()
         .map(|path| format!("{}/{path}", super::FILES_PREVIEW_DIR))
         .collect();
-    let words = [
-        "am".to_string(),
-        "instrument".to_string(),
-        "-e".to_string(),
-        "libraries".to_string(),
-        device_libraries.join(":"),
-        "-e".to_string(),
-        "payloadStamp".to_string(),
-        stamp.to_string(),
-        PREVIEW_HOST_INSTRUMENTATION.to_string(),
-    ];
+    let device_libraries = device_libraries.join(":");
     adb.shell_run(
         host,
         serial,
-        &words.iter().map(String::as_str).collect::<Vec<_>>(),
+        &[
+            "am",
+            "instrument",
+            "-e",
+            "libraries",
+            &device_libraries,
+            "-e",
+            "payloadStamp",
+            stamp,
+            PREVIEW_HOST_INSTRUMENTATION,
+        ],
         AM_DEADLINE,
     )
     .await
@@ -307,35 +286,47 @@ async fn start_host(
     Ok(())
 }
 
-/// Wait for the freshly started host to bind the socket and greet with
-/// `stamp`. Every connect is itself the readiness probe — a refused
-/// connection or a wrong answer is "not up yet", never an assumed delay —
-/// so the loop's only blind element is the final deadline, which names
-/// whatever answered last.
-async fn await_host(port: u16, stamp: &str) -> Result<HostLink> {
-    let deadline = Instant::now() + HOST_START_DEADLINE;
-    let mut last_seen = "nothing answered".to_string();
-    loop {
-        match connect_and_greet(port).await? {
-            Greet::Ready(link, held) if held == stamp => return Ok(link),
-            Greet::Ready(_, held) => {
-                // The host this run is replacing can still own the socket
-                // while its force-stop lands; its stamp is the stale one.
-                last_seen = format!("a host carrying stamp {held}");
-            }
-            Greet::Absent => {}
-            Greet::Silent => {
-                last_seen = "a socket that accepted but sent no greeting".to_string();
-            }
+/// The line the host logs once its socket is bound — after the libraries
+/// loaded — or once its start failed, for the host carrying `stamp`.
+fn host_start_line(outcome: &str, stamp: &str) -> String {
+    format!("preview host {outcome}: stamp {stamp}")
+}
+
+/// Block until the host started for `stamp` logs that it serves or that
+/// its start failed. `logcat -m 1 -e` exits on the first matching line
+/// newer than `since`, so the wait ends on the host's own signal; the
+/// deadline only bounds a host that dies without logging either line.
+async fn await_host_ready(
+    host: &Host,
+    adb: &Adb,
+    serial: &str,
+    stamp: &str,
+    since: &str,
+) -> Result<()> {
+    let serving = host_start_line(HOST_SERVING, stamp);
+    let failed = host_start_line(HOST_START_FAILED, stamp);
+    let pattern = host_start_line(&format!("({HOST_SERVING}|{HOST_START_FAILED})"), stamp);
+    let line = adb
+        .first_log_line(
+            host,
+            serial,
+            since,
+            HOST_LOG_TAG,
+            &pattern,
+            HOST_START_DEADLINE,
+        )
+        .await;
+    let line = match line {
+        Ok(line) if line.contains(&serving) => {
+            debug!(%stamp, "the preview host reported ready");
+            return Ok(());
         }
-        if Instant::now() >= deadline {
-            bail!(
-                "the preview host did not come up within {} seconds — last seen: {last_seen}",
-                HOST_START_DEADLINE.as_secs()
-            );
-        }
-        Timer::after(CONNECT_DELAY).await;
-    }
+        Ok(line) if line.contains(&failed) => format!("the preview host failed to start: {line}"),
+        Ok(line) => format!("waiting for the preview host's start answered {line:?}"),
+        Err(error) => format!("the preview host reported no start: {error}"),
+    };
+    let crash_log = recent_crash_log(host, adb, serial, Some(since)).await;
+    bail!("{line}\n\n=== Crash Log ===\n{crash_log}")
 }
 
 /// What connecting and reading the greeting produced.
@@ -372,7 +363,7 @@ async fn connect_and_greet(port: u16) -> Result<Greet> {
     match read_line(&mut link.stream, GREETING_DEADLINE).await? {
         LineRead::Closed => Ok(Greet::Absent),
         LineRead::TimedOut => Ok(Greet::Silent),
-        LineRead::Line(line) => match parse_event(&line)? {
+        LineRead::Line(frame) => match parse_event(&frame)? {
             HostEvent::Hello { schema, stamp } if schema == HOST_PROTOCOL_SCHEMA => {
                 Ok(Greet::Ready(link, stamp))
             }
@@ -380,8 +371,8 @@ async fn connect_and_greet(port: u16) -> Result<Greet> {
                 "the preview host speaks protocol schema {schema}; this CLI speaks \
                  {HOST_PROTOCOL_SCHEMA} — update `water` or reinstall the preview host"
             ),
-            other => {
-                bail!("the preview host greeted with {other:?} where `hello` was expected: {line}")
+            HostEvent::Rendered | HostEvent::Failed { .. } => {
+                bail!("the preview host greeted with {frame} where `hello` was expected")
             }
         },
     }

@@ -89,27 +89,26 @@ pub(crate) struct Forward {
     pub(crate) remote: String,
 }
 
-/// Parse one `forward --list` line — `serial tcp:<port> <remote>` — for the
-/// serial the list was filtered to.
-fn parse_forward_line(serial: &str, line: &str) -> eyre::Result<Forward> {
+/// Parse one `forward --list` line — `serial tcp:<port> <remote>`. The
+/// adb server lists every device's forwards whatever `-s` names, so a line
+/// for another serial answers `None`; a line that is not three fields of
+/// that shape is an error.
+fn parse_forward_line(serial: &str, line: &str) -> eyre::Result<Option<Forward>> {
     let malformed = || eyre::eyre!("an `adb forward --list` line does not parse: {line:?}");
     let mut fields = line.split_whitespace();
-    let (Some(entry_serial), Some(local), Some(remote)) =
-        (fields.next(), fields.next(), fields.next())
+    let (Some(entry_serial), Some(local), Some(remote), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
     else {
         return Err(malformed());
     };
-    if entry_serial != serial {
-        return Err(malformed());
-    }
     let local_port = local
         .strip_prefix("tcp:")
         .and_then(|port| port.parse::<u16>().ok())
         .ok_or_else(malformed)?;
-    Ok(Forward {
+    Ok((entry_serial == serial).then(|| Forward {
         local_port,
         remote: remote.to_string(),
-    })
+    }))
 }
 
 impl Adb {
@@ -399,8 +398,45 @@ impl Adb {
             .await?;
         output
             .lines()
-            .map(|line| parse_forward_line(serial, line))
+            .filter_map(|line| parse_forward_line(serial, line).transpose())
             .collect()
+    }
+
+    /// `adb -s <serial> logcat -T <since> -m 1 -e <pattern> -s <tag>:*` —
+    /// block until `tag` logs a line newer than `since` that matches
+    /// `pattern`, answering that line. `logcat` exits on the match itself,
+    /// so the wait ends on the device's own signal; `timeout` bounds a
+    /// device that never logs it.
+    ///
+    /// # Errors
+    /// Returns an error if `logcat` fails, exceeds `timeout`, or exits
+    /// without printing a line.
+    pub(crate) async fn first_log_line(
+        &self,
+        host: &Host,
+        serial: &str,
+        since: &str,
+        tag: &str,
+        pattern: &str,
+        timeout: Duration,
+    ) -> eyre::Result<String> {
+        let filter = format!("{tag}:*");
+        let output = self
+            .device_command(
+                host,
+                serial,
+                [
+                    "logcat", "-T", since, "-m", "1", "-e", pattern, "-s", &filter,
+                ],
+                "waiting for a logcat line",
+                timeout,
+            )
+            .await?;
+        output
+            .lines()
+            .find(|line| !line.trim().is_empty() && !line.starts_with("--------- "))
+            .map(str::to_string)
+            .ok_or_else(|| eyre::eyre!("`logcat` exited without a line matching {pattern:?}"))
     }
 
     /// `adb -s <serial> forward tcp:0 <remote>` — bind a fresh local TCP
@@ -690,8 +726,35 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use super::{Adb, AdbError, parse_installed_version_code};
+    use super::{Adb, AdbError, parse_forward_line, parse_installed_version_code};
     use crate::toolchain::testing::TestMachine;
+
+    /// `forward --list` names every device's forwards: a line for another
+    /// serial is skipped, one for this serial parses, and a line of another
+    /// shape is an error naming it.
+    #[test]
+    fn forward_lines_parse_for_their_serial_only() {
+        let forward = parse_forward_line("a", "a tcp:4567 localabstract:x")
+            .expect("parses")
+            .expect("this serial's forward");
+        assert_eq!(
+            (forward.local_port, forward.remote.as_str()),
+            (4567, "localabstract:x")
+        );
+        assert!(
+            parse_forward_line("a", "b tcp:4567 localabstract:x")
+                .expect("parses")
+                .is_none()
+        );
+        for line in [
+            "a tcp:4567",
+            "a tcp:4567 localabstract:x extra",
+            "a udp:4567 localabstract:x",
+        ] {
+            let error = parse_forward_line("a", line).expect_err(line);
+            assert!(error.to_string().contains(line), "{error}");
+        }
+    }
 
     #[test]
     fn without_platform_tools_there_is_no_adb() {

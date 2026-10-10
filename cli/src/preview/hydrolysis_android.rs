@@ -16,7 +16,7 @@
 //! process and a changed one force-stops it first. The produced PNGs come
 //! back through `adb shell -T`. Round trips that do not depend on each
 //! other run side by side: the version check, the clock read and the
-//! preparation; the push and the host probe; and the render and the
+//! preparation; the push and the forward lookup; and the render and the
 //! staging copy's removal.
 
 mod device_host;
@@ -186,9 +186,9 @@ struct DeviceRender<'a> {
 
 /// Take the device lease, then prepare the run alongside the host's version
 /// check — installing the host and preparing again when it is not current —
-/// ship the payload parts the device's copy is stale in while the live host
-/// is probed beside the push, start a host when none answers or a stale one
-/// is replaced, send it the render request and pull the output while the
+/// ship the payload parts the device's copy is stale in while the `adb
+/// forward` is looked up beside the push, then probe the live host —
+/// starting one when none answers or a stale one is replaced — send it the render request and pull the output while the
 /// push's staging copy is removed.
 ///
 /// `am instrument` force-stops the host package and an install replaces
@@ -242,29 +242,30 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
     if pushed {
         info!(?stale, "Pushing the changed preview payload to the device");
     }
+    // The forward lookup rides beside the push; the host probe waits for
+    // the push, so a fresh host starts only once the payload it will report
+    // as loaded is in place, and a reused host's connection is not held
+    // open across a long resources push.
+    let ((), forward) = futures_util::try_join!(
+        async {
+            if pushed {
+                push_payload(host, adb, serial, payload, &stale).await
+            } else {
+                Ok(())
+            }
+        },
+        device_host::open_forward(host, adb, serial),
+    )?;
     let render = async {
-        // The live-host probe rides beside the push: what it learns only
-        // decides reuse-versus-restart, which lands after the push either
-        // way — a fresh host must start only once the payload it will
-        // report as loaded is in place.
-        let ((), check) = futures_util::try_join!(
-            async {
-                if pushed {
-                    push_payload(host, adb, serial, payload, &stale).await
-                } else {
-                    Ok(())
-                }
-            },
-            device_host::check_for_live_host(
+        let mut link = forward
+            .link(
                 host,
                 adb,
                 serial,
+                &payload.library_paths(),
                 payload.stamp(PayloadPart::Libraries),
-            ),
-        )?;
-        let stamp = payload.stamp(PayloadPart::Libraries);
-        let mut link = check
-            .into_link(host, adb, serial, &payload.library_paths(), stamp)
+                &since,
+            )
             .await?;
         if let Err(error) = link
             .render(
@@ -655,6 +656,8 @@ mod tests {
         StaleThenWarm(String),
         /// Every connection greets, then answers the request with `failed`.
         WarmFailing,
+        /// Every connection sends a line that is not a frame.
+        Garbled,
     }
 
     /// A stand-in for the device-side preview host: a real localhost TCP
@@ -690,10 +693,16 @@ mod tests {
                             .write_all(format!("{hello}\n").as_bytes())
                             .expect("greet");
                     };
+                    if matches!(script, FakeHostScript::Garbled) {
+                        stream.write_all(b"not a frame\n").expect("garble");
+                        continue;
+                    }
                     if first {
                         first = false;
                         match &script {
-                            FakeHostScript::Warm | FakeHostScript::WarmFailing => {}
+                            FakeHostScript::Warm
+                            | FakeHostScript::WarmFailing
+                            | FakeHostScript::Garbled => {}
                             FakeHostScript::ColdThenWarm => continue,
                             FakeHostScript::StaleThenWarm(stale) => {
                                 greeting(&mut stream, stale);
@@ -768,6 +777,15 @@ mod tests {
             let fake_host =
                 FakeHost::serve(script, payload.stamp(PayloadPart::Libraries).to_string());
             machine.respond("ADB_FORWARD_PORT", &fake_host.port.to_string());
+            // A started host's readiness line, as `logcat -m 1` prints it.
+            machine.respond(
+                "ADB_LOGCAT",
+                &format!(
+                    "01-01 00:00:01.000  4242  4242 I HydrolysisPreview: preview host serving: \
+                     stamp {}",
+                    payload.stamp(PayloadPart::Libraries)
+                ),
+            );
             let log = machine.root().join("adb-argv.log");
             let run_config = machine.root().join("received-run-config.json");
             let host = machine.host([
@@ -1141,6 +1159,63 @@ mod tests {
         let error = smol::block_on(device.try_run(&device.machine.root().join("preview.png")))
             .expect_err("a failed reply must fail the run");
         assert!(error.to_string().contains("preview exploded"), "{error:#}");
+    }
+
+    /// A fresh host that logs a failed start fails the run with that line
+    /// and the crash log — the wait ends on the host's own report, and no
+    /// render is sent.
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_host_start_surfaces_its_log_line() {
+        let device = RenderingDevice::new();
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+        device.machine.respond(
+            "ADB_LOGCAT",
+            &format!(
+                "01-01 00:00:01.000  4242  4242 E HydrolysisPreview: preview host failed to \
+                 start: stamp {}",
+                device.payload.stamp(PayloadPart::Libraries)
+            ),
+        );
+
+        let error = smol::block_on(device.try_run(&device.machine.root().join("preview.png")))
+            .expect_err("a failed start must fail the run");
+        assert!(
+            error
+                .to_string()
+                .contains("the preview host failed to start: 01-01 00:00:01.000"),
+            "{error:#}"
+        );
+        assert!(device.fake_host.requests().is_empty(), "no render was sent");
+    }
+
+    /// A greeting that is not a frame fails the run naming what arrived —
+    /// never a restart that hides it.
+    #[test]
+    #[cfg(unix)]
+    fn a_malformed_greeting_names_what_arrived() {
+        let device = RenderingDevice::with_host_script(FakeHostScript::Garbled);
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+
+        let error = smol::block_on(device.try_run(&device.machine.root().join("preview.png")))
+            .expect_err("a garbled greeting must fail the run");
+        assert!(
+            error
+                .to_string()
+                .contains("the preview host sent a malformed frame: not a frame"),
+            "{error:#}"
+        );
+        assert!(
+            !device.argv().contains("am "),
+            "nothing was stopped or started: {}",
+            device.argv()
+        );
     }
 
     /// A device whose shell commands run the production scripts for real —
