@@ -209,9 +209,7 @@ pub struct Window {
     /// are unsupported — winit 0.30 cannot set a window icon there — and
     /// Hydrolysis on Android has no per-window icon. `AppKit` and `UIKit`
     /// identify an application by one icon: unsupported there, not faked
-    /// through the Dock. GTK exposes it through the toplevel's icon list,
-    /// `WinUI` through `AppWindow.SetIcon`. The attribute does not cross
-    /// the C ABI.
+    /// through the Dock. The attribute does not cross the C ABI.
     pub icon: Binding<Option<WindowIcon>>,
 }
 

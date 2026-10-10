@@ -3294,20 +3294,16 @@ mod winit_impl {
         /// Alt-Tab icon (`ICON_BIG`).
         fn apply_window_icon(&self, icon: Option<&waterui::window::WindowIcon>) {
             let icon = match icon {
-                Some(icon) => match winit::window::Icon::from_rgba(
-                    icon.rgba().to_vec(),
-                    icon.width(),
-                    icon.height(),
-                ) {
-                    Ok(icon) => Some(icon),
-                    // A `WindowIcon`'s pixels are already validated against
-                    // its size; a failure here is the OS refusing the icon,
-                    // which leaves the previous one in place.
-                    Err(error) => {
-                        tracing::warn!("hydrolysis: window icon rejected by the platform: {error}");
-                        return;
-                    }
-                },
+                // `Icon::from_rgba` only checks the buffer against the size,
+                // which `WindowIcon::new` already guarantees.
+                Some(icon) => Some(
+                    winit::window::Icon::from_rgba(
+                        icon.rgba().to_vec(),
+                        icon.width(),
+                        icon.height(),
+                    )
+                    .expect("a WindowIcon's pixels match its size"),
+                ),
                 None => self.application_icon.clone(),
             };
             self.window.set_window_icon(icon.clone());
