@@ -1189,13 +1189,13 @@ pub(crate) fn redirect_occluded_input(
     REDIRECTED_INPUT
         .into_iter()
         .map(|name| {
-            let element = element.clone();
+            let target = element.clone();
             let occlusion = Rc::clone(&occlusion);
             let closure = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
                 let mouse = event.dyn_ref::<web_sys::MouseEvent>().unwrap_or_else(|| {
                     panic!("hydrolysis web platform: {name} is not a mouse event")
                 });
-                let root: HtmlElement = element
+                let root: HtmlElement = target
                     .closest(&format!("#{ROOT_ID}"))
                     .expect("hydrolysis web platform: #waterui-root is not a valid selector")
                     .expect("hydrolysis web platform: a hosted element is outside the root element")

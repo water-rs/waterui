@@ -22,8 +22,7 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use waterui::ViewExt as _;
-use waterui_core::components::native::Native;
-use waterui_core::{AnyView, Environment};
+use waterui_core::{AnyView, Environment, Native};
 use waterui_video::video::{
     AudioTrackSelection, ContentMode, Event, PlaybackConfiguration, PlaybackOutputPath,
     PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog,
@@ -587,9 +586,8 @@ impl Player {
             core::time::Duration::from_millis(u64::from(buffered_ms)),
             self.loaded_at.get().elapsed(),
         );
-        if let Some(quality) = self.element.get_video_playback_quality().ok() {
-            metrics = metrics.dropped_video_frames(u64::from(quality.dropped_video_frames()));
-        }
+        let quality = self.element.get_video_playback_quality();
+        metrics = metrics.dropped_video_frames(u64::from(quality.dropped_video_frames()));
         self.emit(Event::PlaybackMetrics { metrics });
     }
 
@@ -871,7 +869,7 @@ impl HostedContent for VideoContent {
     }
 
     fn focused(&self) -> Computed<bool> {
-        self.player.focused.clone().computed()
+        self.player.focused.clone().into()
     }
 
     fn request_focus(&self) {
