@@ -71,20 +71,22 @@ impl HydroNativeView for Native<MapConfig> {
 }
 
 /// Reaching `WebView` without a `Hook<WebView>` engine realization means
-/// the backend has nothing to draw a page with: a build without
-/// `hydrolysis_macos_system_webview` or `hydrolysis_android_system_webview`
-/// bridges no engine, and the macOS bridge's record has no native-view
-/// layer to present the `WKWebView` through. On Android the `webview-system`
-/// feature mounts the platform `WebView` as a platform-view instance, so
-/// reaching this is a non-system engine's handle slipping past the leaf's
-/// downcast.
-#[cfg(not(hydrolysis_android_system_webview))]
+/// the backend has nothing to draw a page with: a build without a system
+/// bridge — `hydrolysis_system_webview` or
+/// `hydrolysis_android_system_webview` — bridges no engine. On Android the
+/// `webview-system` feature mounts the platform `WebView` as a
+/// platform-view instance, so reaching this is a non-system engine's
+/// handle slipping past the leaf's downcast.
+#[cfg(not(any(
+    hydrolysis_system_webview,
+    hydrolysis_android_system_webview
+)))]
 pub fn unsupported_webview() -> ! {
     panic!(
         "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
          link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`), enable \
-         the `webview-system` and `winit` features on macOS, or enable the `webview-system` \
-         feature on Android"
+         the `webview-system` and `winit` features on macOS, the `webview-system` and \
+         `web` features on the web, or the `webview-system` feature on Android"
     )
 }
 
@@ -140,6 +142,8 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<GpuContentView>);
         $macro!(Native<ExternalFrameView>);
         $macro!(Native<PlatformView>);
+        #[cfg(hydrolysis_hosted)]
+        $macro!(Native<crate::HostedView>);
         $macro!(Native<SceneView>);
         $macro!(Native<FilteredView>);
         $macro!(Native<Color>);

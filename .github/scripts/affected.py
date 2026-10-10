@@ -36,6 +36,9 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
   integration tests and `cherenkov-bench` read the corpus at run time and
   are not in the set: the gate never runs tests. Jobs that execute those
   tests generate the corpus themselves.
+- `apple-legs` — JSON list of test.yml's `macos` matrix entries: the Apple
+  lint targets with an Apple-gated crate in scope (`apple_gated.py`),
+  `[]` when there is none, so no macOS runner starts to find nothing.
 
 Usage:
 
@@ -54,6 +57,7 @@ import subprocess
 import sys
 import tomllib
 
+from apple_gated import legs as apple_legs
 from rust_semantic_diff import changed_entries, git, semantic_differs, source_at
 
 # Cargo.toml tables whose content can move the dependency graph or the
@@ -178,6 +182,7 @@ def main():
         "package-args": "",
         "comment-only": "false",
         "msrv": "true",
+        "apple-legs": json.dumps(apple_legs("workspace"), separators=(",", ":")),
     }
     try:
         base = git("merge-base", args.base, args.head).strip()
@@ -223,12 +228,16 @@ def main():
         def scene_assets_for(names):
             return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
 
+        def apple_legs_for(scope):
+            return json.dumps(apple_legs(scope), separators=(",", ":"))
+
         if not entries:
             outputs.update(
                 {
                     "packages": "",
                     "msrv": "false",
                     "scene-assets": "false",
+                    "apple-legs": "[]",
                 }
             )
         elif report["workspace"]:
@@ -239,6 +248,7 @@ def main():
                     "packages": "workspace",
                     "msrv": "true" if msrv else "false",
                     "scene-assets": "true",
+                    "apple-legs": apple_legs_for("workspace"),
                 }
             )
         elif comment_only:
@@ -256,6 +266,7 @@ def main():
                     "comment-only": "true",
                     "msrv": "true" if msrv else "false",
                     "scene-assets": scene_assets_for(owners),
+                    "apple-legs": apple_legs_for(" ".join(owners)),
                 }
             )
         else:
@@ -266,6 +277,7 @@ def main():
                     "package-args": " ".join(f"-p {name}" for name in affected),
                     "msrv": "true" if msrv else "false",
                     "scene-assets": scene_assets_for(affected),
+                    "apple-legs": apple_legs_for(" ".join(affected)),
                 }
             )
     except Exception as error:  # widen on any failure — never scope on a guess

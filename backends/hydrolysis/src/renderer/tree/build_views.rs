@@ -265,55 +265,63 @@ impl RenderNode {
         Self::build_widget(renderer, shape, stretch, env)
     }
 
-    /// Build the Android system-WebView leaf: the `HydrolysisWebView` wrapper
-    /// the controller opened mounts as a platform-view *instance* placement,
-    /// keyed by the id Kotlin registered it under. The `WebView` value rides
+    /// Build the `WebView` leaf. Where a hosted system bridge exists it
+    /// mounts through the hosted-content leaf (`WKWebView` on macOS, an
+    /// `<iframe>` on the web); on Android the `HydrolysisWebView` wrapper the
+    /// controller opened mounts as a platform-view *instance* placement,
+    /// keyed by the id Kotlin registered it under — the `WebView` value rides
     /// in the node as the instance owner so the native peer lives exactly as
-    /// long as the leaf that embeds it.
-    #[cfg(hydrolysis_android_system_webview)]
+    /// long as the leaf that embeds it. Where no engine is bridged at all a
+    /// `WebView` that still reaches the backend has nothing to draw it — a
+    /// missing realization, not a drawable stand-in.
     pub(super) fn build_webview(
         webview: WebView,
         env: &Environment,
         renderer: &SemanticCore,
     ) -> Self {
-        use crate::widgets::platform::platform_view::PlatformViewRenderState;
-        use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
+        #[cfg(hydrolysis_system_webview)]
+        {
+            Self::build_hosted(
+                crate::widgets::platform::webview::hosted(&webview),
+                env,
+                renderer,
+            )
+        }
+        #[cfg(hydrolysis_android_system_webview)]
+        {
+            use crate::widgets::platform::platform_view::PlatformViewRenderState;
+            use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
 
-        let instance = webview
-            .handle()
-            .downcast_ref::<AndroidSystemWebViewHandle>()
-            .map_or_else(
-                || {
-                    panic!(
-                        "hydrolysis android: a WebView handle that is not \
-                         AndroidSystemWebViewHandle reached the backend; the \
-                         Android system bridge only draws views `WebView::open` \
-                         made through its controller — another engine must \
-                         install its `Hook<WebView>` realization"
-                    )
-                },
-                AndroidSystemWebViewHandle::instance,
-            );
-        let stretch = waterui_core::NativeView::stretch_axis(&webview);
-        let owner: Rc<dyn core::any::Any> = Rc::new(webview);
-        let state = Rc::new(RefCell::new(PlatformViewRenderState::from_instance(
-            instance, owner, env,
-        )));
-        Self::build_widget(renderer, state, stretch, env)
-    }
-
-    /// A `WebView` reaching the backend without a `Hook<WebView>` engine has
-    /// nothing to draw it — a missing realization, not a drawable stand-in.
-    /// The macOS bridge is no different: `hydrolysis_macos_system_webview`'s
-    /// record has no native-view layer to present the `WKWebView` through,
-    /// so it panics at build like every other engine-less path.
-    #[cfg(not(hydrolysis_android_system_webview))]
-    pub(super) fn build_webview(
-        _webview: WebView,
-        _env: &Environment,
-        _renderer: &mut SemanticCore,
-    ) -> Self {
-        unsupported_webview()
+            let instance = webview
+                .handle()
+                .downcast_ref::<AndroidSystemWebViewHandle>()
+                .map_or_else(
+                    || {
+                        panic!(
+                            "hydrolysis android: a WebView handle that is not \
+                             AndroidSystemWebViewHandle reached the backend; the \
+                             Android system bridge only draws views `WebView::open` \
+                             made through its controller — another engine must \
+                             install its `Hook<WebView>` realization"
+                        )
+                    },
+                    AndroidSystemWebViewHandle::instance,
+                );
+            let stretch = waterui_core::NativeView::stretch_axis(&webview);
+            let owner: Rc<dyn core::any::Any> = Rc::new(webview);
+            let state = Rc::new(RefCell::new(PlatformViewRenderState::from_instance(
+                instance, owner, env,
+            )));
+            Self::build_widget(renderer, state, stretch, env)
+        }
+        #[cfg(not(any(
+            hydrolysis_system_webview,
+            hydrolysis_android_system_webview
+        )))]
+        {
+            let _ = (webview, env, renderer);
+            unsupported_webview()
+        }
     }
 
     /// Build a persistent spacer node: a no-op render with zero intrinsic; it

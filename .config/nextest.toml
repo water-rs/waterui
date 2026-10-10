@@ -214,6 +214,16 @@ command = [
     "uv",
     "run",
     "backends/hydrolysis/tests/fixtures/generate-live-photo-motion.py",
+    "backends/hydrolysis/tests/fixtures/live-photo-motion.mp4",
+]
+
+# The same generator, writing the copy waterui-media's e2e_semantics reads.
+[scripts.setup.media-live-photo-motion]
+command = [
+    "uv",
+    "run",
+    "backends/hydrolysis/tests/fixtures/generate-live-photo-motion.py",
+    "components/multimedia/media/tests/fixtures/live-photo-motion.mp4",
 ]
 
 [scripts.setup.cli-roboto]
@@ -232,10 +242,11 @@ command = ["uv", "run", "cli/tests/fixtures/fonts/generate.py"]
 # list: it follows dev-dependency edges at every hop, while cargo links a
 # package's dev-dependencies into its own tests only.
 #
-# `live-photo-motion` serves hydrolysis's `tests/media.rs`, the only reader
-# of the generated clip. `cli-roboto` serves the waterui-cli platform test
-# that copies the fixture into a generated project — a path membership, not
-# a dependency edge.
+# `live-photo-motion` and `media-live-photo-motion` run the same generator
+# for the clip's two readers: hydrolysis's `tests/media.rs` and
+# waterui-media's `tests/e2e_semantics.rs`. `cli-roboto` serves the
+# waterui-cli platform test that copies the fixture into a generated
+# project — a path membership, not a dependency edge.
 [[profile.default.scripts]]
 filter = '''
     package(gallery-example)
@@ -266,6 +277,10 @@ setup = 'test-fonts'
 [[profile.default.scripts]]
 filter = 'package(hydrolysis)'
 setup = 'live-photo-motion'
+
+[[profile.default.scripts]]
+filter = 'package(waterui-media)'
+setup = 'media-live-photo-motion'
 
 [[profile.default.scripts]]
 filter = 'package(waterui-cli)'

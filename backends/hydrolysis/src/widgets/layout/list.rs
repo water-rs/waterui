@@ -30,7 +30,7 @@ use waterui_core::id::{Id as RawId, SelfId};
 use waterui_core::interaction::Selected;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_core::{Environment, Native};
+use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
 
@@ -930,6 +930,21 @@ fn register_section_chrome_node(
     }
 }
 
+/// Whether the row's content sits under `.disabled` — read from the
+/// environment the content's own presses resolve against, the same
+/// [`waterui_core::interaction::Disabled`] scope every control's input gate
+/// consults. A disabled row is inert the way a disabled `Button` cannot be
+/// pressed: the list registers no selection press for it and its `ListItem`
+/// node advertises no `Click` (water-rs/waterui#2244).
+fn list_row_disabled(
+    content: &AnyView,
+    env: &Environment,
+    renderer: &mut crate::renderer::SemanticCore,
+) -> bool {
+    let (_, content_env) = crate::renderer::flatten_environment_metadata_ref(content, env);
+    renderer.read_signal(&crate::widgets::util::widget_disabled(&content_env))
+}
+
 /// Emits a list's accessibility tree from its node-owned retained state.
 ///
 /// The rendered flush passes its [`RenderContext`] and theme: row extents are
@@ -1130,6 +1145,11 @@ pub fn list_accessibility(
             let mut item = item;
             let (content, row_a11y_env) = hoist_accessibility_metadata(item.content, &row_env);
             item.content = content;
+            // The row's gate is the `Disabled` scope its content resolves
+            // under — the same env the content's presses read — so a
+            // `.disabled` row keeps its label and reports disabled but is
+            // inert to selection.
+            let row_disabled = list_row_disabled(&item.content, &row_a11y_env, renderer);
             // A hidden row vanishes whole — node and content — matching the
             // naming container's treatment of `accessibilityHidden`.
             let row_hidden = row_a11y_env
@@ -1163,14 +1183,26 @@ pub fn list_accessibility(
                 // domain, and `Click` resolves the activation a pointer click
                 // on the row's centre would run — Enter/Space fire it.
                 row_node.add_action(AccessibilityAction::ScrollIntoView);
-                row_node.add_action(AccessibilityAction::Click);
+                // A disabled row reports disabled, advertises no `Click`, and
+                // its `ListRow` target carries no selection to write — a
+                // dispatched `Click` resolves only the row content's own
+                // activations.
+                if row_disabled {
+                    row_node.set_disabled();
+                } else {
+                    row_node.add_action(AccessibilityAction::Click);
+                }
                 let row_target = Some(AccessibilityActionTarget::ListRow {
                     index,
                     handle: handle.clone(),
                     extents: Rc::clone(&state.extent_index),
                     extension: state.surface.extension(),
                     id: row_id,
-                    selection: state.row_selection.clone(),
+                    selection: if row_disabled {
+                        None
+                    } else {
+                        state.row_selection.clone()
+                    },
                 });
                 match ctx {
                     Some(_ctx) => renderer.register_accessibility_child_node_with_key(
@@ -1918,7 +1950,19 @@ pub fn render_list_parts(
         // claims the press, the row's own handler coexists with it
         // (water-rs/hydrolysis#175).
         let mut content = Some(item.content);
-        if let Some(selection) = state.borrow().row_selection.clone() {
+        // The selection press honours the `Disabled` scope the row's content
+        // resolves under — the same gate the content's own presses read — so
+        // a `.disabled` row stays inert to pointer input.
+        let row_disabled = list_row_disabled(
+            content
+                .as_ref()
+                .expect("hydrolysis list row content missing"),
+            &row_env,
+            ctx.renderer_mut(),
+        );
+        if let Some(selection) = state.borrow().row_selection.clone()
+            && !row_disabled
+        {
             let hit_bounds = row_rect;
             let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 3);
             let (_, press_slot, _) = ctx

@@ -545,21 +545,21 @@ impl WpePage {
 
     /// Retrieves the runtime's JSON cookie array.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when the runtime cancels or rejects the cookie query.
+    /// Returns the runtime's error message when it cancels or rejects the
+    /// cookie query.
     #[expect(
         clippy::future_not_send,
         reason = "WPE WebKit pages are confined to the UI thread"
     )]
-    pub async fn cookies_json(&self) -> String {
+    pub async fn cookies_json(&self) -> Result<String, String> {
         // SAFETY: bridge ABI call on the page this type owns; see the module safety
         // note.
         self.string_result(|callback, context| unsafe {
             (self.inner.state.api.api.page_get_cookies)(self.inner.raw.as_ptr(), callback, context);
         })
         .await
-        .unwrap_or_else(|error| panic!("WPE cookie query failed: {error}"))
     }
 
     /// Evaluates JavaScript and returns its serialized result.

@@ -17,7 +17,7 @@ use crate::{error, header, line, note, success, warn};
 use waterui_cli::toolchain_checks;
 use waterui_cli::{
     android::{
-        device::{AndroidDevice, AndroidEmulator},
+        device::{AndroidDevice, AndroidEmulator, AndroidTarget},
         platform::AndroidPlatform,
     },
     apple::{
@@ -181,7 +181,10 @@ pub struct Args {
     #[arg(long, value_enum)]
     painter: Option<HydrolysisAndroidPainter>,
 
-    /// Device identifier (if not specified, uses first available device).
+    /// Device identifier: an iOS device name, identifier or UDID, an
+    /// Android device serial or an AVD name. Without it the remembered
+    /// last-used device wins, then an unambiguous single candidate, then a
+    /// picker.
     #[arg(short, long)]
     device: Option<String>,
 
@@ -871,7 +874,7 @@ async fn start_web_dev_server(
     built: &waterui_cli::build::BuiltTarget,
     expose_on_lan: bool,
 ) -> Result<Option<web::WebDevServer>> {
-    let Some(meta) = web::web_mount(&built.app_symbols()?)? else {
+    let Some(meta) = web::web_mount(&built.app_symbols().await?)? else {
         return Ok(None);
     };
     let root = meta
@@ -1191,49 +1194,14 @@ struct DeviceCandidate {
     label: String,
 }
 
-/// `~/.water/config.toml` key for the device a `(backend, platform)` last
-/// ran on.
-const fn device_memory_key(backend: TargetBackend, platform: TargetPlatform) -> &'static str {
-    match (backend, platform) {
-        (TargetBackend::Apple, TargetPlatform::Ios) => "apple/ios",
-        (TargetBackend::Android, TargetPlatform::Android) => "android/android",
-        (TargetBackend::Hydrolysis, TargetPlatform::Android) => "hydrolysis/android",
-        // Device memory only exists for targets with a device dimension.
-        _ => unreachable!(),
-    }
-}
-
-/// The device last used for `key`, if the config records one. A config read
-/// failure is a warning, not a run failure.
-async fn remembered_device(host: &waterui_cli::toolchain::Host, key: &str) -> Option<String> {
-    match waterui_cli::water_dir::ensure_global_config(host).await {
-        Ok(config) => config.last_used_device.get(key).cloned(),
-        Err(error) => {
-            tracing::warn!("could not read the Water config for device memory: {error:#}");
-            None
-        }
-    }
-}
-
-/// Record `id` as the last-used device for `key`. Best-effort: a config
-/// write failure must not break a run.
-async fn persist_device_choice(host: &waterui_cli::toolchain::Host, key: &str, id: &str) {
-    match waterui_cli::water_dir::ensure_global_config(host).await {
-        Ok(mut config) => {
-            if config.last_used_device.get(key).map(String::as_str) == Some(id) {
-                return;
-            }
-            config
-                .last_used_device
-                .insert(key.to_owned(), id.to_owned());
-            if let Err(error) = waterui_cli::water_dir::write_global_config(host, &config).await {
-                tracing::warn!("could not persist the last-used device: {error:#}");
-            }
-        }
-        Err(error) => {
-            tracing::warn!("could not read the Water config for device memory: {error:#}");
-        }
-    }
+/// The `last_used_device` slot an iOS run's device choice is kept under —
+/// the same one preview and the inspector share for their targets.
+const fn ios_device_memory_key() -> &'static str {
+    waterui_cli::water_dir::device_memory_key(
+        TargetBackend::Apple.lib_backend(),
+        LibTargetPlatform::IOS,
+    )
+    .expect("iOS run targets keep device memory")
 }
 
 /// What `device_choice` resolved for a no-`--device` run.
@@ -1264,36 +1232,6 @@ fn device_choice(candidates: &[DeviceCandidate], remembered: Option<&str>) -> De
     }
 }
 
-/// Ask which device to use. Non-interactive runs cannot pick, so they fail
-/// with the candidate list.
-fn prompt_for_device(
-    shell: &Shell,
-    prompt: &str,
-    candidates: &[DeviceCandidate],
-    spinner: Option<&indicatif::ProgressBar>,
-) -> Result<usize> {
-    use std::fmt::Write as _;
-    if !shell.is_terminal() {
-        let list = candidates.iter().fold(String::new(), |mut out, candidate| {
-            write!(out, "\n  {} — {}", candidate.label, candidate.id)
-                .expect("writing to a String cannot fail");
-            out
-        });
-        bail!("Several devices are available; pass --device to choose one:{list}");
-    }
-    let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
-    let pick = || {
-        dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt(prompt)
-            .items(&labels)
-            .default(0)
-            .interact()
-    };
-    // The scan spinner would redraw over the prompt; hide it while the user
-    // answers.
-    Ok(spinner.map_or_else(pick, |pb| pb.suspend(pick))?)
-}
-
 /// Pick one device out of `candidates`: the remembered last-used device when
 /// it is still present, the single candidate when unambiguous, otherwise an
 /// interactive picker. Choices the user or an explicit query make are
@@ -1309,7 +1247,7 @@ async fn choose_device_candidate(
 ) -> Result<SelectedDevice> {
     debug_assert!(!candidates.is_empty());
 
-    let mut remembered = remembered_device(host, memory_key).await;
+    let mut remembered = waterui_cli::water_dir::last_used_device(host, memory_key).await;
     let mut stale_memory = false;
     let (index, persist) = loop {
         match device_choice(&candidates, remembered.as_deref()) {
@@ -1320,8 +1258,12 @@ async fn choose_device_candidate(
                 stale_memory = true;
             }
             DeviceChoice::Prompt => {
+                let options: Vec<(&str, &str)> = candidates
+                    .iter()
+                    .map(|candidate| (candidate.label.as_str(), candidate.id.as_str()))
+                    .collect();
                 break (
-                    prompt_for_device(shell, prompt, &candidates, spinner)?,
+                    super::prompt_for_device(shell, prompt, &options, spinner)?,
                     true,
                 );
             }
@@ -1333,7 +1275,7 @@ async fn choose_device_candidate(
         .nth(index)
         .expect("the index came from the candidate list");
     if persist {
-        persist_device_choice(host, memory_key, &candidate.id).await;
+        waterui_cli::water_dir::record_last_used_device(host, memory_key, &candidate.id).await;
     }
     Ok(candidate.device)
 }
@@ -1357,18 +1299,18 @@ async fn select_ios_device(
 
     if let Some(query) = device_id {
         if let Some(device) = select_physical_ios(&physical, project, query).await? {
-            persist_device_choice(
+            waterui_cli::water_dir::record_last_used_device(
                 project.host(),
-                device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
+                ios_device_memory_key(),
                 &device.identifier,
             )
             .await;
             return Ok(SelectedDevice::ApplePhysical(device));
         }
         let sim = AppleSimulator::select_ios(project, Some(query)).await?;
-        persist_device_choice(
+        waterui_cli::water_dir::record_last_used_device(
             project.host(),
-            device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
+            ios_device_memory_key(),
             &sim.udid,
         )
         .await;
@@ -1386,7 +1328,7 @@ async fn select_ios_device(
     choose_device_candidate(
         shell,
         project.host(),
-        device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
+        ios_device_memory_key(),
         "Select an iOS device",
         candidates,
         spinner,
@@ -1621,9 +1563,10 @@ async fn find_device(
     device
 }
 
-/// Select the Android target. An explicit `--device` names a connected
-/// device serial or an AVD; without one, the remembered last-used device
-/// wins, then an unambiguous single candidate, then the picker.
+/// Select the Android target through the shared selection: an explicit
+/// `--device` names a connected device serial or an AVD; without one, the
+/// remembered last-used device wins, then an unambiguous single candidate,
+/// then the picker.
 async fn select_android_device(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
@@ -1631,56 +1574,21 @@ async fn select_android_device(
     device_id: Option<&str>,
     spinner: Option<&indicatif::ProgressBar>,
 ) -> Result<SelectedDevice> {
-    let key = device_memory_key(backend, TargetPlatform::Android);
-    let devices = AndroidDevice::scan(host).await?;
-    let avds = AndroidPlatform::list_avds(host).await?;
-
-    if let Some(query) = device_id {
-        for dev in devices {
-            if dev.identifier() == query {
-                persist_device_choice(host, key, dev.identifier()).await;
-                return Ok(SelectedDevice::AndroidDevice(dev));
-            }
-        }
-        if avds.iter().any(|avd| avd == query) {
-            persist_device_choice(host, key, query).await;
-            return Ok(SelectedDevice::AndroidEmulator(
-                AndroidEmulator::open(host, query.to_string()).await?,
-            ));
-        }
-        bail!("Device not found: {query}");
-    }
-
-    let mut candidates: Vec<DeviceCandidate> = devices
-        .into_iter()
-        .map(|dev| DeviceCandidate {
-            label: format!("{} (connected)", dev.identifier()),
-            id: dev.identifier().to_owned(),
-            device: SelectedDevice::AndroidDevice(dev),
-        })
-        .collect();
-    for avd in avds {
-        candidates.push(DeviceCandidate {
-            label: format!("{avd} (emulator)"),
-            id: avd.clone(),
-            device: SelectedDevice::AndroidEmulator(AndroidEmulator::open(host, avd).await?),
-        });
-    }
-
-    if candidates.is_empty() {
-        bail!(
-            "No Android devices connected and no emulators available. Create an emulator with Android Studio or `avdmanager`, or connect a device."
-        );
-    }
-    choose_device_candidate(
+    let target = super::select_android_target(
         shell,
         host,
-        key,
-        "Select an Android device",
-        candidates,
+        waterui_cli::water_dir::device_memory_key(
+            backend.lib_backend(),
+            LibTargetPlatform::Android,
+        ),
+        device_id,
         spinner,
     )
-    .await
+    .await?;
+    Ok(match target {
+        AndroidTarget::Device(device) => SelectedDevice::AndroidDevice(device),
+        AndroidTarget::Emulator(emulator) => SelectedDevice::AndroidEmulator(emulator),
+    })
 }
 
 fn device_name(device: &SelectedDevice) -> String {
@@ -1825,11 +1733,15 @@ mod tests {
     use super::{
         Args, DeviceCandidate, DeviceChoice, SelectedDevice, TargetBackend, TargetPlatform,
         device_android_abi, device_choice, handle_device_event, lib_platform, parse_env_assignment,
-        prompt_for_device, resolve_platform, run_profile, stream_running_events,
-        validate_device_arg,
+        resolve_platform, run_profile, stream_running_events, validate_device_arg,
     };
+    use crate::commands::prompt_for_device;
     use clap::Parser as _;
+    #[cfg(unix)]
+    use waterui_cli::android::adb::Adb;
+    #[cfg(unix)]
     use waterui_cli::android::device::AndroidDevice;
+    use waterui_cli::android::device::AndroidEmulator;
     use waterui_cli::android::platform::AndroidAbi;
     use waterui_cli::build::BuildProfile;
     use waterui_cli::device::{ApplicationExit, DeviceEvent, Local, StopRequest};
@@ -1995,8 +1907,12 @@ mod tests {
     #[test]
     fn non_interactive_multi_device_error_lists_candidates() {
         let shell = crate::shell::Shell::new(true);
-        let candidates = vec![device_candidate("serial-a"), device_candidate("avd-b")];
-        let err = prompt_for_device(&shell, "Pick", &candidates, None)
+        let candidates = [device_candidate("serial-a"), device_candidate("avd-b")];
+        let options: Vec<(&str, &str)> = candidates
+            .iter()
+            .map(|candidate| (candidate.label.as_str(), candidate.id.as_str()))
+            .collect();
+        let err = prompt_for_device(&shell, "Pick", &options, None)
             .expect_err("non-interactive runs cannot pick");
         let message = err.to_string();
         assert!(message.contains("--device"));
@@ -2088,15 +2004,62 @@ mod tests {
     fn android_abi_follows_the_device() {
         // The ABI is a property of the selected device: a desktop run
         // selects the local machine and resolves no ABI, whatever backend
-        // the run uses — Hydrolysis included.
+        // the run uses — Hydrolysis included. An AVD's ABI comes from its
+        // config.
+        let home = tempfile::tempdir().expect("a scratch home");
+        let avd = home.path().join(".android/avd/Pixel_API_37.avd");
+        std::fs::create_dir_all(&avd).expect("create the AVD dir");
+        std::fs::write(avd.join("config.ini"), "abi.type=arm64-v8a\n").expect("write the AVD");
+        let host = waterui_cli::toolchain::Host::new(
+            std::iter::empty::<std::path::PathBuf>(),
+            [
+                ("HOME", home.path().as_os_str()),
+                ("USERPROFILE", home.path().as_os_str()),
+            ],
+        );
+        let emulator = smol::block_on(AndroidEmulator::open(&host, "Pixel_API_37".to_string()))
+            .expect("the AVD opens");
         assert_eq!(
-            device_android_abi(&SelectedDevice::AndroidDevice(AndroidDevice::new(
-                String::from("serial-1"),
-                AndroidAbi::Arm64V8a,
-            ))),
+            device_android_abi(&SelectedDevice::AndroidEmulator(emulator)),
             Some(AndroidAbi::Arm64V8a)
         );
         assert_eq!(device_android_abi(&SelectedDevice::Local(Local)), None);
+    }
+
+    /// A connected device's ABI is the one its scan read. The device holds an
+    /// `adb` client, which exists only once `start-server` ran — here a
+    /// stand-in `adb` in a scratch SDK that answers the scan, so no live
+    /// server is involved. A Windows `adb.exe` cannot be a script, so this
+    /// half is Unix-only.
+    #[test]
+    #[cfg(unix)]
+    fn android_abi_follows_a_connected_device() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let sdk = tempfile::tempdir().expect("a scratch SDK");
+        let adb = sdk.path().join("platform-tools/adb");
+        std::fs::create_dir_all(adb.parent().expect("platform-tools")).expect("platform-tools");
+        std::fs::write(
+            &adb,
+            "#!/bin/sh\ncase \"$*\" in\n  \"devices -l\") printf 'List of devices attached\\nserial-1 device\\n' ;;\n  *getprop*) printf 'arm64-v8a\\n' ;;\nesac\nexit 0\n",
+        )
+        .expect("write the stand-in adb");
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755))
+            .expect("make the stand-in adb executable");
+        let host = waterui_cli::toolchain::Host::new(
+            std::iter::empty::<std::path::PathBuf>(),
+            [("ANDROID_SDK_ROOT", sdk.path().as_os_str())],
+        );
+        let adb = smol::block_on(Adb::locate(&host)).expect("the stand-in adb starts");
+        let device = smol::block_on(AndroidDevice::scan_with_adb(&host, &adb))
+            .expect("the stand-in adb scans")
+            .into_iter()
+            .next()
+            .expect("the scan reports serial-1");
+        assert_eq!(
+            device_android_abi(&SelectedDevice::AndroidDevice(device)),
+            Some(AndroidAbi::Arm64V8a)
+        );
     }
 
     #[cfg(target_os = "macos")]

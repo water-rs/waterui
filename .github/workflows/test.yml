@@ -34,6 +34,11 @@ on:
       scene-assets:
         type: boolean
         default: true
+      # affected.yml's `apple-legs`: the `macos` matrix entries (Apple lint
+      # targets with an Apple-gated crate in scope), `[]` for none.
+      apple-legs:
+        type: string
+        default: "[]"
 
 # Narrow by default: callers may grant actions:write for the lint job's
 # cache retirement, but every other job in this workflow keeps read-only
@@ -762,11 +767,17 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
           cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
+      # The cherenkov-oracle and cherenkov-cpu test targets the composite
+      # lints `include_bytes!` the generated scene fonts.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
       # The macOS host lint legs for hydrolysis's `cfg(target_os =
-      # "macos")` code — `webview-system`'s WKWebView bridge is the entry
-      # point no other leg sees — and waterui-cli's Apple-side plumbing.
-      # The fast gate's `macos` job below calls the same composite, so the
-      # two legs can never drift on the commands.
+      # "macos")` code, waterui-cli's Apple-side plumbing and every other
+      # crate with Apple-gated code. The fast gate's `macos` job below
+      # calls the same composite, so the two legs can never drift on the
+      # commands.
       - name: Clippy (macOS host crates)
         uses: ./.github/actions/macos-lint
       # `cargo test` rather than nextest: CEF's browser process has to own the
@@ -1036,33 +1047,53 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
 
-  # The macOS host legs beside the cross-target ones above (#2143): the
-  # Linux lint compiles `cfg(target_os = "macos")` code away, so a
-  # macOS-only lint break in hydrolysis or waterui-cli used to surface
-  # only in the nightly's `cef` job. Same commands through the shared
-  # `macos-lint` composite; the nightly keeps them in `cef`, where they
-  # share the CEF leg's runner — running them here too under `full`
-  # would pay a second macOS slot for an identical pass.
+  # The Apple-target legs beside the cross-target ones above (#2143,
+  # #2476): the Linux lint compiles `cfg(target_os = "macos")` and
+  # `cfg(target_os = "ios")` code away, so a macOS- or iOS-only lint break,
+  # test targets included, used to surface only in the nightly's `cef` job
+  # or not at all. Same commands through the shared `macos-lint`
+  # composite; the nightly keeps the host leg in `cef`, where it shares the
+  # CEF leg's runner — running it here too under `full` would pay a second
+  # macOS slot for an identical pass. The host and the iOS simulator run
+  # in parallel, and the host's three passes each get their own leg (#2506),
+  # so the gate keeps its 10-minute budget.
   macos:
-    name: aarch64-apple-darwin
-    if: inputs.full == false && (inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'waterui-cli'))
+    name: ${{ matrix.name }}
+    # affected.yml lists only the targets with an Apple-gated crate in
+    # scope, so no runner starts to find nothing to lint.
+    if: inputs.full == false && inputs['apple-legs'] != '[]'
     runs-on: macos-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs['apple-legs']) }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy
+          targets: ${{ matrix.target }}
           cache: "false"
       # Reads the shared `cargo-sources` archive written by the Apple
       # gate's rust job (apple.yml); read-only lanes never save.
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      - name: Clippy (macOS host crates)
+      # The cherenkov-oracle and cherenkov-cpu test targets
+      # `include_bytes!` the generated scene fonts.
+      - name: Generate Cherenkov scene assets
+        if: inputs['scene-assets']
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
+      - name: Clippy (Apple-target crates)
         uses: ./.github/actions/macos-lint
         with:
-          hydrolysis: ${{ inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') }}
-          waterui-cli: ${{ inputs.affected == 'workspace' || contains(inputs.affected, 'waterui-cli') }}
+          hydrolysis: ${{ matrix.hydrolysis }}
+          waterui-cli: ${{ matrix['waterui-cli'] }}
+          apple-gated: ${{ matrix['apple-gated'] }}
+          affected: ${{ inputs.affected }}
+          target: ${{ matrix.target }}
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,

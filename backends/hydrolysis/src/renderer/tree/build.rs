@@ -767,6 +767,11 @@ impl RenderNode {
             Ok(webview) => AnyView::new(*webview),
             Err(view) => view,
         };
+        #[cfg(hydrolysis_hosted)]
+        let view = match view.downcast::<Native<crate::hosted::HostedView>>() {
+            Ok(hosted) => return Self::build_hosted((*hosted).into_inner(), env, renderer),
+            Err(view) => view,
+        };
         // Navigation containers (navigation view / split / stack / tabs): each is a
         // persistent `Widget` node re-rendered every flush from a retained config —
         // the navigation controller, transition slot, and tab-bar state stay live

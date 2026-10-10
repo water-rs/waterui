@@ -121,8 +121,14 @@ impl HydrolysisBackend {
         // through `native_browser_answers`.
         let targets = hydrolysis_targets();
         let android_targets = crate::android::platform::android_target_triples();
-        let ((project_packages, macos, linux, windows), android) = futures_util::future::try_join(
-            futures_util::future::try_join4(
+        let web_section = crate::project::GraphSection {
+            manifest: "the generated Hydrolysis launcher manifest",
+            table: "cfg(target_arch = \"wasm32\")",
+            remedy: "the wasm32 table serves every wasm32 target alike; a graph that \
+                     enables video or the WebView on one of them must enable it on all",
+        };
+        let ((project_packages, macos, linux, windows, web), android) = futures_util::future::try_join(
+            futures_util::future::try_join5(
                 project.project_packages(framework, &targets),
                 project.native_browser_answers(
                     crate::platform::NativeOs::MacOs,
@@ -136,6 +142,7 @@ impl HydrolysisBackend {
                     crate::platform::NativeOs::Windows,
                     section(crate::platform::NativeOs::Windows.cfg()),
                 ),
+                project.web_answers(web_section),
             ),
             project.browser_answers_for(&android_targets, section("cfg(target_os = \"android\")")),
         )
@@ -153,7 +160,8 @@ impl HydrolysisBackend {
         .with_project_packages(project_packages)
         .with_browser(crate::templates::BrowserTemplateContext::desktop(
             macos, linux, windows, android,
-        )))
+        ))
+        .with_web(web))
     }
 }
 

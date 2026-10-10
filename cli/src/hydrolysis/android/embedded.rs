@@ -277,7 +277,7 @@ pub async fn build_aar(
     super::remove_dir_if_present(&jni_libs).await?;
     let build_abi = |abi: AndroidAbi| {
         let abi_options = options.clone().with_output_dir(jni_libs.join(abi.as_str()));
-        super::build_prepared(project, abi, abi_options, &[], kotlin)
+        super::build_prepared_into_jni_libs(project, abi, abi_options, kotlin)
     };
     for abi in earlier_abis {
         build_abi(*abi).await?;
@@ -297,7 +297,7 @@ pub async fn build_aar(
     assets::stage_project_assets_for_android_library(
         project,
         &module_dir,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         false,
     )
     .await?;

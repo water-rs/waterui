@@ -4,12 +4,16 @@ import android.annotation.SuppressLint
 import android.content.Context
 
 /**
- * Loads the push-staged launcher cdylib and hands it the run.
+ * Loads the push-staged launcher cdylib and hands it render requests.
  *
  * [System.load] loads absolute paths — the cdylib lives inside this app's
  * private files, exactly where the CLI copied it — so the bridge loads the
  * payload directly rather than adding `lib/` to the app's native library
  * path, which `Context` exposes no API for.
+ *
+ * A loaded library cannot be swapped, so [initialize] runs exactly once per
+ * process, when the instrumentation starts; [render] serves each render
+ * request the [PreviewHostServer] accepts afterwards.
  */
 object PreviewBridge {
     /**
@@ -20,19 +24,22 @@ object PreviewBridge {
 
     /**
      * Load the staged libraries in order — `libc++_shared.so` first when the
-     * CLI staged it — run the schema handshake, then the registered preview.
-     * A launcher built against a different schema throws out of `nativeInit`.
+     * CLI staged it — and run the schema handshake. A launcher built against
+     * a different schema throws out of `nativeInit`.
      */
-    fun run(
-        libraries: List<String>,
-        context: Context,
-    ) {
+    fun initialize(libraries: List<String>) {
         for (library in libraries) {
             loadStagedLibrary(library)
         }
         nativeInit(SCHEMA)
-        nativeRunPreview(context)
     }
+
+    /**
+     * Run the registered preview once, as the environment the current
+     * request set (`WATERUI_PREVIEW_RUN_CONFIG`, `WATERUI_ASSETS_ROOT`)
+     * describes.
+     */
+    fun render(context: Context) = nativeRunPreview(context)
 
     // The debug-only preview host exists to `System.load` the push-staged
     // payload; it ships in no release artifact.

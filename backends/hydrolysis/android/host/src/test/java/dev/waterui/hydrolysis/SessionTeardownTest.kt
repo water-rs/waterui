@@ -9,6 +9,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import java.time.Duration
+import java.util.concurrent.Executor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -35,7 +36,7 @@ import org.robolectric.annotation.internal.DoNotInstrument
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(
-    shadows = [ShadowNativeBridge::class, ShadowHydrolysisEnvironment::class],
+    shadows = [ShadowNativeBridge::class],
     // The shadow can only replace `NativeBridge`'s natives on an
     // instrumented class.
     instrumentedPackages = ["dev.waterui.hydrolysis"],
@@ -47,6 +48,13 @@ class SessionTeardownTest {
     @Before
     fun resetNative() {
         ShadowNativeBridge.reset()
+        // These tests mount sessions, not the environment's sync — prepare
+        // the process up front on a direct executor so `createView` mounts
+        // inline, as it does after the once-per-process preparation.
+        HydrolysisEnvironment.resetForTest()
+        HydrolysisEnvironment.syncExecutor = Executor { it.run() }
+        HydrolysisEnvironment.prepare(context) {}
+        shadowOf(Looper.getMainLooper()).idle()
     }
 
     @Test
@@ -295,12 +303,13 @@ class SessionTeardownTest {
         }
         owner.registry.currentState = Lifecycle.State.CREATED
         lateinit var session: HydrolysisSession
+        lateinit var hostView: HydrolysisHostView
         val host = HydrolysisEmbedding.createView(
             activity, owner, activity, activity.onBackPressedDispatcher, "waterui_app",
             onCloseRequested = {},
             createContentView = {
                 session = it
-                HydrolysisHostView(activity, it)
+                HydrolysisHostView(activity, it).also { hostView = it }
             },
         )
         activity.setContentView(host)
@@ -319,7 +328,7 @@ class SessionTeardownTest {
         assertTrue(error.message!!.contains("bind reached a closing HydrolysisSession"))
         (host.parent as ViewGroup).removeView(host)
         assertTrue(ShadowNativeBridge.destroyed)
-        assertThrows(IllegalStateException::class.java) { session.bind(host as HydrolysisHostView) }
+        assertThrows(IllegalStateException::class.java) { session.bind(hostView) }
     }
 
     @Test
@@ -376,9 +385,12 @@ class SessionTeardownTest {
         // The ViewModel carried the one live session across the change.
         assertTrue(recreated.sessions.single() === session)
         assertFalse(ShadowNativeBridge.destroyed)
-        // The new activity's host view is the bound one.
-        val host = recreated.window.decorView.findViewById<ViewGroup>(android.R.id.content)
-            .getChildAt(0)
+        // The new activity's host view — inside the mount container — is
+        // the bound one.
+        val host = (
+            recreated.window.decorView.findViewById<ViewGroup>(android.R.id.content)
+                .getChildAt(0) as ViewGroup
+            ).getChildAt(0)
         assertTrue(host.isAttachedToWindow)
         assertTrue(session.hostView === host)
         // The retained back answer re-enabled the new activity's callback,
@@ -460,6 +472,10 @@ class ShadowNativeBridge {
         var frames = 0
             private set
 
+        /** Every `nativeCreateSession` the native side saw. */
+        var sessions = 0
+            private set
+
         var destroyed = false
             private set
 
@@ -485,6 +501,7 @@ class ShadowNativeBridge {
 
         fun reset() {
             frames = 0
+            sessions = 0
             destroyed = false
             deadlineQueries = 0
             visibilities.clear()
@@ -517,7 +534,10 @@ class ShadowNativeBridge {
             @Suppress("UNUSED_PARAMETER") session: HydrolysisSession,
             @Suppress("UNUSED_PARAMETER") context: Context,
             @Suppress("UNUSED_PARAMETER") uiThreadServices: Long,
-        ): Long = SESSION_PTR
+        ): Long {
+            sessions += 1
+            return SESSION_PTR
+        }
 
         @JvmStatic
         @Implementation
@@ -582,16 +602,4 @@ class ShadowNativeBridge {
             return treeJson
         }
     }
-}
-
-/**
- * Isolates the session tests from process environment preparation. Real
- * asset synchronization is covered by HydrolysisEnvironmentTest without
- * this shadow.
- */
-@Implements(HydrolysisEnvironment::class, isInAndroidSdk = false)
-@DoNotInstrument
-class ShadowHydrolysisEnvironment {
-    @Implementation
-    fun prepare(@Suppress("UNUSED_PARAMETER") context: Context) {}
 }

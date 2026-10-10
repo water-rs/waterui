@@ -30,6 +30,8 @@ waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
+# Hosted content follows the occlusion rects through a watcher set.
+waterui-watcher-set.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
@@ -143,6 +145,7 @@ objc2-foundation = { workspace = true, optional = true, features = [
     "NSGeometry",
     "NSHTTPCookie",
     "NSJSONSerialization",
+    "NSKeyValueObserving",
     "NSNotification",
     "NSObject",
     "NSProcessInfo",
@@ -284,6 +287,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
+# The `video` feature's realization of the two video leaves.
+waterui-video = { workspace = true, optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "Response",
     "CompositionEvent",
@@ -295,7 +300,6 @@ web-sys = { version = "0.3", optional = true, features = [
     "Element",
     "Event",
     "EventTarget",
-    "HtmlCanvasElement",
     "HtmlElement",
     "HtmlInputElement",
     "IntersectionObserver",
@@ -386,10 +390,10 @@ testing = []
 # exercise a software adapter for bring-up on a host without a GPU.
 frame-profile = ["testing"]
 inspector-signals = ["waterui/inspector-signals"]
-# The platform's own web engine, bridged as a native subview (`WKWebView` on
-# macOS, the platform-view instance seam for `android.webkit.WebView` on
-# Android). Every other engine is a crate the application links and installs;
-# this backend never names one.
+# The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
+# each hosted on a compositor plane, and `android.webkit.WebView` on Android,
+# mounted as a platform-view instance. Every other engine is a crate the
+# application links and installs; this backend never names one.
 webview-system = [
     "dep:block2",
     "dep:cookie",
@@ -397,6 +401,10 @@ webview-system = [
     "dep:getrandom",
     "dep:objc2-web-kit",
     "dep:serde_json",
+    "web-sys?/HtmlIFrameElement",
+    "web-sys?/MouseEvent",
+    "web-sys?/PointerEventInit",
+    "web-sys?/WheelEventInit",
 ]
 winit = [
     "accessibility",
@@ -418,6 +426,24 @@ winit = [
     "dep:wayland-client",
     "dep:wayland-protocols",
     "dep:windows-sys",
+]
+# The browser's `<video>` element as the web realization of `Video` and
+# `VideoPlayer`. Only a wasm32 `web` build has it; elsewhere the feature
+# selects nothing. The CLI enables it for an application that uses video.
+video = [
+    "dep:waterui-video",
+    "web-sys?/HtmlMediaElement",
+    "web-sys?/HtmlTrackElement",
+    "web-sys?/HtmlVideoElement",
+    "web-sys?/MediaError",
+    "web-sys?/MouseEvent",
+    "web-sys?/PointerEventInit",
+    "web-sys?/TextTrack",
+    "web-sys?/TextTrackList",
+    "web-sys?/TextTrackMode",
+    "web-sys?/TimeRanges",
+    "web-sys?/VideoPlaybackQuality",
+    "web-sys?/WheelEventInit",
 ]
 web = [
     "accessibility",
