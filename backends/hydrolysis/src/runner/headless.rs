@@ -857,6 +857,84 @@ impl HeadlessRuntime {
             })
     }
 
+    /// Which [`Self::is_settled`] clauses are still blocking, one entry per
+    /// blocked condition — for assertion messages in tests that wait on
+    /// settle so a failure names the work still in flight.
+    #[cfg(test)]
+    pub(crate) fn settle_blockers(&self) -> Vec<String> {
+        let mut blockers = Vec::new();
+        if self.runtime.platform.has_pending_events() {
+            blockers.push("main.platform.pending_events".to_string());
+        }
+        if self.local_executor.has_pending() {
+            blockers.push("local_executor.pending".to_string());
+        }
+        if !self.pending_window_queue.borrow().is_empty() {
+            blockers.push("pending_window_queue".to_string());
+        }
+        if self.runtime.mode.is_pending() {
+            blockers.push(format!("main.mode={:?}", self.runtime.mode));
+        }
+        if self.runtime.renderer.has_scheduled_semantic_work() {
+            let r = &self.runtime.renderer;
+            let mut reasons = Vec::new();
+            if r.has_pending_semantic_update() {
+                reasons.push("dirty".to_string());
+            }
+            if r.os_file_drop_pending() {
+                reasons.push("os_file_drop".to_string());
+            }
+            if r.animations_active() {
+                reasons.push("animations".to_string());
+                if r.has_pending_interaction_releases(r.frame_instant()) {
+                    reasons.push("pending_releases".to_string());
+                }
+            }
+            if r.next_gesture_deadline().is_some() {
+                reasons.push("gesture_deadline".to_string());
+            }
+            if r.has_gliding_smooth_scrolls() {
+                reasons.push("smooth_scroll".to_string());
+            }
+            if r.has_active_touch_fling() {
+                reasons.push("touch_fling".to_string());
+            }
+            blockers.push(format!("main.semantic_work[{reasons:?}]"));
+        }
+        for (i, popup) in self.popup_windows.iter().enumerate() {
+            if popup.mode.is_pending() {
+                blockers.push(format!("popup[{i}].mode={:?}", popup.mode));
+            }
+            if popup.platform.has_pending_events() {
+                blockers.push(format!("popup[{i}].platform.pending_events"));
+            }
+            if popup.renderer.has_scheduled_semantic_work() {
+                let r = &popup.renderer;
+                let mut reasons = Vec::new();
+                if r.has_pending_semantic_update() {
+                    reasons.push("dirty");
+                }
+                if r.os_file_drop_pending() {
+                    reasons.push("os_file_drop");
+                }
+                if r.animations_active() {
+                    reasons.push("animations");
+                }
+                if r.next_gesture_deadline().is_some() {
+                    reasons.push("gesture_deadline");
+                }
+                if r.has_gliding_smooth_scrolls() {
+                    reasons.push("smooth_scroll");
+                }
+                if r.has_active_touch_fling() {
+                    reasons.push("touch_fling");
+                }
+                blockers.push(format!("popup[{i}].semantic_work[{reasons:?}]"));
+            }
+        }
+        blockers
+    }
+
     /// Whether a state change has been requested but not yet flushed, so the
     /// semantics this runtime last produced are stale.
     ///

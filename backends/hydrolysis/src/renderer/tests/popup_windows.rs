@@ -285,8 +285,9 @@ fn a_window_with_a_pending_frame_is_not_settled() {
     ) {
         runtime.push_input_event(event);
     }
+    let click_frame_at = Instant::now();
     let update = runtime
-        .pump_at(false, Instant::now())
+        .pump_at(false, click_frame_at)
         .tree_update
         .expect("the click frame must publish the merged tree");
     let (copy, _) = find_by_label(&update, Role::Button, "Copy")
@@ -303,10 +304,18 @@ fn a_window_with_a_pending_frame_is_not_settled() {
         runtime.has_pending_semantic_update(),
         "a pending popup frame is a state change requested but not yet flushed"
     );
-    let _ = runtime.pump_at(false, Instant::now());
+    // The pointer that opened the menu still rests on the host button, so the
+    // click frame armed its hover fade-in — a real in-flight animation on the
+    // main window, not pending popup work. A frame stamped `Instant::now()`
+    // races that fade (it settles only once the wall clock has passed the
+    // hover-enter duration). Stamp the next frame one virtual second after
+    // the click frame instead, past every interaction animation's horizon,
+    // so settling is deterministic (water-rs/waterui#2499).
+    let _ = runtime.pump_at(false, click_frame_at + Duration::from_secs(1));
     assert!(
         runtime.is_settled(),
-        "the popup's pending frame ran and the runtime settled"
+        "the popup's pending frame ran and the runtime settled; blockers: {:?}",
+        runtime.settle_blockers()
     );
 }
 
