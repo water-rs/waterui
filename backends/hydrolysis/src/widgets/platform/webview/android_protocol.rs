@@ -756,7 +756,7 @@ pub enum WebViewMethodId {
     SetCookie,
     GetCookies,
     Evaluate,
-    EvaluateBridgeScript,
+    PostBridgeReply,
     Release,
 }
 
@@ -776,7 +776,7 @@ impl WebViewMethodId {
         Self::SetCookie,
         Self::GetCookies,
         Self::Evaluate,
-        Self::EvaluateBridgeScript,
+        Self::PostBridgeReply,
         Self::Release,
     ];
 }
@@ -843,8 +843,8 @@ pub const WEBVIEW_METHODS: &[WebViewMethod] = &[
         signature: "(Ljava/lang/String;J)V",
     },
     WebViewMethod {
-        name: "evaluateBridgeScript",
-        signature: "(Ljava/lang/String;)V",
+        name: "postBridgeReply",
+        signature: "(Landroidx/webkit/JavaScriptReplyProxy;Ljava/lang/String;)V",
     },
     WebViewMethod {
         name: "release",
@@ -1823,6 +1823,7 @@ mod tests {
             "Array<String>" => "[Ljava/lang/String;",
             "HydrolysisSession" => "Ldev/waterui/hydrolysis/HydrolysisSession;",
             "HydrolysisWebView" => "Ldev/waterui/hydrolysis/webview/HydrolysisWebView;",
+            "JavaScriptReplyProxy" => "Landroidx/webkit/JavaScriptReplyProxy;",
             "Unit" => "V",
             other => panic!("@CalledFromNative member {member} uses unmapped Kotlin type {other}"),
         }

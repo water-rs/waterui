@@ -20,6 +20,7 @@ import android.webkit.WebView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
+import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
@@ -280,7 +281,11 @@ private constructor(
         )
 
         @JvmStatic
-        private external fun nativeOnBridgeMessage(handle: Long, envelope: String)
+        private external fun nativeOnBridgeMessage(
+            handle: Long,
+            envelope: String,
+            replyProxy: JavaScriptReplyProxy,
+        )
 
         @JvmStatic
         private external fun nativeOriginMayUseBridge(handle: Long, origin: String): Boolean
@@ -484,12 +489,19 @@ private constructor(
     }
 
     /**
-     * Evaluates a bridge reply: the `resolve_script` `nativeOnBridgeMessage`
-     * composed for the call it answered.
+     * Posts a bridge reply — the `Reply::message` the native side rendered for
+     * the call it answered — through [replyProxy], the channel the listener
+     * handed `nativeOnBridgeMessage` with that call. The engine binds the
+     * proxy to the document that sent the call and drops the post once that
+     * document is gone, so the reply never reaches another page; a released
+     * view drops it here.
      */
     @CalledFromNative
-    fun evaluateBridgeScript(script: String) {
-        evaluateJavascript(script, null)
+    fun postBridgeReply(replyProxy: JavaScriptReplyProxy, message: String) {
+        if (released) {
+            return
+        }
+        replyProxy.postMessage(message)
     }
 
     /**
@@ -552,8 +564,8 @@ private constructor(
             this,
             bridgeObjectName,
             originRules.toSet(),
-        ) { _, message, sourceOrigin, isMainFrame, _ ->
-            onBridgeMessage(message, sourceOrigin, isMainFrame)
+        ) { _, message, sourceOrigin, isMainFrame, replyProxy ->
+            onBridgeMessage(message, sourceOrigin, isMainFrame, replyProxy)
         }
         bridgeListenerInstalled = true
     }
@@ -574,6 +586,7 @@ private constructor(
         message: WebMessageCompat,
         sourceOrigin: Uri?,
         isMainFrame: Boolean,
+        replyProxy: JavaScriptReplyProxy,
     ) {
         if (!isMainFrame) {
             Log.w(LOG_TAG, "a bridge message from a subframe was dropped")
@@ -593,7 +606,7 @@ private constructor(
             Log.w(LOG_TAG, "a bridge message on a released web view was dropped")
             return
         }
-        nativeOnBridgeMessage(nativeHandle, envelope)
+        nativeOnBridgeMessage(nativeHandle, envelope, replyProxy)
     }
 
     // ------------------------------------------------------------------

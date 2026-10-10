@@ -7,8 +7,9 @@
 //!
 //! This module owns the single script and the single envelope. A backend supplies
 //! only a transport: deliver [`SCRIPT`] at document start, hand
-//! [`Request::parse`] whatever `__wateruiSend` produced, and evaluate
-//! [`Reply::resolve_script`] to complete the call.
+//! [`Request::parse`] whatever `__wateruiSend` produced, and complete the call
+//! by evaluating [`Reply::resolve_script`] or, where the engine binds a reply
+//! channel to the sending document, by posting [`Reply::message`] on it.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -143,6 +144,26 @@ impl Reply {
     /// `Serialize` implementation, never from the page.
     #[must_use]
     pub fn resolve_script(&self, id: u64) -> String {
+        let (ok, payload) = self.parts();
+        format!("globalThis.__wateruiResolve({id},{ok},{payload});")
+    }
+
+    /// Renders the reply as a message for a transport that delivers it on the
+    /// channel the request arrived on, bound to the document that sent it:
+    /// `{"id":…,"ok":…,"payload":…}`, which the page's transport hands to
+    /// `__wateruiResolve(id, ok, payload)` unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::resolve_script`].
+    #[must_use]
+    pub fn message(&self, id: u64) -> String {
+        let (ok, payload) = self.parts();
+        format!("{{\"id\":{id},\"ok\":{ok},\"payload\":{payload}}}")
+    }
+
+    /// Whether the call succeeded, and its payload serialized as JSON.
+    fn parts(&self) -> (bool, String) {
         let json;
         let (ok, payload) = match self {
             Self::Json(bytes) => {
@@ -158,8 +179,10 @@ impl Reply {
             ),
             Self::Failure(message) => (false, ReplyPayload::Failure { message }),
         };
-        let payload = serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize");
-        format!("globalThis.__wateruiResolve({id},{ok},{payload});")
+        (
+            ok,
+            serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize"),
+        )
     }
 }
 
@@ -228,5 +251,22 @@ mod tests {
             script,
             r#"globalThis.__wateruiResolve(5,false,{"message":"he said \"}\"; alert(1)"});"#
         );
+    }
+
+    /// The message form carries the same id, outcome and payload as the
+    /// script form, as one JSON object the page parses rather than runs.
+    #[test]
+    fn a_reply_message_is_a_json_object() {
+        let message = Reply::Json(br#"{"text":"Hi Lexo"}"#.to_vec()).message(3);
+        assert_eq!(
+            message,
+            r#"{"id":3,"ok":true,"payload":{"json":{"text":"Hi Lexo"}}}"#
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&Reply::failure(r#"he said "}""#).message(5))
+                .expect("a reply message is JSON");
+        assert_eq!(parsed["id"], 5);
+        assert_eq!(parsed["ok"], false);
+        assert_eq!(parsed["payload"]["message"], r#"he said "}""#);
     }
 }

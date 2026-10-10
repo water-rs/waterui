@@ -167,43 +167,51 @@ impl SharedState {
         answer
     }
 
-    /// `evaluateBridgeScript` — the fire-and-forget evaluation bridge replies
-    /// take. Callable without a handle because the wrapper lives here. Runs
-    /// inside a local JNI frame: executor tasks enter JNI from the `ALooper`
-    /// fd callback, which has no frame, and locals would otherwise leak.
-    fn evaluate_bridge_script(&self, script: String) {
+    /// `postBridgeReply` — posts a handler's reply through the
+    /// `JavaScriptReplyProxy` of the message that asked. The engine binds the
+    /// proxy to the sending document and drops the post once that document is
+    /// gone, so a reply never reaches a page the call did not come from.
+    /// Callable without a handle because the wrapper lives here. Runs inside
+    /// a local JNI frame: executor tasks enter JNI from the `ALooper` fd
+    /// callback, which has no frame, and locals would otherwise leak.
+    fn post_bridge_reply(&self, reply_proxy: &GlobalRef, message: &str) {
         let Some(wrapper) = self.wrapper.borrow().clone() else {
             tracing::warn!("android webview: a bridge reply arrived before the wrapper was set");
             return;
         };
-        let method = self.methods.id(WebViewMethodId::EvaluateBridgeScript);
+        let method = self.methods.id(WebViewMethodId::PostBridgeReply);
         let mut env = self
             .vm
             .get_env()
             .expect("bridge replies run on the UI thread, which is attached");
         env.with_local_frame::<_, _, jni::errors::Error>(16, |env| {
-            let script = env
-                .new_string(script)
-                .expect("a reply script is Java-safe UTF-8");
+            let message = env
+                .new_string(message)
+                .expect("a reply message is Java-safe UTF-8");
             // SAFETY: `method` was resolved for the wrapper class at create
-            // time and the signature is `evaluateBridgeScript`'s `(String)V`.
+            // time and the signature is `postBridgeReply`'s
+            // `(JavaScriptReplyProxy, String)V`; `reply_proxy` is the proxy
+            // the listener handed `nativeOnBridgeMessage`.
             unsafe {
                 env.call_method_unchecked(
                     wrapper.as_obj(),
                     method,
                     ReturnType::Primitive(Primitive::Void),
-                    &[JValue::Object(script.as_ref()).as_jni()],
+                    &[
+                        JValue::Object(reply_proxy.as_obj()).as_jni(),
+                        JValue::Object(message.as_ref()).as_jni(),
+                    ],
                 )
                 .map(|_| ())
             }
         })
-        .unwrap_or_else(|error| panic_with_java_detail(&mut env, "evaluateBridgeScript", &error));
+        .unwrap_or_else(|error| panic_with_java_detail(&mut env, "postBridgeReply", &error));
     }
 
     /// `nativeOnBridgeMessage`: parse the envelope, dispatch the named
-    /// handler on the executor, and push the reply into the page with
-    /// `evaluateBridgeScript` — the ffi bridge's flow, minus its FFI shim.
-    fn on_bridge_message(self: Rc<Self>, envelope: &str) {
+    /// handler on the executor, and post the reply on `reply_proxy`, the
+    /// channel the engine bound to the document that sent the message.
+    fn on_bridge_message(self: Rc<Self>, envelope: &str, reply_proxy: GlobalRef) {
         let request = match bridge::Request::parse(envelope) {
             Ok(request) => request,
             Err(error) => {
@@ -220,9 +228,10 @@ impl SharedState {
                 handler = %request.name,
                 "android webview: a bridge message named an unregistered handler"
             );
-            self.evaluate_bridge_script(
-                bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
-                    .resolve_script(request_id),
+            self.post_bridge_reply(
+                &reply_proxy,
+                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                    .message(request_id),
             );
             return;
         };
@@ -235,7 +244,7 @@ impl SharedState {
                 Err(message) => bridge::Reply::Failure(message),
             };
             if let Some(shared) = weak.upgrade() {
-                shared.evaluate_bridge_script(reply.resolve_script(request_id));
+                shared.post_bridge_reply(&reply_proxy, &reply.message(request_id));
             }
         })
         .detach();
@@ -1147,6 +1156,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
     _class: JClass,
     handle: jlong,
     envelope: JString,
+    reply_proxy: JObject,
 ) {
     guard(&mut env, |env| {
         let Some(shared) = shared_from_handle(handle) else {
@@ -1154,7 +1164,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
             return Ok(());
         };
         let envelope = get_string(env, &envelope)?;
-        shared.on_bridge_message(&envelope);
+        let reply_proxy = env.new_global_ref(&reply_proxy)?;
+        shared.on_bridge_message(&envelope, reply_proxy);
         Ok(())
     });
 }
