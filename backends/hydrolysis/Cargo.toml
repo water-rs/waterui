@@ -266,6 +266,9 @@ serde_json.workspace = true
 waterui-controls = { workspace = true, features = ["serde"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# wasm32 has no stderr: without a hook a panic reaches the page as a bare
+# `RuntimeError: unreachable`, its message and location lost.
+console_error_panic_hook = { version = "0.1", optional = true }
 # The web runner fetches its fonts while the GPU device comes up; `join!` and
 # `join_all` are the whole of what it needs from futures.
 futures = { workspace = true, optional = true }
@@ -405,6 +408,7 @@ winit = [
 ]
 web = [
     "accessibility",
+    "dep:console_error_panic_hook",
     "dep:futures",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
