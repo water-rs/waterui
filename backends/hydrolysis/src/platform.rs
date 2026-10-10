@@ -3293,25 +3293,27 @@ mod winit_impl {
         /// (`ICON_SMALL`), so the same image also goes to the taskbar and
         /// Alt-Tab icon (`ICON_BIG`).
         fn apply_window_icon(&self, icon: Option<&waterui::window::WindowIcon>) {
-            let icon = match icon {
-                // `Icon::from_rgba` only checks the buffer against the size,
-                // which `WindowIcon::new` already guarantees.
-                Some(icon) => Some(
-                    winit::window::Icon::from_rgba(
-                        icon.rgba().to_vec(),
-                        icon.width(),
-                        icon.height(),
+            let icon = icon.map_or_else(
+                || self.application_icon.clone(),
+                |icon| {
+                    // `Icon::from_rgba` only checks the buffer against the
+                    // size, which `WindowIcon::new` already guarantees.
+                    Some(
+                        winit::window::Icon::from_rgba(
+                            icon.rgba().to_vec(),
+                            icon.width(),
+                            icon.height(),
+                        )
+                        .expect("a WindowIcon's pixels match its size"),
                     )
-                    .expect("a WindowIcon's pixels match its size"),
-                ),
-                None => self.application_icon.clone(),
-            };
-            self.window.set_window_icon(icon.clone());
+                },
+            );
             #[cfg(target_os = "windows")]
             {
                 use winit::platform::windows::WindowExtWindows as _;
-                self.window.set_taskbar_icon(icon);
+                self.window.set_taskbar_icon(icon.clone());
             }
+            self.window.set_window_icon(icon);
         }
 
         /// The `AppKit` half of `set_blur_behind`: while the window asks, an
