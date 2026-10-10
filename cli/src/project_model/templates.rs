@@ -239,7 +239,7 @@ pub struct WebAnswers {
 
 impl WebAnswers {
     /// The Hydrolysis features the generated wasm32 table enables.
-    fn hydrolysis_features(self) -> &'static [&'static str] {
+    const fn hydrolysis_features(self) -> &'static [&'static str] {
         if self.video {
             &["web", "video"]
         } else {
@@ -1589,6 +1589,7 @@ mod tests {
             local_sources,
             framework: stable_framework(),
             browser,
+            web: super::WebAnswers::default(),
             backend_project_path,
             project_root_path,
             android_permissions: Vec::new(),
