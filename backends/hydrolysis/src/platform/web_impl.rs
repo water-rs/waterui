@@ -91,8 +91,8 @@ impl BrowserSurface {
         // output negotiation, so the configured `colorSpace` and the encoding
         // the present pass writes always agree. The page asks for SDR: an
         // extended-range canvas puts Apple displays into EDR mode, which dims
-        // every screenshot of the page and draws more power, and no
-        // Hydrolysis host presents HDR. The Standard..=WideGamut range keeps
+        // every screenshot of the page and draws more power. The
+        // Standard..=WideGamut range keeps
         // Display P3's wide gamut where the browser offers it, keeps every
         // HDR space out, and still meets a canvas that reports only sRGB or
         // no explicit space at all — the ceiling is the request's, not a
@@ -103,10 +103,12 @@ impl BrowserSurface {
             wgpu::Backend::BrowserWebGpu,
             cherenkov_gpu::interop::OutputRequest {
                 transparent: false,
-                color_space: cherenkov_gpu::interop::ColorSpaceRequest::Range {
-                    at_least: cherenkov_gpu::interop::ColorRange::Standard,
-                    at_most: cherenkov_gpu::interop::ColorRange::WideGamut,
-                },
+                color_space: cherenkov_gpu::interop::ColorSpaceRequest::Range(
+                    cherenkov_gpu::interop::ColorRangeInterval::new(
+                        cherenkov_gpu::interop::ColorRange::Standard,
+                        cherenkov_gpu::interop::ColorRange::WideGamut,
+                    ),
+                ),
                 sync: cherenkov_gpu::DisplaySync::Synchronized,
             },
         )

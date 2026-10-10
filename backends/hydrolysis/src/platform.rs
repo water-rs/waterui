@@ -20,6 +20,43 @@ pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::inte
     }
 }
 
+/// Negotiates the output of a host-configured window surface — the
+/// engine's `select_output` over the surface's advertised capabilities
+/// with [`hydrolysis_output_request`], the display's reported headroom
+/// sampled alongside (#2445). The winit (Linux, Windows) and Android
+/// hosts configure their swapchains from the result; the macOS host
+/// hands the same request to the engine's `WindowTarget` instead.
+///
+/// # Errors
+/// [`cherenkov::SurfaceError::UnsupportedTarget`] when the surface
+/// advertises nothing the request admits; the error names the request
+/// and the offer.
+#[cfg(any(all(hydrolysis_winit, not(target_os = "macos")), target_os = "android"))]
+pub fn negotiate_host_output(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+    transparent: bool,
+) -> Result<cherenkov_gpu::interop::OutputSelection, cherenkov::SurfaceError> {
+    let caps = surface.get_capabilities(adapter);
+    let mut selection = cherenkov_gpu::interop::select_output(
+        &caps,
+        adapter.get_info().backend,
+        hydrolysis_output_request(transparent),
+    )?;
+    selection.reported_headroom = surface.display_hdr_info(adapter).tone_map_headroom();
+    tracing::debug!(
+        target: "waterui::hydrolysis",
+        format = ?selection.format,
+        color_space = ?selection.color_space,
+        alpha_mode = ?selection.alpha_mode,
+        present_mode = ?selection.present_mode,
+        reason = ?selection.reason,
+        reported_headroom = ?selection.reported_headroom,
+        "negotiated surface output"
+    );
+    Ok(selection)
+}
+
 /// Releases the resources whose destruction `device` deferred.
 ///
 /// `wgpu` retires finished submissions from inside `Queue::submit`, but the
@@ -822,8 +859,9 @@ pub trait SurfaceProvider: PresentationSurface {
         cherenkov_gpu::interop::OutputAlpha::Straight
     }
     /// The display's HDR headroom — the brightest white the surface
-    /// presents, relative to SDR white. Every current surface is SDR, so
-    /// the default is 1.0; an HDR presentation surface overrides it.
+    /// presents, relative to SDR white. The default, 1.0, is an SDR
+    /// target's; a window surface reports the headroom its output
+    /// negotiation sampled.
     fn display_headroom(&self) -> f32 {
         1.0
     }
@@ -2533,32 +2571,23 @@ mod winit_impl {
             )
         }
 
-        /// The surface's negotiated output configuration — the engine's
-        /// `select_output` over its advertised pairs (`#2445`), reported
-        /// headroom sampled alongside. An unmet request is a window-creation
-        /// failure naming the request, what the surface offers, and the
-        /// adapter, never a silently substituted pair.
+        /// The surface's negotiated output configuration
+        /// ([`super::negotiate_host_output`]). An unmet request is a
+        /// window-creation failure naming the request, what the surface
+        /// offers, and the adapter, never a silently substituted pair.
         #[cfg(not(target_os = "macos"))]
         fn negotiate_surface_output(
             surface: &wgpu::Surface<'static>,
             adapter: &wgpu::Adapter,
             transparent: bool,
         ) -> cherenkov_gpu::interop::OutputSelection {
-            let caps = surface.get_capabilities(adapter);
-            let info = adapter.get_info();
-            let mut selection = cherenkov_gpu::interop::select_output(
-                &caps,
-                info.backend,
-                super::hydrolysis_output_request(transparent),
-            )
-            .unwrap_or_else(|error| {
+            super::negotiate_host_output(surface, adapter, transparent).unwrap_or_else(|error| {
+                let info = adapter.get_info();
                 panic!(
                     "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
                     info.name, info.backend
                 )
-            });
-            selection.reported_headroom = surface.display_hdr_info(adapter).tone_map_headroom();
-            selection
+            })
         }
 
         #[cfg(not(target_os = "macos"))]

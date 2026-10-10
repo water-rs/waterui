@@ -26,7 +26,7 @@ use raw_window_handle::{AndroidDisplayHandle, DisplayHandle, HasDisplayHandle, R
 
 use crate::platform::{
     PresentationSurface, SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
-    hydrolysis_output_request,
+    negotiate_host_output,
 };
 
 /// The Android display's raw handle: the platform has one implicit default
@@ -321,18 +321,9 @@ impl AndroidSurface {
                 ))
             })?;
         // The (format, colour space) pair, present mode and alpha mode
-        // come from the engine's one negotiation path — the same
-        // `select_output` every Hydrolysis host uses (#2445).
-        let caps = surface.get_capabilities(&self.gpu.inner.adapter);
-        let mut selection = cherenkov_gpu::interop::select_output(
-            &caps,
-            self.gpu.inner.adapter.get_info().backend,
-            hydrolysis_output_request(false),
-        )
-        .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?;
-        selection.reported_headroom = surface
-            .display_hdr_info(&self.gpu.inner.adapter)
-            .tone_map_headroom();
+        // come from the one negotiation every Hydrolysis host uses (#2445).
+        let selection = negotiate_host_output(&surface, &self.gpu.inner.adapter, false)
+            .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: selection.format,
