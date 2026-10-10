@@ -45,21 +45,18 @@ pub fn sigma_max(t: Affine) -> f64 {
     p.midpoint(disc).sqrt()
 }
 
-/// A semantic shape as a local `BezPath`.
+/// A semantic shape as a local `BezPath`: its outline (shared with every
+/// other lowering through [`cherenkov::lowering::shape_outline`]), or the
+/// open segment of a line.
 #[must_use]
 pub fn shape_path(shape: &ShapeData, tolerance: f64) -> BezPath {
     match shape {
-        ShapeData::Rect(r) => r.to_path(tolerance),
-        ShapeData::RoundedRect(rr) => rr.to_path(tolerance),
-        ShapeData::Circle(c) => c.to_path(tolerance),
-        ShapeData::Ellipse(e) => {
-            let mut path = e.to_path(tolerance);
-            path.close_path();
-            path
-        }
         ShapeData::Line(l) => l.to_path(tolerance),
-        ShapeData::Continuous(c) => c.to_path(tolerance),
-        ShapeData::Path { elements, .. } => BezPath::from_vec(elements.to_vec()),
+        _ => {
+            cherenkov::lowering::shape_outline(shape, tolerance)
+                .expect("every shape but a line has an outline")
+                .0
+        }
     }
 }
 
