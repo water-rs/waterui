@@ -747,7 +747,7 @@ fn answer_scheme_task(
     let ns_response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
         NSHTTPURLResponse::alloc(),
         &url,
-        NSInteger::from(response.status),
+        NSInteger::try_from(response.status).expect("HTTP status fits NSInteger"),
         Some(&NSString::from_str("HTTP/1.1")),
         Some(&headers),
     )
