@@ -7,17 +7,24 @@
 //! parts. On the device everything lives in the host's private files under
 //! `files/waterui-preview`: each run writes its config and clears `out/` there
 //! while reading the parts' stamps back, ships only the parts whose content
-//! hash differs from the device's stamp — one `adb push` into the shell
-//! user's staging directory, then one `run-as` copy into private storage
-//! that writes the stamps — and renders through the live preview host it
-//! started earlier or starts now: one instrumentation process that answers
-//! render requests over an `adb forward`ed channel and reports the payload
-//! stamp it loaded in its greeting, so an unchanged payload reuses the
-//! process and a changed one force-stops it first. The produced PNGs come
-//! back through `adb shell -T`. Round trips that do not depend on each
-//! other run side by side: the version check, the clock read and the
-//! preparation; the push and the forward lookup; and the render and the
-//! staging copy's removal.
+//! hash differs from the device's stamp — `adb push` into a staging
+//! directory of the run's own under `/data/local/tmp`, then one `run-as`
+//! copy into private storage that writes the stamps — and renders through
+//! the live preview host it started earlier or starts now: one
+//! instrumentation process that answers render requests over an `adb
+//! forward`ed channel and reports the payload stamp it loaded in its
+//! greeting, so an unchanged payload reuses the process and a changed one
+//! force-stops it first. A per-device record in the preview cache
+//! remembers the stamps a run installed: when it predicts a part changed,
+//! that part's push rides beside the run's own preparation — every run
+//! stages under a name of its own, so the preparation's sweep of
+//! abandoned staging cannot remove a push in flight — while the
+//! preparation's stamp read stays the authority, sending a part the
+//! record missed down the serial path and rewriting the record. The
+//! produced PNGs come back through `adb shell -T`. Round trips that do
+//! not depend on each other run side by side: the version check, the
+//! clock read, the preparation and the predicted push; the install and
+//! the forward lookup; and the render and the staging copy's removal.
 
 mod device_host;
 mod payload;
@@ -44,7 +51,10 @@ use crate::preview::run::{RUN_CONFIG_FILE_NAME, run_config_json};
 use crate::project_model::water_dir;
 use crate::toolchain::Host;
 
-use payload::{DevicePayload, HeldStamps, PAYLOAD_DIR, PayloadPart};
+use payload::{
+    DevicePayload, HeldStamps, InstallRecord, PAYLOAD_DIR, PayloadPart, read_install_record,
+    write_install_record,
+};
 
 /// The slowest transport a payload push is given time for, in bytes per
 /// second: a weak wireless `adb connect` link. The push's deadline is the
@@ -56,13 +66,26 @@ const PAYLOAD_MIN_THROUGHPUT: u64 = 1024 * 1024;
 /// size matters.
 const PAYLOAD_DEADLINE_FLOOR: Duration = Duration::from_secs(30);
 
-/// The shell user's directory a payload push lands in before `run-as`
-/// copies it into the host's private files — the app cannot read a push
-/// target of its own. Every run preparation removes it, so a push always
-/// lands on an absent target and `adb push` copies the source as that
-/// target instead of nesting it inside; the install removes it once the
+/// The shell user's staging namespace a payload push lands in before
+/// `run-as` copies it into the host's private files — the app cannot read
+/// a push target of its own. Every run stages under a [`push_staging_dir`]
+/// name inside it: the preparation removes every staging directory the
+/// namespace holds but this run's own, so a push always lands on an
+/// absent target and `adb push` copies the source as that target instead
+/// of nesting it inside; the install removes the run's staging once the
 /// copy is done.
-const PUSH_STAGING_DIR: &str = "/data/local/tmp/waterui-preview";
+const PUSH_STAGING_PREFIX: &str = "/data/local/tmp/waterui-preview";
+
+/// This run's staging directory inside [`PUSH_STAGING_PREFIX`]: one name
+/// per run — on this machine and any other — so its own preparation's
+/// sweep of abandoned staging can never remove the push it runs beside.
+fn push_staging_dir() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{PUSH_STAGING_PREFIX}-{}-{nanos}", std::process::id())
+}
 
 /// The run directory inside the preview host's `filesDir` — the
 /// instrumentation extras are paths relative to `filesDir` itself.
@@ -184,12 +207,14 @@ struct DeviceRender<'a> {
     scenario: Option<&'a HydrolysisPreviewScenario>,
 }
 
-/// Take the device lease, then prepare the run alongside the host's version
-/// check — installing the host and preparing again when it is not current —
-/// ship the payload parts the device's copy is stale in while the `adb
-/// forward` is looked up beside the push, then probe the live host —
-/// starting one when none answers or a stale one is replaced — send it the render request and pull the output while the
-/// push's staging copy is removed.
+/// Take the device lease, then run the version check, the clock read and
+/// the run's preparation side by side with the push of whatever parts the
+/// install record predicts changed — installing the host and preparing
+/// again when it is not current — ship any part the device's own stamp
+/// read turns out stale in and install them while the `adb forward` is
+/// looked up beside it, then probe the live host — starting one when none
+/// answers or a stale one is replaced — send it the render request and
+/// pull the output while the push's staging copy is removed.
 ///
 /// `am instrument` force-stops the host package and an install replaces
 /// it, so a second run's install or host start would kill the render
@@ -213,46 +238,93 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
     // that inherits our pipes.
     adb.start_server(host).await?;
 
+    // Every run's push lands under a staging name of its own, so this
+    // run's preparation — which sweeps what earlier runs left of the
+    // staging namespace — can never remove it.
+    let staging = push_staging_dir();
+
+    // The preview cache keeps the stamps this device was left holding,
+    // which predicts which parts changed: a part the record names stale
+    // ships beside the preparation instead of after it. The record is
+    // only a prediction — a run with no record, and a part the record
+    // missed, take the serial path below; the preparation's stamp read
+    // stays the authority either way.
+    let record_path = payload.install_record_path(device_key);
+    let predicted = read_install_record(&record_path)
+        .await?
+        .map_or_else(Vec::new, |record| {
+            payload.stale_parts(&record.held_stamps())
+        });
+    if !predicted.is_empty() {
+        info!(
+            ?predicted,
+            "Pushing the changed preview payload to the device"
+        );
+    }
+
     // The version query, the `logcat -T` stamp bounding the crash log to
-    // this run and the run's preparation are independent round trips
-    // whenever the host is already installed at this version — every warm
-    // run — so they run side by side. The preparation goes through
-    // `run-as`, which needs the installed host: when the query calls for an
-    // install, the install starts once all three are done, so it never
-    // overlaps a `run-as`, and the preparation runs again against the host
-    // it installed — the speculative one found no host or prepared files
-    // the replacing install may have touched. `install -r` keeps the host's
-    // private files, so a payload already extracted there survives a host
-    // upgrade.
-    let (installed, since, prepared) = futures_util::join!(
+    // this run, the run's preparation and the predicted push are
+    // independent round trips whenever the host is already installed at
+    // this version — every warm run — so they run side by side. The
+    // preparation goes through `run-as`, which needs the installed host:
+    // when the query calls for an install, the install starts once all
+    // four are done, so it never overlaps a `run-as`, and the preparation
+    // runs again against the host it installed — the speculative one found
+    // no host or prepared files the replacing install may have touched.
+    // The push needs neither: its staging survives the second
+    // preparation, which sweeps every staging directory but this run's
+    // own. `install -r` keeps the host's private files, so a payload
+    // already extracted there survives a host upgrade.
+    let (installed, since, prepared, pushed) = futures_util::join!(
         adb.installed_version_code(host, serial, PREVIEW_HOST_PACKAGE, Duration::from_secs(30)),
         device_time_stamp(host, adb, serial),
-        prepare_run(host, adb, serial, run_config),
+        prepare_run(host, adb, serial, run_config, &staging),
+        OptionFuture::from(
+            (!predicted.is_empty())
+                .then(|| push_staged(host, adb, serial, payload, &predicted, &staging)),
+        ),
     );
     let since = since?;
+    let pushed = pushed.transpose()?.is_some();
     let held = if installed? == Some(version_code) {
         prepared?
     } else {
         install_host(host, adb, serial, host_apk, version_code).await?;
-        prepare_run(host, adb, serial, run_config).await?
+        prepare_run(host, adb, serial, run_config, &staging).await?
     };
 
+    // The device read is the authority: the parts it is stale in install
+    // whether or not the record predicted them — a part it missed still
+    // ships, serially — and the record is rewritten to the state the run
+    // leaves. The forward lookup rides beside the shipping and the
+    // install; the host probe waits for both, so a fresh host starts only
+    // once the payload it will report as loaded is in place, and a reused
+    // host's connection is not held open across a long resources push.
     let stale = payload.stale_parts(&held);
-    let pushed = !stale.is_empty();
-    if pushed {
-        info!(?stale, "Pushing the changed preview payload to the device");
-    }
-    // The forward lookup rides beside the push; the host probe waits for
-    // the push, so a fresh host starts only once the payload it will report
-    // as loaded is in place, and a reused host's connection is not held
-    // open across a long resources push.
+    let missed: Vec<PayloadPart> = stale
+        .iter()
+        .copied()
+        .filter(|part| !predicted.contains(part))
+        .collect();
+    let staged_push = pushed || !missed.is_empty();
     let ((), forward) = futures_util::try_join!(
         async {
-            if pushed {
-                push_payload(host, adb, serial, payload, &stale).await
-            } else {
-                Ok(())
+            if !missed.is_empty() {
+                info!(
+                    ?missed,
+                    "The device disagrees with the install record; shipping the rest serially"
+                );
+                push_staged(host, adb, serial, payload, &missed, &staging).await?;
             }
+            if !stale.is_empty() {
+                info!(?stale, "Installing the changed preview payload parts");
+                install_staged(host, adb, serial, payload, &stale, &staging).await?;
+            }
+            write_install_record(
+                &record_path,
+                &InstallRecord::after_install(&held, &stale, payload),
+            )
+            .await
         },
         device_host::open_forward(host, adb, serial),
     )?;
@@ -281,9 +353,10 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
     };
     // The staging copy is dead once installed, and nothing the render reads
     // lives there, so its removal overlaps the render instead of delaying
-    // it. A run that fails before this point leaves it for the next run's
-    // preparation, which clears it first.
-    let remove_staging = OptionFuture::from(pushed.then(|| remove_push_staging(host, adb, serial)));
+    // it. A run that fails before this point leaves it for a later run's
+    // preparation, which sweeps it under its own staging name.
+    let remove_staging =
+        OptionFuture::from(staged_push.then(|| remove_push_staging(host, adb, serial, &staging)));
     let (rendered, removed) = futures_util::join!(render, remove_staging);
     rendered?;
     removed.transpose()?;
@@ -373,8 +446,10 @@ async fn device_time_stamp(host: &Host, adb: &Adb, serial: &str) -> Result<Strin
         .to_string())
 }
 
-/// Prepare the run in one call: as the shell user, remove
-/// [`PUSH_STAGING_DIR`] so this run's push lands on an absent target; then,
+/// Prepare the run in one call: as the shell user, remove every staging
+/// directory [`PUSH_STAGING_PREFIX`] holds but this run's own `staging`,
+/// so an abandoned staging can never poison a push while the push this
+/// run made beside this call lands on its own absent target; then,
 /// through `run-as`, remove every entry of the run directory its layout does
 /// not name — the payload, the part stamps, the run config and `out/` — and
 /// every entry of the payload that is not a part, clear `out/` so a failed
@@ -386,6 +461,7 @@ async fn prepare_run(
     adb: &Adb,
     serial: &str,
     run_config: &[u8],
+    staging: &str,
 ) -> Result<HeldStamps> {
     let [libraries, resources] = PayloadPart::ALL;
     let words = [
@@ -393,7 +469,8 @@ async fn prepare_run(
         "-c",
         PREPARE_SHELL_SCRIPT,
         "sh",
-        PUSH_STAGING_DIR,
+        PUSH_STAGING_PREFIX,
+        staging,
         "run-as",
         PREVIEW_HOST_PACKAGE,
         "sh",
@@ -415,10 +492,15 @@ async fn prepare_run(
     HeldStamps::parse(&stamps)
 }
 
-/// The shell user's half of [`prepare_run`]: `$1` is [`PUSH_STAGING_DIR`],
-/// the rest the `run-as` command it then becomes, keeping the stdin the run
-/// config arrives on.
-const PREPARE_SHELL_SCRIPT: &str = "rm -rf \"$1\" && shift && exec \"$@\"";
+/// The shell user's half of [`prepare_run`]: `$1` is the staging namespace
+/// [`PUSH_STAGING_PREFIX`], `$2` this run's own staging directory —
+/// exempt from the sweep so the push this call runs beside cannot be
+/// removed under it — and the rest the `run-as` command it then becomes,
+/// keeping the stdin the run config arrives on.
+const PREPARE_SHELL_SCRIPT: &str = "prefix=$1 && staging=$2 && shift 2 && \
+     for leftover in \"$prefix\"*; do \
+     [ \"$leftover\" = \"$staging\" ] || rm -rf \"$leftover\" || exit 1; done && \
+     exec \"$@\"";
 
 /// The `run-as` half of [`prepare_run`]: `$1` is the run directory, `$2`
 /// the config file, `$3` the payload directory, `$4` and `$5` the part
@@ -439,35 +521,56 @@ fn payload_deadline(size: u64) -> Duration {
     Duration::from_secs(size.div_ceil(PAYLOAD_MIN_THROUGHPUT)).max(PAYLOAD_DEADLINE_FLOOR)
 }
 
-/// Ship `stale` — the payload parts the device's stamps do not match — into
-/// the host's private files in two calls.
-///
-/// One `adb push` carries them into [`PUSH_STAGING_DIR`]: the whole local
-/// payload directory when every part is stale, the one stale part's
-/// directory otherwise — the staging directory is absent, so either lands
-/// as the parts' directories inside it. One `run-as` call then runs
-/// [`INSTALL_SCRIPT`], which replaces each part and writes its stamp last;
-/// its exit status is the call's, so a failure surfaces. The staging copy
-/// stays for [`remove_push_staging`].
-async fn push_payload(
+/// Ship `parts` — payload parts the device is or is predicted stale in —
+/// to the shell user's `staging` directory by `adb push`: the whole local
+/// payload directory when every part ships, each part's own directory
+/// otherwise. `staging` is absent when a run's predicted push makes this
+/// call, and holds only the parts that push carried when a disagreement
+/// calls it again — either way each target inside it is absent, so `adb
+/// push` copies the source as that target instead of nesting it inside.
+/// The staging copy stays for [`remove_push_staging`].
+async fn push_staged(
     host: &Host,
     adb: &Adb,
     serial: &str,
     payload: &DevicePayload,
-    stale: &[PayloadPart],
+    parts: &[PayloadPart],
+    staging: &str,
 ) -> Result<()> {
-    let (local, remote) = match stale {
-        [part] => (
-            payload.dir().join(part.dir()),
-            format!("{PUSH_STAGING_DIR}/{}", part.dir()),
-        ),
-        _ => (payload.dir().to_path_buf(), PUSH_STAGING_DIR.to_string()),
+    let pushes: Vec<(PathBuf, String)> = if parts == PayloadPart::ALL.as_slice() {
+        vec![(payload.dir().to_path_buf(), staging.to_string())]
+    } else {
+        parts
+            .iter()
+            .map(|part| {
+                (
+                    payload.dir().join(part.dir()),
+                    format!("{staging}/{}", part.dir()),
+                )
+            })
+            .collect()
     };
-    let deadline = payload_deadline(payload.size(stale));
-    adb.push(host, serial, &local, &remote, deadline)
-        .await
-        .wrap_err("failed to push the preview payload to the device")?;
+    let deadline = payload_deadline(payload.size(parts));
+    for (local, remote) in pushes {
+        adb.push(host, serial, &local, &remote, deadline)
+            .await
+            .wrap_err("failed to push the preview payload to the device")?;
+    }
+    Ok(())
+}
 
+/// Install `parts` — already staged by [`push_staged`] — into the run
+/// directory's payload in one `run-as` call running [`INSTALL_SCRIPT`],
+/// which replaces each part and writes its stamp last; its exit status is
+/// the call's, so a failure surfaces.
+async fn install_staged(
+    host: &Host,
+    adb: &Adb,
+    serial: &str,
+    payload: &DevicePayload,
+    parts: &[PayloadPart],
+    staging: &str,
+) -> Result<()> {
     let mut words = vec![
         "run-as",
         PREVIEW_HOST_PACKAGE,
@@ -476,25 +579,25 @@ async fn push_payload(
         INSTALL_SCRIPT,
         "sh",
         FILES_RUN_DIR,
-        PUSH_STAGING_DIR,
+        staging,
         PAYLOAD_DIR,
     ];
-    for part in stale {
+    for part in parts {
         words.extend([part.dir(), part.stamp_file(), payload.stamp(*part)]);
     }
-    adb.shell_run(host, serial, &words, deadline)
+    adb.shell_run(host, serial, &words, payload_deadline(payload.size(parts)))
         .await
         .wrap_err("failed to copy the preview payload into the host's private files")?;
     Ok(())
 }
 
-/// Remove [`PUSH_STAGING_DIR`], the shell user's copy of the payload parts
-/// [`push_payload`] installed.
-async fn remove_push_staging(host: &Host, adb: &Adb, serial: &str) -> Result<()> {
+/// Remove `staging`, the shell user's copy of the payload parts
+/// [`push_staged`] carried.
+async fn remove_push_staging(host: &Host, adb: &Adb, serial: &str, staging: &str) -> Result<()> {
     adb.shell_run(
         host,
         serial,
-        &["rm", "-rf", PUSH_STAGING_DIR],
+        &["rm", "-rf", staging],
         Duration::from_secs(30),
     )
     .await
@@ -502,20 +605,22 @@ async fn remove_push_staging(host: &Host, adb: &Adb, serial: &str) -> Result<()>
     Ok(())
 }
 
-/// The script [`push_payload`]'s install runs through `run-as`: `$1` is the run
-/// directory, `$2` the staging directory, `$3` the payload directory, then
-/// one `<part dir> <stamp file> <stamp>` triple per part to install. Each
-/// part's stamp is removed before its directory is replaced and written
-/// only after the copy and the `chmod` succeeded, so an interruption leaves
-/// no stamp naming a part that is partly deleted or partly copied. The
-/// copied files become read-only — `chmod a-w` satisfies the linker's
-/// read-only `System.load` requirement without write-protecting the
-/// directories, since unlinking needs write on the directory, not the file.
+/// The script [`install_staged`] runs through `run-as`: `$1` is the run
+/// directory, `$2` the run's staging directory, `$3` the payload
+/// directory, then one `<part dir> <stamp file> <stamp>` triple per part
+/// to install. Each part's stamp is removed before its directory is
+/// replaced and written only after the copy succeeded, so an interruption
+/// leaves no stamp naming a part that is partly deleted or partly copied.
+/// `cp -Rp` keeps the mode the staged files carry — `adb push` propagates
+/// the source's mode and the libraries were made read-only where they
+/// were staged — so the linker's read-only `System.load` requirement is
+/// met without a device-side `chmod` pass, and unlinking a replaced part
+/// still needs only write on its parent directory.
 const INSTALL_SCRIPT: &str = "cd \"$1\" && staging=$2 && payload=$3 && shift 3 && \
      mkdir -p \"$payload\" || exit 1; \
      while [ $# -gt 0 ]; do \
-     rm -f \"$2\" && rm -rf \"$payload/$1\" && cp -R \"$staging/$1\" \"$payload/$1\" && \
-     find \"$payload/$1\" -type f -exec chmod a-w {} + && printf %s \"$3\" > \"$2\" || exit 1; \
+     rm -f \"$2\" && rm -rf \"$payload/$1\" && cp -Rp \"$staging/$1\" \"$payload/$1\" && \
+     printf %s \"$3\" > \"$2\" || exit 1; \
      shift 3; done";
 
 /// Read the run's rendered output back and write it locally — the image at
@@ -613,9 +718,9 @@ mod tests {
     }
 
     /// A staged payload: one library plus an asset bundle holding a nested
-    /// image and the bundle's sync stamp.
+    /// image and the bundle's sync stamp, inside a preview cache under the
+    /// scratch machine's root.
     fn staged_payload(machine: &TestMachine) -> DevicePayload {
-        let dir = machine.dir("payload");
         let lib_dir = machine.dir("payload/lib");
         std::fs::write(lib_dir.join("libx.so"), b"\x7fELF-library").expect("lib");
         let bundle = machine.dir("payload/resources/waterui_assets");
@@ -623,12 +728,21 @@ mod tests {
         std::fs::create_dir_all(bundle.join("images")).expect("images dir");
         std::fs::write(bundle.join("images/logo.png"), b"logo-bytes").expect("image");
         smol::block_on(DevicePayload::from_staged(
-            dir,
+            machine.root().to_path_buf(),
             vec!["libx.so".to_string()],
             "assets-v1".to_string(),
         ))
         .expect("the payload stages")
     }
+
+    /// The staging path a scripted run works under — one of the names
+    /// [`push_staging_dir`] produces, passed explicitly since the scripted
+    /// tests drive one step at a time.
+    const STAGING_ONE: &str = "/data/local/tmp/waterui-preview-first";
+
+    /// A second staging path, for a later run's preparation that must
+    /// sweep what [`STAGING_ONE`] left.
+    const STAGING_TWO: &str = "/data/local/tmp/waterui-preview-second";
 
     /// The positional arguments that end a run preparation's argv.
     const PREPARE_ARGS: &str = "sh files/waterui-preview preview-run.json payload lib.stamp \
@@ -823,6 +937,31 @@ mod tests {
             );
         }
 
+        /// Write this device's install record — the prediction its next
+        /// run's push is built on.
+        fn seed_record(&self, libraries: Option<&str>, resources: Option<&str>) {
+            let record = InstallRecord {
+                held: [
+                    (PayloadPart::Libraries, libraries),
+                    (PayloadPart::Resources, resources),
+                ]
+                .into_iter()
+                .filter_map(|(part, stamp)| {
+                    stamp.map(|stamp| (part.dir().to_string(), stamp.to_string()))
+                })
+                .collect(),
+            };
+            let path = self.payload.install_record_path("serial");
+            smol::block_on(write_install_record(&path, &record)).expect("the record writes");
+        }
+
+        /// The install record the run left behind.
+        fn record(&self) -> InstallRecord {
+            let bytes = std::fs::read(self.payload.install_record_path("serial"))
+                .expect("the run wrote a record");
+            serde_json::from_slice(&bytes).expect("the record parses")
+        }
+
         /// One run's device-side half through the production
         /// [`render_on_device`] at `versionCode` 7, which the device holds
         /// unless a test answers the version query otherwise.
@@ -867,14 +1006,27 @@ mod tests {
         found[0]
     }
 
+    /// The per-run staging directory a run's argv names: the first
+    /// `/data/local/tmp/waterui-preview-<pid>-<nanos>` argument — every
+    /// occurrence in one run is the same name.
+    fn staging_of(argv: &str) -> &str {
+        const MARKER: &str = "/data/local/tmp/waterui-preview-";
+        let start = argv.find(MARKER).expect("a per-run staging name");
+        let tail = start + MARKER.len();
+        let end = argv[tail..]
+            .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+            .map_or(argv.len(), |offset| tail + offset);
+        &argv[start..end]
+    }
+
     // Every adb-driven test below is `#[cfg(unix)]`: on Windows the staged
     // `platform-tools/adb.exe` cannot carry the shell dispatcher (see
     // `TestMachine::install_adb`), so the fake adb cannot run there.
 
-    /// A device holding no payload gets the whole payload directory in one
-    /// push into the shell user's staging directory, which the preparation
-    /// cleared, then one install call that copies every part and writes its
-    /// stamp — after the run is prepared and before the instrumentation.
+    /// A device holding no payload — and a run holding no install record —
+    /// gets the whole payload directory in one push into a staging
+    /// directory of the run's own after the preparation, then one install
+    /// call that copies every part and writes its stamp.
     #[test]
     #[cfg(unix)]
     fn a_device_without_the_payload_receives_one_push() {
@@ -886,26 +1038,28 @@ mod tests {
         let argv = device.argv();
         let lines: Vec<&str> = argv.lines().collect();
         let prepare = line_of(&lines, PREPARE_ARGS);
+        let staging = staging_of(&argv);
         assert!(
-            lines[prepare].contains(
-                "sh /data/local/tmp/waterui-preview run-as dev.waterui.hydrolysis.preview sh -c"
-            ),
-            "the preparation clears the push staging before its run-as: {}",
+            lines[prepare].contains(&format!(
+                "sh /data/local/tmp/waterui-preview {staging} run-as \
+                 dev.waterui.hydrolysis.preview sh -c"
+            )),
+            "the preparation sweeps every staging but this run's own: {}",
             lines[prepare]
         );
         let push = line_of(&lines, " push ");
         assert_eq!(
             lines[push],
             format!(
-                "-s serial push {} /data/local/tmp/waterui-preview",
+                "-s serial push {} {staging}",
                 device.payload.dir().display()
             ),
             "{argv}"
         );
-        let install = line_of(&lines, "cp -R");
+        let install = line_of(&lines, "cp -Rp");
         assert!(
             lines[install].ends_with(&format!(
-                "sh files/waterui-preview /data/local/tmp/waterui-preview payload lib lib.stamp {} \
+                "sh files/waterui-preview {staging} payload lib lib.stamp {} \
                  resources resources.stamp {}",
                 device.payload.stamp(PayloadPart::Libraries),
                 device.payload.stamp(PayloadPart::Resources)
@@ -919,13 +1073,19 @@ mod tests {
             prepare < push && push < install && install < instrument && instrument < pull,
             "prepare -> push -> install -> instrument -> pull: {argv}"
         );
-        let removal = line_of(
-            &lines,
-            "-s serial shell rm -rf /data/local/tmp/waterui-preview",
-        );
+        let removal = line_of(&lines, &format!("-s serial shell rm -rf {staging}"));
         assert!(
             install < removal,
             "the staging copy is removed once installed: {argv}"
+        );
+        let record = device.record();
+        assert_eq!(
+            (record.held.get("lib"), record.held.get("resources")),
+            (
+                Some(&device.payload.stamp(PayloadPart::Libraries).to_string()),
+                Some(&device.payload.stamp(PayloadPart::Resources).to_string())
+            ),
+            "the record was rewritten to the state the install left"
         );
         assert!(
             lines[instrument].contains(&format!(
@@ -950,7 +1110,8 @@ mod tests {
     }
 
     /// A device whose stamps match every part's content hash receives
-    /// nothing: no push, no install and no staging removal.
+    /// nothing: no push, no install and no staging removal — and the
+    /// record still lands, naming the stamps the device holds.
     #[test]
     #[cfg(unix)]
     fn an_unchanged_payload_issues_no_push() {
@@ -964,13 +1125,24 @@ mod tests {
 
         let argv = device.argv();
         assert!(
-            !argv.contains(" push ") && !argv.contains("cp -R") && !argv.contains("rm -rf /data"),
+            !argv.contains(" push ") && !argv.contains("cp -Rp") && !argv.contains("rm -rf /data"),
             "an unchanged payload ships nothing: {argv}"
+        );
+        let record = device.record();
+        assert_eq!(
+            (record.held.get("lib"), record.held.get("resources")),
+            (
+                Some(&device.payload.stamp(PayloadPart::Libraries).to_string()),
+                Some(&device.payload.stamp(PayloadPart::Resources).to_string())
+            ),
+            "the record names the stamps the device holds"
         );
     }
 
-    /// A device whose library stamp differs while its resources are current
-    /// gets only the libraries' directory pushed and installed.
+    /// A device whose library stamp differs while its resources are
+    /// current — and a run holding no record to predict it — gets only
+    /// the libraries' directory pushed into the run's staging and
+    /// installed.
     #[test]
     #[cfg(unix)]
     fn a_changed_library_pushes_only_its_directory() {
@@ -983,22 +1155,164 @@ mod tests {
         smol::block_on(device.run(&device.machine.root().join("preview.png")));
 
         let argv = device.argv();
+        let staging = staging_of(&argv);
         let lines: Vec<&str> = argv.lines().collect();
         assert_eq!(
             lines[line_of(&lines, " push ")],
             format!(
-                "-s serial push {} /data/local/tmp/waterui-preview/lib",
+                "-s serial push {} {staging}/lib",
                 device.payload.dir().join("lib").display()
             ),
             "{argv}"
         );
-        let install = lines[line_of(&lines, "cp -R")];
+        let install = lines[line_of(&lines, "cp -Rp")];
         assert!(
             install.ends_with(&format!(
                 "payload lib lib.stamp {}",
                 device.payload.stamp(PayloadPart::Libraries)
             )) && !install.contains("resources"),
             "only the libraries install: {install}"
+        );
+    }
+
+    /// A record that predicts a stale part pushes it beside the
+    /// preparation — the push lands on the run's own staging while the
+    /// preparation still runs — and the install names only that part.
+    #[test]
+    #[cfg(unix)]
+    fn a_predicted_push_runs_beside_the_preparation() {
+        let device = RenderingDevice::new();
+        device.seed_record(
+            Some("an-older-library"),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+        device.holds_stamps(
+            Some("an-older-library"),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+
+        smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+        let argv = device.argv();
+        let staging = staging_of(&argv);
+        let lines: Vec<&str> = argv.lines().collect();
+        assert_eq!(
+            lines[line_of(&lines, " push ")],
+            format!(
+                "-s serial push {} {staging}/lib",
+                device.payload.dir().join("lib").display()
+            ),
+            "only the predicted part ships: {argv}"
+        );
+        let install = lines[line_of(&lines, "cp -Rp")];
+        assert!(
+            install.ends_with(&format!(
+                "{staging} payload lib lib.stamp {}",
+                device.payload.stamp(PayloadPart::Libraries)
+            )) && !install.contains("resources"),
+            "only the libraries install: {install}"
+        );
+        assert_eq!(
+            device.record().held.get("lib"),
+            Some(&device.payload.stamp(PayloadPart::Libraries).to_string()),
+            "the record was rewritten to the installed library stamp"
+        );
+    }
+
+    /// A record that predicts a part the device already holds still pushes
+    /// it — the prediction is only ever wrong in the push, which the
+    /// staging removal clears — but nothing is installed and the record
+    /// is rewritten to the state the device reported.
+    #[test]
+    #[cfg(unix)]
+    fn a_wrong_prediction_pushes_but_installs_nothing() {
+        let device = RenderingDevice::new();
+        device.seed_record(
+            Some("an-older-library"),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+
+        smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+        let argv = device.argv();
+        let staging = staging_of(&argv);
+        let lines: Vec<&str> = argv.lines().collect();
+        assert!(
+            lines[line_of(&lines, " push ")].ends_with(&format!("{staging}/lib")),
+            "the predicted part still pushed: {argv}"
+        );
+        assert!(!argv.contains("cp -Rp"), "nothing was installed: {argv}");
+        assert!(
+            argv.contains(&format!("rm -rf {staging}")),
+            "the wasted staging was removed: {argv}"
+        );
+        assert_eq!(
+            device.record().held.get("lib"),
+            Some(&device.payload.stamp(PayloadPart::Libraries).to_string()),
+            "the record was rewritten to what the device holds"
+        );
+    }
+
+    /// A record that misses a part — it claims the device holds the
+    /// current libraries while the device reports an older stamp — sends
+    /// that part through the serial push after the preparation, installs
+    /// every stale part and rewrites the record to the state the run
+    /// leaves.
+    #[test]
+    #[cfg(unix)]
+    fn a_missed_prediction_falls_back_to_the_serial_push() {
+        let device = RenderingDevice::new();
+        device.seed_record(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some("an-older-bundle"),
+        );
+        device.holds_stamps(Some("a-stale-library"), Some("an-older-bundle"));
+
+        smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+        let argv = device.argv();
+        let staging = staging_of(&argv);
+        let lines: Vec<&str> = argv.lines().collect();
+        let pushes: Vec<String> = lines
+            .iter()
+            .filter(|line| line.contains(" push "))
+            .map(|line| (*line).to_string())
+            .collect();
+        assert_eq!(
+            pushes,
+            [
+                format!(
+                    "-s serial push {} {staging}/resources",
+                    device.payload.dir().join("resources").display()
+                ),
+                format!(
+                    "-s serial push {} {staging}/lib",
+                    device.payload.dir().join("lib").display()
+                )
+            ],
+            "the predicted resources pushed first, the missed libraries after: {argv}"
+        );
+        let install = lines[line_of(&lines, "cp -Rp")];
+        assert!(
+            install.ends_with(&format!(
+                "{staging} payload lib lib.stamp {} resources resources.stamp {}",
+                device.payload.stamp(PayloadPart::Libraries),
+                device.payload.stamp(PayloadPart::Resources)
+            )),
+            "every stale part installs: {install}"
+        );
+        let record = device.record();
+        assert_eq!(
+            (record.held.get("lib"), record.held.get("resources")),
+            (
+                Some(&device.payload.stamp(PayloadPart::Libraries).to_string()),
+                Some(&device.payload.stamp(PayloadPart::Resources).to_string())
+            ),
+            "the record was rewritten to the state the install left"
         );
     }
 
@@ -1282,10 +1596,14 @@ mod tests {
             self.data.join(FILES_RUN_DIR)
         }
 
-        /// The push staging directory as the scratch `/data/local/tmp`
-        /// holds it.
-        fn staging(&self) -> PathBuf {
-            self.tmp.join("waterui-preview")
+        /// The staging directory `staging` — a device path under
+        /// `/data/local/tmp` — as the scratch `/data/local/tmp` holds it.
+        fn staging(&self, staging: &str) -> PathBuf {
+            self.tmp.join(
+                staging
+                    .strip_prefix("/data/local/tmp/")
+                    .expect("a staging path under /data/local/tmp"),
+            )
         }
 
         /// The stamp the device holds for `part`, `None` when it holds none.
@@ -1305,34 +1623,32 @@ mod tests {
             dir
         }
 
-        /// Prepare a run under `host`, answering the stamps it read back.
-        fn prepare(&self, host: &Host) -> HeldStamps {
-            smol::block_on(prepare_run(host, &self.adb, "serial", RUN_CONFIG))
+        /// Prepare a run staged at `staging` under `host`, answering the
+        /// stamps it read back.
+        fn prepare(&self, host: &Host, staging: &str) -> HeldStamps {
+            smol::block_on(prepare_run(host, &self.adb, "serial", RUN_CONFIG, staging))
                 .expect("the run prepares")
         }
 
-        /// Push and install `parts` under `host`.
-        fn push(&self, host: &Host, parts: &[PayloadPart]) -> Result<()> {
-            smol::block_on(push_payload(
-                host,
-                &self.adb,
-                "serial",
-                &self.payload,
-                parts,
-            ))
+        /// Push and install `parts` staged at `staging` under `host`.
+        fn push(&self, host: &Host, staging: &str, parts: &[PayloadPart]) -> Result<()> {
+            smol::block_on(async {
+                push_staged(host, &self.adb, "serial", &self.payload, parts, staging).await?;
+                install_staged(host, &self.adb, "serial", &self.payload, parts, staging).await
+            })
         }
 
         /// Prepare and push once with nothing in the way, so the device
         /// holds the whole payload and its stamps.
         fn install_whole_payload(&self) {
             let host = self.host(None);
-            let held = self.prepare(&host);
+            let held = self.prepare(&host, STAGING_ONE);
             assert_eq!(
                 self.payload.stale_parts(&held),
                 PayloadPart::ALL,
                 "a fresh device holds no stamp"
             );
-            self.push(&host, &PayloadPart::ALL)
+            self.push(&host, STAGING_ONE, &PayloadPart::ALL)
                 .expect("the whole payload installs");
         }
     }
@@ -1365,12 +1681,13 @@ mod tests {
         names
     }
 
-    /// The preparation clears a stale push staging directory and whatever
-    /// the run directory's layout does not name; a whole push then installs
-    /// every part — libraries read-only — and its stamp, which the next
-    /// preparation reads back while it clears the staging copy the push
+    /// The preparation sweeps a staging directory an abandoned run left —
+    /// but not the current run's own — and whatever the run directory's
+    /// layout does not name; a whole push then installs every part —
+    /// libraries read-only — and its stamp, which a later run's
+    /// preparation reads back while it sweeps the staging copy the push
     /// left. A stamp lands only after every step before it succeeded: a
-    /// failing `chmod` leaves the part without one and the other part's
+    /// failing `cp` leaves the part without one and the other part's
     /// untouched.
     #[test]
     #[cfg(unix)]
@@ -1381,7 +1698,8 @@ mod tests {
         std::fs::write(run_dir.join("payload.stamp"), "stale").expect("an old stamp");
         std::fs::create_dir_all(run_dir.join(PAYLOAD_DIR)).expect("an old payload");
         std::fs::write(run_dir.join("payload/SHA256SUMS"), "stale").expect("an old manifest");
-        std::fs::create_dir_all(device.staging().join("lib")).expect("a stale staging dir");
+        std::fs::create_dir_all(device.staging(STAGING_TWO).join("lib"))
+            .expect("an abandoned run's staging");
 
         device.install_whole_payload();
         assert_eq!(
@@ -1418,26 +1736,36 @@ mod tests {
             b"logo-bytes"
         );
         assert!(
-            device.staging().join("lib/libx.so").exists(),
-            "the push staged the libraries"
+            device.staging(STAGING_ONE).join("lib/libx.so").exists(),
+            "the push staged the libraries beside the preparation's sweep"
         );
-        let held = device.prepare(&device.host(None));
+        assert!(
+            !device.staging(STAGING_TWO).exists(),
+            "the preparation swept the staging an abandoned run left"
+        );
+        let held = device.prepare(&device.host(None), STAGING_TWO);
         assert!(
             device.payload.stale_parts(&held).is_empty(),
             "the preparation reads every installed stamp back: {held:?}"
         );
         assert!(
-            !device.staging().exists(),
-            "the preparation clears the staging a previous push left"
+            !device.staging(STAGING_ONE).exists(),
+            "a later run's preparation swept the staging the push left"
         );
 
-        let failing_chmod = device.shim("chmod", "exit 1");
+        // Only the install's `cp -Rp` dies — the push's own `cp -R` rides
+        // the same PATH.
+        let failing_copy = device.shim(
+            "cp",
+            "case \" $*\" in *\" -Rp \"*) exit 1;; esac\nexec /bin/cp \"$@\"",
+        );
         let error = device
             .push(
-                &device.host(Some(&failing_chmod)),
+                &device.host(Some(&failing_copy)),
+                STAGING_ONE,
                 &[PayloadPart::Libraries],
             )
-            .expect_err("a failing chmod fails the install");
+            .expect_err("a failing copy fails the install");
         assert!(format!("{error:#}").contains("status"), "{error:#}");
         assert_eq!(device.stamp(PayloadPart::Libraries), None);
         assert_eq!(
@@ -1464,7 +1792,11 @@ mod tests {
              exec /bin/rm \"$@\"",
         );
         let error = device
-            .push(&device.host(Some(&dying_rm)), &[PayloadPart::Libraries])
+            .push(
+                &device.host(Some(&dying_rm)),
+                STAGING_ONE,
+                &[PayloadPart::Libraries],
+            )
             .expect_err("an interrupted delete fails the install");
         assert!(format!("{error:#}").contains("status"), "{error:#}");
         assert!(
@@ -1521,7 +1853,7 @@ mod tests {
             ("WATERUI_FAKE_ADB_RUN_AS_STATUS", "7".as_ref()),
         ]);
         let error = smol::block_on(async {
-            prepare_run(&host, &adb, "serial", RUN_CONFIG)
+            prepare_run(&host, &adb, "serial", RUN_CONFIG, STAGING_ONE)
                 .await
                 .expect_err("a non-zero run-as must fail")
         });
@@ -1644,5 +1976,107 @@ mod tests {
             error.to_string().contains("timed out") && error.to_string().contains("am instrument"),
             "{error}"
         );
+    }
+
+    /// Every run's staging directory lives inside the one namespace and
+    /// carries a name of its own, so its own preparation's sweep can
+    /// never remove the push it runs beside.
+    #[test]
+    fn each_run_stages_under_a_name_of_its_own() {
+        let one = push_staging_dir();
+        let two = push_staging_dir();
+        assert!(
+            one.starts_with(&format!("{PUSH_STAGING_PREFIX}-"))
+                && two.starts_with(&format!("{PUSH_STAGING_PREFIX}-")),
+            "{one} / {two}"
+        );
+        assert_ne!(one, two);
+    }
+
+    /// The record an install writes names the payload's stamp for every
+    /// part the install landed and the device's own stamp for every part
+    /// it did not — including none, so a part the device never held stays
+    /// out of the prediction rather than predicting itself stale forever.
+    #[test]
+    #[cfg(unix)]
+    fn an_install_record_reflects_the_install() {
+        let machine = TestMachine::new();
+        let payload = staged_payload(&machine);
+        let held =
+            HeldStamps::parse("the-device-lib\nthe-device-resources\n").expect("held stamps parse");
+
+        let installed_all = InstallRecord::after_install(&held, &PayloadPart::ALL, &payload);
+        assert_eq!(
+            installed_all.held.get("lib"),
+            Some(&payload.stamp(PayloadPart::Libraries).to_string()),
+            "an installed part records the payload's stamp"
+        );
+        assert_eq!(
+            installed_all.held.get("resources"),
+            Some(&payload.stamp(PayloadPart::Resources).to_string()),
+        );
+
+        let installed_lib =
+            InstallRecord::after_install(&held, &[PayloadPart::Libraries], &payload);
+        assert_eq!(
+            installed_lib.held.get("lib"),
+            Some(&payload.stamp(PayloadPart::Libraries).to_string()),
+        );
+        assert_eq!(
+            installed_lib.held.get("resources"),
+            Some(&"the-device-resources".to_string()),
+            "a part not installed keeps the stamp the device reported"
+        );
+
+        let held_without_lib =
+            HeldStamps::parse("\nthe-device-resources\n").expect("held stamps parse");
+        let record =
+            InstallRecord::after_install(&held_without_lib, &[PayloadPart::Resources], &payload);
+        assert!(
+            !record.held.contains_key("lib"),
+            "a part the device never held stays out of the record"
+        );
+    }
+
+    /// An install record round-trips through the cache file it lives in,
+    /// and a record that does not parse reads back as none — the run then
+    /// takes the serial path and rewrites it.
+    #[test]
+    #[cfg(unix)]
+    fn an_install_record_round_trips() {
+        let machine = TestMachine::new();
+        let payload = staged_payload(&machine);
+        let path = payload.install_record_path("pixel-9-pro:5555");
+        assert_eq!(
+            path,
+            machine.root().join("devices").join("pixel_9_pro_5555.json"),
+            "one record per device, named by the device key: {}",
+            path.display()
+        );
+
+        let record = InstallRecord {
+            held: std::collections::BTreeMap::from([("lib".to_string(), "a-stamp".to_string())]),
+        };
+        smol::block_on(async {
+            write_install_record(&path, &record).await?;
+            assert_eq!(
+                read_install_record(&path).await?,
+                Some(record),
+                "the record round-trips"
+            );
+            assert_eq!(
+                read_install_record(&machine.root().join("devices/absent.json")).await?,
+                None,
+                "an absent record reads as none"
+            );
+            std::fs::write(&path, b"{not a record").expect("a corrupt record");
+            assert_eq!(
+                read_install_record(&path).await?,
+                None,
+                "a record that does not parse reads as none"
+            );
+            Result::<_, eyre::Report>::Ok(())
+        })
+        .expect("the record file behaves");
     }
 }
