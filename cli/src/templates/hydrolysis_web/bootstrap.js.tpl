@@ -3,7 +3,7 @@ import init from "./pkg/app.js";
 const launch = document.getElementById("waterui-launch");
 const progress = launch.querySelector(".waterui-launch-progress");
 const progressBar = launch.querySelector(".waterui-launch-progress-bar");
-const canvas = document.getElementById("waterui-canvas");
+const root = document.getElementById("waterui-root");
 
 // The wasm size is stamped into the page at build time, so the bar stays
 // determinate whatever the server does to Content-Length (a compressed
@@ -76,7 +76,7 @@ function showStartupError(error) {
 }
 
 async function bootstrap() {
-  canvas.addEventListener("waterui:first-frame", dismissLaunchScreen, { once: true });
+  root.addEventListener("waterui:first-frame", dismissLaunchScreen, { once: true });
   try {
     await init({ module_or_path: fetchWasm() });
   } catch (error) {

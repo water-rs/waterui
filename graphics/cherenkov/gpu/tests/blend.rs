@@ -162,8 +162,9 @@ fn extend_none_is_transparent_outside_the_range() -> Result<(), Box<dyn std::err
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let rb = wait!(surface.readback())?;
     let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
-    assert_eq!(px(4, 32), [0.0; 4], "left of range must be clear");
-    assert_eq!(px(60, 32), [0.0; 4], "right of range must be clear");
+    // Outside the gradient's range nothing is drawn: the cleared zero.
+    assert_eq!(px(4, 32).map(f32::to_bits), [0.0; 4].map(f32::to_bits), "left of range must be clear");
+    assert_eq!(px(60, 32).map(f32::to_bits), [0.0; 4].map(f32::to_bits), "right of range must be clear");
     assert!(px(32, 32)[3] > 0.99, "mid-range must be opaque");
     Ok(())
 }
@@ -241,7 +242,8 @@ fn blended_descendant_isolates_its_normal_group() -> Result<(), Box<dyn std::err
     // background. Without outer isolation the `Clear` reached the scene
     // framebuffer and every pixel came out transparent.
     for (i, px) in rb.pixels.iter().enumerate() {
-        assert_eq!(*px, [1.0, 0.0, 0.0, 1.0], "pixel {i}");
+        // The isolated `Clear` leaves the opaque red background unchanged.
+        assert_eq!((*px).map(f32::to_bits), [1.0, 0.0, 0.0, 1.0].map(f32::to_bits), "pixel {i}");
     }
     Ok(())
 }

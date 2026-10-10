@@ -40,6 +40,7 @@ pub fn demo() -> impl View {
 ```bash
 water preview demo --output preview.png
 water preview demo --backend hydrolysis --theme material3 --frame 390x844
+water preview demo --platform android --device <serial-or-avd>
 water preview --expr 'vstack((text("Hi").title(), button("Go").action(|| {})))'
 ```
 

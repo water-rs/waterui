@@ -64,6 +64,12 @@ pub struct PreviewArgs {
     /// Defaults to this host's native preview platform.
     #[serde(default)]
     pub platform: Option<CliPreviewPlatform>,
+
+    /// Android device serial or AVD name — only with `platform: "android"`.
+    /// Without it the remembered last-used device wins, then an unambiguous
+    /// single candidate; several candidates are an error naming every one.
+    #[serde(default)]
+    pub device: Option<String>,
 }
 
 impl PreviewArgs {
@@ -166,6 +172,27 @@ impl PreviewTool {
             request::check_toolchain_for_backend(&self.host, request.backend).await?;
         let output_path = self.output_path(&request).await?;
 
+        let android = if request.backend
+            == ResolvedPreviewBackend::Hydrolysis(crate::platform::TargetPlatform::Android)
+        {
+            Some(
+                crate::android::device::AndroidTarget::resolve(
+                    &self.host,
+                    args.device.as_deref(),
+                    crate::water_dir::device_memory_key(
+                        crate::platform::TargetBackend::Hydrolysis,
+                        crate::platform::TargetPlatform::Android,
+                    ),
+                )
+                .await?,
+            )
+        } else {
+            if args.device.is_some() {
+                bail!("`device` applies only with `platform: \"android\"`.");
+            }
+            None
+        };
+
         match request.backend {
             ResolvedPreviewBackend::Hydrolysis(platform) => {
                 Box::pin(render_preview_with_hydrolysis(
@@ -187,6 +214,7 @@ impl PreviewTool {
                     &output_path,
                     None,
                     kotlin_toolchain.as_ref(),
+                    android,
                 ))
                 .await?;
             }
@@ -319,6 +347,7 @@ mod tests {
         assert_eq!(args.backend, None);
         assert_eq!(args.theme, None);
         assert_eq!(args.platform, None);
+        assert_eq!(args.device, None);
     }
 
     #[test]
@@ -330,7 +359,8 @@ mod tests {
                 "frame": "800x600",
                 "backend": "hydrolysis",
                 "theme": "material3",
-                "platform": "macos"
+                "platform": "android",
+                "device": "emulator-5554"
             }"#,
         )
         .expect("full args parse");
@@ -338,7 +368,8 @@ mod tests {
         assert_eq!(args.frame.as_deref(), Some("800x600"));
         assert_eq!(args.backend, Some(CliPreviewBackend::Hydrolysis));
         assert_eq!(args.theme, Some(CliHydrolysisPreviewTheme::Material3));
-        assert_eq!(args.platform, Some(CliPreviewPlatform::Macos));
+        assert_eq!(args.platform, Some(CliPreviewPlatform::Android));
+        assert_eq!(args.device.as_deref(), Some("emulator-5554"));
     }
 
     #[test]

@@ -24,9 +24,12 @@ pub struct BoxShape {
     pub radii: [f64; 4],
 }
 
-/// The clip shape mapped to the GPU's centred box form, and the local →
-/// box-local affine `extra` (`transform * extra` maps clip space onto the
-/// centred box). `None` for shapes with no analytic box (path, line).
+/// The clip shape mapped to the GPU's centred box form.
+///
+/// Returned with the local → box-local affine `extra` (`transform * extra`
+/// maps clip space onto the centred box). `None` for shapes with no
+/// analytic box (path, line).
+#[must_use]
 pub fn box_params(shape: &Shape) -> Option<(BoxShape, Affine)> {
     let (boxed, extra) = match shape {
         Shape::Rect(r) => {
@@ -383,15 +386,18 @@ fn arc_distance(
 }
 
 /// The member clip's signed distance and unit outward normal at device
-/// point `p`: the exact Euclidean distance to the box boundary (straight
-/// segments plus Lamé corner arcs), negative inside. `device_from_box`
-/// maps box-local space to device space — the caller's
+/// point `p`.
+///
+/// The distance is the exact Euclidean distance to the box boundary
+/// (straight segments plus Lamé corner arcs), negative inside.
+/// `device_from_box` maps box-local space to device space — the caller's
 /// `transform * extra` from [`box_params`].
 #[expect(
     clippy::float_cmp,
     clippy::many_single_char_names,
     reason = "a bitwise-equal distance is a genuine medial-axis tie; a/b/c/d name the affine coefficients"
 )]
+#[must_use]
 pub fn distance_and_normal(s: &BoxShape, device_from_box: &Affine, p: [f64; 2]) -> (f64, [f64; 2]) {
     let inv = device_from_box.inverse();
     // `device_from_box` is a similarity (rotation, translation and one
@@ -480,7 +486,9 @@ fn apply_to(m: &Affine, p: [f64; 2]) -> [f64; 2] {
 }
 
 /// Bilinear sample of a capture at device point `q`, a literal port of the
-/// WGSL `backdrop_sample`: texel centres at `n + 0.5`, clamped to
+/// WGSL `backdrop_sample`.
+///
+/// Texel centres sit at `n + 0.5`, clamped to
 /// `[origin, origin + size - 1]`, values unclamped. The oracle captures the
 /// full canvas (origin `(0,0)`, size the canvas); the GPU captures the
 /// group's bounded region — both regions contain every point a member's
@@ -492,6 +500,7 @@ fn apply_to(m: &Affine, p: [f64; 2]) -> [f64; 2] {
     clippy::cast_precision_loss,
     reason = "texel coordinates are clamped into the capture before indexing"
 )]
+#[must_use]
 pub fn bilinear(capture: &[[f64; 4]], width: usize, height: usize, q: [f64; 2]) -> [f64; 4] {
     let (w, h) = (width as f64, height as f64);
     let f = [
@@ -526,18 +535,25 @@ mod tests {
         let px: Vec<[f64; 4]> = (0..16)
             .map(|i| [f64::from(i), f64::from(i * 3), 0.5, 1.0])
             .collect();
+        // At a texel centre the offset from it is a whole number, so both
+        // mix weights are exactly zero and `mul_add(d, 0, c0)` is `c0`.
         for y in 0..4u32 {
             for x in 0..4u32 {
                 let v = bilinear(&px, 4, 4, [f64::from(x) + 0.5, f64::from(y) + 0.5]);
-                assert_eq!(v, px[y as usize * 4 + x as usize]);
+                assert_eq!(
+                    v.map(f64::to_bits),
+                    px[y as usize * 4 + x as usize].map(f64::to_bits)
+                );
             }
         }
-        // Off-centre mixes the neighbours.
+        // Off-centre mixes the neighbours: half-way between 0 and 1 is
+        // `(1 - 0)·0.5 + 0`, exactly one half.
         let v = bilinear(&px, 4, 4, [1.0, 0.5]);
-        assert_eq!(v[0], 0.5);
-        // Clamped outside the capture.
+        assert_eq!(v[0].to_bits(), 0.5_f64.to_bits());
+        // Clamped outside the capture: the clamp lands on texel 0's
+        // centre, where the weights are zero again.
         let v = bilinear(&px, 4, 4, [-3.0, 0.5]);
-        assert_eq!(v, px[0]);
+        assert_eq!(v.map(f64::to_bits), px[0].map(f64::to_bits));
     }
 
     /// The exact signed distance and outward unit normal of an

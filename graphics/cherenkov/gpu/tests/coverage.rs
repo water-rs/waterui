@@ -166,9 +166,9 @@ fn axis_aligned_edges_keep_the_ramp() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 split_test! {
-/// Elliptical and Lamé corner rims get their exact pixel area now that
-/// their distance is second-order (`lame_corner`), the same class of
-/// accuracy the circular arcs reached with the κw³/24 term.
+/// Elliptical and Lamé corner rims get their exact pixel area from the
+/// exact corner distance (`lame_corner`) and the κw³/24 curvature term,
+/// the same class of accuracy the circular arcs reach.
 fn elliptical_and_lame_rims_get_their_exact_area() -> Result<(), Box<dyn std::error::Error>> {
     use cherenkov::{ContinuousRect, kurbo::Ellipse};
     // (shape name, draw fn, inside indicator).

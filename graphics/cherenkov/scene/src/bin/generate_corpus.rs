@@ -6050,8 +6050,8 @@ fn run() -> Result<(), SceneError> {
     });
 
     // The same backdrop and blur with non-rounded member clips: the
-    // ellipse and the continuous rect run the second-order SDFs (#173),
-    // not the rounded-rect closed form.
+    // ellipse and the continuous rect run the Lamé-corner SDF (#173,
+    // #2355), not the rounded-rect closed form.
     corpus.scene_setup("backdrop-refraction-shapes", 256, 256, white, |b| {
         b.backdrop_group(BackdropGroup::new(
             1,
@@ -6801,16 +6801,16 @@ fn run() -> Result<(), SceneError> {
     // across its bridge, its effect gain lifting the sample above SDR
     // white. A P3-only disk and an HDR bar sit behind both rows.
     corpus.scene_setup("backdrop-member-encoded", 256, 256, white, |b| {
-        let blur = || vec![BackdropFilter::GaussianBlur { sigma: 6.0 }];
+        let gaussian = || vec![BackdropFilter::GaussianBlur { sigma: 6.0 }];
         b.backdrop_group(BackdropGroup {
             blend_space: BlendSpace::SrgbEncoded,
-            ..BackdropGroup::new(1, blur(), 1.0, 1)
+            ..BackdropGroup::new(1, gaussian(), 1.0, 1)
         });
-        b.backdrop_group(BackdropGroup::new(2, blur(), 1.0, 1));
+        b.backdrop_group(BackdropGroup::new(2, gaussian(), 1.0, 1));
         b.backdrop_group(BackdropGroup {
             union: Some(20.0),
             blend_space: BlendSpace::SrgbEncoded,
-            ..BackdropGroup::new(3, blur(), 1.0, 1)
+            ..BackdropGroup::new(3, gaussian(), 1.0, 1)
         });
         let l = &mut b.root();
         backdrop_background(l);

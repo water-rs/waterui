@@ -630,7 +630,7 @@ impl AndroidPlatform {
         copy_assets_and_fonts(
             project,
             &backend_path,
-            &built.app_symbols()?,
+            &built.app_symbols().await?,
             options.uses_dev_server(),
         )
         .await?;

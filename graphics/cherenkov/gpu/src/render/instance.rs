@@ -1,6 +1,7 @@
 //! CPU-side instance data matching `shader.wgsl` byte for byte.
 
 use bytemuck::{Pod, Zeroable};
+use cherenkov::lowering::rounded_box::RoundedBox;
 
 /// Fill a shape.
 pub const KIND_FILL: u32 = 0;
@@ -162,6 +163,17 @@ impl Shape {
             aspect: 1.0,
             exponent: 2.0,
             radii: [0.0; 4],
+        }
+    }
+}
+
+impl From<RoundedBox> for Shape {
+    fn from(b: RoundedBox) -> Self {
+        Self {
+            half: b.half,
+            aspect: b.aspect,
+            exponent: b.exponent,
+            radii: b.radii,
         }
     }
 }

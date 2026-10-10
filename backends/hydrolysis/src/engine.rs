@@ -1,6 +1,8 @@
 #[path = "engine/cherenkov_backend.rs"]
 pub mod cherenkov;
 
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use cherenkov::DomCherenkovSurface;
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
 pub use cherenkov::WindowCherenkovSurface;
 pub use cherenkov::{EngineSurface, TextureCherenkovSurface};
