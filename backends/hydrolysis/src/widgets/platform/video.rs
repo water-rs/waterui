@@ -71,7 +71,7 @@ pub fn install(env: &mut Environment) {
             env,
             playback,
             content_mode,
-            projection,
+            &projection,
             show_controls,
             false,
         )
