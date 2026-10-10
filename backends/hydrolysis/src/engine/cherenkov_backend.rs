@@ -626,7 +626,7 @@ impl DomCherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub(crate) async fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
+    pub(crate) async fn render(&self) -> Result<cherenkov::Next, cherenkov::RenderError> {
         self.core.engine.render(cherenkov::FrameTime::now()).await
     }
 }
