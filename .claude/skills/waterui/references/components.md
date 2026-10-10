@@ -499,6 +499,12 @@ list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
 tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 
+A row whose content sits under `.disabled(true)` is inert to selection the way a
+disabled `Button` cannot be pressed: pointer, keyboard and accessibility input leave
+the selection unchanged, and the row's accessibility node reports disabled without
+offering the click action. There is no per-item selectable flag — selection follows
+the row content's own disabled state.
+
 When the row set is *derived* — filtered or sorted from other state — do not fall back to
 `watch`: wrap the derived signal in `SignalCollection` (see
 [reactivity.md](reactivity.md), Reactive collections).

@@ -83,11 +83,21 @@
 //!
 //! A shader that reads `uniforms.time` changes with every frame, and says so
 //! with [`ShaderEffect::animated`]: the effect then asks its host for another
-//! frame after each one it renders. A shader that does not animate is rendered
+//! frame after each one it renders. The flag itself can be reactive through
+//! [`ShaderEffect::watch_animated`], so a host can pause and resume the
+//! animation. A shader that does not animate is rendered
 //! only when its input or one of its parameters changes. Reactive parameters
 //! ([`ShaderEffect::watch_param`]) wake the host through the effect's redraw
 //! callback and animate along their interpolators exactly like the
 //! parameters of a filter run by the [`Executor`](crate::Executor).
+//!
+//! # Cloning
+//!
+//! [`ShaderEffect`] is `Clone`: the validated module is shared through an
+//! `Arc`, and a clone starts unset-up with the constant parameters only.
+//! No subscription is cloned — a [`watch_param`](ShaderEffect::watch_param)
+//! or [`watch_animated`](ShaderEffect::watch_animated) binding belongs to the
+//! instance that made it, so reactive parameters are bound per instance.
 //!
 //! # Threading and encoding
 //!
@@ -104,8 +114,9 @@
 
 extern crate alloc;
 
-use alloc::{borrow::Cow, string::String};
+use alloc::{borrow::Cow, string::String, sync::Arc, vec::Vec};
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use cherenkov_shader::naga;
 use filtrate_core::{FilterParam, WatchGuard};
@@ -255,15 +266,21 @@ enum Setup {
 ///
 /// See the [module documentation](self) for the shader contract.
 pub struct ShaderEffect {
-    /// The application's module with the prelude appended, validated.
-    module: naga::Module,
+    /// The application's module with the prelude appended, validated. A
+    /// [`Clone`] of the effect shares it through the `Arc`.
+    module: Arc<naga::Module>,
     /// Whether `main` reads `input_sampler`, which then needs a filterable
     /// input format.
     samples_input: bool,
     /// Parameter tracks and the channel reactive parameters feed. It holds no
     /// subscription, which keeps the effect `Send`.
     animator: ParamAnimator,
-    animated: bool,
+    /// The constant parameters, in push order — what a clone carries. The
+    /// values live in `animator` too; `watch_param` parameters are not here.
+    const_params: Vec<f32>,
+    /// The animation flag, shared with a [`watch_animated`](Self::watch_animated)
+    /// subscription: the watcher writes, the render side reads.
+    animated: Arc<AtomicBool>,
     setup: Setup,
 }
 
@@ -271,7 +288,7 @@ impl fmt::Debug for ShaderEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ShaderEffect")
             .field("params", &self.animator.param_count())
-            .field("animated", &self.animated)
+            .field("animated", &self.is_animated())
             .field("setup", &self.setup)
             .finish_non_exhaustive()
     }
@@ -308,10 +325,11 @@ impl ShaderEffect {
         // `watch_param` hands each later subscription to the caller.
         let (animator, _) = ParamAnimator::new(Vec::new(), |_| {});
         Ok(Self {
-            module,
+            module: Arc::new(module),
             samples_input,
             animator,
-            animated: false,
+            const_params: Vec::new(),
+            animated: Arc::new(AtomicBool::new(false)),
             setup: Setup::Pending,
         })
     }
@@ -326,6 +344,7 @@ impl ShaderEffect {
     #[must_use]
     pub fn param(mut self, value: f32) -> Self {
         self.push_param(value);
+        self.const_params.push(value);
         self
     }
 
@@ -358,11 +377,32 @@ impl ShaderEffect {
         (self, guard)
     }
 
+    /// Binds the animation flag to a reactive parameter: while `flag` is
+    /// nonzero the effect asks its host for another frame after each one it
+    /// renders, exactly like [`ShaderEffect::animated`]. The flag starts
+    /// from `flag`'s current value.
+    ///
+    /// The returned guard is the subscription, with the same contract as
+    /// [`watch_param`](Self::watch_param)'s: keep it for as long as `flag`
+    /// should drive the effect, on the frontend's thread.
+    #[must_use]
+    pub fn watch_animated<P: FilterParam + ?Sized>(self, flag: &P) -> (Self, WatchGuard) {
+        self.animated
+            .store(flag.snapshot() != 0.0, Ordering::Release);
+        let animated = Arc::clone(&self.animated);
+        let sender = self.animator.sender().clone();
+        let guard = flag.watch_animated(Box::new(move |target| {
+            animated.store(target.value != 0.0, Ordering::Release);
+            sender.wake();
+        }));
+        (self, guard)
+    }
+
     /// Marks the shader as time-driven: after every frame it renders, the
     /// effect asks its host for another one.
     #[must_use]
-    pub const fn animated(mut self) -> Self {
-        self.animated = true;
+    pub fn animated(self) -> Self {
+        self.animated.store(true, Ordering::Release);
         self
     }
 
@@ -370,6 +410,13 @@ impl ShaderEffect {
     #[must_use]
     pub const fn param_count(&self) -> usize {
         self.animator.param_count()
+    }
+
+    /// Whether the animation flag is set — by [`animated`](Self::animated)
+    /// or the latest value a [`watch_animated`](Self::watch_animated)
+    /// subscription delivered.
+    fn is_animated(&self) -> bool {
+        self.animated.load(Ordering::Acquire)
     }
 
     /// The cached bind groups — for tests asserting reuse across frames.
@@ -391,6 +438,30 @@ impl ShaderEffect {
             "a ShaderEffect carries at most {SHADER_EFFECT_MAX_PARAMS} parameters"
         );
         self.animator.push_param(initial)
+    }
+}
+
+impl Clone for ShaderEffect {
+    /// A clone shares the validated module through its `Arc` and starts
+    /// unset-up with the constant parameters only: no subscription bound
+    /// through [`watch_param`](Self::watch_param) or
+    /// [`watch_animated`](Self::watch_animated) is cloned, so reactive
+    /// parameters are bound per instance — `WithEffect::param` and
+    /// `WithEffect::animated` in `waterui-graphics` bind them. The clone's
+    /// animation flag starts from the flag's current value.
+    fn clone(&self) -> Self {
+        let (mut animator, _) = ParamAnimator::new(Vec::new(), |_| {});
+        for &value in &self.const_params {
+            animator.push_param(value);
+        }
+        Self {
+            module: Arc::clone(&self.module),
+            samples_input: self.samples_input,
+            animator,
+            const_params: self.const_params.clone(),
+            animated: Arc::new(AtomicBool::new(self.is_animated())),
+            setup: Setup::Pending,
+        }
     }
 }
 
@@ -665,17 +736,22 @@ impl Effect for ShaderEffect {
         }
 
         self.animator.mark_rendered();
-        Ok(self.animated || parameters_animating)
+        Ok(self.is_animated() || parameters_animating)
     }
 
     fn redraw_hint(&self) -> bool {
-        self.animated || self.animator.redraw_hint()
+        self.is_animated() || self.animator.redraw_hint()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
+    use crate::{AnimatedCallback, AnimatedTarget};
 
     const PASS_THROUGH: &str = "
         @fragment
@@ -818,5 +894,150 @@ mod tests {
             let value = value as f32;
             effect = effect.param(value);
         }
+    }
+
+    /// A `FilterParam` whose watcher callback the test fires by hand.
+    struct ScriptedParam {
+        initial: f32,
+        callback: Arc<Mutex<Option<AnimatedCallback>>>,
+    }
+
+    impl ScriptedParam {
+        fn constant(initial: f32) -> Self {
+            Self {
+                initial,
+                callback: Arc::default(),
+            }
+        }
+
+        /// Fires the installed watcher with a new target.
+        fn fire(&self, target: AnimatedTarget) {
+            self.callback
+                .lock()
+                .expect("scripted param callback mutex poisoned")
+                .as_ref()
+                .expect("the effect installs a watcher")(target);
+        }
+    }
+
+    impl FilterParam for ScriptedParam {
+        fn snapshot(&self) -> f32 {
+            self.initial
+        }
+
+        fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
+            *self
+                .callback
+                .lock()
+                .expect("scripted param callback mutex poisoned") = Some(callback);
+            WatchGuard::new(())
+        }
+    }
+
+    /// A clone shares the validated module and carries the constant
+    /// parameters — but no subscription: reactive parameters are bound per
+    /// instance, so a watched parameter and its updates stay with the
+    /// instance that bound them.
+    #[test]
+    fn a_clone_shares_the_module_and_carries_no_guard() {
+        let param = ScriptedParam::constant(0.5);
+        let (mut effect, _subscription) = ShaderEffect::new(PASS_THROUGH)
+            .expect("valid")
+            .param(0.25)
+            .watch_param(&param);
+        let clone = effect.clone();
+        assert!(
+            Arc::ptr_eq(&effect.module, &clone.module),
+            "the validated module is shared"
+        );
+        assert_eq!(
+            clone.param_count(),
+            1,
+            "only the constant parameter carries"
+        );
+        assert!(
+            matches!(clone.setup, Setup::Pending),
+            "a clone starts unset-up"
+        );
+
+        param.fire(AnimatedTarget {
+            value: 0.9,
+            interpolator: None,
+        });
+        effect.animator.update(Duration::ZERO);
+        assert_eq!(effect.animator.current_values(), &[0.25, 0.9]);
+        assert_eq!(
+            clone.animator.current_values(),
+            &[0.25],
+            "the watched parameter and its updates are not cloned"
+        );
+    }
+
+    /// A watched parameter's updates reach the effect the way the executor's
+    /// parameters do: the host is woken, and the next update applies the
+    /// delivered target.
+    #[test]
+    fn a_watched_param_update_reaches_the_effect() {
+        let param = ScriptedParam::constant(0.25);
+        let (mut effect, _subscription) = ShaderEffect::new(PASS_THROUGH)
+            .expect("valid")
+            .watch_param(&param);
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        param.fire(AnimatedTarget {
+            value: 0.75,
+            interpolator: None,
+        });
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            1,
+            "the change wakes the host"
+        );
+        assert!(effect.redraw_hint(), "the change wants a frame");
+        effect.animator.update(Duration::ZERO);
+        assert_eq!(effect.animator.current_values(), &[0.75]);
+    }
+
+    /// Toggling a watched animation flag reaches the render side: the flag
+    /// `redraw_hint` and `encode_render` read reflects each delivered value,
+    /// and every change wakes the host.
+    #[test]
+    fn a_watched_animation_flag_reaches_the_render_side() {
+        let flag = ScriptedParam::constant(0.0);
+        let (mut effect, _subscription) = ShaderEffect::new(PASS_THROUGH)
+            .expect("valid")
+            .watch_animated(&flag);
+        assert!(!effect.is_animated());
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        flag.fire(AnimatedTarget {
+            value: 1.0,
+            interpolator: None,
+        });
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            1,
+            "the toggle wakes the host"
+        );
+        assert!(effect.is_animated());
+        assert!(
+            effect.redraw_hint(),
+            "an animated effect wants another frame"
+        );
+
+        flag.fire(AnimatedTarget {
+            value: 0.0,
+            interpolator: None,
+        });
+        assert_eq!(redraws.load(Ordering::Relaxed), 2);
+        assert!(!effect.is_animated());
     }
 }

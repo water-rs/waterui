@@ -227,6 +227,33 @@ pub enum BrowserTemplateContext {
     Linux(BrowserAnswers),
 }
 
+/// What the application's wasm32 graph uses of the platform primitives
+/// Hydrolysis bridges on the web, so the generated web build compiles
+/// exactly those bridges and no other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebAnswers {
+    /// Whether the application enables `video`: the browser's `<video>`
+    /// element realizes it (the `video` Hydrolysis feature).
+    pub video: bool,
+    /// Whether the application enables the standard `WebView`: an `<iframe>`
+    /// realizes it (the `webview-system` Hydrolysis feature).
+    pub webview: bool,
+}
+
+impl WebAnswers {
+    /// The Hydrolysis features the generated wasm32 table enables.
+    fn hydrolysis_features(self) -> Vec<&'static str> {
+        let mut features = vec!["web"];
+        if self.video {
+            features.push("video");
+        }
+        if self.webview {
+            features.push("webview-system");
+        }
+        features
+    }
+}
+
 /// The `BrowserAnswers` for each desktop OS — the serving set the shared
 /// native manifest's per-OS sections render.
 #[derive(Debug, Clone, Default)]
@@ -473,6 +500,8 @@ pub struct TemplateContext {
     pub framework: ResolvedFramework,
     /// Browser engine and component selections for generated backend manifests.
     pub browser: BrowserTemplateContext,
+    /// The platform primitives the generated web build bridges.
+    pub web: WebAnswers,
     /// Path to the backend project being scaffolded.
     ///
     /// This may be relative to the project root or an absolute cache path.
@@ -579,6 +608,7 @@ impl TemplateContext {
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -624,6 +654,7 @@ impl TemplateContext {
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -684,6 +715,7 @@ impl TemplateContext {
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path,
             android_permissions: Vec::new(),
@@ -748,6 +780,13 @@ impl TemplateContext {
     #[must_use]
     pub(crate) const fn with_browser(mut self, browser: BrowserTemplateContext) -> Self {
         self.browser = browser;
+        self
+    }
+
+    /// Records the answers the generated web build's backend features follow.
+    #[must_use]
+    pub(crate) const fn with_web(mut self, web: WebAnswers) -> Self {
+        self.web = web;
         self
     }
 
@@ -1556,6 +1595,7 @@ mod tests {
             local_sources,
             framework: stable_framework(),
             browser,
+            web: super::WebAnswers::default(),
             backend_project_path,
             project_root_path,
             android_permissions: Vec::new(),
@@ -2838,6 +2878,56 @@ mod tests {
         assert!(
             helper.contains("any(target_os = \"macos\")"),
             "the helper compiles its dispatch where the CEF dep exists: {helper}"
+        );
+    }
+
+    /// The wasm32 table bridges the browser's `<video>` element and the
+    /// `<iframe>` web view exactly when the application uses them: an
+    /// application without them compiles neither bridge (principle 5).
+    #[test]
+    fn hydrolysis_wasm_table_bridges_only_what_the_app_uses() {
+        let wasm_features = |web: super::WebAnswers| -> Vec<String> {
+            let ctx = all_os_browser(project_ctx(), false, None).with_web(web);
+            let cargo_toml =
+                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                    .expect("hydrolysis outputs should render")
+                    .into_iter()
+                    .find_map(|(path, content)| {
+                        (path == std::path::Path::new("Cargo.toml"))
+                            .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                    })
+                    .expect("hydrolysis Cargo.toml output should exist");
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("hydrolysis Cargo.toml should parse");
+            manifest["target"]["cfg(target_arch = \"wasm32\")"]["dependencies"]["hydrolysis"]
+                ["features"]
+                .as_array()
+                .expect("the wasm32 hydrolysis dependency lists its features")
+                .iter()
+                .filter_map(|feature| feature.as_str().map(str::to_string))
+                .collect()
+        };
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: false,
+                webview: false
+            }),
+            ["web"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: true,
+                webview: false
+            }),
+            ["web", "video"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: true,
+                webview: true
+            }),
+            ["web", "video", "webview-system"]
         );
     }
 
@@ -6326,7 +6416,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["web"],
+                            &ctx.web.hydrolysis_features(),
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?

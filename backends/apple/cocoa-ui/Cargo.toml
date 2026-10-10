@@ -44,8 +44,14 @@ map = ["dep:objc2-map-kit", "dep:objc2-core-location"]
 # `macOS` (`AVPlayerView`), where `avkit.rs` uses it.
 avkit = ["dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-av-kit"]
 # The `WebKit` surface (`web_kit` module) carries the `WebKit` and `Security`
-# framework links; opt-in so apps without a web view link neither.
-webview = ["dep:objc2-web-kit", "dep:objc2-security"]
+# framework links; opt-in so apps without a web view link neither. `CFNumber`
+# carries `CFBoolean`, the toll-free type `web_kit` tells a JavaScript
+# boolean from a number by.
+webview = [
+    "dep:objc2-web-kit",
+    "dep:objc2-security",
+    "objc2-core-foundation/CFNumber",
+]
 # The alert surfaces (`appkit::alert` `NSAlert`, `uikit::alert`
 # `UIAlertController`) — the `dialog` leaf's platform objects.
 dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
