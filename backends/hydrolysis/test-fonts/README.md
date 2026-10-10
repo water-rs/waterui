@@ -9,7 +9,9 @@ sources and installs them into the current user's font location, where the
 test host's system font discovery resolves them by family name like any other
 installed font.
 
-Install once per machine; re-running is idempotent:
+`cargo nextest run` installs them on demand through the `test-fonts` setup
+script in `.config/nextest.toml`; a manual `cargo test` run installs once
+per machine, and re-running is idempotent:
 
     uv run backends/hydrolysis/test-fonts/install.py
 

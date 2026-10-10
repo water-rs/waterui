@@ -1,0 +1,37 @@
+# callgrind format
+version: 1
+creator: callgrind-3.18.1
+cmd: cherenkov-bench measure
+part: 2
+
+desc: Trigger: --dump-after=_RNvCs1_5bench5other
+
+positions: line
+events: Ir
+summary: 900
+
+
+ob=(1) /bench
+fl=(1) ???
+fn=(1) _RNvCs1_5bench5frame
+0 800
+cfn=(2) _RNvCs1_7tracing4drop
+calls=1 0
+0 100
+
+fn=(2)
+0 10
+cfn=(3) _RNvCs1_5alloc10deallocate
+calls=1 0
+0 90
+
+fn=(3)
+0 5
+cfn=(4) free'_RNvCs1_5alloc10deallocate'_RNvCs1_7tracing4drop'_RNvCs1_5bench5frame
+calls=1 0
+0 85
+
+fn=(4)
+0 85
+
+totals: 900

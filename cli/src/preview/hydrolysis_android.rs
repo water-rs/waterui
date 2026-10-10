@@ -70,6 +70,8 @@ const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 /// The device's GPU renders the frame and its system fonts shape the text;
 /// the PNG lands in the preview host's private files and is read back into
 /// `output_path` — or `scenario.output_dir`/`frame-*ms.png` for a scenario.
+/// `kotlin` is the toolchain the caller's toolchain check resolved — the
+/// launcher build reuses it rather than probing `kotlinc` again.
 ///
 /// # Errors
 /// Returns an error when no device or AVD is usable, the host APK cannot be
@@ -80,6 +82,7 @@ pub async fn render_preview_with_hydrolysis_android(
     request: &HydrolysisPreviewRequest<'_>,
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
+    kotlin: &crate::android::KotlinToolchain,
 ) -> Result<()> {
     let host = request.host;
     let project = crate::hydrolysis::backend::open_ready(host, request.project_path).await?;
@@ -111,7 +114,7 @@ pub async fn render_preview_with_hydrolysis_android(
         .join("device");
     let ((host_apk, version_code), libraries, device_key) = futures_util::try_join!(
         hydrolysis_android::ensure_preview_host_apk(&project),
-        stage_device_payload(&project, request, abi, &device_dir),
+        stage_device_payload(&project, request, abi, &device_dir, kotlin),
         device_lock_key(host, &adb, &serial),
     )?;
 
@@ -318,6 +321,7 @@ async fn stage_device_payload(
     request: &HydrolysisPreviewRequest<'_>,
     abi: AndroidAbi,
     device_dir: &Path,
+    kotlin: &crate::android::KotlinToolchain,
 ) -> Result<Vec<String>> {
     let host = project.host();
     match fs::remove_dir_all(device_dir).await {
@@ -336,9 +340,14 @@ async fn stage_device_payload(
     if let Some(progress) = request.progress.clone() {
         options = options.with_progress(progress);
     }
-    let build =
-        hydrolysis_android::build_with_features(project, abi, options, &["waterui-preview-mode"])
-            .await?;
+    let build = hydrolysis_android::build_with_features(
+        project,
+        abi,
+        options,
+        &["waterui-preview-mode"],
+        kotlin,
+    )
+    .await?;
 
     // Strip debug info in place: the cdylib carries a full desktop-sized
     // symbol set that only bloats the push. The build hands back the
@@ -369,7 +378,7 @@ async fn stage_device_payload(
         .backend_path::<HydrolysisBackend>()
         .join("android-preview")
         .join("stage");
-    let (_manifest, staged) = assets::stage_project_assets_for_android_library(
+    let (_manifest, bundle) = assets::stage_project_assets_for_android_library(
         project,
         &stage_dir,
         &build.built.app_symbols()?,
@@ -379,15 +388,13 @@ async fn stage_device_payload(
     let resources = device_dir.join("resources");
     fs::create_dir_all(&resources).await?;
     let assets_dest = resources.join(assets::ANDROID_ASSET_BUNDLE_DIR);
-    fs::rename(&staged.bundle, &assets_dest)
-        .await
-        .wrap_err_with(|| {
-            format!(
-                "failed to move {} to {}",
-                staged.bundle.display(),
-                assets_dest.display()
-            )
-        })?;
+    fs::rename(&bundle, &assets_dest).await.wrap_err_with(|| {
+        format!(
+            "failed to move {} to {}",
+            bundle.display(),
+            assets_dest.display()
+        )
+    })?;
 
     Ok(build.staged_libraries)
 }
