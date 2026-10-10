@@ -314,8 +314,7 @@ fn a_window_with_a_pending_frame_is_not_settled() {
     let _ = runtime.pump_at(false, click_frame_at + Duration::from_secs(1));
     assert!(
         runtime.is_settled(),
-        "the popup's pending frame ran and the runtime settled; blockers: {:?}",
-        runtime.settle_blockers()
+        "the popup's pending frame ran and the runtime settled"
     );
 }
 
