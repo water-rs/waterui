@@ -19,16 +19,23 @@ waterui-watcher-set.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 executor-core.workspace = true
-cookie = "0.18.2"
+futures.workspace = true
 percent-encoding = "2.3"
 base64 = "0.23"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
+# Serves the conformance pages from a thread of its own.
+tiny_http = { version = "0.12", optional = true }
+
+# Cookies belong to the bridge APIs, which a browser cannot provide for the
+# page in a cross-origin frame, so the web build has none.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cookie = "0.18.2"
 
 [features]
 # The checks an engine's real-engine suite runs against the contracts this
 # crate states; assertions, so off by default and on in test binaries only.
-conformance = []
+conformance = ["dep:tiny_http"]
 
 [dev-dependencies]
 tempfile = "3.27"

@@ -24,9 +24,11 @@ pub struct BoxShape {
     pub radii: [f64; 4],
 }
 
-/// The clip shape mapped to the GPU's centred box form, and the local →
-/// box-local affine `extra` (`transform * extra` maps clip space onto the
-/// centred box). `None` for shapes with no analytic box (path, line).
+/// The clip shape mapped to the GPU's centred box form.
+///
+/// Returned with the local → box-local affine `extra` (`transform * extra`
+/// maps clip space onto the centred box). `None` for shapes with no
+/// analytic box (path, line).
 #[must_use]
 pub fn box_params(shape: &Shape) -> Option<(BoxShape, Affine)> {
     let (boxed, extra) = match shape {
@@ -533,18 +535,25 @@ mod tests {
         let px: Vec<[f64; 4]> = (0..16)
             .map(|i| [f64::from(i), f64::from(i * 3), 0.5, 1.0])
             .collect();
+        // At a texel centre the offset from it is a whole number, so both
+        // mix weights are exactly zero and `mul_add(d, 0, c0)` is `c0`.
         for y in 0..4u32 {
             for x in 0..4u32 {
                 let v = bilinear(&px, 4, 4, [f64::from(x) + 0.5, f64::from(y) + 0.5]);
-                assert_eq!(v, px[y as usize * 4 + x as usize]);
+                assert_eq!(
+                    v.map(f64::to_bits),
+                    px[y as usize * 4 + x as usize].map(f64::to_bits)
+                );
             }
         }
-        // Off-centre mixes the neighbours.
+        // Off-centre mixes the neighbours: half-way between 0 and 1 is
+        // `(1 - 0)·0.5 + 0`, exactly one half.
         let v = bilinear(&px, 4, 4, [1.0, 0.5]);
-        assert_eq!(v[0], 0.5);
-        // Clamped outside the capture.
+        assert_eq!(v[0].to_bits(), 0.5_f64.to_bits());
+        // Clamped outside the capture: the clamp lands on texel 0's
+        // centre, where the weights are zero again.
         let v = bilinear(&px, 4, 4, [-3.0, 0.5]);
-        assert_eq!(v, px[0]);
+        assert_eq!(v.map(f64::to_bits), px[0].map(f64::to_bits));
     }
 
     /// The exact signed distance and outward unit normal of an

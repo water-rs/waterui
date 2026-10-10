@@ -1169,9 +1169,10 @@ fn deep_level_reads_are_independent_of_the_other_members() {
     let shared = deep_level_member(true);
     for y in 8..56 {
         for x in 600..840 {
+            // Both renders run the same arithmetic on the same inputs: identical bits.
             assert_eq!(
-                pixel(&alone, x, y),
-                pixel(&shared, x, y),
+                pixel(&alone, x, y).map(f32::to_bits),
+                pixel(&shared, x, y).map(f32::to_bits),
                 "member pixel ({x}, {y}) depends on the other member"
             );
         }

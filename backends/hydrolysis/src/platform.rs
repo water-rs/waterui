@@ -6,8 +6,56 @@ use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::gpu::RedrawHandle;
 
+/// The output request every Hydrolysis host surface is negotiated by:
+/// the engine's `select_output` resolves the best advertised (format,
+/// colour space) pair among the surface's offers — HDR where the display
+/// chain carries it — paced FIFO, with a transparency-capable composite
+/// alpha mode iff the window is transparent (#2445).
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
+pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::interop::OutputRequest {
+    cherenkov_gpu::interop::OutputRequest {
+        transparent,
+        color_space: cherenkov_gpu::interop::ColorSpaceRequest::Best,
+        sync: cherenkov_gpu::DisplaySync::Synchronized,
+    }
+}
+
+/// Negotiates the output of a host-configured window surface — the
+/// engine's `select_output` over the surface's advertised capabilities
+/// with [`hydrolysis_output_request`], the display's reported headroom
+/// sampled alongside (#2445). The winit (Linux, Windows) and Android
+/// hosts configure their swapchains from the result; the macOS host
+/// hands the same request to the engine's `WindowTarget` instead.
+///
+/// # Errors
+/// [`cherenkov::SurfaceError::UnsupportedTarget`] when the surface
+/// advertises nothing the request admits; the error names the request
+/// and the offer.
 #[cfg(any(all(hydrolysis_winit, not(target_os = "macos")), target_os = "android"))]
-use waterui_graphics::gpu::preferred_surface_format;
+pub fn negotiate_host_output(
+    surface: &wgpu::Surface<'_>,
+    adapter: &wgpu::Adapter,
+    transparent: bool,
+) -> Result<cherenkov_gpu::interop::OutputSelection, cherenkov::SurfaceError> {
+    let caps = surface.get_capabilities(adapter);
+    let mut selection = cherenkov_gpu::interop::select_output(
+        &caps,
+        adapter.get_info().backend,
+        hydrolysis_output_request(transparent),
+    )?;
+    selection.reported_headroom = surface.display_hdr_info(adapter).tone_map_headroom();
+    tracing::debug!(
+        target: "waterui::hydrolysis",
+        format = ?selection.format,
+        color_space = ?selection.color_space,
+        alpha_mode = ?selection.alpha_mode,
+        present_mode = ?selection.present_mode,
+        reason = ?selection.reason,
+        reported_headroom = ?selection.reported_headroom,
+        "negotiated surface output"
+    );
+    Ok(selection)
+}
 
 /// Releases the resources whose destruction `device` deferred.
 ///
@@ -737,56 +785,6 @@ impl SurfaceFrame {
 
 #[cfg(any(hydrolysis_winit, target_os = "android"))]
 #[cfg(not(target_os = "macos"))]
-pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
-    let preferred = preferred_surface_format(caps, true);
-    if supports_hydrolysis_surface_format(preferred) {
-        return normalize_surface_format(caps, preferred);
-    }
-
-    if let Some(format) = caps
-        .formats
-        .iter()
-        .copied()
-        .find(|format| supports_hydrolysis_surface_format(*format))
-    {
-        return normalize_surface_format(caps, format);
-    }
-
-    panic!(
-        "hydrolysis surface: requires one of Rgba16Float/Rgba32Float/Rgba8/Bgra8 surface formats, got {:?}",
-        caps.formats
-    );
-}
-
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
-fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
-    matches!(
-        format.remove_srgb_suffix(),
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
-    ) || matches!(
-        format,
-        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-    )
-}
-
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
-fn normalize_surface_format(
-    caps: &wgpu::SurfaceCapabilities,
-    format: wgpu::TextureFormat,
-) -> wgpu::TextureFormat {
-    if format.is_srgb() {
-        let linear = format.remove_srgb_suffix();
-        if caps.formats.contains(&linear) {
-            return linear;
-        }
-    }
-    format
-}
-
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
 pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
 ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
@@ -845,8 +843,9 @@ pub trait SurfaceProvider: PresentationSurface {
         cherenkov_gpu::interop::OutputAlpha::Straight
     }
     /// The display's HDR headroom — the brightest white the surface
-    /// presents, relative to SDR white. Every current surface is SDR, so
-    /// the default is 1.0; an HDR presentation surface overrides it.
+    /// presents, relative to SDR white. The default, 1.0, is an SDR
+    /// target's; a window surface reports the headroom its output
+    /// negotiation sampled.
     fn display_headroom(&self) -> f32 {
         1.0
     }
@@ -2401,6 +2400,11 @@ mod winit_impl {
         gpu: WinitGpuContext,
         #[cfg(not(target_os = "macos"))]
         config: wgpu::SurfaceConfiguration,
+        /// The negotiated output the swapchain was configured by — the
+        /// engine's `select_output` result, with the reported headroom
+        /// sampled at negotiation (#2445).
+        #[cfg(not(target_os = "macos"))]
+        selection: cherenkov_gpu::interop::OutputSelection,
         /// The window this surface presents into. A host-presented surface
         /// asks it for the platform's next-frame pacing
         /// (`pre_present_notify`), which on Wayland requests the frame
@@ -2485,51 +2489,6 @@ mod winit_impl {
             )
         }
 
-        /// The composite alpha mode a surface is configured with.
-        ///
-        /// A window the compositor must see through needs a mode whose alpha
-        /// channel reaches it — premultiplied, postmultiplied, or the
-        /// platform-inherited mode compositors honour on alpha-capable
-        /// visuals — in that preference order. An opaque window takes
-        /// whatever the surface prefers first. An adapter offering a
-        /// transparent window none of the transparency-capable modes cannot
-        /// present it at all: under an opaque composite the pixels' alpha
-        /// never reaches the compositor and the window reads as fully
-        /// transparent, which is a window-creation error naming the adapter
-        /// and the modes it reported, not a silently opaque window.
-        #[cfg(any(test, not(target_os = "macos")))]
-        fn select_alpha_mode(
-            caps: &wgpu::SurfaceCapabilities,
-            requires_transparency: bool,
-            adapter_info: &wgpu::AdapterInfo,
-        ) -> wgpu::CompositeAlphaMode {
-            const TRANSPARENT_MODES: [wgpu::CompositeAlphaMode; 3] = [
-                wgpu::CompositeAlphaMode::PreMultiplied,
-                wgpu::CompositeAlphaMode::PostMultiplied,
-                wgpu::CompositeAlphaMode::Inherit,
-            ];
-            if !requires_transparency {
-                // An opaque window's alpha channel never reaches the
-                // compositor, so the surface's preferred mode is fine.
-                return caps.alpha_modes[0];
-            }
-            for wanted in TRANSPARENT_MODES {
-                if caps.alpha_modes.contains(&wanted) {
-                    return wanted;
-                }
-            }
-            let info = adapter_info;
-            panic!(
-                "hydrolysis winit surface: a transparent window needs a \
-                 transparency-capable composite alpha mode, but adapter {:?} \
-                 ({:?}, driver {:?} {:?}) offers only {:?} — presented pixels \
-                 would carry no alpha and the window would draw nothing. \
-                 Transparent windows require a compositing window manager and \
-                 an adapter that reports a non-opaque alpha mode.",
-                info.name, info.backend, info.driver, info.driver_info, caps.alpha_modes
-            );
-        }
-
         /// The X11 presentation defect a transparent window hits on an old
         /// Mesa software rasterizer: the WSI's `x11_present_to_x11_sw` sent
         /// its `xcb_put_image` at a hardcoded depth of 24, which the X
@@ -2592,6 +2551,25 @@ mod winit_impl {
             )
         }
 
+        /// The surface's negotiated output configuration
+        /// ([`super::negotiate_host_output`]). An unmet request is a
+        /// window-creation failure naming the request, what the surface
+        /// offers, and the adapter, never a silently substituted pair.
+        #[cfg(not(target_os = "macos"))]
+        fn negotiate_surface_output(
+            surface: &wgpu::Surface<'static>,
+            adapter: &wgpu::Adapter,
+            transparent: bool,
+        ) -> cherenkov_gpu::interop::OutputSelection {
+            super::negotiate_host_output(surface, adapter, transparent).unwrap_or_else(|error| {
+                let info = adapter.get_info();
+                panic!(
+                    "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
+                    info.name, info.backend
+                )
+            })
+        }
+
         #[cfg(not(target_os = "macos"))]
         fn from_surface(
             surface: wgpu::Surface<'static>,
@@ -2602,8 +2580,6 @@ mod winit_impl {
             on_x11: bool,
             window: Arc<NativeWindow>,
         ) -> Self {
-            let caps = surface.get_capabilities(&gpu.adapter);
-            let format = super::select_hydrolysis_surface_format(&caps);
             let adapter_info = gpu.adapter.get_info();
             if requires_transparency
                 && on_x11
@@ -2611,15 +2587,16 @@ mod winit_impl {
             {
                 panic!("hydrolysis winit surface: {cause}");
             }
-            let alpha_mode = Self::select_alpha_mode(&caps, requires_transparency, &adapter_info);
+            let selection =
+                Self::negotiate_surface_output(&surface, &gpu.adapter, requires_transparency);
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format,
-                color_space: wgpu::SurfaceColorSpace::Auto,
+                format: selection.format,
+                color_space: selection.color_space,
                 width: width.max(1),
                 height: height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
-                alpha_mode,
+                present_mode: selection.present_mode,
+                alpha_mode: selection.alpha_mode,
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             };
@@ -2628,6 +2605,7 @@ mod winit_impl {
                 surface,
                 gpu,
                 config,
+                selection,
                 window,
             }
         }
@@ -2716,21 +2694,28 @@ mod winit_impl {
             )
         }
 
-        /// Re-selects the composite alpha mode for a window whose background
-        /// switched between opaque and translucent, reconfiguring only when
-        /// the mode actually changes. The selection is the one creation uses,
-        /// so a surface that offers no transparency-capable mode fails the
-        /// same way — on X11 that is a window created opaque, whose visual
-        /// cannot gain an alpha channel afterwards.
+        /// Re-runs output negotiation for a window whose background switched
+        /// between opaque and translucent, reconfiguring only when the
+        /// selection actually changes. The negotiation is the one creation
+        /// uses, so a surface that offers no transparency-capable mode fails
+        /// the same way — on X11 that is a window created opaque, whose
+        /// visual cannot gain an alpha channel afterwards.
         #[cfg(not(target_os = "macos"))]
         fn set_transparent(&mut self, transparent: bool) {
-            let caps = self.surface.get_capabilities(&self.gpu.adapter);
-            let alpha_mode =
-                Self::select_alpha_mode(&caps, transparent, &self.gpu.adapter.get_info());
-            if alpha_mode != self.config.alpha_mode {
-                self.config.alpha_mode = alpha_mode;
+            let selection =
+                Self::negotiate_surface_output(&self.surface, &self.gpu.adapter, transparent);
+            if selection.alpha_mode != self.selection.alpha_mode
+                || selection.format != self.selection.format
+                || selection.color_space != self.selection.color_space
+                || selection.present_mode != self.selection.present_mode
+            {
+                self.config.alpha_mode = selection.alpha_mode;
+                self.config.format = selection.format;
+                self.config.color_space = selection.color_space;
+                self.config.present_mode = selection.present_mode;
                 self.surface.configure(&self.gpu.device, &self.config);
             }
+            self.selection = selection;
         }
 
         /// Records the window's new transparency; the next frame recreates
@@ -2839,7 +2824,15 @@ mod winit_impl {
         }
 
         fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
-            cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
+            cherenkov_gpu::interop::surface_output_alpha(self.selection.alpha_mode)
+        }
+
+        fn display_headroom(&self) -> f32 {
+            self.selection.reported_headroom.unwrap_or(1.0)
+        }
+
+        fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+            self.selection.output_color()
         }
     }
 
@@ -3017,12 +3010,16 @@ mod winit_impl {
         resizable: bool,
         closable: bool,
         decorations: bool,
-        /// Whether the key went down (`Pressed`) or came up (`Released`).
+        /// The window's declared `WindowState` — `Normal`, `Minimized`,
+        /// `Maximized`, `Fullscreen` or `Closed`.
         state: WindowState,
         frame: waterui_core::layout::Rect,
         level: WindowLevel,
         attention: Option<UserAttention>,
         resize_increments: Option<waterui_core::layout::Size>,
+        /// The window's own icon, or `None` for the application icon the
+        /// runner staged at creation.
+        icon: Option<waterui::window::WindowIcon>,
     }
 
     /// A monitor's logical rect: `(position, extent)` — the shape
@@ -3064,6 +3061,10 @@ mod winit_impl {
         /// updates the binding, and reading the live geometry against the
         /// stale binding would yank the window straight back to its old frame.
         applied_properties: Option<AppliedWindowProperties>,
+        /// The application icon the runner staged on the window at creation
+        /// (`with_window_icon`): what `apply_properties` restores when the
+        /// declaration's `icon` binding reads `None`.
+        application_icon: Option<winit::window::Icon>,
         /// The requested window frame and state held until the window has
         /// actually mapped (`with_visible(false)`): on X11 a request made
         /// of an unmapped window is dropped, so the first mapped-signal
@@ -3138,7 +3139,7 @@ mod winit_impl {
             wake: RedrawHandle,
             requires_transparency: bool,
         ) -> Self {
-            Self::new_with_shared_gpu(window, wake, None, requires_transparency)
+            Self::new_with_shared_gpu(window, wake, None, requires_transparency, None)
                 .await
                 .0
         }
@@ -3166,6 +3167,10 @@ mod winit_impl {
         /// the last window closes. Post the request to the event loop and
         /// redraw the window there.
         ///
+        /// `application_icon` is the icon the host staged on the window at
+        /// creation: `apply_properties` restores it when the declaration's
+        /// `icon` binding reads `None`.
+        ///
         /// # Panics
         /// Propagates panics from surface and device creation.
         pub async fn new_with_shared_gpu(
@@ -3173,6 +3178,7 @@ mod winit_impl {
             wake: RedrawHandle,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
+            application_icon: Option<winit::window::Icon>,
         ) -> (Self, WinitGpuContext) {
             let (surface, gpu) =
                 WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await;
@@ -3205,6 +3211,7 @@ mod winit_impl {
                     current_cursor_style: CursorStyle::Arrow,
                     applied_size_limits: None,
                     applied_properties: None,
+                    application_icon,
                     pending_mapped_request: MappedRequestRetry::default(),
                     transparent: requires_transparency,
                     #[cfg(any(
@@ -3268,6 +3275,38 @@ mod winit_impl {
                     UserAttention::Informational => winit::window::UserAttentionType::Informational,
                     UserAttention::Critical => winit::window::UserAttentionType::Critical,
                 }));
+        }
+
+        /// Pushes the requested window icon to the window server: the
+        /// declaration's own [`WindowIcon`] converted to winit's, or — on
+        /// `None`, the default — the application icon staged at creation.
+        /// X11 and Windows realize it; winit reports Wayland, macOS and the
+        /// remaining targets unsupported, where the call is a no-op. On
+        /// Windows `set_window_icon` covers only the small title-bar icon
+        /// (`ICON_SMALL`), so the same image also goes to the taskbar and
+        /// Alt-Tab icon (`ICON_BIG`).
+        fn apply_window_icon(&self, icon: Option<&waterui::window::WindowIcon>) {
+            let icon = icon.map_or_else(
+                || self.application_icon.clone(),
+                |icon| {
+                    // `Icon::from_rgba` only checks the buffer against the
+                    // size, which `WindowIcon::new` already guarantees.
+                    Some(
+                        winit::window::Icon::from_rgba(
+                            icon.rgba().to_vec(),
+                            icon.width(),
+                            icon.height(),
+                        )
+                        .expect("a WindowIcon's pixels match its size"),
+                    )
+                },
+            );
+            #[cfg(target_os = "windows")]
+            {
+                use winit::platform::windows::WindowExtWindows as _;
+                self.window.set_taskbar_icon(icon.clone());
+            }
+            self.window.set_window_icon(icon);
         }
 
         /// The `AppKit` half of `set_blur_behind`: while the window asks, an
@@ -3501,6 +3540,7 @@ mod winit_impl {
         /// is the only truthful source there; X11 keeps streaming motion
         /// during XDND, and the query stays right even if the drag source
         /// grabs the pointer.
+        #[cfg(hydrolysis_desktop_queries)]
         fn live_pointer_position(&self) -> Option<(f32, f32)> {
             #[cfg(target_os = "windows")]
             {
@@ -3513,14 +3553,6 @@ mod winit_impl {
             #[cfg(hydrolysis_wayland_platform)]
             {
                 self.x11_live_pointer_position()
-            }
-            #[cfg(not(any(
-                target_os = "windows",
-                target_os = "macos",
-                hydrolysis_wayland_platform
-            )))]
-            {
-                None
             }
         }
 
@@ -4256,6 +4288,7 @@ mod winit_impl {
                     .resize_increments
                     .as_ref()
                     .map(nami::Signal::snapshot),
+                icon: window.icon.snapshot(),
             };
             let previous = self.applied_properties.replace(properties.clone());
             let applied = previous.as_ref();
@@ -4284,6 +4317,9 @@ mod winit_impl {
                         LogicalSize::new(f64::from(size.width), f64::from(size.height))
                     }),
                 );
+            }
+            if applied.is_none_or(|p| p.icon != properties.icon) {
+                self.apply_window_icon(properties.icon.as_ref());
             }
             // The frame binding is pushed to the window only when it changed
             // since the previous pump. A user-driven resize or move lands in
@@ -4392,7 +4428,11 @@ mod winit_impl {
         /// the fallback keeps the stream that never went quiet (X11 motion
         /// during XDND) supplying it.
         fn pointer_position(&self) -> Option<(f32, f32)> {
-            self.live_pointer_position().or(Some(self.pointer_position))
+            #[cfg(hydrolysis_desktop_queries)]
+            let live = self.live_pointer_position();
+            #[cfg(not(hydrolysis_desktop_queries))]
+            let live = None;
+            live.or(Some(self.pointer_position))
         }
 
         /// Requests that the window be repainted.
@@ -4868,8 +4908,9 @@ mod winit_impl {
         #[test]
         fn cursor_position_is_converted_to_logical_coordinates() {
             let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
-            assert_eq!(x, 192.25);
-            assert_eq!(y, 108.125);
+            // Halving a dyadic position is exact, and both halves fit f32.
+            assert_eq!(x.to_bits(), 192.25_f32.to_bits());
+            assert_eq!(y.to_bits(), 108.125_f32.to_bits());
         }
 
         #[test]
@@ -4878,8 +4919,9 @@ mod winit_impl {
                 &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
                 2.0,
             );
-            assert_eq!(dx, 60.0);
-            assert_eq!(dy, -24.25);
+            // Halving a dyadic delta is exact, and both halves fit f32.
+            assert_eq!(dx.to_bits(), 60.0_f32.to_bits());
+            assert_eq!(dy.to_bits(), (-24.25_f32).to_bits());
             assert!(!is_line_delta);
         }
 
@@ -4887,8 +4929,9 @@ mod winit_impl {
         fn line_scroll_delta_is_preserved() {
             let (dx, dy, is_line_delta) =
                 map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
-            assert_eq!(dx, -2.0);
-            assert_eq!(dy, 3.5);
+            // A line delta passes through unscaled.
+            assert_eq!(dx.to_bits(), (-2.0_f32).to_bits());
+            assert_eq!(dy.to_bits(), 3.5_f32.to_bits());
             assert!(is_line_delta);
         }
 
@@ -5064,9 +5107,31 @@ mod winit_impl {
             alpha_modes: &[wgpu::CompositeAlphaMode],
         ) -> wgpu::SurfaceCapabilities {
             wgpu::SurfaceCapabilities {
+                formats: vec![wgpu::TextureFormat::Bgra8UnormSrgb],
+                format_capabilities: vec![wgpu::SurfaceFormatCapabilities {
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    color_spaces: wgpu::SurfaceColorSpaces::SRGB,
+                }],
+                present_modes: vec![wgpu::PresentMode::Fifo],
                 alpha_modes: alpha_modes.to_vec(),
-                ..wgpu::SurfaceCapabilities::default()
+                usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
             }
+        }
+
+        /// The composite alpha mode the host's output request resolves to
+        /// on a surface advertising `modes` — the engine's `select_output`
+        /// with `hydrolysis_output_request`, as creation and the
+        /// transparency switch both run it (#2445).
+        fn negotiated_alpha_mode(
+            transparent: bool,
+            modes: &[wgpu::CompositeAlphaMode],
+        ) -> Result<wgpu::CompositeAlphaMode, cherenkov::SurfaceError> {
+            cherenkov_gpu::interop::select_output(
+                &caps_with_alpha_modes(modes),
+                wgpu::Backend::Vulkan,
+                crate::platform::hydrolysis_output_request(transparent),
+            )
+            .map(|selection| selection.alpha_mode)
         }
 
         fn fake_adapter_info() -> wgpu::AdapterInfo {
@@ -5090,35 +5155,24 @@ mod winit_impl {
         fn a_transparent_window_gets_the_first_transparent_alpha_mode_the_surface_offers() {
             use wgpu::CompositeAlphaMode as Mode;
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied]),
-                    true,
-                    &fake_adapter_info(),
-                ),
+                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied],)
+                    .unwrap(),
                 Mode::PreMultiplied
             );
             // X11 compositing on a 32-bit visual reports exactly this pair:
             // with no explicit multiplied mode the inherited mode is the only
             // one whose alpha reaches the compositor.
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::Inherit]),
-                    true,
-                    &fake_adapter_info(),
-                ),
+                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit]).unwrap(),
                 Mode::Inherit
             );
         }
 
         #[test]
-        fn an_opaque_window_keeps_the_surface_preferred_alpha_mode() {
+        fn an_opaque_window_keeps_the_opaque_alpha_mode() {
             use wgpu::CompositeAlphaMode as Mode;
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::PreMultiplied]),
-                    false,
-                    &fake_adapter_info(),
-                ),
+                negotiated_alpha_mode(false, &[Mode::Opaque, Mode::PreMultiplied]).unwrap(),
                 Mode::Opaque
             );
         }
@@ -5139,10 +5193,9 @@ mod winit_impl {
                     .background(material)
             };
             let select = |material, modes: &[Mode]| {
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(modes),
+                negotiated_alpha_mode(
                     crate::runner::window_requires_transparency(&window(material), &env),
-                    &fake_adapter_info(),
+                    modes,
                 )
             };
             for level in [Material::UltraThin, Material::Thin] {
@@ -5150,17 +5203,18 @@ mod winit_impl {
                     select(
                         level,
                         &[Mode::Opaque, Mode::PostMultiplied, Mode::PreMultiplied]
-                    ),
+                    )
+                    .unwrap(),
                     Mode::PreMultiplied
                 );
                 assert_eq!(
-                    select(level, &[Mode::Opaque, Mode::PostMultiplied]),
+                    select(level, &[Mode::Opaque, Mode::PostMultiplied]).unwrap(),
                     Mode::PostMultiplied
                 );
             }
             for level in [Material::Regular, Material::Thick, Material::UltraThick] {
                 assert_eq!(
-                    select(level, &[Mode::Opaque, Mode::PreMultiplied]),
+                    select(level, &[Mode::Opaque, Mode::PreMultiplied]).unwrap(),
                     Mode::Opaque
                 );
             }
@@ -5230,13 +5284,16 @@ mod winit_impl {
         }
 
         #[test]
-        #[should_panic(expected = "fake adapter")]
         fn a_transparent_window_on_an_opaque_only_adapter_fails_at_creation() {
             use wgpu::CompositeAlphaMode as Mode;
-            let _ = super::WinitSurface::select_alpha_mode(
-                &caps_with_alpha_modes(&[Mode::Opaque]),
-                true,
-                &fake_adapter_info(),
+            // The negotiation reports the surface unsupported; surface
+            // creation turns the error into the window-creation panic.
+            assert!(
+                matches!(
+                    negotiated_alpha_mode(true, &[Mode::Opaque]),
+                    Err(cherenkov::SurfaceError::UnsupportedTarget(_))
+                ),
+                "an opaque-only adapter cannot present a transparent window"
             );
         }
 
@@ -5572,6 +5629,14 @@ mod winit_impl {
 pub use web_impl::ExportedBrowserSurface as BrowserSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
+#[cfg(all(
+    target_arch = "wasm32",
+    feature = "web",
+    any(feature = "video", feature = "webview-system")
+))]
+pub use web_impl::OcclusionShields;
+#[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
+pub use web_impl::yield_wheel;
 
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;

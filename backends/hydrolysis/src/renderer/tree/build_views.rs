@@ -265,13 +265,14 @@ impl RenderNode {
         Self::build_widget(renderer, shape, stretch, env)
     }
 
-    /// Mounts the system engine through the hosted-content leaf on macOS.
+    /// Mounts the system engine through the hosted-content leaf: `WKWebView`
+    /// on macOS, an `<iframe>` on the web.
     pub(super) fn build_webview(
         webview: &WebView,
         env: &Environment,
         renderer: &SemanticCore,
     ) -> Self {
-        #[cfg(hydrolysis_macos_system_webview)]
+        #[cfg(hydrolysis_system_webview)]
         {
             Self::build_hosted(
                 crate::widgets::platform::webview::hosted(webview),
@@ -279,7 +280,7 @@ impl RenderNode {
                 renderer,
             )
         }
-        #[cfg(not(hydrolysis_macos_system_webview))]
+        #[cfg(not(hydrolysis_system_webview))]
         {
             let _ = (webview, env, renderer);
             unsupported_webview()

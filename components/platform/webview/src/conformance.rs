@@ -17,8 +17,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task::Waker;
 
+use futures::channel::oneshot;
 use serde_json::Value;
-use waterui_core::Str;
+use waterui_core::{Binding, Str};
 use waterui_url::Url;
 
 use crate::assets::{ASSET_HTTPS_ORIGIN, ASSET_ORIGIN, AssetRequest, AssetResponse, AssetServer};
@@ -385,5 +386,490 @@ fn describe_error(error: &WebViewError) -> String {
         WebViewError::Network(message) => format!("network: {message}"),
         WebViewError::Ssl { url, message } => format!("ssl at {url}: {message}"),
         WebViewError::LoadFailed(message) => format!("load: {message}"),
+    }
+}
+
+/// Mirrored state and bridge replies reach only the documents the admission
+/// policy admits, and admitted documents get every change.
+///
+/// One origin is admitted and a second, on another port, is refused. A
+/// subject view walks through the admitted origin and then the refused one;
+/// a witness view stays on the admitted origin, exposing the same binding.
+///
+/// - The subject's first document is seeded, and gets a change.
+/// - It still gets one after a same-document navigation, a fragment change
+///   and a `pushState`, which the engine may report as a navigation.
+/// - The next document is seeded with the current value and gets a change.
+/// - Going back restores the first document from the back/forward cache
+///   (its `pageshow` is `persisted`); it catches up on the change it missed
+///   while frozen, and gets the next one.
+/// - Before leaving, the first document calls a handler the case holds open,
+///   and the case answers it only once the refused document has replaced it.
+/// - The refused document defines the bridge's globals itself, so anything
+///   evaluated into it lands in a recorder, and asks for the state and a
+///   handler's reply on every transport it can reach; it must reach at least
+///   one, and every request it makes there must be refused. It must see no
+///   state, no reply, and no evaluation — the held call's reply included. The
+///   witness proves a change was delivered while the refused document was
+///   showing, and the subject is then read back after a round trip ordered
+///   behind anything the change or the held reply could have sent it.
+///   Engines that inject nothing into a refused document pass the seeding
+///   check without running the seed's origin guard; the guard itself is
+///   covered by the bridge script's own tests.
+/// - Navigating on to an admitted document, the subject is seeded with the
+///   current value and gets the next change.
+///
+/// `controller` is the engine's [`WebViewController`]. The views are built
+/// through the same path [`WebView::open`](crate::WebView::open) takes at
+/// render. The suite keeps the engine's event loop and the local executor
+/// turning while this runs, and bounds the whole case with its own deadline:
+/// every wait here is on an event the engine or a page reports.
+///
+/// # Panics
+///
+/// When an admitted document misses a change, the engine does not restore the
+/// first document from its back/forward cache, or the refused document
+/// received the state, a reply, or an evaluation.
+#[expect(
+    clippy::future_not_send,
+    reason = "web views are confined to the UI thread, and so is the suite that drives them"
+)]
+pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebViewController) {
+    let admitted = PageServer::start(&[
+        ("/admitted.js", "text/javascript", STATE_ADMITTED_JS),
+        ("/witness", "text/html", STATE_ADMITTED_HTML),
+        ("/one", "text/html", STATE_ADMITTED_HTML),
+        ("/two", "text/html", STATE_ADMITTED_HTML),
+        ("/three", "text/html", STATE_ADMITTED_HTML),
+    ]);
+    let refused = PageServer::start(&[("/hostile", "text/html", STATE_HOSTILE_HTML)]);
+
+    let count = Binding::container(0_i64);
+    let reports = Rc::new(Reports::default());
+    let held = Rc::new(Held::default());
+    let witness = state_view(controller, admitted.origin(), &count, &reports, &held).await;
+    let subject = state_view(controller, admitted.origin(), &count, &reports, &held).await;
+
+    let witness_url = admitted.url("/witness");
+    witness.go_to(witness_url.clone());
+    reports
+        .next(0, |report| shown(report, &witness_url, false, 0))
+        .await;
+
+    // Seeded, then changed.
+    let one = admitted.url("/one");
+    let mark = reports.mark();
+    subject.go_to(one.clone());
+    reports
+        .next(mark, |report| shown(report, &one, false, 0))
+        .await;
+    set_observed(&reports, &count, 1, &[&one, &witness_url]).await;
+
+    // Same-document navigations keep the document's pull alive.
+    let _: Value = eval(
+        subject.handle(),
+        "(() => { location.hash = 'moved'; history.pushState(null, '', '/one?pushed'); return location.href; })()",
+    )
+    .await;
+    let pushed = admitted.url("/one?pushed");
+    set_observed(&reports, &count, 2, &[&pushed]).await;
+
+    // A cross-document navigation is seeded with the current value.
+    let two = admitted.url("/two");
+    let mark = reports.mark();
+    subject.go_to(two.clone());
+    reports
+        .next(mark, |report| shown(report, &two, false, 2))
+        .await;
+    set_observed(&reports, &count, 3, &[&two]).await;
+
+    // Back to the first document, restored from the back/forward cache with
+    // the value it was frozen with; it catches up, and keeps up.
+    let mark = reports.mark();
+    subject.go_back();
+    let restored = reports
+        .next(mark, |report| {
+            report["kind"] == "shown" && report["href"] == pushed.as_str()
+        })
+        .await;
+    assert_eq!(
+        restored["persisted"],
+        Value::Bool(true),
+        "going back must restore the first document from the back/forward cache, \
+         or the restore path is not exercised: {restored}"
+    );
+    reports
+        .next(mark, |report| observed(report, &pushed, 3))
+        .await;
+    set_observed(&reports, &count, 4, &[&pushed]).await;
+
+    // A call whose document is gone by the time it is answered.
+    let mark = reports.mark();
+    let _ = raw_eval(subject.handle(), "(globalThis.waterui.invoke('hold'), 0)").await;
+    reports.next(mark, |report| report["kind"] == "held").await;
+
+    // The refused document.
+    let hostile = refused.url("/hostile");
+    load_refused(subject.handle(), &hostile).await;
+    // Every message the document sent while it loaded has reached the host
+    // once an evaluation issued after its load is answered: the engine
+    // delivers a document's messages and its evaluation replies in order.
+    let _ = raw_eval(subject.handle(), "0").await;
+    // The handler reports its release in the same turn its reply is handed to
+    // the engine, so by the time the case sees the report the reply is ahead
+    // of every evaluation that follows.
+    let mark = reports.mark();
+    held.release();
+    reports
+        .next(mark, |report| report["kind"] == "released")
+        .await;
+    set_observed(&reports, &count, 5, &[&witness_url]).await;
+    // The witness has seen the change, so the subject's own reply to it —
+    // were there one — was handed to the engine before this evaluation.
+    let _ = raw_eval(subject.handle(), "0").await;
+    assert_untouched_by_the_host(&raw_eval(subject.handle(), "globalThis.__hostile").await);
+
+    // Onward to an admitted document: seeded with the current value, and kept
+    // up to date.
+    let three = admitted.url("/three");
+    let mark = reports.mark();
+    subject.go_to(three.clone());
+    reports
+        .next(mark, |report| shown(report, &three, false, 5))
+        .await;
+    set_observed(&reports, &count, 6, &[&three]).await;
+}
+
+/// Asserts that the refused document's recorder saw the host do nothing: no
+/// seed, no evaluation into its bridge globals, and no answer to any request
+/// it made, while it did reach a transport and every promise-returning one
+/// refused each request.
+fn assert_untouched_by_the_host(record: &Value) {
+    assert_eq!(
+        record["injected"]["stateKeys"],
+        serde_json::json!([]),
+        "a refused document must not be seeded: {record}"
+    );
+    assert_eq!(
+        record["calls"],
+        serde_json::json!([]),
+        "nothing may be evaluated into a refused document's bridge globals — \
+         no state, no reply, and not the reply to its predecessor's held call: {record}"
+    );
+    let transports = record["transports"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the refused document records its transports: {record}"));
+    assert!(
+        !transports.is_empty(),
+        "the refused document must reach a transport, or its requests test nothing: {record}"
+    );
+    let outcomes = record["outcomes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the refused document records its outcomes: {record}"));
+    assert!(
+        outcomes.iter().all(|outcome| outcome[2] != "resolved"),
+        "a refused document's request must never be answered: {record}"
+    );
+    // A transport that returns a promise settles it, so each request it
+    // carried was delivered and refused rather than lost.
+    for transport in transports
+        .iter()
+        .filter(|transport| *transport == "webkit" || *transport == "native")
+    {
+        for id in 1..=3 {
+            assert!(
+                outcomes.iter().any(|outcome| outcome[0] == *transport
+                    && outcome[1] == id
+                    && outcome[2] == "rejected"),
+                "request {id} on the `{transport}` transport must be refused: {record}"
+            );
+        }
+    }
+}
+
+const STATE_ADMITTED_HTML: &str = include_str!("conformance/state/admitted.html");
+const STATE_ADMITTED_JS: &str = include_str!("conformance/state/admitted.js");
+const STATE_HOSTILE_HTML: &str = include_str!("conformance/state/hostile.html");
+
+/// Opens a blank view that mirrors `count` and admits only `origin`, built the
+/// way [`WebView::open`](crate::WebView::open) builds one.
+#[expect(
+    clippy::future_not_send,
+    reason = "web views are confined to the UI thread, and so is the suite that drives them"
+)]
+async fn state_view(
+    controller: &WebViewController,
+    origin: &str,
+    count: &Binding<i64>,
+    reports: &Rc<Reports>,
+    held: &Rc<Held>,
+) -> crate::WebView {
+    let blank: Url = "about:blank".parse().expect("about:blank is a URL");
+    let hold_handler = {
+        let reports = Rc::clone(reports);
+        let held = Rc::clone(held);
+        move |crate::Json(_): crate::Json<Value>| {
+            let released = held.hold();
+            reports.push(serde_json::json!({ "kind": "held" }));
+            let reports = Rc::clone(&reports);
+            async move {
+                released
+                    .await
+                    .expect("the conformance case releases every call it holds");
+                reports.push(serde_json::json!({ "kind": "released" }));
+                crate::Json(Value::from("held"))
+            }
+        }
+    };
+    let reports = Rc::clone(reports);
+    let view = crate::WebView::open(blank)
+        .bridge_origins([Str::from(origin.to_owned())])
+        .expose("count", count.clone())
+        .handler(
+            "echo",
+            |crate::Json(value): crate::Json<Value>| async move { crate::Json(value) },
+        )
+        .handler("report", move |crate::Json(report): crate::Json<Value>| {
+            reports.push(report);
+            async {}
+        })
+        .handler("hold", hold_handler)
+        .create(controller, &waterui_core::Environment::new());
+    // The installs above are commands nobody awaits; an evaluation answered
+    // after them orders them before the first navigation.
+    let _ = raw_eval(view.handle(), "0").await;
+    view
+}
+
+/// Sets `count` to `value` and waits until every document in `documents` has
+/// observed it.
+#[expect(
+    clippy::future_not_send,
+    reason = "reports arrive on the UI thread, which is the one that waits for them"
+)]
+async fn set_observed(reports: &Reports, count: &Binding<i64>, value: i64, documents: &[&Url]) {
+    let mark = reports.mark();
+    count.set(value);
+    for document in documents {
+        reports
+            .next(mark, |report| observed(report, document, value))
+            .await;
+    }
+}
+
+fn shown(report: &Value, url: &Url, persisted: bool, value: i64) -> bool {
+    report["kind"] == "shown"
+        && report["href"] == url.as_str()
+        && report["persisted"] == persisted
+        && report["value"] == value
+}
+
+fn observed(report: &Value, url: &Url, value: i64) -> bool {
+    report["kind"] == "observed" && report["href"] == url.as_str() && report["value"] == value
+}
+
+/// The handler call the case holds open, answered when the case releases it.
+#[derive(Default)]
+struct Held {
+    release: RefCell<Option<oneshot::Sender<()>>>,
+}
+
+impl Held {
+    /// Holds a new call, which completes once [`release`](Self::release)
+    /// runs.
+    fn hold(&self) -> oneshot::Receiver<()> {
+        let (release, released) = oneshot::channel();
+        let previous = self.release.borrow_mut().replace(release);
+        assert!(
+            previous.is_none(),
+            "the conformance case holds one call at a time"
+        );
+        released
+    }
+
+    /// Answers the held call.
+    fn release(&self) {
+        self.release
+            .borrow_mut()
+            .take()
+            .expect("a call is held")
+            .send(())
+            .expect("the held call is still waiting for its answer");
+    }
+}
+
+/// What admitted documents reported through the `report` handler.
+#[derive(Default)]
+struct Reports {
+    entries: RefCell<Vec<Value>>,
+    waker: RefCell<Option<Waker>>,
+}
+
+impl Reports {
+    fn push(&self, report: Value) {
+        self.entries.borrow_mut().push(report);
+        if let Some(waker) = self.waker.borrow_mut().take() {
+            waker.wake();
+        }
+    }
+
+    /// Where the reports that follow will start.
+    fn mark(&self) -> usize {
+        self.entries.borrow().len()
+    }
+
+    /// The first report at or after `mark` that `matches` accepts, once one
+    /// arrives.
+    #[expect(
+        clippy::future_not_send,
+        reason = "reports arrive on the UI thread, which is the one that waits for them"
+    )]
+    async fn next(&self, mark: usize, matches: impl Fn(&Value) -> bool) -> Value {
+        std::future::poll_fn(|context| {
+            if let Some(report) = self.entries.borrow()[mark..]
+                .iter()
+                .find(|report| matches(report))
+            {
+                return std::task::Poll::Ready(report.clone());
+            }
+            *self.waker.borrow_mut() = Some(context.waker().clone());
+            std::task::Poll::Pending
+        })
+        .await
+    }
+}
+
+/// Navigates to a document the bridge refuses and returns once it has loaded.
+///
+/// The document cannot report through the bridge, so this waits on the
+/// engine's `Loaded` and then confirms which document it is.
+#[expect(
+    clippy::future_not_send,
+    reason = "web views are confined to the UI thread, and so is the suite that drives them"
+)]
+async fn load_refused(handle: &crate::AnyWebViewHandle, url: &Url) {
+    let state = Rc::new(RefCell::new(LoadState::default()));
+    let _watcher = handle.watch({
+        let state = Rc::clone(&state);
+        move |event| {
+            let mut state = state.borrow_mut();
+            state.events.push(event);
+            if let Some(waker) = state.waker.take() {
+                waker.wake();
+            }
+        }
+    });
+    handle.go_to(url);
+    let mut loaded_seen = 0_usize;
+    loop {
+        loaded_seen = std::future::poll_fn(|context| {
+            let mut state = state.borrow_mut();
+            let loaded = state
+                .events
+                .iter()
+                .filter(|event| matches!(event, BackendEvent::Event(WebViewEvent::Loaded)))
+                .count();
+            if loaded > loaded_seen {
+                return std::task::Poll::Ready(loaded);
+            }
+            state.waker = Some(context.waker().clone());
+            std::task::Poll::Pending
+        })
+        .await;
+        if raw_eval(handle, "location.href").await == url.as_str() {
+            break;
+        }
+    }
+}
+
+/// Evaluates `source` through the engine's raw path, which works in any
+/// document — a refused one has no `__wateruiEval` of ours to go through —
+/// and decodes the JSON it answers.
+#[expect(
+    clippy::future_not_send,
+    reason = "web views are confined to the UI thread, and so is the suite that drives them"
+)]
+async fn raw_eval(handle: &crate::AnyWebViewHandle, source: &str) -> Value {
+    let raw = handle
+        .run_javascript(source)
+        .await
+        .unwrap_or_else(|error| panic!("`{source}` failed to run: {error}"));
+    serde_json::from_str(raw.as_str())
+        .unwrap_or_else(|error| panic!("`{source}` answered `{raw}`, not JSON: {error}"))
+}
+
+/// An HTTP server for one origin, answering a fixed set of pages from its own
+/// thread until it is dropped.
+///
+/// Its own thread, because the suites drive their engines from different
+/// loops, and a server none of them has to turn works under every one.
+struct PageServer {
+    server: Arc<tiny_http::Server>,
+    origin: String,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PageServer {
+    fn start(pages: &[(&'static str, &'static str, &'static str)]) -> Self {
+        let server = Arc::new(
+            tiny_http::Server::http("127.0.0.1:0").expect("bind a conformance page server"),
+        );
+        let address = server
+            .server_addr()
+            .to_ip()
+            .expect("the page server listens on a TCP port");
+        let pages = pages.to_vec();
+        let thread = std::thread::spawn({
+            let server = Arc::clone(&server);
+            move || {
+                for request in server.incoming_requests() {
+                    let page = pages
+                        .iter()
+                        .find(|(path, _, _)| request.url().split('?').next() == Some(*path));
+                    let response = match page {
+                        Some((_, content_type, body)) => {
+                            let header = tiny_http::Header::from_bytes(
+                                &b"Content-Type"[..],
+                                format!("{content_type}; charset=utf-8").as_bytes(),
+                            )
+                            .expect("a static content type is a valid header");
+                            tiny_http::Response::from_string(*body).with_header(header)
+                        }
+                        // Engines ask for things nobody linked, a favicon
+                        // above all; saying so is the correct answer.
+                        None => {
+                            tiny_http::Response::from_string(String::new()).with_status_code(404)
+                        }
+                    };
+                    // An engine may drop a connection it no longer needs, such
+                    // as a favicon request for a page it navigated away from.
+                    let _ = request.respond(response);
+                }
+            }
+        });
+        Self {
+            server,
+            origin: format!("http://{address}"),
+            thread: Some(thread),
+        }
+    }
+
+    fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    fn url(&self, path: &str) -> Url {
+        format!("{}{path}", self.origin)
+            .parse()
+            .expect("a page server URL")
+    }
+}
+
+impl Drop for PageServer {
+    fn drop(&mut self) {
+        self.server.unblock();
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("the page server thread exits cleanly");
+        }
     }
 }

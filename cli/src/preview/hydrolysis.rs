@@ -96,8 +96,9 @@ pub struct HydrolysisPreviewRequest<'a> {
 /// renders inside the preview host's instrumentation on a device — the
 /// request shape is identical, the dispatch lives here so every caller
 /// resolves one way. `kotlin_toolchain` is the toolchain
-/// [`crate::preview::request::check_toolchain_for_backend`] resolved —
-/// required for `TargetPlatform::Android`, ignored elsewhere.
+/// [`crate::preview::request::check_toolchain_for_backend`] resolved, and
+/// `android` the device the caller's selection resolved — both required
+/// for `TargetPlatform::Android`, ignored elsewhere.
 ///
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
@@ -106,17 +107,21 @@ pub async fn render_preview_with_hydrolysis(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
     kotlin_toolchain: Option<&crate::android::KotlinToolchain>,
+    android: Option<crate::android::device::AndroidTarget>,
 ) -> Result<()> {
     if request.platform == TargetPlatform::Android {
         let kotlin = kotlin_toolchain.ok_or_else(|| {
             eyre::eyre!("Internal error: Android preview has no resolved Kotlin toolchain")
         })?;
+        let target = android
+            .ok_or_else(|| eyre::eyre!("Internal error: Android preview has no resolved device"))?;
         return Box::pin(
             crate::preview::hydrolysis_android::render_preview_with_hydrolysis_android(
                 &request,
                 output_path,
                 scenario,
                 kotlin,
+                &target,
             ),
         )
         .await;

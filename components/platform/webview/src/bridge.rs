@@ -26,6 +26,16 @@ pub const SCRIPT: &str = include_str!("js/bridge.js");
 /// Android `@JavascriptInterface` method, a CDP binding — taking one string.
 pub const SEND_FUNCTION: &str = "__wateruiSend";
 
+/// The [`SEND_FUNCTION`] transport for a `WebKit` web view, injected at
+/// document start ahead of [`SCRIPT`], which calls it.
+///
+/// It posts each envelope to the `__wateruiSend` handler a backend registers
+/// with `addScriptMessageHandlerWithReply:contentWorld:name:` in the page
+/// world, and settles the call from the promise `postMessage` returns. That
+/// promise is `WebKit`'s reply channel, bound to the sending document, so the
+/// backend answers with [`Reply::to_json`] and never evaluates a reply.
+pub const WEBKIT_TRANSPORT: &str = include_str!("js/webkit_transport.js");
+
 /// One `waterui.invoke(...)` call, as parsed from the page.
 ///
 /// Every field is validated: this arrives from page script, which may be
@@ -156,8 +166,12 @@ impl Reply {
 
     /// Serializes the reply envelope without binding it to a JavaScript realm.
     ///
-    /// WPE returns this value through the original script-message reply token;
-    /// other backends keep using [`Self::resolve_script`].
+    /// A backend whose engine offers a reply channel bound to the sending
+    /// document returns this value through it — `WebKit`'s
+    /// `WKScriptMessageHandlerWithReply` and WPE's script-message reply — so
+    /// the engine itself drops a reply whose document has gone. A backend
+    /// without such a channel evaluates [`Self::resolve_script`] in the
+    /// calling context instead.
     ///
     /// # Panics
     /// Panics if the reply envelope cannot be serialized.

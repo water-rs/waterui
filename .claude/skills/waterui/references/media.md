@@ -202,6 +202,30 @@ state; instead read reactive state in a `.on_frame` hook (UI thread, once per fr
 plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
 `bytemuck`. Verify GPU components with offscreen rendering, never by reasoning about the code.
 
+`.effect(..)` post-processes a view's rendered output with a fragment shader the app writes —
+the hook for CRT, scanline, or distortion passes over existing content (a terminal's custom
+shader is the canonical case). The WGSL module defines `@fragment fn main(in: VertexOutput)`;
+the prelude supplies `VertexOutput` (`position`, `uv`), `input_texture`/`input_sampler`,
+`uniforms` (`resolution`, `input_resolution`, `time`, `time_delta`, `frame`, `params`), and
+`effect_param(i)`:
+
+```rust
+use waterui::graphics::ShaderEffect;
+
+let crt = ShaderEffect::new(include_str!("crt.wgsl"))?; // invalid WGSL is an Err, never a blank view
+terminal()
+    .effect(crt.clone())            // a clone shares the validated module; constant params carry
+    .param(strength.clone())        // a signal — the shader reads it as effect_param(0u)
+    .animated(focused.clone())      // a bool signal — a frame after every frame while true
+```
+
+`ShaderEffect::new` parses and validates the module on the CPU, so a shader read from a config
+file is a `Result` handled where it is read. Parameters index in call order — a constant
+`.param(0.35)` on the effect counts too, and watched parameters appended by `.param(signal)`
+follow it — at most `SHADER_EFFECT_MAX_PARAMS` (16). `.animated()` on the effect itself is the
+constant form; the view-level `.animated(signal)` drives the flag reactively. `.effect(..)`
+needs the `gpu` feature and a backend that runs GPU effects.
+
 Frames that already live in GPU memory (a decoder's `CVPixelBuffer`, an `AHardwareBuffer`, a
 dmabuf) are not drawn with `GpuContent`: implement `ExternalFrameSource` and wrap it in
 `ExternalFrameView::new(source)`. `start(&mut self, output: FrameOutput)` runs on the UI thread

@@ -287,6 +287,7 @@ fn sample_rows(
                 clip,
                 effect,
                 union,
+                ..
             } if *sampled == group => {
                 let first = (bounds.y0.max(0) as usize).max(band.0);
                 let last = (bounds.y1.max(0) as usize).min(band.1);
@@ -1552,6 +1553,7 @@ fn run(
                 clip,
                 effect,
                 union,
+                space,
             } => {
                 if let Some(capture) = ctx.captures.get(group) {
                     band.sample(
@@ -1560,6 +1562,7 @@ fn run(
                         clip.as_ref(),
                         effect,
                         union.as_ref(),
+                        *space,
                         stack.as_mut_slice(),
                     );
                 }
@@ -2198,12 +2201,17 @@ impl Band<'_> {
     }
 
     /// Composites `capture`'s rows over the band's top inside `bounds`,
-    /// under `clip` — the member's backdrop sample.
+    /// under `clip` — the member's backdrop sample — blending in
+    /// `member_space`.
     /// Samples `capture` under `clip` with the member's `effect`
     /// (`SampleEffect::None` reads the capture unchanged) at full
     /// strength — the member's own scope attenuates it at composite.
     /// Writes are `clip`-coverage-gated: nothing lands outside the
     /// member clip.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one sample item's fields plus the band's plane stack"
+    )]
     fn sample(
         &mut self,
         capture: &Capture,
@@ -2211,6 +2219,7 @@ impl Band<'_> {
         clip: Option<&ClipRef>,
         effect: &SampleEffect,
         union: Option<&UnionSample>,
+        member_space: cherenkov::BlendSpace,
         stack: &mut [Plane],
     ) {
         let bh = self.fb.len() / self.w;
@@ -2265,8 +2274,20 @@ impl Band<'_> {
                     SampleEffect::Color(m) => color_matrix(m, pixel_sample(capture, px, py, crow)),
                     SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, field, px, py, crow),
                 };
-                let src = c.map(|v| v * cc);
-                dst[row + px] = src_over(dst[row + px], move_space(src, capture.space, space));
+                // The sample at its coverage blends source-over in the
+                // group's member space: the canvas converts into it and
+                // the result back.
+                let src = move_space(c.map(|v| v * cc), capture.space, member_space);
+                let d = &mut dst[row + px];
+                *d = if member_space == space {
+                    src_over(*d, src)
+                } else {
+                    move_space(
+                        src_over(move_space(*d, space, member_space), src),
+                        member_space,
+                        space,
+                    )
+                };
             }
         }
     }

@@ -316,6 +316,157 @@ describe("WPE isolated transport", () => {
   });
 });
 
+// Rust never sends state unasked: the document keeps one pull open and Rust
+// answers it. These drive that loop from the page's side.
+describe("pulling mirrored state", () => {
+  /// A page at `origin` whose `pageshow` listeners can be fired by hand.
+  function loadPulledPage(origin = "https://app.waterui.dev") {
+    const sent = [];
+    const listeners = [];
+    const reported = [];
+    const context = {
+      __wateruiSend: (envelope) => sent.push(JSON.parse(envelope)),
+      addEventListener: (type, listener) => listeners.push([type, listener]),
+      location: { origin, protocol: new URL(origin).protocol },
+      reportError: (error) => reported.push(error),
+    };
+    context.top = context;
+    const run = new Function(
+      "globalThis",
+      `${source("bridge.js")}\n${source("state.js")}\nreturn globalThis;`,
+    );
+    const page = run(context);
+    const pageshow = (persisted) => {
+      for (const [type, listener] of listeners) {
+        if (type === "pageshow") {
+          listener({ persisted });
+        }
+      }
+    };
+    return { page, sent, pageshow, reported };
+  }
+
+  /// Runs the seed `StateRegistry::seed_script` renders for `data`.
+  const seed = (page, data) =>
+    new Function("globalThis", `${source("seed.js")}(${JSON.stringify(data)});`)(page);
+
+  const pulls = (sent) => sent.filter((envelope) => envelope.name === "__wateruiPullState");
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const answer = (page, envelope, cursor, changes) =>
+    page.__wateruiResolve(envelope.id, true, { json: { cursor, changes } });
+
+  test("the seed defines every key and pulls from its cursor", () => {
+    const { page, sent } = loadPulledPage();
+    seed(page, {
+      rules: ["https://app.waterui.dev"],
+      cursor: 4,
+      fields: [["count", { v: 7, e: 4, w: true }]],
+    });
+    expect(page.waterui.state.count).toBe(7);
+    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([{ since: 4 }]);
+  });
+
+  test("the seed does nothing in a document outside the rules", () => {
+    const { page, sent } = loadPulledPage("https://www.google.com");
+    seed(page, {
+      rules: ["https://app.waterui.dev"],
+      cursor: 4,
+      fields: [["count", { v: 7, e: 4, w: true }]],
+    });
+    expect(Object.keys(page.waterui.state)).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+
+  test("the seed does nothing in a sub-frame, even of an admitted origin", () => {
+    const { page, sent } = loadPulledPage();
+    page.top = {};
+    seed(page, { rules: ["*"], cursor: 0, fields: [["count", { v: 1, e: 0, w: true }]] });
+    expect(Object.keys(page.waterui.state)).toEqual([]);
+    expect(sent).toEqual([]);
+  });
+
+  test("local files are admitted by protocol, every origin by `*`", () => {
+    const local = loadPulledPage("file:///tmp/index.html");
+    seed(local.page, { rules: ["file:"], cursor: 0, fields: [["n", { v: 1, e: 0, w: false }]] });
+    expect(local.page.waterui.state.n).toBe(1);
+
+    const any = loadPulledPage("https://anywhere.example");
+    seed(any.page, { rules: ["*"], cursor: 0, fields: [["n", { v: 2, e: 0, w: false }]] });
+    expect(any.page.waterui.state.n).toBe(2);
+  });
+
+  test("a reply applies its changes and the next pull asks from its cursor", async () => {
+    const { page, sent } = loadPulledPage();
+    seed(page, { rules: ["*"], cursor: 0, fields: [["count", { v: 0, e: 0, w: true }]] });
+    const seen = [];
+    page.waterui.watch("count", (value) => seen.push(value));
+
+    answer(page, pulls(sent)[0], 3, { count: { v: 5, e: 3, w: true } });
+    await flush();
+    expect(page.waterui.state.count).toBe(5);
+    expect(seen).toEqual([5]);
+    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([{ since: 0 }, { since: 3 }]);
+  });
+
+  test("an empty reply, sent when a navigation starts, pulls again from the same cursor", async () => {
+    const { page, sent } = loadPulledPage();
+    seed(page, { rules: ["*"], cursor: 2, fields: [["count", { v: 0, e: 2, w: true }]] });
+    answer(page, pulls(sent)[0], 2, {});
+    await flush();
+    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([{ since: 2 }, { since: 2 }]);
+  });
+
+  test("a watcher that throws is reported and stops neither the others nor the loop", async () => {
+    const { page, sent, reported } = loadPulledPage();
+    seed(page, { rules: ["*"], cursor: 0, fields: [["count", { v: 0, e: 0, w: true }]] });
+    const seen = [];
+    page.waterui.watch("count", () => {
+      throw new Error("broken watcher");
+    });
+    page.waterui.watch("count", (value) => seen.push(value));
+
+    answer(page, pulls(sent)[0], 1, { count: { v: 1, e: 1, w: true } });
+    await flush();
+    expect(reported.map((error) => error.message)).toEqual(["broken watcher"]);
+    expect(seen).toEqual([1]);
+
+    answer(page, pulls(sent)[1], 2, { count: { v: 2, e: 2, w: true } });
+    await flush();
+    expect(page.waterui.state.count).toBe(2);
+    expect(seen).toEqual([1, 2]);
+    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([
+      { since: 0 },
+      { since: 1 },
+      { since: 2 },
+    ]);
+  });
+
+  test("a back/forward-cache restore asks for every key and ignores the old loop", async () => {
+    const { page, sent, pageshow } = loadPulledPage();
+    seed(page, { rules: ["*"], cursor: 1, fields: [["count", { v: 1, e: 1, w: true }]] });
+    const frozen = pulls(sent)[0];
+
+    pageshow(false);
+    expect(pulls(sent)).toHaveLength(1);
+
+    pageshow(true);
+    const restored = pulls(sent)[1];
+    expect(restored.json).toEqual({ since: null });
+
+    // The frozen document's pull is answered late; it belongs to a loop that
+    // no longer runs, so it changes nothing and asks for nothing.
+    answer(page, frozen, 2, { count: { v: 2, e: 2, w: true } });
+    await flush();
+    expect(page.waterui.state.count).toBe(1);
+    expect(pulls(sent)).toHaveLength(2);
+
+    answer(page, restored, 3, { count: { v: 3, e: 3, w: true } });
+    await flush();
+    expect(page.waterui.state.count).toBe(3);
+    expect(pulls(sent)[2].json).toEqual({ since: 3 });
+  });
+});
+
 describe("integers a JavaScript number cannot hold", () => {
   const BIG = "9007199254740993";
   let page;
