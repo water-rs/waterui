@@ -32,6 +32,7 @@ use cherenkov::{BlendMode, Display, LayerId, RenderError, ShapeData, SurfaceErro
 
 use crate::interop::ExternalFrame;
 use crate::render::lower::axis_aligned;
+use crate::render::prepared::encloses_nothing;
 use crate::render::present::Presenter;
 
 #[cfg(target_vendor = "apple")]
@@ -454,7 +455,9 @@ fn suffixes(
 /// offered set is `candidates` intersected with `ready`, plus every
 /// mandatory candidate: a candidate whose realization is still pending is
 /// absent from the verdicts entirely, not rejected, and mandatory content
-/// is never pending.
+/// is never pending. A candidate under an ancestor clip that
+/// [`encloses_nothing`] is absent too: the lowering never visits it, so
+/// it shows nowhere and opens no part.
 fn verdicts<'a, C: Compositor>(
     tree: &'a SurfaceTree,
     order: &'a [Visit],
@@ -469,6 +472,14 @@ fn verdicts<'a, C: Compositor>(
     decisions.extend(order.iter().enumerate().filter_map(move |(i, visit)| {
         let &size = candidates.get(&visit.id)?;
         if !size.source.mandatory() && !ready.contains(&visit.id) {
+            return None;
+        }
+        if visit.ancestors.iter().any(|&a| {
+            tree.layer(order[a].id)
+                .clip
+                .as_ref()
+                .is_some_and(encloses_nothing)
+        }) {
             return None;
         }
         let verdict = judge::<C>(
@@ -790,22 +801,18 @@ fn invisible<C: Compositor>(
         let level = tree.layer(id);
         let own = space * level.transform;
         if let Some(clip) = &level.clip {
-            // `with_clip` never reaches `run_clipped` for a shape with no
-            // area; a path clip rasterizes into a mask over a device rect.
+            // No ancestor clip encloses nothing (`verdicts`), so each one
+            // reaches `run_clipped`; a path clip rasterizes into a mask
+            // over a device rect.
             let new = match clip {
-                ShapeData::Line(_) => None,
-                ShapeData::Circle(c) if c.radius <= 0.0 => None,
-                ShapeData::Ellipse(e) if e.radii().x <= 0.0 || e.radii().y <= 0.0 => None,
-                ShapeData::Path { .. } => Some((true, true)),
-                ShapeData::Rect(_) => Some((false, axis_aligned(own))),
-                _ => Some((false, false)),
+                ShapeData::Path { .. } => (true, true),
+                ShapeData::Rect(_) => (false, axis_aligned(own)),
+                _ => (false, false),
             };
-            if let Some(new) = new {
-                merged = match merged {
-                    None => Some(new),
-                    Some(cur) => Some(merge_clip(cur, new).ok_or(Ineligible::NestedClip(id))?),
-                };
-            }
+            merged = match merged {
+                None => Some(new),
+                Some(cur) => Some(merge_clip(cur, new).ok_or(Ineligible::NestedClip(id))?),
+            };
         }
         space = own * Affine::translate(-level.scroll_offset);
     }

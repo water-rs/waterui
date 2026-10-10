@@ -6373,6 +6373,97 @@ mod tests {
         );
     }
 
+    /// A layer under an ancestor clip that encloses nothing is invisible
+    /// to the planner as it is to the lowering: a zero-radius circle is a
+    /// clip Core Animation expresses, but `with_clip` skips the holder's
+    /// whole subtree, so the video under it is never promoted and opens
+    /// no part, and the layer painted above it lands in part 0.
+    #[test]
+    fn a_layer_under_an_empty_ancestor_clip_is_not_promoted() {
+        use crate::render::planes::{self, Candidate, Source};
+        use cherenkov::testing::LayerOp;
+        use cherenkov::{Draw as _, Picture, SurfaceTree};
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let atlas = Atlas::new(&device, u64::MAX);
+        let (holder, video, above) = (LayerId::new(1), LayerId::new(2), LayerId::new(3));
+        let mut tree = SurfaceTree::new();
+        for id in [holder, video, above] {
+            tree.apply(LayerOp::Create(id));
+        }
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: holder,
+        });
+        tree.apply(LayerOp::Push {
+            parent: holder,
+            child: video,
+        });
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: above,
+        });
+        tree.apply(LayerOp::Clip(
+            holder,
+            Some(ShapeData::Circle(kurbo::Circle::new((16.0, 16.0), 0.0))),
+        ));
+        let candidates: FxHashMap<LayerId, Candidate> = std::iter::once((
+            video,
+            Candidate {
+                size: (8, 8),
+                raster: Affine::IDENTITY,
+                source: Source::Frame,
+            },
+        ))
+        .collect();
+        let ready = candidates.keys().copied().collect();
+        let plan = planes::plan::<planes::Platform>(&tree, &candidates, &ready);
+        assert!(plan.planes.is_empty(), "promoted: {:?}", plan.planes);
+        assert_eq!(plan.parts(), 1);
+        let mut caches: FxHashMap<LayerId, ContentData> = std::iter::once((
+            above,
+            ContentData::new(Picture::record(|c| {
+                c.fill(Rect::new(16.0, 0.0, 24.0, 8.0), WorkingColor::WHITE);
+            })),
+        ))
+        .collect();
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &FxHashMap::default(),
+        };
+        let mut frame = Frame::default();
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .run(
+                &tree,
+                &mut caches,
+                WorkingColor::BLACK,
+                &glyphs,
+                &FxHashMap::default(),
+                FxHashMap::default(),
+                &plan,
+            )
+            .expect("lowered");
+        assert_eq!(
+            frame
+                .passes
+                .iter()
+                .map(|p| (p.target, p.clear, p.ranges.len()))
+                .collect::<Vec<_>>(),
+            [(Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 1)]
+        );
+    }
+
     /// A promoted layer under an isolation that is not clip-only still
     /// fails the lowering: neither a translucent ancestor nor a blended
     /// one can straddle a part boundary.

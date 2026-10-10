@@ -50,11 +50,33 @@ pub struct Boxed {
     pub bounds: Rect,
 }
 
+/// Whether `shape` encloses nothing: a line, or a circle or ellipse with a
+/// radius that is not positive. Filled it draws nothing, and as a clip it
+/// cuts its whole subtree away — the lowering skips that subtree, and the
+/// plane planner never promotes a layer inside it.
+pub fn encloses_nothing(shape: &ShapeData) -> bool {
+    match shape {
+        ShapeData::Line(_) => true,
+        ShapeData::Circle(c) => c.radius <= 0.0,
+        ShapeData::Ellipse(e) => {
+            let radii = e.radii();
+            radii.x <= 0.0 || radii.y <= 0.0
+        }
+        ShapeData::Rect(_)
+        | ShapeData::RoundedRect(_)
+        | ShapeData::Continuous(_)
+        | ShapeData::Path { .. } => false,
+    }
+}
+
 /// Converts a semantic shape into a centred rounded box plus the local
 /// transform that centres it.
 ///
-/// A `Line` has no area and draws nothing, so it returns `None`.
+/// A shape that [`encloses_nothing`] has no box, so it returns `None`.
 pub fn box_shape(shape: &ShapeData) -> Result<Option<Boxed>, RenderError> {
+    if encloses_nothing(shape) {
+        return Ok(None);
+    }
     let boxed = match shape {
         ShapeData::Rect(r) => {
             let half = [f32_f64(r.width() / 2.0), f32_f64(r.height() / 2.0)];
@@ -96,9 +118,6 @@ pub fn box_shape(shape: &ShapeData) -> Result<Option<Boxed>, RenderError> {
         }
         ShapeData::Circle(c) => {
             let r = c.radius;
-            if r <= 0.0 {
-                return Ok(None);
-            }
             let half = [f32_f64(r), f32_f64(r)];
             Boxed {
                 extra: Affine::translate(c.center.to_vec2()),
@@ -114,9 +133,6 @@ pub fn box_shape(shape: &ShapeData) -> Result<Option<Boxed>, RenderError> {
         ShapeData::Ellipse(e) => {
             let radii_v = e.radii();
             let (a, b) = (radii_v.x, radii_v.y);
-            if a <= 0.0 || b <= 0.0 {
-                return Ok(None);
-            }
             let half = [f32_f64(a), f32_f64(b)];
             Boxed {
                 extra: Affine::translate(e.center().to_vec2()) * Affine::rotate(e.rotation()),
@@ -129,7 +145,7 @@ pub fn box_shape(shape: &ShapeData) -> Result<Option<Boxed>, RenderError> {
                 bounds: rect_around_origin(half),
             }
         }
-        ShapeData::Line(_) => return Ok(None),
+        ShapeData::Line(_) => unreachable!("a line encloses nothing"),
         ShapeData::Path { .. } => {
             return Err(RenderError::Unsupported(names::PATH));
         }
