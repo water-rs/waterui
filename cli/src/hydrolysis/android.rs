@@ -1420,21 +1420,35 @@ mod tests {
         assert!(activity.contains("HydrolysisHostView"), "{activity}");
 
         // The environment reaches the app through `waterui.env.*` intent
-        // extras applied by `Os.setenv`; nothing reads system properties.
+        // extras applied by `Os.setenv`, landing in the host's
+        // `applyEnvironmentOverrides` slot — after the asset sync, before
+        // the library load; nothing reads system properties.
+        assert!(
+            activity.contains("override fun applyEnvironmentOverrides()"),
+            "{activity}"
+        );
         assert!(
             activity.contains("setupEnvironmentFromIntent(intent)"),
             "{activity}"
         );
         assert!(!activity.contains("SystemProperties"), "{activity}");
 
-        // The host owns the asset sync: `HydrolysisEnvironment.prepare`
-        // runs before `super.onCreate` loads the library, and the
-        // activity carries no sync functions of its own.
+        // The host owns the asset sync off the main thread and the library
+        // load behind it, so the activity carries no sync call of its own;
+        // the startup marker moves behind the mount.
+        assert!(!activity.contains("HydrolysisEnvironment"), "{activity}");
+        assert!(!activity.contains("syncBundledAssets"), "{activity}");
         assert!(
-            activity.contains("HydrolysisEnvironment.prepare(this)"),
+            activity.contains("override fun onSessionMounted()"),
             "{activity}"
         );
-        assert!(!activity.contains("syncBundledAssets"), "{activity}");
+        assert!(activity.contains("WATERUI_ROOT_READY"), "{activity}");
+        // The launch screen covers the sync: it stays until the session
+        // mounts instead of uncovering an empty host view.
+        assert!(
+            activity.contains("setKeepOnScreenCondition { !sessionMounted }"),
+            "{activity}"
+        );
         // The painter band arrives through the shared content-view
         // partial the embedded `WaterUi.kt` includes too.
         assert!(
