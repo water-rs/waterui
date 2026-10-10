@@ -59,6 +59,28 @@ pub enum BoxForm {
     Path,
 }
 
+/// Whether `shape` encloses nothing.
+///
+/// A line, and a circle or ellipse whose radius is not positive, enclose
+/// nothing. Filled such a shape draws nothing, and as a clip it cuts its
+/// whole subtree away, so every engine skips that subtree and the plane
+/// planner never promotes a layer inside it.
+#[must_use]
+pub fn encloses_nothing(shape: &ShapeData) -> bool {
+    match shape {
+        ShapeData::Line(_) => true,
+        ShapeData::Circle(c) => c.radius <= 0.0,
+        ShapeData::Ellipse(e) => {
+            let radii = e.radii();
+            radii.x <= 0.0 || radii.y <= 0.0
+        }
+        ShapeData::Rect(_)
+        | ShapeData::RoundedRect(_)
+        | ShapeData::Continuous(_)
+        | ShapeData::Path { .. } => false,
+    }
+}
+
 /// `shape` as a centred rounded box.
 ///
 /// Corner radii clamp to the smaller half extent, a continuous corner's
@@ -66,6 +88,9 @@ pub enum BoxForm {
 /// is a box whose corners are its quarter arcs.
 #[must_use]
 pub fn box_form(shape: &ShapeData) -> BoxForm {
+    if encloses_nothing(shape) {
+        return BoxForm::Empty;
+    }
     let (extra, shape) = match shape {
         ShapeData::Rect(r) => (
             Affine::translate(r.center().to_vec2()),
@@ -98,9 +123,6 @@ pub fn box_form(shape: &ShapeData) -> BoxForm {
             )
         }
         ShapeData::Circle(c) => {
-            if c.radius <= 0.0 {
-                return BoxForm::Empty;
-            }
             let r = f32_f64(c.radius);
             (
                 Affine::translate(c.center.to_vec2()),
@@ -115,9 +137,6 @@ pub fn box_form(shape: &ShapeData) -> BoxForm {
         ShapeData::Ellipse(e) => {
             let radii = e.radii();
             let (a, b) = (radii.x, radii.y);
-            if a <= 0.0 || b <= 0.0 {
-                return BoxForm::Empty;
-            }
             (
                 Affine::translate(e.center().to_vec2()) * Affine::rotate(e.rotation()),
                 RoundedBox {
@@ -128,7 +147,7 @@ pub fn box_form(shape: &ShapeData) -> BoxForm {
                 },
             )
         }
-        ShapeData::Line(_) => return BoxForm::Empty,
+        ShapeData::Line(_) => unreachable!("a line encloses nothing"),
         ShapeData::Path { .. } => return BoxForm::Path,
     };
     BoxForm::Box { extra, shape }
