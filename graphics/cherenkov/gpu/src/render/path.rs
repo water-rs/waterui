@@ -52,7 +52,11 @@ pub fn shape_path(shape: &ShapeData, tolerance: f64) -> BezPath {
         ShapeData::Rect(r) => r.to_path(tolerance),
         ShapeData::RoundedRect(rr) => rr.to_path(tolerance),
         ShapeData::Circle(c) => c.to_path(tolerance),
-        ShapeData::Ellipse(e) => e.to_path(tolerance),
+        ShapeData::Ellipse(e) => {
+            let mut path = e.to_path(tolerance);
+            path.close_path();
+            path
+        }
         ShapeData::Line(l) => l.to_path(tolerance),
         ShapeData::Continuous(c) => c.to_path(tolerance),
         ShapeData::Path { elements, .. } => BezPath::from_vec(elements.to_vec()),
