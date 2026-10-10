@@ -18,6 +18,7 @@ use std::borrow::Cow;
 
 use crate::BackdropShaderId;
 use crate::ops::BackdropId;
+use crate::style::BlendSpace;
 
 /// A per-member effect evaluated in the member's composite against the
 /// group's shared filtered capture. Extended linear P3, no clamping.
@@ -277,6 +278,58 @@ impl BackdropOuter {
     }
 }
 
+/// The device pixels one logical pixel of a member's recording spans:
+/// finite and above 0.
+///
+/// [`BackdropSample::scale`] hands it to the member's backdrop shader as
+/// `px.scale`, so a recipe written in logical pixels converts its
+/// lengths without recovering the scale from the member's geometry.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct RecordingScale(f32);
+
+/// Why a [`RecordingScale`] could not be constructed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RecordingScaleError {
+    /// The scale is NaN or infinite.
+    #[error("the recording scale is not finite")]
+    NonFinite,
+    /// The scale is not above 0.
+    #[error("the recording scale must be above 0")]
+    OutOfRange,
+}
+
+impl RecordingScale {
+    /// One device pixel per logical pixel: a recording in device pixels.
+    pub const ONE: Self = Self(1.0);
+
+    /// A recording whose logical pixel spans `scale` device pixels.
+    ///
+    /// # Errors
+    /// [`RecordingScaleError::NonFinite`] when `scale` is NaN or
+    /// infinite, [`RecordingScaleError::OutOfRange`] unless it is above 0.
+    pub fn new(scale: f32) -> Result<Self, RecordingScaleError> {
+        if !scale.is_finite() {
+            return Err(RecordingScaleError::NonFinite);
+        }
+        if scale <= 0.0 {
+            return Err(RecordingScaleError::OutOfRange);
+        }
+        Ok(Self(scale))
+    }
+
+    /// The device pixels per logical pixel; finite and above 0.
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for RecordingScale {
+    fn default() -> Self {
+        Self::ONE
+    }
+}
+
 /// A layer's backdrop sample: the group it samples and an optional
 /// per-member effect evaluated in the member's composite against the
 /// shared filtered capture.
@@ -289,6 +342,8 @@ pub struct BackdropSample {
     /// How far the member's own field extends its composite past the
     /// clip edge, in device pixels.
     outer: BackdropOuter,
+    /// The device pixels per logical pixel of the member's recording.
+    recording_scale: RecordingScale,
 }
 
 impl BackdropSample {
@@ -299,6 +354,7 @@ impl BackdropSample {
             group,
             effect: None,
             outer: BackdropOuter::ZERO,
+            recording_scale: RecordingScale::ONE,
         }
     }
 
@@ -310,6 +366,7 @@ impl BackdropSample {
             group,
             effect: Some(effect.into()),
             outer: BackdropOuter::ZERO,
+            recording_scale: RecordingScale::ONE,
         }
     }
 
@@ -322,9 +379,21 @@ impl BackdropSample {
     #[must_use]
     pub fn outer(self, extent: BackdropOuter) -> Self {
         Self {
-            group: self.group,
-            effect: self.effect,
             outer: extent,
+            ..self
+        }
+    }
+
+    /// The device pixels one logical pixel of the member's recording
+    /// spans, read by its backdrop shader as `px.scale`
+    /// ([`BackdropShaderSource`]). [`RecordingScale::ONE`] — the
+    /// default — states a recording in device pixels. Built-in effects
+    /// take device-pixel parameters and never read it.
+    #[must_use]
+    pub fn scale(self, scale: RecordingScale) -> Self {
+        Self {
+            recording_scale: scale,
+            ..self
         }
     }
 
@@ -346,6 +415,13 @@ impl BackdropSample {
     #[must_use]
     pub const fn outer_extent(&self) -> BackdropOuter {
         self.outer
+    }
+
+    /// The member's recording scale ([`RecordingScale::ONE`] unless
+    /// [`BackdropSample::scale`] set it).
+    #[must_use]
+    pub const fn recording_scale(&self) -> RecordingScale {
+        self.recording_scale
     }
 }
 
@@ -551,6 +627,7 @@ pub struct BackdropSpec {
     levels: CaptureLevels,
     anchor: Option<crate::LayerId>,
     union: Option<BackdropUnion>,
+    blend_space: BlendSpace,
 }
 
 impl BackdropSpec {
@@ -565,6 +642,7 @@ impl BackdropSpec {
             levels,
             anchor: None,
             union: None,
+            blend_space: BlendSpace::Linear,
         }
     }
 
@@ -595,6 +673,20 @@ impl BackdropSpec {
         }
     }
 
+    /// A group whose members composite their samples onto their canvas
+    /// in `space`: each member's composite — the effect's result at its
+    /// coverage, antialiased edge and outer extent included — blends with
+    /// the canvas in that space, converted there and back. The default
+    /// [`BlendSpace::Linear`] blends in the linear working space; a
+    /// member's own content and descendants composite as before.
+    #[must_use]
+    pub const fn blend_space(self, space: BlendSpace) -> Self {
+        Self {
+            blend_space: space,
+            ..self
+        }
+    }
+
     /// The capture scale `s`.
     #[must_use]
     pub const fn scale(self) -> CaptureScale {
@@ -619,6 +711,14 @@ impl BackdropSpec {
     pub const fn union_field(self) -> Option<BackdropUnion> {
         self.union
     }
+
+    /// The space the group's members composite their samples in
+    /// ([`BlendSpace::Linear`] unless [`BackdropSpec::blend_space`] set
+    /// it).
+    #[must_use]
+    pub const fn member_blend_space(self) -> BlendSpace {
+        self.blend_space
+    }
 }
 
 impl From<CaptureScale> for BackdropSpec {
@@ -635,7 +735,7 @@ impl From<CaptureScale> for BackdropSpec {
 /// ```wgsl
 /// struct BackdropPixel {
 ///     p: vec2<f32>, sdf: f32, normal: vec2<f32>,
-///     own_sdf: f32, size: vec2<f32>,
+///     own_sdf: f32, size: vec2<f32>, scale: f32, local: vec2<f32>,
 /// }
 /// fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32>
 /// ```
@@ -645,9 +745,22 @@ impl From<CaptureScale> for BackdropSpec {
 /// union field when it has one ([`BackdropUnion`]), else the member's
 /// own clip field — `px.normal` that field's unit outward normal,
 /// `px.own_sdf` the signed distance to the member's own clip edge,
-/// `px.size` the member's device bounds size, and `params` the effect
-/// uniforms packed four per `vec4`, zero-filled. Without a union,
-/// `px.sdf == px.own_sdf` and `px.normal` is the member's own normal.
+/// `px.size` the member's device bounds size, `px.scale` the device
+/// pixels per logical pixel of the member's recording
+/// ([`BackdropSample::scale`]), `px.local` the member pixel in the member
+/// layer's own coordinate space — the space its clip is declared in — and
+/// `params` the effect uniforms packed four per `vec4`, zero-filled.
+/// Without a union, `px.sdf == px.own_sdf` and `px.normal` is the
+/// member's own normal.
+///
+/// `fn backdrop_field(q: vec2<f32>) -> BackdropField`, with
+/// `struct BackdropField { sdf: f32, normal: vec2<f32>, weight: f32 }`,
+/// evaluates the field the member draws against at any device point `q`:
+/// the signed distance and unit outward normal of the group's union field
+/// — the same fold the composite evaluates at its own pixel — or of the
+/// member's own clip without a union, and `weight` the member's ownership
+/// of `q` under the union (1 without one). `backdrop_field(px.p)` is
+/// exactly `px.sdf` and `px.normal`.
 /// `fn backdrop_sample(q: vec2<f32>) -> vec4<f32>` bilinearly samples the
 /// filtered capture at device point `q` — at `q · s` on a group's capture
 /// grid ([`CaptureScale`]) — clamped to its region. For a group keeping
@@ -691,8 +804,27 @@ impl BackdropShaderSource {
 mod tests {
     use super::{
         BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError,
-        CaptureScale, CaptureScaleError,
+        CaptureScale, CaptureScaleError, RecordingScale, RecordingScaleError,
     };
+
+    #[test]
+    fn recording_scale_is_finite_and_positive() {
+        for scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                RecordingScale::new(scale),
+                Err(RecordingScaleError::NonFinite)
+            );
+        }
+        for scale in [0.0, -0.0, -2.0] {
+            assert_eq!(
+                RecordingScale::new(scale),
+                Err(RecordingScaleError::OutOfRange)
+            );
+        }
+        assert_eq!(RecordingScale::new(1.0), Ok(RecordingScale::ONE));
+        assert_eq!(RecordingScale::default(), RecordingScale::ONE);
+        assert!((RecordingScale::new(3.0).expect("in range").get() - 3.0).abs() <= f32::EPSILON);
+    }
 
     #[test]
     fn backdrop_union_is_finite_and_positive() {
@@ -707,6 +839,10 @@ mod tests {
         let spec = BackdropSpec::FULL.union(union);
         assert_eq!(spec.union_field(), Some(union));
         assert_eq!(BackdropSpec::FULL.union_field(), None);
+        assert_eq!(spec.member_blend_space(), super::BlendSpace::Linear);
+        let encoded = spec.blend_space(super::BlendSpace::SrgbEncoded);
+        assert_eq!(encoded.member_blend_space(), super::BlendSpace::SrgbEncoded);
+        assert_eq!(encoded.union_field(), Some(union));
     }
 
     #[test]

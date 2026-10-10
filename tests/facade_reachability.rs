@@ -41,7 +41,7 @@ use waterui::Intensity;
 // the same copies the engine runs.
 #[cfg(feature = "gpu")]
 use waterui::graphics::{
-    RenderTransfer,
+    RenderTransfer, SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError,
     filtrate::{
         Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
         Filter,

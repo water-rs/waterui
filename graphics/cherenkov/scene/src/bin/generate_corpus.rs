@@ -20,11 +20,11 @@ use cherenkov_scene::kurbo::{
     Affine, BezPath, Circle, Ellipse, Line, Point, Rect, RoundedRect, RoundedRectRadii, Vec2,
 };
 use cherenkov_scene::{
-    BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, Color, ColorSpace, Draw, Extend,
-    FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, ImageColorSpace, ImageEncoding,
-    ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live, Motion, MotionAnimation,
-    NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash, Sampling, Scene,
-    SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
+    BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Color, ColorSpace,
+    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, ImageColorSpace,
+    ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live, Motion,
+    MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash, Sampling,
+    Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
 };
 use fontique::FontWeight;
 use parley::{
@@ -6876,6 +6876,70 @@ fn run() -> Result<(), SceneError> {
                 solid(srgba(1.0, 1.0, 1.0, 0.15)),
             );
         });
+    });
+
+    // Member blend space (#2430): the left member's group composites its
+    // samples in sRGB-encoded space, the right member's identical group
+    // in linear space, so the darkened 8-px outer band and antialiased
+    // edge differ side by side. The bottom union pair composites encoded
+    // across its bridge, its effect gain lifting the sample above SDR
+    // white. A P3-only disk and an HDR bar sit behind both rows.
+    corpus.scene_setup("backdrop-member-encoded", 256, 256, white, |b| {
+        let gaussian = || vec![BackdropFilter::GaussianBlur { sigma: 6.0 }];
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(1, gaussian(), 1.0, 1)
+        });
+        b.backdrop_group(BackdropGroup::new(2, gaussian(), 1.0, 1));
+        b.backdrop_group(BackdropGroup {
+            union: Some(20.0),
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(3, gaussian(), 1.0, 1)
+        });
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.fill(Shape::circle(128.0, 64.0, 36.0), solid(p3(0.0, 0.85, 0.05)));
+        l.fill(
+            Shape::rect(16.0, 176.0, 224.0, 24.0),
+            solid(hdr(2.5, 2.2, 1.8)),
+        );
+        let darken = BackdropEffectSpec::ColorMatrix {
+            matrix: [
+                0.2, 0.0, 0.0, 0.0, //
+                0.0, 0.2, 0.0, 0.0, //
+                0.0, 0.0, 0.2, 0.0,
+            ],
+        };
+        for (x0, group) in [(24.0, 1), (140.0, 2)] {
+            l.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    x0,
+                    32.0,
+                    x0 + 92.0,
+                    112.0,
+                    16.0,
+                )));
+                m.backdrop(group);
+                m.backdrop_outer(8.0);
+                m.backdrop_effect(darken.clone());
+            });
+        }
+        for (x0, x1) in [(40.0, 122.0), (134.0, 216.0)] {
+            l.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    x0, 140.0, x1, 232.0, 16.0,
+                )));
+                m.backdrop(3);
+                m.backdrop_outer(6.0);
+                m.backdrop_effect(BackdropEffectSpec::ColorMatrix {
+                    matrix: [
+                        1.6, 0.0, 0.0, 0.0, //
+                        0.0, 1.6, 0.0, 0.0, //
+                        0.0, 0.0, 1.6, 0.0,
+                    ],
+                });
+            });
+        }
     });
 
     // The #211 dense city map: a 1600×1200 frame whose live coverage

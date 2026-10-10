@@ -393,17 +393,7 @@ impl LayerTarget for cherenkov_gpu::Gpu {
             },
             (
                 move |params, scale| {
-                    let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels);
-                    // A scoped chrome group captures beneath its scope's
-                    // anchor layer, like a material group
-                    // (water-rs/waterui#2097).
-                    if let Some(anchor) = key.anchor() {
-                        spec = spec.anchor(anchor);
-                    }
-                    if let Some(union) = union_of(params, scale, key.class()) {
-                        spec = spec.union(union);
-                    }
-                    surface.backdrop_group_unfiltered(spec)
+                    surface.backdrop_group_unfiltered(chrome_spec(params, scale, key))
                 },
                 |tx: &mut Transaction<'_, Self>,
                  member: &Layer,
@@ -420,6 +410,30 @@ impl LayerTarget for cherenkov_gpu::Gpu {
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
         tx[layer].clear_backdrop();
     }
+}
+
+/// The spec a chrome group of `key` is created with at display `scale`:
+/// the class's capture scale, levels and member blend space, its union
+/// field converted at `scale`, and — for a scoped group — its scope's
+/// anchor layer, beneath which it captures like a material group
+/// (water-rs/waterui#2097).
+///
+/// # Panics
+/// Panics as [`union_of`] does for a union smoothing invalid at `scale`.
+pub fn chrome_spec(
+    params: &cherenkov_record::MaterialCapture,
+    scale: f64,
+    key: ChromeGroupKey,
+) -> cherenkov::BackdropSpec {
+    let mut spec =
+        cherenkov::BackdropSpec::new(params.scale, params.levels).blend_space(params.blend_space);
+    if let Some(anchor) = key.anchor() {
+        spec = spec.anchor(anchor);
+    }
+    if let Some(union) = union_of(params, scale, key.class()) {
+        spec = spec.union(union);
+    }
+    spec
 }
 
 /// The union field `params` declares for a group built at `scale`:
@@ -481,10 +495,25 @@ pub fn chrome_sample(
         .map(move |effect| group_sample_with(id, &shader, &effect, scale))
 }
 
+/// The display `scale` the group was built for as the member's
+/// [`RecordingScale`](cherenkov::RecordingScale): the device pixels one
+/// logical pixel of the recording spans.
+///
+/// # Panics
+/// Panics when `scale` is not a valid recording scale: its error is
+/// surfaced, never clamped.
+pub fn recording_scale_of(scale: f64) -> cherenkov::RecordingScale {
+    cherenkov::RecordingScale::new(crate::num_cast::f64_as_f32(scale)).unwrap_or_else(|error| {
+        panic!("hydrolysis materials: display scale {scale} is not a recording scale: {error}")
+    })
+}
+
 /// The live backdrop sample a `ChromeMaterial` member binds: the group's
 /// id and the member's effect mapped through its shader, the effect's
 /// logical outer extent converted to device pixels at `scale` — the
-/// display scale the group was built for.
+/// display scale the group was built for — and `scale` itself as the
+/// member's recording scale, so its shader converts the recipe's
+/// logical lengths.
 pub fn group_sample_with(
     id: cherenkov::BackdropId,
     shader: &cherenkov::BackdropShader,
@@ -494,6 +523,7 @@ pub fn group_sample_with(
     let outer = outer_of(effect.outer_extent(), scale);
     cherenkov::BackdropSample::with_effect(id, shader.effect(effect.uniforms().to_vec()))
         .outer(outer)
+        .scale(recording_scale_of(scale))
 }
 
 fn external_frame_plane_size(frame: &cherenkov_gpu::interop::ExternalFrame) -> (u32, u32) {

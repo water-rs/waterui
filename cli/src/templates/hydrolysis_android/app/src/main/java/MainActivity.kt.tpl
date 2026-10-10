@@ -7,7 +7,6 @@ import android.system.Os
 import android.util.Log
 import android.view.View
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import dev.waterui.hydrolysis.HydrolysisEnvironment
 import dev.waterui.hydrolysis.HydrolysisActivity
 import dev.waterui.hydrolysis.HydrolysisHostView
 import dev.waterui.hydrolysis.HydrolysisSession
@@ -19,10 +18,11 @@ import {{ ctx.hydrolysis_android_painter_band_import() }}
  * The generated app entry: a [HydrolysisActivity] that loads this project's
  * Hydrolysis cdylib and mounts the painter's band beneath every host child.
  *
- * [HydrolysisEnvironment.prepare] owns the bundled asset tree and the default
- * environment variables; the intent extras the CLI passes still override the
- * defaults it sets, so they land between it and `super.onCreate` (which loads
- * the native library).
+ * The host syncs the bundled asset tree off the main thread while the
+ * launch screen stays up; the `waterui.env.*` intent extras the CLI passes
+ * still override the sync's defaults, so they land in
+ * [applyEnvironmentOverrides] — after the sync finishes, before the native
+ * library loads.
  */
 class MainActivity : HydrolysisActivity() {
 
@@ -33,18 +33,26 @@ class MainActivity : HydrolysisActivity() {
         return {% include "partials/hydrolysis_android_content_view.kt.tpl" %}
     }
 
+    override fun applyEnvironmentOverrides() {
+        setupEnvironmentFromIntent(intent)
+    }
+
+    /** Set once the session's root mounted; releases the launch screen. */
+    private var sessionMounted = false
+
+    /** The session's root mounted — the bench's cold-start marker. */
+    override fun onSessionMounted() {
+        sessionMounted = true
+        Log.i(TAG, "WATERUI_ROOT_READY")
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // The launch screen the system showed from the tap on the icon stays
-        // until this activity's first frame.
-        installSplashScreen()
-
-        // super.onCreate loads the native library and registers the app, so
-        // every environment hand-off lands before it.
-        HydrolysisEnvironment.prepare(this)
-        setupEnvironmentFromIntent(intent)
+        // until the session mounts, so the window never shows the empty host
+        // view the asset sync leaves in place.
+        installSplashScreen().setKeepOnScreenCondition { !sessionMounted }
 
         super.onCreate(savedInstanceState)
-        Log.i(TAG, "WATERUI_ROOT_READY")
     }
 
     companion object {

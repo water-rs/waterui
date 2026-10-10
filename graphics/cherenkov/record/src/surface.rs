@@ -1155,9 +1155,11 @@ impl<T: Target> From<Picture> for LayerContent<T> {
     }
 }
 
-/// A layer's edit handle inside a [`Transaction`]: `tx[&layer]` returns
-/// it pointed at that layer. Each method queues an op into the open
-/// transaction's shared edit stream and returns `&mut Self` for chaining.
+/// A layer's edit handle inside a [`Transaction`].
+///
+/// `tx[&layer]` returns it pointed at that layer. Each method queues an
+/// op into the open transaction's shared edit stream and returns
+/// `&mut Self` for chaining.
 ///
 /// `transform` and its components (`translation`, `rotation`, `scale`,
 /// `skew`, `pivot`, `projection`, `tilt`, `depth`), `opacity`,
@@ -1806,9 +1808,11 @@ impl<T: Target> LayerEdit<T> {
     }
 }
 
-/// A transaction's edits to a surface's layer tree. `tx[&layer]` returns
-/// the [`LayerEdit`] pointed at that layer; each setter queues its op
-/// into the open transaction's shared edit stream in program order.
+/// A transaction's edits to a surface's layer tree.
+///
+/// `tx[&layer]` returns the [`LayerEdit`] pointed at that layer; each
+/// setter queues its op into the open transaction's shared edit stream in
+/// program order.
 pub struct Transaction<'a, T: Target> {
     /// The shared `LayerEdit` handle, re-pointed at each indexed layer.
     edit: LayerEdit<T>,

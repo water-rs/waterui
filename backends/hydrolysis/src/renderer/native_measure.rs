@@ -70,13 +70,14 @@ impl HydroNativeView for Native<MapConfig> {
     }
 }
 
-/// A build without the macOS system bridge needs an application's `WebView` hook.
-#[cfg(not(hydrolysis_macos_system_webview))]
+/// A build without a system bridge needs an application's `WebView` hook.
+#[cfg(not(hydrolysis_system_webview))]
 pub fn unsupported_webview() -> ! {
     panic!(
         "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
-         link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`) or enable \
-         the `webview-system` and `winit` features on macOS"
+         link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`), enable \
+         the `webview-system` and `winit` features on macOS, or the `webview-system` and \
+         `web` features on the web"
     )
 }
 

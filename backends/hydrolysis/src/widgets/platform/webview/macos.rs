@@ -23,7 +23,6 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use cookie::time::OffsetDateTime;
 use futures::channel::oneshot;
 use nami::Signal;
 use objc2::rc::Retained;
@@ -148,13 +147,16 @@ impl SharedState {
     ///
     /// No policy means no bridge: a handle whose origins were never chosen has
     /// nothing to authenticate a page against, and the seed script carries the
-    /// live value of every exposed binding.
+    /// live value of every exposed binding. The URL is parsed with `FromStr`,
+    /// not [`Url::parse`]: the policy's own `allows` handles `file:` documents
+    /// and `BridgeOrigins::Any`, which `Url::parse`'s web-only filter would
+    /// refuse before the policy could see them.
     fn admits(&self, url: Option<&str>) -> bool {
         let policy = self.bridge_origins.borrow();
         let (Some(policy), Some(url)) = (policy.as_ref(), url) else {
             return false;
         };
-        Url::parse(url).is_some_and(|url| policy.allows(&url))
+        url.parse::<Url>().is_ok_and(|url| policy.allows(&url))
     }
 
     /// Re-decides whether the document at `url` gets the bridge, and rebuilds
@@ -188,10 +190,9 @@ impl SharedState {
                 // The URL that failed is the one the navigation started at;
                 // `WKWebView::URL` still points at the document being replaced.
                 url: Self::parse_url(
-                    &self
-                        .last_navigation_url
+                    self.last_navigation_url
                         .borrow()
-                        .clone()
+                        .as_deref()
                         .unwrap_or_default(),
                 ),
                 message,
@@ -367,13 +368,9 @@ define_class!(
             _navigation: Option<&WKNavigation>,
         ) {
             self.ivars().shared.emit(WebViewEvent::Loading {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "WebKit progress is in 0..=1; the event uses f32"
-                )]
                 // SAFETY: main-thread message send to an object this wrapper
                 // retains; see the module safety note.
-                progress: unsafe { web_view.estimatedProgress() } as f32,
+                progress: crate::num_cast::f64_as_f32(unsafe { web_view.estimatedProgress() }),
             });
         }
 
@@ -950,26 +947,22 @@ impl MacSystemWebViewHandle {
         cookies.objectAtIndex(0)
     }
 
-    fn cookie_from_native(cookie: &NSHTTPCookie) -> Cookie<'static> {
-        let mut builder = Cookie::build((cookie.name().to_string(), cookie.value().to_string()))
+    fn cookie_from_native(cookie: &NSHTTPCookie) -> Result<Cookie<'static>, waterui_core::Error> {
+        let name = cookie.name().to_string();
+        let mut builder = Cookie::build((name.clone(), cookie.value().to_string()))
             .domain(cookie.domain().to_string())
             .path(cookie.path().to_string())
             .secure(cookie.isSecure())
             .http_only(cookie.isHTTPOnly());
         if let Some(expires) = cookie.expiresDate() {
+            // `expiresDate` is an `NSDate`: `NSTimeInterval` seconds since 1970.
+            // A cookie with no `expiresDate` is a session cookie and keeps the
+            // expiry unset; one whose interval names no representable date
+            // fails the whole query rather than silently dropping the expiry.
             let seconds = expires.timeIntervalSince1970();
-            if seconds.is_finite() {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "HTTP cookies use whole seconds"
-                )]
-                let timestamp = seconds as i64;
-                let expires = OffsetDateTime::from_unix_timestamp(timestamp)
-                    .expect("Hydrolysis WKWebView cookie expiration must fit OffsetDateTime");
-                builder = builder.expires(expires);
-            }
+            builder = builder.expires(waterui_webview::cookie_expiry(&name, seconds)?);
         }
-        builder.build()
+        Ok(builder.build())
     }
 }
 
@@ -1124,9 +1117,9 @@ impl WebViewHandle for MacSystemWebViewHandle {
 
     #[expect(
         clippy::future_not_send,
-        reason = "WebKit objects and callbacks are main-thread bound"
+        reason = "the cookie query runs on the macOS main thread: the future holds the `MainThreadOnly` cookie store and the non-`Send` completion block until WebKit answers"
     )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
         // SAFETY: main-thread message send to an object this wrapper retains; see
         // the module safety note.
         let store = unsafe {
@@ -1147,7 +1140,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
                     let cookie = cookies.objectAtIndex(index);
                     Self::cookie_from_native(&cookie)
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>();
             let sender = sender
                 .borrow_mut()
                 .take()
@@ -1166,7 +1159,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
 
     #[expect(
         clippy::future_not_send,
-        reason = "WebKit objects and callbacks are main-thread bound"
+        reason = "the evaluation runs on the macOS main thread: the future holds the `MainThreadOnly` web view's non-`Send` completion block until WebKit answers"
     )]
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         let (sender, receiver) = oneshot::channel();
@@ -1186,7 +1179,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
 
     #[expect(
         clippy::future_not_send,
-        reason = "WebKit objects and callbacks are main-thread bound"
+        reason = "the evaluation runs on the macOS main thread: the future holds the `MainThreadMarker` and the non-`Send` completion block until WebKit answers"
     )]
     async fn call_async_javascript(&self, body: &str) -> Result<Str, Str> {
         let mtm = MainThreadMarker::new()

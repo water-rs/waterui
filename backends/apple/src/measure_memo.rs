@@ -47,7 +47,9 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
     all(feature = "scroll", target_os = "macos"),
     feature = "table",
     feature = "text",
-    feature = "text_field"
+    feature = "text_field",
+    feature = "video",
+    feature = "video_player"
 ))]
 pub fn invalidate() {
     GENERATION.fetch_add(1, Ordering::Relaxed);

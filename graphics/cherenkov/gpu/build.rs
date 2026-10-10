@@ -91,7 +91,7 @@ struct AppleTarget {
 /// Only a whole trimmed line equal to the marker toggles the span — a
 /// marker inside other text is not a marker. An unpaired marker is a
 /// build bug and panics. The stripped output must carry neither
-/// `union_field` nor `backdrop_field`: the check fails loudly if the
+/// `union_field` nor `member_field`: the check fails loudly if the
 /// spans drift from what the marker is supposed to remove.
 fn drop_marked(source: &str, marker: &str) -> String {
     let tag = format!("// {marker}");
@@ -106,7 +106,7 @@ fn drop_marked(source: &str, marker: &str) -> String {
     }
     assert!(!dropping, "unpaired `{tag}` marker");
     assert!(
-        !out.contains("union_field") && !out.contains("backdrop_field"),
+        !out.contains("union_field") && !out.contains("member_field"),
         "`{tag}` stripping left union code in the output"
     );
     out
