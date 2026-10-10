@@ -30,6 +30,7 @@
 //! );
 //! ```
 
+pub mod alert;
 mod appearance;
 mod application;
 mod badge;
@@ -68,6 +69,8 @@ mod trait_change;
 pub mod view_controller;
 mod window;
 
+#[cfg(feature = "dialog")]
+pub use alert::AlertController;
 pub use appearance::{ColorSchemeObservation, current_scheme};
 pub use application::{
     ApplicationHandlers, MenuBuilder, WindowScene, request_main_menu_rebuild, run,

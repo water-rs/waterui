@@ -52,6 +52,9 @@ webview = [
     "dep:objc2-security",
     "objc2-core-foundation/CFNumber",
 ]
+# The alert surfaces (`appkit::alert` `NSAlert`, `uikit::alert`
+# `UIAlertController`) — the `dialog` leaf's platform objects.
+dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 # Harness-only reach for `tests/native`: compiles the doc(hidden)
 # test-support entry points that touch implementation-private surfaces
 # (`accessory_overlay_window_for_test`), the harnesses' shared
@@ -289,6 +292,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "objc2-core-foundation",
     "NSAppearance",
+    "NSAlert",
     "NSApplication",
     "NSAccessibility",
     "NSAccessibilityConstants",
@@ -414,6 +418,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "std",
     "objc2-core-foundation",
     "objc2-quartz-core",
+    "UIAlertController",
     "UIApplication",
     "UIColor",
     "UIControl",

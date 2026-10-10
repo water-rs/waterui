@@ -433,6 +433,11 @@ impl RenderNode {
                             },
                         );
                     }
+                    WrapperEffect::Dialog(value) => {
+                        HydrolysisRenderer::apply_dialog(renderer, child_env, value, |r| {
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                        });
+                    }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
                         node.child
@@ -947,6 +952,29 @@ impl RenderNode {
                         node.child.emit_accessibility(renderer, child_env);
                         if let Some(hook) = effect.appear.take() {
                             hook.call();
+                        }
+                    }
+                    WrapperEffect::Dialog(effect) => {
+                        // The walk reports to the same dialog stack the
+                        // rendered flush does. The dialog on screen emits its
+                        // modal layer in place of the child; publication then
+                        // keeps that layer's modal node alone under the
+                        // window, so everything beneath is inert.
+                        let presented = renderer.read_signal(effect.dialog.is_presented());
+                        let focus = renderer.hit_test.keyboard_focus.clone();
+                        if renderer.popup_menu.dialog_stack.report(
+                            &effect.marker,
+                            &effect.dialog,
+                            presented,
+                            focus,
+                        ) {
+                            let env = dialog_modal_environment(child_env, &effect.dialog);
+                            effect
+                                .content
+                                .borrow_mut()
+                                .emit_accessibility(renderer, &env);
+                        } else {
+                            node.child.emit_accessibility(renderer, child_env);
                         }
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),

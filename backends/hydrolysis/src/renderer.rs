@@ -331,6 +331,8 @@ pub struct PresentationHosts {
     pub(crate) context_menu: NodeCore,
     /// `.anchored_overlay` presentations' host.
     pub(crate) anchored: NodeCore,
+    /// The `.dialog` modal layer's host.
+    pub(crate) dialog: NodeCore,
 }
 
 impl PresentationHosts {
@@ -339,7 +341,12 @@ impl PresentationHosts {
     /// `PAINT|COMMIT` like [`RenderNode::unmount`] leaves the window's own
     /// tree.
     pub(crate) fn unmount(&self) {
-        for host in [&self.text_overlay, &self.context_menu, &self.anchored] {
+        for host in [
+            &self.text_overlay,
+            &self.context_menu,
+            &self.anchored,
+            &self.dialog,
+        ] {
             host.cell.unmount_subtree();
         }
     }
@@ -747,6 +754,7 @@ impl SemanticCore {
             text_overlay: host(),
             context_menu: host(),
             anchored: host(),
+            dialog: host(),
         };
         Self {
             state: HydroState::new(text),
@@ -871,12 +879,31 @@ impl SemanticCore {
     /// The whole-tree drivers (`flush_window_tree`, the semantic emit walk)
     /// bracket their emit regions with this pair; a standalone re-record
     /// outside a pass is what the unit rule's mark exists for.
-    pub(crate) fn begin_emit_pass(&self) {
+    ///
+    /// A pass is also the dialog stack's frame: every `.dialog` node reports
+    /// inside it, so the stack opens here and closes in
+    /// [`Self::finish_emit_pass`].
+    pub(crate) fn begin_emit_pass(&mut self) {
         self.emit_pass_active.set(true);
+        self.popup_menu.dialog_stack.begin_pass();
+        self.popup_menu.front_dialog = None;
     }
 
-    /// Closes the pass [`Self::begin_emit_pass`] opened.
-    pub(crate) fn finish_emit_pass(&self) {
+    /// Closes the pass [`Self::begin_emit_pass`] opened. A dialog that came
+    /// on screen takes keyboard focus; once the last one closes, focus
+    /// returns to where it was before the first one came up.
+    pub(crate) fn finish_emit_pass(&mut self) {
+        match self.popup_menu.dialog_stack.finish_pass() {
+            DialogFocus::Keep => {}
+            DialogFocus::Enter => {
+                self.move_keyboard_focus(false);
+            }
+            DialogFocus::Return(focus) => {
+                if focus.is_some() {
+                    self.set_keyboard_focus(focus, true);
+                }
+            }
+        }
         self.emit_pass_active.set(false);
     }
 
@@ -1810,14 +1837,16 @@ impl HydrolysisRenderer {
     }
 
     /// The window's fixed host frames in paint order: the content root,
-    /// then the context menu, anchored overlay and text overlay hosts.
-    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell>; 4] {
+    /// then the context menu, anchored overlay and text overlay hosts, and
+    /// finally the `.dialog` modal layer so nothing else stacks above it.
+    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell>; 5] {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
             Rc::clone(&hosts.context_menu.cell),
             Rc::clone(&hosts.anchored.cell),
             Rc::clone(&hosts.text_overlay.cell),
+            Rc::clone(&hosts.dialog.cell),
         ]
     }
 

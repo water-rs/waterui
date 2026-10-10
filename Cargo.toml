@@ -419,6 +419,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 default = [
     "gpu",
     "assets",
+    "dialog",
     "snackbar",
     "highlight",
     "locale-datetime",
@@ -446,6 +447,7 @@ highlight = ["waterui-internal/highlight", "waterui-dylib?/highlight"]
 # a release package that never attaches the hub leaves its server stack out.
 inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
 inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
+dialog = ["waterui-internal/dialog", "waterui-dylib?/dialog"]
 snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
 media = ["waterui-internal/media", "waterui-dylib?/media"]
@@ -508,6 +510,7 @@ all = [
     "video-gpu",
     "navigation-restoration",
     "snackbar",
+    "dialog",
     "remote",
 ]
 

@@ -447,7 +447,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Collections | `List` `ListItem` `ForEach` `SignalCollection` `ScrollController` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` |
+| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `Chart` (12 kinds) `Map` |
 | Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuContentView` `ExternalFrameView` icon sets |
