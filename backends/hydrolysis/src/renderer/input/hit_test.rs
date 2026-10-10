@@ -238,7 +238,8 @@ pub struct NativeViewOcclusion {
     /// paints above it.
     pub(crate) order: usize,
     /// Shared with the platform's view host. Rects are in window hit-test space.
-    pub(crate) sink: Rc<RefCell<Vec<kurbo::Rect>>>,
+    #[cfg(hydrolysis_hosted)]
+    pub(crate) sink: crate::hosted::HostedOcclusion,
 }
 
 /// Outcome of synchronizing hover targets against a pointer position.
@@ -1111,7 +1112,18 @@ impl HitTestState {
 
     /// Publishes, for each registered native subview, the rects where
     /// `WaterUI`-drawn interactive content sits above it.
+    #[cfg_attr(
+        not(hydrolysis_hosted),
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "no hosted content exists on targets without system-compositor planes"
+        )
+    )]
     fn publish_native_view_occlusion(&self, text_inputs: &[TextInputTarget]) {
+        #[cfg(not(hydrolysis_hosted))]
+        let _ = text_inputs;
+        #[cfg(hydrolysis_hosted)]
         for occlusion in &self.native_view_occlusions {
             let above = |order: usize, bounds: kurbo::Rect| {
                 (order > occlusion.order)
@@ -1137,7 +1149,7 @@ impl HitTestState {
                     )
                 }))
                 .collect();
-            occlusion.sink.replace(rects);
+            occlusion.sink.publish(rects);
         }
     }
 

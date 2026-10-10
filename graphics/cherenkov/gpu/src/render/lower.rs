@@ -2703,10 +2703,11 @@ impl<'a> Lowering<'a> {
     #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
     fn emit_backdrop_sample(
         &mut self,
-        gid: u64,
+        sample: &cherenkov::BackdropSample,
         member: LayerId,
-        effect: Option<&cherenkov::BackdropEffect>,
     ) -> Result<(), RenderError> {
+        let gid = sample.group().raw();
+        let effect = sample.effect();
         let Some(plan) = self.backdrops.get(&gid) else {
             return Ok(());
         };
@@ -2767,6 +2768,8 @@ impl<'a> Lowering<'a> {
             inst.grad[2] = scale.get();
             // `grad.w` is the group's level count for `backdrop_sample_level`.
             inst.grad[3] = spec.levels().get() as f32;
+            // `color.x` is the member's recording scale, `px.scale`.
+            inst.color[0] = sample.recording_scale().get();
             // `grad2.xy` is the region's size in texels; `grad2.zw` the
             // member's device size for effect shaders: the unclipped
             // bounds, not the visible intersection.
@@ -3189,10 +3192,6 @@ impl<'a> Lowering<'a> {
         clippy::too_many_arguments,
         reason = "the layer walk's fixed context, not real complexity"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the union-member scope cases each need their own few lines"
-    )]
     fn layer_body(
         &mut self,
         id: LayerId,
@@ -3253,7 +3252,7 @@ impl<'a> Lowering<'a> {
                             .as_ref()
                             .is_some_and(|sample| s.union_member(sample.group().raw(), id));
                         if union_member && let Some(sample) = &node.backdrop {
-                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                            s.emit_backdrop_sample(sample, id)?;
                         }
                         s.with_clip(
                             clip,
@@ -3262,11 +3261,7 @@ impl<'a> Lowering<'a> {
                                 if let Some(sample) = &node.backdrop
                                     && !union_member
                                 {
-                                    s.emit_backdrop_sample(
-                                        sample.group().raw(),
-                                        id,
-                                        sample.effect(),
-                                    )?;
+                                    s.emit_backdrop_sample(sample, id)?;
                                 }
                                 s.layer_items(id, node, tree, caches, glyphs)
                             },
@@ -3291,7 +3286,7 @@ impl<'a> Lowering<'a> {
                     .is_some_and(|sample| self.union_member(sample.group().raw(), id))
                     && !is_destructive(blend);
                 if outside && let Some(sample) = &node.backdrop {
-                    self.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                    self.emit_backdrop_sample(sample, id)?;
                 }
                 self.with_clip(
                     clip,
@@ -3305,7 +3300,7 @@ impl<'a> Lowering<'a> {
                             // sample — or one nothing isolates — lands in
                             // the enclosing target at full strength: the
                             // member's filter never covers it.
-                            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+                            s.emit_backdrop_sample(sample, id)?;
                         }
                         if isolates {
                             let inner = s.clip;
@@ -3322,11 +3317,7 @@ impl<'a> Lowering<'a> {
                                     {
                                         // An unfiltered member's sample is
                                         // its canvas's bottom-most content.
-                                        s.emit_backdrop_sample(
-                                            sample.group().raw(),
-                                            id,
-                                            sample.effect(),
-                                        )?;
+                                        s.emit_backdrop_sample(sample, id)?;
                                     }
                                     s.layer_items(id, node, tree, caches, glyphs)
                                 },
@@ -3374,7 +3365,7 @@ impl<'a> Lowering<'a> {
         // outside the filter — beside a nested filter scope over the
         // member's items at opacity 1, `Normal` blend.
         let mut body = |s: &mut Self, glyphs: &GlyphContext<'_>| {
-            s.emit_backdrop_sample(sample.group().raw(), id, sample.effect())?;
+            s.emit_backdrop_sample(sample, id)?;
             let inner = s.clip;
             s.isolate(
                 inner,

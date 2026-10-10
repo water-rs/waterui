@@ -24,6 +24,7 @@
 #[cfg(target_os = "macos")]
 mod real {
     use std::cell::{Cell, RefCell};
+    use std::fs;
     use std::future::Future;
     use std::pin::pin;
     use std::rc::Rc;
@@ -64,6 +65,11 @@ mod real {
     const SECOND_HTML: &str = include_str!("pages/second.html");
     const CHECKS_JS: &str = include_str!("pages/checks.js");
     const STATE_SEED_JS: &str = include_str!("pages/state_seed.js");
+
+    /// The document the `file:` case loads. Inline and minimal, so nothing
+    /// but the bridge is under test — and so no sibling file is needed for a
+    /// page whose whole job is to be a local document.
+    const LOCAL_HTML: &str = "<!doctype html><title>local</title>";
 
     /// The local executor the page's handler replies are spawned onto.
     ///
@@ -407,6 +413,36 @@ mod real {
                 .expect("location.href evaluates")
                 .to_string()
         }
+
+        /// The `typeof` of every global the document-start scripts install —
+        /// `waterui`, the `__wateruiEval` wrapper and the `__wateruiState`
+        /// store — evaluated in the document currently loaded. The probe goes
+        /// through `evaluateJavaScript`, so the answer does not depend on the
+        /// bridge it reports on; an array marshals as its JSON encoding.
+        fn bridge_globals(&self) -> String {
+            self.block_on(
+                self.handle.run_javascript(
+                    "[typeof waterui, typeof __wateruiEval, typeof __wateruiState]",
+                ),
+            )
+            .expect("the bridge globals probe evaluates")
+            .to_string()
+        }
+
+        /// A `greet` through the bridge.
+        ///
+        /// The page reaches the handler only when message authentication
+        /// admits the origin the engine reports for its frame, so a reply
+        /// proves the admission check and `allows_origin` agree — not merely
+        /// that the scripts ran in a document whose messages are refused.
+        fn greet(&self) -> String {
+            self.block_on(
+                self.handle
+                    .call_async_javascript(r#"return waterui.invoke("greet", {name: "Lexo"});"#),
+            )
+            .expect("a bridge invoke settles")
+            .to_string()
+        }
     }
 
     /// Reads one field of the page's record, saying what was there when it is
@@ -586,6 +622,68 @@ mod real {
         );
     }
 
+    /// `BridgeOrigins::LocalFiles` exists for documents loaded from the
+    /// filesystem: a `file:` URL parses to a local `Url`, which a web-only
+    /// admission filter refuses before the policy can see it — while
+    /// `allows_origin` already admits the `file://` origin the engine
+    /// reports. The document must get the bridge, and a handler call must
+    /// cross it, or the two checks disagree.
+    fn a_local_file_document_receives_the_bridge(executor: &TestExecutor) {
+        let engine = start(executor);
+        let path = std::env::temp_dir().join("waterui-hydrolysis-real-engine-local.html");
+        fs::write(&path, LOCAL_HTML).expect("the local test document is writable");
+        let url: Url = format!("file://{}", path.display())
+            .parse()
+            .expect("the test document's file URL parses");
+        engine
+            .handle
+            .set_bridge_origins(OriginPolicy::new(BridgeOrigins::LocalFiles, &url));
+        engine.navigate("the local file document to load", || {
+            engine.handle.go_to(&url);
+        });
+        fs::remove_file(&path).expect("the local test document is removable");
+
+        assert_eq!(
+            engine.bridge_globals(),
+            r#"["object","function","object"]"#,
+            "a file: document under BridgeOrigins::LocalFiles must receive the bridge"
+        );
+        assert_eq!(
+            engine.greet(),
+            "Hi Lexo",
+            "message authentication must admit the file:// origin the document reports"
+        );
+    }
+
+    /// `BridgeOrigins::Any` is documented as every origin — including
+    /// documents with no origin to authenticate, which the same filter
+    /// refused. A `data:` document rather than `about:blank`: a fresh view's
+    /// first `about:blank` reuses the initial empty document, which runs no
+    /// document-start script and would read as a refusal.
+    fn an_any_policy_admits_an_opaque_document(executor: &TestExecutor) {
+        let engine = start(executor);
+        let page: Url = "data:text/html,admitted"
+            .parse()
+            .expect("a data: document URL parses");
+        engine
+            .handle
+            .set_bridge_origins(OriginPolicy::new(BridgeOrigins::Any, &page));
+        engine.navigate("the data: document to load", || {
+            engine.handle.go_to(&page);
+        });
+
+        assert_eq!(
+            engine.bridge_globals(),
+            r#"["object","function","object"]"#,
+            "a data: document under BridgeOrigins::Any must receive the bridge"
+        );
+        assert_eq!(
+            engine.greet(),
+            "Hi Lexo",
+            "message authentication must admit the document under BridgeOrigins::Any"
+        );
+    }
+
     pub fn run() {
         let executor = TestExecutor(Rc::new(AsyncLocalExecutor::new()));
         executor_core::init_local_executor(executor.clone());
@@ -598,6 +696,8 @@ mod real {
         integers_beyond_two_to_the_fifty_third_cross_intact(&executor);
         typed_evaluation_awaits_the_wrapper(&executor);
         a_keyed_injection_replaces_its_predecessor(&executor);
+        a_local_file_document_receives_the_bridge(&executor);
+        an_any_policy_admits_an_opaque_document(&executor);
     }
 }
 

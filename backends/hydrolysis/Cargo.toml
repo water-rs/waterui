@@ -30,6 +30,8 @@ waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
+# Hosted content follows the occlusion rects through a watcher set.
+waterui-watcher-set.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
@@ -378,14 +380,19 @@ testing = []
 # exercise a software adapter for bring-up on a host without a GPU.
 frame-profile = ["testing"]
 inspector-signals = ["waterui/inspector-signals"]
-# The platform's own web engine, bridged as a native subview. Every other engine
-# is a crate the application links and installs; this backend never names one.
+# The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
+# each hosted on a compositor plane. Every other engine is a crate the
+# application links and installs; this backend never names one.
 webview-system = [
     "dep:block2",
     "dep:cookie",
     "dep:futures",
     "dep:objc2-web-kit",
     "dep:serde_json",
+    "web-sys?/HtmlIFrameElement",
+    "web-sys?/MouseEvent",
+    "web-sys?/PointerEventInit",
+    "web-sys?/WheelEventInit",
 ]
 winit = [
     "accessibility",

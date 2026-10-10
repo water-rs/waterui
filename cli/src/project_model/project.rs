@@ -1451,16 +1451,25 @@ impl Project {
         &self,
         section: GraphSection,
     ) -> eyre::Result<crate::templates::WebAnswers> {
-        let video = self
-            .unanimous_graph_answer(
-                &crate::platform::wasm_target_triples(),
+        let targets = crate::platform::wasm_target_triples();
+        let (video, webview) = futures_util::future::try_join(
+            self.unanimous_graph_answer(
+                &targets,
                 "the video usage",
                 section,
                 |enabled: &bool| enabled.to_string(),
                 |project, target| async move { project.uses_video(&target).await },
-            )
-            .await?;
-        Ok(crate::templates::WebAnswers { video })
+            ),
+            self.unanimous_graph_answer(
+                &targets,
+                "the standard WebView usage",
+                section,
+                |enabled: &bool| enabled.to_string(),
+                |project, target| async move { project.uses_standard_webview(&target).await },
+            ),
+        )
+        .await?;
+        Ok(crate::templates::WebAnswers { video, webview })
     }
 
     /// The two `WebView` answers `os`'s generated-manifest table gets from
