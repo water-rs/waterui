@@ -1007,6 +1007,9 @@ struct MemberEntry {
     /// The member's device-space clip bounds — its `size` input and the
     /// draw bound's base.
     bounds: Rect,
+    /// The member layer's local-to-device transform: the space its clip
+    /// is declared in, which an effect shader's `px.local` reads back.
+    transform: Affine,
     /// The composite's draw bound: `bounds` inflated by `r(n) + outer +
     /// 1` for a union-field member, `bounds` unchanged otherwise.
     draw: Rect,
@@ -1606,6 +1609,7 @@ impl<'a> Lowering<'a> {
                 id,
                 MemberEntry {
                     bounds: member,
+                    transform,
                     draw: member,
                     region: 0,
                     ord,
@@ -2781,6 +2785,10 @@ impl<'a> Lowering<'a> {
             inst.grad[3] = spec.levels().get() as f32;
             // `color.x` is the member's recording scale, `px.scale`.
             inst.color[0] = sample.recording_scale().get();
+            // The span's bounds are device space, so its affine is free:
+            // it carries the member layer's transform, `px.local`'s
+            // inverse.
+            inst.affine = affine(entry.transform);
             // `grad2.xy` is the region's size in texels; `grad2.zw` the
             // member's device size for effect shaders: the unclipped
             // bounds, not the visible intersection.

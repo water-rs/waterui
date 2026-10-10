@@ -182,7 +182,9 @@ impl From<RoundedBox> for Shape {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Instance {
-    /// Local-to-device affine: `[a, b, c, d, e, f, 0, 0]`.
+    /// Local-to-device affine: `[a, b, c, d, e, f, 0, 0]`. A
+    /// `PAINT_BACKDROP` span's bounds are device space; its affine is the
+    /// member layer's transform.
     pub affine: [f32; 8],
     /// Quad rectangle `(x0, y0, x1, y1)`, local space except `KIND_GLYPH`
     /// `KIND_SPAN` and `KIND_REGION`, where it is a device-space rectangle.

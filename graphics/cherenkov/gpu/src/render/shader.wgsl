@@ -482,8 +482,10 @@ fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
 // signed distance of the field the member draws against — the group's
 // union field when it has one, the member's own clip distance
 // otherwise — the unit outward normal of that field, the member's own
-// signed distance, the member's device size, and the device pixels per
-// logical pixel of the member's recording.
+// signed distance, the member's device size, the device pixels per
+// logical pixel of the member's recording, and the sample point in the
+// member layer's own coordinate space (the space its clip is declared
+// in).
 struct BackdropPixel {
     p: vec2<f32>,
     sdf: f32,
@@ -491,6 +493,36 @@ struct BackdropPixel {
     own_sdf: f32,
     size: vec2<f32>,
     scale: f32,
+    local: vec2<f32>,
+}
+
+// The field a member draws against, read at any device point: its signed
+// distance, the unit outward normal there and the member's ownership
+// weight — its share of the point under a union, 1 otherwise.
+struct BackdropField {
+    sdf: f32,
+    normal: vec2<f32>,
+    weight: f32,
+}
+
+// The instance paint_backdrop is compositing: backdrop_field reads the
+// member's clip or union record from it.
+var<private> backdrop_member: u32;
+
+// The member's field at device point `q`: the group's union field — the
+// same fold and ownership the composite evaluates at its own pixel —
+// for a union member, the member's own clip distance otherwise. At
+// `q = px.p` it is exactly `px.sdf` and `px.normal`.
+fn backdrop_field(q: vec2<f32>) -> BackdropField {
+    let inst = instances[backdrop_member];
+    // union-stub
+    if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
+        let u = union_field(bitcast<u32>(inst.uv.x), bitcast<u32>(inst.uv.y), q);
+        return BackdropField(u.d, u.n, u.w_own);
+    }
+    // union-stub
+    let own = device_sdf(inst.clip_inv, inst.clip, q);
+    return BackdropField(own.x, own.yz, 1.0);
 }
 
 // backdrop-effect-stub
@@ -503,9 +535,11 @@ fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32>
 // meta_.w's low bits (`kind | stop count << 8`) evaluated at the device
 // pixel centre `pixel`. grad.xy is the capture origin, grad.z the capture
 // scale, grad.w its level count, grad2.xy its size, grad2.zw the member's
-// device size, color.x the member's recording scale.
+// device size, color.x the member's recording scale, the instance
+// affine the member layer's local-to-device transform.
 fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     let inst = instances[i];
+    backdrop_member = i;
     backdrop_origin = inst.grad.xy;
     backdrop_scale = inst.grad.z;
     backdrop_levels = inst.grad.w;
@@ -536,9 +570,10 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     px.p = pixel;
     px.size = inst.grad2.zw;
     px.scale = inst.color.x;
+    px.local = apply_inverse(inst.affine, pixel);
     // union-stub
     if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
-        let field = backdrop_field;
+        let field = member_field;
         px.own_sdf = field.own;
         px.sdf = field.d;
         px.normal = field.n;
@@ -839,8 +874,8 @@ fn fs_full(in: VsOut) -> vec4<f32> {
         // subnormals as f32 and could flush to zero.
         let base = bitcast<u32>(instances[i].uv.x);
         let ord = bitcast<u32>(instances[i].uv.y);
-        backdrop_field = union_field(base, ord, in.device);
-        cov *= union_coverage(backdrop_field, instances[i].params.x);
+        member_field = union_field(base, ord, in.device);
+        cov *= union_coverage(member_field, instances[i].params.x);
     }
     // union-stub
     // Coverage before the opacity multiply is the composite's clip coverage:
