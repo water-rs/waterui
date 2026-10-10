@@ -7253,14 +7253,31 @@ mod webview {
 
     use super::mtm;
 
+    /// The bound the whole mirrored-state conformance scenario gets.
+    ///
+    /// The case walks several real navigations across two server origins —
+    /// each a full load cycle through `WebKit`'s web and network processes —
+    /// so its bound covers the scenario, not the single main-queue drain
+    /// [`MAIN_QUEUE_DEADLINE`] gives one deferred piece of work.
+    const MIRRORED_STATE_SCENARIO_DEADLINE: f64 = 180.0;
+
     pub fn trials() -> Vec<Trial> {
-        vec![Trial::test(
-            "webview::a_non_admitted_document_gets_no_bridge_globals",
-            || {
-                a_non_admitted_document_gets_no_bridge_globals();
-                Ok(())
-            },
-        )]
+        vec![
+            Trial::test(
+                "webview::a_non_admitted_document_gets_no_bridge_globals",
+                || {
+                    a_non_admitted_document_gets_no_bridge_globals();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "webview::mirrored_state_reaches_only_admitted_documents",
+                || {
+                    mirrored_state_reaches_only_admitted_documents();
+                    Ok(())
+                },
+            ),
+        ]
     }
 
     /// Navigates to `destination` and waits for the engine to report the
@@ -7349,6 +7366,32 @@ mod webview {
             bridge_globals(&handle),
             r#"["undefined","undefined","undefined","undefined"]"#,
             "a document outside the admission policy must get no bridge globals"
+        );
+    }
+
+    /// Mirrored state and bridge replies reach only the documents the
+    /// admission policy admits — the shared conformance case, run on two
+    /// real `WKWebView`s opened through the leaf's own controller.
+    ///
+    /// The case's handler futures and mirrored-state flushes run on the
+    /// local executor, which on this backend lands on the main dispatch
+    /// queue; `block_on_main` keeps the run loop turning so they advance
+    /// while it drives the case's future.
+    fn mirrored_state_reaches_only_admitted_documents() {
+        // The local executor is process-global: `initialize_process` installs
+        // a monitored one when the GPU-surface fixtures run, and this install
+        // is a no-op then; otherwise the plain main-queue executor answers
+        // the same contract.
+        let _ = executor_core::try_init_local_executor(
+            native_executor::NativeMainExecutor::new()
+                .expect("the native suite runs on the process's main thread"),
+        );
+        let controller = waterui_apple::native_test_support::webview::controller(mtm());
+        block_on_main(
+            MIRRORED_STATE_SCENARIO_DEADLINE,
+            waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
+                &controller,
+            ),
         );
     }
 }

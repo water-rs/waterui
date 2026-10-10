@@ -19,16 +19,19 @@ waterui-watcher-set.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 executor-core.workspace = true
+futures.workspace = true
 cookie = "0.18.2"
 percent-encoding = "2.3"
 base64 = "0.23"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
+# Serves the conformance pages from a thread of its own.
+tiny_http = { version = "0.12", optional = true }
 
 [features]
 # The checks an engine's real-engine suite runs against the contracts this
 # crate states; assertions, so off by default and on in test binaries only.
-conformance = []
+conformance = ["dep:tiny_http"]
 
 [dev-dependencies]
 tempfile = "3.27"

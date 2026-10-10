@@ -653,10 +653,8 @@ impl WebView {
 
 /// Runs a wrapped call on `handle` and parses the envelope it resolves with.
 ///
-/// Free rather than a method because the mirrored-state bridge holds only a
-/// [`WeakWebViewHandle`] — it lives inside a handler the backend owns, so
-/// keeping a whole [`WebView`] there is what stopped the native web view from
-/// ever being destroyed.
+/// Free rather than a method on [`WebView`] because the conformance checks
+/// drive a bare [`AnyWebViewHandle`] that no [`WebView`] owns.
 #[expect(
     clippy::future_not_send,
     reason = "native web views and JavaScript execution are main-thread-affine"
@@ -943,9 +941,8 @@ impl WebViewOpen {
         // already registered; nothing had navigated yet, so it was only ever
         // safe by accident. For an asset-origin view `initial` is the resolved
         // entry URL, so `BridgeOrigins::Initial` narrows to the asset origin.
-        webview
-            .handle()
-            .set_bridge_origins(OriginPolicy::new(bridge_origins, &initial));
+        let policy = OriginPolicy::new(bridge_origins, &initial);
+        webview.handle().set_bridge_origins(policy.clone());
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
         }
@@ -972,7 +969,7 @@ impl WebViewOpen {
                 .forget();
         }
         if !state.is_empty() {
-            state::install(&webview, state);
+            state::install(&webview, state, &policy);
         }
         let webview = if let Some(url) = url {
             webview.bind_navigation(url)

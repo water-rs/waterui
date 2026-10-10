@@ -10,9 +10,10 @@
 //! navigation and per server redirect so only an admitted document ever
 //! receives them — `WKUserContentController` has no per-origin filter, so
 //! the admission decision is the injection itself. `waterui://localhost`
-//! is answered through the asset server, replies travel back through
-//! `bridge::Reply::resolve_script` + `evaluateJavaScript`, and
-//! `emitWillNavigate` dedupes against the last navigation URL unless the
+//! is answered through the asset server, replies travel back through the
+//! `WKScriptMessageHandlerWithReply` channel — bound to the document that
+//! sent the message, so `WebKit` drops a reply whose sender navigated away —
+//! and `emitWillNavigate` dedupes against the last navigation URL unless the
 //! action repeats it (reload, back/forward, form submit). The measured
 //! size is `WuiWebViewComponent.sizeThatFits`: the proposal's axes where
 //! given, 320×480 otherwise; the leaf stretches both ways.
@@ -46,15 +47,6 @@ use crate::dispatch::Dispatcher;
 /// which is also the name the script-message transport registers under.
 const SEND_FUNCTION: &str = bridge::SEND_FUNCTION;
 
-/// Adapts the shared bridge's one-function transport onto `WebKit`'s
-/// message-handler channel — the same `window.webkit.messageHandlers`
-/// shim `WebViewWrapper.transportScript` injected.
-const TRANSPORT_SCRIPT: &str = concat!(
-    "globalThis.__wateruiSend = function (envelope) {",
-    "window.webkit.messageHandlers.__wateruiSend.postMessage(envelope);",
-    "};"
-);
-
 /// A user script as the leaf tracks it: the registry key the platform
 /// cannot remove by, its source, and its injection time.
 struct UserScript {
@@ -65,8 +57,8 @@ struct UserScript {
 
 /// What the handle and the kit's delegate closures share.
 ///
-/// The kit closures capture `Weak`s into this — a handler that outlives its
-/// web view has nowhere to deliver a reply, which is exactly what upgrading
+/// The kit closures capture `Weak`s into this — a callback that outlives its
+/// web view has no state left to touch, which is exactly what upgrading
 /// answers. `view` is a `OnceCell`: the controller is constructed with
 /// closures that already point at this state, so it arrives last.
 struct Shared {
@@ -146,8 +138,12 @@ impl Shared {
     /// Registers the single `__wateruiSend` script-message handler every
     /// bridge message rides.
     ///
-    /// The handler itself is unconditional: what a non-admitted document
-    /// never receives is `__wateruiSend`'s JavaScript shim, and a page that
+    /// The registration is `WKScriptMessageHandlerWithReply`: the reply each
+    /// message earns travels the channel `WebKit` binds to the sending
+    /// document, so a document that navigated away mid-await cannot receive
+    /// an answer meant for it — and cannot donate one to its successor. The
+    /// handler itself is unconditional: what a non-admitted document never
+    /// receives is `__wateruiSend`'s JavaScript shim, and a page that
     /// reaches the transport anyway is refused by `frame_may_use_bridge`.
     fn ensure_transport_registered(self: &Rc<Self>) {
         if self.transport_registered.replace(true) {
@@ -156,11 +152,13 @@ impl Shared {
         let shared = Rc::downgrade(self);
         self.view().add_script_message_handler(
             SEND_FUNCTION,
-            Rc::new(move |message| {
+            Rc::new(move |message, reply| {
                 let Some(shared) = shared.upgrade() else {
+                    // `reply`'s `Drop` still answers the document, since
+                    // `WebKit` requires the channel to be used once.
                     return;
                 };
-                shared.on_script_message(&message);
+                shared.on_script_message(&message, reply);
             }),
         );
     }
@@ -206,7 +204,7 @@ impl Shared {
             return;
         }
         self.view().add_user_script(
-            TRANSPORT_SCRIPT,
+            bridge::WEBKIT_TRANSPORT,
             web_kit::InjectionTime::DocumentStart,
             true,
         );
@@ -260,21 +258,28 @@ impl Shared {
     /// `handleScriptMessage`: authenticate the frame, parse the envelope,
     /// dispatch by name; anything else is a rejected promise, not a panic —
     /// page script reaches this transport directly.
-    fn on_script_message(self: &Rc<Self>, message: &web_kit::ScriptMessage) {
+    ///
+    /// Every path answers through `reply`: `WebKit` requires the reply
+    /// channel to be used exactly once, which [`web_kit::ScriptReply`]
+    /// enforces by construction.
+    fn on_script_message(&self, message: &web_kit::ScriptMessage, reply: web_kit::ScriptReply) {
         if !self.frame_may_use_bridge(message) {
             tracing::warn!(
                 "a document outside the bridge origin policy tried to call a WaterUI handler"
             );
+            reply.reject("this document is not allowed to use the WaterUI bridge");
             return;
         }
         let Some(body) = message.body.as_deref() else {
             tracing::warn!("WaterUI bridge received a non-string message body");
+            reply.reject("the WaterUI bridge takes a string message body");
             return;
         };
         let request = match bridge::Request::parse(body) {
             Ok(request) => request,
             Err(error) => {
                 tracing::warn!(%error, "WaterUI bridge rejected a malformed envelope");
+                reply.reject(&error.to_string());
                 return;
             }
         };
@@ -286,35 +291,26 @@ impl Shared {
                 handler = %request.name,
                 "page script called a WaterUI handler that is not registered"
             );
-            self.deliver_reply(
-                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name)),
-                request.id,
+            reply.resolve(
+                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                    .to_json(),
             );
             return;
         };
 
         // Handlers are asynchronous; the page's promise settles when the
-        // future completes. The reply path holds a `Weak` — a view that died
-        // mid-await has no page to answer.
+        // future completes. The reply needs no view: the channel answers the
+        // document that asked, and `ScriptReply`'s `Drop` covers a view that
+        // died mid-await.
         let future = handler(&request.payload);
-        let shared = Rc::downgrade(self);
         executor_core::spawn_local(async move {
-            let reply = match future.await {
-                Ok(reply) => bridge::Reply::from(reply),
+            let answer = match future.await {
+                Ok(answer) => bridge::Reply::from(answer),
                 Err(message) => bridge::Reply::Failure(message),
             };
-            if let Some(shared) = shared.upgrade() {
-                shared.deliver_reply(&reply, request.id);
-            }
+            reply.resolve(&answer.to_json());
         })
         .detach();
-    }
-
-    /// `MessageReplyContext`: render the reply script and evaluate it in the
-    /// top frame, where the pending promise lives.
-    fn deliver_reply(&self, reply: &bridge::Reply, request_id: u64) {
-        self.view()
-            .evaluate_javascript(&reply.resolve_script(request_id), |_| {});
     }
 }
 
@@ -933,14 +929,14 @@ mod tests {
     #[test]
     fn bridge_envelope_parse_and_reply() {
         // The transport contract: a JSON envelope parses into id/name/payload,
-        // and a reply renders back into a script the page can evaluate.
+        // and a reply serializes into the JSON the reply channel hands the page.
         let request =
             bridge::Request::parse(r#"{"id":7,"name":"alert","payload":{"message":"hi"}}"#)
                 .expect("a well-formed envelope parses");
         assert_eq!(request.id, 7);
         assert_eq!(request.name, "alert");
 
-        let script = bridge::Reply::failure("boom").resolve_script(request.id);
-        assert!(script.contains("boom"));
+        let json = bridge::Reply::failure("boom").to_json();
+        assert!(json.contains("boom"));
     }
 }

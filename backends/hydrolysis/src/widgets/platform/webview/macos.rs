@@ -42,7 +42,7 @@ use objc2_foundation::{
 };
 use objc2_web_kit::{
     WKContentWorld, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
-    WKNavigationDelegate, WKScriptMessage, WKScriptMessageHandler, WKSecurityOrigin,
+    WKNavigationDelegate, WKScriptMessage, WKScriptMessageHandlerWithReply, WKSecurityOrigin,
     WKURLSchemeHandler, WKURLSchemeTask, WKUserContentController, WKUserScript,
     WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
@@ -55,15 +55,76 @@ use waterui_webview::{
     bridge,
 };
 
-/// Bridges `waterui.invoke` to WebKit's message-handler transport.
+/// The reply channel WebKit hands a `WKScriptMessageHandlerWithReply`
+/// callback.
 ///
-/// The shared script calls one function; WebKit delivers messages through a named
-/// handler object, so this adapts between the two.
-const TRANSPORT_SCRIPT: &str = concat!(
-    "globalThis.__wateruiSend = function (envelope) {",
-    "window.webkit.messageHandlers.__wateruiSend.postMessage(envelope);",
-    "};"
-);
+/// WebKit requires the reply handler block to be invoked exactly once, so the
+/// copied block lives here and the consuming [`Self::resolve`]/[`Self::reject`]
+/// are the only answers; `Drop` answers with an error for a handler future
+/// that was dropped because its web view went away. The channel is bound to
+/// the document that sent the message, so WebKit itself drops the reply when
+/// that document has already navigated away.
+struct ScriptReply {
+    /// Taken by the one answer, so a second cannot happen.
+    block: Option<RcBlock<dyn Fn(*mut AnyObject, *mut NSString)>>,
+}
+
+impl ScriptReply {
+    /// Copies the reply handler WebKit passed the callback, so it can be held
+    /// across an `await`.
+    fn new(reply_handler: &block2::DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>) -> Self {
+        Self {
+            block: Some(reply_handler.copy()),
+        }
+    }
+
+    /// Delivers `json` — a serialized [`bridge::Reply`] — as the value the
+    /// page's `postMessage` promise resolves with.
+    fn resolve(mut self, json: &str) {
+        if let Some(block) = self.block.take() {
+            Self::answer(&block, Some(&NSString::from_str(json)), None);
+        }
+    }
+
+    /// Rejects the page's `postMessage` promise with `message`.
+    fn reject(mut self, message: &str) {
+        if let Some(block) = self.block.take() {
+            Self::answer(&block, None, Some(&NSString::from_str(message)));
+        }
+    }
+
+    /// Invokes the block; the borrows are enough because WebKit reads both
+    /// arguments synchronously.
+    fn answer(
+        block: &RcBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
+        reply: Option<&NSString>,
+        error: Option<&NSString>,
+    ) {
+        let reply = reply.map_or(std::ptr::null_mut(), |text| {
+            std::ptr::from_ref(text).cast_mut().cast::<AnyObject>()
+        });
+        let error = error.map_or(std::ptr::null_mut(), |text| {
+            std::ptr::from_ref(text).cast_mut()
+        });
+        block.call((reply, error));
+    }
+}
+
+impl Drop for ScriptReply {
+    fn drop(&mut self) {
+        // WebKit requires the reply handler to run once, so a dropped handler
+        // future still owes the document an answer.
+        if let Some(block) = self.block.take() {
+            Self::answer(
+                &block,
+                None,
+                Some(&NSString::from_str(
+                    "the WaterUI web view was closed before the handler answered",
+                )),
+            );
+        }
+    }
+}
 
 type JavaScriptHandler = Rc<waterui_webview::ScriptMessageHandler>;
 
@@ -406,20 +467,23 @@ define_class!(
         }
     }
 
-    unsafe impl WKScriptMessageHandler for WebViewDelegate {
-        #[unsafe(method(userContentController:didReceiveScriptMessage:))]
+    unsafe impl WKScriptMessageHandlerWithReply for WebViewDelegate {
+        #[unsafe(method(userContentController:didReceiveScriptMessage:replyHandler:))]
         #[allow(non_snake_case)]
-        unsafe fn userContentController_didReceiveScriptMessage(
+        unsafe fn userContentController_didReceiveScriptMessage_replyHandler(
             &self,
             _user_content_controller: &WKUserContentController,
             message: &WKScriptMessage,
+            reply_handler: &block2::DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
         ) {
+            let reply = ScriptReply::new(reply_handler);
             // SAFETY: main-thread message send to an object this wrapper retains;
             // see the module safety note.
             let body = unsafe { message.body() };
             // Page script reaches this transport directly, so nothing here is fatal.
             let Some(body) = body.downcast_ref::<NSString>() else {
-                tracing::warn!("WaterUI bridge received a non-string message body; ignoring");
+                tracing::warn!("WaterUI bridge received a non-string message body");
+                reply.reject("the WaterUI bridge takes a string message body");
                 return;
             };
             // WebKit reports the frame each message came from, so the origin is
@@ -444,6 +508,7 @@ define_class!(
                 tracing::warn!(
                     "a document outside the bridge origin policy tried to call a WaterUI handler"
                 );
+                reply.reject("this document is not allowed to use the WaterUI bridge");
                 return;
             }
 
@@ -451,6 +516,7 @@ define_class!(
                 Ok(request) => request,
                 Err(error) => {
                     tracing::warn!(%error, "page script sent a malformed WaterUI bridge request");
+                    reply.reject(&error.to_string());
                     return;
                 }
             };
@@ -468,39 +534,27 @@ define_class!(
                     handler = %request.name,
                     "page script called a WaterUI handler that is not registered"
                 );
-                let reply =
-                    bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name));
-                // SAFETY: WebKit sets the source web view on every script
-                // message it delivers.
-                let web_view = unsafe { message.webView() }
-                    .expect("a bridge message must have a source web view");
-                let script = NSString::from_str(&reply.resolve_script(request.id));
-                // SAFETY: main-thread message send to a retained object; see the
-                // module safety note.
-                unsafe {
-                    web_view.evaluateJavaScript_completionHandler(&script, None);
-                }
+                reply.resolve(
+                    &bridge::Reply::failure(&format!(
+                        "no WaterUI handler named `{}`",
+                        request.name
+                    ))
+                    .to_json(),
+                );
                 return;
             };
 
             // Handlers are asynchronous, so the promise settles when the future
-            // completes rather than when this callback returns.
+            // completes rather than when this callback returns. The reply needs
+            // no web view: the channel answers the document that asked, and
+            // `ScriptReply`'s `Drop` covers a view that died mid-await.
             let future = handler(&request.payload);
-            // SAFETY: WebKit sets the source web view on every script message it
-            // delivers, and it is retained for the spawned task.
-            let web_view =
-                unsafe { message.webView() }.expect("a bridge message must have a source web view");
             executor_core::spawn_local(async move {
-                let reply = match future.await {
-                    Ok(reply) => bridge::Reply::from(reply),
+                let answer = match future.await {
+                    Ok(answer) => bridge::Reply::from(answer),
                     Err(message) => bridge::Reply::Failure(message),
                 };
-                let script = NSString::from_str(&reply.resolve_script(request.id));
-                // SAFETY: main-thread message send to a retained object; see the
-                // module safety note.
-                unsafe {
-                    web_view.evaluateJavaScript_completionHandler(&script, None);
-                }
+                reply.resolve(&answer.to_json());
             })
             .detach();
         }
@@ -585,7 +639,7 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
     // the page reaches all of them through `waterui.invoke`.
     add_user_script(
         controller,
-        TRANSPORT_SCRIPT,
+        bridge::WEBKIT_TRANSPORT,
         ScriptInjectionTime::DocumentStart,
     );
     add_user_script(
@@ -840,18 +894,27 @@ impl MacSystemWebViewHandle {
     /// Registers the single WebKit message handler the bridge transports over.
     ///
     /// One handler serves every WaterUI handler name, so this runs once rather
-    /// than per registration.
+    /// than per registration. The registration is the reply-capable
+    /// `WKScriptMessageHandlerWithReply` kind: WebKit binds each answer to the
+    /// document that sent the message and drops it when that document is gone,
+    /// so a reply can never land in a successor document the policy never
+    /// admitted.
     fn ensure_transport_registered(&self) {
         if self.inner.shared.transport_registered.replace(true) {
             return;
         }
         let controller = self.user_content_controller();
         let name = NSString::from_str(bridge::SEND_FUNCTION);
-        // SAFETY: main-thread message send to an object this wrapper retains; see
-        // the module safety note.
+        let mtm = MainThreadMarker::new()
+            .expect("Hydrolysis WKWebView handlers must be registered on the macOS main thread");
+        // SAFETY: `mtm` is the main-thread marker `pageWorld` requires.
+        let world = unsafe { WKContentWorld::pageWorld(mtm) };
+        // SAFETY: main-thread message sends to live objects this wrapper
+        // retains; see the module safety note.
         unsafe {
-            controller.addScriptMessageHandler_name(
+            controller.addScriptMessageHandlerWithReply_contentWorld_name(
                 ProtocolObject::from_ref(&*self.inner.delegate),
+                &world,
                 &name,
             );
         }
@@ -1120,7 +1183,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // once the promise it returns resolves. `evaluateJavaScript` does not
         // await, so it answered the shared wrapper's promise object with
         // `WKErrorJavaScriptResultTypeUnsupported`, which is what made every
-        // `eval`/`exec` and every mirrored-state push fail on this backend.
+        // `eval`/`exec` fail on this backend.
         //
         // The page world is where the injected scripts live, so it is where
         // `__wateruiEval` is defined.
