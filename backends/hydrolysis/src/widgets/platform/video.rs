@@ -211,6 +211,8 @@ struct Player {
     tracks: RefCell<Vec<HtmlTrackElement>>,
     focused: Binding<bool>,
     listeners: RefCell<Vec<Listener>>,
+    /// Hit-taking surfaces over the content painted above the element.
+    shields: RefCell<Option<crate::platform::OcclusionShields>>,
     guards: RefCell<Vec<BoxWatcherGuard>>,
 }
 
@@ -263,6 +265,7 @@ impl Player {
             tracks: RefCell::new(Vec::new()),
             focused: nami::binding(false),
             listeners: RefCell::new(Vec::new()),
+            shields: RefCell::new(None),
             guards: RefCell::new(Vec::new()),
         });
         player.listen();
@@ -827,7 +830,7 @@ impl Player {
         ))));
     }
 
-    /// Stops the element and releases its source and listeners.
+    /// Stops the element and releases its source, listeners and shields.
     fn release(&self) {
         self.element
             .pause()
@@ -837,6 +840,7 @@ impl Player {
             .expect("hydrolysis web video: failed to clear the source");
         self.element.load();
         self.guards.take();
+        self.shields.take();
         for closure in self.listeners.take() {
             drop(closure);
         }
@@ -864,8 +868,13 @@ struct VideoContent {
 impl HostedContent for VideoContent {
     fn mount(&self, occlusion: HostedOcclusion) -> HostedObject {
         let element: HtmlElement = self.player.element.clone().unchecked_into();
-        let redirect = crate::platform::redirect_occluded_input(&element, occlusion, true);
-        self.player.listeners.borrow_mut().extend(redirect);
+        // Shields, not listeners on the element: the native controls take
+        // input inside the element before any page listener sees it.
+        self.player
+            .shields
+            .replace(Some(crate::platform::OcclusionShields::new(&occlusion)));
+        let wheel = crate::platform::yield_wheel(&element);
+        self.player.listeners.borrow_mut().push(wheel);
         cherenkov_gpu::interop::web::HostedElement::new(element)
     }
 
