@@ -1,0 +1,36 @@
+# callgrind format
+version: 1
+creator: callgrind-3.18.1
+cmd: cherenkov-bench measure
+part: 4
+
+desc: Trigger: --dump-after=_RNvCs1_5bench6nested
+
+positions: line
+events: Ir
+summary: 40
+
+
+ob=(1) /bench
+fl=(1) ???
+fn=(1) _RNvCs1_5bench5frame
+cfn=(2) _RNvCs1_5bench4root
+calls=0 0
+0 40
+
+fn=(2)
+0 2
+cfn=(3) _RNvCs1_5bench6nested
+calls=1 0
+0 38
+
+fn=(3)
+0 26
+cfn=(4) __memcpy_avx_unaligned_erms'_RNvCs1_5bench6nested'_RNvCs1_5bench4root'_RNvCs1_5bench5frame
+calls=2 0
+0 12
+
+fn=(4)
+0 12
+
+totals: 40
