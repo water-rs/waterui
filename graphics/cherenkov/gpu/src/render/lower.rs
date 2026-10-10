@@ -3192,10 +3192,6 @@ impl<'a> Lowering<'a> {
         clippy::too_many_arguments,
         reason = "the layer walk's fixed context, not real complexity"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the union-member scope cases each need their own few lines"
-    )]
     fn layer_body(
         &mut self,
         id: LayerId,
