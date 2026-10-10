@@ -1054,8 +1054,10 @@ jobs:
   # composite; the nightly keeps the host leg in `cef`, where it shares the
   # CEF leg's runner — running it here too under `full` would pay a second
   # macOS slot for an identical pass. The host and the iOS simulator run
-  # in parallel, and the host's three passes each get their own leg (#2506),
-  # so the gate keeps its 10-minute budget.
+  # in parallel. The host's three passes each get their own leg (#2506),
+  # and on the simulator the checked-feature-set pass and each crate
+  # group of apple_gated.py's `SIM_GROUPS` get theirs too (#2521), so
+  # every leg keeps the gate's 10-minute budget.
   macos:
     name: ${{ matrix.name }}
     # affected.yml lists only the targets with an Apple-gated crate in
@@ -1093,6 +1095,7 @@ jobs:
           apple-gated: ${{ matrix['apple-gated'] }}
           affected: ${{ inputs.affected }}
           target: ${{ matrix.target }}
+          group: ${{ matrix.group }}
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,

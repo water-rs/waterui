@@ -39,6 +39,13 @@ inputs:
       simulator, where only the Apple-gated crates run.
     required: false
     default: ""
+  group:
+    description: >
+      One of the iOS simulator's crate groups in apple_gated.py
+      (`SIM_GROUPS`); empty lints the whole Apple-gated list. The host
+      leg never carries one.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -77,8 +84,9 @@ runs:
       env:
         AFFECTED: ${{ inputs.affected }}
         TARGET: ${{ inputs.target }}
+        GROUP: ${{ inputs.group }}
       run: |
-        read -ra args <<< "$(python3 "$GITHUB_WORKSPACE/.github/scripts/apple_gated.py" "$TARGET" "$AFFECTED")"
+        read -ra args <<< "$(python3 "$GITHUB_WORKSPACE/.github/scripts/apple_gated.py" "$TARGET" "$AFFECTED" "$GROUP")"
         target_args=()
         if [ -n "$TARGET" ]; then
           target_args=(--target "$TARGET")
