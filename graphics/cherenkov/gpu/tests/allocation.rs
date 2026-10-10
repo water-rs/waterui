@@ -49,6 +49,33 @@ fn uploads(events: &[AllocEvent]) -> usize {
         .count()
 }
 
+/// `(x, y, w, h)` of every `write_texture` into the glyph atlas.
+fn atlas_writes(events: &[AllocEvent]) -> Vec<(u32, u32, u32, u32)> {
+    events
+        .iter()
+        .filter_map(|event| match event.kind {
+            EventKind::Upload {
+                label: "glyph atlas",
+                rect: Some(rect),
+                ..
+            } => Some(rect),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A closed polygonal path, so the fills rasterize into atlas cells
+/// instead of taking the analytic rect fast path.
+fn polygon(points: &[(f64, f64)]) -> BezPath {
+    let mut path = BezPath::new();
+    path.move_to(points[0]);
+    for &p in &points[1..] {
+        path.line_to(p);
+    }
+    path.close_path();
+    path
+}
+
 split_test! {
 /// Two dirty surfaces grow the shared instance buffer exactly once in a
 /// single frame — frame-wide sizing, never one grow per surface.
@@ -163,29 +190,19 @@ fn a_wide_cell_never_takes_a_dead_band() -> Result<(), Box<dyn std::error::Error
         wait!(engine.surface(Offscreen::new((1100, 240), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(WorkingColor::new([0.0, 0.0, 0.0, 1.0]));
     let ink = WorkingColor::new([0.8, 0.3, 0.1, 1.0]);
-    // General paths, so the fills rasterize into atlas cells instead of
-    // taking the analytic rect fast path.
-    let polygon = |points: &[(f64, f64)]| {
-        let mut path = BezPath::new();
-        path.move_to(points[0]);
-        for &p in &points[1..] {
-            path.line_to(p);
-        }
-        path.close_path();
-        path
-    };
-    // Frame 1 stacks three shelves on the 1024 atlas: a class-24 shelf
-    // (the tall triangle's single cell), a class-8 strip shelf (the
-    // box's fractional top and bottom rows) and a class-16 shelf (the
-    // short triangle). Only the last touches the layout's frontier, so
-    // evicting either of the others leaves a dead band, not virgin rows.
+    // Frame 1 stacks three shelves on the 1024 atlas: a class-8 strip
+    // shelf at the origin (the box's fractional top and bottom rows), a
+    // class-24 shelf (the tall triangle's single cell) and a class-16
+    // shelf (the short triangle). Only the last touches the layout's
+    // frontier, so evicting either of the others leaves a dead band,
+    // not virgin rows.
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
-            r.fill(polygon(&[(90.0, 90.0), (110.0, 90.0), (100.0, 108.0)]), ink);
             r.fill(
                 polygon(&[(10.0, 10.5), (60.0, 10.5), (60.0, 30.5), (10.0, 30.5)]),
                 ink,
             );
+            r.fill(polygon(&[(90.0, 90.0), (110.0, 90.0), (100.0, 108.0)]), ink);
             r.fill(polygon(&[(130.0, 90.0), (150.0, 90.0), (140.0, 100.0)]), ink);
         }));
     });
@@ -218,6 +235,88 @@ fn a_wide_cell_never_takes_a_dead_band() -> Result<(), Box<dyn std::error::Error
         assert!((r - 0.4).abs() < 0.02 && a > 0.99, "row 202 at {x}: {r} {a}");
         let [r, _, _, _] = px(x, 203);
         assert!((r - 0.8).abs() < 0.02, "row 203 at {x}: {r}");
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// A frame's pending path cells hold no atlas origin yet: resolving
+/// their still-`(0, 0)` UVs pins whatever shelf covers the atlas
+/// origin, so the cold band at `y = 0` survives eviction and the
+/// commit grows the atlas instead of reclaiming it (#2440).
+fn a_pending_cell_does_not_pin_the_origin_shelf() -> Result<(), Box<dyn std::error::Error>> {
+    let sink = Sink::new();
+    let engine = wait!(diag_engine(&sink))?;
+    let surface =
+        wait!(engine.surface(Offscreen::new((1030, 480), OffscreenFormat::LinearF16), || {}))?;
+    surface.clear_color(WorkingColor::new([0.0, 0.0, 0.0, 1.0]));
+    let ink = WorkingColor::new([0.8, 0.3, 0.1, 1.0]);
+    // Frame 1: a box with fractional top and bottom rows puts a class-8
+    // strip shelf at the atlas origin. Rendered alone so it lands
+    // before the page filler's allocations.
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                polygon(&[(10.0, 10.5), (60.0, 10.5), (60.0, 30.5), (10.0, 30.5)]),
+                ink,
+            );
+        }));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    // Frame 2's fillers live on their own layer, so the root replace
+    // below leaves every one of their shelves sampled: three clip
+    // masks stack class-264/272/480 bands — exactly the rest of the
+    // page — and their masked fills pin them every frame.
+    let fillers = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&fillers);
+        tx[&fillers].content(surface.record(|r| {
+            for clip in [
+                polygon(&[(420.0, 4.0), (550.0, 4.0), (485.0, 264.0)]),
+                polygon(&[(556.0, 4.0), (686.0, 4.0), (621.0, 270.0)]),
+                polygon(&[(692.0, 4.0), (822.0, 4.0), (757.0, 476.0)]),
+            ] {
+                r.clip(clip, |r| {
+                    r.fill(Rect::new(0.0, 0.0, 1030.0, 480.0), ink);
+                });
+            }
+        }));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    // Frame 3: replace the content with one path whose single strip
+    // cell — 1020 texels of class 8 — fits neither the origin shelf's
+    // spent run nor the exhausted virgin rows. Reclaiming the cold
+    // shelf at `y = 0` takes the cell; pinning that shelf through the
+    // cell's unwritten UV would grow the atlas instead (#2440).
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                polygon(&[(1.0, 270.5), (1019.0, 270.5), (1019.0, 272.5), (1.0, 272.5)]),
+                ink,
+            );
+        }));
+    });
+    let _ = sink.take();
+    wait!(engine.render(FrameTime::now()))?;
+    let events = sink.take();
+    let grown = grows(&events, "glyph atlas");
+    assert!(
+        grown.is_empty(),
+        "reclaiming the cold origin band must not grow the atlas: {grown:?}"
+    );
+    assert!(
+        atlas_writes(&events).iter().any(|&(_, y, _, _)| y == 0),
+        "the strip cell should land in the evicted band at y = 0: {:?}",
+        atlas_writes(&events)
+    );
+    let pixels = wait!(surface.readback())?;
+    let px = |x: u32, y: u32| pixels.pixels[(y * pixels.width + x) as usize];
+    for x in [2, 512, 800, 1018] {
+        let [r, _, _, a] = px(x, 270);
+        assert!((r - 0.4).abs() < 0.02 && a > 0.99, "row 270 at {x}: {r} {a}");
+        let [r, _, _, _] = px(x, 271);
+        assert!((r - 0.8).abs() < 0.02, "row 271 at {x}: {r}");
     }
     Ok(())
 }
