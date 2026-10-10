@@ -1308,7 +1308,9 @@ mod hierarchy_tests {
             .expect("retargeted track");
         let (position, velocity, _) = first.sample(retarget_at);
         assert_eq!(track.from, position);
-        assert_eq!(track.velocity, velocity);
+        // The retarget took its velocity from the same `eval_lanes` call on
+        // the same track at the same instant: bit-identical.
+        assert_eq!(track.velocity.map(f64::to_bits), velocity.map(f64::to_bits));
         assert_eq!(track.start, retarget_at);
         // And the new track keeps sampling identically to its description.
         let t = retarget_at + Duration::from_millis(200);
@@ -1346,7 +1348,13 @@ mod hierarchy_tests {
             .and_then(|a| a.transform)
             .expect("retargeted track");
         assert_eq!(track.from, Affine::IDENTITY);
-        assert_eq!(track.velocity, [0.0; 6]);
+        // An unstarted curve evaluates at its first instant, where
+        // `curve_slope` returns exactly zero; scaling the non-negative Δ by
+        // it leaves +0.0 in every lane.
+        assert_eq!(
+            track.velocity.map(f64::to_bits),
+            [0.0_f64; 6].map(f64::to_bits)
+        );
         assert_eq!(track.start, retarget_at);
     }
 

@@ -369,6 +369,22 @@ pub trait Device: Sized + Send {
     }
 }
 
+/// The error a command that cannot ask reports when several devices are
+/// available and no `--device` names one — every candidate it could not
+/// pick among, as a `label — id` line.
+pub fn ambiguous_device_error<'a>(
+    candidates: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> eyre::Report {
+    use std::fmt::Write as _;
+    let list = candidates
+        .into_iter()
+        .fold(String::new(), |mut out, (label, id)| {
+            write!(out, "\n  {label} — {id}").expect("writing to a String cannot fail");
+            out
+        });
+    eyre::eyre!("Several devices are available; pass --device to choose one:{list}")
+}
+
 /// Represents a running application on a device.
 ///
 /// The run ends through its device monitor, the one owner of stop timing: the

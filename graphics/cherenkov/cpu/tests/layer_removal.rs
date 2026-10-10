@@ -88,9 +88,10 @@ fn a_child_reattached_before_its_parent_drops_still_renders() {
     engine.render(FrameTime::now()).expect("second render");
 
     let rb = surface.readback().expect("readback");
+    // Full coverage of an opaque fill writes the paint unchanged.
     assert_eq!(
-        rb.pixels[16 * 32 + 16],
-        [1.0, 0.0, 0.0, 1.0],
+        (rb.pixels[16 * 32 + 16]).map(f32::to_bits),
+        [1.0, 0.0, 0.0, 1.0].map(f32::to_bits),
         "the child still renders under its new parent"
     );
 }

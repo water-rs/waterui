@@ -3547,6 +3547,7 @@ mod winit_impl {
         /// is the only truthful source there; X11 keeps streaming motion
         /// during XDND, and the query stays right even if the drag source
         /// grabs the pointer.
+        #[cfg(hydrolysis_desktop_queries)]
         fn live_pointer_position(&self) -> Option<(f32, f32)> {
             #[cfg(target_os = "windows")]
             {
@@ -3559,14 +3560,6 @@ mod winit_impl {
             #[cfg(hydrolysis_wayland_platform)]
             {
                 self.x11_live_pointer_position()
-            }
-            #[cfg(not(any(
-                target_os = "windows",
-                target_os = "macos",
-                hydrolysis_wayland_platform
-            )))]
-            {
-                None
             }
         }
 
@@ -4442,7 +4435,11 @@ mod winit_impl {
         /// the fallback keeps the stream that never went quiet (X11 motion
         /// during XDND) supplying it.
         fn pointer_position(&self) -> Option<(f32, f32)> {
-            self.live_pointer_position().or(Some(self.pointer_position))
+            #[cfg(hydrolysis_desktop_queries)]
+            let live = self.live_pointer_position();
+            #[cfg(not(hydrolysis_desktop_queries))]
+            let live = None;
+            live.or(Some(self.pointer_position))
         }
 
         /// Requests that the window be repainted.
@@ -4918,8 +4915,9 @@ mod winit_impl {
         #[test]
         fn cursor_position_is_converted_to_logical_coordinates() {
             let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
-            assert_eq!(x, 192.25);
-            assert_eq!(y, 108.125);
+            // Halving a dyadic position is exact, and both halves fit f32.
+            assert_eq!(x.to_bits(), 192.25_f32.to_bits());
+            assert_eq!(y.to_bits(), 108.125_f32.to_bits());
         }
 
         #[test]
@@ -4928,8 +4926,9 @@ mod winit_impl {
                 &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
                 2.0,
             );
-            assert_eq!(dx, 60.0);
-            assert_eq!(dy, -24.25);
+            // Halving a dyadic delta is exact, and both halves fit f32.
+            assert_eq!(dx.to_bits(), 60.0_f32.to_bits());
+            assert_eq!(dy.to_bits(), (-24.25_f32).to_bits());
             assert!(!is_line_delta);
         }
 
@@ -4937,8 +4936,9 @@ mod winit_impl {
         fn line_scroll_delta_is_preserved() {
             let (dx, dy, is_line_delta) =
                 map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
-            assert_eq!(dx, -2.0);
-            assert_eq!(dy, 3.5);
+            // A line delta passes through unscaled.
+            assert_eq!(dx.to_bits(), (-2.0_f32).to_bits());
+            assert_eq!(dy.to_bits(), 3.5_f32.to_bits());
             assert!(is_line_delta);
         }
 
@@ -5622,6 +5622,14 @@ mod winit_impl {
 pub use web_impl::ExportedBrowserSurface as BrowserSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
+#[cfg(all(
+    target_arch = "wasm32",
+    feature = "web",
+    any(feature = "video", feature = "webview-system")
+))]
+pub use web_impl::OcclusionShields;
+#[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
+pub use web_impl::yield_wheel;
 
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;

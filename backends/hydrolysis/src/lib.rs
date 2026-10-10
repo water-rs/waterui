@@ -98,3 +98,5 @@ pub use text::{DeclaredFonts, FontFamilyResolution};
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
+#[cfg(hydrolysis_web_system_webview)]
+pub use widgets::platform::webview::WebSystemWebViewController;

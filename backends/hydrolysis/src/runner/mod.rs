@@ -265,14 +265,18 @@ fn offscreen_scale_factor() -> f64 {
 /// The self-drawn realizations of semantic components — the GPU video player,
 /// the vector map — are not among them: which realization draws a component is
 /// the application's choice, installed by `waterui::app::App` from the
-/// `video-gpu` / `map-gpu` features, so this renderer never names a component
-/// crate.
+/// `video-gpu` / `map-gpu` features. What this renderer installs are the
+/// platform's own primitives it bridges: the system web view on macOS and the
+/// `<video>` element on the web.
 fn install_native_component_hooks(env: &mut Environment) {
     crate::localization::install(env);
     // The only web engine this backend knows about is the platform's own: a
     // browser engine an application links installs its realization itself.
-    #[cfg(hydrolysis_macos_system_webview)]
+    #[cfg(hydrolysis_system_webview)]
     crate::widgets::platform::webview::install_controller(env);
+    // The page's own `<video>` element is the web's native player.
+    #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
+    crate::widgets::platform::video::install(env);
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
