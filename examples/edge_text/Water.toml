@@ -3,3 +3,30 @@ waterui_path = "../.."
 [package]
 name = "Edge Text"
 bundle_identifier = "dev.waterui.edgetext"
+
+# A browser has no system fonts, so a web build carries a face for every
+# script and emoji the edge cases use beyond Roboto's Latin; the native
+# backends draw them with the platform's own.
+[[assets.font]]
+name = "Noto Sans CJK SC"
+platforms = ["web"]
+
+[[assets.font]]
+name = "Noto Sans CJK JP"
+platforms = ["web"]
+
+[[assets.font]]
+name = "Noto Sans CJK KR"
+platforms = ["web"]
+
+[[assets.font]]
+name = "Noto Sans Arabic"
+platforms = ["web"]
+
+[[assets.font]]
+name = "Noto Sans Hebrew"
+platforms = ["web"]
+
+[[assets.font]]
+name = "Noto Color Emoji"
+platforms = ["web"]

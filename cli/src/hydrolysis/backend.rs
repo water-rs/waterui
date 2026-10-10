@@ -213,7 +213,14 @@ impl Backend for HydrolysisBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         if platform == TargetPlatform::Android {
-            return crate::hydrolysis::android::build(project, AndroidAbi::Arm64V8a, options).await;
+            let kotlin = crate::android::platform::require_kotlin(project.host()).await?;
+            return crate::hydrolysis::android::build(
+                project,
+                AndroidAbi::Arm64V8a,
+                options,
+                &kotlin,
+            )
+            .await;
         }
         project
             .browser_runtime_plan(platform, TargetBackend::Hydrolysis, &platform.triple())
