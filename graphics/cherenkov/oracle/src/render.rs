@@ -76,7 +76,7 @@ use crate::image::{F32Image, Image};
 /// The union member cap — the same file `cherenkov::BackdropUnion`
 /// reads, pulled in by path so the oracle stays independent of the
 /// engine crates.
-#[path = "../../src/union_cap.rs"]
+#[path = "../../record/src/union_cap.rs"]
 mod union_cap;
 use crate::paint::{eval_paint, sample_image};
 use crate::path::{edges, shape_polylines, stroke_polylines_device};

@@ -3015,10 +3015,11 @@ mod tests {
     }
 }
 
-/// The union field's quadratic smooth-min fold on two distances, sorted
-/// ascending as in the shader: `m ← min(m, d) − h²·k/4` with
-/// `h = max(k − |m − d|, 0)/k`. Shared by the GPU and CPU backdrop test
-/// suites.
+/// The union field's quadratic smooth-min fold of two distances.
+///
+/// The step is `m ← min(m, d) − h²·k/4` with `h = max(k − |m − d|, 0)/k`,
+/// applied to distances sorted ascending as in the shader. Shared by the GPU
+/// and CPU backdrop test suites.
 #[must_use]
 pub fn smin(field: f32, dist: f32, smoothing: f32) -> f32 {
     let blend = (smoothing - (field - dist).abs()).max(0.0) / smoothing;

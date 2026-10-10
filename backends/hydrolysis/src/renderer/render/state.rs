@@ -19,6 +19,11 @@ pub struct HydroState {
     /// pass reads into it; outside a pass it stays `None` (a pass never
     /// nests: `RenderNode::layout` does not lay out a retained sub-view).
     pub(in crate::renderer) layout_dependencies: Option<LayoutDependencies>,
+    /// Advances whenever the session's fonts gain faces after text was
+    /// shaped — a web page's faces arriving after its first frame. Every text
+    /// measurement reads it through [`Self::measuring_text`], so a cached
+    /// layout that measured text is laid out again when a face arrives.
+    pub(crate) font_revision: nami::Binding<u64>,
 }
 
 impl HydroState {
@@ -28,7 +33,16 @@ impl HydroState {
             measurement: MeasurementCaches::default(),
             counters: FrameWorkCounters::default(),
             layout_dependencies: None,
+            font_revision: nami::Binding::container(0),
         }
+    }
+
+    /// The text service, for a measurement: the read records the session's
+    /// font revision as a dependency of the layout pass in flight.
+    pub(crate) fn measuring_text(&mut self) -> &Arc<TextService<SessionTextEngine>> {
+        let font_revision = self.font_revision.clone();
+        let _ = self.measure_signal(&font_revision);
+        &self.text
     }
 }
 

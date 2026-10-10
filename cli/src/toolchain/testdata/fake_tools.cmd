@@ -148,6 +148,26 @@ for %%a in (%*) do (
 )
 if "%~1"=="--version" (echo git version 2.43.0 & exit /b 0)
 set "git_args=%*"
+call :contains git_args "rev-parse --is-shallow-repository"
+if %errorlevel%==0 (call :respond GIT_SHALLOW & exit /b !errorlevel!)
+call :contains git_args "rev-parse --verify refs/remotes/origin/dev"
+if %errorlevel%==0 (call :respond GIT_HEAD & exit /b !errorlevel!)
+call :contains git_args "rev-parse --verify"
+if %errorlevel%==0 (call :respond GIT_REVISION & exit /b !errorlevel!)
+call :contains git_args --unshallow
+if %errorlevel%==0 (type nul > .fake-git-unshallowed & exit /b 0)
+call :contains git_args "merge-base --is-ancestor"
+if %errorlevel%==0 (
+    if exist .fake-git-unshallowed (
+        if defined WATERUI_FAKE_GIT_ANCESTOR_COMPLETE exit /b !WATERUI_FAKE_GIT_ANCESTOR_COMPLETE!
+        exit /b 0
+    )
+    if defined WATERUI_FAKE_GIT_ANCESTOR exit /b !WATERUI_FAKE_GIT_ANCESTOR!
+    exit /b 0
+)
+call :contains git_args ls-tree
+if %errorlevel%==0 (call :respond_or_empty GIT_ENTRY & exit /b !errorlevel!)
+if "%~1"=="show" (call :respond GIT_FILE & exit /b !errorlevel!)
 call :contains git_args checkout
 if %errorlevel%==0 if defined WATERUI_FAKE_GIT_CHECKOUT if defined git_dir (
     for /r "%WATERUI_FAKE_GIT_CHECKOUT%" %%f in (*) do (

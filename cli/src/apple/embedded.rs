@@ -262,8 +262,15 @@ async fn stage_resources(
 ) -> Result<()> {
     let manifest = merge_manifests(manifests)?;
     assets::write_library_resources(&manifest, destination).await?;
-    let declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let declarations = assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[
+            waterui_assets_planner::FontPlatform::Ios,
+            waterui_assets_planner::FontPlatform::Macos,
+        ],
+    )
+    .await?;
     let mut fonts = assets::resolve_fonts(project.host(), declarations).await?;
     fonts.extend(assets::scan_project_font_assets(&manifest)?);
     let font_dir = destination.join("fonts");

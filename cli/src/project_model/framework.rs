@@ -14,7 +14,10 @@ use cargo_toml::{Dependency, DependencyDetail, PatchSet};
 use eyre::{Result, WrapErr, bail, eyre};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zenwave::{Client as _, Method, StatusCode};
+use zenwave::StatusCode;
+
+mod git_tree;
+use git_tree::FrameworkTree;
 
 /// A framework distribution channel, independent of the Rust toolchain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -498,10 +501,9 @@ impl ResolvedFramework {
         path: &Path,
     ) -> Result<(Self, Option<Vec<u8>>)> {
         let repository = framework_repository();
-        let slug = repository_slug(repository)?;
         let certification = load_manifest(host, path, repository).await?;
-        let revision = certification.revision.clone();
-        Self::construct(host, repository, slug, &revision, Some(certification)).await
+        let tree = FrameworkTree::fetch(host, repository, &certification.revision).await?;
+        Self::construct(host, repository, &tree, Some(certification)).await
     }
 
     pub(crate) fn validate_cli(&self, host: &crate::toolchain::Host) -> Result<()> {
@@ -1566,15 +1568,17 @@ impl ResolvedFramework {
                     );
                 }
                 let certification = latest_certification(host, repository, channel).await?;
-                let revision = certification.revision.clone();
-                Self::construct(host, repository, slug, &revision, Some(certification)).await
+                let tree = FrameworkTree::fetch(host, repository, &certification.revision).await?;
+                Self::construct(host, repository, &tree, Some(certification)).await
             }
             FrameworkChannel::Dev => {
-                let revision = match rev {
-                    Some(rev) => resolve_dev_at(host, repository, slug, rev).await?,
-                    None => resolve_dev(host, repository, slug).await?,
+                let tree = if let Some(rev) = rev {
+                    resolve_dev_at(host, repository, slug, rev).await?
+                } else {
+                    let revision = resolve_dev(host, repository, slug).await?;
+                    FrameworkTree::fetch(host, repository, &revision).await?
                 };
-                Self::construct(host, repository, slug, &revision, None).await
+                Self::construct(host, repository, &tree, None).await
             }
         }
     }
@@ -1592,19 +1596,17 @@ impl ResolvedFramework {
     async fn construct(
         host: &Host,
         repository: &str,
-        slug: &str,
-        revision: &str,
+        tree: &FrameworkTree,
         certification: Option<Certification>,
     ) -> Result<(Self, Option<Vec<u8>>)> {
-        validate_revision(revision)?;
-        let base = format!("https://raw.githubusercontent.com/{slug}/{revision}");
-        let manifest_bytes = fetch(host, &format!("{base}/Cargo.toml")).await?;
+        let revision = tree.revision.as_str();
+        let manifest_bytes = tree.file(host, "Cargo.toml").await?;
         let root: toml::Value = toml::from_str(std::str::from_utf8(&manifest_bytes)?)?;
         let metadata = framework_metadata(&root)?;
         let minimum_cli_version = minimum_cli_version(&metadata)?;
         let rust_version = manifest_rust_version(&root)?;
         let mut scaffold = framework_scaffold(&root)?;
-        let lock_bytes = fetch(host, &format!("{base}/Cargo.lock")).await?;
+        let lock_bytes = tree.file(host, "Cargo.lock").await?;
         let lock_sha256 = hex::encode(Sha256::digest(&lock_bytes));
         let lock: Lockfile = std::str::from_utf8(&lock_bytes)?.parse()?;
 
@@ -1636,7 +1638,7 @@ impl ResolvedFramework {
         let submodule_repositories = match channel {
             FrameworkChannel::Stable => BTreeMap::new(),
             FrameworkChannel::Dev | FrameworkChannel::Nightly => {
-                match fetch_optional(host, &format!("{base}/.gitmodules")).await? {
+                match tree.optional_file(host, ".gitmodules").await? {
                     Some(bytes) => parse_gitmodules(std::str::from_utf8(&bytes)?),
                     // Every submodule was extracted; the revision records none.
                     None => BTreeMap::new(),
@@ -1664,7 +1666,7 @@ impl ResolvedFramework {
                     revision: revision.to_owned(),
                     lock_sha256,
                 },
-                dev_submodules(host, slug, revision, &submodule_repositories).await?,
+                dev_submodules(host, tree, &submodule_repositories).await?,
             )
         };
         complete_scaffold(&mut scaffold, &lock)?;
@@ -1919,8 +1921,7 @@ fn same_source(
 /// `.gitmodules` names.
 async fn dev_submodules(
     host: &Host,
-    slug: &str,
-    revision: &str,
+    tree: &FrameworkTree,
     submodule_repositories: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
     let mut submodules = BTreeMap::new();
@@ -1929,7 +1930,7 @@ async fn dev_submodules(
     // repository at the gitlink's commit — the same record the
     // certification supplies for `nightly`.
     for path in submodule_repositories.keys() {
-        if let Some(commit) = submodule_pin(host, slug, revision, path).await? {
+        if let Some(commit) = tree.submodule_pin(host, path).await? {
             submodules.insert(path.clone(), commit);
         }
     }
@@ -2525,13 +2526,6 @@ fn assert_declared_git_source(
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct SubmoduleEntry {
-    sha: String,
-    #[serde(rename = "type")]
-    kind: String,
-}
-
 /// Fill in what the framework manifest cannot carry itself: every framework
 /// package's version from the framework's own lock.
 fn complete_scaffold(scaffold: &mut BTreeMap<String, String>, lock: &Lockfile) -> Result<()> {
@@ -2549,31 +2543,6 @@ fn complete_scaffold(scaffold: &mut BTreeMap<String, String>, lock: &Lockfile) -
         scaffold.insert(format!("{name}-version"), version);
     }
     Ok(())
-}
-
-/// The commit `path`'s gitlink records at `revision`, or `None` when `path`
-/// is not a submodule there — a `.gitmodules` entry can outlive the gitlink
-/// it once named, and the patch paths under it then belong in the tree.
-async fn submodule_pin(
-    host: &Host,
-    slug: &str,
-    revision: &str,
-    path: &str,
-) -> Result<Option<String>> {
-    let Some(bytes) = fetch_optional(
-        host,
-        &format!("https://api.github.com/repos/{slug}/contents/{path}?ref={revision}"),
-    )
-    .await?
-    else {
-        return Ok(None);
-    };
-    // A present-but-ordinary path lists as a directory array or carries a
-    // non-submodule type; neither is a pin.
-    let Ok(entry) = serde_json::from_slice::<SubmoduleEntry>(&bytes) else {
-        return Ok(None);
-    };
-    Ok((entry.kind == "submodule").then_some(entry.sha))
 }
 
 /// The `path → url` pairs `.gitmodules` records — git-config syntax rather
@@ -2662,25 +2631,53 @@ async fn fetch(host: &Host, url: &str) -> Result<Vec<u8>> {
         .ok_or_else(|| eyre!("framework resolution returned HTTP 404 from {url}"))
 }
 
-/// [`fetch`] that answers `None` when the resource does not exist —
-/// `.gitmodules` is absent on a revision whose submodules were all
-/// extracted. zenwave surfaces a non-success status as `Err`, so the 404
-/// arrives as an [`Error::Http`], never as a response to inspect.
+/// [`fetch`] that answers `None` when the resource does not exist.
 async fn fetch_optional(host: &Host, url: &str) -> Result<Option<Vec<u8>>> {
-    let mut client = zenwave::client();
-    let mut request = client
-        .method(Method::GET, url)?
-        .header("User-Agent", env!("CARGO_PKG_NAME"))?;
-    if let Some(token) = github_api_token(host, url) {
-        request = request.header("Authorization", &format!("Bearer {token}"))?;
+    let token = github_api_token(host, url).map(|token| format!("Bearer {token}"));
+    let mut headers = vec![("User-Agent", env!("CARGO_PKG_NAME"))];
+    if let Some(token) = &token {
+        headers.push(("Authorization", token));
     }
-    let response = match request.await {
+    let response = match host.http_get(url, &headers).await {
         Ok(response) => response,
-        Err(zenwave::Error::Http { status, .. }) if status == StatusCode::NOT_FOUND => {
-            return Ok(None);
-        }
+        Err(zenwave::Error::Http { response, .. }) => response.response,
         Err(error) => return Err(error.into()),
     };
+    let status = response.status();
+    if matches!(
+        status,
+        StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS
+    ) && response
+        .headers()
+        .get("x-ratelimit-remaining")
+        .is_some_and(|value| value == "0")
+    {
+        let header = |name| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+        };
+        let limit = header("x-ratelimit-limit").unwrap_or("unknown");
+        let resource = header("x-ratelimit-resource").unwrap_or("core");
+        let reset = header("x-ratelimit-reset")
+            .and_then(|value| value.parse().ok())
+            .and_then(|seconds| jiff::Timestamp::from_second(seconds).ok())
+            .map_or_else(
+                || "unknown (missing or invalid x-ratelimit-reset)".to_owned(),
+                |time| time.to_string(),
+            );
+        bail!(
+            "GitHub REST API {resource} rate limit exhausted (0/{limit} requests remaining); \
+             resets at {reset}; set WATERUI_GITHUB_TOKEN to a GitHub token and retry ({url})"
+        );
+    }
+    if status == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        bail!("framework resolution returned HTTP {status} from {url}");
+    }
     Ok(Some(response.into_body().into_bytes().await?.to_vec()))
 }
 
@@ -3051,19 +3048,23 @@ async fn resolve_dev(host: &Host, repository: &str, slug: &str) -> Result<String
 
 /// A `dev` selection pinned to an exact commit: `rev` names a commit of the
 /// integration branch's own history, verified against the branch's head
-/// through the same GitHub API the tip resolution already uses. Anything
+/// through the fetched git history. Anything
 /// else — a fork commit, another branch's tip, a commit `dev` never merged —
 /// is not dev history and cannot stand in for the channel.
-async fn resolve_dev_at(host: &Host, repository: &str, slug: &str, rev: &str) -> Result<String> {
+async fn resolve_dev_at(
+    host: &Host,
+    repository: &str,
+    slug: &str,
+    rev: &str,
+) -> Result<FrameworkTree> {
     validate_rev(rev)?;
-    let head = remote_dev_head(host, repository, "framework").await?;
-    let revision = normalize_revision(host, slug, rev).await?;
-    let status = dev_ancestor_status(host, slug, &revision, &head).await?;
-    ensure_dev_ancestor(&status, &revision, &head)?;
-    if !gate_passed(host, slug, "dev.yml", &revision).await? {
+    let tree = FrameworkTree::fetch(host, repository, rev).await?;
+    tree.ensure_dev_ancestor(host).await?;
+    let revision = &tree.revision;
+    if !gate_passed(host, slug, "dev.yml", revision).await? {
         bail!("no successful dev gate run exists for --rev {revision}");
     }
-    Ok(revision)
+    Ok(tree)
 }
 
 /// The spelling `--rev` accepts: a commit hash — hex only, at least the four
@@ -3074,53 +3075,6 @@ fn validate_rev(rev: &str) -> Result<()> {
         bail!("--rev must be a commit hash of 4-40 hex characters, got `{rev}`");
     }
     Ok(())
-}
-
-/// The full commit id `rev` names in `slug` — the object the commits API
-/// names back, so an abbreviation `225259c80` persists the same forty
-/// characters the tip resolution would.
-async fn normalize_revision(host: &Host, slug: &str, rev: &str) -> Result<String> {
-    let response = fetch(
-        host,
-        &format!("https://api.github.com/repos/{slug}/commits/{rev}"),
-    )
-    .await
-    .wrap_err_with(|| format!("--rev {rev} does not name a commit in {slug}"))?;
-    let commit: serde_json::Value = serde_json::from_slice(&response)?;
-    commit["sha"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| eyre!("--rev {rev} did not resolve to a commit in {slug}"))
-}
-
-/// The compare status of `revision...head` — the ancestry fact the compare
-/// API reports for the pin against the branch's own head.
-async fn dev_ancestor_status(
-    host: &Host,
-    slug: &str,
-    revision: &str,
-    head: &str,
-) -> Result<String> {
-    let url = format!("https://api.github.com/repos/{slug}/compare/{revision}...{head}");
-    let response = fetch(host, &url).await?;
-    let compare: serde_json::Value = serde_json::from_slice(&response)?;
-    compare["status"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| eyre!("malformed compare response from {url}: `status` is missing"))
-}
-
-/// The compare statuses a pin is accepted under: `ahead` — `dev` moved past
-/// the pin — or `identical` — the pin is the head itself. `behind` and
-/// `diverged` name a commit carrying work `dev` never contained.
-fn ensure_dev_ancestor(status: &str, revision: &str, head: &str) -> Result<()> {
-    if matches!(status, "ahead" | "identical") {
-        return Ok(());
-    }
-    bail!(
-        "--rev {revision} is not an ancestor of the framework's dev head {head} \
-         (compare status: {status})"
-    );
 }
 
 /// The `dev` branch head of `repository` — the tip `git ls-remote` reports.
@@ -3736,13 +3690,8 @@ async fn foreign_locked_packages(
     }
     let mut foreign = Vec::new();
     for (git, revision) in pins {
-        let slug = repository_slug(&git)?;
-        let Some(bytes) = fetch_optional(
-            host,
-            &format!("https://raw.githubusercontent.com/{slug}/{revision}/Cargo.lock"),
-        )
-        .await?
-        else {
+        let tree = FrameworkTree::fetch(host, &git, &revision).await?;
+        let Some(bytes) = tree.optional_file(host, "Cargo.lock").await? else {
             // An extracted crate that keeps no lock of its own contributes
             // nothing the channel can pin.
             continue;
@@ -6218,23 +6167,170 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         }
     }
 
+    fn git_fact_host(machine: &crate::toolchain::testing::TestMachine) -> Host {
+        machine.install("git");
+        machine.respond("GIT_REVISION", &"a".repeat(40));
+        machine.respond("GIT_HEAD", &"b".repeat(40));
+        machine.respond("GIT_SHALLOW", "true");
+        machine.host([("WATERUI_FAKE_LOG", machine.root().join("git.log"))])
+    }
+
+    fn gate_url() -> String {
+        format!(
+            "https://api.github.com/repos/water-rs/waterui/actions/workflows/dev.yml/runs?branch=dev&head_sha={}&status=success&event=push&per_page=1",
+            "a".repeat(40)
+        )
+    }
+
     #[test]
-    fn dev_ancestry_accepts_only_dev_history() {
-        let head = "b".repeat(40);
-        let pin = "a".repeat(40);
-        assert!(ensure_dev_ancestor("ahead", &pin, &head).is_ok());
-        assert!(ensure_dev_ancestor("identical", &pin, &head).is_ok());
-        for status in ["behind", "diverged", "unknown"] {
-            let message = ensure_dev_ancestor(status, &pin, &head)
-                .unwrap_err()
-                .to_string();
-            assert!(message.contains(&pin), "{message} must name the commit");
-            assert!(message.contains(&head), "{message} must name the dev head");
-            assert!(
-                message.contains(status),
-                "{message} must name the compare status"
+    fn channel_git_facts_reads_files_and_gitlinks_without_http() {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        let host = git_fact_host(&machine);
+        let tree = smol::block_on(FrameworkTree::fetch(
+            &host,
+            framework_repository(),
+            &"a".repeat(40),
+        ))
+        .unwrap();
+        for path in ["Cargo.toml", "Cargo.lock", ".gitmodules"] {
+            machine.respond("GIT_FILE", "file contents");
+            machine.respond(
+                "GIT_ENTRY",
+                &format!("100644 blob {}\t{path}", "c".repeat(40)),
+            );
+            assert_eq!(
+                smol::block_on(tree.optional_file(&host, path))
+                    .unwrap()
+                    .unwrap(),
+                b"file contents\n"
             );
         }
+        machine.respond(
+            "GIT_ENTRY",
+            &format!("160000 commit {}\tkit", "d".repeat(40)),
+        );
+        assert_eq!(
+            smol::block_on(tree.submodule_pin(&host, "kit")).unwrap(),
+            Some("d".repeat(40))
+        );
+        machine.respond("GIT_ENTRY", &format!("040000 tree {}\tkit", "e".repeat(40)));
+        assert!(
+            smol::block_on(tree.submodule_pin(&host, "kit"))
+                .unwrap()
+                .is_none()
+        );
+        machine.respond("GIT_ENTRY", "");
+        assert!(
+            smol::block_on(tree.optional_file(&host, ".gitmodules"))
+                .unwrap()
+                .is_none()
+        );
+        let log = std::fs::read_to_string(machine.root().join("git.log")).unwrap();
+        assert!(log.contains("fetch -q --depth=1 origin"), "{log}");
+        assert!(
+            log.contains(&format!("git show {}:Cargo.toml", "a".repeat(40))),
+            "{log}"
+        );
+        assert!(log.contains("ls-tree -z"), "{log}");
+    }
+
+    #[test]
+    fn channel_git_facts_pinned_dev_only_requests_the_actions_gate() {
+        for rev in ["aaaa".to_owned(), "a".repeat(40)] {
+            let machine = crate::toolchain::testing::TestMachine::new();
+            let host = git_fact_host(&machine).with_http_response(&gate_url(), zenwave::Response::new(
+                serde_json::json!({"workflow_runs": [{"head_sha": "a".repeat(40), "conclusion": "success"}]}).to_string().into()
+            ));
+            let tree = smol::block_on(resolve_dev_at(
+                &host,
+                framework_repository(),
+                "water-rs/waterui",
+                &rev,
+            ))
+            .unwrap();
+            assert_eq!(tree.revision, "a".repeat(40));
+            let log = std::fs::read_to_string(machine.root().join("git.log")).unwrap();
+            assert!(log.contains("merge-base --is-ancestor"), "{log}");
+            assert!(!log.contains("--unshallow"), "{log}");
+        }
+    }
+
+    #[test]
+    fn channel_git_facts_deepens_before_rejecting_ancestry() {
+        for status in ["0", "1", "128"] {
+            let machine = crate::toolchain::testing::TestMachine::new();
+            let host = git_fact_host(&machine)
+                .with_env("WATERUI_FAKE_GIT_ANCESTOR", "1")
+                .with_env("WATERUI_FAKE_GIT_ANCESTOR_COMPLETE", status);
+            let tree = smol::block_on(FrameworkTree::fetch(
+                &host,
+                framework_repository(),
+                &"a".repeat(40),
+            ))
+            .unwrap();
+            let result = smol::block_on(tree.ensure_dev_ancestor(&host));
+            match status {
+                "0" => result.unwrap(),
+                "1" => assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("is not an ancestor")
+                ),
+                _ => assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("git ancestry check failed")
+                ),
+            }
+            let log = std::fs::read_to_string(machine.root().join("git.log")).unwrap();
+            assert!(log.contains("--unshallow"), "{log}");
+            assert_eq!(log.matches("merge-base --is-ancestor").count(), 2, "{log}");
+        }
+    }
+
+    #[test]
+    fn channel_git_facts_rate_limit_names_limit_reset_and_remedy() {
+        for status in [403, 429] {
+            let machine = crate::toolchain::testing::TestMachine::new();
+            let mut response = zenwave::Response::new("rate limited".into());
+            *response.status_mut() = zenwave::StatusCode::from_u16(status).unwrap();
+            response
+                .headers_mut()
+                .insert("x-ratelimit-remaining", "0".parse().unwrap());
+            response
+                .headers_mut()
+                .insert("x-ratelimit-limit", "60".parse().unwrap());
+            response
+                .headers_mut()
+                .insert("x-ratelimit-reset", "1791582104".parse().unwrap());
+            let host = git_fact_host(&machine).with_http_response(&gate_url(), response);
+            let error = smol::block_on(resolve_dev_at(
+                &host,
+                framework_repository(),
+                "water-rs/waterui",
+                &"a".repeat(40),
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("0/60"), "{error}");
+            assert!(error.contains("2026-10-09T21:41:44Z"), "{error}");
+            assert!(error.contains("WATERUI_GITHUB_TOKEN"), "{error}");
+            assert!(!error.contains("does not name a commit"), "{error}");
+        }
+    }
+
+    #[test]
+    fn channel_git_facts_http_errors_are_not_all_rate_limits() {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        let url = "https://api.github.com/repos/water-rs/waterui/releases";
+        let mut response = zenwave::Response::new("forbidden".into());
+        *response.status_mut() = zenwave::StatusCode::FORBIDDEN;
+        let host = git_fact_host(&machine).with_http_response(url, response);
+        let error = smol::block_on(fetch(&host, url)).unwrap_err().to_string();
+        assert!(error.contains("HTTP 403"), "{error}");
+        assert!(!error.contains("rate limit"), "{error}");
     }
 
     /// A pinned revision is held to the tip's own promise: the gate decision

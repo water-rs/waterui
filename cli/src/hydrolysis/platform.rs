@@ -237,6 +237,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
 
     copy_assets_and_fonts(
         project,
+        platform,
         &backend_path,
         &built_target.app_symbols().await?,
         options.uses_dev_server(),
@@ -379,6 +380,7 @@ pub async fn package_hydrolysis(
     let backend_path = project.backend_path::<HydrolysisBackend>();
     copy_assets_and_fonts(
         project,
+        platform,
         &backend_path,
         &built.app_symbols().await?,
         options.uses_dev_server(),
@@ -649,6 +651,7 @@ const fn is_hydrolysis_native_platform(platform: TargetPlatform) -> bool {
 /// asset mounts.
 async fn copy_assets_and_fonts(
     project: &Project,
+    platform: TargetPlatform,
     backend_path: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
@@ -658,7 +661,12 @@ async fn copy_assets_and_fonts(
     let manifest =
         assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, dev_server).await?;
 
-    let font_declarations = assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
     if !resolved_fonts.is_empty() {

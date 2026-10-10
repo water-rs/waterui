@@ -1766,7 +1766,7 @@ fn run_binary_with_grace(
     Ok(running)
 }
 
-const fn termination_grace() -> std::time::Duration {
+pub(crate) const fn termination_grace() -> std::time::Duration {
     #[cfg(unix)]
     {
         TERMINATION_GRACE_PERIOD

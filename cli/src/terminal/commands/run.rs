@@ -371,7 +371,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             return Ok(None);
         };
         print_run_header(shell, &context);
-        check_run_toolchain(
+        let kotlin_toolchain = check_run_toolchain(
             shell,
             context.project.host(),
             context.platform,
@@ -415,6 +415,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             context.backend,
             selection,
             config,
+            kotlin_toolchain.as_ref(),
         ))
         .await?;
         Ok(Some(RunReady {
@@ -481,7 +482,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         ManagedBackends::NONE,
@@ -520,7 +521,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         args.backend.map(TargetBackend::lib_backend),
     )?);
     let managed_backends = managed_backends(platform, backend);
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         managed_backends,
@@ -573,14 +574,14 @@ async fn check_run_toolchain(
     host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(host, platform, backend).await?;
+    let kotlin_toolchain = check_toolchain_for_backend(host, platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
     success!(shell, "Toolchain ready");
-    Ok(())
+    Ok(kotlin_toolchain)
 }
 
 async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
@@ -783,6 +784,7 @@ async fn build_and_run(
     backend: TargetBackend,
     selection: DeviceSelection,
     config: BuildRunConfig,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<(Running, Option<web::WebDevServer>)> {
     let build_plan = resolve_build_plan(cli_platform, &selection.device);
     let physical_ios = is_physical_ios(&selection.device);
@@ -817,6 +819,7 @@ async fn build_and_run(
         backend,
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
+        kotlin_toolchain,
     ))
     .await?;
 
@@ -1006,7 +1009,13 @@ async fn build_for_backend(
     backend: TargetBackend,
     plan: &BuildPlan,
     build_options: BuildOptions,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<waterui_cli::build::BuiltTarget> {
+    let kotlin = || {
+        kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android build has no resolved Kotlin toolchain")
+        })
+    };
     match backend {
         TargetBackend::Apple => {
             Box::pin(build_rust_lib(project, plan.lib_platform, build_options)).await
@@ -1016,7 +1025,7 @@ async fn build_for_backend(
                 .android_abi
                 .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
             AndroidPlatform::clean_jni_libs(project).await?;
-            Box::pin(AndroidPlatform::new(abi).build(project, build_options)).await
+            Box::pin(AndroidPlatform::new(abi).build(project, build_options, kotlin()?)).await
         }
         TargetBackend::Gtk4 => Box::pin(build_gtk4(project, build_options)).await,
         TargetBackend::Hydrolysis => {
@@ -1025,7 +1034,13 @@ async fn build_for_backend(
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
+                Box::pin(hydrolysis_android::build(
+                    project,
+                    abi,
+                    build_options,
+                    kotlin()?,
+                ))
+                .await
             } else {
                 Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
@@ -1504,7 +1519,7 @@ async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     match backend {
         TargetBackend::Apple => {
             let sdk = match platform {
@@ -1526,7 +1541,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Android {
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android_run(host).await?;
+            return toolchain_checks::check_android_run(host).await.map(Some);
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
@@ -1544,8 +1559,9 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
             if platform == TargetPlatform::Android {
-                toolchain_checks::check_android_run(host).await?;
-            } else if platform == TargetPlatform::Web {
+                return toolchain_checks::check_android_run(host).await.map(Some);
+            }
+            if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
                 toolchain_checks::check_hydrolysis(host).await?;
@@ -1558,7 +1574,7 @@ async fn check_toolchain_for_backend(
             toolchain_checks::check_winui(host).await?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn find_device(

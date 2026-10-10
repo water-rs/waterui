@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-    echo "usage: $0 <output-directory>" >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "usage: $0 <output-directory> [work-directory]" >&2
     exit 2
 fi
 
@@ -18,10 +18,6 @@ configuration_value() {
 }
 
 version="$(configuration_value version)"
-source_url="$(configuration_value source_url)"
-source_sha256="$(configuration_value source_sha256)"
-glib_dependencies_url="$(configuration_value glib_dependencies_url)"
-glib_dependencies_sha256="$(configuration_value glib_dependencies_sha256)"
 released="$(configuration_value released)"
 maximum_glibc="$(configuration_value maximum_glibc)"
 minimum_gcc="$(configuration_value minimum_gcc)"
@@ -33,7 +29,7 @@ cli_wpe_version="$(
         | sed -n 's/^wpe_version = "\([^"]*\)"$/\1/p'
 )"
 
-if [[ -z "$version" || -z "$source_url" || -z "$source_sha256" || -z "$glib_dependencies_url" || -z "$glib_dependencies_sha256" || -z "$released" || -z "$maximum_glibc" || -z "$minimum_gcc" ]]; then
+if [[ -z "$version" || -z "$released" || -z "$maximum_glibc" || -z "$minimum_gcc" ]]; then
     echo "invalid WPE runtime source configuration" >&2
     exit 1
 fi
@@ -85,111 +81,44 @@ if [[ "$highest_glibc" != "$maximum_glibc" ]]; then
     exit 1
 fi
 
-work_directory="$(mktemp -d)"
-trap 'rm -rf "$work_directory"' EXIT
-archive="$work_directory/wpewebkit.tar.xz"
-curl --fail --location --retry 3 --output "$archive" "$source_url"
-printf '%s  %s\n' "$source_sha256" "$archive" | sha256sum --check
-tar -xJf "$archive" -C "$work_directory"
-source_directory="$work_directory/wpewebkit-$version"
-build_directory="$work_directory/build"
-prefix="$work_directory/runtime"
-
-# `Tools/wpe/dependencies/apt` sources this file and the release tarball does
-# not ship it, so upstream's own installer exits before installing anything.
-# Restore it from the tag the tarball was cut from rather than keeping a second,
-# hand-copied dependency list in this repository.
-glib_dependencies="$source_directory/Tools/glib/dependencies/apt"
-if [[ ! -f "$glib_dependencies" ]]; then
-    mkdir -p "$(dirname "$glib_dependencies")"
-    curl --fail --location --retry 3 --output "$glib_dependencies" "$glib_dependencies_url"
-    printf '%s  %s\n' "$glib_dependencies_sha256" "$glib_dependencies" | sha256sum --check
-    chmod +x "$glib_dependencies"
+# A work directory passed by the caller persists across runs — the layout CI
+# restores the stored WebKit prefix into. Without one the build stays as
+# ephemeral as before.
+if [[ $# -eq 2 ]]; then
+    work_directory="$(mkdir -p "$2" && cd "$2" && pwd)"
+else
+    work_directory="$(mktemp -d)"
+    trap 'rm -rf "$work_directory"' EXIT
 fi
+source_directory="$work_directory/wpewebkit-$version"
+prefix="$work_directory/runtime"
+stage="$work_directory/stage"
 
-# Upstream's list mixes developer tooling in with the build dependencies, and
-# two entries make the whole apt transaction unsatisfiable on a current CI
-# image:
-#   * `git-svn` pins `git (< 1:2.34.1-.)`, while GitHub's runner images install
-#     git from a PPA — 2.55 against 22.04's 2.34. It is tooling for the SVN
-#     workflow WebKit has long since left behind; nothing in this build reads
-#     it. apt cannot install it, and one unusable package aborts everything
-#     else with it.
-#   * `libgstreamer1.0-dev` needs `libunwind-dev`, which apt does not pull in
-#     on its own here.
-# Drop the first from the list and install the second alongside our own
-# additions, so the installer fails only for reasons that actually matter.
-sed -i '/git-svn/d' \
-    "$glib_dependencies" \
-    "$source_directory/Tools/wpe/dependencies/apt"
+# The WebKit build is the expensive stage by hours. build-webkit.sh skips it
+# whenever the install prefix carries its completion marker — which is what
+# lets a shim-only change rebuild only the shim, and what the CI prefix store
+# relies on. It also installs the host dependencies the packaging stage vendors
+# from, so it runs on every invocation, marker or not.
+"$runtime_directory/build-webkit.sh" "$work_directory"
 
-# Before upstream's installer, not after: it is `libgstreamer1.0-dev` inside
-# that installer's own list that needs this, so satisfying it afterwards is too
-# late — the installer has already aborted the transaction.
-sudo apt-get install -y --no-install-recommends libunwind-dev
-
-sudo "$source_directory/Tools/wpe/install-dependencies"
-sudo apt-get install -y --no-install-recommends \
-    bubblewrap \
-    cmake \
-    gstreamer1.0-plugins-base \
-    gstreamer1.0-plugins-good \
-    ninja-build \
-    patchelf \
-    pax-utils \
-    xdg-dbus-proxy
-
-# `USE_LIBBACKTRACE` defaults on and is a hard requirement when it is, but no
-# Debian or Ubuntu release packages libbacktrace, so configuring fails on every
-# apt-based host. It only symbolizes WebKit's own crash logs, which a shipped
-# runtime does not print.
-# `USE_JPEGXL` defaults on the same way, but jammy has no `libjxl-dev` — the
-# package entered Ubuntu at 23.04 — so the flag fails the one image the
-# artifact's glibc floor allows. JPEG XL decoding is optional for the embedded
-# runtime.
-# `ENABLE_WPE_PLATFORM_DRM` defaults on too, and WPEPlatform's DRM display
-# calls `drmModeCreateDumbBuffer`, which entered libdrm at 2.4.114 — jammy
-# ships 2.4.113. The embedded runtime only ever creates the headless display
-# (`wpe_display_headless_new`), so the DRM display is dead code here.
-cmake \
-    -S "$source_directory" \
-    -B "$build_directory" \
-    -G Ninja \
-    -DPORT=WPE \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$prefix" \
-    -DCMAKE_INSTALL_LIBDIR=lib \
-    -DCMAKE_INSTALL_LIBEXECDIR=libexec \
-    -DCMAKE_C_COMPILER="$c_compiler" \
-    -DCMAKE_CXX_COMPILER="$cxx_compiler" \
-    -DBWRAP_EXECUTABLE=/usr/bin/bwrap \
-    -DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy \
-    -DENABLE_API_TESTS=OFF \
-    -DENABLE_BUBBLEWRAP_SANDBOX=ON \
-    -DENABLE_DOCUMENTATION=OFF \
-    -DENABLE_INTROSPECTION=OFF \
-    -DENABLE_JOURNALD_LOG=OFF \
-    -DENABLE_LAYOUT_TESTS=OFF \
-    -DENABLE_MINIBROWSER=OFF \
-    -DENABLE_WPE_LEGACY_API=OFF \
-    -DENABLE_WPE_PLATFORM=ON \
-    -DENABLE_WPE_PLATFORM_DRM=OFF \
-    -DUSE_JPEGXL=OFF \
-    -DUSE_LIBBACKTRACE=OFF
-cmake --build "$build_directory" --parallel "${WATERUI_WPE_BUILD_JOBS:-$(nproc)}"
-cmake --install "$build_directory"
+# Everything downstream mutates the tree it works on: the bridge installs its
+# shim, package-runtime.py vendors libraries and rewrites rpaths. Stage a
+# throwaway copy of the install prefix so the prefix itself stays exactly what
+# `cmake --install` produced — re-runs and stored prefixes see a pristine tree.
+rm -rf "$stage"
+cp -a "$prefix" "$stage"
 
 bridge_build_directory="$work_directory/bridge-build"
-PKG_CONFIG_PATH="$prefix/lib/pkgconfig:$prefix/share/pkgconfig" \
+PKG_CONFIG_PATH="$stage/lib/pkgconfig:$stage/share/pkgconfig" \
 cmake \
     -S "$repo_root/components/platform/browser-wpe/native" \
     -B "$bridge_build_directory" \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$prefix" \
+    -DCMAKE_INSTALL_PREFIX="$stage" \
     -DCMAKE_C_COMPILER="$c_compiler" \
     -DCMAKE_CXX_COMPILER="$cxx_compiler" \
-    -DCMAKE_PREFIX_PATH="$prefix"
+    -DCMAKE_PREFIX_PATH="$stage"
 cmake --build "$bridge_build_directory"
 cmake --install "$bridge_build_directory"
 
@@ -197,7 +126,7 @@ python3 "$runtime_directory/package-runtime.py" \
     --architecture "$architecture" \
     --maximum-glibc "$maximum_glibc" \
     --output "$output_directory" \
-    --prefix "$prefix" \
+    --prefix "$stage" \
     --released "$released" \
     --repository "$repo_root" \
     --source "$source_directory" \

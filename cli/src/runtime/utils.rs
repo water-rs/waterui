@@ -271,15 +271,39 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
 /// - If `path` cannot be opened or read; the error names the path.
 pub(crate) fn hash_file_into(hasher: &mut sha2::Sha256, path: &Path) -> io::Result<()> {
     use sha2::Digest as _;
-    use std::io::Read as _;
 
     let named =
         |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", path.display()));
     let mut file = std::fs::File::open(path).map_err(named)?;
     hasher.update(file.metadata().map_err(named)?.len().to_le_bytes());
+    stream_into(hasher, &mut file).map_err(named)
+}
+
+/// The lowercase hex SHA-256 of the file at `path`, read in chunks off the
+/// executor thread.
+///
+/// # Errors
+/// - If the file cannot be read.
+pub async fn file_sha256(path: &Path) -> io::Result<String> {
+    use sha2::Digest as _;
+
+    let path = path.to_path_buf();
+    unblock(move || {
+        let mut hasher = sha2::Sha256::new();
+        stream_into(&mut hasher, &mut std::fs::File::open(path)?)?;
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
+}
+
+/// Feed the rest of `file` into `hasher` in 64 KiB chunks.
+fn stream_into(hasher: &mut sha2::Sha256, file: &mut std::fs::File) -> io::Result<()> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
-        let read = file.read(&mut chunk).map_err(named)?;
+        let read = file.read(&mut chunk)?;
         if read == 0 {
             return Ok(());
         }

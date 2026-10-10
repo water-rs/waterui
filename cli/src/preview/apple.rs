@@ -73,7 +73,12 @@ async fn stage_apple_preview_resources(project: &Project, symbols: &ArtifactSymb
 
     let mut resolved_fonts = {
         let font_manifest = project.ffi_crate_path().join("Cargo.toml");
-        let font_declarations = assets::scan_fonts(project, &font_manifest).await?;
+        let font_declarations = assets::scan_fonts(
+            project,
+            &font_manifest,
+            &[waterui_assets_planner::FontPlatform::Macos],
+        )
+        .await?;
         assets::resolve_fonts(project.host(), font_declarations).await?
     };
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);

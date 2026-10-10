@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smol::fs;
 
+use crate::android::KotlinToolchain;
 use crate::android::platform::{AndroidAbi, ndk_llvm_tool};
 use crate::build::{BuildOptions, BuildProfile};
 use crate::hydrolysis::android::{self as hydrolysis_android, HydrolysisAndroidBuild};
@@ -159,6 +160,7 @@ impl DevicePayload {
         host: &Host,
         request: &HydrolysisPreviewRequest<'_>,
         abi: AndroidAbi,
+        kotlin: &KotlinToolchain,
     ) -> Result<Self> {
         let root = project
             .backend_path::<HydrolysisBackend>()
@@ -177,6 +179,7 @@ impl DevicePayload {
             abi,
             options,
             &["waterui-preview-mode"],
+            kotlin,
         )
         .await?;
 

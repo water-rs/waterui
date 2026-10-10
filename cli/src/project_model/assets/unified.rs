@@ -362,26 +362,20 @@ pub async fn stage_for_android(
 /// the app-level `res`/`theme`/launcher artwork belongs to the host.
 /// `symbols` is the target build's app library — see [`stage_for_apple`].
 ///
-/// Returns the manifest and where the bundle was staged.
+/// Returns the manifest and the staged `waterui_assets` directory — the
+/// only entry the library writes under `src/main/assets`, which AAR asset
+/// merging shares with the host application.
 pub async fn stage_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
+) -> eyre::Result<(BundleManifest, PathBuf)> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
-    let root = module_dir.join("src/main/assets");
-    stage_bundle(&manifest, &root.join(ASSET_ROOT_DIR), &[]).await?;
+    let bundle = module_dir.join("src/main/assets").join(ASSET_ROOT_DIR);
+    stage_bundle(&manifest, &bundle, &[]).await?;
 
-    Ok((manifest, StagedAndroidAssets { root }))
-}
-
-/// Where [`stage_for_android_library`] staged a library's assets.
-#[derive(Debug, Clone)]
-pub struct StagedAndroidAssets {
-    /// The module's `src/main/assets/` root, holding the staged bundle as
-    /// its [`ASSET_ROOT_DIR`] directory.
-    pub root: PathBuf,
+    Ok((manifest, bundle))
 }
 
 /// Renders the project's macOS `.icns` app icon for hand-assembled bundles
@@ -1335,39 +1329,46 @@ mod tests {
     use crate::project::ManagedBackends;
     use waterui_assets_planner::LaunchConfig;
 
+    /// A minimal project under `root` — `Water.toml`, `Cargo.toml`,
+    /// `Cargo.lock`, `src/lib.rs` — opened through [`Project::open`].
+    /// `host_root` backs the machine's toolchain directory.
+    async fn open_fixture_project(host_root: &Path, root: &Path) -> Project {
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        std::fs::write(
+            root.join("Water.toml"),
+            "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
+        )
+        .expect("Water.toml");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::write(
+            root.join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("Cargo.lock");
+        std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
+        Project::open(
+            &crate::toolchain::testing::real_toolchain_host(host_root),
+            root,
+            ManagedBackends::NONE,
+        )
+        .await
+        .expect("fixture project opens")
+    }
+
     #[test]
     fn the_scaffold_assets_readme_never_ships() {
         smol::block_on(async {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let root = tempdir.path().join("fixture");
-            std::fs::create_dir_all(root.join("src")).expect("src");
             std::fs::create_dir_all(root.join("assets")).expect("assets");
-            std::fs::write(
-                root.join("Water.toml"),
-                "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
-            )
-            .expect("Water.toml");
-            std::fs::write(
-                root.join("Cargo.toml"),
-                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-            )
-            .expect("Cargo.toml");
-            std::fs::write(
-                root.join("Cargo.lock"),
-                "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
-            )
-            .expect("Cargo.lock");
-            std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
             std::fs::write(root.join("assets/README.md"), "# Assets\n").expect("readme");
             std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
 
-            let project = Project::open(
-                &crate::toolchain::testing::real_toolchain_host(tempdir.path()),
-                &root,
-                ManagedBackends::NONE,
-            )
-            .await
-            .expect("fixture project opens");
+            let project = open_fixture_project(tempdir.path(), &root).await;
             let assets = plan_main_assets(&project).expect("assets plan");
             assert_eq!(
                 assets
@@ -1377,6 +1378,41 @@ mod tests {
                 [Path::new("note.txt")],
                 "the scaffold README stays out of the package"
             );
+        });
+    }
+
+    /// AAR asset merging shares `src/main/assets` with the host application
+    /// and the host's files win, so the library's bundle is the one thing
+    /// the stage may place there — a sibling top-level directory like a
+    /// `fonts/` tree collides with whatever the host ships (#2348).
+    #[test]
+    fn android_library_staging_writes_only_the_namespaced_bundle() {
+        smol::block_on(async {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let root = tempdir.path().join("fixture");
+            std::fs::create_dir_all(root.join("assets")).expect("assets");
+            std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
+            let project = open_fixture_project(tempdir.path(), &root).await;
+
+            let module_dir = tempdir.path().join("waterui");
+            let (_manifest, bundle) =
+                stage_for_android_library(&project, &module_dir, &ArtifactSymbols::empty(), false)
+                    .await
+                    .expect("library assets stage");
+
+            let assets_root = module_dir.join("src/main/assets");
+            assert_eq!(bundle, assets_root.join(ASSET_ROOT_DIR));
+            let entries = std::fs::read_dir(&assets_root)
+                .expect("the module's assets root exists")
+                .map(|entry| entry.expect("a readable entry").file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                entries.as_slice(),
+                &[OsStr::new(ASSET_ROOT_DIR)],
+                "the library stages nothing beside the waterui_assets bundle"
+            );
+            assert!(bundle.join("note.txt").is_file());
+            assert!(bundle.join(SYNC_STAMP_FILE).is_file());
         });
     }
 

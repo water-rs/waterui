@@ -194,6 +194,7 @@ pub async fn launch_inspector_session(
             let target = AndroidTarget::first_available(host).await?;
             target.launch(host).await?;
             info!("Building and running inspector app on Android...");
+            let kotlin = crate::android::platform::require_kotlin(host).await?;
             crate::hydrolysis::android::run_on_device(
                 &project,
                 crate::hydrolysis::android::resolve_painter(&project, None),
@@ -201,6 +202,7 @@ pub async fn launch_inspector_session(
                 run_options,
                 BuildOptions::development(BuildProfile::Debug),
                 progress.clone(),
+                &kotlin,
             )
             .await
             .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?

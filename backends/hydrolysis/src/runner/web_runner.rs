@@ -1,4 +1,4 @@
-//! Browser event loop: canvas surface, RAF scheduling, DOM input listeners.
+//! Browser event loop: the page surface, RAF scheduling, DOM input listeners.
 
 // Compiles only into wasm32 + `web`: the fetch/frame futures hold `Rc`,
 // `Closure` and JS-object handles that are `!Send` by design on the
@@ -25,8 +25,9 @@ use wasm_bindgen_futures::JsFuture;
 use waterui::app::{App, AppParts};
 use waterui::window::{Window, WindowState};
 use waterui_core::Environment;
-use waterui_text::FontCollection;
 use web_sys::Response;
+
+use crate::text::fonts::WebFonts;
 
 use crate::platform::{BrowserWindow, PlatformWindow};
 use crate::renderer::{
@@ -51,6 +52,12 @@ struct WebFontManifest {
 struct WebFontManifestEntry {
     name: String,
     file_name: String,
+}
+
+impl WebFontManifestEntry {
+    fn path(&self) -> String {
+        format!("fonts/{}", self.file_name)
+    }
 }
 
 #[expect(
@@ -102,36 +109,74 @@ async fn fetch_text(path: &str) -> String {
     })
 }
 
-/// The fonts named by the page's manifest, fetched and registered.
+/// The fonts the page's first frame needs, fetched and registered, and the
+/// manifest's other faces, which load after it.
 ///
-/// Built once for the application: the runner installs the result as the shared
-/// [`FontCollection`] and seeds the window's renderer from it.
+/// A face is needed first when the visitor reads the script it draws — their
+/// preferred languages, which the browser reports — or when it is the default
+/// family or a face selected by name (see
+/// [`loads_before_first_frame`](crate::text::fonts::loads_before_first_frame)).
+/// Built once for the application: the runner installs the collection as the
+/// shared [`FontCollection`](waterui_text::FontCollection) and seeds the window's renderer from it.
 #[expect(
     clippy::future_not_send,
     reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
 )]
-async fn load_web_fonts() -> FontCollection {
+async fn load_web_fonts() -> (WebFonts, Vec<WebFontManifestEntry>) {
     let manifest_text = fetch_text(WEB_FONT_MANIFEST_PATH).await;
     let manifest: WebFontManifest = serde_json::from_str(&manifest_text).unwrap_or_else(|error| {
         panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}")
     });
+    let languages = waterui_locale::regional::current_settings()
+        .preferred_languages()
+        .to_vec();
+    let (first, deferred): (Vec<_>, Vec<_>) = manifest.fonts.into_iter().partition(|font| {
+        crate::text::fonts::loads_before_first_frame(
+            &font.name,
+            &manifest.default_family,
+            &languages,
+        )
+    });
 
     // Every font file is in flight at once; registration order follows the
     // manifest so the collection is the same as a serial load would build.
-    let font_files = futures::future::join_all(manifest.fonts.iter().map(|font| {
-        let font_path = format!("fonts/{}", font.file_name);
-        async move { fetch_bytes(&font_path).await }
-    }))
+    let font_files = futures::future::join_all(
+        first
+            .iter()
+            .map(|font| async move { fetch_bytes(&font.path()).await }),
+    )
     .await;
 
-    crate::text::fonts::web_collection(
+    let fonts = WebFonts::new(
         &manifest.default_family,
-        manifest
-            .fonts
+        first
             .iter()
             .zip(font_files)
             .map(|(font, font_data)| (font.name.as_str(), font_data)),
-    )
+    );
+    (fonts, deferred)
+}
+
+/// Fetches the faces the first frame did not wait for, all at once, and
+/// registers each as it arrives: `arrived` tells the next frame to drop the
+/// text shaped without it, and `wake` schedules that frame.
+fn load_deferred_web_fonts(
+    deferred: Vec<WebFontManifestEntry>,
+    fonts: &Rc<RefCell<WebFonts>>,
+    arrived: &Rc<Cell<bool>>,
+    wake: &Rc<dyn Fn()>,
+) {
+    for font in deferred {
+        let fonts = Rc::clone(fonts);
+        let arrived = Rc::clone(arrived);
+        let wake = Rc::clone(wake);
+        wasm_bindgen_futures::spawn_local(async move {
+            let font_data = fetch_bytes(&font.path()).await;
+            fonts.borrow_mut().register(&font.name, font_data);
+            arrived.set(true);
+            wake();
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -171,6 +216,17 @@ struct BrowserRunner {
     /// Whether the page has been told its first frame is up, which ends the
     /// launch screen the page shows until then.
     first_frame_announced: bool,
+    /// The page's fonts; the faces the first frame did not wait for register
+    /// into it as they arrive.
+    fonts: Rc<RefCell<WebFonts>>,
+    /// The manifest faces the first frame did not wait for; their fetches
+    /// start once it is presented.
+    deferred_fonts: Vec<WebFontManifestEntry>,
+    /// A face arrived since the last frame: the renderer drops the text it
+    /// shaped without it before this frame lays out.
+    fonts_arrived: Rc<Cell<bool>>,
+    /// Schedules a frame — what an arriving face wakes the page with.
+    wake: Rc<dyn Fn()>,
 }
 
 impl BrowserRunner {
@@ -208,6 +264,9 @@ impl BrowserRunner {
     )]
     async fn frame(&mut self) -> bool {
         let _ = self.drain_local_executor_queue();
+        if self.fonts_arrived.take() {
+            self.runtime.renderer.fonts_changed();
+        }
         // The page's occlusion report drives the pump state each frame — a
         // hidden page still drains events and executor work; only drawing
         // stops.
@@ -244,6 +303,12 @@ impl BrowserRunner {
             if presented && !self.first_frame_announced {
                 self.first_frame_announced = true;
                 self.runtime.platform.announce_first_frame();
+                load_deferred_web_fonts(
+                    core::mem::take(&mut self.deferred_fonts),
+                    &self.fonts,
+                    &self.fonts_arrived,
+                    &self.wake,
+                );
             }
         }
         if let Some(update) = self.runtime.renderer.take_accessibility_tree_update() {
@@ -414,7 +479,7 @@ pub fn run(app: App, style: impl crate::Style) {
         // seeded from the collection, and a self-drawn component that typesets
         // text itself reads it out of the environment instead of building a
         // collection of its own.
-        let (mut platform, fonts) = futures::join!(
+        let (mut platform, (fonts, deferred_fonts)) = futures::join!(
             BrowserWindow::new(
                 Rc::clone(&browser_schedule),
                 Rc::clone(&browser_occlusion_wake),
@@ -425,10 +490,10 @@ pub fn run(app: App, style: impl crate::Style) {
         // The root content lays out inside the page's safe area while
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
-        fonts.clone().install(&mut env);
+        fonts.collection().clone().install(&mut env);
         let mut renderer = HydrolysisRenderer::with_engine(
             theme,
-            SessionTextEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
+            SessionTextEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),
         );
         renderer.set_window_id(
             env.get::<MenuShortcutRegistry>()
@@ -438,8 +503,10 @@ pub fn run(app: App, style: impl crate::Style) {
         renderer.set_window_closable(window.closable);
         let runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
-        let accessibility_bridge =
-            WebAccessibilityBridge::new(Rc::clone(&accessibility_actions), browser_schedule);
+        let accessibility_bridge = WebAccessibilityBridge::new(
+            Rc::clone(&accessibility_actions),
+            Rc::clone(&browser_schedule),
+        );
         let runner = BrowserRunner {
             env,
             runtime,
@@ -447,6 +514,10 @@ pub fn run(app: App, style: impl crate::Style) {
             accessibility_actions,
             accessibility_bridge,
             first_frame_announced: false,
+            fonts: Rc::new(RefCell::new(fonts)),
+            deferred_fonts,
+            fonts_arrived: Rc::new(Cell::new(false)),
+            wake: browser_schedule,
         };
 
         let handle = Rc::new(BrowserRunnerHandle {

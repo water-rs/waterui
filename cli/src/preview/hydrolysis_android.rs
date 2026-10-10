@@ -86,6 +86,8 @@ const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 /// The device's GPU renders the frame and its system fonts shape the text;
 /// the PNG lands in the preview host's private files and is read back into
 /// `output_path` — or `scenario.output_dir`/`frame-*ms.png` for a scenario.
+/// `kotlin` is the toolchain the caller's toolchain check resolved — the
+/// launcher build reuses it rather than probing `kotlinc` again.
 ///
 /// # Errors
 /// Returns an error when no device or AVD is usable, the host APK cannot be
@@ -96,6 +98,7 @@ pub async fn render_preview_with_hydrolysis_android(
     request: &HydrolysisPreviewRequest<'_>,
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
+    kotlin: &crate::android::KotlinToolchain,
 ) -> Result<()> {
     let host = request.host;
     let project = crate::hydrolysis::backend::open_ready(host, request.project_path).await?;
@@ -122,7 +125,7 @@ pub async fn render_preview_with_hydrolysis_android(
             eyre::Ok((device, key))
         },
         hydrolysis_android::ensure_preview_host_apk(&project),
-        DevicePayload::stage(&project, host, request, target.android_abi()),
+        DevicePayload::stage(&project, host, request, target.android_abi(), kotlin),
     )?;
     // The device carries the client its scan located, so every command
     // below reuses that one running server.
