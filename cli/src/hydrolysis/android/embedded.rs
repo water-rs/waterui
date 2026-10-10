@@ -634,7 +634,7 @@ mod tests {
     }
 
     /// The modules [`publish_modules`] reports for the GPU painter without
-    /// the system WebView.
+    /// the system `WebView`.
     const GPU_MODULES: [&str; 2] = ["host", "gpu"];
 
     #[test]

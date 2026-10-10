@@ -1661,7 +1661,7 @@ mod tests {
                 .resolved_framework()
                 .await
                 .expect("the fixture's framework resolves");
-            let ctx = HydrolysisBackend::template_context(&project, &resolved)
+            let ctx = HydrolysisBackend::template_context(&project, resolved)
                 .await
                 .expect("template context builds");
             assert_eq!(
