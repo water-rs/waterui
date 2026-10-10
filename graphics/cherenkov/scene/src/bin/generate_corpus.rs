@@ -6050,8 +6050,8 @@ fn run() -> Result<(), SceneError> {
     });
 
     // The same backdrop and blur with non-rounded member clips: the
-    // ellipse and the continuous rect run the second-order SDFs (#173),
-    // not the rounded-rect closed form.
+    // ellipse and the continuous rect run the Lamé-corner SDF (#173,
+    // #2355), not the rounded-rect closed form.
     corpus.scene_setup("backdrop-refraction-shapes", 256, 256, white, |b| {
         b.backdrop_group(BackdropGroup::new(
             1,
