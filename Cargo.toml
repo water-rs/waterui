@@ -600,7 +600,7 @@ waterui-webview = { path = "components/platform/webview" }
 # split tabs-bar surface and divider calls (#1982). Drop the git pin once a
 # release has both changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "9ade35272de87da502ae0e038e00bb4936bd0d7e" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "00fe165b8221b74bd0da21dbdd4555c418881555" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
