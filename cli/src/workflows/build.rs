@@ -236,13 +236,16 @@ impl BuiltTarget {
     /// and `waterui_preview_*` exports enumerate here. A build with no project
     /// attached — a fixture or a support crate — reads empty.
     ///
+    /// The read and the parse run on a blocking thread: the library is the
+    /// whole compiled crate.
+    ///
     /// # Errors
     /// Returns an error when the reported artifact cannot be read or parsed.
-    pub fn app_symbols(&self) -> eyre::Result<crate::artifact_symbols::ArtifactSymbols> {
-        self.app_library.as_ref().map_or_else(
-            || Ok(crate::artifact_symbols::ArtifactSymbols::empty()),
-            |library| crate::artifact_symbols::ArtifactSymbols::read(library),
-        )
+    pub async fn app_symbols(&self) -> eyre::Result<crate::artifact_symbols::ArtifactSymbols> {
+        let Some(library) = self.app_library.clone() else {
+            return Ok(crate::artifact_symbols::ArtifactSymbols::empty());
+        };
+        smol::unblock(move || crate::artifact_symbols::ArtifactSymbols::read(&library)).await
     }
 }
 

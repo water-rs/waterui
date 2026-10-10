@@ -4,7 +4,6 @@ plugins {
 
 android {
     namespace = "dev.waterui.hydrolysis.testapp"
-    compileSdk = 36
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
@@ -21,7 +20,7 @@ android {
 
     sourceSets {
         named("main") {
-            jniLibs.srcDir("build/jniLibs")
+            jniLibs.directories.add("build/jniLibs")
         }
     }
 

@@ -32,6 +32,8 @@ pub use cherenkov;
 pub use color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
 #[cfg(feature = "effects")]
 pub use effects::filter_view;
+#[cfg(feature = "gpu")]
+pub use filter_view::WithEffect;
 #[cfg(feature = "effects")]
 pub use filter_view::{
     AnyEffect, BackgroundReplace, BlendWithImage, Bloom, Blur, Brightness, BumpDistortion,
@@ -100,6 +102,11 @@ pub use cherenkov_gpu;
 /// filter written against it is the one the engine runs.
 #[cfg(feature = "effects")]
 pub use filtrate;
+
+/// The application-supplied post-process shader `.effect(..)` applies, its
+/// parameter bound, and the error its construction returns.
+#[cfg(feature = "gpu")]
+pub use filtrate::{SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError};
 
 /// The exact `wgpu` this build links, re-exported so applications implementing
 /// [`GpuContent`] cannot end up with a version-mismatched `wgpu`.

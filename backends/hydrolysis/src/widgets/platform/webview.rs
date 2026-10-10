@@ -1,21 +1,20 @@
 //! The `WebView` leaf, as this backend bridges it.
 //!
-//! Hydrolysis bridges exactly one web engine: the platform's own. On macOS that
-//! is `WKWebView`, composed into the winit window as a native subview by the
-//! `webview-system` feature. Every other engine — CEF, WPE `WebKit` — is a
+//! Hydrolysis bridges exactly one web engine: the platform's own, selected by
+//! the `webview-system` feature. On macOS that is `WKWebView`; on the web it is
+//! an `<iframe>` (`web`). Every other engine — CEF, WPE `WebKit` — is a
 //! crate the *application* links and installs as a `Hook<WebView>` realization,
 //! which intercepts the component before it reaches this backend.
 //!
-//! A `WebView` that still reaches the backend is a missing realization — a
-//! programmer error — and panics at the earliest point it is seen (measure or
-//! node build) rather than occupying a layout slot with no page behind it.
-//! That includes the macOS bridge today: its record has no native-view layer
-//! to present the `WKWebView` through, so it fails at build like every other
-//! engine-less path.
+//! Both bridges mount through Cherenkov `Hosted` content: an `AppKit` port on
+//! macOS, the `<iframe>` element on the web. Other engines must install their
+//! own hook; reaching the backend without one is a programmer error rather
+//! than a layout slot with no page behind it.
 
 // Only macOS can act on this: there the feature names a bridge that exists and
-// the diagnostic tells the reader what is missing. Everywhere else the platform
-// has no WKWebView to bridge, and the feature selects nothing — which is what
+// the diagnostic tells the reader what is missing. On the web the feature
+// selects the `<iframe>` bridge, and everywhere else the platform has no web
+// engine this backend bridges, and the feature selects nothing — which is what
 // the module documents above. It has to stay buildable there, because every
 // tool that reads a crate whole turns on every feature on Linux: docs.rs,
 // `cargo hack`, and the `cargo semver-checks` release-plz runs before it
@@ -39,9 +38,13 @@ use waterui_webview::WebView;
 
 #[cfg(hydrolysis_macos_system_webview)]
 mod macos;
+#[cfg(hydrolysis_web_system_webview)]
+mod web;
 
 #[cfg(hydrolysis_macos_system_webview)]
 pub use macos::MacSystemWebViewController;
+#[cfg(hydrolysis_web_system_webview)]
+pub use web::WebSystemWebViewController;
 
 use crate::renderer::{HydroNativeView, HydroState};
 
@@ -52,16 +55,52 @@ impl HydroNativeView for WebView {
         _env: &Environment,
         _theme: &std::rc::Rc<dyn crate::engine::WidgetTheme>,
     ) -> LayoutSize {
+        #[cfg(hydrolysis_system_webview)]
+        {
+            LayoutSize::new(0.0, 0.0)
+        }
+        #[cfg(not(hydrolysis_system_webview))]
         crate::renderer::unsupported_webview()
     }
 }
 
+/// The hosted leaf showing `view`'s `WKWebView`. A page another engine opened
+/// reaches the backend only when that engine's `Hook<WebView>` is missing.
 #[cfg(hydrolysis_macos_system_webview)]
-pub(crate) fn install_controller(env: &mut Environment) {
+pub fn hosted(view: &WebView) -> crate::HostedView {
+    const FOREIGN: &str = "Hydrolysis hosts only pages the system WKWebView controller opened; \
+                           install the custom engine's WebView hook";
+    let handle = view
+        .handle()
+        .downcast_ref::<macos::MacSystemWebViewHandle>()
+        .expect(FOREIGN);
+    crate::HostedView::new(handle.clone())
+}
+
+/// The hosted leaf showing `view`'s `<iframe>`. A page another engine opened
+/// reaches the backend only when that engine's `Hook<WebView>` is missing.
+#[cfg(hydrolysis_web_system_webview)]
+pub fn hosted(view: &WebView) -> crate::HostedView {
+    const FOREIGN: &str = "Hydrolysis hosts only pages the web <iframe> controller opened; \
+                           install the custom engine's WebView hook";
+    let handle = view
+        .handle()
+        .downcast_ref::<web::WebIframeHandle>()
+        .expect(FOREIGN);
+    crate::HostedView::new(handle.clone())
+}
+
+#[cfg(hydrolysis_macos_system_webview)]
+pub fn install_controller(env: &mut Environment) {
     macos::install(env);
 }
 
-// No `install_controller` without the macOS bridge. A build that bridges no
+#[cfg(hydrolysis_web_system_webview)]
+pub fn install_controller(env: &mut Environment) {
+    web::install(env);
+}
+
+// No `install_controller` without a system bridge. A build that bridges no
 // platform engine installs no controller, so a `WebView` can only be created in
 // it under a controller the application installed itself — an engine crate's
 // `install`, which also installs the `Hook<WebView>` that intercepts the

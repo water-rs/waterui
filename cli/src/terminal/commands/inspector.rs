@@ -52,6 +52,12 @@ pub struct Args {
     #[arg(short, long, value_enum, default_value = "macos")]
     platform: CliInspectorPlatform,
 
+    /// Android device serial or AVD name (only with `--platform android`).
+    /// Without it the remembered last-used device wins, then an unambiguous
+    /// single candidate, then a picker.
+    #[arg(short, long)]
+    device: Option<String>,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
@@ -67,6 +73,9 @@ impl Args {
 /// Run the inspector command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let platform = InspectorPlatform::from(args.platform);
+    if args.device.is_some() && platform != InspectorPlatform::Android {
+        eyre::bail!("`--device` is supported only with `--platform android`.");
+    }
     require_device_endpoint(platform, args.target.as_deref(), args.token.as_deref())?;
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
@@ -91,10 +100,32 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     note!(shell, "Target runtime endpoint: {}", target);
     note!(shell, "Session token: {}", token);
 
+    let android = if platform == InspectorPlatform::Android {
+        let spinner = shell.spinner("Scanning for devices...");
+        let target = super::select_android_target(
+            shell,
+            &waterui_cli::toolchain::Host::current(),
+            waterui_cli::water_dir::device_memory_key(
+                waterui_cli::platform::TargetBackend::Hydrolysis,
+                waterui_cli::platform::TargetPlatform::Android,
+            ),
+            args.device.as_deref(),
+            spinner.as_ref(),
+        )
+        .await;
+        if let Some(pb) = spinner {
+            pb.finish_and_clear();
+        }
+        Some(target?)
+    } else {
+        None
+    };
+
     let mut session = launch_inspector_session(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         platform,
+        android,
         InspectorLaunchOptions {
             target_addr: target.to_string(),
             token: token.clone(),

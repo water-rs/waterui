@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use jni::objects::{GlobalRef, JMethodID, JValue};
 use jni::signature::{Primitive, ReturnType};
@@ -27,6 +28,7 @@ use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 use waterui::cursor::CursorStyle;
 use waterui::window::WindowState;
+use waterui_graphics::gpu::RedrawHandle;
 
 use super::accessibility::AccessibilitySnapshot;
 use super::gpu::{AndroidGpuContext, AndroidSurface};
@@ -40,7 +42,7 @@ use crate::platform::{
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
 };
-use crate::runner::android_executor::AndroidMainThreadExecutor;
+use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
 use crate::runner::window::{
@@ -323,11 +325,20 @@ pub struct AndroidHostWindow {
     events: Vec<InputEvent>,
     pub(crate) surface: AndroidSurface,
     /// Shared with the installed frame wake, which posts its own
-    /// Choreographer request through it.
-    pub(crate) bridge: Rc<HostBridge>,
-    /// A redraw the engine asked for that has not yet reached the scheduler;
-    /// consumed at the end of the frame transaction as scheduling demand.
-    redraw_pending: Cell<bool>,
+    /// Choreographer request through it, and with the GPU-surface redraw
+    /// handle, whose queued post calls it from the executor's drain.
+    pub(crate) bridge: Arc<HostBridge>,
+    /// The cross-thread redraw handle's transport onto the UI thread: a
+    /// post rides the executor's shared `eventfd`, coalescing with its
+    /// other wakes.
+    ui_poster: UiThreadPoster,
+    /// A redraw the engine asked for. `on_frame` drains it at the render
+    /// boundary — a request raised before the render is demand the render
+    /// itself serves — and reads it again at close, where only a request
+    /// raised after the render (an animation asking for its next frame)
+    /// remains as scheduling demand. Atomic because the GPU-surface redraw
+    /// handle latches it from whichever thread its producer runs on.
+    redraw_pending: Arc<AtomicBool>,
     /// The Activity is between `onStart` and `onStop` — half of the Android
     /// visibility report; the other half is a live surface below.
     started: bool,
@@ -387,8 +398,8 @@ impl AndroidHostWindow {
         }
     }
 
-    pub const fn take_redraw_pending(&self) -> bool {
-        self.redraw_pending.replace(false)
+    pub fn take_redraw_pending(&self) -> bool {
+        self.redraw_pending.swap(false, Ordering::AcqRel)
     }
 
     /// Re-derives the installed frame wake's gate: closed while `on_frame`
@@ -449,12 +460,18 @@ impl PlatformWindow for AndroidHostWindow {
     }
 
     fn request_redraw(&self) {
-        self.redraw_pending.set(true);
-        tracing::debug!(
-            target: "waterui::hydrolysis::android",
-            "wake posted: redraw requested"
-        );
-        self.bridge.request_frame();
+        self.redraw_pending.store(true, Ordering::Release);
+        // Inside `on_frame`'s transaction the request posts nothing: the
+        // frame already running serves a request raised before it renders,
+        // and a later one joins the continuation `wants_next_frame` carries.
+        // An occluded window's request stays armed for the restore frame.
+        if self.frame_transaction.may_post() {
+            tracing::debug!(
+                target: "waterui::hydrolysis::android",
+                "wake posted: redraw requested"
+            );
+            self.bridge.request_frame();
+        }
     }
 
     /// The wake installed on the window's frame signals: posts the
@@ -464,7 +481,7 @@ impl PlatformWindow for AndroidHostWindow {
     /// occluded; Kotlin's `posted` flag coalesces repeated posts, so the
     /// wake itself posts unconditionally while the gate is open.
     fn frame_wake(&self) -> Rc<dyn Fn()> {
-        let bridge = Rc::clone(&self.bridge);
+        let bridge = Arc::clone(&self.bridge);
         self.frame_transaction.frame_wake(Rc::new(move || {
             tracing::debug!(
                 target: "waterui::hydrolysis::android",
@@ -537,6 +554,41 @@ impl GpuSurfaceWindow for AndroidHostWindow {
     type Presentation = AndroidSurface;
     fn surface(&mut self) -> &mut AndroidSurface {
         &mut self.surface
+    }
+
+    /// The cross-thread `request_redraw`: a producer's wake (a decoder, an
+    /// external frame, an engine completion) lands on any thread, but
+    /// `FrameScheduler` is UI-thread state. The handle latches the redraw
+    /// the next frame renders and queues one post through the executor's
+    /// shared `eventfd` — the wake the main `ALooper` already watches. On
+    /// the UI thread the post asks for the Choreographer frame through the
+    /// transaction gate: inside a transaction the latch already joins that
+    /// frame, and while occluded the request stays armed for the restore
+    /// frame. Wakes raised before the queued post runs coalesce into it.
+    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+        let poster = self.ui_poster.clone();
+        let latch = Arc::clone(&self.redraw_pending);
+        let bridge = Arc::clone(&self.bridge);
+        let wake = Arc::new(self.frame_transaction.ui_thread_wake(move || {
+            tracing::debug!(
+                target: "waterui::hydrolysis::android",
+                "wake posted: cross-thread redraw requested"
+            );
+            bridge.request_frame();
+        }));
+        let queued = Arc::new(AtomicBool::new(false));
+        Some(RedrawHandle::new(move || {
+            latch.store(true, Ordering::Release);
+            if queued.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            let wake = Arc::clone(&wake);
+            let queued = Arc::clone(&queued);
+            poster.post(move || {
+                queued.store(false, Ordering::Release);
+                wake();
+            });
+        }))
     }
 }
 
@@ -725,13 +777,16 @@ impl UiThreadServices {
         // SAFETY: fd >= 0 checked above.
         let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
         let wake = ExecutorWake::register(&executor)?;
-        let _ = executor_core::try_init_local_executor(
+        executor_core::try_init_local_executor(
             waterui::task::monitored_local_executor_with_probes(
                 executor.clone(),
                 waterui::task::RefreshRate::HEADLESS,
                 inspector_probe,
             ),
-        );
+        )
+        .map_err(|_| {
+            JniError("hydrolysis android: the UI thread's executor is already attached".to_owned())
+        })?;
         let mut env = Environment::new();
         waterui::inspector::install(&mut env, inspector);
         Ok(Self {
@@ -817,8 +872,9 @@ impl AndroidSession {
             metrics,
             events: Vec::new(),
             surface: AndroidSurface::new(gpu.clone()),
-            bridge: Rc::new(bridge),
-            redraw_pending: Cell::new(false),
+            bridge: Arc::new(bridge),
+            ui_poster: executor.poster(),
+            redraw_pending: Arc::new(AtomicBool::new(false)),
             started: false,
             cursor_style: CursorStyle::default(),
             soft_input: None,
@@ -966,7 +1022,15 @@ impl AndroidSession {
         let deadline = advance_runtime(&mut self.runtime, &self.env, now);
         let mut flushed = false;
         let surface_attached = self.runtime.platform.surface.is_attached();
-        if FrameTransaction::take_render_request(&mut self.runtime, surface_attached) {
+        // A redraw request raised before this frame renders is served by
+        // that render — it drains into the render demand here, so only a
+        // request raised from this point on, an animation asking for its
+        // next frame, still counts toward the transaction's continuation.
+        if FrameTransaction::take_render_request(
+            &mut self.runtime,
+            surface_attached,
+            AndroidHostWindow::take_redraw_pending,
+        ) {
             let executor = self.executor.clone();
             let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
             flushed = true;
@@ -998,9 +1062,12 @@ impl AndroidSession {
             "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session"
         );
 
-        // A hidden session reports no continuation: the armed mode stays
-        // armed for the restore frame, but the scheduler must not keep
-        // posting wakes into a parked pump.
+        // The redraw latch now holds only requests raised after this
+        // frame's render — an animation asking for its next frame; the
+        // requests before it were drained into the render demand above and
+        // served. A hidden session reports no continuation either way: the
+        // armed mode stays armed for the restore frame, but the scheduler
+        // must not keep posting wakes into a parked pump.
         let redraw_pending = self.runtime.platform.take_redraw_pending();
         // The signals' pending count covers a frame request raised inside
         // this transaction after the pump drained the flags: its wake was

@@ -2,7 +2,7 @@
 
 /// The shared union member cap — the same definition the oracle's
 /// renderer reads, pulled in without depending on the engine crate.
-#[path = "../../src/union_cap.rs"]
+#[path = "../../record/src/union_cap.rs"]
 mod union_cap;
 
 use cherenkov_oracle::color::{linear_srgb_to_linear_p3, to_working};
@@ -35,9 +35,10 @@ fn self_comparison_is_perfect() {
     let scene = b.build();
     let img = render(&scene, &tmp());
     let (m, _heat) = metrics::compare(&img, &img);
-    assert_eq!(m.flip_mean, 0.0);
-    assert_eq!(m.flip_max, 0.0);
-    assert_eq!(m.max_local_error, 0.0);
+    // An image compared with itself has a zero difference everywhere.
+    assert_eq!(m.flip_mean.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(m.flip_max.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(m.max_local_error.to_bits(), 0.0_f64.to_bits());
 }
 
 #[expect(
@@ -55,13 +56,18 @@ fn solid_rect_fills_pixel_centres() {
     let img = render(&scene, &tmp());
     // Pixel (8,8): fully covered by opaque red.
     let [r, g, bl, a] = img.pixels[8 * W as usize + 8];
-    assert_eq!(a, 1.0);
+    // The pixel is fully covered: coverage is exactly one.
+    assert_eq!(a.to_bits(), 1.0_f32.to_bits());
     let want = to_working(&Color::srgb(1.0, 0.0, 0.0));
     assert!((r - want[0] as f32).abs() < 1e-5);
     assert!((g - want[1] as f32).abs() < 1e-5);
     assert!((bl - want[2] as f32).abs() < 1e-5);
     // Pixel (0,0): default clear colour (opaque black), untouched.
-    assert_eq!(img.pixels[0], [0.0, 0.0, 0.0, 1.0]);
+    // Untouched pixels keep the clear colour exactly.
+    assert_eq!(
+        img.pixels[0].map(f32::to_bits),
+        [0.0, 0.0, 0.0, 1.0].map(f32::to_bits)
+    );
 }
 
 /// Clipping is geometric — the exact area of shape∩clip per pixel — not a
@@ -94,8 +100,9 @@ fn clip_is_geometric_intersection() {
     // The intersection is the sliver [9.25, 9.75): no pixel is fully
     // covered. Column 8 is inside the clip but outside the shape; column 10
     // is inside the shape but outside the clip.
-    assert_eq!(img.pixels[8][3], 0.0);
-    assert_eq!(img.pixels[10][3], 0.0);
+    // Outside the intersection the coverage is exactly zero.
+    assert_eq!(img.pixels[8][3].to_bits(), 0.0_f32.to_bits());
+    assert_eq!(img.pixels[10][3].to_bits(), 0.0_f32.to_bits());
 }
 
 /// A member clipped by an ellipse never writes outside the clip: the
@@ -134,9 +141,10 @@ fn ellipse_clip_writes_nothing_outside_the_tip() {
     // The tip is at x = 24: every pixel left of it is outside the clip.
     for y in 64..80usize {
         for x in 0..24usize {
+            // Outside the clip the coverage is exactly zero.
             assert_eq!(
-                img.pixels[y * W + x][3],
-                0.0,
+                img.pixels[y * W + x][3].to_bits(),
+                0.0_f32.to_bits(),
                 "pixel ({x},{y}) written outside the ellipse clip"
             );
         }
@@ -212,7 +220,8 @@ fn metrics_detect_error() {
     assert_eq!(heat.len(), (W * H * 3) as usize);
     img.pixels[8 * W as usize + 8] = [1.0, 1.0, 1.0, 1.0];
     let (m2, _) = metrics::compare(&img, &perturbed);
-    assert_eq!(m2.flip_mean, 0.0);
+    // Restoring the pixel makes the images identical again: a zero difference.
+    assert_eq!(m2.flip_mean.to_bits(), 0.0_f64.to_bits());
 }
 
 /// The metric pipeline runs in Display P3 primaries: two linear-P3 colours
@@ -616,18 +625,20 @@ fn bilinear_clamps_at_edges() {
     // row 0's centre, so the sample is texel (0,0) exactly).
     for u in [-0.25, 0.0, 0.2, 0.49] {
         let px = sample_image(&img, u, 0.5, Sampling::Bilinear);
+        // Both weights toward the neighbours are zero here, so the sample is the texel.
         assert_eq!(
-            px,
-            [1.0, 0.0, 0.0, 1.0],
+            px.map(f64::to_bits),
+            [1.0, 0.0, 0.0, 1.0].map(f64::to_bits),
             "left edge u={u}: got {px:?}, want pure edge texel"
         );
     }
     // Top edge: v in [0, 0.5) must sample row 0 only.
     for v in [-0.25, 0.0, 0.49] {
         let px = sample_image(&img, 1.5, v, Sampling::Bilinear);
+        // Both weights toward the neighbours are zero here, so the sample is the texel.
         assert_eq!(
-            px,
-            [0.0, 1.0, 0.0, 1.0],
+            px.map(f64::to_bits),
+            [0.0, 1.0, 0.0, 1.0].map(f64::to_bits),
             "top edge v={v}: got {px:?}, want pure edge texel"
         );
     }
@@ -1044,9 +1055,10 @@ fn a_mixed_group_without_a_union_draws_the_band() {
         px(40, 16)
     );
     for col in [44usize, 46] {
+        // The plain member's clip excludes the band: the background red, untouched.
         assert_eq!(
-            px(col, 16),
-            red,
+            px(col, 16).map(f32::to_bits),
+            red.map(f32::to_bits),
             "plain member inflated at ({col}, 16): {:?}",
             px(col, 16)
         );

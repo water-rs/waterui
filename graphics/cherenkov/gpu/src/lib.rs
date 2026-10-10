@@ -249,6 +249,10 @@ pub enum GpuTarget {
     /// DMA-BUF images with sync-file acquire/release fences (#1687).
     #[cfg(target_os = "linux")]
     Dmabuf(interop::dmabuf::DmabufTarget),
+    /// Canvases and the host's elements under a host element of the page,
+    /// with DOM planes for hosted content.
+    #[cfg(target_arch = "wasm32")]
+    Dom(interop::web::DomTarget),
 }
 
 /// A window the engine presents on: a raw window handle and the drawable
@@ -291,7 +295,7 @@ impl WindowTarget {
             refresh: cherenkov::DEFAULT_REFRESH,
             output: render::present::OutputRequest {
                 transparent: false,
-                color_space: None,
+                color_space: render::present::ColorSpaceRequest::Best,
                 sync: DisplaySync::Synchronized,
             },
             probe: None,
@@ -308,19 +312,23 @@ impl WindowTarget {
         self
     }
 
-    /// Requires the swapchain's colour space (#98). Without it the engine
+    /// Sets the swapchain's colour-space request (#98, #2445). The
+    /// default, [`ColorSpaceRequest::Best`](interop::ColorSpaceRequest::Best),
     /// negotiates the surface's best advertised pair — an extended or HDR
-    /// space where offered, otherwise a reported SDR selection. With it,
-    /// the surface fails with [`SurfaceError::UnsupportedTarget`] when no
-    /// format is advertised for the space: at creation, or on Apple, where
-    /// the engine creates its layers on the main queue, as the first
-    /// render's [`RenderError::Render`].
+    /// space where offered, otherwise a reported SDR selection.
+    /// [`Range`](interop::ColorSpaceRequest::Range) takes the best pair
+    /// inside a [`ColorRangeInterval`](interop::ColorRangeInterval) of
+    /// classes, and [`Exact`](interop::ColorSpaceRequest::Exact) one space.
+    /// The surface fails with [`SurfaceError::UnsupportedTarget`] when
+    /// nothing it advertises meets the request, never substituting a pair
+    /// — at creation, or on Apple, where the engine creates its layers on
+    /// the main queue, as the first render's [`RenderError::Render`].
     ///
     /// [`SurfaceError::UnsupportedTarget`]: cherenkov::SurfaceError::UnsupportedTarget
     /// [`RenderError::Render`]: cherenkov::RenderError::Render
     #[must_use]
-    pub const fn require_color_space(mut self, color_space: wgpu::SurfaceColorSpace) -> Self {
-        self.output.color_space = Some(color_space);
+    pub const fn color_space(mut self, request: interop::ColorSpaceRequest) -> Self {
+        self.output.color_space = request;
         self
     }
 
@@ -456,15 +464,16 @@ impl Uploads<Rgba16F> for Gpu {}
 impl cherenkov::HdrOutput for Gpu {}
 
 // System-compositor planes (#90): eligible layers of an Apple window surface
-// are promoted to Core Animation layers, and of an Android surface-control
-// surface to child surface controls — see `render::planes`.
-#[cfg(any(target_vendor = "apple", target_os = "android"))]
+// are promoted to Core Animation layers, of an Android surface-control
+// surface to child surface controls, and of a DOM surface to DOM elements —
+// see `render::planes`.
+#[cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))]
 impl cherenkov::Planes for Gpu {}
 
-// Hosted system layers (#2199): the host's `NSView` (macOS), `CALayer` (iOS)
-// or `SurfaceControl` is placed on a plane of its own, never composited —
+// Hosted system layers (#2199): the host's `NSView` (macOS), `CALayer` (iOS),
+// `SurfaceControl` or DOM element (web) is placed on a plane of its own, never composited —
 // see `render::planes`.
-#[cfg(any(target_vendor = "apple", target_os = "android"))]
+#[cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))]
 impl cherenkov::HostedLayers for Gpu {
     type Object = render::planes::Hosted;
 

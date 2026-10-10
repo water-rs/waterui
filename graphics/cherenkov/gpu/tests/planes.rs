@@ -1682,7 +1682,7 @@ mod macos {
         sink.submit(bgra(&fixture.metal, &buffer, FrameColor::SRGB));
         fixture.render();
         assert_eq!(node.position(), CGPoint::new(24., 16.));
-        assert_eq!(node.affineTransform().tx, 0.0);
+        assert_eq!(node.affineTransform().tx.to_bits(), 0_f64.to_bits());
         fixture
             .window
             .display(Display {
@@ -1692,7 +1692,7 @@ mod macos {
             .expect("headroom-only compose");
         fixture.render();
         assert_eq!(node.position(), CGPoint::new(24., 16.));
-        assert_eq!(node.affineTransform().tx, 0.0);
+        assert_eq!(node.affineTransform().tx.to_bits(), 0_f64.to_bits());
         fixture
             .window
             .visibility(cherenkov::Visibility::Hidden)
@@ -1722,7 +1722,7 @@ mod macos {
                 .is_none()
         );
         assert_eq!(node.position(), CGPoint::new(0., 0.));
-        assert_eq!(node.affineTransform().tx, 8.);
+        assert_eq!(node.affineTransform().tx.to_bits(), 8_f64.to_bits());
         drop(video);
         fixture.render();
         assert_eq!(displays(&fixture.root()).len(), 0);
@@ -2290,8 +2290,8 @@ mod macos {
             "AppKit wired the hosted layer under the leaf's"
         );
         assert!(sublayers(&hosted_layer).is_empty(), "no engine sublayers");
-        assert_eq!(hosted_layer.affineTransform().tx, 0.0);
-        assert_eq!(hosted_layer.affineTransform().ty, 0.0);
+        assert_eq!(hosted_layer.affineTransform().tx.to_bits(), 0_f64.to_bits());
+        assert_eq!(hosted_layer.affineTransform().ty.to_bits(), 0_f64.to_bits());
         assert_eq!(
             (
                 hosted_layer.affineTransform().a,

@@ -375,25 +375,25 @@ pub fn render_text_field_parts(
             interaction_motion.focus_exit
         },
     );
-    // The prompt-as-label is sized the way a label view is: its own laid-out
-    // height floored at the theme's minimum label height. The minimum alone
-    // shrinks the Material line box and drops the resting prompt below
-    // centre (#1705).
-    let prompt_styled = prompt_as_label
-        .then(|| StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color()));
-    let prompt_label_height = prompt_styled.as_ref().map_or(0.0, |styled| {
-        material_input_label_height(
-            HydrolysisRenderer::measure_text_dimensions(
-                ctx.state_mut(),
-                styled.clone(),
-                HorizontalAlignment::Leading,
-                env,
-                None,
-                Some(1),
-            )
-            .size,
-            input_metrics.label_height,
+    // The prompt-as-label reserves the same band a label view does, but its
+    // resting rect and laid-out box are still the prompt's own line box —
+    // the band's smaller height would drop the resting prompt below centre
+    // (#1705).
+    let prompt_label = prompt_as_label.then(|| {
+        let styled = StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color());
+        let size = HydrolysisRenderer::measure_text_dimensions(
+            ctx.state_mut(),
+            styled.clone(),
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            Some(1),
         )
+        .size;
+        (styled, size)
+    });
+    let prompt_label_height = prompt_label.as_ref().map_or(0.0, |(_, size)| {
+        material_input_label_height(*size, input_metrics.label_height)
     });
     if label_height > 0.0 {
         flush_material_label(
@@ -403,9 +403,10 @@ pub fn render_text_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             label_height,
+            f64::from(label_size.height),
             label_progress,
         );
-    } else if let Some(prompt_styled) = prompt_styled {
+    } else if let Some((prompt_styled, prompt_size)) = prompt_label {
         flush_material_prompt_label(
             ctx,
             env,
@@ -413,6 +414,7 @@ pub fn render_text_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             prompt_label_height,
+            f64::from(prompt_size.height),
             label_progress,
         );
     }
@@ -732,6 +734,7 @@ pub fn render_secure_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             label_height,
+            f64::from(label_size.height),
             label_progress,
         );
     }
@@ -882,9 +885,15 @@ pub fn measure_secure_field_node(
     ))
 }
 
-fn material_input_label_height(label_size: LayoutSize, min_label_height: f64) -> f64 {
+/// The band a labeled field reserves for its floating label is exactly the
+/// theme's `label_height` — matching `measured_input_label_height` on the
+/// measure path so the dealt frame and the rendered geometry agree. The
+/// label's own measure only decides whether the band exists; it still sizes
+/// the resting rect and the laid-out label box the transform scales into
+/// the band (water-rs/waterui#2387).
+fn material_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(min_label_height)
+        label_height
     } else {
         0.0
     }
@@ -922,6 +931,15 @@ fn material_input_resting_label_rect(
 /// (translate from resting to floating position + scale). The label is a retained
 /// node sub-view re-laid-out and re-flushed each frame, so reactive label content
 /// stays live without re-dispatch.
+///
+/// `label_height` is the reserved band (the theme's `label_height` exactly);
+/// `measured_label_height` is the label's own unscaled height — it centres the
+/// resting box and gives the label its natural layout box, which the transform
+/// scales down into the band.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads the full flush context; grouping into a struct would not improve clarity"
+)]
 fn flush_material_label(
     ctx: &mut WidgetRenderContext<'_>,
     env: &Environment,
@@ -929,16 +947,18 @@ fn flush_material_label(
     field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
+    measured_label_height: f64,
     progress: f32,
 ) {
     let progress = f64::from(progress.clamp(0.0, 1.0));
-    let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
+    let resting =
+        material_input_resting_label_rect(field_rect, horizontal_inset, measured_label_height);
     let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
     let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
     let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
     let y = (floating.y0 - resting.y0).mul_add(progress, resting.y0);
     let width = floating.width() / scale;
-    let height = label_height / scale;
+    let height = measured_label_height;
     let transform = kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale);
     let child = ctx.child(transform, kurbo::Rect::new(0.0, 0.0, width, height));
     #[allow(clippy::cast_possible_truncation)]
@@ -972,7 +992,13 @@ fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {
 /// Draws the prompt text under the Material floating-label transform —
 /// the resting spot centred in the container, floating to the top scaled
 /// down — used when the field has no label view so the prompt stands in as
-/// the label (#85).
+/// the label (#85). `label_height` is the reserved band while
+/// `measured_label_height` is the prompt's own line-box height — the same
+/// split [`flush_material_label`] makes between band and content.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads the full flush context; grouping into a struct would not improve clarity"
+)]
 fn flush_material_prompt_label(
     ctx: &mut WidgetRenderContext<'_>,
     env: &Environment,
@@ -980,10 +1006,12 @@ fn flush_material_prompt_label(
     field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
+    measured_label_height: f64,
     progress: f32,
 ) {
     let progress = f64::from(progress.clamp(0.0, 1.0));
-    let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
+    let resting =
+        material_input_resting_label_rect(field_rect, horizontal_inset, measured_label_height);
     let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
     let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
     let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
@@ -991,7 +1019,7 @@ fn flush_material_prompt_label(
     let width = floating.width() / scale;
     let child = ctx.child(
         kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale),
-        kurbo::Rect::new(0.0, 0.0, width, label_height / scale),
+        kurbo::Rect::new(0.0, 0.0, width, measured_label_height),
     );
     let renderer = ctx.renderer_mut();
     let (state, scene) = renderer.state_and_run_mut();

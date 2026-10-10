@@ -26,7 +26,7 @@ use raw_window_handle::{AndroidDisplayHandle, DisplayHandle, HasDisplayHandle, R
 
 use crate::platform::{
     PresentationSurface, SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
-    select_hydrolysis_surface_format,
+    negotiate_host_output,
 };
 
 /// The Android display's raw handle: the platform has one implicit default
@@ -215,6 +215,10 @@ pub struct AndroidSurface {
     /// dies with it.
     native_window: Option<WindowLease>,
     config: Option<wgpu::SurfaceConfiguration>,
+    /// The negotiated output the swapchain was configured by — the
+    /// engine's `select_output` result, reported headroom included
+    /// (#2445).
+    selection: Option<cherenkov_gpu::interop::OutputSelection>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// wgpu configuration — valid while between surface generations too.
     width: u32,
@@ -244,6 +248,7 @@ impl AndroidSurface {
             surface: None,
             native_window: None,
             config: None,
+            selection: None,
             width: 0,
             height: 0,
             high_refresh: false,
@@ -315,32 +320,24 @@ impl AndroidSurface {
                     "hydrolysis android: surface creation failed: {error}"
                 ))
             })?;
-        let caps = surface.get_capabilities(&self.gpu.inner.adapter);
-        if caps.formats.is_empty() {
-            return Err(GpuError::new(
-                "hydrolysis android: surface reports no formats".to_owned(),
-            ));
-        }
-        let format = select_hydrolysis_surface_format(&caps);
+        // The (format, colour space) pair, present mode and alpha mode
+        // come from the one negotiation every Hydrolysis host uses (#2445).
+        let selection = negotiate_host_output(&surface, &self.gpu.inner.adapter, false)
+            .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
+            format: selection.format,
+            color_space: selection.color_space,
             width: width.max(1),
             height: height.max(1),
-            // FIFO vsync-paced presentation with the plan's swapchain depth.
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: selection.present_mode,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps
-                .alpha_modes
-                .iter()
-                .copied()
-                .find(|mode| *mode == wgpu::CompositeAlphaMode::Opaque)
-                .unwrap_or(wgpu::CompositeAlphaMode::Auto),
+            alpha_mode: selection.alpha_mode,
             view_formats: vec![],
         };
         surface.configure(&self.gpu.inner.device, &config);
         self.config = Some(config);
+        self.selection = Some(selection);
         self.surface = Some(surface);
         Ok(())
     }
@@ -351,6 +348,7 @@ impl AndroidSurface {
     /// window's — so a re-attached surface gets it back.
     pub(crate) fn detach(&mut self) {
         self.config = None;
+        self.selection = None;
         self.surface = None;
         self.native_window = None;
     }
@@ -371,6 +369,7 @@ impl AndroidSurface {
         self.height = height;
         if width == 0 || height == 0 {
             self.config = None;
+            self.selection = None;
             self.surface = None;
             return Ok(());
         }
@@ -512,10 +511,24 @@ impl SurfaceProvider for AndroidSurface {
     }
 
     fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
-        self.config
+        self.selection
             .as_ref()
-            .map_or(cherenkov_gpu::interop::OutputAlpha::Straight, |config| {
-                cherenkov_gpu::interop::surface_output_alpha(config.alpha_mode)
+            .map_or(cherenkov_gpu::interop::OutputAlpha::Straight, |selection| {
+                cherenkov_gpu::interop::surface_output_alpha(selection.alpha_mode)
             })
+    }
+
+    fn display_headroom(&self) -> f32 {
+        self.selection
+            .as_ref()
+            .and_then(|selection| selection.reported_headroom)
+            .unwrap_or(1.0)
+    }
+
+    fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+        self.selection.as_ref().map_or_else(
+            || crate::engine::format_output_color(self.format()),
+            cherenkov_gpu::interop::OutputSelection::output_color,
+        )
     }
 }

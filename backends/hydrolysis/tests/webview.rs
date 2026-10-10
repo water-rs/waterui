@@ -118,8 +118,10 @@ impl WebViewHandle for TestHandle {
         self.watchers.insert(f)
     }
 
-    fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> {
-        ready(Vec::new())
+    fn get_cookies(
+        &self,
+    ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
+        ready(Ok(Vec::new()))
     }
 
     /// Fails rather than answering, because there is no page to answer for.

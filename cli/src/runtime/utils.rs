@@ -22,6 +22,16 @@ pub enum CommandError {
         #[source]
         source: io::Error,
     },
+    /// The input streamed into the command's stdin could not be read or
+    /// written.
+    #[error("failed to feed input to `{program}`: {source}")]
+    Input {
+        /// The program that was invoked.
+        program: String,
+        /// The underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
     /// The command exited with a non-zero status.
     #[error("command `{program}` failed with status {status}{report}")]
     Failed {
@@ -249,6 +259,56 @@ pub async fn copy_file(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Resu
     let from = from.as_ref().to_path_buf();
     let to = to.as_ref().to_path_buf();
     unblock(move || copy_file_overwriting(&from, &to)).await
+}
+
+/// Feed `path`'s length and then its bytes into `hasher`, streamed in
+/// chunks so a large file is never held in memory. The length prefix keeps
+/// consecutive files in one digest from running into each other.
+///
+/// Blocking: call it inside `smol::unblock`.
+///
+/// # Errors
+/// - If `path` cannot be opened or read; the error names the path.
+pub(crate) fn hash_file_into(hasher: &mut sha2::Sha256, path: &Path) -> io::Result<()> {
+    use sha2::Digest as _;
+
+    let named =
+        |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", path.display()));
+    let mut file = std::fs::File::open(path).map_err(named)?;
+    hasher.update(file.metadata().map_err(named)?.len().to_le_bytes());
+    stream_into(hasher, &mut file).map_err(named)
+}
+
+/// The lowercase hex SHA-256 of the file at `path`, read in chunks off the
+/// executor thread.
+///
+/// # Errors
+/// - If the file cannot be read.
+pub async fn file_sha256(path: &Path) -> io::Result<String> {
+    use sha2::Digest as _;
+
+    let path = path.to_path_buf();
+    unblock(move || {
+        let mut hasher = sha2::Sha256::new();
+        stream_into(&mut hasher, &mut std::fs::File::open(path)?)?;
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
+}
+
+/// Feed the rest of `file` into `hasher` in 64 KiB chunks.
+fn stream_into(hasher: &mut sha2::Sha256, file: &mut std::fs::File) -> io::Result<()> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(());
+        }
+        hasher.update(&chunk[..read]);
+    }
 }
 
 /// Copy `from` onto `to` only when its bytes differ.

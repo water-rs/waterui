@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use eyre::{Context as _, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use smol::fs;
 use walkdir::WalkDir;
 use zenwave::{Client as _, Method};
@@ -431,7 +430,7 @@ async fn cache_artifact(
     fs::create_dir_all(&cache_root).await?;
     let archive = cache_root.join(format!("{}.zip", artifact.sha256));
     if archive.is_file()
-        && file_sha256(&archive).await? == artifact.sha256
+        && crate::utils::file_sha256(&archive).await? == artifact.sha256
         && fs::metadata(&archive).await?.len() == artifact.size
     {
         return Ok(archive);
@@ -456,7 +455,7 @@ async fn cache_artifact(
             artifact.size
         );
     }
-    let checksum = file_sha256(&partial).await?;
+    let checksum = crate::utils::file_sha256(&partial).await?;
     if checksum != artifact.sha256 {
         fs::remove_file(&partial).await?;
         bail!(
@@ -469,31 +468,12 @@ async fn cache_artifact(
     Ok(archive)
 }
 
-async fn file_sha256(path: &Path) -> eyre::Result<String> {
-    let path = path.to_path_buf();
-    smol::unblock(move || {
-        let mut file = File::open(path)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-        Ok::<_, std::io::Error>(hex::encode(hasher.finalize()))
-    })
-    .await
-    .map_err(Into::into)
-}
-
 async fn extract_verified_zip(
     archive: &Path,
     expected_sha256: &str,
     destination: &Path,
 ) -> eyre::Result<()> {
-    let actual_sha256 = file_sha256(archive).await?;
+    let actual_sha256 = crate::utils::file_sha256(archive).await?;
     if actual_sha256 != expected_sha256 {
         bail!(
             "cached browser runtime SHA-256 mismatch: expected {expected_sha256}, received {actual_sha256}"

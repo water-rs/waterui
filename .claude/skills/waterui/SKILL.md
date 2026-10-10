@@ -469,6 +469,11 @@ interaction test and an accessibility check, which is why a component that canno
 tested this way is a bug rather than a gap. Details in
 [references/testing.md](references/testing.md).
 
+Backend selection uses `[platforms.<platform>] backend = "..."` in `Water.toml`;
+`--backend` may confirm, but not contradict, that declaration. Without either,
+the platform default applies. See [platforms and backends](references/project.md#platforms-and-backends),
+including the Hydrolysis requirement for Linux previews.
+
 ## Driving the app from an agent
 
 `water mcp` serves the running app to an agent over MCP: run it in the project root and

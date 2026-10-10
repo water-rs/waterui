@@ -100,6 +100,8 @@ fn trials() -> Vec<Trial> {
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
+    #[cfg(feature = "webview")]
+    tests.extend(webview::trials());
     tests
 }
 
@@ -7228,6 +7230,198 @@ mod navigation {
         assert!(
             settles_with_bar(&nav, &root, true),
             "the buried page's recorded intent applies when it shows again"
+        );
+    }
+}
+
+/// The web view leaf's real-engine cases.
+///
+/// Bridge admission is decided inside `WebKit` at navigation time, so only
+/// a genuine `WKWebView` proves a non-admitted document never receives the
+/// bridge — a mock of the handle's own bookkeeping would merely restate it.
+#[cfg(feature = "webview")]
+mod webview {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, block_on_main, pump_main_until};
+    use waterui_webview::{
+        AnyWebViewHandle, BackendEvent, BridgeOrigins, JsReply, OriginPolicy, ScriptInjectionTime,
+        Url, WebViewEvent,
+    };
+
+    use super::mtm;
+
+    /// The bound the whole mirrored-state conformance scenario gets.
+    ///
+    /// The case walks several real navigations across two server origins —
+    /// each a full load cycle through `WebKit`'s web and network processes —
+    /// so its bound covers the scenario, not the single main-queue drain
+    /// [`MAIN_QUEUE_DEADLINE`] gives one deferred piece of work.
+    const MIRRORED_STATE_SCENARIO_DEADLINE: f64 = 180.0;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "webview::a_non_admitted_document_gets_no_bridge_globals",
+                || {
+                    a_non_admitted_document_gets_no_bridge_globals();
+                    Ok(())
+                },
+            ),
+            Trial::test("webview::raw_evaluation_answers_json", || {
+                raw_evaluation_answers_json();
+                Ok(())
+            }),
+            Trial::test(
+                "webview::mirrored_state_reaches_only_admitted_documents",
+                || {
+                    mirrored_state_reaches_only_admitted_documents();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// Navigates to `destination` and waits for the engine to report the
+    /// load finished — delegate callbacks arrive on the main run loop,
+    /// which `pump_main_until` turns.
+    fn navigate(handle: &AnyWebViewHandle, destination: &str, loaded: &Rc<Cell<u32>>) {
+        let before = loaded.get();
+        let url: Url = destination
+            .parse()
+            .unwrap_or_else(|error| panic!("{destination} must parse: {error}"));
+        handle.go_to(&url);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || loaded.get() > before),
+            "the engine never finished loading {destination}"
+        );
+    }
+
+    /// The `typeof` of every global the bridge installs, evaluated in the
+    /// document currently loaded — `waterui`, the `__wateruiEval` wrapper
+    /// and the `__wateruiState` store from the document-start script, plus
+    /// the `__wateruiProbe` the case itself injects, riding the same keyed
+    /// `inject_script` the mirrored-state seed does. The probe answers an
+    /// array, whose reply is its JSON encoding on every engine.
+    fn bridge_globals(handle: &AnyWebViewHandle) -> String {
+        block_on_main(
+            MAIN_QUEUE_DEADLINE,
+            handle.run_javascript(
+                "[typeof waterui, typeof __wateruiEval, typeof __wateruiState, typeof __wateruiProbe]",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("the globals probe must evaluate: {error}"))
+        .to_string()
+    }
+
+    /// A document outside the admission policy must receive none of the
+    /// bridge: no `waterui` object, no `__wateruiEval`, no `__wateruiState`,
+    /// and none of the keyed injections the state seed is one of.
+    ///
+    /// The first leg loads under `BridgeOrigins::Any` so the globals are
+    /// expected present — without it, a build that simply never installed
+    /// anything would pass too. Both legs load `data:` documents, so the
+    /// policy is the only difference between them. The first is not
+    /// `about:blank`: a fresh view's first `about:blank` navigation reuses
+    /// the initial empty document, which runs no document-start script.
+    fn a_non_admitted_document_gets_no_bridge_globals() {
+        let webview = waterui_apple::native_test_support::webview::open(mtm());
+        let handle = webview.handle().clone();
+
+        let loaded = Rc::new(Cell::new(0_u32));
+        let _events = handle.watch({
+            let loaded = Rc::clone(&loaded);
+            move |event| {
+                if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
+                    loaded.set(loaded.get() + 1);
+                }
+            }
+        });
+
+        handle.add_handler(
+            "noop",
+            Box::new(|_| -> waterui_webview::HandlerFuture {
+                Box::pin(async { Ok(JsReply::Json(b"null".to_vec())) })
+            }),
+        );
+        handle.inject_script(
+            "waterui:test-probe",
+            "globalThis.__wateruiProbe = true;",
+            ScriptInjectionTime::DocumentStart,
+        );
+
+        let initial: Url = "https://waterui.dev".parse().expect("parses");
+        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Any, &initial));
+        navigate(&handle, "data:text/html,admitted", &loaded);
+        assert_eq!(
+            bridge_globals(&handle),
+            r#"["object","function","object","boolean"]"#,
+            "an admitted document must receive the whole bridge"
+        );
+
+        // The default policy — only the origin the view was opened at —
+        // admits nothing a `data:` document could report, so the next
+        // navigation must leave the page with no bridge at all.
+        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &initial));
+        navigate(&handle, "data:text/plain,elsewhere", &loaded);
+        assert_eq!(
+            bridge_globals(&handle),
+            r#"["undefined","undefined","undefined","undefined"]"#,
+            "a document outside the admission policy must get no bridge globals"
+        );
+    }
+
+    /// `run_javascript` answers the JSON encoding of the evaluated value —
+    /// a string quoted, a boolean `true`/`false`, `undefined` as `null` —
+    /// checked against a real `WKWebView` through the shared conformance
+    /// case, on a document that has loaded.
+    fn raw_evaluation_answers_json() {
+        let webview = waterui_apple::native_test_support::webview::open(mtm());
+        let handle = webview.handle().clone();
+
+        let loaded = Rc::new(Cell::new(0_u32));
+        let _events = handle.watch({
+            let loaded = Rc::clone(&loaded);
+            move |event| {
+                if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
+                    loaded.set(loaded.get() + 1);
+                }
+            }
+        });
+        navigate(&handle, "data:text/html,conformance", &loaded);
+        block_on_main(
+            MAIN_QUEUE_DEADLINE,
+            waterui_webview::conformance::raw_evaluation_answers_json(async |script| {
+                handle.run_javascript(script).await
+            }),
+        );
+    }
+
+    /// Mirrored state and bridge replies reach only the documents the
+    /// admission policy admits — the shared conformance case, run on two
+    /// real `WKWebView`s opened through the leaf's own controller.
+    ///
+    /// The case's handler futures and mirrored-state flushes run on the
+    /// local executor, which on this backend lands on the main dispatch
+    /// queue; `block_on_main` keeps the run loop turning so they advance
+    /// while it drives the case's future.
+    fn mirrored_state_reaches_only_admitted_documents() {
+        // The local executor is process-global: `initialize_process` installs
+        // a monitored one when the GPU-surface fixtures run, and this install
+        // is a no-op then; otherwise the plain main-queue executor answers
+        // the same contract.
+        let _ = executor_core::try_init_local_executor(
+            native_executor::NativeMainExecutor::new()
+                .expect("the native suite runs on the process's main thread"),
+        );
+        let controller = waterui_apple::native_test_support::webview::controller(mtm());
+        block_on_main(
+            MIRRORED_STATE_SCENARIO_DEADLINE,
+            waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
+                &controller,
+            ),
         );
     }
 }

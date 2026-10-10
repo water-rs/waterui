@@ -34,7 +34,8 @@ fn pending_paths_reuse_their_coverage_layout() -> Result<(), Box<dyn std::error:
     let pixels = wait!(surface.readback())?;
     for y in 0..80 {
         for x in 0..63 {
-            assert_eq!(px(&pixels, x, y), px(&pixels, x + 65, y), "translated pixel {x},{y}");
+            // A whole-pixel translation rasterises the same coverage: identical bits.
+            assert_eq!(px(&pixels, x, y).map(f32::to_bits), (px(&pixels, x + 65, y)).map(f32::to_bits), "translated pixel {x},{y}");
         }
     }
     Ok(())

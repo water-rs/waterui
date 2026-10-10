@@ -1799,6 +1799,14 @@ fn alloc_on(
     w: u32,
     h: u32,
 ) -> Option<(u32, u32, usize)> {
+    // Every band — a live shelf, a dead band, virgin rows — spans one
+    // page's width, so a cell wider than the edge places nowhere. It
+    // fails here, before any branch, so the plan grows the edge (#234)
+    // instead of a reclaimed band taking it and the shelf upload
+    // overrunning the texture's x extent (#2396).
+    if w + 2 * PAD > size {
+        return None;
+    }
     // Shelf height classes are multiples of 8.
     let class = band(h);
     for (i, shelf) in layout.shelves.iter_mut().enumerate() {
@@ -1852,31 +1860,27 @@ fn alloc_on(
         layout.next_epoch += 1;
         return Some((PAD, shelf.y + PAD, slot));
     }
-    // A new shelf also needs the cell's width: a cell wider than the
-    // page edge must fail here so the caller grows (or reclaims)
-    // instead of writing past the texture edge. The virgin scan fills
-    // pages front to back; no room on any page fails the placement.
-    if w + 2 * PAD <= size {
-        for (page, top) in layout.tops.iter_mut().enumerate() {
-            if *top + class > size {
-                continue;
-            }
-            let base = u32::try_from(page).expect("pages fit u32") * size;
-            let i = layout.shelves.len();
-            layout.shelves.push(Shelf {
-                y: base + *top,
-                h: class,
-                x: w + 2 * PAD,
-                base: 0,
-                last_used: tick,
-                hits: 0,
-                live: true,
-                epoch: layout.next_epoch,
-            });
-            layout.next_epoch += 1;
-            *top += class;
-            return Some((PAD, base + *top - class + PAD, i));
+    // The virgin scan fills pages front to back; no room on any page
+    // fails the placement.
+    for (page, top) in layout.tops.iter_mut().enumerate() {
+        if *top + class > size {
+            continue;
         }
+        let base = u32::try_from(page).expect("pages fit u32") * size;
+        let i = layout.shelves.len();
+        layout.shelves.push(Shelf {
+            y: base + *top,
+            h: class,
+            x: w + 2 * PAD,
+            base: 0,
+            last_used: tick,
+            hits: 0,
+            live: true,
+            epoch: layout.next_epoch,
+        });
+        layout.next_epoch += 1;
+        *top += class;
+        return Some((PAD, base + *top - class + PAD, i));
     }
     None
 }

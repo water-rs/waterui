@@ -1,3 +1,8 @@
+# Generated test fixtures are produced by nextest setup scripts (#2386), so
+# a local run and a CI leg share one path: each generator below is pinned,
+# hash-verified, and a cheap no-op once its output exists and verifies.
+experimental = ["setup-scripts"]
+
 # Local runs keep nextest's defaults.
 [profile.default]
 # The AppKit/UIKit-touching native tests share process-wide framework state;
@@ -198,3 +203,85 @@ test-group = 'ios-sim-app'
 platform = 'cfg(target_os = "ios")'
 filter = 'binary(native_app)'
 test-group = 'ios-sim-app'
+
+# The pinned, hash-verified generators, one per uncommitted asset a suite
+# needs. `uv run` reads each script's inline metadata the same way CI does.
+[scripts.setup.test-fonts]
+command = ["uv", "run", "backends/hydrolysis/test-fonts/install.py"]
+
+[scripts.setup.live-photo-motion]
+command = [
+    "uv",
+    "run",
+    "backends/hydrolysis/tests/fixtures/generate-live-photo-motion.py",
+    "backends/hydrolysis/tests/fixtures/live-photo-motion.mp4",
+]
+
+# The same generator, writing the copy waterui-media's e2e_semantics reads.
+[scripts.setup.media-live-photo-motion]
+command = [
+    "uv",
+    "run",
+    "backends/hydrolysis/tests/fixtures/generate-live-photo-motion.py",
+    "components/multimedia/media/tests/fixtures/live-photo-motion.mp4",
+]
+
+[scripts.setup.cli-roboto]
+command = ["uv", "run", "cli/tests/fixtures/fonts/generate.py"]
+
+# Which tests each generator serves. A run that reaches none of a rule's
+# packages runs no generator. Every profile, `ci` included, applies the
+# default profile's script rules, so they are written once.
+#
+# `test-fonts` serves the packages whose test binaries link
+# `waterui-testing`, whose styled suites resolve the installed families
+# through system font discovery. That set is a fact of the package graph,
+# and `.github/tools/affected` (`affected nextest-fixtures`, run by the
+# affected-scope job) fails CI naming every package this filter is missing
+# or carries without cause. `rdeps(waterui-testing)` cannot replace the
+# list: it follows dev-dependency edges at every hop, while cargo links a
+# package's dev-dependencies into its own tests only.
+#
+# `live-photo-motion` and `media-live-photo-motion` run the same generator
+# for the clip's two readers: hydrolysis's `tests/media.rs` and
+# waterui-media's `tests/e2e_semantics.rs`. `cli-roboto` serves the
+# waterui-cli platform test that copies the fixture into a generated
+# project — a path membership, not a dependency edge.
+[[profile.default.scripts]]
+filter = '''
+    package(gallery-example)
+ or package(hydrolysis)
+ or package(list-example)
+ or package(reply-example)
+ or package(skill_snippets)
+ or package(stress-example)
+ or package(typography-rtl-example)
+ or package(waterui)
+ or package(waterui-controls)
+ or package(waterui-form)
+ or package(waterui-graphics)
+ or package(waterui-icon)
+ or package(waterui-icons-lucide)
+ or package(waterui-icons-material-icon)
+ or package(waterui-inspector-app)
+ or package(waterui-macros)
+ or package(waterui-mcp)
+ or package(waterui-media)
+ or package(waterui-navigation)
+ or package(waterui-testing)
+ or package(waterui-text)
+ or package(waterui-webview)
+'''
+setup = 'test-fonts'
+
+[[profile.default.scripts]]
+filter = 'package(hydrolysis)'
+setup = 'live-photo-motion'
+
+[[profile.default.scripts]]
+filter = 'package(waterui-media)'
+setup = 'media-live-photo-motion'
+
+[[profile.default.scripts]]
+filter = 'package(waterui-cli)'
+setup = 'cli-roboto'

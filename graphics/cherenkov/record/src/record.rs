@@ -16,6 +16,10 @@ use crate::display_list::{
     Command, DisplayList, DisplayListView, Operand, Picture, Slot, SlotUpdate,
 };
 use crate::glyph::GlyphRun;
+use crate::material::{
+    BackdropMaterial, CaptureClass, LayeredContent, MaterialEffect, MaterialRun, MaterialScope,
+    MaterialShader,
+};
 use crate::paint::{ImageId, Paint, Sampling};
 use crate::resource::ResourceId;
 use crate::shape::Shape;
@@ -272,6 +276,14 @@ impl<T> Watch<T> {
 }
 
 /// A signal's subscription factory and the guard keeping it alive.
+///
+/// A `Live` made from a signal carries one `Box`ed subscription, consumed
+/// by the first binding — the box's drop is an allocator call, which the
+/// Callgrind gate excludes, where a shared cell's refcount bookkeeping
+/// would be counted on every draw call's operand. A `Live` a recording
+/// stores for later rebinding — a material's shape or effect — goes
+/// through [`into_shared`](Live::into_shared), which moves the factory
+/// into the shared form a [`SharedLive`] binds any number of times.
 struct Subscribe<T>(Option<Box<dyn Subscription<T>>>);
 
 impl<T> std::fmt::Debug for Subscribe<T> {
@@ -280,19 +292,37 @@ impl<T> std::fmt::Debug for Subscribe<T> {
     }
 }
 
+/// An owned subscription — what a [`Live`] carries: started once,
+/// consuming the box.
 trait Subscription<T> {
-    fn start(self: Box<Self>, watch: Watch<T>) -> Option<Box<dyn Any>>;
+    /// Starts the watch, consuming the box.
+    fn start_owned(self: Box<Self>, watch: Watch<T>) -> Option<Box<dyn Any>>;
+    /// Moves the subscription into the shared form a [`SharedLive`]
+    /// carries.
+    fn into_shared(self: Box<Self>) -> Rc<dyn SharedSubscription<T>>;
+}
+
+/// A shared subscription — what a [`SharedLive`] carries: started once
+/// per binding, each start consuming one `Rc` handle.
+trait SharedSubscription<T> {
+    /// Starts the watch, consuming this `Rc` handle; the subscription
+    /// stays alive through its other handles.
+    fn start_shared(self: Rc<Self>, watch: Watch<T>) -> Option<Box<dyn Any>>;
+    /// The source's value now: for rebinding a stored `Live` — a change
+    /// the signal made between the `Live`'s making and the rebind folded
+    /// into the value the new binding starts from.
+    fn current(&self) -> T;
 }
 
 struct SignalSubscription<S>(S);
 
-impl<S: Signal> Subscription<S::Output> for SignalSubscription<S> {
+impl<S: Signal> SignalSubscription<S> {
     #[expect(
         clippy::inline_always,
         reason = "erase constant watches after devirtualizing the subscription"
     )]
     #[inline(always)]
-    fn start(self: Box<Self>, watch: Watch<S::Output>) -> Option<Box<dyn Any>> {
+    fn start_watch(&self, watch: Watch<S::Output>) -> Option<Box<dyn Any>> {
         let guard = self.0.watch(move |context| watch.notify(context));
         // The watch always runs. Only guards with neither size nor drop glue
         // can be discarded instead of retained for unsubscription.
@@ -304,18 +334,118 @@ impl<S: Signal> Subscription<S::Output> for SignalSubscription<S> {
     }
 }
 
+impl<S: Signal> Subscription<S::Output> for SignalSubscription<S> {
+    #[expect(
+        clippy::inline_always,
+        reason = "erase constant watches after devirtualizing the subscription"
+    )]
+    #[inline(always)]
+    fn start_owned(self: Box<Self>, watch: Watch<S::Output>) -> Option<Box<dyn Any>> {
+        self.start_watch(watch)
+    }
+
+    fn into_shared(self: Box<Self>) -> Rc<dyn SharedSubscription<S::Output>> {
+        Rc::new(*self)
+    }
+}
+
+impl<S: Signal> SharedSubscription<S::Output> for SignalSubscription<S> {
+    #[expect(
+        clippy::inline_always,
+        reason = "erase constant watches after devirtualizing the subscription"
+    )]
+    #[inline(always)]
+    fn start_shared(self: Rc<Self>, watch: Watch<S::Output>) -> Option<Box<dyn Any>> {
+        self.start_watch(watch)
+    }
+
+    fn current(&self) -> S::Output {
+        self.0.snapshot()
+    }
+}
+
 impl<T> Subscribe<T> {
     #[expect(
         clippy::inline_always,
         reason = "expose the concrete subscription to the recorder's call site"
     )]
     #[inline(always)]
-    // Starts the watch `Live::watch` and the recorder's slot subscriptions
-    // share.
+    // Starts a recorder's slot subscription.
     #[must_use]
     fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>> {
-        self.0.and_then(|subscription| subscription.start(watch))
+        self.0
+            .and_then(|subscription| subscription.start_owned(watch))
     }
+}
+
+/// The subscription handle a [`Live`] or a [`SharedLive`] carries: the
+/// one seam their shared `watch` and `map` run through.
+trait Handle<T>: Sized {
+    /// The same kind of handle over a mapped value.
+    type Mapped<U: 'static>;
+    /// Starts the watch on this handle.
+    fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>>;
+    /// A handle whose changes pass through `f`.
+    fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Self::Mapped<U>
+    where
+        T: 'static;
+}
+
+impl<T> Handle<T> for Box<dyn Subscription<T>> {
+    type Mapped<U: 'static> = Box<dyn Subscription<U>>;
+
+    #[expect(
+        clippy::inline_always,
+        reason = "expose the concrete subscription to the binding's call site"
+    )]
+    #[inline(always)]
+    fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>> {
+        self.start_owned(watch)
+    }
+
+    fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Box<dyn Subscription<U>>
+    where
+        T: 'static,
+    {
+        Box::new(OwnedMapped { inner: self, f })
+    }
+}
+
+impl<T> Handle<T> for Rc<dyn SharedSubscription<T>> {
+    type Mapped<U: 'static> = Rc<dyn SharedSubscription<U>>;
+
+    fn start(self, watch: Watch<T>) -> Option<Box<dyn Any>> {
+        self.start_shared(watch)
+    }
+
+    fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Rc<dyn SharedSubscription<U>>
+    where
+        T: 'static,
+    {
+        Rc::new(SharedMapped {
+            inner: self,
+            f: Rc::new(f),
+        })
+    }
+}
+
+/// [`Live::watch`] and [`SharedLive::watch`]: starts `watcher` on
+/// `subscription`, returning the value the binding starts from and the
+/// guard keeping it alive.
+#[expect(
+    clippy::inline_always,
+    reason = "expose the concrete subscription to the binding's call site"
+)]
+#[inline(always)]
+fn watch_handle<T>(
+    value: T,
+    subscription: Option<impl Handle<T>>,
+    watcher: impl Fn(nami_core::watcher::Context<T>) + 'static,
+) -> (T, Option<Binding>) {
+    let guard = subscription
+        .and_then(|subscription| subscription.start(Watch::binding(watcher)))
+        .map(|guard| Binding { _guard: guard });
+    (value, guard)
 }
 
 /// A value accepted by [`Recorder`]: a [`Fixed`] value, or the current value
@@ -324,6 +454,11 @@ impl<T> Subscribe<T> {
 /// Outside a recording, a target binds a property to a `Live` through
 /// [`Live::watch`]: layer properties take `impl Into<Live<T>>`, so a bound
 /// signal keeps updating the property with no further transaction.
+///
+/// A `Live` the recording stores to bind later — a material's shape or
+/// effect — is shared ([`into_shared`](Self::into_shared)) so
+/// [`SharedLive::rebound`] and `Clone` can give every binding a watch of
+/// the same subscription.
 pub struct Live<T> {
     value: T,
     subscription: Subscribe<T>,
@@ -377,11 +512,33 @@ impl std::fmt::Debug for Binding {
 }
 
 impl<T> Live<T> {
-    /// The value a binding starts from: the constant, or the signal's
-    /// value when the `Live` was made.
+    /// The value when the `Live` was made: the constant, or the signal's
+    /// value at that point. A binding ([`watch`](Self::watch)) starts
+    /// from the same value — the binding snapshots once, when the `Live`
+    /// is made. nami notifies only the watchers already registered, so a
+    /// change made between the `Live`'s making and the watch starting
+    /// never reaches the binding: a `Live` stored and bound later goes
+    /// through [`SharedLive::rebound`], which starts from the signal's
+    /// value at the bind.
     #[must_use]
     pub const fn value(&self) -> &T {
         &self.value
+    }
+
+    /// Shares the subscription so the `Live` can be cloned or
+    /// [`SharedLive::rebound`] again later — the form a recording hands
+    /// the host for a material's shape or effect. A `Live` only ever
+    /// bound once never needs it: the owned box's drop is an allocator
+    /// call where a shared cell's `Rc` bookkeeping runs on every binding.
+    pub fn into_shared(self) -> SharedLive<T> {
+        let Self {
+            value,
+            subscription,
+        } = self;
+        SharedLive {
+            value,
+            subscription: subscription.0.map(Subscription::into_shared),
+        }
     }
 
     /// Binds `watcher` to the source signal's later changes — the one
@@ -391,10 +548,13 @@ impl<T> Live<T> {
     /// new target, and an [`Animation`] in its metadata is the animation
     /// the change was made under.
     ///
-    /// Returns the value the binding starts from and the guard keeping
-    /// the subscription alive — `None` for a constant, which never calls
-    /// the watcher, or a signal whose watch needs no storage. Either way
-    /// the binding replaces the property's previous one.
+    /// Returns the value the binding starts from — the constant, or the
+    /// signal's value when the `Live` was made — and the guard keeping
+    /// the subscription alive: `None` for a constant, and for a signal
+    /// whose guard is zero-sized with no drop glue. Either way the
+    /// binding replaces the property's previous one. To rebind a `Live`
+    /// stored since its recording, go through [`SharedLive::rebound`]
+    /// first so the binding starts from the signal's current value.
     #[expect(
         clippy::inline_always,
         reason = "expose the concrete subscription to the binding's call site"
@@ -404,14 +564,177 @@ impl<T> Live<T> {
         self,
         watcher: impl Fn(nami_core::watcher::Context<T>) + 'static,
     ) -> (T, Option<Binding>) {
-        let Self {
-            value,
-            subscription,
-        } = self;
-        let guard = subscription
-            .start(Watch::binding(watcher))
-            .map(|guard| Binding { _guard: guard });
-        (value, guard)
+        watch_handle(self.value, self.subscription.0, watcher)
+    }
+
+    /// A `Live` of `f` applied to this one's value: `f` maps the stored
+    /// value now, and the value the binding starts from and every later
+    /// change when the result is bound. A change keeps its `Context`
+    /// metadata, so an [`Animation`] it was made under still reaches the
+    /// binding. The mapped subscription is one allocation, owning this
+    /// one's.
+    pub fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> Live<U>
+    where
+        T: 'static,
+    {
+        Live {
+            value: f(self.value),
+            subscription: Subscribe(self.subscription.0.map(|inner| inner.map(f))),
+        }
+    }
+}
+
+/// A [`Live`] whose subscription is shared (`Rc`) instead of owned.
+///
+/// The form a recording hands the host for a material's shape and effect:
+/// every binding — the first and each later rebind — gets its own watch
+/// of the one subscription.
+pub struct SharedLive<T> {
+    value: T,
+    subscription: Option<Rc<dyn SharedSubscription<T>>>,
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for SharedLive<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedLive")
+            .field("value", &self.value)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Clone> Clone for SharedLive<T> {
+    /// Clones the value and shares the subscription.
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            subscription: self.subscription.clone(),
+        }
+    }
+}
+
+impl<T: 'static> SharedLive<T> {
+    /// The value when the `Live` was made — see [`Live::value`].
+    #[must_use]
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
+
+    /// This `SharedLive` starting from its source's value now: for
+    /// rebinding a `Live` a recording stored — changes the signal made
+    /// between the `Live`'s making and the rebind fold into the value the
+    /// new binding starts from, where `watch` alone would restart stale.
+    /// A constant is unchanged. The subscription is shared, not re-made.
+    #[must_use]
+    pub fn rebound(&self) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            value: self
+                .subscription
+                .as_ref()
+                .map_or_else(|| self.value.clone(), |inner| inner.current()),
+            subscription: self.subscription.clone(),
+        }
+    }
+
+    /// The single-use form: [`watch`](Live::watch) by the same contract.
+    /// Consuming the handle drops this `Rc` — every other clone and
+    /// rebind keeps the shared subscription alive.
+    pub fn watch(
+        self,
+        watcher: impl Fn(nami_core::watcher::Context<T>) + 'static,
+    ) -> (T, Option<Binding>) {
+        watch_handle(self.value, self.subscription, watcher)
+    }
+
+    /// A `SharedLive` of `f` applied to this one's value — see
+    /// [`Live::map`].
+    pub fn map<U: 'static>(self, f: impl Fn(T) -> U + 'static) -> SharedLive<U> {
+        SharedLive {
+            value: f(self.value),
+            subscription: self.subscription.map(|inner| inner.map(f)),
+        }
+    }
+
+    /// The value with its one-way binding machinery: `LayerEdit`'s ops
+    /// take `Live`, so a shared operand hands over a `Live` wrapping the
+    /// same subscription.
+    pub(crate) fn into_live(self) -> Live<T> {
+        Live {
+            value: self.value,
+            subscription: Subscribe(
+                self.subscription
+                    .map(|inner| Box::new(SharedHandle(inner)) as Box<dyn Subscription<T>>),
+            ),
+        }
+    }
+}
+
+impl<T: 'static> From<SharedLive<T>> for Live<T> {
+    #[inline]
+    fn from(live: SharedLive<T>) -> Self {
+        live.into_live()
+    }
+}
+
+/// A shared subscription wrapped to bind where a `Live` is expected —
+/// every clone of the `Rc` keeps the subscription alive.
+struct SharedHandle<T>(Rc<dyn SharedSubscription<T>>);
+
+impl<T: 'static> Subscription<T> for SharedHandle<T> {
+    fn start_owned(self: Box<Self>, watch: Watch<T>) -> Option<Box<dyn Any>> {
+        self.0.start_shared(watch)
+    }
+
+    fn into_shared(self: Box<Self>) -> Rc<dyn SharedSubscription<T>> {
+        self.0
+    }
+}
+
+/// An owned subscription whose changes pass through `f` before they reach
+/// the watch: what [`Live::map`] leaves. Started, it moves `f` into the
+/// watch; shared, it becomes a [`SharedMapped`].
+struct OwnedMapped<T, F> {
+    inner: Box<dyn Subscription<T>>,
+    f: F,
+}
+
+impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> Subscription<U> for OwnedMapped<T, F> {
+    fn start_owned(self: Box<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
+        let Self { inner, f } = *self;
+        inner.start_owned(Watch::binding(
+            move |context: nami_core::watcher::Context<T>| {
+                watch.notify(context.map(&f));
+            },
+        ))
+    }
+
+    fn into_shared(self: Box<Self>) -> Rc<dyn SharedSubscription<U>> {
+        let Self { inner, f } = *self;
+        inner.into_shared().map(f)
+    }
+}
+
+/// A shared subscription whose changes pass through `f` before they
+/// reach each watch: what [`SharedLive::map`] leaves.
+struct SharedMapped<T, F> {
+    inner: Rc<dyn SharedSubscription<T>>,
+    f: Rc<F>,
+}
+
+impl<T: 'static, U: 'static, F: Fn(T) -> U + 'static> SharedSubscription<U> for SharedMapped<T, F> {
+    fn start_shared(self: Rc<Self>, watch: Watch<U>) -> Option<Box<dyn Any>> {
+        let f = Rc::clone(&self.f);
+        Rc::clone(&self.inner).start_shared(Watch::binding(
+            move |context: nami_core::watcher::Context<T>| {
+                watch.notify(context.map(&*f));
+            },
+        ))
+    }
+
+    fn current(&self) -> U {
+        (self.f)(self.inner.current())
     }
 }
 
@@ -633,6 +956,21 @@ pub struct Recorder {
     live: Rc<LiveState>,
     picture: Option<Picture>,
     size: LayoutSize,
+    /// The clip, transform and group scopes open around the current call.
+    depth: u32,
+    /// The state of a recording opened with [`Content::record_layered`];
+    /// `None` for a plain recording, which takes no material.
+    layered: Option<Layered>,
+}
+
+/// A layered recording's state.
+#[derive(Debug)]
+struct Layered {
+    /// The material scope the recording was opened under.
+    scope: MaterialScope,
+    /// Each material so far, in recording order, with the content recorded
+    /// before it.
+    parts: Vec<(Content, BackdropMaterial)>,
 }
 
 impl std::fmt::Debug for Recorder {
@@ -644,6 +982,97 @@ impl std::fmt::Debug for Recorder {
 }
 
 impl Recorder {
+    /// A plain recording into `list`, recording `live` operands.
+    const fn new(
+        list: DisplayList,
+        live: Rc<LiveState>,
+        picture: Option<Picture>,
+        size: LayoutSize,
+    ) -> Self {
+        Self {
+            list,
+            live,
+            picture,
+            size,
+            depth: 0,
+            layered: None,
+        }
+    }
+
+    /// Declares a backdrop material at this point of the recording: a
+    /// chrome surface that samples what lies behind it.
+    ///
+    /// What was recorded before the call draws below the material and is
+    /// part of its backdrop; what is recorded after it draws above it.
+    /// `shape` is the member's clip and `effect` its per-member
+    /// parameters for the registered `shader`; the member's group takes
+    /// the parameters of the registered `capture` class. Both `shape` and
+    /// `effect` are [`Live`]: their signals are not bound to any slot of
+    /// the recording but reach the realized member, so a change updates
+    /// it with no re-recording. See [`crate::material`].
+    ///
+    /// # Panics
+    /// - in a recording not opened with [`Content::record_layered`];
+    /// - inside a [`clip`](Draw::clip), [`transform`](Draw::transform) or
+    ///   [`group`](Draw::group) scope: a material is allowed only at the
+    ///   top level of a layered recording.
+    pub fn backdrop_material<S: Shape>(
+        &mut self,
+        shape: impl Into<Live<S>>,
+        shader: MaterialShader,
+        capture: CaptureClass,
+        effect: impl Into<Live<MaterialEffect>>,
+    ) {
+        let Self {
+            layered: Some(layered),
+            list,
+            live,
+            depth,
+            ..
+        } = self
+        else {
+            panic!(
+                "a backdrop material can only be recorded into a recording opened with \
+                 `Content::record_layered`"
+            );
+        };
+        assert!(
+            *depth == 0,
+            "a backdrop material can only be recorded at the top level of a layered recording, \
+             outside every clip, transform and group scope"
+        );
+        // Built before the part is taken: a panic in the caller's
+        // conversions leaves the recording unchanged.
+        let shape = shape.into().map(Shape::into_data).into_shared();
+        let material = BackdropMaterial::new(
+            shape,
+            shader,
+            capture,
+            effect.into().into_shared(),
+            layered.scope,
+        );
+        layered.parts.push((Self::take_part(list, live), material));
+    }
+
+    /// Runs a clip, transform or group scope's `body` one scope deeper.
+    fn scoped(&mut self, body: impl FnOnce(&mut Self)) {
+        self.depth += 1;
+        body(self);
+        self.depth -= 1;
+    }
+
+    /// Finishes what has been recorded since the last material into a
+    /// content of its own, leaving the recorder empty for the next part.
+    fn take_part(list: &mut DisplayList, live: &mut Rc<LiveState>) -> Content {
+        let mut list = std::mem::take(list);
+        list.trim_spare();
+        Content {
+            picture: Picture::from_list(list),
+            live: std::mem::take(live),
+            sent: false,
+        }
+    }
+
     /// The size the host lays the recorded layer out at, as a signal:
     /// geometry derived from it (`c.layout_size().map(…)`) updates when the
     /// host resizes the layer, without re-recording. See [`LayoutSize`].
@@ -816,7 +1245,7 @@ impl Draw for Recorder {
         self.subscribe(shape.subscription, begin, |shape: S| {
             Operand::Shape(shape.into_data())
         });
-        body(self);
+        self.scoped(body);
         self.list.end(begin);
     }
 
@@ -827,7 +1256,7 @@ impl Draw for Recorder {
             end: 0,
         });
         self.subscribe(transform.subscription, begin, Operand::Transform);
-        body(self);
+        self.scoped(body);
         self.list.end(begin);
     }
 
@@ -838,7 +1267,7 @@ impl Draw for Recorder {
             end: 0,
         });
         self.subscribe(group.subscription, begin, Operand::Group);
-        body(self);
+        self.scoped(body);
         self.list.end(begin);
     }
 }
@@ -957,6 +1386,45 @@ impl Content {
         Self::record_with_capacity(0, size, body)
     }
 
+    /// Records content that may declare backdrop materials
+    /// ([`Recorder::backdrop_material`]), split at each material.
+    ///
+    /// `size` is the layer's [`LayoutSize`], as for
+    /// [`record`](Self::record). `scope` is the material scope the host
+    /// records under: the nearest enclosing view subtree that groups its
+    /// materials, or [`MaterialScope::SOLO`]. Every material recorded
+    /// carries it.
+    ///
+    /// The recording comes back as [`LayeredContent`]: the content below
+    /// the first material, then each material with the content recorded
+    /// after it. A signal used by commands of one part becomes a slot of
+    /// that part only. A recording with no material is all `below`.
+    pub fn record_layered(
+        size: &LayoutSize,
+        scope: MaterialScope,
+        body: impl FnOnce(&mut Recorder),
+    ) -> LayeredContent {
+        let mut recorder = Recorder::new(DisplayList::default(), Rc::default(), None, size.clone());
+        recorder.layered = Some(Layered {
+            scope,
+            parts: Vec::new(),
+        });
+        body(&mut recorder);
+        // Each material's part is the content recorded before it; the
+        // content after the last one is the last run's.
+        let mut above = Recorder::take_part(&mut recorder.list, &mut recorder.live);
+        let Some(Layered { parts, .. }) = recorder.layered else {
+            unreachable!("`record_layered` opened the recording with its layered state");
+        };
+        let mut runs = Vec::with_capacity(parts.len());
+        for (before, material) in parts.into_iter().rev() {
+            runs.push(MaterialRun { material, above });
+            above = before;
+        }
+        runs.reverse();
+        LayeredContent { below: above, runs }
+    }
+
     /// Records into the `spare` a retired content handed back, reusing its
     /// picture storage and live state; a fresh recording when `spare` is
     /// empty.
@@ -983,12 +1451,7 @@ impl Content {
         } else {
             Rc::new(LiveState::default())
         };
-        let mut recorder = Recorder {
-            list,
-            live,
-            picture,
-            size: size.clone(),
-        };
+        let mut recorder = Recorder::new(list, live, picture, size.clone());
         body(&mut recorder);
         recorder.finish()
     }
@@ -1026,12 +1489,12 @@ impl Content {
         size: &LayoutSize,
         body: impl FnOnce(&mut Recorder),
     ) -> Self {
-        let mut recorder = Recorder {
-            list: DisplayList::with_capacity(capacity),
-            live: Rc::default(),
-            picture: None,
-            size: size.clone(),
-        };
+        let mut recorder = Recorder::new(
+            DisplayList::with_capacity(capacity),
+            Rc::default(),
+            None,
+            size.clone(),
+        );
         body(&mut recorder);
         recorder.list.trim_spare();
         Self {
@@ -1177,12 +1640,12 @@ mod tests {
     #[test]
     fn explicit_recording_keeps_live_operands_until_frozen() {
         let radius = binding::<f64>(1.0);
-        let mut recorder = Recorder {
-            list: DisplayList::default(),
-            live: Rc::default(),
-            picture: None,
-            size: LayoutSize::new(),
-        };
+        let mut recorder = Recorder::new(
+            DisplayList::default(),
+            Rc::default(),
+            None,
+            LayoutSize::new(),
+        );
         recorder.fill(radius.map(|r| Circle::new((0.0, 0.0), r)), red());
         let mut content = recorder.finish();
         let Some(ContentChange::Replace(original)) = content.take_change() else {
@@ -1218,12 +1681,12 @@ mod tests {
             elements,
             rule: crate::FillRule::EvenOdd,
         };
-        let mut recorder = Recorder {
-            list: DisplayList::default(),
-            live: Rc::default(),
-            picture: None,
-            size: LayoutSize::new(),
-        };
+        let mut recorder = Recorder::new(
+            DisplayList::default(),
+            Rc::default(),
+            None,
+            LayoutSize::new(),
+        );
         recorder.fill(Fixed(shape), red());
         let picture = recorder.finish().into_picture();
         let Command::Fill {
@@ -1272,6 +1735,8 @@ mod tests {
         assert_eq!(run.coords.as_ptr(), coords);
     }
 
+    /// The recorder subscribes unconditionally, so a slot's `watch` runs
+    /// even when the signal's guard is zero-sized.
     #[test]
     fn a_zero_sized_guard_does_not_skip_the_watch() {
         #[derive(Clone)]
@@ -1587,6 +2052,40 @@ mod tests {
             !content.sample(Instant::now()).is_animating(),
             "a snapped change starts no track"
         );
+    }
+
+    #[test]
+    fn a_mapped_live_maps_every_value_and_keeps_the_animation() {
+        let animation = Animation::from(Curve::linear(std::time::Duration::from_millis(300)));
+        let x = binding::<f64>(1.0);
+        let live: Live<f64> = x.with(animation).into();
+        let mapped = live.map(|x| Circle::new((0., 0.), x * 2.));
+        assert_eq!(*mapped.value(), Circle::new((0., 0.), 2.));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let (start, guard) = mapped.watch({
+            let seen = Rc::clone(&seen);
+            move |context| {
+                let animation = context.metadata().try_get::<Animation>();
+                seen.borrow_mut().push((context.into_value(), animation));
+            }
+        });
+        assert_eq!(start, Circle::new((0., 0.), 2.));
+        x.set(3.0);
+        assert_eq!(
+            *seen.borrow(),
+            [(Circle::new((0., 0.), 6.), Some(animation))],
+            "the change is mapped and keeps its animation"
+        );
+        drop(guard);
+        x.set(4.0);
+        assert_eq!(seen.borrow().len(), 1, "dropping the guard unsubscribes");
+
+        // A mapped constant maps its value and never subscribes.
+        let (value, guard) = Live::from(Fixed(5.0_f64))
+            .map(|x| x + 1.)
+            .watch(|_| unreachable!("a constant never changes"));
+        assert!((value - 6.).abs() < f64::EPSILON);
+        assert!(guard.is_none());
     }
 
     #[test]

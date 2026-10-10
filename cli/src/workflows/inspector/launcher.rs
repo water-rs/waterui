@@ -128,12 +128,16 @@ async fn open_inspector_project(
 
 /// Launch (or relaunch) an inspector support app.
 ///
+/// `android` is the device the caller's selection resolved — required for
+/// [`InspectorPlatform::Android`], ignored elsewhere.
+///
 /// # Errors
 /// Returns an error if the support project cannot be prepared or the inspector app fails to launch.
 pub async fn launch_inspector_session(
     host: &crate::toolchain::Host,
     project_path: &Path,
     platform: InspectorPlatform,
+    android: Option<AndroidTarget>,
     options: InspectorLaunchOptions,
     progress: Option<BuildProgress>,
 ) -> Result<InspectorSession> {
@@ -191,9 +195,12 @@ pub async fn launch_inspector_session(
                 .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
         }
         InspectorPlatform::Android => {
-            let target = AndroidTarget::first_available(host).await?;
+            let target = android.ok_or_else(|| {
+                eyre::eyre!("Internal error: Android inspector launch has no resolved device")
+            })?;
             target.launch(host).await?;
             info!("Building and running inspector app on Android...");
+            let kotlin = crate::android::platform::require_kotlin(host).await?;
             crate::hydrolysis::android::run_on_device(
                 &project,
                 crate::hydrolysis::android::resolve_painter(&project, None),
@@ -201,6 +208,7 @@ pub async fn launch_inspector_session(
                 run_options,
                 BuildOptions::development(BuildProfile::Debug),
                 progress.clone(),
+                &kotlin,
             )
             .await
             .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?

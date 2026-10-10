@@ -113,14 +113,18 @@ pub struct Evaluate<'a> {
     pub await_promise: bool,
     /// Return the value itself rather than a remote handle.
     pub return_by_value: bool,
-    /// Which execution context to evaluate in; the default context when absent.
+    /// Which execution context to evaluate in, named by its unique id; the
+    /// default context when absent.
     ///
-    /// A bridge reply has to go back to the context that made the call. Sending
-    /// every reply to the default context left a sub-frame's
-    /// `waterui.invoke(...)` promise pending forever, because the resolver it
-    /// was waiting on lives in the frame's own context.
+    /// A bridge reply has to go back to the context that made the call, and
+    /// `uniqueContextId` is how `Runtime.evaluate` names it. The numeric
+    /// `contextId` is a per-renderer handle another renderer can reuse after a
+    /// cross-process navigation, so the number alone could deliver a reply
+    /// into a different document; the unique id cannot be reused. The two are
+    /// mutually exclusive in the protocol, and this command only ever sends
+    /// the unique id.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_id: Option<i64>,
+    pub unique_context_id: Option<&'a str>,
 }
 
 #[cfg(feature = "webview")]
@@ -344,7 +348,7 @@ mod tests {
             expression: "1 + 1",
             await_promise: true,
             return_by_value: true,
-            context_id: None,
+            unique_context_id: None,
         };
         let json = serde_json::to_value(&evaluate).expect("serializes");
 
@@ -353,8 +357,10 @@ mod tests {
         // camelCase, because that is what the protocol uses.
         assert_eq!(json["awaitPromise"], true);
         assert_eq!(json["returnByValue"], true);
-        // The default context is expressed by omission, not by null.
+        // The default context is expressed by omission, not by null, and the
+        // reused-by-another-renderer `contextId` is never sent.
         assert!(json.get("contextId").is_none());
+        assert!(json.get("uniqueContextId").is_none());
     }
 
     #[test]

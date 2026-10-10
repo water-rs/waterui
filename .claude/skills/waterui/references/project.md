@@ -116,6 +116,9 @@ bundle_identifier = "dev.example.myapp"
 # assets_path = "assets"                  # default
 # accessory = false                       # macOS: build as a headless accessory app
 
+[platforms.linux]                         # optional
+backend = "hydrolysis"
+
 [theme]
 background = "#0B0B0F"
 surface = "#15151C"
@@ -141,6 +144,10 @@ description = "Required to show user location on the map"
 
 The `[theme]` slots seed the same tokens described in `references/styling.md`, so setting
 them once here themes the whole app on every backend.
+
+The optional `[platforms.<platform>]` tables declare the project's backend for each
+platform; see [Platforms and backends](#platforms-and-backends). `water create` writes
+no declarations.
 
 When developing against a local WaterUI checkout, add `waterui_path = "../.."` at the top
 level so backends resolve locally instead of from the registry.
@@ -251,13 +258,32 @@ the app crashed** — read the log tail rather than treating it as success.
 
 ## Platforms and backends
 
+Declare a backend once in `Water.toml` with `[platforms.linux]` and
+`backend = "hydrolysis"`, for example. The platform names are `ios`,
+`ios-simulator`, `macos`, `android`, `linux`, `windows`, `web`, `esp32s3`,
+`esp32c3`, and `esp32p4`; backend names are `apple`, `android`, `gtk4`,
+`hydrolysis`, and `winui`, exactly as in CLI flags. Unknown names and backends
+unsupported on the selected platform are manifest errors. ESP32 currently has no
+supported backend, so it cannot carry a backend declaration.
+
+`water build`, `water run`, `water package`, and CLI/MCP previews use the declaration.
+An explicit `--backend` (MCP: `backend`) may equal it, but a different value is an error
+before building. Without a declaration an explicit backend wins; without either,
+the defaults below apply. `water create` leaves the tables absent.
+
 | Platform | Default backend | Also possible |
 |---|---|---|
-| macOS, iOS, tvOS, watchOS, visionOS (+ simulators) | `apple` (UIKit/AppKit) | `hydrolysis` |
+| macOS | `apple` (AppKit) | `hydrolysis` |
+| iOS (+ simulator) | `apple` (UIKit) | — |
 | Android | `hydrolysis` | `android` (Kotlin runtime, Android View) |
 | Linux | `gtk4` | `hydrolysis` |
-| Windows | `hydrolysis` | — |
-| Web | WASM + WebGPU | — |
+| Windows | `hydrolysis` | `winui` |
+| Web | `hydrolysis` (WASM + WebGPU) | — |
+
+Previews support only `apple` on iOS/macOS and `hydrolysis` on macOS/Linux/Windows/Android.
+A resolved backend without preview support is an error, not a fallback. For Linux
+previews, declare `hydrolysis` or pass `--backend hydrolysis` on an undeclared project.
+`water preview test` requires Hydrolysis and rejects a conflicting declaration too.
 
 Native backends bridge to real platform widgets. `hydrolysis` is WaterUI's own
 renderer: it is GPU-required and targets high-refresh modern hardware. Choosing a

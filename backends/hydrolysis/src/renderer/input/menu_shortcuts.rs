@@ -204,7 +204,7 @@ pub enum WindowId {
 
 impl WindowId {
     /// The winit window this id names, when it names one.
-    #[cfg(hydrolysis_winit)]
+    #[cfg(hydrolysis_closable_windows)]
     pub(crate) const fn as_winit(self) -> Option<winit::window::WindowId> {
         match self {
             Self::Winit(id) => Some(id),

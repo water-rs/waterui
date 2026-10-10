@@ -56,11 +56,6 @@ waterui-assets-macros = { workspace = true, optional = true }
 waterui-inspector-protocol = { workspace = true, optional = true }
 waterui-ts-schema = { workspace = true, optional = true }
 waterkit-haptic = { workspace = true, optional = true }
-# The self-drawn video realization. Selected by `video-gpu` rather than by
-# `video`, because whether it is the realization is a property of the platform's
-# own frameworks, not of the semantic component.
-waterui-video-gpu = { workspace = true, optional = true }
-
 pastey.workspace = true
 # The document parser `FlowMarkdown` re-parses incrementally as a stream
 # arrives. Only the Markdown grammar: fenced code is highlighted by the `Code`
@@ -72,6 +67,13 @@ tree-sitter-md = { version = "0.5.3", optional = true }
 # embedded; espidf uses a no-op in component/link.rs.
 [target.'cfg(not(target_os = "espidf"))'.dependencies]
 robius-open.workspace = true
+
+# The self-drawn video realization. Selected by `video-gpu` rather than by
+# `video`, because whether it is the realization is a property of the platform's
+# own frameworks, not of the semantic component. The web plays video through
+# the browser's `<video>` element, so a wasm32 build never links it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+waterui-video-gpu = { workspace = true, optional = true }
 
 # CPU-time profiling (cpu-time) needs CLOCK_*_CPUTIME_ID, absent in ESP-IDF
 # newlib; the runtime guard uses a zero-cost fallback there.
@@ -142,9 +144,10 @@ remote = [
     "waterui-assets?/remote",
 ]
 # `WaterUI`'s own GPU video player, installed as the video realization. Not
-# implied by `video`: Apple bridges AVPlayer, so an Apple application would
-# otherwise link and pay for a player it never runs. The backend that has no
-# native player to bridge selects this.
+# implied by `video`: Apple bridges AVPlayer and the web the `<video>` element,
+# so an application there would otherwise link and pay for a player it never
+# runs. The backend that has no native player to bridge selects this; on
+# wasm32 it links nothing.
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
 webview = ["dep:waterui-webview"]
 # The TypeScript props contract schema behind `waterui::ts::schema` — the

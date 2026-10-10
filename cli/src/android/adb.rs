@@ -79,6 +79,38 @@ pub struct Adb {
     path: PathBuf,
 }
 
+/// One `adb forward` registration on a device: a local TCP port bound to a
+/// remote spec.
+#[derive(Debug)]
+pub(crate) struct Forward {
+    /// The local `tcp:` port.
+    pub(crate) local_port: u16,
+    /// The remote spec the port forwards to (`localabstract:<name>`).
+    pub(crate) remote: String,
+}
+
+/// Parse one `forward --list` line — `serial tcp:<port> <remote>`. The
+/// adb server lists every device's forwards whatever `-s` names, so a line
+/// for another serial answers `None`; a line that is not three fields of
+/// that shape is an error.
+fn parse_forward_line(serial: &str, line: &str) -> eyre::Result<Option<Forward>> {
+    let malformed = || eyre::eyre!("an `adb forward --list` line does not parse: {line:?}");
+    let mut fields = line.split_whitespace();
+    let (Some(entry_serial), Some(local), Some(remote), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return Err(malformed());
+    };
+    let local_port = local
+        .strip_prefix("tcp:")
+        .and_then(|port| port.parse::<u16>().ok())
+        .ok_or_else(malformed)?;
+    Ok((entry_serial == serial).then(|| Forward {
+        local_port,
+        remote: remote.to_string(),
+    }))
+}
+
 impl Adb {
     /// Locate `adb` on `host` and make sure its server is up.
     ///
@@ -86,12 +118,34 @@ impl Adb {
     /// [`AdbError::NotFound`] when the SDK has no `adb`; the other variants
     /// when the server could not be started.
     pub async fn locate(host: &Host) -> Result<Self, AdbError> {
-        let path = AndroidSdk::adb_path(host).ok_or(AdbError::NotFound)?;
-        let status = host.run_detached(&path, ["start-server"]).await?;
+        let adb = Self {
+            path: AndroidSdk::adb_path(host).ok_or(AdbError::NotFound)?,
+        };
+        adb.start_server(host).await?;
+        Ok(adb)
+    }
+
+    /// Run `adb start-server` through
+    /// [`Host::run_detached`](crate::toolchain::Host::run_detached): a no-op
+    /// against a running server, and a fresh server that inherits none of
+    /// our handles when the one this client found has since died.
+    ///
+    /// A device phase that follows a long build calls this first — a server
+    /// killed while the build ran would otherwise be relaunched by the
+    /// phase's first ordinary client command, which hands it our pipes.
+    ///
+    /// # Errors
+    /// [`AdbError::ServerLauncher`] when the launcher cannot be run,
+    /// [`AdbError::ServerStart`] when it reports failure.
+    pub async fn start_server(&self, host: &Host) -> Result<(), AdbError> {
+        let status = host.run_detached(&self.path, ["start-server"]).await?;
         if !status.success() {
-            return Err(AdbError::ServerStart { adb: path, status });
+            return Err(AdbError::ServerStart {
+                adb: self.path.clone(),
+                status,
+            });
         }
-        Ok(Self { path })
+        Ok(())
     }
 
     /// The client executable.
@@ -124,10 +178,12 @@ impl Adb {
         Ok((output, invocation))
     }
 
-    /// `adb -s <serial> push <local> <remote>`.
+    /// `adb -s <serial> push <local> <remote>` — adb's sync protocol, which
+    /// carries the bytes unaltered and fails the command on any transfer
+    /// error.
     ///
     /// # Errors
-    /// Returns an error if the push fails.
+    /// Returns an error if the push fails or exceeds `timeout`.
     pub(crate) async fn push(
         &self,
         host: &Host,
@@ -136,21 +192,23 @@ impl Adb {
         remote: &str,
         timeout: Duration,
     ) -> Result<(), AdbCommandError> {
-        self.device_command(
-            host,
-            serial,
-            [OsStr::new("push"), local.as_os_str(), OsStr::new(remote)],
-            "pushing a payload to the device",
-            timeout,
-        )
-        .await?;
-        Ok(())
+        let operation = "pushing files to the device";
+        let (output, invocation) = self
+            .device_output(
+                host,
+                serial,
+                [OsStr::new("push"), local.as_os_str(), OsStr::new(remote)],
+                operation,
+                timeout,
+            )
+            .await?;
+        check_bounded_output(&output, operation, &invocation)
     }
 
-    /// The shared `shell` argv build-and-run behind [`Self::shell`] and
-    /// [`Self::shell_run`]: `words` joined with `shlex` so callers never
-    /// hand a pre-quoted line, returning the full output and the rendered
-    /// invocation for [`check_bounded_output`].
+    /// The shared `shell` argv build-and-run behind [`Self::shell_run`]:
+    /// `words` joined with `shlex` so callers never hand a pre-quoted line,
+    /// returning the full output and the rendered invocation for
+    /// [`check_bounded_output`].
     async fn shell_output(
         &self,
         host: &Host,
@@ -171,25 +229,8 @@ impl Adb {
             .await?)
     }
 
-    /// `adb -s <serial> shell <words>` — `words` is an argv, joined with
-    /// `shlex` so callers never hand a pre-quoted line. Returns the full
-    /// output: the caller judges the status (`am instrument` reports results
-    /// in its stdout, not its exit code).
-    ///
-    /// # Errors
-    /// Returns an error if `words` cannot be quoted or `adb` itself fails.
-    pub(crate) async fn shell(
-        &self,
-        host: &Host,
-        serial: &str,
-        words: &[&str],
-        timeout: Duration,
-    ) -> eyre::Result<Output> {
-        Ok(self.shell_output(host, serial, words, timeout).await?.0)
-    }
-
-    /// [`Self::shell`] failing on a non-zero exit and returning stdout —
-    /// for shell verbs whose own status carries the verdict.
+    /// [`Self::shell_output`] failing on a non-zero exit and returning
+    /// stdout — for shell verbs whose own status carries the verdict.
     ///
     /// # Errors
     /// Returns an error if `words` cannot be quoted or the command fails.
@@ -206,28 +247,6 @@ impl Adb {
             "running a shell command on the device",
             &command,
         )?)
-    }
-
-    /// `adb -s <serial> shell run-as <package> <words>` — a command inside
-    /// `package`'s private data, so a debuggable host's staged files stay
-    /// reachable. The whole command is one quoted `shell` argv, exactly like
-    /// [`Self::shell_run`]. Returns stdout, failing on a non-zero exit.
-    ///
-    /// # Errors
-    /// Returns an error if `words` cannot be quoted or the command fails.
-    pub(crate) async fn run_as(
-        &self,
-        host: &Host,
-        serial: &str,
-        package: &str,
-        words: &[&str],
-        timeout: Duration,
-    ) -> eyre::Result<String> {
-        let argv: Vec<&str> = ["run-as", package]
-            .into_iter()
-            .chain(words.iter().copied())
-            .collect();
-        self.shell_run(host, serial, &argv, timeout).await
     }
 
     /// `adb -s <serial> shell -T run-as <package> cat <path>` — the bytes of
@@ -248,28 +267,50 @@ impl Adb {
         path: &str,
         timeout: Duration,
     ) -> eyre::Result<Vec<u8>> {
-        let joined = shlex::try_join(["run-as", package, "cat", path]).map_err(|error| {
-            eyre::eyre!("cannot quote the run-as cat words for {path}: {error}")
-        })?;
-        let (output, command) = self
-            .device_output(
-                host,
-                serial,
-                [
-                    OsStr::new("shell"),
-                    OsStr::new("-T"),
-                    OsStr::new(joined.as_str()),
-                ],
-                "reading a file from the preview host's private data",
-                timeout,
-            )
-            .await?;
-        check_bounded_output(
-            &output,
-            "reading a file from the preview host's private data",
-            &command,
-        )?;
+        let operation = "reading a file from the preview host's private data";
+        let args = shell_byte_channel_args(serial, &["run-as", package, "cat", path])?;
+        let invocation = command_string(self.path(), &args);
+        let output = bounded_adb(
+            host.output(self.path(), &args),
+            operation,
+            invocation.clone(),
+            timeout,
+        )
+        .await?;
+        check_bounded_output(&output, operation, &invocation)?;
         Ok(output.stdout)
+    }
+
+    /// `adb -s <serial> shell -T <words>` with `input` streamed into the
+    /// remote command's stdin. Returns stdout, failing on a non-zero exit.
+    ///
+    /// The shell protocol behind `shell -T` carries the remote exit status
+    /// and signals the end of `input` to the remote command; `exec-in`
+    /// does neither, and the device kills its command once the client
+    /// disconnects, so a remote failure there would read as success.
+    ///
+    /// # Errors
+    /// Returns an error if `words` cannot be quoted, `input` cannot be fed,
+    /// or the command fails or exceeds `timeout`.
+    pub(crate) async fn shell_with_input(
+        &self,
+        host: &Host,
+        serial: &str,
+        words: &[&str],
+        input: impl smol::io::AsyncRead,
+        timeout: Duration,
+    ) -> eyre::Result<String> {
+        let operation = "running a shell command with input on the device";
+        let args = shell_byte_channel_args(serial, words)?;
+        let invocation = command_string(self.path(), &args);
+        let output = bounded_adb(
+            host.output_with_input(self.path(), &args, input),
+            operation,
+            invocation.clone(),
+            timeout,
+        )
+        .await?;
+        Ok(checked_stdout(&output, operation, &invocation)?)
     }
 
     /// The `versionCode` the device reports for `package`, `None` when it is
@@ -334,6 +375,109 @@ impl Adb {
         Ok(())
     }
 
+    /// `adb -s <serial> forward --list` — this serial's registrations.
+    ///
+    /// # Errors
+    /// Returns an error if the list fails or a line does not parse — a
+    /// garbled line silently dropped could hide the forward a caller is
+    /// looking for.
+    pub(crate) async fn forwards(
+        &self,
+        host: &Host,
+        serial: &str,
+        timeout: Duration,
+    ) -> eyre::Result<Vec<Forward>> {
+        let output = self
+            .device_command(
+                host,
+                serial,
+                [OsStr::new("forward"), OsStr::new("--list")],
+                "listing adb forwards",
+                timeout,
+            )
+            .await?;
+        output
+            .lines()
+            // adb prints a lone empty line when nothing is forwarded; a
+            // blank line names no registration.
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| parse_forward_line(serial, line).transpose())
+            .collect()
+    }
+
+    /// `adb -s <serial> logcat -T <since> -m 1 -e <pattern> -s <tag>:*` —
+    /// block until `tag` logs a line newer than `since` that matches
+    /// `pattern`, answering that line. `logcat` exits on the match itself,
+    /// so the wait ends on the device's own signal; `timeout` bounds a
+    /// device that never logs it.
+    ///
+    /// # Errors
+    /// Returns an error if `logcat` fails, exceeds `timeout`, or exits
+    /// without printing a line.
+    pub(crate) async fn first_log_line(
+        &self,
+        host: &Host,
+        serial: &str,
+        since: &str,
+        tag: &str,
+        pattern: &str,
+        timeout: Duration,
+    ) -> eyre::Result<String> {
+        let filter = format!("{tag}:*");
+        let output = self
+            .device_command(
+                host,
+                serial,
+                [
+                    "logcat", "-T", since, "-m", "1", "-e", pattern, "-s", &filter,
+                ],
+                "waiting for a logcat line",
+                timeout,
+            )
+            .await?;
+        output
+            .lines()
+            .find(|line| !line.trim().is_empty() && !line.starts_with("--------- "))
+            .map(str::to_string)
+            .ok_or_else(|| eyre::eyre!("`logcat` exited without a line matching {pattern:?}"))
+    }
+
+    /// `adb -s <serial> forward tcp:0 <remote>` — bind a fresh local TCP
+    /// port to `remote`, answering the port adb chose.
+    ///
+    /// The registration lives on the adb server, so it survives the client
+    /// that created it: a later run's `forward --list` sees it again.
+    ///
+    /// # Errors
+    /// Returns an error if the command fails or answers something that is
+    /// not a port.
+    pub(crate) async fn forward(
+        &self,
+        host: &Host,
+        serial: &str,
+        remote: &str,
+        timeout: Duration,
+    ) -> eyre::Result<u16> {
+        let output = self
+            .device_command(
+                host,
+                serial,
+                [
+                    OsStr::new("forward"),
+                    OsStr::new("tcp:0"),
+                    OsStr::new(remote),
+                ],
+                "creating an adb forward",
+                timeout,
+            )
+            .await?;
+        output.trim().parse::<u16>().map_err(|error| {
+            eyre::eyre!(
+                "`adb forward` answered {output:?} where a local port was expected: {error}"
+            )
+        })
+    }
+
     /// [`Self::device_output`] failing on a non-zero exit, stdout on success.
     async fn device_command<A, S>(
         &self,
@@ -381,12 +525,26 @@ where
         .map(|argument| argument.as_ref().to_os_string())
         .collect::<Vec<_>>();
     let invocation = command_string(adb.path(), &args);
+    bounded_adb(
+        host.output(adb.path(), &args),
+        operation,
+        invocation,
+        timeout,
+    )
+    .await
+}
+
+/// Bound one spawned `adb` invocation by `timeout`. The command future
+/// owns a `kill_on_drop` child, so the deadline firing drops it and leaves
+/// no orphan.
+async fn bounded_adb(
+    command: impl Future<Output = Result<Output, CommandError>>,
+    operation: &str,
+    invocation: String,
+    timeout: Duration,
+) -> Result<Output, AdbCommandError> {
     let operation = operation.to_owned();
-    let command = Box::pin(async move {
-        host.output(adb.path(), &args)
-            .await
-            .map_err(AdbCommandError::from)
-    });
+    let command = Box::pin(async move { command.await.map_err(AdbCommandError::from) });
     let seconds = timeout.as_secs();
     let timeout = Box::pin(async move {
         smol::Timer::after(timeout).await;
@@ -400,6 +558,18 @@ where
     match select(command, timeout).await {
         Either::Left((result, _)) | Either::Right((result, _)) => result,
     }
+}
+
+/// `-s <serial> shell -T <words>`: the command is one `shlex`-quoted shell
+/// word, and `-T` pins the no-PTY byte channel a binary read or a fed stdin
+/// needs.
+fn shell_byte_channel_args(serial: &str, words: &[&str]) -> eyre::Result<Vec<OsString>> {
+    let joined = shlex::try_join(words.iter().copied())
+        .map_err(|error| eyre::eyre!("cannot quote the shell words {words:?}: {error}"))?;
+    Ok(["-s", serial, "shell", "-T", joined.as_str()]
+        .into_iter()
+        .map(OsString::from)
+        .collect())
 }
 
 /// [`run_bounded_adb_output`] plus the status check: stdout text on success,
@@ -559,8 +729,35 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use super::{Adb, AdbError, parse_installed_version_code};
+    use super::{Adb, AdbError, parse_forward_line, parse_installed_version_code};
     use crate::toolchain::testing::TestMachine;
+
+    /// `forward --list` names every device's forwards: a line for another
+    /// serial is skipped, one for this serial parses, and a line of another
+    /// shape is an error naming it.
+    #[test]
+    fn forward_lines_parse_for_their_serial_only() {
+        let forward = parse_forward_line("a", "a tcp:4567 localabstract:x")
+            .expect("parses")
+            .expect("this serial's forward");
+        assert_eq!(
+            (forward.local_port, forward.remote.as_str()),
+            (4567, "localabstract:x")
+        );
+        assert!(
+            parse_forward_line("a", "b tcp:4567 localabstract:x")
+                .expect("parses")
+                .is_none()
+        );
+        for line in [
+            "a tcp:4567",
+            "a tcp:4567 localabstract:x extra",
+            "a udp:4567 localabstract:x",
+        ] {
+            let error = parse_forward_line("a", line).expect_err(line);
+            assert!(error.to_string().contains(line), "{error}");
+        }
+    }
 
     #[test]
     fn without_platform_tools_there_is_no_adb() {
@@ -655,15 +852,17 @@ mod tests {
         }
     }
 
-    /// `push`, `run-as` and the `shell -T` read-back log their argv through
-    /// the fake — paths with spaces travel inside one quoted shell word.
+    /// `push`, the fed `shell -T` and the `shell -T` read-back log their
+    /// argv through the fake — paths with spaces travel inside one quoted
+    /// shell word — and the fed input reaches the remote command's stdin.
     #[test]
     #[cfg(unix)]
-    fn push_run_as_and_cat_log_their_invocations() {
+    fn push_fed_shell_and_cat_log_their_invocations() {
         let machine = TestMachine::new();
         let sdk = machine.install_android_sdk();
         machine.install_adb();
         let log = machine.root().join("adb-argv.log");
+        let received = machine.root().join("received.bin");
         let host = machine.host([
             (
                 OsString::from("ANDROID_SDK_ROOT"),
@@ -673,8 +872,16 @@ mod tests {
                 OsString::from("WATERUI_FAKE_ADB_LOG"),
                 log.as_os_str().to_os_string(),
             ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_STDIN"),
+                received.as_os_str().to_os_string(),
+            ),
         ]);
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
+        // More than one feed chunk, so the input spans several writes.
+        let input: Vec<u8> = (0..200_000u32)
+            .map(|index| index.to_le_bytes()[0])
+            .collect();
 
         smol::block_on(async {
             adb.push(
@@ -686,21 +893,23 @@ mod tests {
             )
             .await
             .expect("the fake adb accepts push");
-            adb.run_as(
+            adb.shell_with_input(
                 &host,
                 "serial",
-                "dev.waterui.hydrolysis.preview",
                 &[
+                    "run-as",
+                    "dev.waterui.hydrolysis.preview",
                     "sh",
                     "-c",
-                    "rm -rf \"$1\"",
+                    "cat > \"$1\"",
                     "sh",
                     "files/payload with space",
                 ],
+                input.as_slice(),
                 Duration::from_secs(5),
             )
             .await
-            .expect("the fake adb accepts run-as");
+            .expect("the fake adb accepts the input");
             std::fs::create_dir_all(machine.responses()).expect("responses dir");
             std::fs::write(
                 machine.responses().join("ADB_CAT"),
@@ -721,16 +930,27 @@ mod tests {
         let argv = std::fs::read_to_string(&log).expect("read the argv log");
         assert!(
             argv.lines()
-                .any(|line| line.contains("push") && line.contains("dir with space")),
+                .any(|line| line
+                    == "-s serial push dir with space/lib /data/local/tmp/waterui-preview"),
             "the push invocation logged: {argv}"
         );
         assert!(
-            argv.contains("run-as dev.waterui.hydrolysis.preview sh -c"),
-            "the run-as invocation logged: {argv}"
+            argv.contains(
+                "-s serial shell -T run-as dev.waterui.hydrolysis.preview sh -c 'cat > \"$1\"' sh \
+                 'files/payload with space'"
+            ),
+            "the fed shell invocation logged: {argv}"
         );
         assert!(
-            argv.contains("-T") && argv.contains("cat files/payload/out.png"),
+            argv.contains(
+                "-s serial shell -T run-as dev.waterui.hydrolysis.preview cat files/payload/out.png"
+            ),
             "the shell -T cat invocation logged: {argv}"
+        );
+        assert_eq!(
+            std::fs::read(&received).expect("the input landed"),
+            input,
+            "the remote command read the whole input"
         );
     }
 
@@ -752,11 +972,17 @@ mod tests {
             ),
         ]);
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
-        let error = smol::block_on(adb.run_as(
+        let error = smol::block_on(adb.shell_with_input(
             &host,
             "serial",
-            "dev.waterui.hydrolysis.preview",
-            &["ls", "files"],
+            &[
+                "run-as",
+                "dev.waterui.hydrolysis.preview",
+                "sh",
+                "-c",
+                "cat > config",
+            ],
+            &b"config"[..],
             Duration::from_secs(5),
         ))
         .expect_err("a non-zero run-as must fail");
@@ -779,7 +1005,7 @@ mod tests {
         )]);
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
         let wedged = machine.host([(OsString::from("WATERUI_FAKE_ADB_HANG"), OsString::from("1"))]);
-        let error = smol::block_on(adb.shell(
+        let error = smol::block_on(adb.shell_run(
             &wedged,
             "serial",
             &["getprop", "ro.build.id"],

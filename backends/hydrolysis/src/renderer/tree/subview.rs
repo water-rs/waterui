@@ -93,7 +93,7 @@ impl<'a> NodeSubView<'a> {
             try_resolve_node_text_leaf(node, env, state).map(|(input, max_lines)| {
                 ResolvedNodeTextMeasure {
                     input,
-                    service: std::sync::Arc::clone(&state.borrow().text),
+                    service: std::sync::Arc::clone(state.borrow_mut().measuring_text()),
                     max_lines,
                 }
             });

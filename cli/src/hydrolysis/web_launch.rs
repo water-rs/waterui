@@ -209,7 +209,7 @@ mod tests {
         assert!(html.contains("src=\"data:image/png;base64,AAAA\""));
         assert!(html.contains("<title>Demo &#60;App&#62;</title>"), "{html}");
         assert!(html.contains("id=\"waterui-launch\""));
-        assert!(html.contains("<canvas id=\"waterui-canvas\">"));
+        assert!(html.contains("<div id=\"waterui-root\">"));
     }
 
     #[test]

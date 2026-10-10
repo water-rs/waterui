@@ -1,0 +1,60 @@
+# callgrind format
+version: 1
+creator: callgrind-3.18.1
+cmd: cherenkov-bench measure
+part: 1
+
+desc: Trigger: --dump-after=_RNvCs1_5bench4root
+
+positions: line
+events: Ir
+summary: 108
+
+
+ob=(1) /bench
+fl=(1) ???
+fn=(1) _RNvCs1_5bench5frame
+cfn=(2) _RNvCs1_5bench4root
+calls=1 0
+0 108
+
+fn=(2)
+0 40
+cfn=(3) _RNvCs1_7___rustc14___rust_realloc'_RNvCs1_5bench4root'_RNvCs1_5bench5frame
+calls=1 0
+0 60
+cfn=(4) __memcpy_avx_unaligned_erms'_RNvCs1_5bench4root'_RNvCs1_5bench5frame
+calls=1 0
+0 8
+
+fn=(3)
+0 5
+cfn=(5) realloc'_RNvCs1_7___rustc14___rust_realloc'_RNvCs1_5bench4root'_RNvCs1_5bench5frame
+calls=1 0
+0 55
+
+fn=(5)
+0 10
+cfn=(6) _int_realloc
+calls=1 0
+0 45
+
+fn=(6)
+0 15
+cfn=(7) 0x0000000000001000
+calls=1 0
+0 30
+
+fn=(7)
+0 2
+cfn=(8) __memcpy_avx_unaligned_erms'0x0000000000001000'_int_realloc'realloc'_RNvCs1_7___rustc14___rust_realloc'_RNvCs1_5bench4root'_RNvCs1_5bench5frame
+calls=1 0
+0 28
+
+fn=(8)
+0 28
+
+fn=(4)
+0 8
+
+totals: 108

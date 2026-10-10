@@ -541,7 +541,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
-        let layout = state.text.shape(&input, None);
+        let layout = state.measuring_text().shape(&input, None);
         if layout.line_count() == 0 {
             return;
         }
@@ -562,10 +562,6 @@ impl HydrolysisRenderer {
     }
 
     #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
-    #[expect(
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
@@ -577,13 +573,9 @@ impl HydrolysisRenderer {
         max_width: Option<f32>,
     ) -> SessionTextLayout {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        state.text.shape(&input, max_width)
+        state.measuring_text().shape(&input, max_width)
     }
 
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
@@ -597,8 +589,9 @@ impl HydrolysisRenderer {
         max_lines: Option<usize>,
     ) -> ViewDimensions {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        let layout = state.text.shape_limited(&input, max_width, max_lines);
-        state.text.dimensions(&layout, max_lines)
+        let text = state.measuring_text();
+        let layout = text.shape_limited(&input, max_width, max_lines);
+        text.dimensions(&layout, max_lines)
     }
 
     pub(crate) fn measure_text_intrinsic_size(
@@ -1195,9 +1188,13 @@ pub fn measure_secure_field_size_with_label_size(
     )
 }
 
-fn measured_input_label_height(label_size: LayoutSize, min_label_height: f64) -> f64 {
+/// The band a labeled field reserves for its floating label is exactly the
+/// theme's `label_height`: the label scales into the band when it floats, so
+/// the unscaled label measure only decides whether the band exists, never
+/// how tall it is (water-rs/waterui#2387).
+fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(min_label_height)
+        label_height
     } else {
         0.0
     }
@@ -1583,8 +1580,19 @@ pub fn measure_picker_intrinsic_with_label_size(
 
 #[cfg(test)]
 mod tests {
-    use super::measured_input_field_height;
+    use super::{measure_view_dimensions, measured_input_field_height};
+    use crate::engine::WidgetTheme;
+    use crate::renderer::tests::{MinimalTestTheme, test_environment};
+    use crate::renderer::{HydroState, normalize_layout_view};
+    use crate::text::{FontFamilyResolution, SessionTextEngine};
+    use std::rc::Rc;
+    use waterui::theme::install_font_signal;
+    use waterui::{Binding, Computed};
     use waterui_backend_core::widget::InputFieldMetrics;
+    use waterui_controls::text_field::field;
+    use waterui_core::{AnyView, Str};
+    use waterui_form::secure::{Secure, secure};
+    use waterui_text::font::{Body, FontWeight, ResolvedFont};
 
     #[test]
     fn labeled_input_field_height_reserves_space_for_tall_text() {
@@ -1592,6 +1600,39 @@ mod tests {
 
         approx::assert_relative_eq!(measured_input_field_height(22.0, 18.0, metrics), 56.0);
         approx::assert_relative_eq!(measured_input_field_height(34.0, 18.0, metrics), 68.0);
+    }
+
+    /// A labeled field reserves exactly the theme's `label_height` for its
+    /// floating label: the label's unscaled line must not grow the band
+    /// (water-rs/waterui#2387). A 16 pt band, two 8 pt insets and a 24 pt
+    /// body line compose 56 pt — the Material 3 filled field height — and
+    /// the secure field composes identically. The theme's `min_height`
+    /// stays below the composition so the assertion cannot be met by the
+    /// floor.
+    #[test]
+    fn labeled_fields_reserve_the_theme_label_height() {
+        let mut env = test_environment();
+        install_font_signal::<Body>(
+            &mut env,
+            Computed::constant(
+                ResolvedFont::new(16.0, FontWeight::Normal).with_typography_metrics(24.0, 0.0),
+            ),
+        );
+        let theme: Rc<dyn WidgetTheme> = Rc::new(
+            MinimalTestTheme::default()
+                .with_input_metrics(InputFieldMetrics::new(16.0, 280.0, 40.0, 16.0, 8.0)),
+        );
+        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+
+        let value = Binding::container(Str::from("x"));
+        let view = normalize_layout_view(AnyView::new(field("Label", &value)), &env);
+        let size = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+        approx::assert_relative_eq!(f64::from(size.height), 56.0);
+
+        let secret = Binding::container(Secure::new(String::from("x")));
+        let view = normalize_layout_view(AnyView::new(secure("Label", &secret)), &env);
+        let size = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+        approx::assert_relative_eq!(f64::from(size.height), 56.0);
     }
 
     #[test]

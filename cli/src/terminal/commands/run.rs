@@ -17,7 +17,7 @@ use crate::{error, header, line, note, success, warn};
 use waterui_cli::toolchain_checks;
 use waterui_cli::{
     android::{
-        device::{AndroidDevice, AndroidEmulator},
+        device::{AndroidDevice, AndroidEmulator, AndroidTarget},
         platform::AndroidPlatform,
     },
     apple::{
@@ -169,7 +169,7 @@ pub struct Args {
     #[arg(short, long, value_enum)]
     platform: Option<TargetPlatform>,
 
-    /// Backend to use (overrides default for platform).
+    /// Backend to use (must agree with any Water.toml platform declaration).
     /// Example: `--platform linux --backend hydrolysis`.
     #[arg(short, long, value_enum)]
     backend: Option<TargetBackend>,
@@ -181,7 +181,10 @@ pub struct Args {
     #[arg(long, value_enum)]
     painter: Option<HydrolysisAndroidPainter>,
 
-    /// Device identifier (if not specified, uses first available device).
+    /// Device identifier: an iOS device name, identifier or UDID, an
+    /// Android device serial or an AVD name. Without it the remembered
+    /// last-used device wins, then an unambiguous single candidate, then a
+    /// picker.
     #[arg(short, long)]
     device: Option<String>,
 
@@ -295,74 +298,6 @@ impl From<CliLogLevel> for LogLevel {
     }
 }
 
-/// Resolve the effective backend for a platform.
-/// Returns the backend to use and validates compatibility.
-fn resolve_backend(
-    platform: TargetPlatform,
-    backend_override: Option<TargetBackend>,
-) -> Result<TargetBackend> {
-    // The ESP32 variants stay selectable so the refusal can name what
-    // replaces their backend: Dew is archived and Hydrolysis's embedded host
-    // lands with #1601.
-    let Some(default_backend) = default_backend(platform) else {
-        bail!("{}", super::ESP32_UNSUPPORTED);
-    };
-    let backend = backend_override.unwrap_or(default_backend);
-
-    // Validate backend supports platform
-    let supported = matches!(
-        (platform, backend),
-        (TargetPlatform::Ios, TargetBackend::Apple)
-            | (
-                TargetPlatform::Macos,
-                TargetBackend::Apple | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Android,
-                TargetBackend::Android | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Linux,
-                TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Windows,
-                TargetBackend::Hydrolysis | TargetBackend::WinUi
-            )
-            | (TargetPlatform::Web, TargetBackend::Hydrolysis)
-    );
-
-    if !supported {
-        bail!(
-            "Backend {:?} does not support platform {:?}.\n\
-             Valid combinations:\n  \
-             - iOS: apple\n  \
-             - macOS: apple, hydrolysis\n  \
-             - Android: hydrolysis, android\n  \
-             - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis, winui\n  \
-             - Web: hydrolysis",
-            backend,
-            platform
-        );
-    }
-
-    Ok(backend)
-}
-
-/// The backend a run on `platform` uses when `--backend` is not given —
-/// `None` for the ESP32 targets, which no backend serves until #1601.
-const fn default_backend(platform: TargetPlatform) -> Option<TargetBackend> {
-    match platform {
-        TargetPlatform::Ios | TargetPlatform::Macos => Some(TargetBackend::Apple),
-        TargetPlatform::Android
-        | TargetPlatform::Linux
-        | TargetPlatform::Windows
-        | TargetPlatform::Web => Some(TargetBackend::Hydrolysis),
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => None,
-    }
-}
-
 /// The managed native backends a run on `platform` and `backend` needs
 /// opened.
 ///
@@ -439,7 +374,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             return Ok(None);
         };
         print_run_header(shell, &context);
-        check_run_toolchain(
+        let kotlin_toolchain = check_run_toolchain(
             shell,
             context.project.host(),
             context.platform,
@@ -483,6 +418,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             context.backend,
             selection,
             config,
+            kotlin_toolchain.as_ref(),
         ))
         .await?;
         Ok(Some(RunReady {
@@ -549,7 +485,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         ManagedBackends::NONE,
@@ -581,9 +517,14 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         platform.desktop_os(),
         std::env::consts::OS,
     )?;
-    let backend = resolve_backend(platform, args.backend)?;
+    let manifest = waterui_cli::project::Manifest::open(project_path.join("Water.toml")).await?;
+    let backend = TargetBackend::from_lib(waterui_cli::project::resolve_backend(
+        &manifest,
+        lib_platform(platform),
+        args.backend.map(TargetBackend::lib_backend),
+    )?);
     let managed_backends = managed_backends(platform, backend);
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         managed_backends,
@@ -636,14 +577,14 @@ async fn check_run_toolchain(
     host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(host, platform, backend).await?;
+    let kotlin_toolchain = check_toolchain_for_backend(host, platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
     success!(shell, "Toolchain ready");
-    Ok(())
+    Ok(kotlin_toolchain)
 }
 
 async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
@@ -846,6 +787,7 @@ async fn build_and_run(
     backend: TargetBackend,
     selection: DeviceSelection,
     config: BuildRunConfig,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<(Running, Option<web::WebDevServer>)> {
     let build_plan = resolve_build_plan(cli_platform, &selection.device);
     let physical_ios = is_physical_ios(&selection.device);
@@ -880,6 +822,7 @@ async fn build_and_run(
         backend,
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
+        kotlin_toolchain,
     ))
     .await?;
 
@@ -931,7 +874,7 @@ async fn start_web_dev_server(
     built: &waterui_cli::build::BuiltTarget,
     expose_on_lan: bool,
 ) -> Result<Option<web::WebDevServer>> {
-    let Some(meta) = web::web_mount(&built.app_symbols()?)? else {
+    let Some(meta) = web::web_mount(&built.app_symbols().await?)? else {
         return Ok(None);
     };
     let root = meta
@@ -1069,7 +1012,13 @@ async fn build_for_backend(
     backend: TargetBackend,
     plan: &BuildPlan,
     build_options: BuildOptions,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<waterui_cli::build::BuiltTarget> {
+    let kotlin = || {
+        kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android build has no resolved Kotlin toolchain")
+        })
+    };
     match backend {
         TargetBackend::Apple => {
             Box::pin(build_rust_lib(project, plan.lib_platform, build_options)).await
@@ -1079,7 +1028,7 @@ async fn build_for_backend(
                 .android_abi
                 .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
             AndroidPlatform::clean_jni_libs(project).await?;
-            Box::pin(AndroidPlatform::new(abi).build(project, build_options)).await
+            Box::pin(AndroidPlatform::new(abi).build(project, build_options, kotlin()?)).await
         }
         TargetBackend::Gtk4 => Box::pin(build_gtk4(project, build_options)).await,
         TargetBackend::Hydrolysis => {
@@ -1088,7 +1037,13 @@ async fn build_for_backend(
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
+                Box::pin(hydrolysis_android::build(
+                    project,
+                    abi,
+                    build_options,
+                    kotlin()?,
+                ))
+                .await
             } else {
                 Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
@@ -1239,49 +1194,14 @@ struct DeviceCandidate {
     label: String,
 }
 
-/// `~/.water/config.toml` key for the device a `(backend, platform)` last
-/// ran on.
-const fn device_memory_key(backend: TargetBackend, platform: TargetPlatform) -> &'static str {
-    match (backend, platform) {
-        (TargetBackend::Apple, TargetPlatform::Ios) => "apple/ios",
-        (TargetBackend::Android, TargetPlatform::Android) => "android/android",
-        (TargetBackend::Hydrolysis, TargetPlatform::Android) => "hydrolysis/android",
-        // Device memory only exists for targets with a device dimension.
-        _ => unreachable!(),
-    }
-}
-
-/// The device last used for `key`, if the config records one. A config read
-/// failure is a warning, not a run failure.
-async fn remembered_device(host: &waterui_cli::toolchain::Host, key: &str) -> Option<String> {
-    match waterui_cli::water_dir::ensure_global_config(host).await {
-        Ok(config) => config.last_used_device.get(key).cloned(),
-        Err(error) => {
-            tracing::warn!("could not read the Water config for device memory: {error:#}");
-            None
-        }
-    }
-}
-
-/// Record `id` as the last-used device for `key`. Best-effort: a config
-/// write failure must not break a run.
-async fn persist_device_choice(host: &waterui_cli::toolchain::Host, key: &str, id: &str) {
-    match waterui_cli::water_dir::ensure_global_config(host).await {
-        Ok(mut config) => {
-            if config.last_used_device.get(key).map(String::as_str) == Some(id) {
-                return;
-            }
-            config
-                .last_used_device
-                .insert(key.to_owned(), id.to_owned());
-            if let Err(error) = waterui_cli::water_dir::write_global_config(host, &config).await {
-                tracing::warn!("could not persist the last-used device: {error:#}");
-            }
-        }
-        Err(error) => {
-            tracing::warn!("could not read the Water config for device memory: {error:#}");
-        }
-    }
+/// The `last_used_device` slot an iOS run's device choice is kept under —
+/// the same one preview and the inspector share for their targets.
+const fn ios_device_memory_key() -> &'static str {
+    waterui_cli::water_dir::device_memory_key(
+        TargetBackend::Apple.lib_backend(),
+        LibTargetPlatform::IOS,
+    )
+    .expect("iOS run targets keep device memory")
 }
 
 /// What `device_choice` resolved for a no-`--device` run.
@@ -1312,36 +1232,6 @@ fn device_choice(candidates: &[DeviceCandidate], remembered: Option<&str>) -> De
     }
 }
 
-/// Ask which device to use. Non-interactive runs cannot pick, so they fail
-/// with the candidate list.
-fn prompt_for_device(
-    shell: &Shell,
-    prompt: &str,
-    candidates: &[DeviceCandidate],
-    spinner: Option<&indicatif::ProgressBar>,
-) -> Result<usize> {
-    use std::fmt::Write as _;
-    if !shell.is_terminal() {
-        let list = candidates.iter().fold(String::new(), |mut out, candidate| {
-            write!(out, "\n  {} — {}", candidate.label, candidate.id)
-                .expect("writing to a String cannot fail");
-            out
-        });
-        bail!("Several devices are available; pass --device to choose one:{list}");
-    }
-    let labels: Vec<&str> = candidates.iter().map(|c| c.label.as_str()).collect();
-    let pick = || {
-        dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt(prompt)
-            .items(&labels)
-            .default(0)
-            .interact()
-    };
-    // The scan spinner would redraw over the prompt; hide it while the user
-    // answers.
-    Ok(spinner.map_or_else(pick, |pb| pb.suspend(pick))?)
-}
-
 /// Pick one device out of `candidates`: the remembered last-used device when
 /// it is still present, the single candidate when unambiguous, otherwise an
 /// interactive picker. Choices the user or an explicit query make are
@@ -1357,7 +1247,7 @@ async fn choose_device_candidate(
 ) -> Result<SelectedDevice> {
     debug_assert!(!candidates.is_empty());
 
-    let mut remembered = remembered_device(host, memory_key).await;
+    let mut remembered = waterui_cli::water_dir::last_used_device(host, memory_key).await;
     let mut stale_memory = false;
     let (index, persist) = loop {
         match device_choice(&candidates, remembered.as_deref()) {
@@ -1368,8 +1258,12 @@ async fn choose_device_candidate(
                 stale_memory = true;
             }
             DeviceChoice::Prompt => {
+                let options: Vec<(&str, &str)> = candidates
+                    .iter()
+                    .map(|candidate| (candidate.label.as_str(), candidate.id.as_str()))
+                    .collect();
                 break (
-                    prompt_for_device(shell, prompt, &candidates, spinner)?,
+                    super::prompt_for_device(shell, prompt, &options, spinner)?,
                     true,
                 );
             }
@@ -1381,7 +1275,7 @@ async fn choose_device_candidate(
         .nth(index)
         .expect("the index came from the candidate list");
     if persist {
-        persist_device_choice(host, memory_key, &candidate.id).await;
+        waterui_cli::water_dir::record_last_used_device(host, memory_key, &candidate.id).await;
     }
     Ok(candidate.device)
 }
@@ -1405,18 +1299,18 @@ async fn select_ios_device(
 
     if let Some(query) = device_id {
         if let Some(device) = select_physical_ios(&physical, project, query).await? {
-            persist_device_choice(
+            waterui_cli::water_dir::record_last_used_device(
                 project.host(),
-                device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
+                ios_device_memory_key(),
                 &device.identifier,
             )
             .await;
             return Ok(SelectedDevice::ApplePhysical(device));
         }
         let sim = AppleSimulator::select_ios(project, Some(query)).await?;
-        persist_device_choice(
+        waterui_cli::water_dir::record_last_used_device(
             project.host(),
-            device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
+            ios_device_memory_key(),
             &sim.udid,
         )
         .await;
@@ -1434,7 +1328,7 @@ async fn select_ios_device(
     choose_device_candidate(
         shell,
         project.host(),
-        device_memory_key(TargetBackend::Apple, TargetPlatform::Ios),
+        ios_device_memory_key(),
         "Select an iOS device",
         candidates,
         spinner,
@@ -1567,7 +1461,7 @@ async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     match backend {
         TargetBackend::Apple => {
             let sdk = match platform {
@@ -1589,7 +1483,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Android {
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android_run(host).await?;
+            return toolchain_checks::check_android_run(host).await.map(Some);
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
@@ -1607,8 +1501,9 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
             if platform == TargetPlatform::Android {
-                toolchain_checks::check_android_run(host).await?;
-            } else if platform == TargetPlatform::Web {
+                return toolchain_checks::check_android_run(host).await.map(Some);
+            }
+            if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
                 toolchain_checks::check_hydrolysis(host).await?;
@@ -1621,7 +1516,7 @@ async fn check_toolchain_for_backend(
             toolchain_checks::check_winui(host).await?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn find_device(
@@ -1668,9 +1563,10 @@ async fn find_device(
     device
 }
 
-/// Select the Android target. An explicit `--device` names a connected
-/// device serial or an AVD; without one, the remembered last-used device
-/// wins, then an unambiguous single candidate, then the picker.
+/// Select the Android target through the shared selection: an explicit
+/// `--device` names a connected device serial or an AVD; without one, the
+/// remembered last-used device wins, then an unambiguous single candidate,
+/// then the picker.
 async fn select_android_device(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
@@ -1678,56 +1574,21 @@ async fn select_android_device(
     device_id: Option<&str>,
     spinner: Option<&indicatif::ProgressBar>,
 ) -> Result<SelectedDevice> {
-    let key = device_memory_key(backend, TargetPlatform::Android);
-    let devices = AndroidDevice::scan(host).await?;
-    let avds = AndroidPlatform::list_avds(host).await?;
-
-    if let Some(query) = device_id {
-        for dev in devices {
-            if dev.identifier() == query {
-                persist_device_choice(host, key, dev.identifier()).await;
-                return Ok(SelectedDevice::AndroidDevice(dev));
-            }
-        }
-        if avds.iter().any(|avd| avd == query) {
-            persist_device_choice(host, key, query).await;
-            return Ok(SelectedDevice::AndroidEmulator(
-                AndroidEmulator::open(host, query.to_string()).await?,
-            ));
-        }
-        bail!("Device not found: {query}");
-    }
-
-    let mut candidates: Vec<DeviceCandidate> = devices
-        .into_iter()
-        .map(|dev| DeviceCandidate {
-            label: format!("{} (connected)", dev.identifier()),
-            id: dev.identifier().to_owned(),
-            device: SelectedDevice::AndroidDevice(dev),
-        })
-        .collect();
-    for avd in avds {
-        candidates.push(DeviceCandidate {
-            label: format!("{avd} (emulator)"),
-            id: avd.clone(),
-            device: SelectedDevice::AndroidEmulator(AndroidEmulator::open(host, avd).await?),
-        });
-    }
-
-    if candidates.is_empty() {
-        bail!(
-            "No Android devices connected and no emulators available. Create an emulator with Android Studio or `avdmanager`, or connect a device."
-        );
-    }
-    choose_device_candidate(
+    let target = super::select_android_target(
         shell,
         host,
-        key,
-        "Select an Android device",
-        candidates,
+        waterui_cli::water_dir::device_memory_key(
+            backend.lib_backend(),
+            LibTargetPlatform::Android,
+        ),
+        device_id,
         spinner,
     )
-    .await
+    .await?;
+    Ok(match target {
+        AndroidTarget::Device(device) => SelectedDevice::AndroidDevice(device),
+        AndroidTarget::Emulator(emulator) => SelectedDevice::AndroidEmulator(emulator),
+    })
 }
 
 fn device_name(device: &SelectedDevice) -> String {
@@ -1871,12 +1732,16 @@ fn handle_device_event(
 mod tests {
     use super::{
         Args, DeviceCandidate, DeviceChoice, SelectedDevice, TargetBackend, TargetPlatform,
-        default_backend, device_android_abi, device_choice, handle_device_event, lib_platform,
-        parse_env_assignment, prompt_for_device, resolve_backend, resolve_platform, run_profile,
-        stream_running_events, validate_device_arg,
+        device_android_abi, device_choice, handle_device_event, lib_platform, parse_env_assignment,
+        resolve_platform, run_profile, stream_running_events, validate_device_arg,
     };
+    use crate::commands::prompt_for_device;
     use clap::Parser as _;
+    #[cfg(unix)]
+    use waterui_cli::android::adb::Adb;
+    #[cfg(unix)]
     use waterui_cli::android::device::AndroidDevice;
+    use waterui_cli::android::device::AndroidEmulator;
     use waterui_cli::android::platform::AndroidAbi;
     use waterui_cli::build::BuildProfile;
     use waterui_cli::device::{ApplicationExit, DeviceEvent, Local, StopRequest};
@@ -2042,8 +1907,12 @@ mod tests {
     #[test]
     fn non_interactive_multi_device_error_lists_candidates() {
         let shell = crate::shell::Shell::new(true);
-        let candidates = vec![device_candidate("serial-a"), device_candidate("avd-b")];
-        let err = prompt_for_device(&shell, "Pick", &candidates, None)
+        let candidates = [device_candidate("serial-a"), device_candidate("avd-b")];
+        let options: Vec<(&str, &str)> = candidates
+            .iter()
+            .map(|candidate| (candidate.label.as_str(), candidate.id.as_str()))
+            .collect();
+        let err = prompt_for_device(&shell, "Pick", &options, None)
             .expect_err("non-interactive runs cannot pick");
         let message = err.to_string();
         assert!(message.contains("--device"));
@@ -2135,90 +2004,62 @@ mod tests {
     fn android_abi_follows_the_device() {
         // The ABI is a property of the selected device: a desktop run
         // selects the local machine and resolves no ABI, whatever backend
-        // the run uses — Hydrolysis included.
+        // the run uses — Hydrolysis included. An AVD's ABI comes from its
+        // config.
+        let home = tempfile::tempdir().expect("a scratch home");
+        let avd = home.path().join(".android/avd/Pixel_API_37.avd");
+        std::fs::create_dir_all(&avd).expect("create the AVD dir");
+        std::fs::write(avd.join("config.ini"), "abi.type=arm64-v8a\n").expect("write the AVD");
+        let host = waterui_cli::toolchain::Host::new(
+            std::iter::empty::<std::path::PathBuf>(),
+            [
+                ("HOME", home.path().as_os_str()),
+                ("USERPROFILE", home.path().as_os_str()),
+            ],
+        );
+        let emulator = smol::block_on(AndroidEmulator::open(&host, "Pixel_API_37".to_string()))
+            .expect("the AVD opens");
         assert_eq!(
-            device_android_abi(&SelectedDevice::AndroidDevice(AndroidDevice::new(
-                String::from("serial-1"),
-                AndroidAbi::Arm64V8a,
-            ))),
+            device_android_abi(&SelectedDevice::AndroidEmulator(emulator)),
             Some(AndroidAbi::Arm64V8a)
         );
         assert_eq!(device_android_abi(&SelectedDevice::Local(Local)), None);
     }
 
+    /// A connected device's ABI is the one its scan read. The device holds an
+    /// `adb` client, which exists only once `start-server` ran — here a
+    /// stand-in `adb` in a scratch SDK that answers the scan, so no live
+    /// server is involved. A Windows `adb.exe` cannot be a script, so this
+    /// half is Unix-only.
     #[test]
-    fn resolve_backend_defaults_include_web() {
-        assert_eq!(
-            resolve_backend(TargetPlatform::Web, None).expect("web backend"),
-            TargetBackend::Hydrolysis
-        );
-    }
+    #[cfg(unix)]
+    fn android_abi_follows_a_connected_device() {
+        use std::os::unix::fs::PermissionsExt as _;
 
-    #[test]
-    fn resolve_backend_defaults_match_platforms() {
-        assert_eq!(
-            resolve_backend(TargetPlatform::Ios, None).expect("ios backend"),
-            TargetBackend::Apple
+        let sdk = tempfile::tempdir().expect("a scratch SDK");
+        let adb = sdk.path().join("platform-tools/adb");
+        std::fs::create_dir_all(adb.parent().expect("platform-tools")).expect("platform-tools");
+        std::fs::write(
+            &adb,
+            "#!/bin/sh\ncase \"$*\" in\n  \"devices -l\") printf 'List of devices attached\\nserial-1 device\\n' ;;\n  *getprop*) printf 'arm64-v8a\\n' ;;\nesac\nexit 0\n",
+        )
+        .expect("write the stand-in adb");
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755))
+            .expect("make the stand-in adb executable");
+        let host = waterui_cli::toolchain::Host::new(
+            std::iter::empty::<std::path::PathBuf>(),
+            [("ANDROID_SDK_ROOT", sdk.path().as_os_str())],
         );
+        let adb = smol::block_on(Adb::locate(&host)).expect("the stand-in adb starts");
+        let device = smol::block_on(AndroidDevice::scan_with_adb(&host, &adb))
+            .expect("the stand-in adb scans")
+            .into_iter()
+            .next()
+            .expect("the scan reports serial-1");
         assert_eq!(
-            resolve_backend(TargetPlatform::Android, None).expect("android backend"),
-            TargetBackend::Hydrolysis
+            device_android_abi(&SelectedDevice::AndroidDevice(device)),
+            Some(AndroidAbi::Arm64V8a)
         );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Linux, None).expect("linux backend"),
-            TargetBackend::Hydrolysis
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Windows, None).expect("windows backend"),
-            TargetBackend::Hydrolysis
-        );
-    }
-
-    #[test]
-    fn default_backend_matches_the_platform() {
-        assert_eq!(
-            default_backend(TargetPlatform::Macos),
-            Some(TargetBackend::Apple)
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Ios),
-            Some(TargetBackend::Apple)
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Android),
-            Some(TargetBackend::Hydrolysis)
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Linux),
-            Some(TargetBackend::Hydrolysis)
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Windows),
-            Some(TargetBackend::Hydrolysis)
-        );
-        for platform in [
-            TargetPlatform::Esp32s3,
-            TargetPlatform::Esp32c3,
-            TargetPlatform::Esp32p4,
-        ] {
-            assert_eq!(default_backend(platform), None);
-        }
-    }
-
-    #[test]
-    fn esp32_platforms_fail_naming_the_embedded_host_issue() {
-        // Dew is archived; until Hydrolysis's embedded host lands (#1601),
-        // selecting an ESP32 target refuses with an error naming the issue.
-        for platform in [
-            TargetPlatform::Esp32s3,
-            TargetPlatform::Esp32c3,
-            TargetPlatform::Esp32p4,
-        ] {
-            let error = resolve_backend(platform, None).unwrap_err();
-            assert!(error.to_string().contains("#1601"), "{error}");
-            let error = resolve_backend(platform, Some(TargetBackend::Hydrolysis)).unwrap_err();
-            assert!(error.to_string().contains("#1601"), "{error}");
-        }
     }
 
     #[cfg(target_os = "macos")]

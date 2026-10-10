@@ -405,21 +405,40 @@ fn an_inexpressible_clip_is_not_promoted() {
     assert!(verdict(&tree).is_ok());
 }
 
-/// Two shaped clips on the path make the engine isolate the inner one into
-/// a clip offscreen; a device-aligned rect nests freely.
+/// An ancestor clip pair the engine composites through a clip offscreen
+/// (`Lowering::run_clipped`) keeps the layer in the engine — whichever of
+/// the pair carries the shape. The candidate's own clip does not count:
+/// its scope opens only after the part boundary the candidate starts.
 #[test]
 fn nested_shaped_clips_are_not_promoted() {
-    let rounded = ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0));
+    let rounded = || ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(PARENT, Some(rounded.clone())));
-    tree.apply(LayerOp::Clip(VIDEO, Some(rounded.clone())));
-    assert_eq!(verdict(&tree), Err(Ineligible::NestedClip(VIDEO)));
+    tree.apply(LayerOp::Clip(ROOT, Some(rounded())));
+    tree.apply(LayerOp::Clip(PARENT, Some(rounded())));
+    assert_eq!(verdict(&tree), Err(Ineligible::NestedClip(PARENT)));
+    // A device-aligned rect under a shaped clip isolates too: only a
+    // pair of aligned rects merges in place.
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(PARENT, Some(rounded)));
+    tree.apply(LayerOp::Clip(ROOT, Some(rounded())));
     tree.apply(LayerOp::Clip(
-        VIDEO,
+        PARENT,
         Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
     ));
+    assert_eq!(verdict(&tree), Err(Ineligible::NestedClip(PARENT)));
+    let mut tree = scene();
+    tree.apply(LayerOp::Clip(
+        ROOT,
+        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 100.0))),
+    ));
+    tree.apply(LayerOp::Clip(
+        PARENT,
+        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+    ));
+    assert!(verdict(&tree).is_ok());
+    // Under a single shaped ancestor the candidate's own clip is excluded.
+    let mut tree = scene();
+    tree.apply(LayerOp::Clip(PARENT, Some(rounded())));
+    tree.apply(LayerOp::Clip(VIDEO, Some(rounded())));
     assert!(verdict(&tree).is_ok());
 }
 

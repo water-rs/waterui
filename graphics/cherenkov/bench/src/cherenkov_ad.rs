@@ -854,6 +854,7 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::BackdropAnchor,
         Feature::BackdropUnion,
         Feature::BackdropOuter,
+        Feature::BackdropBlendSpace,
         Feature::Projective,
         // `sRGB` maps to `SrgbEncoded`; `linear-p3` and `linear-srgb` are
         // both linear interpolation, which is the working space already.

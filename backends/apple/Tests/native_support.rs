@@ -546,6 +546,41 @@ pub mod filtered {
     pub use crate::components::filtered::native_test::{MountedFilteredSurface, WakeProbe};
 }
 
+/// The web view leaf's harness reach.
+///
+/// Opens a real `WKWebView` through the same late install an application
+/// gets — `install_service` fills the environment's `WebViewController`
+/// slot exactly the way `embedding::mount` does — so a case can drive the
+/// engine without mounting a view tree.
+#[cfg(feature = "webview")]
+pub mod webview {
+    use cocoa_ui::MainThreadMarker;
+    use waterui_backend_core::Environment;
+
+    /// The `WebViewController` the leaf's `install_service` installs.
+    ///
+    /// This is the same construction `open` drives, so a case that opens
+    /// several views shares the one service install. `mtm` is the proof
+    /// the call happened on the real main thread, which `WKWebView`
+    /// requires.
+    #[must_use]
+    pub fn controller(_mtm: MainThreadMarker) -> waterui_webview::WebViewController {
+        let mut env = Environment::new();
+        crate::components::webview::install_service(&mut env);
+        env.get::<waterui_webview::WebViewController>()
+            .expect("the webview leaf installs its WebViewController")
+            .clone()
+    }
+
+    /// A fresh `WebView` backed by the backend's own `WKWebView`, never
+    /// mounted. `mtm` is the proof the call happened on the real main
+    /// thread, which `WKWebView` requires.
+    #[must_use]
+    pub fn open(mtm: MainThreadMarker) -> waterui_webview::WebView {
+        controller(mtm).open()
+    }
+}
+
 /// Counts `tracing` ERROR events one module emits — a settle contract
 /// that must log exactly once per failure asserts on the count.
 ///

@@ -70,16 +70,14 @@ impl HydroNativeView for Native<MapConfig> {
     }
 }
 
-/// Reaching `WebView` without a `Hook<WebView>` engine realization means
-/// the backend has nothing to draw a page with: a build without
-/// `hydrolysis_macos_system_webview` bridges no engine, and the macOS
-/// bridge's record has no native-view layer to present the `WKWebView`
-/// through.
+/// A build without a system bridge needs an application's `WebView` hook.
+#[cfg(not(hydrolysis_system_webview))]
 pub fn unsupported_webview() -> ! {
     panic!(
         "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
-         link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`) or enable \
-         the `webview-system` and `winit` features on macOS"
+         link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`), enable \
+         the `webview-system` and `winit` features on macOS, or the `webview-system` and \
+         `web` features on the web"
     )
 }
 
@@ -135,6 +133,8 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<GpuContentView>);
         $macro!(Native<ExternalFrameView>);
         $macro!(Native<PlatformView>);
+        #[cfg(hydrolysis_hosted)]
+        $macro!(Native<crate::HostedView>);
         $macro!(Native<SceneView>);
         $macro!(Native<FilteredView>);
         $macro!(Native<Color>);

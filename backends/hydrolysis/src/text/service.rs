@@ -72,6 +72,21 @@ impl<E: TextEngine> TextService<E> {
         }
     }
 
+    /// The session's fonts gained faces: drops every layout and recording
+    /// shaped against the old set, here and in the engine.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    pub(crate) fn fonts_changed(&self) {
+        self.layouts
+            .lock()
+            .expect("text layout cache mutex must not be poisoned")
+            .clear();
+        self.scenes
+            .lock()
+            .expect("text scene cache mutex must not be poisoned")
+            .clear();
+        self.engine.fonts_changed();
+    }
+
     /// Shape `input` into a layout, reusing the shared cache.
     ///
     /// The layout is shared rather than copied: every consumer only reads it,

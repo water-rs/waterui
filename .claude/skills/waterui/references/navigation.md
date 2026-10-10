@@ -284,6 +284,11 @@ The `Window` builder, precisely:
   and draws a material window background as the opaque theme background. The background is reactive:
   setting the binding (or `window.handle().set_background(..)`) re-applies it to the
   open window, e.g. to switch between opaque, a translucent colour and a material.
+- `.icon(..)` — a `WindowIcon` (`WindowIcon::new(width, height, rgba)`, straight-alpha
+  RGBA8 pixels) or a `Binding<Option<WindowIcon>>`; `None`, the default, keeps the
+  application icon. Reactive like the style: `window.handle().set_icon(..)` swaps it on
+  the open window. Only platforms with a per-window icon show it (X11 and Windows);
+  Wayland, macOS, iOS and Android always show the application icon.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
   take one `impl IntoComputed<Size>` (a `Size` or a signal of one, not two floats);
   without a min, the backend derives one by measuring content at a zero proposal.

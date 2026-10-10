@@ -182,6 +182,12 @@ pub struct FilteredRuntime {
     _guards: ParamGuards,
 }
 
+impl std::fmt::Debug for FilteredRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FilteredRuntime").finish_non_exhaustive()
+    }
+}
+
 impl FilteredRuntime {
     /// A runtime holding `view`'s effect source and parameter guards.
     pub(crate) const fn new(effect: AnyEffect, guards: ParamGuards) -> Self {

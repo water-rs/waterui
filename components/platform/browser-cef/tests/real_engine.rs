@@ -639,6 +639,21 @@ fn the_asset_origin_serves_bundled_content(engine: &Engine) {
     );
 }
 
+/// Mirrored state and bridge replies reach only the documents the admission
+/// policy admits — the shared case every engine's real-engine suite runs.
+///
+/// The case serves its own pages from its own threads and drives two views
+/// through the engine's controller; `block_on` keeps CEF pumped and the local
+/// executor ticking while it walks the navigations.
+fn mirrored_state_reaches_only_admitted_documents(engine: &Engine) {
+    engine.block_on(
+        "the mirrored-state admission conformance case",
+        waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
+            &engine.controller,
+        ),
+    );
+}
+
 /// `include_web!`'s serving layer — a `DirectoryServer` over the site written
 /// to disk the way a staged bundle carries it — serves the same conformance
 /// site through the engine's native interception.
@@ -750,7 +765,7 @@ async fn cdp_eval(cdp: &waterui_chromium::CdpSession, source: &str) -> Value {
 /// Every check, in the order they run.
 type Check = (&'static str, fn(&Engine));
 
-const CHECKS: [Check; 8] = [
+const CHECKS: [Check; 9] = [
     (
         "navigation_reaches_each_url_and_history_moves_both_ways",
         navigation_reaches_each_url_and_history_moves_both_ways,
@@ -774,6 +789,10 @@ const CHECKS: [Check; 8] = [
     (
         "the_asset_origin_serves_bundled_content",
         the_asset_origin_serves_bundled_content,
+    ),
+    (
+        "mirrored_state_reaches_only_admitted_documents",
+        mirrored_state_reaches_only_admitted_documents,
     ),
     (
         "the_directory_server_serves_the_staged_bundle",

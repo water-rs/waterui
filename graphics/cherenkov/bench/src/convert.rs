@@ -1005,10 +1005,19 @@ mod front {
         Ok(scale)
     }
 
+    /// A scene blend space as the engine's.
+    pub const fn engine_blend_space(space: cherenkov_scene::BlendSpace) -> cherenkov::BlendSpace {
+        match space {
+            cherenkov_scene::BlendSpace::Linear => cherenkov::BlendSpace::Linear,
+            cherenkov_scene::BlendSpace::SrgbEncoded => cherenkov::BlendSpace::SrgbEncoded,
+        }
+    }
+
     /// A scene backdrop group's capture spec at the engine boundary: the
-    /// scale exactly as [`capture_scale`], plus its pyramid level count and
-    /// union smoothing distance — both narrowed only when the `f32` holds
-    /// the scene's `f64` exactly.
+    /// scale exactly as [`capture_scale`], plus its pyramid level count,
+    /// member blend space and union smoothing distance — the level count
+    /// and distance narrowed only when the `f32` holds the scene's `f64`
+    /// exactly.
     ///
     /// # Errors
     /// `BenchError::Engine` when the scale or union distance is not exactly
@@ -1025,7 +1034,8 @@ mod front {
         let scale = capture_scale(group)?;
         let levels = cherenkov::CaptureLevels::new(group.levels)
             .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
-        let mut spec = cherenkov::BackdropSpec::new(scale, levels);
+        let mut spec = cherenkov::BackdropSpec::new(scale, levels)
+            .blend_space(engine_blend_space(group.blend_space));
         if let Some(k) = group.union {
             let narrowed = k as f32;
             if f64::from(narrowed).to_bits() != k.to_bits() {
@@ -1468,10 +1478,7 @@ mod front {
             group: cherenkov::Group::new()
                 .opacity(group.opacity as f32)
                 .blend(engine_blend(group.blend))
-                .blend_space(match group.blend_space {
-                    cherenkov_scene::BlendSpace::Linear => cherenkov::BlendSpace::Linear,
-                    cherenkov_scene::BlendSpace::SrgbEncoded => cherenkov::BlendSpace::SrgbEncoded,
-                }),
+                .blend_space(engine_blend_space(group.blend_space)),
             ops,
         })
     }
