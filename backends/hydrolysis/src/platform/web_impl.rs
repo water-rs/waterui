@@ -1168,79 +1168,30 @@ const REDIRECTED_INPUT: [&str; 8] = [
 ];
 
 #[cfg(feature = "video")]
-/// Makes `element`, an element the engine hosts in the page, refuse every
-/// hit `occlusion` covers: interactive Hydrolysis content painted above the
-/// element takes it instead.
+/// Makes `element`, an element the engine hosts in the page with no wheel
+/// behaviour of its own — a `<video>` — yield every wheel event to the root
+/// element, so a scroll view keeps scrolling under the pointer wherever the
+/// element sits.
 ///
-/// The engine's canvases take no pointer events, so a press over content
-/// painted above a hosted element lands on the element. A capture listener
-/// on the element sees it before the element's own handlers do, stops it
-/// there, and dispatches a copy of a pointer or wheel event to the root
-/// element, whose listeners deliver it to Hydrolysis's hit testing as if the
-/// element were not there. Clicks are only stopped: Hydrolysis reads presses,
-/// not clicks.
-///
-/// An element with no wheel behaviour of its own — a `<video>` — passes
-/// `yields_wheel`, and yields every wheel event the same way, so a scroll
-/// view keeps scrolling under the pointer wherever the element sits.
-///
-/// The returned listeners stay registered while they are held.
-pub fn redirect_occluded_input(
-    element: &HtmlElement,
-    occlusion: crate::HostedOcclusion,
-    yields_wheel: bool,
-) -> Vec<Closure<dyn FnMut(Event)>> {
-    let occlusion = Rc::new(occlusion);
-    REDIRECTED_INPUT
-        .into_iter()
-        .map(|name| {
-            let target = element.clone();
-            let occlusion = Rc::clone(&occlusion);
-            let closure = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
-                let mouse = event.dyn_ref::<web_sys::MouseEvent>().unwrap_or_else(|| {
-                    panic!("hydrolysis web platform: {name} is not a mouse event")
-                });
-                let root: HtmlElement = target
-                    .closest(&format!("#{ROOT_ID}"))
-                    .expect("hydrolysis web platform: #waterui-root is not a valid selector")
-                    .expect("hydrolysis web platform: a hosted element is outside the root element")
-                    .unchecked_into();
-                let (x, y) = event_position(
-                    &root,
-                    f64::from(mouse.client_x()),
-                    f64::from(mouse.client_y()),
-                );
-                let yielded = yields_wheel && event.dyn_ref::<WheelEvent>().is_some();
-                if !yielded && !occlusion.covers(kurbo::Point::new(f64::from(x), f64::from(y))) {
-                    return;
-                }
-                event.stop_immediate_propagation();
-                event.prevent_default();
-                let copy: Option<Event> = event.dyn_ref::<PointerEvent>().map_or_else(
-                    || {
-                        event
-                            .dyn_ref::<WheelEvent>()
-                            .map(|wheel| wheel_event_copy(wheel).into())
-                    },
-                    |pointer| Some(pointer_event_copy(pointer).into()),
-                );
-                if let Some(copy) = copy {
-                    root.dispatch_event(&copy)
-                        .expect("hydrolysis web platform: failed to redirect occluded input");
-                }
-            });
-            element
-                .add_event_listener_with_callback_and_bool(
-                    name,
-                    closure.as_ref().unchecked_ref(),
-                    true,
-                )
-                .unwrap_or_else(|_| {
-                    panic!("hydrolysis web platform: failed to register the {name} redirect")
-                });
-            closure
-        })
-        .collect()
+/// A capture listener on the element stops the event and dispatches a copy
+/// to the root, whose listeners deliver it to Hydrolysis's hit testing as if
+/// the element were not there. The listener stays registered while it is
+/// held.
+pub fn yield_wheel(element: &HtmlElement) -> Closure<dyn FnMut(Event)> {
+    let closure = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        let wheel = event
+            .dyn_ref::<WheelEvent>()
+            .expect("hydrolysis web platform: a wheel listener received another event");
+        event.stop_immediate_propagation();
+        event.prevent_default();
+        page_root()
+            .dispatch_event(&wheel_event_copy(wheel))
+            .expect("hydrolysis web platform: failed to yield a wheel event");
+    });
+    element
+        .add_event_listener_with_callback_and_bool("wheel", closure.as_ref().unchecked_ref(), true)
+        .expect("hydrolysis web platform: failed to register the wheel yield");
+    closure
 }
 
 #[cfg(any(feature = "video", feature = "webview-system"))]
@@ -1293,14 +1244,15 @@ fn wheel_event_copy(event: &WheelEvent) -> WheelEvent {
 
 /// Hit-taking surfaces over the rects where interactive Hydrolysis content
 /// is painted above an element that keeps its input to itself — a
-/// cross-origin `<iframe>`, whose events never reach the page.
+/// cross-origin `<iframe>`, whose events never reach the page, or a
+/// `<video>`, whose native controls take input before any page listener.
 ///
 /// Each occluded rect gets a transparent `<div>` in the root element, stacked
 /// above the engine's stacking root and so above every plane. A press on it
 /// is stopped and a copy of the pointer or wheel event is dispatched to the
 /// root, whose listeners deliver it to Hydrolysis's hit testing. The shields
 /// follow the occlusion as it changes and leave the page when this drops.
-#[cfg(feature = "webview-system")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 pub struct OcclusionShields {
     shields: Rc<RefCell<Vec<HtmlElement>>>,
     _watch: waterui_watcher_set::WatcherGuard,
@@ -1308,10 +1260,10 @@ pub struct OcclusionShields {
 }
 
 /// The listeners every shield shares, by event name.
-#[cfg(feature = "webview-system")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 type ShieldListeners = Rc<Vec<(&'static str, Closure<dyn FnMut(Event)>)>>;
 
-#[cfg(feature = "webview-system")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 impl OcclusionShields {
     /// Keeps shields over `occlusion`'s rects.
     pub fn new(occlusion: &crate::HostedOcclusion) -> Self {
@@ -1356,7 +1308,7 @@ impl OcclusionShields {
     }
 }
 
-#[cfg(feature = "webview-system")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 impl Drop for OcclusionShields {
     fn drop(&mut self) {
         for shield in self.shields.take() {
@@ -1366,7 +1318,7 @@ impl Drop for OcclusionShields {
 }
 
 /// Makes `shields` exactly one transparent `<div>` per rect, placed over it.
-#[cfg(feature = "webview-system")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 fn sync_shields(
     shields: &RefCell<Vec<HtmlElement>>,
     listeners: &ShieldListeners,
@@ -1423,7 +1375,7 @@ fn sync_shields(
 }
 
 /// The page's root element.
-#[cfg(feature = "webview-system")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 fn page_root() -> HtmlElement {
     web_sys::window()
         .and_then(|window| window.document())
