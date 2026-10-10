@@ -30,7 +30,9 @@ Per sample it reports the root's inclusive Ir; the allocator's share of it
 shims and the libc malloc family) with the number of alloc, realloc and
 dealloc calls; the libc memory primitives' share (memcpy, memmove, memset,
 memcmp, bcmp), whose Ir depends on buffer addresses the allocator chooses,
-with their call count; and the Rust Ir: inclusive Ir minus both shares.
+with their call count; and the Rust Ir: inclusive Ir minus both shares. A
+subtracted call made inside another one, directly or through frames the gate
+keeps, is already in the outer call's inclusive cost and is not counted again.
 
 A share counts only calls made under the root, decided by calling context:
 `--separate-callers<N>` keys every allocator and memory-primitive function by
@@ -158,12 +160,17 @@ def measure(path, symbol):
     for (a, b), cost in edge.items():
         function, callers = context(names[b])
         share = subtracted(function)
-        # A call from inside the allocator is part of the call into it.
-        if share is None or subtracted(context(names[a])[0]) is not None:
+        if share is None:
             continue
         assert callers, (path, names[b], 'not separated by caller chain: add it to the Callgrind patterns')
         if symbol not in callers:
             assert len(callers) < CALLERS, (path, names[b], f'caller chain truncated at {CALLERS} without the root')
+            continue
+        # A call made inside another subtracted call is part of that call's
+        # cost, whether its caller is the outer function or a frame the gate
+        # keeps between them (glibc's realloc reaches memcpy through
+        # `_int_realloc` and an unnamed local function).
+        if any(subtracted(caller) is not None for caller in callers[:callers.index(symbol)]):
             continue
         if share[0] == 'alloc':
             alloc_ir += cost
