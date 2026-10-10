@@ -108,10 +108,10 @@ pub struct MirrorHost {
     engine: Rc<GpuEngine>,
     metrics: Arc<AppliedFilterMetrics>,
     materials: MaterialTerms<MirrorTarget>,
-    /// Each chrome group's union field at creation — what
-    /// [`mount::target::union_of`] resolved for the key's class at the
-    /// group's display scale. `None` for a `Solo`/`Shared` class.
-    union_log: RefCell<Vec<Option<cherenkov::BackdropUnion>>>,
+    /// Each chrome group's spec at creation — what
+    /// [`mount::target::chrome_spec`] resolved for the key's class at the
+    /// group's display scale.
+    spec_log: RefCell<Vec<cherenkov::BackdropSpec>>,
 }
 
 impl std::fmt::Debug for MirrorHost {
@@ -236,13 +236,11 @@ impl LayerTarget for MirrorTarget {
             },
             (
                 move |params: &cherenkov_record::MaterialCapture, scale| {
-                    // The same union conversion the GPU target runs; a
-                    // test reads the device-pixel result off the log.
-                    let mut log = host.union_log.borrow_mut();
-                    log.push(crate::renderer::mount::target::union_of(
-                        params,
-                        scale,
-                        key.class(),
+                    // The same spec the GPU target builds; a test reads
+                    // the device-pixel conversions off the log.
+                    let mut log = host.spec_log.borrow_mut();
+                    log.push(crate::renderer::mount::target::chrome_spec(
+                        params, scale, key,
                     ));
                     // Every group built gets an id of its own, as the
                     // engine's do: a member left on a released group
@@ -321,7 +319,7 @@ impl MirrorWindow {
                 registry: Rc::clone(registry),
                 shaders: attach_material_shaders(&engine, registry),
             },
-            union_log: RefCell::new(Vec::new()),
+            spec_log: RefCell::new(Vec::new()),
         };
         Self {
             mount: Mount::new(shared, registry),
@@ -432,7 +430,17 @@ impl MirrorWindow {
     /// The union field each chrome group was created with, in creation
     /// order — `None` for `Solo`/`Shared` classes.
     pub fn union_log(&self) -> Vec<Option<cherenkov::BackdropUnion>> {
-        self.host.union_log.borrow().clone()
+        self.host
+            .spec_log
+            .borrow()
+            .iter()
+            .map(|spec| spec.union_field())
+            .collect()
+    }
+
+    /// The spec each chrome group was created with, in creation order.
+    pub fn spec_log(&self) -> Vec<cherenkov::BackdropSpec> {
+        self.host.spec_log.borrow().clone()
     }
 
     /// The mirror's chrome group table.

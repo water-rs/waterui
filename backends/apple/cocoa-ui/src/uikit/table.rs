@@ -133,6 +133,14 @@ pub trait TableSource: 'static {
         let _ = (table, from, to);
     }
 
+    /// Whether `index`'s row may become selected — `UIKit` consults it
+    /// through `tableView:willSelectRowAtIndexPath:` before pointer and
+    /// keyboard selection apply. The default allows every row.
+    fn should_select(&self, table: &TableView, index: IndexPath) -> bool {
+        let _ = (table, index);
+        true
+    }
+
     /// `index`'s row became selected by the user.
     fn did_select_row(&self, table: &TableView, index: IndexPath);
 
@@ -426,6 +434,21 @@ define_class!(
             } else {
                 None
             }
+        }
+
+        #[unsafe(method_id(tableView:willSelectRowAtIndexPath:))]
+        fn will_select_row(
+            &self,
+            _table_view: &UITableView,
+            path: &NSIndexPath,
+        ) -> Option<Retained<NSIndexPath>> {
+            guarded("uikit::table::source.should_select", || {
+                let index = table_index(path);
+                self.ivars()
+                    .source()
+                    .is_some_and(|source| source.should_select(self, index))
+                    .then(|| index_path(index))
+            })
         }
 
         #[unsafe(method(tableView:didSelectRowAtIndexPath:))]

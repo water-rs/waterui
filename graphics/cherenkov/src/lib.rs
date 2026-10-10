@@ -111,7 +111,7 @@ pub use cherenkov_record::{
     CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
     LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
     LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
-    snap_animating,
+    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
+    SurfaceId, SurfaceTree, Target, Transaction, snap_animating,
 };
 pub use kurbo::Stroke;

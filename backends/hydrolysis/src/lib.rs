@@ -6,6 +6,8 @@ mod engine;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod env;
 mod gpu_view;
+#[cfg(hydrolysis_hosted)]
+mod hosted;
 mod localization;
 mod num_cast;
 #[cfg(hydrolysis_pipeline_cache)]
@@ -26,6 +28,8 @@ mod widgets;
 pub(crate) use waterui_backend_core::{animation, gesture, scroll, time};
 
 pub use engine::{IconOnlyButtonLabel, WidgetTheme};
+#[cfg(hydrolysis_hosted)]
+pub use hosted::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 use std::time::Duration;
 use waterui_core::Environment;
 
@@ -94,3 +98,5 @@ pub use text::{DeclaredFonts, FontFamilyResolution};
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
+#[cfg(hydrolysis_web_system_webview)]
+pub use widgets::platform::webview::WebSystemWebViewController;

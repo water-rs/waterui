@@ -129,6 +129,12 @@ pub struct Args {
     #[arg(long)]
     output_dir: Option<PathBuf>,
 
+    /// Android device serial or AVD name (only with `--platform android`).
+    /// Without it the remembered last-used device wins, then an unambiguous
+    /// single candidate, then a picker.
+    #[arg(short, long)]
+    device: Option<String>,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
@@ -154,6 +160,7 @@ impl Args {
             backend: self.backend,
             theme: self.theme,
             platform: self.platform,
+            device: self.device.clone(),
         }
     }
 }
@@ -233,6 +240,12 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     // the MCP `preview` tool takes.
     let manifest = Manifest::open(project_path.join("Water.toml")).await?;
     let request = args.preview_args(target).resolve(&manifest, &crate_name)?;
+    if args.device.is_some()
+        && request.backend
+            != ResolvedPreviewBackend::Hydrolysis(waterui_cli::platform::TargetPlatform::Android)
+    {
+        bail!("`--device` is supported only with `--platform android`.");
+    }
     header!(shell, "Preview: {}", request.target.display_name());
 
     let kotlin_toolchain = request::check_toolchain_for_backend(
@@ -246,6 +259,26 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
 
     if let ResolvedPreviewBackend::Hydrolysis(platform) = request.backend {
+        let android = if platform == waterui_cli::platform::TargetPlatform::Android {
+            let spinner = shell.spinner("Scanning for devices...");
+            let target = super::select_android_target(
+                shell,
+                &waterui_cli::toolchain::Host::current(),
+                waterui_cli::water_dir::device_memory_key(
+                    waterui_cli::platform::TargetBackend::Hydrolysis,
+                    waterui_cli::platform::TargetPlatform::Android,
+                ),
+                args.device.as_deref(),
+                spinner.as_ref(),
+            )
+            .await;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            Some(target?)
+        } else {
+            None
+        };
         let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
         let spinner = shell.spinner("Building and rendering with hydrolysis...");
         Box::pin(render_preview_with_hydrolysis(
@@ -265,6 +298,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             &args.output,
             scenario.as_ref(),
             kotlin_toolchain.as_ref(),
+            android,
         ))
         .await?;
         if let Some(s) = spinner {

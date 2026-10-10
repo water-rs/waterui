@@ -4,6 +4,11 @@
 use super::*;
 use crate::platform::{GpuSurfaceWindow, PresentationSurface as _};
 use crate::renderer::material::{Blending, WithinWindowLevel};
+#[cfg(any(target_os = "android", test))]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use waterui::theme::color::Background;
 use waterui::window::ResolvedWindowBackground;
 use waterui_graphics::{Color, color::WorkingColor};
@@ -203,7 +208,9 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
 #[derive(Debug, Default)]
 pub(super) struct FrameTransaction {
     open: Cell<bool>,
-    wake_gate: Rc<Cell<bool>>,
+    /// Written only on the UI thread; atomic because the cross-thread wake's
+    /// post carries a share of it onto the UI thread's queue.
+    wake_gate: Arc<AtomicBool>,
 }
 
 #[cfg(any(target_os = "android", test))]
@@ -211,25 +218,43 @@ impl FrameTransaction {
     /// Wraps the host's frame post in the gate: the returned wake posts only
     /// while no transaction is open and the window is not occluded.
     pub(super) fn frame_wake(&self, post: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
-        let gate = Rc::clone(&self.wake_gate);
+        let gate = Arc::clone(&self.wake_gate);
         Rc::new(move || {
-            if gate.get() {
+            if gate.load(Ordering::Relaxed) {
                 post();
             }
         })
     }
 
+    /// [`Self::frame_wake`] for a wake a thread-safe handle queues onto the
+    /// UI thread: the returned post may cross threads, but it must run on
+    /// the UI thread, where it reads the gate as it stands when it runs — a
+    /// post that lands inside a transaction joins its continuation instead
+    /// of posting into the frame already running.
+    pub(super) fn ui_thread_wake(
+        &self,
+        post: impl Fn() + Send + Sync + 'static,
+    ) -> impl Fn() + Send + Sync + 'static {
+        let gate = Arc::clone(&self.wake_gate);
+        move || {
+            if gate.load(Ordering::Relaxed) {
+                post();
+            }
+        }
+    }
+
     /// Re-derives the gate from the host's occlusion report; an open
     /// transaction keeps it closed.
     pub(super) fn sync_occlusion(&self, occluded: bool) {
-        self.wake_gate.set(!self.open.get() && !occluded);
+        self.wake_gate
+            .store(!self.open.get() && !occluded, Ordering::Relaxed);
     }
 
     /// Opens the transaction: requests raised until [`Self::finish`] post no
     /// wake and count toward its continuation instead.
     pub(super) fn begin(&self) {
         self.open.set(true);
-        self.wake_gate.set(false);
+        self.wake_gate.store(false, Ordering::Relaxed);
     }
 
     /// Whether this transaction renders: armed work, or a redraw-only
@@ -974,14 +999,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
 
     let rebuilt = pump_window_scene(runtime, env, &mut || false).built;
     apply_window_size_limits(runtime, env);
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
-        runtime
-            .platform
-            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
-    }
+    sync_platform_input(runtime);
     if runtime.renderer.take_redraw_request() {
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -998,9 +1016,9 @@ pub struct SurfaceRenderResult {
 
 /// How a window's presentation kind renders one frame and gets it to the
 /// display. Host-acquired surfaces ([`SurfaceProvider`]) acquire, copy the
-/// engine output in and present; the macOS winit window's engine target
-/// presents inside `Engine::render`, so it has no acquire, copy or present
-/// to call.
+/// engine output in and present; the macOS winit window's and the browser
+/// page's engine targets present inside `Engine::render`, so they have no
+/// acquire, copy or present to call.
 ///
 /// [`SurfaceProvider`]: crate::platform::SurfaceProvider
 pub trait GpuSurfaceFrame {
@@ -1192,6 +1210,39 @@ impl GpuSurfaceFrame for crate::platform::WinitSurface {
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
         renderer
             .render_window_frame(&target, engine_target)
+            .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        Ok(SurfaceRenderResult {
+            acquire: Duration::ZERO,
+            render: render_started_at.elapsed(),
+            present: Duration::ZERO,
+            snapshot: None,
+        })
+    }
+}
+
+/// The browser page's frame: `Engine::render` is the whole presentation —
+/// the engine presents its canvases and places the page's hosted elements
+/// inside it, so there is no host acquire, copy or present, and `acquire`
+/// and `present` report zero. No snapshot can be asked of this kind: a
+/// browser surface is never read back.
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl GpuSurfaceFrame for crate::platform::BrowserSurface {
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    async fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+        let render_started_at = Instant::now();
+        let (target, root, window_slot) =
+            self.render_targets(display_scale, crate::renderer::working_color(clear_color));
+        renderer
+            .render_dom_frame(&target, root, window_slot)
+            .await
             .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
         Ok(SurfaceRenderResult {
             acquire: Duration::ZERO,
@@ -1463,14 +1514,7 @@ crate::engine::cfg_async_fn! {
         }
     }
 
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
-        runtime
-            .platform
-            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
-    }
+    sync_platform_input(runtime);
     if runtime.renderer.take_redraw_request() {
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -1629,6 +1673,21 @@ where
     // flag set at the press is read by the very next `TextInput` event.
     let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
+        // Hosted content holding platform focus receives its own key and
+        // IME delivery; none of it reaches Hydrolysis's dispatch.
+        if runtime.renderer.sync_hosted_focus()
+            && matches!(
+                event,
+                InputEvent::Key { .. }
+                    | InputEvent::TextInput { .. }
+                    | InputEvent::KeyText { .. }
+                    | InputEvent::ImePreedit { .. }
+                    | InputEvent::ImeCommit { .. }
+                    | InputEvent::ImeDisabled
+            )
+        {
+            continue;
+        }
         let key_consumed = suppress_key_text;
         suppress_key_text = false;
         // The preflight re-registers every hit target at the geometry a
@@ -2071,15 +2130,30 @@ where
         }
         schedule_redraw_or_refresh(runtime, changed);
     }
+    sync_platform_input(runtime);
+    should_close
+}
+
+/// Settles focus ownership between Hydrolysis and hosted content, then pushes
+/// the focused text input's state to the platform IME.
+fn sync_platform_focus<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+    runtime.renderer.sync_hosted_focus();
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
+}
+
+/// [`sync_platform_focus`], then the cursor under the pointer — left to the
+/// hosted view wherever uncovered hosted content is under it.
+fn sync_platform_input<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+    sync_platform_focus(runtime);
+    if let Some((x, y)) = runtime.pointer_position
+        && !runtime.renderer.hosted_owns_cursor(x, y)
+    {
         runtime
             .platform
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
     }
-    should_close
 }
 
 pub(super) fn advance_runtime<P: PlatformWindow>(
@@ -2104,9 +2178,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
             runtime.render_diagnostics.set_refresh_rate(hz);
         }
     }
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
+    sync_platform_focus(runtime);
     // A gesture tick can mount a popup window — an armed context-menu hold
     // fires here — and the popup anchors in absolute coordinates through
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.

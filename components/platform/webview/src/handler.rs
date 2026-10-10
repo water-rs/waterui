@@ -1,23 +1,33 @@
-use std::{any::Any, pin::Pin, rc::Rc};
+#[cfg(not(target_arch = "wasm32"))]
+use std::pin::Pin;
+use std::{any::Any, rc::Rc};
 
+#[cfg(not(target_arch = "wasm32"))]
 use cookie::Cookie;
+#[cfg(not(target_arch = "wasm32"))]
 use suiteki::Str;
+use waterui_core::impl_debug;
+#[cfg(not(target_arch = "wasm32"))]
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Computed, Signal, impl_debug};
+#[cfg(not(target_arch = "wasm32"))]
+use waterui_core::{Computed, Signal};
 
 use crate::{BackendEvent, WatcherGuard};
 use waterui_url::Url;
 
+#[cfg(not(target_arch = "wasm32"))]
 /// What a handler returns: the answer to resolve the page's promise with, or a
 /// message to reject it.
 pub type HandlerResult = Result<crate::message::JsReply, String>;
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The future a handler produces.
 ///
 /// Boxed and thread-local: handlers run on the UI thread with the web view, and
 /// the payload types are `!Send` by design.
 pub type HandlerFuture = core::pin::Pin<Box<dyn core::future::Future<Output = HandlerResult>>>;
 
+#[cfg(not(target_arch = "wasm32"))]
 /// A handler the page can call.
 ///
 /// Asynchronous so a handler can read a file or query a database before
@@ -25,6 +35,7 @@ pub type HandlerFuture = core::pin::Pin<Box<dyn core::future::Future<Output = Ha
 /// deferred channel, so this costs them nothing.
 pub type ScriptMessageHandler = dyn Fn(&[u8]) -> HandlerFuture + 'static;
 
+#[cfg(not(target_arch = "wasm32"))]
 /// When to inject a user script into the web view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScriptInjectionTime {
@@ -64,23 +75,31 @@ webview_handle! {
     impl AnyWebViewHandle.inner;
 
     uniform {
+        #[cfg(not(target_arch = "wasm32"))]
         /// Navigates back in the web view's history.
         fn go_back(&self);
+        #[cfg(not(target_arch = "wasm32"))]
         /// Navigates forward in the web view's history.
         fn go_forward(&self);
         /// Navigates to the specified URL.
         fn go_to(&self, url: &Url);
+        #[cfg(not(target_arch = "wasm32"))]
         /// Stops the current loading operation.
         fn stop(&self);
+        #[cfg(not(target_arch = "wasm32"))]
         /// Refreshes the current page.
         fn refresh(&self);
+        #[cfg(not(target_arch = "wasm32"))]
         /// Sets the user agent string for the web view.
         fn set_user_agent(&self, user_agent: &str);
+        #[cfg(not(target_arch = "wasm32"))]
         /// Returns whether the web view can navigate back in its history.
         fn can_go_back(&self) -> bool;
+        #[cfg(not(target_arch = "wasm32"))]
         /// Returns whether the web view can navigate forward in its history.
         fn can_go_forward(&self) -> bool;
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Injects a script that will run on every page load.
         ///
         /// The script is re-injected on every navigation, so a page the view
@@ -94,6 +113,7 @@ webview_handle! {
         /// seed scripts, each starting another pull loop.
         fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime);
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Adds a handler that can be called from JavaScript.
         ///
         /// The page calls it as `waterui.invoke(name, payload)`, the same way on
@@ -105,9 +125,11 @@ webview_handle! {
         /// channel.
         fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>);
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Removes a previously added handler.
         fn remove_handler(&self, name: &str);
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Chooses which documents may reach the bridge.
         ///
         /// A backend enforces this as natively as it can — restricting where the
@@ -115,9 +137,11 @@ webview_handle! {
         /// arrives from — and refuses calls that do not match.
         fn set_bridge_origins(&self, policy: crate::OriginPolicy);
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Sets a cookie for the web view.
         fn set_cookie(&self, cookie: Cookie<'static>);
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// The origin this view serves bundled assets under, when it was
         /// opened with an [`AssetServer`](crate::AssetServer).
         ///
@@ -134,6 +158,7 @@ webview_handle! {
     // returns an `impl Trait` that a `dyn` cannot hold. Each layer says its own
     // signature so the conversion between them stays where it can be read.
     public extra {
+        #[cfg(not(target_arch = "wasm32"))]
         /// Enables or disables following redirects.
         fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>);
 
@@ -145,6 +170,7 @@ webview_handle! {
         /// [`WatcherSet`](crate::WatcherSet) rather than implementing it each.
         fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard;
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Retrieves all cookies for the current web view.
         ///
         /// # Attributes are not available everywhere
@@ -165,8 +191,16 @@ webview_handle! {
         /// which is worse than the gap being visible.
         ///
         /// [getCookie]: https://developer.android.com/reference/android/webkit/CookieManager#getCookie(java.lang.String)
-        fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>>;
+        ///
+        /// # Errors
+        ///
+        /// Fails when the platform cookie store cannot be read, or when it
+        /// returns a cookie the contract cannot represent (for example an
+        /// expiry outside `OffsetDateTime`'s range). A failure is reported,
+        /// never silently collapsed into an empty list.
+        fn get_cookies(&self) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>>;
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Runs JavaScript code in the context of the currently loaded page.
         ///
         /// This executes the script **after** the page has loaded. For scripts
@@ -194,6 +228,7 @@ webview_handle! {
         /// because it needs the promise awaited.
         fn run_javascript(&self, script: &str) -> impl Future<Output = Result<Str, Str>>;
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Runs `body` as the body of an `async` function and **awaits** the
         /// promise it returns.
         ///
@@ -218,13 +253,19 @@ webview_handle! {
     }
 
     shim extra {
+        #[cfg(not(target_arch = "wasm32"))]
         fn set_redirects_enabled(&self, enabled: Computed<bool>);
         fn watch(&self, f: Box<dyn Fn(BackendEvent) + 'static>) -> WatcherGuard;
-        fn get_cookies<'a>(&'a self) -> Pin<Box<dyn 'a + Future<Output = Vec<Cookie<'static>>>>>;
+        #[cfg(not(target_arch = "wasm32"))]
+        fn get_cookies<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn 'a + Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>>>>;
+        #[cfg(not(target_arch = "wasm32"))]
         fn run_javascript<'a>(
             &'a self,
             script: &'a str,
         ) -> Pin<Box<dyn 'a + Future<Output = Result<Str, Str>>>>;
+        #[cfg(not(target_arch = "wasm32"))]
         fn call_async_javascript<'a>(
             &'a self,
             body: &'a str,
@@ -234,6 +275,7 @@ webview_handle! {
     bridge extra {
         // A `Computed` is a `Signal` and a `Box<dyn Fn>` is an `Fn`, so these
         // two need nothing but the call; only the futures have to be boxed.
+        #[cfg(not(target_arch = "wasm32"))]
         fn set_redirects_enabled(&self, enabled: Computed<bool>) {
             WebViewHandle::set_redirects_enabled(self, enabled);
         }
@@ -242,10 +284,15 @@ webview_handle! {
             WebViewHandle::watch(self, f)
         }
 
-        fn get_cookies<'a>(&'a self) -> Pin<Box<dyn 'a + Future<Output = Vec<Cookie<'static>>>>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        fn get_cookies<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn 'a + Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>>>>
+        {
             Box::pin(WebViewHandle::get_cookies(self))
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         fn run_javascript<'a>(
             &'a self,
             script: &'a str,
@@ -253,6 +300,7 @@ webview_handle! {
             Box::pin(WebViewHandle::run_javascript(self, script))
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         fn call_async_javascript<'a>(
             &'a self,
             body: &'a str,
@@ -262,6 +310,7 @@ webview_handle! {
     }
 
     wrapper extra {
+        #[cfg(not(target_arch = "wasm32"))]
         /// Enables or disables following redirects.
         ///
         /// Takes anything that becomes a `Computed`, so a plain `bool` reads as
@@ -276,6 +325,7 @@ webview_handle! {
             self.inner.watch(Box::new(f))
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Retrieves all cookies for the current web view.
         ///
         /// See [`WebViewHandle::get_cookies`] for what a backend can and cannot
@@ -284,10 +334,13 @@ webview_handle! {
             clippy::future_not_send,
             reason = "native web views and their handles are main-thread-affine"
         )]
-        pub fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> + '_ {
+        pub fn get_cookies(
+            &self,
+        ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> + '_ {
             self.inner.get_cookies()
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Runs the given JavaScript code in the context of the web view.
         ///
         /// The returned future is intentionally thread-local because native web
@@ -303,6 +356,7 @@ webview_handle! {
             self.inner.run_javascript(script)
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
         /// Runs `body` as an `async` function body and awaits its promise.
         ///
         /// See [`WebViewHandle::call_async_javascript`] for why this is separate

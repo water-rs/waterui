@@ -36,10 +36,10 @@ use objc2::{
     AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, extern_class, extern_methods,
     msg_send,
 };
-use objc2_core_foundation::CFError;
+use objc2_core_foundation::{CFBoolean, CFError, CFType};
 use objc2_foundation::{
     NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger,
-    NSJSONSerialization, NSJSONWritingOptions, NSObject, NSRect, NSString, NSURL,
+    NSJSONSerialization, NSJSONWritingOptions, NSNull, NSNumber, NSObject, NSRect, NSString, NSURL,
     NSURLAuthenticationChallenge, NSURLCredential, NSURLRequest,
     NSURLSessionAuthChallengeDisposition,
 };
@@ -1281,9 +1281,9 @@ impl WebViewController {
             .set_custom_user_agent(user_agent.map(NSString::from_str).as_deref());
     }
 
-    /// Runs `script` in the default world; `done` receives the result
-    /// JSON-serialized (top-level non-JSON values fall back to their
-    /// `description`) or the error's localized description.
+    /// Runs `script` in the default world; `done` receives the result's
+    /// JSON encoding (a value without one falls back to its `description`)
+    /// or the error's localized description.
     pub fn evaluate_javascript(
         &self,
         script: &str,
@@ -1564,14 +1564,49 @@ fn script_result(result: *mut AnyObject, error: *mut NSError) -> Result<String, 
     Ok(json_string(result))
 }
 
-/// JSON-serializes `object`, falling back to `description` when it is not a
-/// valid JSON object — the shape `evaluateJavaScript` replies with.
+/// JSON-encodes `object` for the `run_javascript` reply — a string quoted
+/// and escaped, a boolean `true`/`false`, a number as its literal, `null`
+/// for `NSNull`, a container as its JSON. A value with no JSON encoding —
+/// an `NSDate` a `Date` bridges to — falls back to `description`.
 fn json_string(object: &AnyObject) -> String {
-    // SAFETY: `object` is a live object.
-    if unsafe { NSJSONSerialization::isValidJSONObject(object) } {
-        // SAFETY: `object` passed `isValidJSONObject`.
+    if object.downcast_ref::<NSNull>().is_some() {
+        return String::from("null");
+    }
+    if let Some(number) = object.downcast_ref::<NSNumber>() {
+        // A JavaScript boolean bridges as a `CFBoolean` — an `NSNumber`
+        // told from the numbers by its CoreFoundation type, never by its
+        // value: `NSNumber` 1 is not `true`.
+        // SAFETY: an `NSNumber` is a `CFType` under toll-free bridging; the
+        // downcast only reads its type identifier.
+        let cf = unsafe { &*std::ptr::from_ref(number).cast::<CFType>() };
+        if let Some(boolean) = cf.downcast_ref::<CFBoolean>() {
+            return String::from(if boolean.value() { "true" } else { "false" });
+        }
+        // JSON has no spelling for NaN or an infinity, and the serializer
+        // raises on them instead of erroring; they answer `null`, the
+        // spelling `JSON.stringify` gives them.
+        if !number.doubleValue().is_finite() {
+            return String::from("null");
+        }
+    }
+    // `FragmentsAllowed` extends the serializer to the scalar classes
+    // `isValidJSONObject` rejects at top level — `NSString`, `NSNumber`.
+    // The serializer raises `NSInvalidArgumentException` on a type it
+    // cannot write rather than answering an error, so only those classes
+    // and containers that pass the validity check are handed to it.
+    let writable = object.downcast_ref::<NSString>().is_some()
+        || object.downcast_ref::<NSNumber>().is_some()
+        // SAFETY: `object` is a live object.
+        || unsafe { NSJSONSerialization::isValidJSONObject(object) };
+    if writable {
+        // SAFETY: `writable` is the writability contract
+        // `dataWithJSONObject` enforces by raising; `object` is a live
+        // object.
         if let Ok(data) = unsafe {
-            NSJSONSerialization::dataWithJSONObject_options_error(object, NSJSONWritingOptions(0))
+            NSJSONSerialization::dataWithJSONObject_options_error(
+                object,
+                NSJSONWritingOptions::FragmentsAllowed,
+            )
         } && let Ok(text) = String::from_utf8(data.to_vec())
         {
             return text;

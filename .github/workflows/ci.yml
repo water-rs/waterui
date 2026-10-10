@@ -417,8 +417,8 @@ jobs:
       affected: ${{ needs.scope.outputs.packages }}
       package-args: ${{ needs.scope.outputs.package-args }}
       comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
-      test-assets: ${{ needs.scope.outputs.test-assets == 'true' }}
       scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
+      apple-legs: ${{ needs.scope.outputs.apple-legs }}
 
   # The one required check for the Test workflow. A pull request that changes
   # no code skips the `test` call above, and a skipped reusable-workflow call

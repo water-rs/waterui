@@ -39,6 +39,7 @@ use waterui::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
+use waterui_core::interaction::Disabled;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext, Renderer};
@@ -427,6 +428,10 @@ struct Shared {
     /// `measuredRowHeights`: the row contract the height delegate reports,
     /// refreshed from both `viewFor`/`cellForRow` layout passes.
     measured_heights: HashMap<ItemId, f64>,
+    /// The `Disabled` signal each rendered row resolved under, by item id —
+    /// recorded on the row's own render pass, so a `.disabled` binding flip
+    /// takes effect without a reload (water-rs/waterui#2244).
+    disabled_rows: RefCell<HashMap<ItemId, Computed<bool>>>,
 }
 
 impl fmt::Debug for Shared {
@@ -446,6 +451,9 @@ impl Shared {
         self.regroup();
         let seen: HashSet<ItemId> = self.item_ids.iter().copied().collect();
         self.measured_heights.retain(|id, _| seen.contains(id));
+        self.disabled_rows
+            .get_mut()
+            .retain(|id, _| seen.contains(id));
     }
 
     /// Regroups over the current `item_ids` — after a local delete or
@@ -458,6 +466,18 @@ impl Shared {
             self.uses_sections,
             &self.env,
         );
+    }
+
+    /// Whether `flat`'s row resolved under `.disabled` on its last render
+    /// — such a row is inert the way a disabled `Button` cannot be
+    /// pressed: pointer and accessibility-driven selection both refuse it
+    /// while its label and disabled state still report
+    /// (water-rs/waterui#2244). Rows never rendered answer `false`.
+    fn row_disabled(&self, flat: usize) -> bool {
+        self.disabled_rows
+            .borrow()
+            .get(&self.item_ids[flat])
+            .is_some_and(Signal::snapshot)
     }
 
     /// `writeSelectionFromTable`: `flat` item indexes selected on the
@@ -484,7 +504,12 @@ impl Shared {
             .expect("list item index is in bounds");
         let insets = item.insets;
         let deletable = item.deletable;
-        let leaf = self.renderer.render(item.content);
+        // The row's `Disabled` signal comes from the scope this render
+        // resolves the content under — the same pass, not a second walk.
+        let (leaf, resolved_env) = self.renderer.render_resolved(item.content);
+        self.disabled_rows
+            .borrow_mut()
+            .insert(self.item_ids[flat], Disabled::resolve(&resolved_env, false));
         (insets, deletable, leaf)
     }
 
@@ -1027,6 +1052,11 @@ mod platform_impl {
         let Some(flat) = flat_index(&state.borrow().groups, index.section, index.row) else {
             return;
         };
+        // A `.disabled` row is inert — accessibility activation must not
+        // select it, the way a pointer press must not.
+        if state.borrow().row_disabled(flat) {
+            return;
+        }
         if selected.contains(&flat) {
             table.deselect_row(index, false);
         } else {
@@ -1258,6 +1288,10 @@ mod platform_impl {
             if let Some(on_move) = &state.on_move {
                 on_move(&state.env, Move::new(source, adjusted));
             }
+        }
+
+        fn should_select(&self, _table: &TableView, index: IndexPath) -> bool {
+            !self.state.borrow().row_disabled(self.flat(index))
         }
 
         fn did_select_row(&self, table: &TableView, index: IndexPath) {
@@ -1572,7 +1606,10 @@ mod platform_impl {
         fn should_select(&self, _table: &TableView, row: usize) -> bool {
             let state = self.state.borrow();
             state.selection.allows_selection()
-                && matches!(state.flat_layout.get(row), Some(FlatEntry::Row(_)))
+                && match state.flat_layout.get(row) {
+                    Some(&FlatEntry::Row(flat)) => !state.row_disabled(flat),
+                    _ => false,
+                }
         }
 
         fn selection_did_change(&self, table: &TableView) {
@@ -1845,6 +1882,7 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         theme_insets,
         resolved_min_height: min_row_height(config.min_row_height, stock_height),
         measured_heights: HashMap::new(),
+        disabled_rows: RefCell::new(HashMap::new()),
     }));
 
     #[cfg(target_os = "ios")]

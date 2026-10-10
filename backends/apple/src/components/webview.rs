@@ -636,16 +636,20 @@ impl WebViewHandle for WkWebViewHandle {
         clippy::future_not_send,
         reason = "WebKit and WaterUI view state are confined to the UI thread"
     )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
         let (sender, receiver) = async_channel::bounded(1);
         self.controller().all_cookies(move |records| {
             let cookies = records
                 .into_iter()
                 .map(cookie_record::into_cookie)
-                .collect();
+                .collect::<Result<Vec<_>, _>>();
             let _ = sender.try_send(cookies);
         });
-        receiver.recv().await.unwrap_or_default()
+        receiver.recv().await.map_err(|error| {
+            waterui_core::Error::msg(format!(
+                "the WKWebView cookie query ended without an answer: {error}"
+            ))
+        })?
     }
 
     #[expect(
@@ -687,12 +691,19 @@ impl WebViewHandle for WkWebViewHandle {
 /// with unknown `SameSite` values dropped like it does.
 mod cookie_record {
     use super::{Cookie, web_kit};
-    use cookie::time::OffsetDateTime;
 
     /// Converts the kit's cookie record into the cookie type the handle
     /// contract answers with.
-    pub(super) fn into_cookie(record: web_kit::CookieRecord) -> Cookie<'static> {
-        let mut builder = Cookie::build((record.name, record.value))
+    ///
+    /// # Errors
+    ///
+    /// Fails when `record.expires` names no representable date; the error
+    /// names the cookie and the raw value.
+    pub(super) fn into_cookie(
+        record: web_kit::CookieRecord,
+    ) -> Result<Cookie<'static>, waterui_core::Error> {
+        let name = record.name;
+        let mut builder = Cookie::build((name.clone(), record.value))
             .domain(record.domain)
             .path(record.path)
             .secure(record.secure)
@@ -710,22 +721,10 @@ mod cookie_record {
                 }
             }
         }
-        if let Some(expires) = record.expires {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "cookie expiries are positive unix seconds that fit i64"
-            )]
-            match OffsetDateTime::from_unix_timestamp(expires as i64) {
-                Ok(expires) => builder = builder.expires(expires),
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "ignoring a cookie expiry that is outside the representable range"
-                    );
-                }
-            }
+        if let Some(seconds) = record.expires {
+            builder = builder.expires(waterui_webview::cookie_expiry(&name, seconds)?);
         }
-        builder.build()
+        Ok(builder.build())
     }
 }
 
@@ -896,7 +895,7 @@ mod tests {
             http_only: true,
             same_site: Some(String::from("Strict")),
         };
-        let cookie = cookie_record::into_cookie(record);
+        let cookie = cookie_record::into_cookie(record).expect("the expiry is representable");
         let header = cookie.to_string();
         assert!(header.contains("session=abc"));
         assert!(header.contains("Domain=example.com"));
@@ -921,6 +920,7 @@ mod tests {
         };
         assert!(
             !cookie_record::into_cookie(record)
+                .expect("no expiry is a session cookie")
                 .to_string()
                 .contains("SameSite")
         );

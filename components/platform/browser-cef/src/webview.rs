@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use cef::{ImplBrowser, ImplBrowserHost, ImplFrame};
-use cookie::{Expiration, SameSite, time::OffsetDateTime};
-use num_traits::ToPrimitive as _;
+use cookie::{Expiration, SameSite};
 use serde_json::Value;
 use suiteki::Str;
 use waterui_core::{Computed, Signal};
@@ -296,7 +295,7 @@ impl WebViewHandle for CefWebViewHandle {
         clippy::future_not_send,
         reason = "CEF pages and DevTools sessions are confined to the UI thread"
     )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
         // The cookies of the current document, not every cookie in the profile:
         // `Network.getAllCookies` returned the whole store, which is not what
         // "the cookies for this web view" means on any other backend.
@@ -304,8 +303,14 @@ impl WebViewHandle for CefWebViewHandle {
             .session()
             .execute(&protocol::GetCookies { urls: Vec::new() })
             .await
-            .unwrap_or_else(|error| panic!("CEF failed to retrieve WebView cookies: {error}"));
-        response.cookies.iter().map(cookie_from_cdp).collect()
+            .map_err(|error| {
+                waterui_core::Error::new(error).context("CEF failed to retrieve WebView cookies")
+            })?;
+        response
+            .cookies
+            .iter()
+            .map(cookie_from_cdp)
+            .collect::<Result<Vec<_>, _>>()
     }
 
     #[expect(
@@ -553,7 +558,7 @@ fn execute_without_result<C: protocol::CdpCommand>(session: &CefCdpSession, comm
     drop(session.execute(command));
 }
 
-fn cookie_from_cdp(cookie: &protocol::Cookie) -> Cookie<'static> {
+fn cookie_from_cdp(cookie: &protocol::Cookie) -> Result<Cookie<'static>, waterui_core::Error> {
     let mut builder = Cookie::build((cookie.name.clone(), cookie.value.clone()))
         .domain(cookie.domain.clone())
         .path(cookie.path.clone())
@@ -572,12 +577,13 @@ fn cookie_from_cdp(cookie: &protocol::Cookie) -> Cookie<'static> {
             ),
         }
     }
-    if cookie.expires.abs() > f64::EPSILON
-        && cookie.expires.is_sign_positive()
-        && let Some(seconds) = cookie.expires.to_i64()
-        && let Ok(expires) = OffsetDateTime::from_unix_timestamp(seconds)
-    {
-        builder = builder.expires(expires);
+    // CDP reports a non-positive `expires` for a session cookie; anything
+    // else, NaN included, is an expiry that must convert.
+    if cookie.expires.is_nan() || cookie.expires > 0.0 {
+        builder = builder.expires(waterui_webview::cookie_expiry(
+            &cookie.name,
+            cookie.expires,
+        )?);
     }
-    builder.build()
+    Ok(builder.build())
 }

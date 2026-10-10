@@ -1724,7 +1724,7 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
 /// controller permits it — but on a build bridging no engine there is nothing
 /// to draw it with, and the backend fails rather than occupying a layout slot
 /// with no page behind it.
-#[cfg(not(hydrolysis_macos_system_webview))]
+#[cfg(not(hydrolysis_system_webview))]
 #[test]
 #[should_panic(expected = "no web engine is bridged")]
 fn a_webview_with_no_engine_to_draw_it_panics() {
@@ -1782,8 +1782,10 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
         fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
             self.watchers.insert(f)
         }
-        fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> {
-            ready(Vec::new())
+        fn get_cookies(
+            &self,
+        ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
+            ready(Ok(Vec::new()))
         }
         #[expect(
             clippy::future_not_send,
@@ -2659,6 +2661,19 @@ pub struct MinimalTestTheme {
     progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
     /// Every `draw_radio_indicator` call.
     radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
+    /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
+    /// defaults `input_field_metrics` carries below.
+    input_metrics: Option<InputFieldMetrics>,
+}
+
+impl MinimalTestTheme {
+    /// Reports `metrics` from `input_field_metrics` instead of the fixture
+    /// defaults.
+    #[must_use]
+    pub fn with_input_metrics(mut self, metrics: InputFieldMetrics) -> Self {
+        self.input_metrics = Some(metrics);
+        self
+    }
 }
 
 /// One `backdrop_material` a chrome test's theme replays per
@@ -2858,13 +2873,13 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_stepper_increment_icon(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
     fn input_field_metrics(&self) -> InputFieldMetrics {
-        InputFieldMetrics {
+        self.input_metrics.unwrap_or(InputFieldMetrics {
             label_height: 14.0,
             min_width: 100.0,
             min_height: 32.0,
             horizontal_inset: 8.0,
             vertical_inset: 6.0,
-        }
+        })
     }
 
     fn input_placeholder_color(&self) -> waterui_graphics::color::Color {
