@@ -13805,6 +13805,7 @@ dependencies = [
  "thiserror 2.0.21",
  "uuid",
  "waterui-core",
+ "waterui-layout",
  "waterui-url",
 ]
 

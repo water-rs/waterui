@@ -21,7 +21,6 @@ use std::rc::{Rc, Weak};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
-use waterui::ViewExt as _;
 use waterui_core::{AnyView, Environment, Native};
 use waterui_video::video::{
     AudioTrackSelection, ContentMode, Event, PlaybackConfiguration, PlaybackOutputPath,
@@ -36,11 +35,6 @@ use web_sys::{HtmlElement, HtmlTrackElement, HtmlVideoElement, TextTrackMode};
 
 use crate::time::Instant;
 use crate::{HostedContent, HostedObject, HostedOcclusion, HostedView};
-
-/// The height a `Fit` leaf answers under every proposal: it stretches
-/// horizontally only, and its height is the same fallback the Apple
-/// realization measures.
-const FIT_HEIGHT: f32 = 180.0;
 
 /// The MIME type an HLS playlist is offered to the element as.
 const HLS_MIME: &str = "application/vnd.apple.mpegurl";
@@ -100,10 +94,11 @@ fn leaf(
     }
     let element = video_element(content_mode, controls);
     let player = Player::new(env, element, playback, loops);
+    let aspect = player.aspect.clone().computed();
+    let natural_width = player.natural_width.clone().computed();
     let hosted = Native::new(HostedView::new(VideoContent { player }));
     match content_mode {
-        // `Fit` stretches horizontally only (`NativeVideoConfig::stretch_axis`).
-        ContentMode::Fit => AnyView::new(hosted.height(FIT_HEIGHT)),
+        ContentMode::Fit => AnyView::new(waterui_video::fit_video(hosted, aspect, natural_width)),
         ContentMode::Fill | ContentMode::Stretch => AnyView::new(hosted),
     }
 }
@@ -210,6 +205,10 @@ struct Player {
     /// The `<track>` children the current source's sidecar subtitles added.
     tracks: RefCell<Vec<HtmlTrackElement>>,
     focused: Binding<bool>,
+    /// The source's width-to-height ratio, 16:9 until it reports its size.
+    aspect: Binding<f32>,
+    /// The source's own width, once it reports its size.
+    natural_width: Binding<Option<f32>>,
     listeners: RefCell<Vec<Listener>>,
     guards: RefCell<Vec<BoxWatcherGuard>>,
 }
@@ -262,6 +261,8 @@ impl Player {
             last_buffer_level_ms: Cell::new(None),
             tracks: RefCell::new(Vec::new()),
             focused: nami::binding(false),
+            aspect: nami::binding(waterui_video::DEFAULT_ASPECT),
+            natural_width: nami::binding(None),
             listeners: RefCell::new(Vec::new()),
             guards: RefCell::new(Vec::new()),
         });
@@ -322,6 +323,8 @@ impl Player {
         self.bindings.position_seconds.set(0.0);
         self.bindings.live_window.set(None);
         self.bindings.track_catalog.set(TrackCatalog::default());
+        self.aspect.set(waterui_video::DEFAULT_ASPECT);
+        self.natural_width.set(None);
         for track in self.tracks.take() {
             track.remove();
         }
@@ -562,6 +565,23 @@ impl Player {
         )));
     }
 
+    /// The source's size, once the element reports it: the `Fit` leaf
+    /// answers by its aspect ratio.
+    fn report_size(&self) {
+        let (width, height) = (self.element.video_width(), self.element.video_height());
+        if width == 0 || height == 0 {
+            return;
+        }
+        let width = crate::num_cast::u32_as_f32(width);
+        let aspect = width / crate::num_cast::u32_as_f32(height);
+        if self.aspect.snapshot().to_bits() != aspect.to_bits() {
+            self.aspect.set(aspect);
+        }
+        if self.natural_width.snapshot() != Some(width) {
+            self.natural_width.set(Some(width));
+        }
+    }
+
     /// The buffered extent ahead of the playhead, in milliseconds.
     fn buffered_ahead_ms(&self) -> u32 {
         let position = self.element.current_time();
@@ -716,13 +736,17 @@ impl Player {
 
     /// Registers the element's media, picture-in-picture and focus events.
     fn listen(self: &Rc<Self>) {
-        let handlers: [(&str, Handler); 16] = [
+        let handlers: [(&str, Handler); 17] = [
             ("canplay", Self::can_play),
             ("playing", |player| player.playing()),
             ("pause", |player| player.paused()),
             ("waiting", |player| player.waiting()),
             ("timeupdate", |player| player.tick()),
-            ("loadedmetadata", |player| player.report_duration()),
+            ("loadedmetadata", |player| {
+                player.report_duration();
+                player.report_size();
+            }),
+            ("resize", |player| player.report_size()),
             ("durationchange", |player| player.report_duration()),
             ("progress", |player| player.update_live_window()),
             ("ended", Self::ended),

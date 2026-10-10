@@ -70,10 +70,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<NativeVideoPlayerConfig>(render_video_player);
 }
 
-/// Fallback bounds while the item's own size is unknown — the Swift
-/// `sizeThatFits` answered `320×180`.
+/// Fallback bounds while the item's own size is unknown: 320 wide, and the
+/// 16:9 height at that width.
 const FALLBACK_WIDTH: f32 = 320.0;
-const FALLBACK_HEIGHT: f32 = 180.0;
+const FALLBACK_HEIGHT: f32 = FALLBACK_WIDTH / waterui_video::DEFAULT_ASPECT;
 
 /// The coordinator's periodic-observer cadence, matching the Swift 1/4s.
 const PERIODIC_SECONDS: f64 = 0.25;
@@ -103,22 +103,37 @@ const fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
     }
 }
 
-/// The leaf's measure: the proposal, falling back to `320×180` per side.
-/// A `Fit` leaf does not stretch vertically, so its height answer is its
-/// own fallback under every proposal — never the offered height echoed
-/// back and claimed as the band a stack negotiated.
-fn measure(stretch: StretchAxis, proposal: ProposalSize) -> ViewDimensions {
-    let height = if stretch == StretchAxis::Horizontal {
-        FALLBACK_HEIGHT
-    } else {
-        proposal.height.unwrap_or(FALLBACK_HEIGHT)
-    };
-    ViewDimensions::new(Size::new(proposal.width.unwrap_or(FALLBACK_WIDTH), height))
+/// The leaf's measure (`docs/layout-spec.md`, §6). A `Fit` video answers the
+/// proposed width and the height `source`'s aspect ratio gives at that width
+/// (16:9 until the item reports its size), whatever height is offered; to an
+/// unspecified width it answers the source's own width, or 320. `Fill` and
+/// `Stretch` fill the proposal, falling back to 320×180 on an unspecified
+/// axis.
+fn measure(mode: ContentMode, source: Option<Size>, proposal: ProposalSize) -> ViewDimensions {
+    match mode {
+        ContentMode::Fit => {
+            let aspect = source.map_or(waterui_video::DEFAULT_ASPECT, |size| {
+                size.width / size.height
+            });
+            let width = proposal
+                .width
+                .filter(|width| width.is_finite())
+                .unwrap_or_else(|| source.map_or(FALLBACK_WIDTH, |size| size.width));
+            ViewDimensions::new(Size::new(width, width / aspect))
+        }
+        ContentMode::Fill | ContentMode::Stretch => ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(FALLBACK_WIDTH),
+            proposal.height.unwrap_or(FALLBACK_HEIGHT),
+        )),
+    }
 }
 
 /// Layout face shared by both leaves.
 struct VideoSubView {
-    stretch: StretchAxis,
+    mode: ContentMode,
+    /// The item's presentation size, once it reports one: written by the
+    /// coordinator, which relayouts the leaf when it changes.
+    source: Rc<core::cell::Cell<Option<Size>>>,
 }
 
 impl core::fmt::Debug for VideoSubView {
@@ -129,11 +144,11 @@ impl core::fmt::Debug for VideoSubView {
 
 impl SubView for VideoSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        measure(self.stretch, proposal)
+        measure(self.mode, self.source.get(), proposal)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        self.stretch
+        leaf_stretch_axis(self.mode)
     }
 
     fn priority(&self) -> i32 {
@@ -331,6 +346,11 @@ struct State {
     session: MediaSessionBridge,
     /// Whether the current item's end was already handled.
     ended: bool,
+    /// The item's presentation size, shared with the leaf's measure.
+    source_size: Rc<core::cell::Cell<Option<Size>>>,
+    /// Relayouts the leaf after `source_size` changed; installed once the
+    /// leaf's view exists.
+    relayout: Option<Box<dyn Fn()>>,
     /// Binding writes, events, and session pushes queued while this cell
     /// is borrowed; [`update`] applies them after it is released.
     deferred: Vec<Deferred>,
@@ -432,6 +452,7 @@ impl State {
         self.guards.clear();
         self.item = None;
         self.ended = false;
+        self.set_source_size(None);
         self.buffering = false;
         self.buffering_since = None;
         self.last_buffer_level_ms = None;
@@ -569,6 +590,13 @@ impl State {
         match item.status() {
             ItemStatus::Unknown => {}
             ItemStatus::ReadyToPlay => {
+                let size = item.presentation_size();
+                if size.width > 0.0 && size.height > 0.0 {
+                    self.set_source_size(Some(Size::new(
+                        f64_as_f32(size.width),
+                        f64_as_f32(size.height),
+                    )));
+                }
                 self.emit(Event::ReadyToPlay);
                 self.set_phase(PlaybackPhase::Ready);
                 self.report_duration(&item);
@@ -590,6 +618,18 @@ impl State {
                 self.set_phase(PlaybackPhase::Failed);
                 self.defer_push_playback_state();
             }
+        }
+    }
+
+    /// Records the item's presentation size and relayouts the leaf when it
+    /// changed: a `Fit` leaf's height follows its aspect ratio.
+    fn set_source_size(&mut self, size: Option<Size>) {
+        if self.source_size.get() == size {
+            return;
+        }
+        self.source_size.set(size);
+        if let Some(relayout) = &self.relayout {
+            relayout();
         }
     }
 
@@ -1298,6 +1338,12 @@ const fn f64_as_u32(value: f64) -> u32 {
     }
 }
 
+/// f64 → f32 for a presentation size, which is far inside `f32`'s range.
+#[allow(clippy::cast_possible_truncation)]
+const fn f64_as_f32(value: f64) -> f32 {
+    value as f32
+}
+
 /// Sort key for a variant: declared bitrate first, then pixel count — the
 /// Swift catalog ordering.
 fn variant_quality(variant: &AVAssetVariant) -> f64 {
@@ -1336,6 +1382,15 @@ fn codec_string(fourcc: u32) -> String {
 /// Uptime in seconds — `systemUptime`'s equivalent for the buffering gate.
 fn uptime_seconds() -> f64 {
     cocoa_ui::process::time_since_start().map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+/// Lets the coordinator relayout `leaf` when the item's size changes.
+fn install_relayout(leaf: &NativeLeaf, coordinator: &Coordinator) {
+    let view = cocoa_ui::view::retain_base(leaf.view());
+    coordinator.state.borrow_mut().relayout = Some(Box::new(move || {
+        crate::measure_memo::invalidate();
+        cocoa_ui::view::invalidate_layout(&view);
+    }));
 }
 
 /// The coordinator the leaf keeps alive; dropping it tears everything down.
@@ -1412,6 +1467,8 @@ fn coordinator(
         started_at: uptime_seconds(),
         session: MediaSessionBridge::new(),
         ended: false,
+        source_size: Rc::new(core::cell::Cell::new(None)),
+        relayout: None,
     }));
     state.borrow_mut().weak = Rc::downgrade(&state);
 
@@ -1629,9 +1686,11 @@ fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLea
     let mut leaf = NativeLeaf::new(
         surface.view(),
         VideoSubView {
-            stretch: leaf_stretch_axis(config.content_mode),
+            mode: config.content_mode,
+            source: Rc::clone(&coordinator.state.borrow().source_size),
         },
     );
+    install_relayout(&leaf, &coordinator);
     bind(&mut leaf, &coordinator);
     leaf.keep(surface);
     leaf.keep(coordinator);
@@ -1669,7 +1728,9 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
         }
     });
 
-    let mut leaf = build_player_leaf(&view, config.content_mode, mtm);
+    let source = Rc::clone(&coordinator.state.borrow().source_size);
+    let mut leaf = build_player_leaf(&view, config.content_mode, source, mtm);
+    install_relayout(&leaf, &coordinator);
     bind(&mut leaf, &coordinator);
     leaf.keep(coordinator);
     leaf.keep(view);
@@ -1683,6 +1744,7 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
 fn build_player_leaf(
     view: &Rc<PlayerView>,
     mode: ContentMode,
+    source: Rc<core::cell::Cell<Option<Size>>>,
     mtm: MainThreadMarker,
 ) -> NativeLeaf {
     #[cfg(target_os = "ios")]
@@ -1707,24 +1769,14 @@ fn build_player_leaf(
                 }
             }
         });
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            VideoSubView {
-                stretch: leaf_stretch_axis(mode),
-            },
-        );
+        let mut leaf = NativeLeaf::new(&*host, VideoSubView { mode, source });
         leaf.keep(host);
         leaf
     }
     #[cfg(target_os = "macos")]
     {
         let _ = mtm;
-        NativeLeaf::new(
-            view.view(),
-            VideoSubView {
-                stretch: leaf_stretch_axis(mode),
-            },
-        )
+        NativeLeaf::new(view.view(), VideoSubView { mode, source })
     }
 }
 
@@ -1756,26 +1808,38 @@ mod tests {
     }
 
     #[test]
-    fn measure_falls_back_to_320x180() {
-        let empty = measure(StretchAxis::Both, ProposalSize::new(None, None));
+    fn measure_fill_falls_back_to_320x180() {
+        let empty = measure(ContentMode::Fill, None, ProposalSize::new(None, None));
         assert!(f32::abs(empty.size.width - FALLBACK_WIDTH) < f32::EPSILON);
         assert!(f32::abs(empty.size.height - FALLBACK_HEIGHT) < f32::EPSILON);
     }
 
     #[test]
-    fn measure_uses_proposal() {
+    fn measure_fill_uses_proposal() {
         let proposal = ProposalSize::new(Some(640.0), Some(360.0));
-        let measured = measure(StretchAxis::Both, proposal);
+        let measured = measure(ContentMode::Stretch, None, proposal);
         assert!(f32::abs(measured.size.width - 640.0) < f32::EPSILON);
         assert!(f32::abs(measured.size.height - 360.0) < f32::EPSILON);
     }
 
+    /// A `Fit` leaf takes the proposed width and the height its source's
+    /// aspect gives at that width, whatever height is offered — 16:9 until
+    /// the item reports its size.
     #[test]
-    fn measure_fit_keeps_its_own_height() {
-        let proposal = ProposalSize::new(Some(640.0), Some(360.0));
-        let measured = measure(StretchAxis::Horizontal, proposal);
-        assert!(f32::abs(measured.size.width - 640.0) < f32::EPSILON);
-        assert!(f32::abs(measured.size.height - FALLBACK_HEIGHT) < f32::EPSILON);
+    fn measure_fit_follows_the_source_aspect() {
+        let proposal = ProposalSize::new(Some(640.0), Some(100.0));
+        let unknown = measure(ContentMode::Fit, None, proposal);
+        assert!(f32::abs(unknown.size.width - 640.0) < f32::EPSILON);
+        assert!(f32::abs(unknown.size.height - 360.0) < 1e-3);
+        let square = measure(ContentMode::Fit, Some(Size::new(1080.0, 1080.0)), proposal);
+        assert!(f32::abs(square.size.height - 640.0) < f32::EPSILON);
+        let unspecified = measure(
+            ContentMode::Fit,
+            Some(Size::new(1280.0, 720.0)),
+            ProposalSize::new(None, None),
+        );
+        assert!(f32::abs(unspecified.size.width - 1280.0) < f32::EPSILON);
+        assert!(f32::abs(unspecified.size.height - 720.0) < f32::EPSILON);
     }
 
     #[test]
