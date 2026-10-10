@@ -59,10 +59,12 @@ pub enum BoxForm {
     Path,
 }
 
-/// Whether `shape` encloses nothing: a line, or a circle or ellipse whose
-/// radius is not positive. Filled it draws nothing, and as a clip it cuts
-/// its whole subtree away, so every engine skips that subtree and the
-/// plane planner never promotes a layer inside it.
+/// Whether `shape` encloses nothing.
+///
+/// A line, and a circle or ellipse whose radius is not positive, enclose
+/// nothing. Filled such a shape draws nothing, and as a clip it cuts its
+/// whole subtree away, so every engine skips that subtree and the plane
+/// planner never promotes a layer inside it.
 #[must_use]
 pub fn encloses_nothing(shape: &ShapeData) -> bool {
     match shape {
