@@ -314,6 +314,8 @@ fn capture_presented(style: Material3, case: &str) {
         .theme(style)
         .mount_offscreen(move || content_fixture(&presented));
     app.settle();
+    // The window before the dialog: what the scrim must leave visible.
+    app.capture_snapshot("dialog", case, "closed");
     shown.set(true);
     app.settle();
 
@@ -514,6 +516,14 @@ fn a_second_dialog_waits_in_presentation_order_on_offscreen_mount() {
     assert_second_dialog_waits(&mut app, &first, &second);
 }
 
+/// The label of the node holding keyboard focus — the focus the window
+/// publishes with its accessibility tree.
+fn focused_label<R>(app: &SemanticApp<R>) -> Option<String> {
+    let tree = app.tree();
+    tree.node(tree.focus())
+        .and_then(|node| node.label().map(str::to_owned))
+}
+
 #[test]
 fn focus_moves_into_the_dialog_and_returns_on_dismissal() {
     let presented = Binding::bool(false);
@@ -521,27 +531,19 @@ fn focus_moves_into_the_dialog_and_returns_on_dismissal() {
     let shown = presented.clone();
     let mut app = ui()
         .viewport(400, 300)
-        .mount(move || fixture(&presented, flag.clone()));
+        .theme(Material3::defaults())
+        .mount_offscreen(move || fixture(&presented, flag.clone()));
     app.settle();
     app.press_named_key("Tab");
     app.settle();
-    app.query()
-        .role(Role::BUTTON)
-        .label("Open")
-        .assert_ui_focus();
+    assert_eq!(focused_label(&app).as_deref(), Some("Open"));
 
     shown.set(true);
     app.settle();
-    app.query()
-        .role(Role::BUTTON)
-        .label("Cancel")
-        .assert_ui_focus();
+    assert_eq!(focused_label(&app).as_deref(), Some("Cancel"));
 
     app.press_named_key("Escape");
     app.settle();
     assert!(!shown.snapshot());
-    app.query()
-        .role(Role::BUTTON)
-        .label("Open")
-        .assert_ui_focus();
+    assert_eq!(focused_label(&app).as_deref(), Some("Open"));
 }

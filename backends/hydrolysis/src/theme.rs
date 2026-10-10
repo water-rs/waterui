@@ -53,7 +53,7 @@ pub(crate) fn install_theme_tokens(env: &mut Environment, style: Option<&dyn cra
                 .error(color(0xDC_26_26))
                 .error_foreground(color(0xFF_FF_FF))
                 // Scrim: black at 32% over the content beneath a modal layer.
-                .scrim(Srgb::BLACK.with_opacity(0.32).resolve()),
+                .scrim(Srgb::BLACK.resolve().with_alpha(0.32)),
         )
         .fonts(FontSettings::default_scale())
         .install(&mut defaults);
