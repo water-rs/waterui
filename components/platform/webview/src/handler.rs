@@ -166,7 +166,14 @@ webview_handle! {
         /// which is worse than the gap being visible.
         ///
         /// [getCookie]: https://developer.android.com/reference/android/webkit/CookieManager#getCookie(java.lang.String)
-        fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>>;
+        ///
+        /// # Errors
+        ///
+        /// Fails when the platform cookie store cannot be read, or when it
+        /// returns a cookie the contract cannot represent (for example an
+        /// expiry outside `OffsetDateTime`'s range). A failure is reported,
+        /// never silently collapsed into an empty list.
+        fn get_cookies(&self) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>>;
 
         /// Runs JavaScript code in the context of the currently loaded page.
         ///
@@ -221,7 +228,9 @@ webview_handle! {
     shim extra {
         fn set_redirects_enabled(&self, enabled: Computed<bool>);
         fn watch(&self, f: Box<dyn Fn(BackendEvent) + 'static>) -> WatcherGuard;
-        fn get_cookies<'a>(&'a self) -> Pin<Box<dyn 'a + Future<Output = Vec<Cookie<'static>>>>>;
+        fn get_cookies<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn 'a + Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>>>>;
         fn run_javascript<'a>(
             &'a self,
             script: &'a str,
@@ -243,7 +252,10 @@ webview_handle! {
             WebViewHandle::watch(self, f)
         }
 
-        fn get_cookies<'a>(&'a self) -> Pin<Box<dyn 'a + Future<Output = Vec<Cookie<'static>>>>> {
+        fn get_cookies<'a>(
+            &'a self,
+        ) -> Pin<Box<dyn 'a + Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>>>>
+        {
             Box::pin(WebViewHandle::get_cookies(self))
         }
 
@@ -285,7 +297,9 @@ webview_handle! {
             clippy::future_not_send,
             reason = "native web views and their handles are main-thread-affine"
         )]
-        pub fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> + '_ {
+        pub fn get_cookies(
+            &self,
+        ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> + '_ {
             self.inner.get_cookies()
         }
 
