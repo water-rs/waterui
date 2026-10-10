@@ -358,7 +358,7 @@ pub fn navigation_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 11/13
+// navigation.md § "## Windows" — rust block 11/14
 // ---------------------------------------------------------------------------
 #[expect(
     clippy::redundant_closure,
@@ -416,6 +416,7 @@ pub fn navigation_window_builder_prose() {
         .resize_increments(Size::new(80.0, 24.0));
     let handle = window.handle();
     handle.maximize();
+    handle.request_close();
     handle.request_attention(UserAttention::Informational);
     handle.cancel_attention();
     let _ = Window::new("W", state.clone(), || text("c"))
@@ -443,7 +444,7 @@ pub fn navigation_window_builder_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 12/13
+// navigation.md § "## Windows" — rust block 12/14
 // ---------------------------------------------------------------------------
 pub fn navigation_block_12() -> impl View {
     use waterui::window::WindowState;
@@ -456,9 +457,37 @@ pub fn navigation_block_12() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows that open and close" — rust block 13/13
+// navigation.md § "## Windows" — rust block 13/14
 // ---------------------------------------------------------------------------
-pub fn navigation_block_13() -> impl View {
+pub fn navigation_block_13() -> waterui::window::Window {
+    fn editor_content() -> impl View {
+        text("editor")
+    }
+
+    use waterui::window::CloseReply;
+    use waterui::window::{Window, WindowState};
+
+    let dirty = binding(true); // unsaved buffers
+    let window_state = binding(WindowState::Closed);
+
+    Window::new("Editor", window_state.clone(), move || editor_content()).on_close_request(
+        move || {
+            let dirty = dirty.snapshot();
+            async move {
+                if dirty {
+                    CloseReply::Cancel
+                } else {
+                    CloseReply::Close
+                }
+            }
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Windows that open and close" — rust block 14/14
+// ---------------------------------------------------------------------------
+pub fn navigation_block_14() -> impl View {
     fn inspector_content() -> impl View {
         text("inspector")
     }

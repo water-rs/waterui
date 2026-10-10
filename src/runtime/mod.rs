@@ -14,5 +14,6 @@ pub mod snackbar;
 pub mod task;
 mod termination;
 pub mod window;
+mod window_close;
 
 pub use entry::entry;

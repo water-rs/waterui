@@ -323,6 +323,7 @@ fn bind_root(
             &declaration.background.computed(),
             declaration.closable,
             declaration.resizable,
+            &declaration.close_request,
             mtm,
         ));
     });

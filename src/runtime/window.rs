@@ -27,14 +27,16 @@
 //!     .background(Material::UltraThin);
 //! ```
 
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, future::Future, pin::Pin, rc::Rc};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
-use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
+use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
 use waterui_core::{AnyView, Dynamic, Environment, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
+
+pub use super::window_close::{CloseReply, CloseRequest};
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
@@ -194,6 +196,11 @@ pub struct Window {
     /// Platform support: hydrolysis/winit (X11 `WM_NORMAL_HINTS`, macOS),
     /// macOS (`NSWindow.contentResizeIncrements`). Others ignore it.
     pub resize_increments: Option<Computed<Size>>,
+    /// The close-request machine [`Self::on_close_request`] installs into,
+    /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
+    /// window is realized. Backend-facing plumbing — not application surface.
+    #[doc(hidden)]
+    pub close_request: CloseRequest,
 }
 
 /// A connected display, as the backend resolved it for a window's placement.
@@ -552,6 +559,7 @@ impl Window {
             AnyView::new(content)
         });
 
+        let close_request = CloseRequest::new(state.clone(), true);
         Self {
             title: title.into_computed(),
             closable: true,
@@ -571,6 +579,7 @@ impl Window {
             level: Computed::constant(WindowLevel::Normal),
             attention: Binding::container(None),
             resize_increments: None,
+            close_request,
         }
     }
 
@@ -784,6 +793,80 @@ impl Window {
             .unwrap_or_else(|| self.display_app_id())
     }
 
+    /// Asks `handler` before the window closes.
+    ///
+    /// Every close request — the title-bar close button, the window
+    /// manager's close (X11 `WM_DELETE_WINDOW`, Wayland
+    /// `xdg_toplevel.close`, `WM_CLOSE`), a Close Window menu command,
+    /// `performClose:` or [`WindowHandle::request_close`] — runs the handler
+    /// and applies its [`CloseReply`]: [`Close`](CloseReply::Close) writes
+    /// `state =` [`WindowState::Closed`] and the normal teardown runs,
+    /// [`Cancel`](CloseReply::Cancel) leaves the window open and writes
+    /// nothing. A request arriving while a question is already open is
+    /// dropped — the machine asks one question per window.
+    ///
+    /// Writing `state` to [`WindowState::Closed`] yourself, or
+    /// [`WindowHandle::close`], is not a request and never runs the handler;
+    /// a programmatic close while a question is open drops its future,
+    /// cancelling it. `closable == false` drops a request before the handler
+    /// runs.
+    ///
+    /// The handler extracts from the environment the window renders under —
+    /// a `State`, a service — and its future runs on the runner's local
+    /// executor, so the reply never arrives inside a platform delegate call.
+    ///
+    /// Platform support: Hydrolysis desktop and AppKit. Hydrolysis Android,
+    /// UIKit and web have no window close request — the handler never runs
+    /// there.
+    #[must_use]
+    pub fn on_close_request<H, Args, Fut>(self, handler: H) -> Self
+    where
+        H: Handler<Args, Fut>,
+        Fut: Future<Output = CloseReply> + 'static,
+    {
+        let mut action = boxed_action(handler);
+        self.close_request.set_hook(Box::new(move |env| {
+            Box::pin(action(env)) as Pin<Box<dyn Future<Output = CloseReply>>>
+        }));
+        self
+    }
+
+    /// Files a close request — the entry point every backend calls when the
+    /// platform asks to close the window.
+    ///
+    /// `env` is the application environment the window renders under; the
+    /// request's handler extracts from it. `closable == false` drops the
+    /// request before the handler runs.
+    #[doc(hidden)]
+    pub fn request_close(&self, env: &Environment) {
+        self.close_request.set_closable(self.closable);
+        self.close_request.request(env);
+    }
+
+    /// Whether an `on_close_request` handler is installed — the synchronous
+    /// verdict a delegate like `windowShouldClose:` needs.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_close_handler(&self) -> bool {
+        self.close_request.has_close_handler()
+    }
+
+    /// Arms the close-request machine with the environment the window
+    /// renders under — call it when the backend realizes the window, before
+    /// the first request can arrive.
+    #[doc(hidden)]
+    pub fn arm_close_requests(&self, env: &Environment) {
+        self.close_request.set_closable(self.closable);
+        self.close_request.arm(env);
+    }
+
+    /// A shareable clone of this window's close-request machine, for wiring
+    /// a platform callback that outlives the declaration's scope.
+    #[doc(hidden)]
+    pub fn close_request_gate(&self) -> CloseRequest {
+        self.close_request.clone()
+    }
+
     /// Get a handle to control the window after showing it.
     #[must_use]
     pub fn handle(&self) -> WindowHandle {
@@ -793,6 +876,7 @@ impl Window {
             attention: self.attention.clone(),
             style: self.style.clone(),
             background: self.background.clone(),
+            close_request: self.close_request.clone(),
         }
     }
 
@@ -893,9 +977,26 @@ pub struct WindowHandle {
     attention: Binding<Option<UserAttention>>,
     style: Binding<WindowStyle>,
     background: Binding<WindowBackground>,
+    close_request: CloseRequest,
 }
 
 impl WindowHandle {
+    /// Files a close request the window's `on_close_request` handler
+    /// decides, as the title-bar close button would. With no handler
+    /// installed the window closes immediately; `closable == false` drops
+    /// the request. [`Self::close`] closes without asking.
+    ///
+    /// Platform support: Hydrolysis desktop and AppKit. Hydrolysis Android,
+    /// UIKit and web have no window close request — nothing asks a handler
+    /// there and the window closes directly.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the window has not been realized yet.
+    pub fn request_close(&self) {
+        self.close_request.request_armed();
+    }
+
     /// Close the window.
     pub fn close(&self) {
         self.state.set(WindowState::Closed);

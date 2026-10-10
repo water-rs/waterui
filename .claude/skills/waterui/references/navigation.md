@@ -299,7 +299,7 @@ The `Window` builder, precisely:
 minimizing, maximizing, and restoring are ordinary reactive state changes:
 
 `Window::handle()` returns a `WindowHandle` that survives after the window is shown:
-`close()`, `minimize()`, `maximize()`, `fullscreen()`, `restore()`,
+`close()`, `request_close()`, `minimize()`, `maximize()`, `fullscreen()`, `restore()`,
 `request_attention(UserAttention::Informational | UserAttention::Critical)` (the
 backend clears it when the window gains focus), `cancel_attention()`, and
 `set_frame(Rect)`.
@@ -313,6 +313,36 @@ button("Open Window")
 Note the inference: `binding::<WindowState>(WindowState::default())` needs the turbofish
 (nothing downstream pins `T`), and `binding(WindowState::Normal)` means the window is
 open from the first frame — start from `default()` for a window that opens on demand.
+
+A window that must confirm or veto a close — a terminal with a running shell, an
+editor with unsaved buffers — gates it with `.on_close_request(..)`, which mirrors
+`App::on_quit_request`: the title-bar close button, a window-manager close, the Close
+Window menu command and `handle().request_close()` all file through the handler and
+wait for its `CloseReply`. `handle().close()` and writing `WindowState::Closed`
+straight to the binding close without asking, one question is pending per window at a
+time, and a programmatic close cancels an open question. The handler runs on Hydrolysis
+desktop and AppKit; Android, UIKit and web have no window close request, so it never
+runs there.
+
+```rust
+use waterui::window::CloseReply;
+
+let dirty = binding(true); // unsaved buffers
+let window_state = binding(WindowState::Closed);
+
+Window::new("Editor", window_state.clone(), move || editor_content()).on_close_request(
+    move || {
+        let dirty = dirty.snapshot();
+        async move {
+            if dirty {
+                CloseReply::Cancel
+            } else {
+                CloseReply::Close
+            }
+        }
+    },
+)
+```
 
 ## Windows that open and close
 
