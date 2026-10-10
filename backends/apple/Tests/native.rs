@@ -7254,13 +7254,19 @@ mod webview {
     use super::mtm;
 
     pub fn trials() -> Vec<Trial> {
-        vec![Trial::test(
-            "webview::a_non_admitted_document_gets_no_bridge_globals",
-            || {
-                a_non_admitted_document_gets_no_bridge_globals();
+        vec![
+            Trial::test(
+                "webview::a_non_admitted_document_gets_no_bridge_globals",
+                || {
+                    a_non_admitted_document_gets_no_bridge_globals();
+                    Ok(())
+                },
+            ),
+            Trial::test("webview::raw_evaluation_answers_json", || {
+                raw_evaluation_answers_json();
                 Ok(())
-            },
-        )]
+            }),
+        ]
     }
 
     /// Navigates to `destination` and waits for the engine to report the
@@ -7349,6 +7355,32 @@ mod webview {
             bridge_globals(&handle),
             r#"["undefined","undefined","undefined","undefined"]"#,
             "a document outside the admission policy must get no bridge globals"
+        );
+    }
+
+    /// `run_javascript` answers the JSON encoding of the evaluated value —
+    /// a string quoted, a boolean `true`/`false`, `undefined` as `null` —
+    /// checked against a real `WKWebView` through the shared conformance
+    /// case, on a document that has loaded.
+    fn raw_evaluation_answers_json() {
+        let webview = waterui_apple::native_test_support::webview::open(mtm());
+        let handle = webview.handle().clone();
+
+        let loaded = Rc::new(Cell::new(0_u32));
+        let _events = handle.watch({
+            let loaded = Rc::clone(&loaded);
+            move |event| {
+                if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
+                    loaded.set(loaded.get() + 1);
+                }
+            }
+        });
+        navigate(&handle, "data:text/html,conformance", &loaded);
+        block_on_main(
+            MAIN_QUEUE_DEADLINE,
+            waterui_webview::conformance::raw_evaluation_answers_json(async |script| {
+                handle.run_javascript(script).await
+            }),
         );
     }
 }
