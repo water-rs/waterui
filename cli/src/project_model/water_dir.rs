@@ -1008,6 +1008,65 @@ pub(crate) async fn write_global_config_in(
         .wrap_err_with(|| format!("Failed to write Water config {}", config_path.display()))
 }
 
+/// The `last_used_device` slot a `(backend, platform)` pair remembers its
+/// device under — `None` for a pair with no device dimension, where a
+/// device choice could never be made.
+#[must_use]
+pub const fn device_memory_key(
+    backend: crate::platform::TargetBackend,
+    platform: crate::platform::TargetPlatform,
+) -> Option<&'static str> {
+    match (backend, platform) {
+        (
+            crate::platform::TargetBackend::Apple,
+            crate::platform::TargetPlatform::IOS | crate::platform::TargetPlatform::IOSSimulator,
+        ) => Some("apple/ios"),
+        (
+            crate::platform::TargetBackend::Android,
+            crate::platform::TargetPlatform::Android,
+        ) => Some("android/android"),
+        (
+            crate::platform::TargetBackend::Hydrolysis,
+            crate::platform::TargetPlatform::Android,
+        ) => Some("hydrolysis/android"),
+        _ => None,
+    }
+}
+
+/// The device `last_used_device` records under `key`, if any. A config
+/// read failure is a warning, not a failure of the selection the memory
+/// serves.
+pub async fn last_used_device(host: &crate::toolchain::Host, key: &str) -> Option<String> {
+    match ensure_global_config(host).await {
+        Ok(config) => config.last_used_device.get(key).cloned(),
+        Err(error) => {
+            tracing::warn!("could not read the Water config for device memory: {error:#}");
+            None
+        }
+    }
+}
+
+/// Record `id` as the last-used device under `key`. Best-effort: a config
+/// write failure must not break the selection the memory serves.
+pub async fn record_last_used_device(host: &crate::toolchain::Host, key: &str, id: &str) {
+    match ensure_global_config(host).await {
+        Ok(mut config) => {
+            if config.last_used_device.get(key).map(String::as_str) == Some(id) {
+                return;
+            }
+            config
+                .last_used_device
+                .insert(key.to_owned(), id.to_owned());
+            if let Err(error) = write_global_config(host, &config).await {
+                tracing::warn!("could not persist the last-used device: {error:#}");
+            }
+        }
+        Err(error) => {
+            tracing::warn!("could not read the Water config for device memory: {error:#}");
+        }
+    }
+}
+
 async fn ensure_project_build_cache_in(
     project_root: &Path,
     cache_root: &Path,

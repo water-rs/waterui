@@ -8,6 +8,7 @@ use dialoguer::{Confirm, theme::ColorfulTheme};
 use crate::shell::Shell;
 use crate::{note, success, warn};
 use waterui_cli::{
+    android::device::{AndroidDecision, AndroidTarget},
     apple::backend::AppleBackend,
     backend::reinit_backend,
     gtk4::backend::Gtk4Backend,
@@ -224,6 +225,85 @@ pub mod preview;
 pub mod run;
 pub mod update;
 pub mod web;
+
+/// Ask which device to use among `candidates`, `(label, id)` pairs in the
+/// order a picker shows them. Non-interactive runs cannot pick, so they
+/// fail with the candidate list.
+pub(crate) fn prompt_for_device(
+    shell: &Shell,
+    prompt: &str,
+    candidates: &[(&str, &str)],
+    spinner: Option<&indicatif::ProgressBar>,
+) -> eyre::Result<usize> {
+    if !shell.is_terminal() {
+        return Err(waterui_cli::device::ambiguous_device_error(
+            candidates.iter().copied(),
+        ));
+    }
+    let labels: Vec<&str> = candidates.iter().map(|(label, _)| *label).collect();
+    let pick = || {
+        dialoguer::Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(prompt)
+            .items(&labels)
+            .default(0)
+            .interact()
+    };
+    // The scan spinner would redraw over the prompt; hide it while the user
+    // answers.
+    Ok(spinner.map_or_else(pick, |pb| pb.suspend(pick))?)
+}
+
+/// Resolve the Android target a command runs on through the shared library
+/// selection ([`AndroidTarget::select`]): `--device` names it, the
+/// remembered last-used device wins while it is still present, an
+/// interactive terminal picks among the rest, and a non-interactive one
+/// fails naming every candidate.
+///
+/// `memory_key` is the `last_used_device` slot the choice is recorded
+/// under — see [`waterui_cli::water_dir::device_memory_key`]; `None` for a
+/// selection that keeps no memory.
+pub(crate) async fn select_android_target(
+    shell: &Shell,
+    host: &Host,
+    memory_key: Option<&str>,
+    device_id: Option<&str>,
+    spinner: Option<&indicatif::ProgressBar>,
+) -> eyre::Result<AndroidTarget> {
+    let remembered = match memory_key {
+        Some(key) => waterui_cli::water_dir::last_used_device(host, key).await,
+        None => None,
+    };
+    let selection = AndroidTarget::select(host, device_id, remembered.as_deref()).await?;
+    if let Some(stale) = &selection.stale {
+        warn!(shell, "Last-used device \"{stale}\" is not available");
+    }
+    let (target, picked) = match selection.decision {
+        AndroidDecision::Resolved(target) => (target, false),
+        AndroidDecision::Ambiguous(candidates) => {
+            let options: Vec<(&str, &str)> = candidates
+                .iter()
+                .map(|candidate| (candidate.label(), candidate.id()))
+                .collect();
+            let index = prompt_for_device(shell, "Select an Android device", &options, spinner)?;
+            (
+                candidates
+                    .into_iter()
+                    .nth(index)
+                    .expect("the picker answers a listed index")
+                    .into_target(),
+                true,
+            )
+        }
+    };
+    // An explicit name, a pick, and a resolution that repaired stale memory
+    // are the choices worth remembering.
+    if let Some(key) = memory_key
+        && (picked || selection.stale.is_some() || device_id.is_some())
+    {
+        waterui_cli::water_dir::record_last_used_device(host, key, target.id()).await;
+    }
+    Ok(target)
+}
 
 /// Parse a viewport size from a `WIDTHxHEIGHT` string into whole pixels.
 fn parse_viewport(s: &str) -> eyre::Result<(u32, u32)> {
