@@ -16,7 +16,7 @@
 //! never forwards an unhandled wheel event and exposes no public way to learn
 //! it went unused. A web view whose page does not scroll therefore does not
 //! chain the wheel to an enclosing scroll view while the pointer is over it,
-//! as with `WKWebView` inside an `NSScrollView` in an AppKit app. Touch
+//! as with `WKWebView` inside an `NSScrollView` in an `AppKit` app. Touch
 //! scrolling and other platforms are not affected.
 //!
 //! # Example
