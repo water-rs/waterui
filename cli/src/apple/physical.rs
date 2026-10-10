@@ -23,8 +23,9 @@ use smol::{
 };
 use tracing::info;
 
+use crate::device::termination_grace;
 #[cfg(unix)]
-use crate::device::{TERMINATION_GRACE_PERIOD, TerminationOutcome, await_termination, within};
+use crate::device::{TerminationOutcome, await_termination, within};
 use crate::{
     device::{
         ApplicationExit, Artifact, Crash, CrashCause, Device, DeviceEvent, FailToRun, PanicInfo,
@@ -534,6 +535,7 @@ async fn monitor_console_session(
     process_name: String,
     channels: ConsoleMonitorChannels,
     sender: Sender<DeviceEvent>,
+    termination_grace: Duration,
 ) {
     let ConsoleMonitorChannels {
         control,
@@ -550,6 +552,7 @@ async fn monitor_console_session(
         &process_name,
         &mut control,
         &sender,
+        termination_grace,
     )
     .await;
     let console_closed = async {
@@ -582,6 +585,7 @@ async fn wait_for_console_status(
     process_name: &str,
     control: &mut Option<smol::channel::Receiver<StopRequest>>,
     sender: &Sender<DeviceEvent>,
+    termination_grace: Duration,
 ) -> std::io::Result<std::process::ExitStatus> {
     use futures_util::future::{Either, select};
 
@@ -597,7 +601,7 @@ async fn wait_for_console_status(
             Either::Right((Ok(StopRequest::Terminate), _)) => {
                 signal_child(child, nix::sys::signal::Signal::SIGTERM, sender);
                 if let TerminationOutcome::Exited(status) =
-                    await_termination(child, control, TERMINATION_GRACE_PERIOD, sender).await
+                    await_termination(child, control, termination_grace, sender).await
                 {
                     return status;
                 }
@@ -621,6 +625,7 @@ async fn wait_for_console_status(
     _process_name: &str,
     control: &mut Option<smol::channel::Receiver<StopRequest>>,
     _sender: &Sender<DeviceEvent>,
+    _termination_grace: Duration,
 ) -> std::io::Result<std::process::ExitStatus> {
     use futures_util::future::{Either, select};
 
@@ -755,6 +760,7 @@ impl Device for ApplePhysicalDevice {
                 panic: panic_rx,
             },
             sender,
+            termination_grace(),
         ))
         .detach();
 
@@ -939,6 +945,7 @@ mod tests {
     #[cfg(unix)]
     fn console_run(
         machine: &crate::toolchain::testing::TestMachine,
+        termination_grace: std::time::Duration,
     ) -> (
         crate::device::Running,
         async_channel::Sender<()>,
@@ -982,6 +989,7 @@ mod tests {
                 panic,
             },
             sender,
+            termination_grace,
         ))
         .detach();
         let (interrupt_tx, interrupt_rx) = async_channel::unbounded();
@@ -998,7 +1006,8 @@ mod tests {
         use crate::device::DeviceEvent;
 
         let machine = crate::toolchain::testing::TestMachine::new();
-        let (running, interrupt_tx, interrupt_rx, group_guard) = console_run(&machine);
+        let (running, interrupt_tx, interrupt_rx, group_guard) =
+            console_run(&machine, Duration::from_millis(200));
         let exercise = async move {
             let _group_guard = group_guard;
             let mut events = std::pin::pin!(running.supervise(interrupt_rx));
@@ -1063,7 +1072,8 @@ mod tests {
         use crate::device::DeviceEvent;
 
         let machine = crate::toolchain::testing::TestMachine::new();
-        let (running, interrupt_tx, interrupt_rx, group_guard) = console_run(&machine);
+        let (running, interrupt_tx, interrupt_rx, group_guard) =
+            console_run(&machine, Duration::from_secs(3600));
         let exercise = async move {
             let _group_guard = group_guard;
             let mut events = std::pin::pin!(running.supervise(interrupt_rx));
