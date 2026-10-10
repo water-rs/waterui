@@ -79,6 +79,39 @@ pub struct Adb {
     path: PathBuf,
 }
 
+/// One `adb forward` registration on a device: a local TCP port bound to a
+/// remote spec.
+#[derive(Debug)]
+pub(crate) struct Forward {
+    /// The local `tcp:` port.
+    pub(crate) local_port: u16,
+    /// The remote spec the port forwards to (`localabstract:<name>`).
+    pub(crate) remote: String,
+}
+
+/// Parse one `forward --list` line — `serial tcp:<port> <remote>` — for the
+/// serial the list was filtered to.
+fn parse_forward_line(serial: &str, line: &str) -> eyre::Result<Forward> {
+    let malformed = || eyre::eyre!("an `adb forward --list` line does not parse: {line:?}");
+    let mut fields = line.split_whitespace();
+    let (Some(entry_serial), Some(local), Some(remote)) =
+        (fields.next(), fields.next(), fields.next())
+    else {
+        return Err(malformed());
+    };
+    if entry_serial != serial {
+        return Err(malformed());
+    }
+    let local_port = local
+        .strip_prefix("tcp:")
+        .and_then(|port| port.parse::<u16>().ok())
+        .ok_or_else(malformed)?;
+    Ok(Forward {
+        local_port,
+        remote: remote.to_string(),
+    })
+}
+
 impl Adb {
     /// Locate `adb` on `host` and make sure its server is up.
     ///
@@ -173,10 +206,10 @@ impl Adb {
         check_bounded_output(&output, operation, &invocation)
     }
 
-    /// The shared `shell` argv build-and-run behind [`Self::shell`] and
-    /// [`Self::shell_run`]: `words` joined with `shlex` so callers never
-    /// hand a pre-quoted line, returning the full output and the rendered
-    /// invocation for [`check_bounded_output`].
+    /// The shared `shell` argv build-and-run behind [`Self::shell_run`]:
+    /// `words` joined with `shlex` so callers never hand a pre-quoted line,
+    /// returning the full output and the rendered invocation for
+    /// [`check_bounded_output`].
     async fn shell_output(
         &self,
         host: &Host,
@@ -197,25 +230,8 @@ impl Adb {
             .await?)
     }
 
-    /// `adb -s <serial> shell <words>` — `words` is an argv, joined with
-    /// `shlex` so callers never hand a pre-quoted line. Returns the full
-    /// output: the caller judges the status (`am instrument` reports results
-    /// in its stdout, not its exit code).
-    ///
-    /// # Errors
-    /// Returns an error if `words` cannot be quoted or `adb` itself fails.
-    pub(crate) async fn shell(
-        &self,
-        host: &Host,
-        serial: &str,
-        words: &[&str],
-        timeout: Duration,
-    ) -> eyre::Result<Output> {
-        Ok(self.shell_output(host, serial, words, timeout).await?.0)
-    }
-
-    /// [`Self::shell`] failing on a non-zero exit and returning stdout —
-    /// for shell verbs whose own status carries the verdict.
+    /// [`Self::shell_output`] failing on a non-zero exit and returning
+    /// stdout — for shell verbs whose own status carries the verdict.
     ///
     /// # Errors
     /// Returns an error if `words` cannot be quoted or the command fails.
@@ -358,6 +374,69 @@ impl Adb {
         )
         .await?;
         Ok(())
+    }
+
+    /// `adb -s <serial> forward --list` — this serial's registrations.
+    ///
+    /// # Errors
+    /// Returns an error if the list fails or a line does not parse — a
+    /// garbled line silently dropped could hide the forward a caller is
+    /// looking for.
+    pub(crate) async fn forwards(
+        &self,
+        host: &Host,
+        serial: &str,
+        timeout: Duration,
+    ) -> eyre::Result<Vec<Forward>> {
+        let output = self
+            .device_command(
+                host,
+                serial,
+                [OsStr::new("forward"), OsStr::new("--list")],
+                "listing adb forwards",
+                timeout,
+            )
+            .await?;
+        output
+            .lines()
+            .map(|line| parse_forward_line(serial, line))
+            .collect()
+    }
+
+    /// `adb -s <serial> forward tcp:0 <remote>` — bind a fresh local TCP
+    /// port to `remote`, answering the port adb chose.
+    ///
+    /// The registration lives on the adb server, so it survives the client
+    /// that created it: a later run's `forward --list` sees it again.
+    ///
+    /// # Errors
+    /// Returns an error if the command fails or answers something that is
+    /// not a port.
+    pub(crate) async fn forward(
+        &self,
+        host: &Host,
+        serial: &str,
+        remote: &str,
+        timeout: Duration,
+    ) -> eyre::Result<u16> {
+        let output = self
+            .device_command(
+                host,
+                serial,
+                [
+                    OsStr::new("forward"),
+                    OsStr::new("tcp:0"),
+                    OsStr::new(remote),
+                ],
+                "creating an adb forward",
+                timeout,
+            )
+            .await?;
+        output.trim().parse::<u16>().map_err(|error| {
+            eyre::eyre!(
+                "`adb forward` answered {output:?} where a local port was expected: {error}"
+            )
+        })
     }
 
     /// [`Self::device_output`] failing on a non-zero exit, stdout on success.
@@ -860,7 +939,7 @@ mod tests {
         )]);
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb");
         let wedged = machine.host([(OsString::from("WATERUI_FAKE_ADB_HANG"), OsString::from("1"))]);
-        let error = smol::block_on(adb.shell(
+        let error = smol::block_on(adb.shell_run(
             &wedged,
             "serial",
             &["getprop", "ro.build.id"],

@@ -435,6 +435,14 @@ adb)
             (respond_or_empty ADB_INSTALL)
             exit "${WATERUI_FAKE_ADB_INSTALL_STATUS:-0}"
             ;;
+        *"forward --list"*)
+            respond_or_empty ADB_FORWARD_LIST
+            ;;
+        *"forward tcp:0 "*)
+            # `forward tcp:0` answers the local port it bound; the test
+            # stages the port its fake host listener holds.
+            respond_or_empty ADB_FORWARD_PORT
+            ;;
         *logcat*)
             respond_or_empty ADB_LOGCAT
             ;;
