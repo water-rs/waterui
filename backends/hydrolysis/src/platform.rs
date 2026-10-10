@@ -5079,7 +5079,7 @@ mod winit_impl {
             cherenkov_gpu::interop::select_output(
                 &caps_with_alpha_modes(modes),
                 wgpu::Backend::Vulkan,
-                super::hydrolysis_output_request(transparent),
+                crate::platform::hydrolysis_output_request(transparent),
             )
             .map(|selection| selection.alpha_mode)
         }
@@ -5105,15 +5105,16 @@ mod winit_impl {
         fn a_transparent_window_gets_the_first_transparent_alpha_mode_the_surface_offers() {
             use wgpu::CompositeAlphaMode as Mode;
             assert_eq!(
-                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied],),
-                Ok(Mode::PreMultiplied)
+                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied],)
+                    .unwrap(),
+                Mode::PreMultiplied
             );
             // X11 compositing on a 32-bit visual reports exactly this pair:
             // with no explicit multiplied mode the inherited mode is the only
             // one whose alpha reaches the compositor.
             assert_eq!(
-                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit]),
-                Ok(Mode::Inherit)
+                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit]).unwrap(),
+                Mode::Inherit
             );
         }
 
@@ -5121,8 +5122,8 @@ mod winit_impl {
         fn an_opaque_window_keeps_the_opaque_alpha_mode() {
             use wgpu::CompositeAlphaMode as Mode;
             assert_eq!(
-                negotiated_alpha_mode(false, &[Mode::Opaque, Mode::PreMultiplied]),
-                Ok(Mode::Opaque)
+                negotiated_alpha_mode(false, &[Mode::Opaque, Mode::PreMultiplied]).unwrap(),
+                Mode::Opaque
             );
         }
 
@@ -5152,18 +5153,19 @@ mod winit_impl {
                     select(
                         level,
                         &[Mode::Opaque, Mode::PostMultiplied, Mode::PreMultiplied]
-                    ),
-                    Ok(Mode::PreMultiplied)
+                    )
+                    .unwrap(),
+                    Mode::PreMultiplied
                 );
                 assert_eq!(
-                    select(level, &[Mode::Opaque, Mode::PostMultiplied]),
-                    Ok(Mode::PostMultiplied)
+                    select(level, &[Mode::Opaque, Mode::PostMultiplied]).unwrap(),
+                    Mode::PostMultiplied
                 );
             }
             for level in [Material::Regular, Material::Thick, Material::UltraThick] {
                 assert_eq!(
-                    select(level, &[Mode::Opaque, Mode::PreMultiplied]),
-                    Ok(Mode::Opaque)
+                    select(level, &[Mode::Opaque, Mode::PreMultiplied]).unwrap(),
+                    Mode::Opaque
                 );
             }
         }
