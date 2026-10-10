@@ -51,8 +51,8 @@ impl HostedOcclusion {
         if *self.rects.borrow() == rects {
             return;
         }
-        self.rects.replace(rects.clone());
-        self.watchers.emit(&rects);
+        self.rects.replace(rects);
+        self.watchers.emit(&self.rects.borrow());
     }
 }
 

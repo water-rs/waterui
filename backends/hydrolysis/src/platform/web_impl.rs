@@ -1295,8 +1295,8 @@ fn wheel_event_copy(event: &WheelEvent) -> WheelEvent {
 /// is painted above an element that keeps its input to itself — a
 /// cross-origin `<iframe>`, whose events never reach the page.
 ///
-/// Each occluded rect gets a transparent `<div>` in the root element, after
-/// the engine's stacking root, so it lies above every plane. A press on it
+/// Each occluded rect gets a transparent `<div>` in the root element, stacked
+/// above the engine's stacking root and so above every plane. A press on it
 /// is stopped and a copy of the pointer or wheel event is dispatched to the
 /// root, whose listeners deliver it to Hydrolysis's hit testing. The shields
 /// follow the occlusion as it changes and leave the page when this drops.
@@ -1304,14 +1304,18 @@ fn wheel_event_copy(event: &WheelEvent) -> WheelEvent {
 pub struct OcclusionShields {
     shields: Rc<RefCell<Vec<HtmlElement>>>,
     _watch: waterui_watcher_set::WatcherGuard,
-    _listeners: Rc<Vec<(&'static str, Closure<dyn FnMut(Event)>)>>,
+    _listeners: ShieldListeners,
 }
+
+/// The listeners every shield shares, by event name.
+#[cfg(feature = "webview-system")]
+type ShieldListeners = Rc<Vec<(&'static str, Closure<dyn FnMut(Event)>)>>;
 
 #[cfg(feature = "webview-system")]
 impl OcclusionShields {
     /// Keeps shields over `occlusion`'s rects.
     pub fn new(occlusion: &crate::HostedOcclusion) -> Self {
-        let listeners: Rc<Vec<(&'static str, Closure<dyn FnMut(Event)>)>> = Rc::new(
+        let listeners: ShieldListeners = Rc::new(
             REDIRECTED_INPUT
                 .into_iter()
                 .map(|name| {
@@ -1365,7 +1369,7 @@ impl Drop for OcclusionShields {
 #[cfg(feature = "webview-system")]
 fn sync_shields(
     shields: &RefCell<Vec<HtmlElement>>,
-    listeners: &[(&'static str, Closure<dyn FnMut(Event)>)],
+    listeners: &ShieldListeners,
     rects: &[kurbo::Rect],
 ) {
     let mut shields = shields.borrow_mut();
@@ -1380,7 +1384,13 @@ fn sync_shields(
             .create_element("div")
             .expect("hydrolysis web platform: failed to create an occlusion shield")
             .unchecked_into();
-        for (property, value) in [("position", "absolute"), ("pointer-events", "auto")] {
+        // Above the engine's stacking root whatever the document order: a
+        // shield can be created before the first frame appends that root.
+        for (property, value) in [
+            ("position", "absolute"),
+            ("z-index", "1"),
+            ("pointer-events", "auto"),
+        ] {
             shield
                 .style()
                 .set_property(property, value)
