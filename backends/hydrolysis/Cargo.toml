@@ -30,6 +30,8 @@ waterui-icon.workspace = true
 waterui-shape.workspace = true
 waterui-map.workspace = true
 waterui-webview.workspace = true
+# Hosted content follows the occlusion rects through a watcher set.
+waterui-watcher-set.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true

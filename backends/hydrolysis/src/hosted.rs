@@ -3,6 +3,7 @@
 use std::{cell::RefCell, fmt, rc::Rc};
 
 use waterui_core::{Computed, NativeView, layout::StretchAxis};
+use waterui_watcher_set::{WatcherGuard, WatcherSet};
 
 /// The engine's platform-selected hosted object: an `NSView` on macOS, a
 /// `CALayer` on iOS, a `SurfaceControl` on Android and an `HtmlElement` on
@@ -13,11 +14,15 @@ pub type HostedObject = <cherenkov_gpu::Gpu as cherenkov::HostedLayers>::Object;
 ///
 /// The renderer republishes the rectangles every frame, in window hit-test
 /// space (logical points, y down from the window content's top-left). A host
-/// refuses a hit that [`covers`](Self::covers) reports, so the event reaches
-/// Hydrolysis's own hit testing instead.
+/// that sees every hit refuses one that [`covers`](Self::covers) reports, so
+/// the event reaches Hydrolysis's own hit testing instead. A host that never
+/// sees the hits — a cross-origin `<iframe>` keeps its input to itself —
+/// follows the [`rects`](Self::rects) through [`watch`](Self::watch) and
+/// keeps its own hit-taking surfaces over them.
 #[derive(Clone, Default)]
 pub struct HostedOcclusion {
     rects: Rc<RefCell<Vec<kurbo::Rect>>>,
+    watchers: WatcherSet<Vec<kurbo::Rect>>,
 }
 
 impl HostedOcclusion {
@@ -28,9 +33,26 @@ impl HostedOcclusion {
         self.rects.borrow().iter().any(|rect| rect.contains(point))
     }
 
-    /// The renderer's write side, published by the hit-test materialization.
-    pub(crate) fn sink(&self) -> Rc<RefCell<Vec<kurbo::Rect>>> {
-        Rc::clone(&self.rects)
+    /// The rectangles last published, in window hit-test space.
+    #[must_use]
+    pub fn rects(&self) -> Vec<kurbo::Rect> {
+        self.rects.borrow().clone()
+    }
+
+    /// Calls `watcher` with the new rectangles whenever the published set
+    /// changes. Dropping the guard stops it.
+    pub fn watch(&self, watcher: impl Fn(Vec<kurbo::Rect>) + 'static) -> WatcherGuard {
+        self.watchers.insert(watcher)
+    }
+
+    /// The renderer's write side, called by the hit-test materialization
+    /// every frame; watchers hear only a change.
+    pub(crate) fn publish(&self, rects: Vec<kurbo::Rect>) {
+        if *self.rects.borrow() == rects {
+            return;
+        }
+        self.rects.replace(rects.clone());
+        self.watchers.emit(&rects);
     }
 }
 
