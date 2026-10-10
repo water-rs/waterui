@@ -1153,7 +1153,7 @@ fn add_event_listener(
     closure
 }
 
-#[cfg(feature = "video")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 /// The pointer and wheel events a hosted element yields to Hydrolysis
 /// content painted above it.
 const REDIRECTED_INPUT: [&str; 8] = [
@@ -1243,7 +1243,7 @@ pub fn redirect_occluded_input(
         .collect()
 }
 
-#[cfg(feature = "video")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 /// A dispatchable copy of `event`, carrying everything the root's pointer
 /// listeners read.
 fn pointer_event_copy(event: &PointerEvent) -> PointerEvent {
@@ -1270,7 +1270,7 @@ fn pointer_event_copy(event: &PointerEvent) -> PointerEvent {
         .expect("hydrolysis web platform: failed to copy a pointer event")
 }
 
-#[cfg(feature = "video")]
+#[cfg(any(feature = "video", feature = "webview-system"))]
 /// A dispatchable copy of `event`, carrying everything the root's wheel
 /// listener reads.
 fn wheel_event_copy(event: &WheelEvent) -> WheelEvent {
@@ -1289,6 +1289,147 @@ fn wheel_event_copy(event: &WheelEvent) -> WheelEvent {
     init.set_delta_mode(event.delta_mode());
     WheelEvent::new_with_event_init_dict(&event.type_(), &init)
         .expect("hydrolysis web platform: failed to copy a wheel event")
+}
+
+/// Hit-taking surfaces over the rects where interactive Hydrolysis content
+/// is painted above an element that keeps its input to itself — a
+/// cross-origin `<iframe>`, whose events never reach the page.
+///
+/// Each occluded rect gets a transparent `<div>` in the root element, stacked
+/// above the engine's stacking root and so above every plane. A press on it
+/// is stopped and a copy of the pointer or wheel event is dispatched to the
+/// root, whose listeners deliver it to Hydrolysis's hit testing. The shields
+/// follow the occlusion as it changes and leave the page when this drops.
+#[cfg(feature = "webview-system")]
+pub struct OcclusionShields {
+    shields: Rc<RefCell<Vec<HtmlElement>>>,
+    _watch: waterui_watcher_set::WatcherGuard,
+    _listeners: ShieldListeners,
+}
+
+/// The listeners every shield shares, by event name.
+#[cfg(feature = "webview-system")]
+type ShieldListeners = Rc<Vec<(&'static str, Closure<dyn FnMut(Event)>)>>;
+
+#[cfg(feature = "webview-system")]
+impl OcclusionShields {
+    /// Keeps shields over `occlusion`'s rects.
+    pub fn new(occlusion: &crate::HostedOcclusion) -> Self {
+        let listeners: ShieldListeners = Rc::new(
+            REDIRECTED_INPUT
+                .into_iter()
+                .map(|name| {
+                    let closure = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+                        event.stop_immediate_propagation();
+                        event.prevent_default();
+                        let copy: Option<Event> = event.dyn_ref::<PointerEvent>().map_or_else(
+                            || {
+                                event
+                                    .dyn_ref::<WheelEvent>()
+                                    .map(|wheel| wheel_event_copy(wheel).into())
+                            },
+                            |pointer| Some(pointer_event_copy(pointer).into()),
+                        );
+                        if let Some(copy) = copy {
+                            page_root().dispatch_event(&copy).expect(
+                                "hydrolysis web platform: failed to redirect shielded input",
+                            );
+                        }
+                    });
+                    (name, closure)
+                })
+                .collect(),
+        );
+        let shields = Rc::new(RefCell::new(Vec::new()));
+        let sync = {
+            let shields = Rc::clone(&shields);
+            let listeners = Rc::clone(&listeners);
+            move |rects: Vec<kurbo::Rect>| sync_shields(&shields, &listeners, &rects)
+        };
+        sync(occlusion.rects());
+        let watch = occlusion.watch(sync);
+        Self {
+            shields,
+            _watch: watch,
+            _listeners: listeners,
+        }
+    }
+}
+
+#[cfg(feature = "webview-system")]
+impl Drop for OcclusionShields {
+    fn drop(&mut self) {
+        for shield in self.shields.take() {
+            shield.remove();
+        }
+    }
+}
+
+/// Makes `shields` exactly one transparent `<div>` per rect, placed over it.
+#[cfg(feature = "webview-system")]
+fn sync_shields(
+    shields: &RefCell<Vec<HtmlElement>>,
+    listeners: &ShieldListeners,
+    rects: &[kurbo::Rect],
+) {
+    let mut shields = shields.borrow_mut();
+    while shields.len() > rects.len() {
+        shields.pop().expect("a surplus shield exists").remove();
+    }
+    while shields.len() < rects.len() {
+        let root = page_root();
+        let shield: HtmlElement = root
+            .owner_document()
+            .expect("hydrolysis web platform: the root element left its document")
+            .create_element("div")
+            .expect("hydrolysis web platform: failed to create an occlusion shield")
+            .unchecked_into();
+        // Above the engine's stacking root whatever the document order: a
+        // shield can be created before the first frame appends that root.
+        for (property, value) in [
+            ("position", "absolute"),
+            ("z-index", "1"),
+            ("pointer-events", "auto"),
+        ] {
+            shield
+                .style()
+                .set_property(property, value)
+                .expect("hydrolysis web platform: failed to style an occlusion shield");
+        }
+        for (name, closure) in listeners.iter() {
+            shield
+                .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref())
+                .unwrap_or_else(|_| {
+                    panic!("hydrolysis web platform: failed to register the {name} shield")
+                });
+        }
+        root.append_child(&shield)
+            .expect("hydrolysis web platform: failed to add an occlusion shield");
+        shields.push(shield);
+    }
+    for (shield, rect) in shields.iter().zip(rects) {
+        let style = shield.style();
+        for (property, value) in [
+            ("left", rect.x0),
+            ("top", rect.y0),
+            ("width", rect.width()),
+            ("height", rect.height()),
+        ] {
+            style
+                .set_property(property, &format!("{value}px"))
+                .expect("hydrolysis web platform: failed to place an occlusion shield");
+        }
+    }
+}
+
+/// The page's root element.
+#[cfg(feature = "webview-system")]
+fn page_root() -> HtmlElement {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id(ROOT_ID))
+        .expect("hydrolysis web platform: the page has no #waterui-root")
+        .unchecked_into()
 }
 
 /// Whether `event` was dispatched to the root element itself. The engine's

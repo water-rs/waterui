@@ -194,12 +194,28 @@ impl SemanticCore {
 
     /// Whether the pointer is over hosted content that no Hydrolysis content
     /// covers: the hosted view sets the cursor there itself.
+    #[cfg_attr(
+        not(hydrolysis_hosted),
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "no hosted content exists on targets without system-compositor planes"
+        )
+    )]
     pub(crate) fn hosted_owns_cursor(&self, x: f32, y: f32) -> bool {
-        let point = kurbo::Point::new(f64::from(x), f64::from(y));
-        self.hit_test.native_view_occlusions.iter().any(|target| {
-            target.bounds.contains(point)
-                && !target.sink.borrow().iter().any(|rect| rect.contains(point))
-        })
+        #[cfg(hydrolysis_hosted)]
+        {
+            let point = kurbo::Point::new(f64::from(x), f64::from(y));
+            self.hit_test
+                .native_view_occlusions
+                .iter()
+                .any(|target| target.bounds.contains(point) && !target.sink.covers(point))
+        }
+        #[cfg(not(hydrolysis_hosted))]
+        {
+            let _ = (x, y);
+            false
+        }
     }
 
     #[must_use]

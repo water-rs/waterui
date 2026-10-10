@@ -67,7 +67,7 @@ impl WidgetBehavior for HostedNode {
             NativeViewOcclusion {
                 bounds: ctx.bounds,
                 order: 0,
-                sink: runtime.occlusion.sink(),
+                sink: runtime.occlusion.clone(),
                 hosted: (key, Rc::clone(runtime)),
             },
             ctx.bounds,

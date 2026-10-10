@@ -119,7 +119,7 @@ impl HydrolysisBackend {
             manifest: "the generated Hydrolysis launcher manifest",
             table: "cfg(target_arch = \"wasm32\")",
             remedy: "the wasm32 table serves every wasm32 target alike; a graph that \
-                     enables video on one of them must enable it on all",
+                     enables video or the WebView on one of them must enable it on all",
         };
         let (project_packages, macos, linux, windows, web) = futures_util::future::try_join5(
             project.project_packages(framework, &targets),
