@@ -145,13 +145,16 @@ impl SharedState {
     ///
     /// No policy means no bridge: a handle whose origins were never chosen has
     /// nothing to authenticate a page against, and the seed script carries the
-    /// live value of every exposed binding.
+    /// live value of every exposed binding. The URL is parsed with `FromStr`,
+    /// not [`Url::parse`]: the policy's own `allows` handles `file:` documents
+    /// and `BridgeOrigins::Any`, which `Url::parse`'s web-only filter would
+    /// refuse before the policy could see them.
     fn admits(&self, url: Option<&str>) -> bool {
         let policy = self.bridge_origins.borrow();
         let (Some(policy), Some(url)) = (policy.as_ref(), url) else {
             return false;
         };
-        Url::parse(url).is_some_and(|url| policy.allows(&url))
+        url.parse::<Url>().is_ok_and(|url| policy.allows(&url))
     }
 
     /// Re-decides whether the document at `url` gets the bridge, and rebuilds
