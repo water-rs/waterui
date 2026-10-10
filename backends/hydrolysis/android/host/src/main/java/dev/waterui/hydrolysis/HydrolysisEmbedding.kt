@@ -2,10 +2,12 @@ package dev.waterui.hydrolysis
 
 import android.content.Context
 import android.view.View
+import android.widget.FrameLayout
 import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.OnBackPressedDispatcher
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -80,10 +82,16 @@ internal class HydrolysisSessionHolder : ViewModel() {
 object HydrolysisEmbedding {
 
     /**
-     * Mounts the app in [nativeLibraryName] as a View: prepares the process
-     * environment, loads the library, retains the session in a ViewModel of
-     * [viewModelStoreOwner] under [key], and wires lifecycle visibility and
-     * system back while the returned view is attached.
+     * Mounts the app in [nativeLibraryName] as a View. The returned container
+     * is what the host shows immediately — an empty view while
+     * [HydrolysisEnvironment]'s asset sync runs off the main thread; the
+     * mount continues on the main thread once it finishes: environment
+     * overrides land through [applyEnvironmentOverrides], the library loads,
+     * the session is retained in a ViewModel of [viewModelStoreOwner] under
+     * [key], and its content view joins the container. [onMounted] runs last,
+     * after the content view is wired. An owner whose lifecycle reaches
+     * DESTROYED before the sync finishes never starts a session — the
+     * container stays empty.
      *
      * [onCloseRequested] receives the app's close requests while the returned
      * view is attached. A close that arrives between mounts — after a
@@ -102,11 +110,43 @@ object HydrolysisEmbedding {
         nativeLibraryName: String,
         key: String = nativeLibraryName,
         logLevel: String? = null,
+        applyEnvironmentOverrides: () -> Unit = {},
         createContentView: (HydrolysisSession) -> View,
         onCloseRequested: () -> Unit,
+        onMounted: () -> Unit = {},
     ): View {
-        HydrolysisEnvironment.prepare(context)
-        NativeBridge.load(nativeLibraryName, logLevel)
+        val container = FrameLayout(context)
+        HydrolysisEnvironment.prepare(context) {
+            if (lifecycleOwner.lifecycle.currentState != Lifecycle.State.DESTROYED) {
+                applyEnvironmentOverrides()
+                NativeBridge.load(nativeLibraryName, logLevel)
+                mountSession(
+                    container, context, lifecycleOwner, viewModelStoreOwner,
+                    onBackPressedDispatcher, key, createContentView,
+                    onCloseRequested,
+                )
+                onMounted()
+            }
+        }
+        return container
+    }
+
+    /**
+     * The main-thread half of [createView], run once the asset sync finished:
+     * the session is retained, its content view created and wired — lifecycle
+     * visibility, system back, the owning mount's close handler — and added
+     * to the container the caller already shows.
+     */
+    private fun mountSession(
+        container: FrameLayout,
+        context: Context,
+        lifecycleOwner: LifecycleOwner,
+        viewModelStoreOwner: ViewModelStoreOwner,
+        onBackPressedDispatcher: OnBackPressedDispatcher,
+        key: String,
+        createContentView: (HydrolysisSession) -> View,
+        onCloseRequested: () -> Unit,
+    ) {
         val holder = ViewModelProvider(viewModelStoreOwner)[
             "dev.waterui.hydrolysis.session:$key",
             HydrolysisSessionHolder::class.java,
@@ -173,6 +213,6 @@ object HydrolysisEmbedding {
                 }
             },
         )
-        return contentView
+        container.addView(contentView)
     }
 }
