@@ -6801,16 +6801,16 @@ fn run() -> Result<(), SceneError> {
     // across its bridge, its effect gain lifting the sample above SDR
     // white. A P3-only disk and an HDR bar sit behind both rows.
     corpus.scene_setup("backdrop-member-encoded", 256, 256, white, |b| {
-        let blur = || vec![BackdropFilter::GaussianBlur { sigma: 6.0 }];
+        let gaussian = || vec![BackdropFilter::GaussianBlur { sigma: 6.0 }];
         b.backdrop_group(BackdropGroup {
             blend_space: BlendSpace::SrgbEncoded,
-            ..BackdropGroup::new(1, blur(), 1.0, 1)
+            ..BackdropGroup::new(1, gaussian(), 1.0, 1)
         });
-        b.backdrop_group(BackdropGroup::new(2, blur(), 1.0, 1));
+        b.backdrop_group(BackdropGroup::new(2, gaussian(), 1.0, 1));
         b.backdrop_group(BackdropGroup {
             union: Some(20.0),
             blend_space: BlendSpace::SrgbEncoded,
-            ..BackdropGroup::new(3, blur(), 1.0, 1)
+            ..BackdropGroup::new(3, gaussian(), 1.0, 1)
         });
         let l = &mut b.root();
         backdrop_background(l);
