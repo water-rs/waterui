@@ -472,16 +472,21 @@ impl EngineSurface for WindowCherenkovSurface {
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
 impl WindowCherenkovSurface {
     /// Creates the engine surface presenting on `window` at `size`
-    /// (physical pixels), composited transparent or opaque. `wake` is the
-    /// host's display-link wake, as for the texture kind.
+    /// (physical pixels), configured by the host's `output` request —
+    /// transparency, colour space and display sync through the same
+    /// `OutputRequest` every Hydrolysis host negotiates by (#2445).
+    /// `wake` is the host's display-link wake, as for the texture kind.
     pub fn new(
         engine: Rc<GpuEngine>,
         window: std::sync::Arc<winit::window::Window>,
         size: (u32, u32),
-        transparent: bool,
+        output: cherenkov_gpu::interop::OutputRequest,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
-        let mut target = cherenkov_gpu::WindowTarget::new(window, size).transparent(transparent);
+        let mut target = cherenkov_gpu::WindowTarget::new(window, size)
+            .transparent(output.transparent)
+            .color_space(output.color_space)
+            .display_sync(output.sync);
         let probe_rx = target.output_probe();
         let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
         let engine_wake = std::sync::Arc::clone(&wake);
@@ -490,7 +495,7 @@ impl WindowCherenkovSurface {
             .expect("hydrolysis renderer: failed to create the Cherenkov window surface");
         Self {
             core: SurfaceCore::new(engine, surface, size),
-            transparent,
+            transparent: output.transparent,
             probe_rx,
             probe: None,
             last_headroom: cherenkov::Display::default().headroom,

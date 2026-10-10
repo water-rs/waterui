@@ -6,8 +6,19 @@ use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::gpu::RedrawHandle;
 
-#[cfg(any(all(hydrolysis_winit, not(target_os = "macos")), target_os = "android"))]
-use waterui_graphics::gpu::preferred_surface_format;
+/// The output request every Hydrolysis host surface is negotiated by:
+/// the engine's `select_output` resolves the best advertised (format,
+/// colour space) pair among the surface's offers — HDR where the display
+/// chain carries it — paced FIFO, with a transparency-capable composite
+/// alpha mode iff the window is transparent (#2445).
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
+pub const fn hydrolysis_output_request(transparent: bool) -> cherenkov_gpu::interop::OutputRequest {
+    cherenkov_gpu::interop::OutputRequest {
+        transparent,
+        color_space: cherenkov_gpu::interop::ColorSpaceRequest::Best,
+        sync: cherenkov_gpu::DisplaySync::Synchronized,
+    }
+}
 
 /// Releases the resources whose destruction `device` deferred.
 ///
@@ -745,56 +756,6 @@ impl SurfaceFrame {
             Self::Browser { view, .. } => view,
         }
     }
-}
-
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
-pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
-    let preferred = preferred_surface_format(caps, true);
-    if supports_hydrolysis_surface_format(preferred) {
-        return normalize_surface_format(caps, preferred);
-    }
-
-    if let Some(format) = caps
-        .formats
-        .iter()
-        .copied()
-        .find(|format| supports_hydrolysis_surface_format(*format))
-    {
-        return normalize_surface_format(caps, format);
-    }
-
-    panic!(
-        "hydrolysis surface: requires one of Rgba16Float/Rgba32Float/Rgba8/Bgra8 surface formats, got {:?}",
-        caps.formats
-    );
-}
-
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
-fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
-    matches!(
-        format.remove_srgb_suffix(),
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
-    ) || matches!(
-        format,
-        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
-    )
-}
-
-#[cfg(any(hydrolysis_winit, target_os = "android"))]
-#[cfg(not(target_os = "macos"))]
-fn normalize_surface_format(
-    caps: &wgpu::SurfaceCapabilities,
-    format: wgpu::TextureFormat,
-) -> wgpu::TextureFormat {
-    if format.is_srgb() {
-        let linear = format.remove_srgb_suffix();
-        if caps.formats.contains(&linear) {
-            return linear;
-        }
-    }
-    format
 }
 
 #[cfg(any(
@@ -2421,6 +2382,11 @@ mod winit_impl {
         gpu: WinitGpuContext,
         #[cfg(not(target_os = "macos"))]
         config: wgpu::SurfaceConfiguration,
+        /// The negotiated output the swapchain was configured by — the
+        /// engine's `select_output` result, with the reported headroom
+        /// sampled at negotiation (#2445).
+        #[cfg(not(target_os = "macos"))]
+        selection: cherenkov_gpu::interop::OutputSelection,
         /// The window this surface presents into. A host-presented surface
         /// asks it for the platform's next-frame pacing
         /// (`pre_present_notify`), which on Wayland requests the frame
@@ -2505,51 +2471,6 @@ mod winit_impl {
             )
         }
 
-        /// The composite alpha mode a surface is configured with.
-        ///
-        /// A window the compositor must see through needs a mode whose alpha
-        /// channel reaches it — premultiplied, postmultiplied, or the
-        /// platform-inherited mode compositors honour on alpha-capable
-        /// visuals — in that preference order. An opaque window takes
-        /// whatever the surface prefers first. An adapter offering a
-        /// transparent window none of the transparency-capable modes cannot
-        /// present it at all: under an opaque composite the pixels' alpha
-        /// never reaches the compositor and the window reads as fully
-        /// transparent, which is a window-creation error naming the adapter
-        /// and the modes it reported, not a silently opaque window.
-        #[cfg(any(test, not(target_os = "macos")))]
-        fn select_alpha_mode(
-            caps: &wgpu::SurfaceCapabilities,
-            requires_transparency: bool,
-            adapter_info: &wgpu::AdapterInfo,
-        ) -> wgpu::CompositeAlphaMode {
-            const TRANSPARENT_MODES: [wgpu::CompositeAlphaMode; 3] = [
-                wgpu::CompositeAlphaMode::PreMultiplied,
-                wgpu::CompositeAlphaMode::PostMultiplied,
-                wgpu::CompositeAlphaMode::Inherit,
-            ];
-            if !requires_transparency {
-                // An opaque window's alpha channel never reaches the
-                // compositor, so the surface's preferred mode is fine.
-                return caps.alpha_modes[0];
-            }
-            for wanted in TRANSPARENT_MODES {
-                if caps.alpha_modes.contains(&wanted) {
-                    return wanted;
-                }
-            }
-            let info = adapter_info;
-            panic!(
-                "hydrolysis winit surface: a transparent window needs a \
-                 transparency-capable composite alpha mode, but adapter {:?} \
-                 ({:?}, driver {:?} {:?}) offers only {:?} — presented pixels \
-                 would carry no alpha and the window would draw nothing. \
-                 Transparent windows require a compositing window manager and \
-                 an adapter that reports a non-opaque alpha mode.",
-                info.name, info.backend, info.driver, info.driver_info, caps.alpha_modes
-            );
-        }
-
         /// The X11 presentation defect a transparent window hits on an old
         /// Mesa software rasterizer: the WSI's `x11_present_to_x11_sw` sent
         /// its `xcb_put_image` at a hardcoded depth of 24, which the X
@@ -2612,6 +2533,34 @@ mod winit_impl {
             )
         }
 
+        /// The surface's negotiated output configuration — the engine's
+        /// `select_output` over its advertised pairs (`#2445`), reported
+        /// headroom sampled alongside. An unmet request is a window-creation
+        /// failure naming the request, what the surface offers, and the
+        /// adapter, never a silently substituted pair.
+        #[cfg(not(target_os = "macos"))]
+        fn negotiate_surface_output(
+            surface: &wgpu::Surface<'static>,
+            adapter: &wgpu::Adapter,
+            transparent: bool,
+        ) -> cherenkov_gpu::interop::OutputSelection {
+            let caps = surface.get_capabilities(adapter);
+            let info = adapter.get_info();
+            let mut selection = cherenkov_gpu::interop::select_output(
+                &caps,
+                info.backend,
+                super::hydrolysis_output_request(transparent),
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
+                    info.name, info.backend
+                )
+            });
+            selection.reported_headroom = surface.display_hdr_info(adapter).tone_map_headroom();
+            selection
+        }
+
         #[cfg(not(target_os = "macos"))]
         fn from_surface(
             surface: wgpu::Surface<'static>,
@@ -2622,8 +2571,6 @@ mod winit_impl {
             on_x11: bool,
             window: Arc<NativeWindow>,
         ) -> Self {
-            let caps = surface.get_capabilities(&gpu.adapter);
-            let format = super::select_hydrolysis_surface_format(&caps);
             let adapter_info = gpu.adapter.get_info();
             if requires_transparency
                 && on_x11
@@ -2631,15 +2578,16 @@ mod winit_impl {
             {
                 panic!("hydrolysis winit surface: {cause}");
             }
-            let alpha_mode = Self::select_alpha_mode(&caps, requires_transparency, &adapter_info);
+            let selection =
+                Self::negotiate_surface_output(&surface, &gpu.adapter, requires_transparency);
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format,
-                color_space: wgpu::SurfaceColorSpace::Auto,
+                format: selection.format,
+                color_space: selection.color_space,
                 width: width.max(1),
                 height: height.max(1),
-                present_mode: wgpu::PresentMode::AutoVsync,
-                alpha_mode,
+                present_mode: selection.present_mode,
+                alpha_mode: selection.alpha_mode,
                 view_formats: vec![],
                 desired_maximum_frame_latency: 2,
             };
@@ -2648,6 +2596,7 @@ mod winit_impl {
                 surface,
                 gpu,
                 config,
+                selection,
                 window,
             }
         }
@@ -2736,21 +2685,28 @@ mod winit_impl {
             )
         }
 
-        /// Re-selects the composite alpha mode for a window whose background
-        /// switched between opaque and translucent, reconfiguring only when
-        /// the mode actually changes. The selection is the one creation uses,
-        /// so a surface that offers no transparency-capable mode fails the
-        /// same way — on X11 that is a window created opaque, whose visual
-        /// cannot gain an alpha channel afterwards.
+        /// Re-runs output negotiation for a window whose background switched
+        /// between opaque and translucent, reconfiguring only when the
+        /// selection actually changes. The negotiation is the one creation
+        /// uses, so a surface that offers no transparency-capable mode fails
+        /// the same way — on X11 that is a window created opaque, whose
+        /// visual cannot gain an alpha channel afterwards.
         #[cfg(not(target_os = "macos"))]
         fn set_transparent(&mut self, transparent: bool) {
-            let caps = self.surface.get_capabilities(&self.gpu.adapter);
-            let alpha_mode =
-                Self::select_alpha_mode(&caps, transparent, &self.gpu.adapter.get_info());
-            if alpha_mode != self.config.alpha_mode {
-                self.config.alpha_mode = alpha_mode;
+            let selection =
+                Self::negotiate_surface_output(&self.surface, &self.gpu.adapter, transparent);
+            if selection.alpha_mode != self.selection.alpha_mode
+                || selection.format != self.selection.format
+                || selection.color_space != self.selection.color_space
+                || selection.present_mode != self.selection.present_mode
+            {
+                self.config.alpha_mode = selection.alpha_mode;
+                self.config.format = selection.format;
+                self.config.color_space = selection.color_space;
+                self.config.present_mode = selection.present_mode;
                 self.surface.configure(&self.gpu.device, &self.config);
             }
+            self.selection = selection;
         }
 
         /// Records the window's new transparency; the next frame recreates
@@ -2859,7 +2815,15 @@ mod winit_impl {
         }
 
         fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
-            cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
+            cherenkov_gpu::interop::surface_output_alpha(self.selection.alpha_mode)
+        }
+
+        fn display_headroom(&self) -> f32 {
+            self.selection.reported_headroom.unwrap_or(1.0)
+        }
+
+        fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+            self.selection.output_color()
         }
     }
 
@@ -5084,9 +5048,31 @@ mod winit_impl {
             alpha_modes: &[wgpu::CompositeAlphaMode],
         ) -> wgpu::SurfaceCapabilities {
             wgpu::SurfaceCapabilities {
+                formats: vec![wgpu::TextureFormat::Bgra8UnormSrgb],
+                format_capabilities: vec![wgpu::SurfaceFormatCapabilities {
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    color_spaces: wgpu::SurfaceColorSpaces::SRGB,
+                }],
+                present_modes: vec![wgpu::PresentMode::Fifo],
                 alpha_modes: alpha_modes.to_vec(),
-                ..wgpu::SurfaceCapabilities::default()
+                usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
             }
+        }
+
+        /// The composite alpha mode the host's output request resolves to
+        /// on a surface advertising `modes` — the engine's `select_output`
+        /// with `hydrolysis_output_request`, as creation and the
+        /// transparency switch both run it (#2445).
+        fn negotiated_alpha_mode(
+            transparent: bool,
+            modes: &[wgpu::CompositeAlphaMode],
+        ) -> Result<wgpu::CompositeAlphaMode, cherenkov::SurfaceError> {
+            cherenkov_gpu::interop::select_output(
+                &caps_with_alpha_modes(modes),
+                wgpu::Backend::Vulkan,
+                super::hydrolysis_output_request(transparent),
+            )
+            .map(|selection| selection.alpha_mode)
         }
 
         fn fake_adapter_info() -> wgpu::AdapterInfo {
@@ -5110,36 +5096,24 @@ mod winit_impl {
         fn a_transparent_window_gets_the_first_transparent_alpha_mode_the_surface_offers() {
             use wgpu::CompositeAlphaMode as Mode;
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied]),
-                    true,
-                    &fake_adapter_info(),
-                ),
-                Mode::PreMultiplied
+                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied],),
+                Ok(Mode::PreMultiplied)
             );
             // X11 compositing on a 32-bit visual reports exactly this pair:
             // with no explicit multiplied mode the inherited mode is the only
             // one whose alpha reaches the compositor.
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::Inherit]),
-                    true,
-                    &fake_adapter_info(),
-                ),
-                Mode::Inherit
+                negotiated_alpha_mode(true, &[Mode::Opaque, Mode::Inherit]),
+                Ok(Mode::Inherit)
             );
         }
 
         #[test]
-        fn an_opaque_window_keeps_the_surface_preferred_alpha_mode() {
+        fn an_opaque_window_keeps_the_opaque_alpha_mode() {
             use wgpu::CompositeAlphaMode as Mode;
             assert_eq!(
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::PreMultiplied]),
-                    false,
-                    &fake_adapter_info(),
-                ),
-                Mode::Opaque
+                negotiated_alpha_mode(false, &[Mode::Opaque, Mode::PreMultiplied]),
+                Ok(Mode::Opaque)
             );
         }
 
@@ -5159,10 +5133,9 @@ mod winit_impl {
                     .background(material)
             };
             let select = |material, modes: &[Mode]| {
-                super::WinitSurface::select_alpha_mode(
-                    &caps_with_alpha_modes(modes),
+                negotiated_alpha_mode(
                     crate::runner::window_requires_transparency(&window(material), &env),
-                    &fake_adapter_info(),
+                    modes,
                 )
             };
             for level in [Material::UltraThin, Material::Thin] {
@@ -5171,17 +5144,17 @@ mod winit_impl {
                         level,
                         &[Mode::Opaque, Mode::PostMultiplied, Mode::PreMultiplied]
                     ),
-                    Mode::PreMultiplied
+                    Ok(Mode::PreMultiplied)
                 );
                 assert_eq!(
                     select(level, &[Mode::Opaque, Mode::PostMultiplied]),
-                    Mode::PostMultiplied
+                    Ok(Mode::PostMultiplied)
                 );
             }
             for level in [Material::Regular, Material::Thick, Material::UltraThick] {
                 assert_eq!(
                     select(level, &[Mode::Opaque, Mode::PreMultiplied]),
-                    Mode::Opaque
+                    Ok(Mode::Opaque)
                 );
             }
         }
@@ -5250,13 +5223,16 @@ mod winit_impl {
         }
 
         #[test]
-        #[should_panic(expected = "fake adapter")]
         fn a_transparent_window_on_an_opaque_only_adapter_fails_at_creation() {
             use wgpu::CompositeAlphaMode as Mode;
-            let _ = super::WinitSurface::select_alpha_mode(
-                &caps_with_alpha_modes(&[Mode::Opaque]),
-                true,
-                &fake_adapter_info(),
+            // The negotiation reports the surface unsupported; surface
+            // creation turns the error into the window-creation panic.
+            assert!(
+                matches!(
+                    negotiated_alpha_mode(true, &[Mode::Opaque]),
+                    Err(cherenkov::SurfaceError::UnsupportedTarget(_))
+                ),
+                "an opaque-only adapter cannot present a transparent window"
             );
         }
 

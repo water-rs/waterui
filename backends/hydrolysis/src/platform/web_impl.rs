@@ -92,28 +92,25 @@ impl BrowserSurface {
         // the present pass writes always agree. The page asks for SDR: an
         // extended-range canvas puts Apple displays into EDR mode, which dims
         // every screenshot of the page and draws more power, and no
-        // Hydrolysis host presents HDR. Display P3 keeps the wide gamut where
-        // the browser offers it; sRGB is the space every canvas offers.
+        // Hydrolysis host presents HDR. The Standard..=WideGamut range keeps
+        // Display P3's wide gamut where the browser offers it, keeps every
+        // HDR space out, and still meets a canvas that reports only sRGB or
+        // no explicit space at all — the ceiling is the request's, not a
+        // retry loop's (#2445).
         let caps = surface.get_capabilities(&adapter);
-        let selection = [wgpu::SurfaceColorSpace::DisplayP3, wgpu::SurfaceColorSpace::Srgb]
-            .into_iter()
-            .find_map(|color_space| {
-                cherenkov_gpu::interop::select_output(
-                    &caps,
-                    wgpu::Backend::BrowserWebGpu,
-                    cherenkov_gpu::interop::OutputRequest {
-                        transparent: false,
-                        color_space: Some(color_space),
-                        sync: cherenkov_gpu::DisplaySync::Synchronized,
-                    },
-                )
-                .ok()
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "hydrolysis web surface: the canvas offers neither Display P3 nor sRGB output: {caps:?}"
-                )
-            });
+        let selection = cherenkov_gpu::interop::select_output(
+            &caps,
+            wgpu::Backend::BrowserWebGpu,
+            cherenkov_gpu::interop::OutputRequest {
+                transparent: false,
+                color_space: cherenkov_gpu::interop::ColorSpaceRequest::Range {
+                    at_least: cherenkov_gpu::interop::ColorRange::Standard,
+                    at_most: cherenkov_gpu::interop::ColorRange::WideGamut,
+                },
+                sync: cherenkov_gpu::DisplaySync::Synchronized,
+            },
+        )
+        .unwrap_or_else(|error| panic!("hydrolysis web surface: {error}"));
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: selection.format,
