@@ -315,6 +315,10 @@ cherenkov-record.workspace = true
 # The wayland examples need a widget theme; m3 is independently maintained.
 hydrolysis-m3.workspace = true
 waterui-testing.workspace = true
+# The canonical test-artifact layout, without `waterui-testing`'s edge back
+# to this crate: named from `src/` unit tests, where that edge links a second
+# `hydrolysis` rlib and its JNI exports collide on Android (#2447).
+waterui-testing-artifacts.workspace = true
 waterui-navigation.workspace = true
 # The presentation tests received from waterui exercise these component crates
 # directly: live photos (media), the MCP session harness (mcp, aither-mcp,

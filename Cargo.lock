@@ -4631,6 +4631,7 @@ dependencies = [
  "waterui-navigation",
  "waterui-shape",
  "waterui-testing",
+ "waterui-testing-artifacts",
  "waterui-text",
  "waterui-url",
  "waterui-video",
@@ -13695,7 +13696,6 @@ dependencies = [
  "executor-core",
  "hydrolysis",
  "hydrolysis-m3",
- "image",
  "kurbo 0.13.1",
  "pollster 1.0.1",
  "serde",
@@ -13707,7 +13707,15 @@ dependencies = [
  "waterui-canvas",
  "waterui-core",
  "waterui-preview-protocol",
+ "waterui-testing-artifacts",
  "wgpu 30.0.1",
+]
+
+[[package]]
+name = "waterui-testing-artifacts"
+version = "0.5.1"
+dependencies = [
+ "image",
 ]
 
 [[package]]

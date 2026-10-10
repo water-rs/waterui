@@ -15,11 +15,15 @@ categories.workspace = true
 hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 waterui-core.workspace = true
 waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+# The canonical artifact store the harness re-exports (`TestArtifacts`,
+# `Snapshot`, `artifact_root`). It lives in its own crate — with no edge back
+# to `hydrolysis` — so a backend's `cargo test --lib` can name the artifact
+# layout without linking the backend's rlib a second time (#2447).
+waterui-testing-artifacts.workspace = true
 wgpu.workspace = true
 kurbo.workspace = true
 accesskit = "0.25"
 pollster.workspace = true
-image = { version = "0.25", default-features = false, features = ["png"] }
 executor-core.workspace = true
 sysinfo.workspace = true
 waterui-preview-protocol.workspace = true

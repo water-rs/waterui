@@ -11,9 +11,9 @@ use waterui::ViewExt as _;
 use waterui_controls::button::button;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size};
 use waterui_core::{AnyView, SignalExt as _};
-use waterui_testing::TestArtifacts;
+use waterui_testing_artifacts::TestArtifacts;
 
-/// Where this module's visual evidence is written: `waterui-testing`'s
+/// Where this module's visual evidence is written: `waterui-testing-artifacts`'
 /// canonical `<root>/hydrolysis/<case>/<stage>.png` layout, with the root from
 /// `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it (uploaded with every run) and
 /// the platform temp directory otherwise.

@@ -26,7 +26,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use waterui_testing::TestArtifacts;
 
 use waterui::Binding;
 use waterui_core::AnyView;
@@ -34,6 +33,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::frame::Frame;
+use waterui_testing_artifacts::TestArtifacts;
 
 use super::{MinimalTestTheme, pumped_test_environment};
 use crate::HeadlessRuntime;
@@ -49,7 +49,7 @@ const WINDOW_HEIGHT: u32 = 120;
 /// window's light theme background.
 const FILL: wgpu::Color = wgpu::Color::BLACK;
 
-/// Where this module's visual evidence is written: `waterui-testing`'s
+/// Where this module's visual evidence is written: `waterui-testing-artifacts`'
 /// canonical `<root>/hydrolysis/direct_to_target/<stage>.png` layout, with the
 /// root from `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it and the platform temp
 /// directory otherwise.

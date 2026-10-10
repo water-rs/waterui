@@ -546,7 +546,7 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
     let snapshot = result
         .snapshot
         .expect("a mid-exit frame must be capturable");
-    let path = waterui_testing::TestArtifacts::new("hydrolysis")
+    let path = waterui_testing_artifacts::TestArtifacts::new("hydrolysis")
         .snapshot_path("anchored_overlay_exit", "mid-flight");
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");

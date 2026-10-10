@@ -74,6 +74,10 @@ name = "waterui-testing"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-testing-artifacts"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-dylib"
 version_group = "waterui"
 

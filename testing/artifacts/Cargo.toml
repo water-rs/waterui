@@ -1,0 +1,20 @@
+[package]
+name = "waterui-testing-artifacts"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Canonical artifact store for WaterUI test suites"
+keywords = ["testing", "snapshot", "artifacts", "waterui"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+# `Snapshot::save_png` writes the canonical PNG evidence files; the encoder
+# is the only codec the store needs.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

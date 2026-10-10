@@ -15,8 +15,8 @@ use waterui::window::Window;
 use waterui::{Plugin, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
+use waterui_testing_artifacts::{CapturedSnapshot, Snapshot, TestArtifacts};
 
-use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
     self, DriverPumpResult, FrameTiming, ResourceSampler, RuntimeDriver, VIRTUAL_FRAME,
 };
@@ -24,7 +24,6 @@ use crate::perf::{PerfApp, PerfConfig, PerfReport};
 use crate::query::Query;
 use crate::selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 use crate::semantics::{NodeId, TreeSnapshot};
-use crate::snapshot::Snapshot;
 use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 
 /// The style state of a [`UiBuilder`] that carries none: `ui()`'s starting

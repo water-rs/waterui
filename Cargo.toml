@@ -20,6 +20,10 @@ members = [
     "src",
     "cli",
     "testing",
+    # The artifact store `waterui-testing` re-exports: a leaf with no edge
+    # back to `hydrolysis`, so the backend's `cargo test --lib` can name the
+    # layout without linking its own rlib a second time (#2447).
+    "testing/artifacts",
     "ffi",
     "ffi/generator",
     "macros",
@@ -303,6 +307,7 @@ waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
 waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 waterui-testing = { path = "testing" }
+waterui-testing-artifacts = { version = "0.5.1", path = "testing/artifacts" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }

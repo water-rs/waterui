@@ -9,9 +9,9 @@ use hydrolysis::{
     Modifiers, PointerButton, PointerKind, SemanticRuntime, TouchPhase,
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
+use waterui_testing_artifacts::Snapshot;
 
 use crate::semantics::NodeId;
-use crate::snapshot::Snapshot;
 
 const TEST_POINTER_ID: u64 = 0;
 
