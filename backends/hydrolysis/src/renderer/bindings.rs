@@ -158,6 +158,35 @@ impl SemanticCore {
         self.set_focused_text_input(None)
     }
 
+    /// AppKit/DOM content owns its own key and IME delivery while focused.
+    pub(crate) fn hosted_has_focus(&self) -> bool {
+        #[cfg(hydrolysis_hosted)]
+        return self.hit_test.native_view_occlusions.iter().any(|target| {
+            target
+                .hosted
+                .as_ref()
+                .is_some_and(|(_, runtime)| runtime.focused.snapshot())
+        });
+        #[cfg(not(hydrolysis_hosted))]
+        false
+    }
+
+    pub(crate) fn sync_hosted_focus(&mut self) {
+        if self.hosted_has_focus() {
+            self.set_focused_text_input(None);
+            self.set_focused_embedded_key(None);
+            self.set_keyboard_focus(None, false);
+        }
+    }
+
+    pub(crate) fn hosted_owns_cursor(&self, x: f32, y: f32) -> bool {
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
+        self.hit_test.native_view_occlusions.iter().any(|target| {
+            target.bounds.contains(point)
+                && !target.sink.borrow().iter().any(|rect| rect.contains(point))
+        })
+    }
+
     #[must_use]
     pub fn cursor_style_at(&self, x: f32, y: f32) -> CursorStyle {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));

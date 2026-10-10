@@ -1099,6 +1099,24 @@ fn commit_producer<T: LayerTarget>(
     producer: Option<&ProducerContent>,
 ) -> Option<HeldResources> {
     match producer {
+        #[cfg(hydrolysis_hosted)]
+        Some(ProducerContent::Hosted { runtime, bounds }) => {
+            let fresh = ensure_install(cx, layers, false);
+            if fresh {
+                runtime.binding.replace(None);
+            }
+            let (install, props) = layers.install.as_mut().expect("install ensured");
+            T::mount_hosted(cx.tx, install, runtime, bounds.size());
+            write_props(
+                cx.tx,
+                install,
+                props,
+                LayerProps {
+                    transform: kurbo::Affine::translate((bounds.x0, bounds.y0)),
+                    ..LayerProps::DEFAULT
+                },
+            );
+        }
         Some(ProducerContent::Scene(source)) => {
             return Some(mount_scene(cx, cell, &layers.frame, source));
         }

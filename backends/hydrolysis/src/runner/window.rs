@@ -999,10 +999,13 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
 
     let rebuilt = pump_window_scene(runtime, env, &mut || false).built;
     apply_window_size_limits(runtime, env);
+    runtime.renderer.sync_hosted_focus();
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
+    if let Some((x, y)) = runtime.pointer_position
+        && !runtime.renderer.hosted_owns_cursor(x, y)
+    {
         runtime
             .platform
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
@@ -1488,10 +1491,13 @@ crate::engine::cfg_async_fn! {
         }
     }
 
+    runtime.renderer.sync_hosted_focus();
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
+    if let Some((x, y)) = runtime.pointer_position
+        && !runtime.renderer.hosted_owns_cursor(x, y)
+    {
         runtime
             .platform
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
@@ -1654,6 +1660,20 @@ where
     // flag set at the press is read by the very next `TextInput` event.
     let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
+        runtime.renderer.sync_hosted_focus();
+        if runtime.renderer.hosted_has_focus()
+            && matches!(
+                event,
+                InputEvent::Key { .. }
+                    | InputEvent::TextInput { .. }
+                    | InputEvent::KeyText { .. }
+                    | InputEvent::ImePreedit { .. }
+                    | InputEvent::ImeCommit { .. }
+                    | InputEvent::ImeDisabled
+            )
+        {
+            continue;
+        }
         let key_consumed = suppress_key_text;
         suppress_key_text = false;
         // The preflight re-registers every hit target at the geometry a
@@ -2096,10 +2116,13 @@ where
         }
         schedule_redraw_or_refresh(runtime, changed);
     }
+    runtime.renderer.sync_hosted_focus();
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
+    if let Some((x, y)) = runtime.pointer_position
+        && !runtime.renderer.hosted_owns_cursor(x, y)
+    {
         runtime
             .platform
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
@@ -2129,6 +2152,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
             runtime.render_diagnostics.set_refresh_rate(hz);
         }
     }
+    runtime.renderer.sync_hosted_focus();
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());

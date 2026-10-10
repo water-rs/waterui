@@ -40,6 +40,16 @@ pub trait LayerTarget: cherenkov::Target {
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources>;
 
+    #[cfg(hydrolysis_hosted)]
+    fn mount_hosted(
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        _runtime: &crate::hosted::HostedRuntime,
+        _size: kurbo::Size,
+    ) {
+        panic!("hydrolysis: this target cannot mount hosted content");
+    }
+
     /// Binds a GPU content producer at `pixels` on `layer`.
     fn mount_gpu_content(
         host: &Self::Host,
@@ -210,6 +220,20 @@ impl LayerTarget for cherenkov_gpu::Gpu {
     type Group = cherenkov::BackdropGroup;
     type Shader = cherenkov::BackdropShader;
     const BACKDROP_SHADERS: bool = true;
+
+    #[cfg(hydrolysis_hosted)]
+    fn mount_hosted(
+        tx: &mut Transaction<'_, Self>,
+        layer: &Layer,
+        runtime: &crate::hosted::HostedRuntime,
+        size: kurbo::Size,
+    ) {
+        let binding = (layer.id(), size);
+        if *runtime.binding.borrow() != Some(binding) {
+            tx[layer].content(runtime.hosted.at(size));
+            runtime.binding.replace(Some(binding));
+        }
+    }
 
     fn resources(host: &CherenkovHost) -> &Rc<SceneResources> {
         &host.resources
