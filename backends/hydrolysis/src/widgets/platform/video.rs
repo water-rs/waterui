@@ -42,10 +42,6 @@ use crate::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 /// realization measures.
 const FIT_HEIGHT: f32 = 180.0;
 
-/// Stalls shorter than this end without a `BufferingEnded` event, as on
-/// Apple.
-const BUFFERING_REPORT_SECONDS: f64 = 1.0;
-
 /// The MIME type an HLS playlist is offered to the element as.
 const HLS_MIME: &str = "application/vnd.apple.mpegurl";
 
@@ -201,8 +197,9 @@ struct Player {
     ready: Cell<bool>,
     /// Whether the current source's end was handled.
     ended: Cell<bool>,
-    /// When the current stall began, while the element waits for data.
-    stalled_since: Cell<Option<Instant>>,
+    /// Whether the element is waiting for data after reporting
+    /// `Buffering`; the stall ends with `BufferingEnded`.
+    stalled: Cell<bool>,
     /// When the current source began loading, for the metrics' start-up
     /// time.
     loaded_at: Cell<Instant>,
@@ -260,7 +257,7 @@ impl Player {
             source_key: RefCell::new(None),
             ready: Cell::new(false),
             ended: Cell::new(false),
-            stalled_since: Cell::new(None),
+            stalled: Cell::new(false),
             loaded_at: Cell::new(Instant::now()),
             last_buffer_level_ms: Cell::new(None),
             tracks: RefCell::new(Vec::new()),
@@ -318,7 +315,7 @@ impl Player {
         self.source_key.replace(Some(key));
         self.ready.set(false);
         self.ended.set(false);
-        self.stalled_since.set(None);
+        self.stalled.set(false);
         self.last_buffer_level_ms.set(None);
         self.loaded_at.set(Instant::now());
         self.bindings.duration_seconds.set(0.0);
@@ -490,7 +487,9 @@ impl Player {
                 self.start_playing();
             }
         } else if !self.element.paused() {
-            self.element.pause();
+            self.element
+                .pause()
+                .expect("hydrolysis web video: HTMLMediaElement.pause threw");
         }
     }
 
@@ -596,7 +595,15 @@ impl Player {
         self.emit(Event::PlaybackMetrics { metrics });
     }
 
+    /// Data flows again: a reported stall ends.
+    fn end_stall(&self) {
+        if self.stalled.replace(false) {
+            self.emit(Event::BufferingEnded);
+        }
+    }
+
     fn can_play(self: &Rc<Self>) {
+        self.end_stall();
         if self.ready.replace(true) {
             return;
         }
@@ -611,11 +618,7 @@ impl Player {
     }
 
     fn playing(&self) {
-        if let Some(since) = self.stalled_since.take()
-            && since.elapsed().as_secs_f64() >= BUFFERING_REPORT_SECONDS
-        {
-            self.emit(Event::BufferingEnded);
-        }
+        self.end_stall();
         self.set_phase(PlaybackPhase::Playing);
         self.emit(Event::PlaybackStateChanged { playing: true });
         // The browser's own controls started it.
@@ -645,8 +648,7 @@ impl Player {
     }
 
     fn waiting(&self) {
-        if self.stalled_since.get().is_none() {
-            self.stalled_since.set(Some(Instant::now()));
+        if !self.stalled.replace(true) {
             self.emit(Event::Buffering);
             self.set_phase(PlaybackPhase::Buffering);
         }
@@ -827,7 +829,9 @@ impl Player {
 
     /// Stops the element and releases its source and listeners.
     fn release(&self) {
-        self.element.pause();
+        self.element
+            .pause()
+            .expect("hydrolysis web video: HTMLMediaElement.pause threw");
         self.element
             .remove_attribute("src")
             .expect("hydrolysis web video: failed to clear the source");
