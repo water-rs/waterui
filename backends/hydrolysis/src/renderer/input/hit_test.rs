@@ -1116,6 +1116,7 @@ impl HitTestState {
         not(hydrolysis_hosted),
         expect(
             clippy::unused_self,
+            clippy::missing_const_for_fn,
             reason = "no hosted content exists on targets without system-compositor planes"
         )
     )]
