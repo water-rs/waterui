@@ -1396,7 +1396,7 @@ fn sync_shields(
                 .set_property(property, value)
                 .expect("hydrolysis web platform: failed to style an occlusion shield");
         }
-        for (name, closure) in listeners {
+        for (name, closure) in listeners.iter() {
             shield
                 .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref())
                 .unwrap_or_else(|_| {
