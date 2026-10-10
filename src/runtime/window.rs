@@ -37,7 +37,7 @@ use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
 
 pub use super::window_close::CloseReply;
-use super::window_close::CloseRequest;
+use super::window_close::{CloseRequest, Question};
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
@@ -815,8 +815,8 @@ impl Window {
     /// a `State`, a service — and its future runs on the runner's local
     /// executor, so the reply never arrives inside a platform delegate call.
     ///
-    /// Platform support: Hydrolysis desktop and AppKit. Hydrolysis Android,
-    /// UIKit and web have no window close request — the handler never runs
+    /// Platform support: Hydrolysis desktop and `AppKit`. Hydrolysis Android,
+    /// `UIKit` and web have no window close request — the handler never runs
     /// there, and [`WindowHandle::request_close`] panics.
     #[must_use]
     pub fn on_close_request<H, Args, Fut>(self, handler: H) -> Self
@@ -826,7 +826,7 @@ impl Window {
     {
         let mut action = boxed_action(handler);
         self.close_request
-            .set_hook(Box::new(move |env| Box::pin(action(env))));
+            .set_hook(Box::new(move |env| Box::pin(action(env)) as Question));
         self
     }
 
@@ -982,7 +982,7 @@ impl WindowHandle {
     /// # Panics
     ///
     /// When the window has not been realized yet, and on the platforms with
-    /// no window close request — Hydrolysis Android, UIKit and web.
+    /// no window close request — Hydrolysis Android, `UIKit` and web.
     pub fn request_close(&self) {
         self.close_request.request();
     }

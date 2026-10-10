@@ -27,7 +27,7 @@
 //! `on_quit_request` — which is also why a `Close` reply can never land on an
 //! already-closed window.
 //!
-//! Hydrolysis Android, the UIKit runner and the web backend have no window
+//! Hydrolysis Android, the `UIKit` runner and the web backend have no window
 //! close request, so they never arm the machine: a handler installed there
 //! never runs, and `WindowHandle::request_close` panics.
 
@@ -59,10 +59,10 @@ pub enum CloseReply {
 }
 
 /// A close-request hook erased together with the future it returns.
-pub(crate) type CloseRequestHook = Box<dyn FnMut(&Environment) -> Question>;
+pub type CloseRequestHook = Box<dyn FnMut(&Environment) -> Question>;
 
 /// The future an `on_close_request` hook returns: the open question.
-pub(crate) type Question = Pin<Box<dyn Future<Output = CloseReply>>>;
+pub type Question = Pin<Box<dyn Future<Output = CloseReply>>>;
 
 /// What the backend told the machine when it realized the window.
 struct Armed {
@@ -101,7 +101,7 @@ struct Shared {
 /// Cloning shares the machine — a `WindowHandle` files requests into the same
 /// machine the backend armed.
 #[derive(Clone)]
-pub(crate) struct CloseRequest {
+pub struct CloseRequest {
     inner: Rc<RefCell<Shared>>,
 }
 
@@ -169,7 +169,7 @@ impl CloseRequest {
     /// # Panics
     ///
     /// When the machine was never armed — the window was never realized, or
-    /// its platform has no window close request (Android, UIKit, web).
+    /// its platform has no window close request (Android, `UIKit`, web).
     pub(crate) fn request(&self) {
         let (mut hook, env) = {
             let mut shared = self.inner.borrow_mut();
