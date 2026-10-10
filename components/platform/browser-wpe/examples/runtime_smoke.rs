@@ -303,6 +303,21 @@ mod linux {
         await_bridge_smoke(&page, deadline);
         tracing::info!("RUN navigation-barrier checks");
         super::bridge_smoke::run(&runtime, &executor, deadline);
+        tracing::info!("RUN mirrored-state admission conformance");
+        page.block_on(
+            async move {
+                let controller = waterui_webview::WebViewController::new(
+                    waterui_browser_wpe::WpeController::new(runtime.clone()),
+                );
+                waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
+                    &controller,
+                )
+                .await;
+            },
+            deadline,
+            "the mirrored-state admission conformance case",
+        );
+        tracing::info!("PASS mirrored-state admission conformance");
         tracing::info!("RUN frame import and snapshot");
         let frame = await_rendered_frame(&page, &frame_ready, deadline);
         let gpu_runtime = pollster::block_on(GpuRuntime::new())
