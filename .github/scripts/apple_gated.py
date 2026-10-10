@@ -10,8 +10,7 @@ a target with work in the affected scope; the composite reads the cargo
 Usage:
 
     apple_gated.py --legs <scope>        # the matrix entries, as JSON
-    apple_gated.py <target> <scope>      # `--all-targets` args, then
-                                         # library-only args, one line each
+    apple_gated.py <target> <scope>      # the cargo `-p` arguments
 
 `<scope>` is affected.py's `packages`: `workspace`, or space-separated
 package names. `<target>` is empty for the macOS host.
@@ -24,8 +23,11 @@ IOS_SIM = "aarch64-apple-ios-sim"
 
 # waterui-apple, cocoa-ui and cherenkov-gpu are not listed: apple.yml's
 # rust job lints them on both targets. waterui-cli and hydrolysis's
-# checked feature set have their own composite steps.
-MACOS = (
+# checked feature set have their own composite steps. The whole group
+# lints `--all-targets` on the macOS host and on `aarch64-apple-ios-sim`
+# alike; the sysinfo/libc defect that once forced library-only passes on
+# the simulator is pinned away (Cargo.lock keeps libc 0.2.189, #2485).
+CRATES = (
     "hydrolysis", "waterui", "waterui-internal",
     "cherenkov", "cherenkov-record", "cherenkov-cpu", "cherenkov-oracle",
     "cherenkov-scene", "cherenkov-shader", "cherenkov-bench",
@@ -34,30 +36,6 @@ MACOS = (
     "waterui-locale", "waterui-preview", "waterui-preview-protocol",
     "waterui-testing", "waterui-ts", "waterui-ts-engine-jsc",
     "waterui-macros", "waterui-assets-macros", "waterui-url",
-)
-
-IOS_SIM_ALL_TARGETS = (
-    "waterui-internal",
-    "cherenkov", "cherenkov-record", "cherenkov-cpu", "cherenkov-oracle",
-    "cherenkov-scene", "cherenkov-shader",
-    "filtrate", "filtrate-core", "filtrate-derive",
-    "waterui-locale", "waterui-preview", "waterui-preview-protocol",
-    "waterui-ts", "waterui-ts-engine-jsc",
-    "waterui-assets-macros", "waterui-url",
-)
-
-# Library targets only on the simulator, because of a dependency defect:
-# sysinfo 0.39.6 calls `libc::mach_host_self` and `libc::mach_task_self`
-# on every Apple target, but libc 0.2.190 declares both for
-# `target_os = "macos"` only (0.2.189 declared them for all Apple
-# targets). These crates' test targets reach sysinfo through
-# waterui-testing and do not compile for aarch64-apple-ios-sim.
-# waterui-testing and cherenkov-bench depend on sysinfo outright and are
-# linted on the host only.
-IOS_SIM_LIB = (
-    "hydrolysis", "waterui",
-    "waterui-controls", "waterui-text", "waterui-graphics", "waterui-media",
-    "waterui-macros",
 )
 
 
@@ -69,11 +47,9 @@ def in_scope(crates, scope):
 
 
 def crates_for(target, scope):
-    """The `--all-targets` crates and the library-only crates for `target`."""
-    if target == "":
-        return in_scope(MACOS, scope), []
-    if target == IOS_SIM:
-        return in_scope(IOS_SIM_ALL_TARGETS, scope), in_scope(IOS_SIM_LIB, scope)
+    """The crates `target` lints with `--all-targets`."""
+    if target in ("", IOS_SIM):
+        return in_scope(CRATES, scope)
     raise ValueError(f"unknown Apple lint target {target!r}")
 
 
@@ -112,8 +88,7 @@ def main(argv):
     if len(argv) == 2 and argv[0] == "--legs":
         print(json.dumps(legs(argv[1]), separators=(",", ":")))
     elif len(argv) == 2:
-        for crates in crates_for(argv[0], argv[1]):
-            print(" ".join(f"-p {crate}" for crate in crates))
+        print(" ".join(f"-p {crate}" for crate in crates_for(argv[0], argv[1])))
     else:
         raise SystemExit(__doc__)
 

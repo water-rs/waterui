@@ -312,7 +312,7 @@ def test_host_only_crates_start_only_host_legs():
             "apple-gated": False,
         }
     ]
-    assert leg_targets("waterui-testing cherenkov-bench") == [""]
+    assert leg_targets("waterui-testing cherenkov-bench") == ["", IOS_SIM]
 
 
 def test_simulator_compatible_crates_start_both_legs():
@@ -320,9 +320,9 @@ def test_simulator_compatible_crates_start_both_legs():
     assert not any(leg["hydrolysis"] for leg in legs("cherenkov-oracle"))
 
 
-def test_simulator_splits_library_only_crates():
-    assert crates_for(IOS_SIM, "waterui cherenkov") == (["cherenkov"], ["waterui"])
-    assert crates_for("", "waterui cherenkov") == (["waterui", "cherenkov"], [])
+def test_simulator_lints_the_same_all_targets_group():
+    assert crates_for(IOS_SIM, "waterui cherenkov") == ["waterui", "cherenkov"]
+    assert crates_for("", "waterui cherenkov") == ["waterui", "cherenkov"]
 
 
 def test_an_unknown_target_is_an_error():

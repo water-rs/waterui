@@ -19,6 +19,13 @@ const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Linux;
 /// See the macOS definition.
 #[cfg(target_os = "windows")]
 const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Windows;
+/// See the macOS definition. `target_os = "ios"` covers devices and
+/// simulators alike.
+#[cfg(target_os = "ios")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Ios;
+/// See the macOS definition.
+#[cfg(target_os = "android")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Android;
 
 /// Suffix appended to the test executable's file name to name its cache.
 const CACHE_SUFFIX: &str = ".waterui-declared-fonts.json";
