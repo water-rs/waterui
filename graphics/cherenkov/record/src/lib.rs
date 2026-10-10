@@ -56,7 +56,7 @@ pub use crate::backdrop::{
     BackdropEffect, BackdropOuter, BackdropOuterError, BackdropSample, BackdropShaderEffect,
     BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
     CaptureLevelsError, CaptureScale, CaptureScaleError, ColorMatrix, LevelRamp, LevelRampError,
-    Refraction, Rim,
+    RecordingScale, RecordingScaleError, Refraction, Rim,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
