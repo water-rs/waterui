@@ -398,6 +398,9 @@ impl Adb {
             .await?;
         output
             .lines()
+            // adb prints a lone empty line when nothing is forwarded; a
+            // blank line names no registration.
+            .filter(|line| !line.trim().is_empty())
             .filter_map(|line| parse_forward_line(serial, line).transpose())
             .collect()
     }
