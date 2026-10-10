@@ -787,7 +787,8 @@ impl BoundaryRun {
 /// Mutable sweep bookkeeping shares one allocation per input path.
 #[derive(Clone, Copy)]
 struct SegmentState {
-    /// None after retirement; otherwise the current active location.
+    /// None after retirement. Admission and retirement phases refresh shifted
+    /// offsets before returning control to the rest of the sweep.
     position: Option<Position>,
     neighbours: Neighbours,
     run: BoundaryRun,
@@ -838,6 +839,14 @@ struct ActiveEntry {
     step: i16,
 }
 
+/// Offsets stay fixed while a group of retirements unlinks its segments.
+/// The chunk contains at most 128 entries; one bit records each removal.
+/// Consuming this value packs the survivors and restores their positions.
+struct RetiringChunk {
+    index: usize,
+    removed: u128,
+}
+
 #[derive(Default)]
 struct Chunk {
     /// Stable identifier into `order_pos`.
@@ -858,6 +867,9 @@ struct Chunk {
     /// Admissions/removals invalidate local prefixes until emission.
     /// The direction sum and Fenwick totals remain current throughout.
     prefix_dirty: bool,
+    /// First offset shifted by admissions, refreshed before retirement or
+    /// crossing processing can read cached locations. None means current.
+    positions_from: Option<u8>,
     /// Union of offsets edited since the last emission; MAX denotes a suffix.
     changed: Range<usize>,
 }
@@ -1030,13 +1042,6 @@ impl Active {
         (c, k - base as usize)
     }
 
-    /// Rank of a live segment: chunk base plus its offset inside.
-    fn rank(&self, e: u32) -> usize {
-        let p = self.position(e);
-        let c = self.order_pos[p.chunk()] as usize;
-        self.fsum(c).0 as usize + usize::from(p.offset)
-    }
-
     /// Segment at a rank.
     fn at(&self, r: usize) -> u32 {
         let (c, o) = self.locate(r);
@@ -1050,8 +1055,8 @@ impl Active {
         id
     }
 
-    /// First rank whose midpoint key `(x_at(ym), slope)` is not below
-    /// `(xi, si)` — the position the old midpoint sort produced.
+    /// First rank after the midpoint keys `(x_at(ym), slope) <= (xi, si)` —
+    /// the stable admission position the old midpoint sort produced.
     #[expect(
         clippy::float_cmp,
         reason = "exact key equality mirrors the sort's tie-break"
@@ -1091,7 +1096,8 @@ impl Active {
         }
     }
 
-    /// Insert a segment at a rank, splitting an overfull chunk.
+    /// Insert during admission, splitting an overfull chunk. Cached offsets
+    /// are refreshed when the admission phase finishes.
     fn insert(&mut self, segs: &[Seg], at: usize, e: u32) {
         self.link(e, (at < self.len).then(|| SegmentId::new(self.at(at))));
         let right = self.state[e as usize].neighbours.next;
@@ -1139,10 +1145,10 @@ impl Active {
         );
         self.mark(c, o..usize::MAX);
         self.len += 1;
-        for (offset, entry) in self.chunks[c].els.iter().enumerate().skip(o) {
-            self.state[entry.segment as usize].position =
-                Some(Position::new(self.chunks[c].id, offset));
-        }
+        let position = Position::new(self.chunks[c].id, o);
+        self.state[e as usize].position = Some(position);
+        let from = &mut self.chunks[c].positions_from;
+        *from = Some(from.map_or(position.offset, |old| old.min(position.offset)));
         self.fadd(c, 1, segs[e as usize].dir);
         self.chunks[c].ds += segs[e as usize].dir;
         self.chunks[c].prefix_dirty = true;
@@ -1160,6 +1166,7 @@ impl Active {
                     id,
                     els: tail,
                     live,
+                    positions_from: Some(0),
                     ..Chunk::default()
                 },
             );
@@ -1170,9 +1177,6 @@ impl Active {
                 self.order_pos[self.chunks[p].id as usize] =
                     u32::try_from(p).expect("chunk index fits u32");
             }
-            for (offset, entry) in self.chunks[c + 1].els.iter().enumerate() {
-                self.state[entry.segment as usize].position = Some(Position::new(id, offset));
-            }
             self.recalc(c + 1);
             self.mark(c + 1, 0..usize::MAX);
             self.mark(c, 0..usize::MAX);
@@ -1181,8 +1185,76 @@ impl Active {
         }
     }
 
-    /// Remove a live segment; tombstones the chunk if it empties.
-    fn remove(&mut self, segs: &[Seg], e: u32) {
+    /// Admit in midpoint-key order, then refresh shifted positions once.
+    /// Admission searches and event creation use elements and neighbour links;
+    /// neither reads a cached location until this phase has finished.
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::cast_possible_truncation,
+        reason = "the admission phase owns the sweep queues; segment counts fit u32"
+    )]
+    fn admit_starting(
+        &mut self,
+        segs: &[Seg],
+        ya: f64,
+        ym: f64,
+        next: &mut usize,
+        retire: &mut BinaryHeap<Reverse<(Split, u32)>>,
+        xings: &mut BinaryHeap<Reverse<Crossing>>,
+        posts: &mut BinaryHeap<(Split, u32, u32, u32)>,
+        eqs: &mut SmallVec<[(u32, u32); 4]>,
+        m_glob: f64,
+    ) {
+        let first = *next;
+        while *next < segs.len() && segs[*next].y0 <= ya + EPS {
+            let i = *next;
+            *next += 1;
+            retire.push(Reverse((Split(segs[i].y1), i as u32)));
+            // Equal midpoint keys are admitted after existing segments,
+            // preserving the preceding sweep's stable sort order.
+            let at = self.slot(segs, ym, segs[i].x_at(ym), segs[i].slope);
+            self.insert(segs, at, i as u32);
+            let neighbours = self.state[i].neighbours;
+            if let Some(previous) = neighbours.previous {
+                push_xing(
+                    xings,
+                    posts,
+                    eqs,
+                    self,
+                    segs,
+                    previous.index() as usize,
+                    i,
+                    m_glob,
+                );
+            }
+            if let Some(next) = neighbours.next {
+                push_xing(
+                    xings,
+                    posts,
+                    eqs,
+                    self,
+                    segs,
+                    i,
+                    next.index() as usize,
+                    m_glob,
+                );
+            }
+        }
+        if first != *next {
+            for &id in &self.dirty {
+                let ch = &mut self.chunks[self.order_pos[id as usize] as usize];
+                if let Some(from) = ch.positions_from.take() {
+                    for (offset, entry) in ch.els.iter().enumerate().skip(usize::from(from)) {
+                        self.state[entry.segment as usize].position =
+                            Some(Position::new(ch.id, offset));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Unlink a segment immediately, deferring the chunk's physical shift.
+    fn remove(&mut self, segs: &[Seg], e: u32, batch: &mut RetiringChunk) {
         let right = self.state[e as usize].neighbours.next;
         let left = self.state[e as usize].neighbours.previous;
         if let Some(right) = right {
@@ -1196,7 +1268,7 @@ impl Active {
         let p = self.position(e);
         let c = self.order_pos[p.chunk()] as usize;
         let o = usize::from(p.offset);
-        self.chunks[c].els.remove(o);
+        batch.removed |= 1 << o;
         self.chunks[c].live -= usize::from(matches!(
             self.state[e as usize].run,
             BoundaryRun::Closing { .. }
@@ -1204,18 +1276,100 @@ impl Active {
         self.mark(c, o..usize::MAX);
         self.len -= 1;
         self.state[e as usize].position = None;
-        for (offset, entry) in self.chunks[c].els.iter().enumerate().skip(o) {
-            self.state[entry.segment as usize].position =
-                Some(Position::new(self.chunks[c].id, offset));
-        }
         self.fadd(c, -1, -segs[e as usize].dir);
         self.chunks[c].ds -= segs[e as usize].dir;
         self.chunks[c].prefix_dirty = true;
-        if self.chunks[c].els.is_empty() {
+    }
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "packing consumes the offsets belonging to the unpacked chunk"
+    )]
+    fn finish_retirements(&mut self, batch: RetiringChunk) {
+        let ch = &mut self.chunks[batch.index];
+        let first = batch.removed.trailing_zeros() as usize;
+        let mut offset = first;
+        // Preserve the untouched prefix and move each surviving suffix entry
+        // once, instead of shifting it after every preceding retirement.
+        for read in first + 1..ch.els.len() {
+            if batch.removed & (1 << read) == 0 {
+                let entry = ch.els[read];
+                ch.els[offset] = entry;
+                self.state[entry.segment as usize].position = Some(Position::new(ch.id, offset));
+                offset += 1;
+            }
+        }
+        ch.els.truncate(offset);
+        if ch.els.is_empty() {
             self.empty += 1;
             if self.empty * 4 > self.chunks.len() && self.chunks.len() > 8 {
                 self.compact();
             }
+        }
+    }
+
+    /// Heap order and adjacency events are unchanged. Only physical removal
+    /// is batched, while the Fenwick counts track each logical retirement.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the retirement phase owns the sweep queues"
+    )]
+    fn retire_ending(
+        &mut self,
+        segs: &[Seg],
+        ya: f64,
+        retire: &mut BinaryHeap<Reverse<(Split, u32)>>,
+        dead: &mut SmallVec<[(u32, u32); 4]>,
+        retired: &mut SmallVec<[u32; 4]>,
+        xings: &mut BinaryHeap<Reverse<Crossing>>,
+        posts: &mut BinaryHeap<(Split, u32, u32, u32)>,
+        eqs: &mut SmallVec<[(u32, u32); 4]>,
+        m_glob: f64,
+    ) {
+        let mut batch: Option<RetiringChunk> = None;
+        while let Some(&Reverse((Split(y1), e))) = retire.peek() {
+            if y1 > ya + EPS {
+                break;
+            }
+            retire.pop();
+            let i = e as usize;
+            let mut p = self.position(e);
+            let mut c = self.order_pos[p.chunk()] as usize;
+            if let Some(previous) = batch.take_if(|batch| batch.index != c) {
+                self.finish_retirements(previous);
+                // Packing an empty chunk can compact the list. The next
+                // retirement then uses its newly assigned cached location.
+                p = self.position(e);
+                c = self.order_pos[p.chunk()] as usize;
+            }
+            let batch = batch.get_or_insert(RetiringChunk {
+                index: c,
+                removed: 0,
+            });
+            if self.state[i].run.is_live() {
+                let before = (batch.removed & ((1 << p.offset) - 1)).count_ones();
+                let rank = self.fsum(c).0 + u32::from(p.offset) - before;
+                self.state[i].run.retire();
+                dead.push((rank, e));
+                retired.push(e);
+            }
+            let neighbours = self.state[i].neighbours;
+            self.remove(segs, e, batch);
+            if let (Some(previous), Some(next)) = (neighbours.previous, neighbours.next) {
+                push_xing(
+                    xings,
+                    posts,
+                    eqs,
+                    self,
+                    segs,
+                    previous.index() as usize,
+                    next.index() as usize,
+                    m_glob,
+                );
+            }
+        }
+        if let Some(batch) = batch {
+            self.finish_retirements(batch);
         }
     }
 
@@ -2029,72 +2183,28 @@ pub fn resolve_winding(
             m_glob,
             &mut crossing_scratch,
         );
-        while next < segs.len() && segs[next].y0 <= ya + EPS {
-            let i = next;
-            next += 1;
-            retire.push(Reverse((Split(segs[i].y1), i as u32)));
-            // Insert at the segment's position at the band's midpoint:
-            // the position the old sort produced. A tie on x goes by
-            // slope, and equal keys land after existing and
-            // already-admitted members, matching the stable sort.
-            let (xi, si) = (segs[i].x_at(ym), segs[i].slope);
-            let at = active.slot(&segs, ym, xi, si);
-            active.insert(&segs, at, i as u32);
-            let neighbours = active.state[i].neighbours;
-            if let Some(previous) = neighbours.previous {
-                push_xing(
-                    &mut xings,
-                    &mut posts,
-                    &mut eqs,
-                    &active,
-                    &segs,
-                    previous.index() as usize,
-                    i,
-                    m_glob,
-                );
-            }
-            if let Some(next) = neighbours.next {
-                push_xing(
-                    &mut xings,
-                    &mut posts,
-                    &mut eqs,
-                    &active,
-                    &segs,
-                    i,
-                    next.index() as usize,
-                    m_glob,
-                );
-            }
-        }
-        while let Some(&Reverse((Split(y1), i))) = retire.peek() {
-            if y1 > ya + EPS {
-                break;
-            }
-            retire.pop();
-            let i = i as usize;
-            // The retiring edge's own transition dies with it; its
-            // last firing was the previous band.
-            if active.state[i].run.is_live() {
-                let at = active.rank(i as u32);
-                active.state[i].run.retire();
-                dead.push((at as u32, i as u32));
-                retired.push(i as u32);
-            }
-            let neighbours = active.state[i].neighbours;
-            active.remove(&segs, i as u32);
-            if let (Some(previous), Some(next)) = (neighbours.previous, neighbours.next) {
-                push_xing(
-                    &mut xings,
-                    &mut posts,
-                    &mut eqs,
-                    &active,
-                    &segs,
-                    previous.index() as usize,
-                    next.index() as usize,
-                    m_glob,
-                );
-            }
-        }
+        active.admit_starting(
+            &segs,
+            ya,
+            ym,
+            &mut next,
+            &mut retire,
+            &mut xings,
+            &mut posts,
+            &mut eqs,
+            m_glob,
+        );
+        active.retire_ending(
+            &segs,
+            ya,
+            &mut retire,
+            &mut dead,
+            &mut retired,
+            &mut xings,
+            &mut posts,
+            &mut eqs,
+            m_glob,
+        );
         active.discard_stale(&mut xings, &mut posts);
         // Transitions that died on retirement close their pieces in
         // the rank order they held while firing — each write is the
