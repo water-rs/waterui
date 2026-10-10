@@ -5572,10 +5572,10 @@ mod winit_impl {
 pub use web_impl::ExportedBrowserSurface as BrowserSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
-#[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
-pub use web_impl::redirect_occluded_input;
 #[cfg(all(target_arch = "wasm32", feature = "web", feature = "webview-system"))]
 pub use web_impl::OcclusionShields;
+#[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
+pub use web_impl::redirect_occluded_input;
 
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
