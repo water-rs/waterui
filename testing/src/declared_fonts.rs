@@ -14,11 +14,41 @@ use waterui_assets_planner::{FontPlatform, FontSource, GraphScope, dependency_fo
 #[cfg(target_os = "macos")]
 const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Macos;
 /// See the macOS definition.
+#[cfg(target_os = "ios")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Ios;
+/// See the macOS definition.
+#[cfg(target_os = "tvos")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Tvos;
+/// See the macOS definition.
+#[cfg(target_os = "watchos")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Watchos;
+/// See the macOS definition.
+#[cfg(target_os = "visionos")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Visionos;
+/// See the macOS definition.
+#[cfg(target_os = "android")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Android;
+/// See the macOS definition.
 #[cfg(target_os = "linux")]
 const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Linux;
 /// See the macOS definition.
 #[cfg(target_os = "windows")]
 const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Windows;
+/// See the macOS definition; both browser triples carry the `wasm` family.
+#[cfg(target_family = "wasm")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Web;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "android",
+    target_os = "linux",
+    target_os = "windows",
+    target_family = "wasm"
+)))]
+compile_error!("waterui-testing has no `FontPlatform` mapping for this target");
 
 /// Suffix appended to the test executable's file name to name its cache.
 const CACHE_SUFFIX: &str = ".waterui-declared-fonts.json";
