@@ -326,8 +326,12 @@ pub(crate) async fn build_rust_lib_with_links(
 
     // Resolve fonts BEFORE cargo build - this ensures icons.json is present
     // for crates like fontawesome7 that need it during build.rs
-    let font_declarations =
-        crate::assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = crate::assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
@@ -637,23 +641,16 @@ async fn localize_archive_symbols(
     Ok(())
 }
 
-/// The deployment targets the Apple backend supports, as `SEMVER` strings.
-///
-/// These were `*_DEPLOYMENT_TARGET` build settings in the generated Xcode
-/// project; entry-owning packaging has no project file, so they are declared
-/// here next to the backend that owns them — the same values the framework
-/// tree's root `Package.swift` publishes.
-const fn apple_deployment_target_for(platform: TargetPlatform) -> Option<&'static str> {
+/// The framework metadata key for each Apple platform family.
+const fn apple_deployment_platform(platform: TargetPlatform) -> Option<&'static str> {
     match platform {
-        TargetPlatform::MacOS
-        | TargetPlatform::IOS
-        | TargetPlatform::IOSSimulator
-        | TargetPlatform::MacCatalyst
-        | TargetPlatform::TvOS
-        | TargetPlatform::TvOSSimulator
-        | TargetPlatform::WatchOS
-        | TargetPlatform::WatchOSSimulator => Some("26.0"),
-        TargetPlatform::VisionOS | TargetPlatform::VisionOSSimulator => Some("2.5"),
+        TargetPlatform::MacOS => Some("macos"),
+        TargetPlatform::IOS | TargetPlatform::IOSSimulator | TargetPlatform::MacCatalyst => {
+            Some("ios")
+        }
+        TargetPlatform::TvOS | TargetPlatform::TvOSSimulator => Some("tvos"),
+        TargetPlatform::WatchOS | TargetPlatform::WatchOSSimulator => Some("watchos"),
+        TargetPlatform::VisionOS | TargetPlatform::VisionOSSimulator => Some("visionos"),
         _ => None,
     }
 }
@@ -664,15 +661,19 @@ const fn apple_deployment_target_for(platform: TargetPlatform) -> Option<&'stati
 ///
 /// Returns an error when the platform has no Apple deployment target.
 pub async fn apple_deployment_target(
-    _project: &Project,
+    project: &Project,
     platform: TargetPlatform,
 ) -> eyre::Result<(&'static str, String)> {
     let environment = platform.deployment_target_setting().ok_or_else(|| {
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
-    let target = apple_deployment_target_for(platform).ok_or_else(|| {
+    let key = apple_deployment_platform(platform).ok_or_else(|| {
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
+    let target = project
+        .resolved_framework()
+        .await?
+        .apple_deployment_target(key)?;
     Ok((environment, target.to_string()))
 }
 
@@ -686,9 +687,10 @@ pub async fn apple_deployment_target(
 /// Mac Catalyst keys on the iOS variable: the build scripts a macabi
 /// compilation runs read `IPHONEOS_DEPLOYMENT_TARGET`, and no consumer in
 /// the graph reads `MACOSX_DEPLOYMENT_TARGET` for it.
-pub(crate) fn apple_deployment_target_env(
+pub(crate) fn apple_deployment_target_env<'a>(
+    framework: &'a crate::framework::ResolvedFramework,
     triple: &target_lexicon::Triple,
-) -> Option<(&'static str, &'static str)> {
+) -> eyre::Result<Option<(&'static str, &'a str)>> {
     use target_lexicon::{Environment, OperatingSystem};
     let platform = match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
@@ -699,12 +701,16 @@ pub(crate) fn apple_deployment_target_env(
         OperatingSystem::TvOS(_) => TargetPlatform::TvOS,
         OperatingSystem::WatchOS(_) => TargetPlatform::WatchOS,
         OperatingSystem::VisionOS(_) | OperatingSystem::XROS(_) => TargetPlatform::VisionOS,
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some((
-        platform.deployment_target_setting()?,
-        apple_deployment_target_for(platform)?,
-    ))
+    Ok(Some((
+        platform
+            .deployment_target_setting()
+            .expect("Apple platform"),
+        framework.apple_deployment_target(
+            apple_deployment_platform(platform).expect("Apple platform"),
+        )?,
+    )))
 }
 
 // ============================================================================
@@ -834,6 +840,7 @@ pub async fn package_apple(
     let staging_dir = project_path.join("DerivedData/AssetStaging");
     copy_assets_and_fonts(
         project,
+        platform,
         &staging_dir,
         &built.app_symbols()?,
         options.uses_dev_server(),
@@ -986,6 +993,7 @@ pub async fn package_apple(
 /// `waterui_meta_bundle_*` statics declare the asset mounts.
 async fn copy_assets_and_fonts(
     project: &Project,
+    platform: TargetPlatform,
     dest_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
@@ -995,8 +1003,12 @@ async fn copy_assets_and_fonts(
         assets::stage_project_assets_for_apple(project, dest_dir, symbols, dev_server).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

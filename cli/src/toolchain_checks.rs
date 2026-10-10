@@ -8,7 +8,7 @@ use eyre::{Result, bail};
 use crate::{
     android::{
         AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
-        AndroidSdkPlatforms, Java, Kotlin,
+        AndroidSdkPlatforms, Java, Kotlin, KotlinToolchain,
         platform::{ALL_ABIS, AndroidAbi},
     },
     apple::toolchain::{AppleSdk, Xcode},
@@ -144,20 +144,26 @@ pub async fn check_apple(host: &Host, sdk: AppleSdk) -> Result<()> {
 
 /// Verify the Android toolchain covers building and packaging for all ABIs.
 ///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
+///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
-pub async fn check_android_build_or_package(host: &Host) -> Result<()> {
+pub async fn check_android_build_or_package(host: &Host) -> Result<KotlinToolchain> {
     check_android_build_or_package_for_abis(host, ALL_ABIS).await
 }
 
 /// Verify the Android toolchain covers building and packaging for `required_abis`.
+///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
 ///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_android_build_or_package_for_abis(
     host: &Host,
     required_abis: &[AndroidAbi],
-) -> Result<()> {
+) -> Result<KotlinToolchain> {
     let sdk = AndroidSdk;
     if let Err(e) = sdk.check(host).await {
         bail!(
@@ -228,22 +234,25 @@ pub async fn check_android_build_or_package_for_abis(
             .await
         );
     }
-    let kotlin = Kotlin;
-    if let Err(e) = kotlin.check(host).await {
-        bail!(
+    let kotlin = match Kotlin::verify(host).await {
+        Ok(kotlin) => kotlin,
+        Err(e) => bail!(
             "{}",
             android_failure_message(host, "Kotlin", &e, AndroidCheckScope::BuildOrPackage).await
-        );
-    }
-    Ok(())
+        ),
+    };
+    Ok(kotlin)
 }
 
 /// Verify the Android toolchain covers running an app (adds `adb` to the build requirements).
 ///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
+///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
-pub async fn check_android_run(host: &Host) -> Result<()> {
-    check_android_build_or_package(host).await?;
+pub async fn check_android_run(host: &Host) -> Result<KotlinToolchain> {
+    let kotlin = check_android_build_or_package(host).await?;
     let platform_tools = AndroidPlatformTools;
     if let Err(e) = platform_tools.check(host).await {
         bail!(
@@ -252,7 +261,7 @@ pub async fn check_android_run(host: &Host) -> Result<()> {
                 .await
         );
     }
-    Ok(())
+    Ok(kotlin)
 }
 
 /// Verify the GTK4 toolchain is installed.

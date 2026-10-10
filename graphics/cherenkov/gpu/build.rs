@@ -34,7 +34,7 @@ mod tile;
 /// definition `cherenkov::BackdropUnion::MAX_MEMBERS` re-exports, kept
 /// free of a crate dependency so this build script does not link the
 /// engine.
-#[path = "../src/union_cap.rs"]
+#[path = "../record/src/union_cap.rs"]
 mod union_cap;
 
 use std::env;

@@ -151,6 +151,79 @@ fn atlas_growth_retries_and_commits() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 split_test! {
+/// A path cell wider than the live atlas edge grows the atlas even when
+/// eviction has left a dead band tall enough for it: the reclaimed band
+/// spans only the page's width, so placing the cell there would upload
+/// past the texture's x extent and kill the render thread (#2396).
+fn a_wide_cell_never_takes_a_dead_band() -> Result<(), Box<dyn std::error::Error>> {
+    let sink = Sink::new();
+    let engine = wait!(diag_engine(&sink))?;
+    // The width the issue's window failed at: 1100 px.
+    let surface =
+        wait!(engine.surface(Offscreen::new((1100, 240), OffscreenFormat::LinearF16), || {}))?;
+    surface.clear_color(WorkingColor::new([0.0, 0.0, 0.0, 1.0]));
+    let ink = WorkingColor::new([0.8, 0.3, 0.1, 1.0]);
+    // General paths, so the fills rasterize into atlas cells instead of
+    // taking the analytic rect fast path.
+    let polygon = |points: &[(f64, f64)]| {
+        let mut path = BezPath::new();
+        path.move_to(points[0]);
+        for &p in &points[1..] {
+            path.line_to(p);
+        }
+        path.close_path();
+        path
+    };
+    // Frame 1 stacks three shelves on the 1024 atlas: a class-24 shelf
+    // (the tall triangle's single cell), a class-8 strip shelf (the
+    // box's fractional top and bottom rows) and a class-16 shelf (the
+    // short triangle). Only the last touches the layout's frontier, so
+    // evicting either of the others leaves a dead band, not virgin rows.
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(polygon(&[(90.0, 90.0), (110.0, 90.0), (100.0, 108.0)]), ink);
+            r.fill(
+                polygon(&[(10.0, 10.5), (60.0, 10.5), (60.0, 30.5), (10.0, 30.5)]),
+                ink,
+            );
+            r.fill(polygon(&[(130.0, 90.0), (150.0, 90.0), (140.0, 100.0)]), ink);
+        }));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    // Frame 2 needs one strip cell 1098 texels wide — a band across the
+    // 1100 px surface whose inflated coverage fits one strip. No live
+    // shelf or virgin row takes it on the 1024 edge, and the cold shelves
+    // eviction reclaims leave a dead band tall enough for its class.
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                polygon(&[(1.0, 202.5), (1099.0, 202.5), (1099.0, 205.0), (1.0, 205.0)]),
+                ink,
+            );
+        }));
+    });
+    let _ = sink.take();
+    wait!(engine.render(FrameTime::now()))?;
+    let grown = grows(&sink.take(), "glyph atlas");
+    assert!(
+        grown.iter().any(|new| *new >= 2048 * 2048),
+        "a cell wider than the 1024 edge must grow the atlas edge: {grown:?}"
+    );
+    let pixels = wait!(surface.readback())?;
+    let px = |x: u32, y: u32| pixels.pixels[(y * pixels.width + x) as usize];
+    // The half-covered top row reads half ink across the cell's whole
+    // width, past the old 1024 edge included.
+    for x in [2, 512, 1050, 1097] {
+        let [r, _, _, a] = px(x, 202);
+        assert!((r - 0.4).abs() < 0.02 && a > 0.99, "row 202 at {x}: {r} {a}");
+        let [r, _, _, _] = px(x, 203);
+        assert!((r - 0.8).abs() < 0.02, "row 203 at {x}: {r}");
+    }
+    Ok(())
+}
+}
+
+split_test! {
 /// A backdrop capture regrowing across frames drops the unsubmitted
 /// group-1 bind groups that held the predecessor's view — promptly, at
 /// the binding-generation bump, not at the next encode's stamp clear.

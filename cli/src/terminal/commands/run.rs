@@ -169,7 +169,7 @@ pub struct Args {
     #[arg(short, long, value_enum)]
     platform: Option<TargetPlatform>,
 
-    /// Backend to use (overrides default for platform).
+    /// Backend to use (must agree with any Water.toml platform declaration).
     /// Example: `--platform linux --backend hydrolysis`.
     #[arg(short, long, value_enum)]
     backend: Option<TargetBackend>,
@@ -295,74 +295,6 @@ impl From<CliLogLevel> for LogLevel {
     }
 }
 
-/// Resolve the effective backend for a platform.
-/// Returns the backend to use and validates compatibility.
-fn resolve_backend(
-    platform: TargetPlatform,
-    backend_override: Option<TargetBackend>,
-) -> Result<TargetBackend> {
-    // The ESP32 variants stay selectable so the refusal can name what
-    // replaces their backend: Dew is archived and Hydrolysis's embedded host
-    // lands with #1601.
-    let Some(default_backend) = default_backend(platform) else {
-        bail!("{}", super::ESP32_UNSUPPORTED);
-    };
-    let backend = backend_override.unwrap_or(default_backend);
-
-    // Validate backend supports platform
-    let supported = matches!(
-        (platform, backend),
-        (TargetPlatform::Ios, TargetBackend::Apple)
-            | (
-                TargetPlatform::Macos,
-                TargetBackend::Apple | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Android,
-                TargetBackend::Android | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Linux,
-                TargetBackend::Gtk4 | TargetBackend::Hydrolysis
-            )
-            | (
-                TargetPlatform::Windows,
-                TargetBackend::Hydrolysis | TargetBackend::WinUi
-            )
-            | (TargetPlatform::Web, TargetBackend::Hydrolysis)
-    );
-
-    if !supported {
-        bail!(
-            "Backend {:?} does not support platform {:?}.\n\
-             Valid combinations:\n  \
-             - iOS: apple\n  \
-             - macOS: apple, hydrolysis\n  \
-             - Android: hydrolysis, android\n  \
-             - Linux: gtk4, hydrolysis\n  \
-             - Windows: hydrolysis, winui\n  \
-             - Web: hydrolysis",
-            backend,
-            platform
-        );
-    }
-
-    Ok(backend)
-}
-
-/// The backend a run on `platform` uses when `--backend` is not given —
-/// `None` for the ESP32 targets, which no backend serves until #1601.
-const fn default_backend(platform: TargetPlatform) -> Option<TargetBackend> {
-    match platform {
-        TargetPlatform::Ios | TargetPlatform::Macos => Some(TargetBackend::Apple),
-        TargetPlatform::Android
-        | TargetPlatform::Linux
-        | TargetPlatform::Windows
-        | TargetPlatform::Web => Some(TargetBackend::Hydrolysis),
-        TargetPlatform::Esp32s3 | TargetPlatform::Esp32c3 | TargetPlatform::Esp32p4 => None,
-    }
-}
-
 /// The managed native backends a run on `platform` and `backend` needs
 /// opened.
 ///
@@ -439,7 +371,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             return Ok(None);
         };
         print_run_header(shell, &context);
-        check_run_toolchain(
+        let kotlin_toolchain = check_run_toolchain(
             shell,
             context.project.host(),
             context.platform,
@@ -483,6 +415,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             context.backend,
             selection,
             config,
+            kotlin_toolchain.as_ref(),
         ))
         .await?;
         Ok(Some(RunReady {
@@ -549,7 +482,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         ManagedBackends::NONE,
@@ -581,9 +514,14 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         platform.desktop_os(),
         std::env::consts::OS,
     )?;
-    let backend = resolve_backend(platform, args.backend)?;
+    let manifest = waterui_cli::project::Manifest::open(project_path.join("Water.toml")).await?;
+    let backend = TargetBackend::from_lib(waterui_cli::project::resolve_backend(
+        &manifest,
+        lib_platform(platform),
+        args.backend.map(TargetBackend::lib_backend),
+    )?);
     let managed_backends = managed_backends(platform, backend);
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         managed_backends,
@@ -636,14 +574,14 @@ async fn check_run_toolchain(
     host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(host, platform, backend).await?;
+    let kotlin_toolchain = check_toolchain_for_backend(host, platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
     success!(shell, "Toolchain ready");
-    Ok(())
+    Ok(kotlin_toolchain)
 }
 
 async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
@@ -846,6 +784,7 @@ async fn build_and_run(
     backend: TargetBackend,
     selection: DeviceSelection,
     config: BuildRunConfig,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<(Running, Option<web::WebDevServer>)> {
     let build_plan = resolve_build_plan(cli_platform, &selection.device);
     let physical_ios = is_physical_ios(&selection.device);
@@ -880,6 +819,7 @@ async fn build_and_run(
         backend,
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
+        kotlin_toolchain,
     ))
     .await?;
 
@@ -1069,7 +1009,13 @@ async fn build_for_backend(
     backend: TargetBackend,
     plan: &BuildPlan,
     build_options: BuildOptions,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<waterui_cli::build::BuiltTarget> {
+    let kotlin = || {
+        kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android build has no resolved Kotlin toolchain")
+        })
+    };
     match backend {
         TargetBackend::Apple => {
             Box::pin(build_rust_lib(project, plan.lib_platform, build_options)).await
@@ -1079,7 +1025,7 @@ async fn build_for_backend(
                 .android_abi
                 .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
             AndroidPlatform::clean_jni_libs(project).await?;
-            Box::pin(AndroidPlatform::new(abi).build(project, build_options)).await
+            Box::pin(AndroidPlatform::new(abi).build(project, build_options, kotlin()?)).await
         }
         TargetBackend::Gtk4 => Box::pin(build_gtk4(project, build_options)).await,
         TargetBackend::Hydrolysis => {
@@ -1088,7 +1034,13 @@ async fn build_for_backend(
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
+                Box::pin(hydrolysis_android::build(
+                    project,
+                    abi,
+                    build_options,
+                    kotlin()?,
+                ))
+                .await
             } else {
                 Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
@@ -1567,7 +1519,7 @@ async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     match backend {
         TargetBackend::Apple => {
             let sdk = match platform {
@@ -1589,7 +1541,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Android {
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android_run(host).await?;
+            return toolchain_checks::check_android_run(host).await.map(Some);
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
@@ -1607,8 +1559,9 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
             if platform == TargetPlatform::Android {
-                toolchain_checks::check_android_run(host).await?;
-            } else if platform == TargetPlatform::Web {
+                return toolchain_checks::check_android_run(host).await.map(Some);
+            }
+            if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
                 toolchain_checks::check_hydrolysis(host).await?;
@@ -1621,7 +1574,7 @@ async fn check_toolchain_for_backend(
             toolchain_checks::check_winui(host).await?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn find_device(
@@ -1871,9 +1824,9 @@ fn handle_device_event(
 mod tests {
     use super::{
         Args, DeviceCandidate, DeviceChoice, SelectedDevice, TargetBackend, TargetPlatform,
-        default_backend, device_android_abi, device_choice, handle_device_event, lib_platform,
-        parse_env_assignment, prompt_for_device, resolve_backend, resolve_platform, run_profile,
-        stream_running_events, validate_device_arg,
+        device_android_abi, device_choice, handle_device_event, lib_platform, parse_env_assignment,
+        prompt_for_device, resolve_platform, run_profile, stream_running_events,
+        validate_device_arg,
     };
     use clap::Parser as _;
     use waterui_cli::android::device::AndroidDevice;
@@ -2144,81 +2097,6 @@ mod tests {
             Some(AndroidAbi::Arm64V8a)
         );
         assert_eq!(device_android_abi(&SelectedDevice::Local(Local)), None);
-    }
-
-    #[test]
-    fn resolve_backend_defaults_include_web() {
-        assert_eq!(
-            resolve_backend(TargetPlatform::Web, None).expect("web backend"),
-            TargetBackend::Hydrolysis
-        );
-    }
-
-    #[test]
-    fn resolve_backend_defaults_match_platforms() {
-        assert_eq!(
-            resolve_backend(TargetPlatform::Ios, None).expect("ios backend"),
-            TargetBackend::Apple
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Android, None).expect("android backend"),
-            TargetBackend::Hydrolysis
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Linux, None).expect("linux backend"),
-            TargetBackend::Hydrolysis
-        );
-        assert_eq!(
-            resolve_backend(TargetPlatform::Windows, None).expect("windows backend"),
-            TargetBackend::Hydrolysis
-        );
-    }
-
-    #[test]
-    fn default_backend_matches_the_platform() {
-        assert_eq!(
-            default_backend(TargetPlatform::Macos),
-            Some(TargetBackend::Apple)
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Ios),
-            Some(TargetBackend::Apple)
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Android),
-            Some(TargetBackend::Hydrolysis)
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Linux),
-            Some(TargetBackend::Hydrolysis)
-        );
-        assert_eq!(
-            default_backend(TargetPlatform::Windows),
-            Some(TargetBackend::Hydrolysis)
-        );
-        for platform in [
-            TargetPlatform::Esp32s3,
-            TargetPlatform::Esp32c3,
-            TargetPlatform::Esp32p4,
-        ] {
-            assert_eq!(default_backend(platform), None);
-        }
-    }
-
-    #[test]
-    fn esp32_platforms_fail_naming_the_embedded_host_issue() {
-        // Dew is archived; until Hydrolysis's embedded host lands (#1601),
-        // selecting an ESP32 target refuses with an error naming the issue.
-        for platform in [
-            TargetPlatform::Esp32s3,
-            TargetPlatform::Esp32c3,
-            TargetPlatform::Esp32p4,
-        ] {
-            let error = resolve_backend(platform, None).unwrap_err();
-            assert!(error.to_string().contains("#1601"), "{error}");
-            let error = resolve_backend(platform, Some(TargetBackend::Hydrolysis)).unwrap_err();
-            assert!(error.to_string().contains("#1601"), "{error}");
-        }
     }
 
     #[cfg(target_os = "macos")]

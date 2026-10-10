@@ -948,6 +948,69 @@ fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid() {
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
 }
 
+/// A member bound to a signal of its refraction re-renders with the new
+/// parameters on the next frame, with no transaction.
+#[test]
+fn a_bound_refraction_change_rerenders_the_member() {
+    use nami::{SignalExt, binding};
+
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let member = surface.layer();
+    let depth = binding(8.0_f32);
+    let sample = {
+        let group = group.id();
+        depth.map(move |depth| {
+            cherenkov::BackdropSample::with_effect(
+                group,
+                cherenkov::Refraction {
+                    depth,
+                    strength: 4.0,
+                },
+            )
+        })
+    };
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 52.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(52.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(sample);
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Pixel 54's centre is 1.5 inside the right edge. Over a depth of 8 it
+    // is displaced 4 · (1 − 1.5/8)² ≈ 2.6 px to the left, across the
+    // red/blue boundary at 52, so red mixes in.
+    let displaced = pixel(&readback, 54, 32);
+    assert!(displaced[0] > 0.25, "displaced pixel {displaced:?}");
+    let captures = engine.memory().backdrop_captures;
+
+    // Over a depth of 1 the pixel is past the rim: the unshifted blue.
+    depth.set(1.0);
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    assert_pixel(pixel(&readback, 54, 32), [0.0, 0.0, 1.0, 1.0], 1e-5);
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
+    assert_eq!(
+        engine.memory().backdrop_captures,
+        captures,
+        "the group keeps its capture"
+    );
+}
+
 /// A 33×33 surface, column 32 blue and the rest red, captured at full
 /// scale into 2 levels and read through a `LevelRamp` at `level`.
 fn odd_grid(level: f32) -> cherenkov::Readback {

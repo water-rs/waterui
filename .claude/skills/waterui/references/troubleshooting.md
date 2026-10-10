@@ -194,6 +194,11 @@ explicitly.
 
 ## Diagnosing without a device
 
+**A backend conflicts with `Water.toml`.** `[platforms.<platform>] backend = "..."`
+is the project's declared backend; a different CLI/MCP override is rejected before
+building. Use the declared backend or change the declaration. Linux previews require
+`hydrolysis`, not the default `gtk4`; see [backend selection](project.md#platforms-and-backends).
+
 Reach for these before reaching for a simulator — they are faster and they produce evidence
 you can attach to a bug report.
 

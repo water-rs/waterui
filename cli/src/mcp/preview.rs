@@ -23,7 +23,7 @@ use crate::preview::{
     ApplePreviewRequest, HydrolysisPreviewRequest, PreviewPlatform, launch_preview_session,
     render_preview_with_apple, render_preview_with_hydrolysis,
 };
-use crate::project::read_project_crate_name;
+use crate::project::{Manifest, read_project_crate_name};
 
 /// Render a `#[preview]` function or `WaterUI` expression to a PNG image.
 ///
@@ -49,9 +49,9 @@ pub struct PreviewArgs {
     #[serde(default)]
     pub frame: Option<String>,
 
-    /// Rendering backend: `apple` or `hydrolysis`. Defaults to the
-    /// platform's native backend (`apple` on macOS/iOS, `hydrolysis` on
-    /// Linux, Windows, and Android).
+    /// Rendering backend: `apple` or `hydrolysis`. Uses the project's
+    /// platform declaration, then the platform default. A conflicting
+    /// override or a backend without preview support is an error.
     #[serde(default)]
     pub backend: Option<CliPreviewBackend>,
 
@@ -73,11 +73,11 @@ impl PreviewArgs {
     /// # Errors
     /// Returns an error for a malformed frame or an unsupported
     /// platform/backend/theme combination.
-    pub fn resolve(&self, crate_name: &str) -> Result<PreviewRequest> {
+    pub fn resolve(&self, project: &Manifest, crate_name: &str) -> Result<PreviewRequest> {
         let frame = self.frame.as_deref().unwrap_or(DEFAULT_FRAME);
         let (width, height) = request::parse_frame(frame)?;
         let platform = request::resolve_preview_platform(self.platform)?;
-        let backend = request::resolve_preview_backend(platform, self.backend)?;
+        let backend = request::resolve_preview_backend(project, platform, self.backend)?;
         let hydrolysis_theme = request::resolve_hydrolysis_preview_theme(backend, self.theme)?;
         let target = request::resolve_preview_target(crate_name, &self.target, self.expr);
         Ok(PreviewRequest {
@@ -159,9 +159,11 @@ impl PreviewTool {
     }
 
     async fn run(&self, args: &PreviewArgs) -> Result<(PathBuf, Vec<u8>)> {
+        let manifest = Manifest::open(self.project_path.join("Water.toml")).await?;
         let crate_name = read_project_crate_name(&self.project_path).await?;
-        let request = args.resolve(&crate_name)?;
-        request::check_toolchain_for_backend(&self.host, request.backend).await?;
+        let request = args.resolve(&manifest, &crate_name)?;
+        let kotlin_toolchain =
+            request::check_toolchain_for_backend(&self.host, request.backend).await?;
         let output_path = self.output_path(&request).await?;
 
         match request.backend {
@@ -184,6 +186,7 @@ impl PreviewTool {
                     },
                     &output_path,
                     None,
+                    kotlin_toolchain.as_ref(),
                 ))
                 .await?;
             }
@@ -300,6 +303,10 @@ impl Tool for PreviewTool {
 
 #[cfg(test)]
 mod tests {
+    fn project_manifest() -> Manifest {
+        Manifest::parse("[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.linux]\nbackend = 'hydrolysis'").unwrap()
+    }
+
     use super::*;
 
     #[test]
@@ -374,7 +381,9 @@ mod tests {
             "platform": platform_name,
         }))
         .expect("args parse");
-        let request = args.resolve("demo_app").expect("resolve");
+        let request = args
+            .resolve(&project_manifest(), "demo_app")
+            .expect("resolve");
         assert_eq!(
             request,
             PreviewRequest {
