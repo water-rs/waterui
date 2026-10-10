@@ -879,12 +879,31 @@ impl SemanticCore {
     /// The whole-tree drivers (`flush_window_tree`, the semantic emit walk)
     /// bracket their emit regions with this pair; a standalone re-record
     /// outside a pass is what the unit rule's mark exists for.
-    pub(crate) fn begin_emit_pass(&self) {
+    ///
+    /// A pass is also the dialog stack's frame: every `.dialog` node reports
+    /// inside it, so the stack opens here and closes in
+    /// [`Self::finish_emit_pass`].
+    pub(crate) fn begin_emit_pass(&mut self) {
         self.emit_pass_active.set(true);
+        self.popup_menu.dialog_stack.begin_pass();
+        self.popup_menu.front_dialog = None;
     }
 
-    /// Closes the pass [`Self::begin_emit_pass`] opened.
-    pub(crate) fn finish_emit_pass(&self) {
+    /// Closes the pass [`Self::begin_emit_pass`] opened. A dialog that came
+    /// on screen takes keyboard focus; once the last one closes, focus
+    /// returns to where it was before the first one came up.
+    pub(crate) fn finish_emit_pass(&mut self) {
+        match self.popup_menu.dialog_stack.finish_pass() {
+            DialogFocus::Keep => {}
+            DialogFocus::Enter => {
+                self.move_keyboard_focus(false);
+            }
+            DialogFocus::Return(focus) => {
+                if focus.is_some() {
+                    self.set_keyboard_focus(focus, true);
+                }
+            }
+        }
         self.emit_pass_active.set(false);
     }
 

@@ -955,15 +955,24 @@ impl RenderNode {
                         }
                     }
                     WrapperEffect::Dialog(effect) => {
-                        // The modal layer replaces what the subtree
-                        // contributes while presented — the nodes beneath are
-                        // inert for accessibility — so the walk emits the
-                        // dialog's own subtree instead of the child's.
-                        if renderer.read_signal(&effect.is_presented) {
+                        // The walk reports to the same dialog stack the
+                        // rendered flush does. The dialog on screen emits its
+                        // modal layer in place of the child; publication then
+                        // keeps that layer's modal node alone under the
+                        // window, so everything beneath is inert.
+                        let presented = renderer.read_signal(effect.dialog.is_presented());
+                        let focus = renderer.hit_test.keyboard_focus.clone();
+                        if renderer.popup_menu.dialog_stack.report(
+                            &effect.marker,
+                            &effect.dialog,
+                            presented,
+                            focus,
+                        ) {
                             let env = dialog_modal_environment(child_env, &effect.dialog);
-                            if let Some(content) = effect.content.borrow_mut().as_mut() {
-                                content.emit_accessibility(renderer, &env);
-                            }
+                            effect
+                                .content
+                                .borrow_mut()
+                                .emit_accessibility(renderer, &env);
                         } else {
                             node.child.emit_accessibility(renderer, child_env);
                         }

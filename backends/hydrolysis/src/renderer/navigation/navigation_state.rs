@@ -698,16 +698,19 @@ impl SemanticCore {
         event: crate::BackNavigation,
         env: &Environment,
     ) -> bool {
-        // A modal scope answers system back through its escape action — the
-        // presented dialog's cancel path, shared with Escape
-        // (water-rs/waterui#1210).
-        if self
+        // A modal scope owns system back while it is up: the gesture never
+        // reaches a navigation stack beneath it, and only a committed back
+        // runs the scope's escape action — the presented dialog's cancel path,
+        // shared with Escape (water-rs/waterui#1210). A started, progressing
+        // or cancelled gesture answers nothing, so a back swipe the user
+        // abandons leaves the dialog up.
+        if let Some(modal) = self
             .hit_test
             .modal_interaction
-            .as_ref()
-            .is_some_and(|modal| modal.is_active() && modal.close_on_escape())
+            .clone()
+            .filter(|modal| modal.is_active() && modal.close_on_escape())
         {
-            if let Some(modal) = self.hit_test.modal_interaction.clone() {
+            if matches!(event, crate::BackNavigation::Invoked) {
                 modal.handle_escape(env);
             }
             return true;

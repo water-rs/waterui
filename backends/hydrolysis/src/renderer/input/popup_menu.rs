@@ -138,13 +138,13 @@ pub struct PopupMenuState {
     /// binding — for the pointer-down outside-interaction dismissal and the
     /// anchor-left-the-tree close.
     pub(crate) presented_anchored_overlays: Vec<PresentedAnchoredOverlay>,
-    /// The `.dialog` nodes this frame's flush registered — presentation
-    /// state, modal environment and the retained layer content. The
-    /// post-flush `render_dialogs` drains it.
-    pub(crate) dialogs: Vec<RegisteredDialog>,
-    /// The dialog the modal layer drew this frame — its registration
-    /// identity and binding — for the node-left-the-tree close.
-    pub(crate) presented_dialogs: Vec<PresentedDialog>,
+    /// The window's open `.dialog` presentations in presentation order —
+    /// which one is on screen, which wait, and which closed with their node.
+    pub(crate) dialog_stack: DialogStack,
+    /// The front dialog this frame's flush registered — its modal
+    /// environment and retained layer content. The post-flush
+    /// `render_dialogs` takes it.
+    pub(crate) front_dialog: Option<RegisteredDialog>,
 }
 
 #[derive(Clone)]
