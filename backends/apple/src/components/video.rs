@@ -106,20 +106,23 @@ const fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
 /// The leaf's measure (`docs/layout-spec.md`, §6). A `Fit` video answers the
 /// proposed width and the height `source`'s aspect ratio gives at that width
 /// (16:9 until the item reports its size), whatever height is offered; to an
-/// unspecified width it answers the source's own width, or 320. `Fill` and
-/// `Stretch` fill the proposal, falling back to 320×180 on an unspecified
-/// axis.
+/// unspecified width its natural size (320×180 until reported); to a maximum
+/// width an unbounded width at its natural height. `Fill` and `Stretch` fill
+/// the proposal, falling back to 320×180 on an unspecified axis.
 fn measure(mode: ContentMode, source: Option<Size>, proposal: ProposalSize) -> ViewDimensions {
     match mode {
         ContentMode::Fit => {
             let aspect = source.map_or(waterui_video::DEFAULT_ASPECT, |size| {
                 size.width / size.height
             });
-            let width = proposal
-                .width
-                .filter(|width| width.is_finite())
-                .unwrap_or_else(|| source.map_or(FALLBACK_WIDTH, |size| size.width));
-            ViewDimensions::new(Size::new(width, width / aspect))
+            let natural = source.map_or(FALLBACK_WIDTH, |size| size.width);
+            ViewDimensions::new(match proposal.width {
+                // A maximum probe: the leaf stretches horizontally, and its
+                // height stays the one its natural width gives.
+                Some(width) if width.is_infinite() => Size::new(f32::INFINITY, natural / aspect),
+                Some(width) => Size::new(width, width / aspect),
+                None => Size::new(natural, natural / aspect),
+            })
         }
         ContentMode::Fill | ContentMode::Stretch => ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(FALLBACK_WIDTH),
@@ -623,7 +626,7 @@ impl State {
 
     /// Records the item's presentation size and relayouts the leaf when it
     /// changed: a `Fit` leaf's height follows its aspect ratio.
-    fn set_source_size(&mut self, size: Option<Size>) {
+    fn set_source_size(&self, size: Option<Size>) {
         if self.source_size.get() == size {
             return;
         }
@@ -1840,6 +1843,17 @@ mod tests {
         );
         assert!(f32::abs(unspecified.size.width - 1280.0) < f32::EPSILON);
         assert!(f32::abs(unspecified.size.height - 720.0) < f32::EPSILON);
+        let maximum = measure(
+            ContentMode::Fit,
+            Some(Size::new(1280.0, 720.0)),
+            ProposalSize::new(Some(f32::INFINITY), None),
+        );
+        assert!(maximum.size.width.is_infinite());
+        assert!(f32::abs(maximum.size.height - 720.0) < f32::EPSILON);
+        let minimum = measure(ContentMode::Fit, None, ProposalSize::new(Some(0.0), None));
+        assert!(
+            minimum.size.width.abs() < f32::EPSILON && minimum.size.height.abs() < f32::EPSILON
+        );
     }
 
     #[test]

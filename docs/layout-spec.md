@@ -394,12 +394,15 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   unspecified proposal. Under a smaller finite proposal it scales down,
   preserving its aspect ratio, and never scales up. It claims no leftover space
   (`None`). `.resizable()` fills the proposal per `content_mode`.
-- **Video**: a `Fit` video answers the proposal width and the height its
-  source's aspect ratio gives at that width, whatever height is offered; until
-  the source reports its size the ratio is 16:9. To an unspecified width it
-  answers the source's own width, or 320 until the source reports it. It
-  stretches horizontally (`Horizontal`). `Fill` and `Stretch` answer the
-  proposal on both axes (`Both`), 320 × 180 on an unspecified axis.
+- **Video**: a `Fit` video answers a finite width proposal — `0` included —
+  with that width and the height its source's aspect ratio gives at it,
+  whatever height is offered; until the source reports its size the ratio is
+  16:9. To an unspecified width it answers its natural size, as an image does:
+  the source's pixel dimensions taken as points, 320 × 180 until the source
+  reports them. A maximum probe (`INFINITY`) is answered with an unbounded
+  width at the natural height. It stretches horizontally (`Horizontal`).
+  `Fill` and `Stretch` answer the proposal on both axes (`Both`), 320 × 180 on
+  an unspecified axis.
 
 A leaf that answers a probe with the proposal instead of its content on an
 axis it does not stretch is a backend bug: it makes every container above it

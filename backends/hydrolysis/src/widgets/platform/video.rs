@@ -94,8 +94,8 @@ fn leaf(
     }
     let element = video_element(content_mode, controls);
     let player = Player::new(env, element, playback, loops);
-    let aspect = player.aspect.clone().computed();
-    let natural_width = player.natural_width.clone().computed();
+    let aspect = player.aspect.clone().into();
+    let natural_width = player.natural_width.clone().into();
     let hosted = Native::new(HostedView::new(VideoContent { player }));
     match content_mode {
         ContentMode::Fit => AnyView::new(waterui_video::fit_video(hosted, aspect, natural_width)),

@@ -36,11 +36,14 @@ impl FitVideoLayout {
             aspect > 0.0 && aspect.is_finite(),
             "a video's aspect ratio must be positive and finite, got {aspect}"
         );
-        let width = proposal
-            .width
-            .filter(|width| width.is_finite())
-            .unwrap_or_else(|| self.natural_width.snapshot().unwrap_or(FALLBACK_WIDTH));
-        Size::new(width, width / aspect)
+        let natural = self.natural_width.snapshot().unwrap_or(FALLBACK_WIDTH);
+        match proposal.width {
+            // A maximum probe: the leaf stretches horizontally, and its height
+            // stays the one its natural width gives.
+            Some(width) if width.is_infinite() => Size::new(f32::INFINITY, natural / aspect),
+            Some(width) => Size::new(width, width / aspect),
+            None => Size::new(natural, natural / aspect),
+        }
     }
 }
 
@@ -81,9 +84,11 @@ impl Layout for FitVideoLayout {
     }
 }
 
-/// `picture` laid out as a `Fit` video: the proposed width and the height
-/// `aspect` gives at that width. `natural_width` is the source's own width,
-/// answered to an unspecified width proposal once the source reports it.
+/// `picture` laid out as a `Fit` video.
+///
+/// It takes the proposed width and the height `aspect` gives at that width.
+/// `natural_width` is the source's own width in points, answered to an
+/// unspecified width once the source reports it.
 pub fn fit_video(
     picture: impl View,
     aspect: Computed<f32>,
