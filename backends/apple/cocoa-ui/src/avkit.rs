@@ -286,10 +286,11 @@ define_class!(
 
 impl PathObserver {
     fn new(mtm: MainThreadMarker, handler: impl Fn() + 'static) -> Retained<Self> {
-        // SAFETY: `init` is the constructor `NSObject` subclasses use.
-        let observer: Retained<Self> = unsafe { msg_send![Self::alloc(mtm), init] };
-        observer.ivars().handler.replace(Some(Rc::new(handler)));
-        observer
+        let this = Self::alloc(mtm).set_ivars(ObserverIvars {
+            handler: RefCell::new(Some(Rc::new(handler))),
+        });
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        unsafe { msg_send![super(this), init] }
     }
 }
 
@@ -1411,10 +1412,11 @@ mod platform {
 
         /// Sets the picture-in-picture event handler.
         pub fn set_pip_handler(&self, handler: impl Fn(PipEvent) + 'static) {
-            // SAFETY: `init` is the constructor `NSObject` subclasses use.
-            let delegate: Retained<PipDelegate> =
-                unsafe { msg_send![PipDelegate::alloc(self.mtm), init] };
-            delegate.ivars().handler.replace(Some(Rc::new(handler)));
+            let delegate = PipDelegate::alloc(self.mtm).set_ivars(PipDelegateIvars {
+                handler: RefCell::new(Some(Rc::new(handler))),
+            });
+            // SAFETY: `init` is `NSObject`'s designated initializer.
+            let delegate: Retained<PipDelegate> = unsafe { msg_send![super(delegate), init] };
             // SAFETY: `delegate` is a live `PipDelegate` implementing the
             // protocol the property expects.
             unsafe {
@@ -1593,10 +1595,11 @@ mod platform {
 
         /// Sets the picture-in-picture event handler.
         pub fn set_pip_handler(&self, handler: impl Fn(PipEvent) + 'static) {
-            // SAFETY: `init` is the constructor `NSObject` subclasses use.
-            let delegate: Retained<PipDelegate> =
-                unsafe { msg_send![PipDelegate::alloc(self.mtm), init] };
-            delegate.ivars().handler.replace(Some(Rc::new(handler)));
+            let delegate = PipDelegate::alloc(self.mtm).set_ivars(PipDelegateIvars {
+                handler: RefCell::new(Some(Rc::new(handler))),
+            });
+            // SAFETY: `init` is `NSObject`'s designated initializer.
+            let delegate: Retained<PipDelegate> = unsafe { msg_send![super(delegate), init] };
             // SAFETY: the delegate property accepts any NSObject; ours
             // implements the optional methods it needs.
             unsafe {
