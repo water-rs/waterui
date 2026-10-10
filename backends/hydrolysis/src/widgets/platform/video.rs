@@ -636,7 +636,10 @@ impl Player {
             self.set_phase(PlaybackPhase::Paused);
         }
         self.emit(Event::PlaybackStateChanged { playing: false });
-        if self.bindings.desired_playing.snapshot() {
+        // Loading a new source pauses the element before it is ready; only
+        // a pause of a ready source withdraws the request to play, so a
+        // playlist that advances keeps playing.
+        if self.ready.get() && self.bindings.desired_playing.snapshot() {
             self.bindings.desired_playing.set(false);
         }
     }
