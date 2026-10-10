@@ -875,6 +875,23 @@ fn fs_full(in: VsOut) -> vec4<f32> {
         // The bound capture stores its own space (FLAG_TEX_SRGB): the
         // effect evaluates on it and the result lands in globals.space.
         let tspace = select(SPACE_LINEAR, SPACE_SRGB, (flags & FLAG_TEX_SRGB) != 0u);
+        if (flags & FLAG_BLEND_SRC) != 0u {
+            // The member blends in its group's space, unlike the pass's
+            // storage (two spaces exist, so it is the other one): the
+            // canvas comes from the backdrop copy at device origin
+            // `color.yz`, the sample source-over in the member space,
+            // the result written verbatim. An uncovered pixel keeps the
+            // canvas untouched.
+            let coord = vec2<i32>(floor(in.device - instances[i].color.yz));
+            let cb = read_composite_backdrop(coord);
+            if cov <= 0.0 {
+                return cb;
+            }
+            let space = select(SPACE_SRGB, SPACE_LINEAR, globals.space == SPACE_SRGB);
+            let cs = move_space(paint_backdrop(i, in.device) * cov, tspace, space);
+            let over = cs + move_space(cb, globals.space, space) * (1.0 - cs.a);
+            return move_space(over, space, globals.space);
+        }
         return move_space(paint_backdrop(i, in.device) * cov, tspace, globals.space);
     }
     return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);

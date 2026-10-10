@@ -18,6 +18,7 @@ use std::borrow::Cow;
 
 use crate::BackdropShaderId;
 use crate::ops::BackdropId;
+use crate::style::BlendSpace;
 
 /// A per-member effect evaluated in the member's composite against the
 /// group's shared filtered capture. Extended linear P3, no clamping.
@@ -626,6 +627,7 @@ pub struct BackdropSpec {
     levels: CaptureLevels,
     anchor: Option<crate::LayerId>,
     union: Option<BackdropUnion>,
+    blend_space: BlendSpace,
 }
 
 impl BackdropSpec {
@@ -640,6 +642,7 @@ impl BackdropSpec {
             levels,
             anchor: None,
             union: None,
+            blend_space: BlendSpace::Linear,
         }
     }
 
@@ -670,6 +673,20 @@ impl BackdropSpec {
         }
     }
 
+    /// A group whose members composite their samples onto their canvas
+    /// in `space`: each member's composite — the effect's result at its
+    /// coverage, antialiased edge and outer extent included — blends with
+    /// the canvas in that space, converted there and back. The default
+    /// [`BlendSpace::Linear`] blends in the linear working space; a
+    /// member's own content and descendants composite as before.
+    #[must_use]
+    pub const fn blend_space(self, space: BlendSpace) -> Self {
+        Self {
+            blend_space: space,
+            ..self
+        }
+    }
+
     /// The capture scale `s`.
     #[must_use]
     pub const fn scale(self) -> CaptureScale {
@@ -693,6 +710,14 @@ impl BackdropSpec {
     #[must_use]
     pub const fn union_field(self) -> Option<BackdropUnion> {
         self.union
+    }
+
+    /// The space the group's members composite their samples in
+    /// ([`BlendSpace::Linear`] unless [`BackdropSpec::blend_space`] set
+    /// it).
+    #[must_use]
+    pub const fn member_blend_space(self) -> BlendSpace {
+        self.blend_space
     }
 }
 
@@ -803,6 +828,10 @@ mod tests {
         let spec = BackdropSpec::FULL.union(union);
         assert_eq!(spec.union_field(), Some(union));
         assert_eq!(BackdropSpec::FULL.union_field(), None);
+        assert_eq!(spec.member_blend_space(), super::BlendSpace::Linear);
+        let encoded = spec.blend_space(super::BlendSpace::SrgbEncoded);
+        assert_eq!(encoded.member_blend_space(), super::BlendSpace::SrgbEncoded);
+        assert_eq!(encoded.union_field(), Some(union));
     }
 
     #[test]

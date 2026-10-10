@@ -66,8 +66,15 @@ pub enum PipelineKind {
     /// Write the fragment result unblended; blended composites do their
     /// compositing in the shader.
     Replace,
-    /// A registered backdrop effect shader's pipeline (its raw id).
-    Effect(u64),
+    /// A registered backdrop effect shader's pipeline: its raw id, and
+    /// `replace` for a member composite that reads the backdrop copy
+    /// and writes its result unblended.
+    Effect {
+        /// The shader's raw id.
+        id: u64,
+        /// Write the fragment result unblended.
+        replace: bool,
+    },
     /// The projective composite (#84): source-over, or `replace` for a
     /// blended composite that reads the backdrop copy itself.
     Projective { replace: bool },
@@ -2761,8 +2768,12 @@ impl<'a> Lowering<'a> {
         // `grad.xy` carries the capture region's texel origin.
         inst.grad[0] = rx;
         inst.grad[1] = ry;
+        // A member blending in a space unlike the pass's storage reads
+        // the canvas from a copy of its draw rect and writes the result
+        // unblended.
+        let explicit = spec.member_blend_space() != self.current_space();
         let mut pipeline = PipelineKind::SrcOver;
-        if effect.is_some() || !scale.is_full() || entry.union.is_some() {
+        if effect.is_some() || !scale.is_full() || entry.union.is_some() || explicit {
             inst.meta[1] = super::instance::PAINT_BACKDROP;
             // `grad.z` maps device points onto the capture grid.
             inst.grad[2] = scale.get();
@@ -2793,28 +2804,17 @@ impl<'a> Lowering<'a> {
             inst.uv[1] = f32::from_bits(entry.ord);
             inst.params[0] = entry.outer;
         }
-        if let Some(effect) = effect {
-            // Refraction and shader effects evaluate the member clip's
-            // SDF; a path/mask clip has no analytic shape to read. A
-            // union-field member reads its own clip from its record, so
-            // a mask on the *ancestors'* merged clip stays legal.
-            if !matches!(effect, cherenkov::BackdropEffect::Color(_))
-                && entry.union.is_none()
-                && self.clip.is_none_or(|c| c.mask.is_some())
-            {
-                return Err(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH));
-            }
-            #[expect(clippy::cast_possible_truncation, reason = "stop counts fit u32")]
-            let first = self.frame.stops.len() as u32;
-            let (kind, count) = push_effect_stops(&mut self.frame.stops, effect);
-            inst.meta[2] = first;
-            inst.meta[3] |= kind | (count << 8);
-            if let cherenkov::BackdropEffect::Shader(s) = effect {
-                pipeline = PipelineKind::Effect(s.shader.raw());
-            }
+        if let Some(effect) = effect
+            && let Some(effect_pipeline) =
+                self.pack_member_effect(&mut inst, effect, entry.union.is_some(), explicit)?
+        {
+            pipeline = effect_pipeline;
         }
         if self.capture_space.get(&gid).copied() == Some(cherenkov::BlendSpace::SrgbEncoded) {
             inst.meta[3] |= FLAG_TEX_SRGB << 24;
+        }
+        if explicit {
+            self.open_member_blend_pass(&mut inst, &mut pipeline);
         }
         self.set_source(Some(Source::Backdrop {
             group: gid,
@@ -2825,6 +2825,62 @@ impl<'a> Lowering<'a> {
         self.set_pipeline(PipelineKind::SrcOver);
         self.set_source(None);
         Ok(())
+    }
+
+    /// Packs a member's backdrop effect into `inst`: its parameter stops
+    /// go to the frame's stop buffer, `meta[2]` names the first and
+    /// `meta[3]` carries the kind and count. A shader effect returns the
+    /// pipeline that runs it, replacing the canvas when the member blends
+    /// in an explicit space.
+    fn pack_member_effect(
+        &mut self,
+        inst: &mut Instance,
+        effect: &cherenkov::BackdropEffect,
+        union_field: bool,
+        explicit: bool,
+    ) -> Result<Option<PipelineKind>, RenderError> {
+        // Refraction and shader effects evaluate the member clip's SDF; a
+        // path/mask clip has no analytic shape to read. A union-field
+        // member reads its own clip from its record, so a mask on the
+        // *ancestors'* merged clip stays legal.
+        if !matches!(effect, cherenkov::BackdropEffect::Color(_))
+            && !union_field
+            && self.clip.is_none_or(|c| c.mask.is_some())
+        {
+            return Err(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH));
+        }
+        #[expect(clippy::cast_possible_truncation, reason = "stop counts fit u32")]
+        let first = self.frame.stops.len() as u32;
+        let (kind, count) = push_effect_stops(&mut self.frame.stops, effect);
+        inst.meta[2] = first;
+        inst.meta[3] |= kind | (count << 8);
+        Ok(match effect {
+            cherenkov::BackdropEffect::Shader(s) => Some(PipelineKind::Effect {
+                id: s.shader.raw(),
+                replace: explicit,
+            }),
+            _ => None,
+        })
+    }
+
+    /// Opens the pass a member blending in a space unlike the pass's
+    /// storage composites in: its backdrop copy covers the instance,
+    /// `color.yz` carries the copy's device origin, and `FLAG_BLEND_SRC`
+    /// marks the member's space. The result is written unblended, so a
+    /// source-over composite becomes `Replace`.
+    #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
+    fn open_member_blend_pass(&mut self, inst: &mut Instance, pipeline: &mut PipelineKind) {
+        let copy = covering_region(inst.bounds, self.width, self.height);
+        self.begin_pass(self.current_target(), None);
+        if let Some(open) = &mut self.frame.open {
+            open.backdrop_copy = Some(copy);
+        }
+        inst.color[1] = copy[0] as f32;
+        inst.color[2] = copy[1] as f32;
+        inst.meta[3] |= FLAG_BLEND_SRC << 24;
+        if *pipeline == PipelineKind::SrcOver {
+            *pipeline = PipelineKind::Replace;
+        }
     }
 
     /// Emits the composite quad sampling `source` at texel origin
@@ -5287,6 +5343,21 @@ fn tight_region(instances: &[Instance], width: u32, height: u32) -> [u32; 4] {
         max[1] = max[1].max(b[3]);
     }
     padded_region(min, max, width, height)
+}
+
+/// The `[x, y, w, h]` texel region covering the device rect `bounds`
+/// (`x0, y0, x1, y1`): floor / ceil, clamped to the surface.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "region coordinates are finite, non-negative and below the surface size"
+)]
+fn covering_region(bounds: [f32; 4], width: f32, height: f32) -> [u32; 4] {
+    let x0 = bounds[0].floor().max(0.0);
+    let y0 = bounds[1].floor().max(0.0);
+    let x1 = bounds[2].ceil().min(width);
+    let y1 = bounds[3].ceil().min(height);
+    [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
 }
 
 /// The `[x, y, w, h]` texel region covering a float bbox: floor−1 / ceil+1,
