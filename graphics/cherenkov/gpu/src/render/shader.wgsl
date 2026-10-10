@@ -585,7 +585,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if VARIANT == VARIANT_SIMPLE {
-        return fs_simple(in, false);
+        return fs_simple(in);
     }
     if VARIANT == VARIANT_SHADOW {
         return fs_shadow(in);
@@ -605,42 +605,28 @@ fn read_composite_backdrop(coord: vec2<i32>) -> vec4<f32> {
 
 // Solid fill/span/glyph coverage: no clip, mask, inner, or paint()
 // evaluation, and no `instances` reads at all.
-fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
+fn fs_simple(in: VsOut) -> vec4<f32> {
     let s = Shape(in.shape_a.xy, in.shape_a.z, in.shape_a.w, in.shape_radii);
     let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
     var cov: f32;
     switch in.meta_.x {
         case KIND_GLYPH: {
-            var texel: vec2<i32>;
-            if classified {
-                texel = vec2<i32>(floor(in.local));
-            } else {
-                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
-            }
+            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
             cov = textureLoad(atlas, texel, 0).r;
         }
         case KIND_SPAN: {
             cov = 1.0;
         }
         default: {
-            if classified && in.affine1.w > 0.0 {
-                let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
-                let u = abs(in.local) / r;
-                let rr = dot(u, u);
-                if rr < in.affine1.z {
-                    cov = 1.0;
-                } else if rr > in.affine1.w {
-                    cov = 0.0;
-                } else {
-                    cov = shape_coverage(s, in.local, m, classified);
-                }
-            } else {
-                cov = shape_coverage(s, in.local, m, classified);
-            }
+            cov = shape_coverage(s, in.local, m, false);
         }
     }
-    cov = clamp(cov, 0.0, 1.0) * in.params.y;
-    return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
+    return solid_coverage_color(in.color, in.params.y, cov);
+}
+
+fn solid_coverage_color(color: vec4<f32>, opacity: f32, coverage: f32) -> vec4<f32> {
+    let cov = clamp(coverage, 0.0, 1.0) * opacity;
+    return move_space(vec4<f32>(color.rgb * color.a, color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
 // Retained path spans already describe full coverage. Their opacity is
@@ -749,19 +735,37 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
-    let inst = instances[in.instance];
-    var data: VsOut;
-    data.local = in.local;
-    data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
-    data.color = inst.color;
-    data.params.y = inst.params.y;
-    if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
-        data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
-        data.shape_radii = inst.shape.radii;
-        data.affine0 = inst.affine[0];
+    var cov: f32;
+    switch instances[in.instance].meta_.x {
+        case KIND_GLYPH, KIND_REGION: {
+            cov = textureLoad(atlas, vec2<i32>(floor(in.local)), 0).r;
+        }
+        case KIND_SPAN: {
+            cov = 1.0;
+        }
+        default: {
+            cov = partial_shape_coverage(in);
+        }
     }
-    data.affine1 = vec4<f32>(0.0, 0.0, in.coverage);
-    return fs_simple(data, true);
+    // Keep paint storage loads after coverage, outside the corner solve's
+    // register lifetime. Varying-backed fs_simple shares the same color tail.
+    return solid_coverage_color(instances[in.instance].color, instances[in.instance].params.y, cov);
+}
+
+fn partial_shape_coverage(in: PartialOut) -> f32 {
+    let s = instances[in.instance].shape;
+    if in.coverage.y > 0.0 {
+        let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
+        let u = abs(in.local) / r;
+        let rr = dot(u, u);
+        if rr < in.coverage.x {
+            return 1.0;
+        }
+        if rr > in.coverage.y {
+            return 0.0;
+        }
+    }
+    return shape_coverage(s, in.local, instances[in.instance].affine, true);
 }
 
 // The shadow kernel plus the same opacity/solid-colour tail.
