@@ -968,11 +968,16 @@ pub fn components_block_30() {
 
     let presented = binding(false);
     let _ = button("Delete")
-        .action({ let presented = presented.clone(); move || presented.set(true) })
+        .action({
+            let presented = presented.clone();
+            move || presented.set(true)
+        })
         .dialog(
-            Dialog::new(&presented, "Delete photo?")        // title takes impl IntoText
-                .message("This cannot be undone.")          // optional, also IntoText
+            Dialog::new(&presented, "Delete photo?") // title takes impl IntoText
+                .message("This cannot be undone.") // optional, also IntoText
                 .action(DialogAction::cancel("Cancel", || {}))
-                .action(DialogAction::destructive("Delete", |_: Environment| trash_photo())),
+                .action(DialogAction::destructive("Delete", |_: Environment| {
+                    trash_photo()
+                })),
         );
 }

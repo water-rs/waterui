@@ -35,9 +35,7 @@
 use nami::Binding;
 use waterui_controls::{ButtonStyle, button};
 use waterui_core::accessibility::AccessibilityRole;
-use waterui_core::extract::Use;
 use waterui_core::handler::{Handler, SharedAction, shared_action};
-use waterui_core::key::{Key, KeyHandling, KeyPress, NamedKey};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, View};
 use waterui_layout::alignment;
@@ -48,7 +46,7 @@ use waterui_text::text::{IntoText, Text, text};
 
 use crate::shape::{FixedRoundedRectangle, ShapeExt};
 use crate::theme::color::{Accent, Error, Foreground, MutedForeground, Scrim, Surface};
-use crate::{AnyView, ViewExt};
+use crate::{AnyView, Computed, SignalExt as _, Str, ViewExt};
 use waterui_graphics::color::Color;
 
 /// M3 `dialog.container.min-width`: the narrowest a card gets, in dp.
@@ -66,6 +64,13 @@ const CARD_CONTENT_SPACING: f32 = 16.0;
 const ACTIONS_TOP_PADDING: f32 = 8.0;
 /// Gap between adjacent action buttons, in dp.
 const ACTIONS_SPACING: f32 = 8.0;
+
+/// Translation key for the acknowledgement button a dialog declared without
+/// actions presents.
+///
+/// A self-drawn backend renders this entry; `AppKit` draws its own localized
+/// `NSAlert` button instead, so the platform's wording wins where one exists.
+pub const DIALOG_ACKNOWLEDGE_LABEL_KEY: &str = "waterui.dialog.acknowledge";
 
 /// The role a [`DialogAction`] carries: how it reads and where it sits.
 ///
@@ -150,6 +155,7 @@ impl DialogAction {
     }
 
     /// The button title.
+    #[must_use]
     pub const fn title(&self) -> &Text {
         &self.title
     }
@@ -194,10 +200,6 @@ impl DialogAction {
 ///
 /// One dialog is presented per window at a time; a second one presented while
 /// one is up waits in presentation order.
-///
-/// `Dialog` also implements [`View`]: rendered directly it produces the
-/// composed card — the `Scrim` backdrop plus the alert card — which is what
-/// the Hydrolysis modal layer draws.
 #[derive(Clone)]
 pub struct Dialog {
     is_presented: Binding<bool>,
@@ -255,6 +257,7 @@ impl Dialog {
     }
 
     /// The dialog's headline.
+    #[must_use]
     pub const fn title(&self) -> &Text {
         &self.title
     }
@@ -284,9 +287,10 @@ impl Dialog {
 
     /// The action list as renderers must present it: roles in platform
     /// convention order — dismissive first, affirmative trailing — with
-    /// declaration order kept within each role, and a single platform-worded
-    /// acknowledgement button with role `Cancel` when the declaration was
-    /// empty (the same default `NSAlert` draws).
+    /// declaration order kept within each role, and a single acknowledgement
+    /// button with role `Cancel` when the declaration was empty (the same
+    /// default `NSAlert` draws). The acknowledgement's title is the
+    /// [`DIALOG_ACKNOWLEDGE_LABEL_KEY`] catalog entry.
     ///
     /// # Panics
     ///
@@ -303,7 +307,10 @@ impl Dialog {
             "Dialog declares more than one Cancel action"
         );
         if self.actions.is_empty() {
-            return vec![DialogAction::cancel("OK", || {})];
+            return vec![DialogAction::cancel(
+                Text::localized_or(DIALOG_ACKNOWLEDGE_LABEL_KEY, "OK"),
+                || {},
+            )];
         }
         let mut ordered = Vec::with_capacity(self.actions.len());
         ordered.extend(
@@ -325,6 +332,17 @@ impl Dialog {
                 .cloned(),
         );
         ordered
+    }
+
+    /// The primary action: the first `Default` one, bound to Return.
+    ///
+    /// `None` when no `Default` action was declared — Return then has no
+    /// dialog-level meaning and activates the focused button.
+    #[must_use]
+    pub fn primary_action(&self) -> Option<&DialogAction> {
+        self.actions
+            .iter()
+            .find(|action| action.role == DialogRole::Default)
     }
 
     /// The shared "chose this action" step: run the handler, then write the
@@ -371,8 +389,25 @@ fn action_button(action: DialogAction, dialog: &Dialog, primary: bool) -> AnyVie
 /// The alert card the Hydrolysis modal layer draws: `Surface` container,
 /// `Foreground` title, `MutedForeground` message, and the action row —
 /// `Accent` primary, `Error` destructive — carrying the `Dialog`
-/// accessibility role.
-fn dialog_card(dialog: &Dialog) -> impl View + use<> {
+/// accessibility role, labelled by the title.
+struct DialogCard(Dialog);
+
+impl View for DialogCard {
+    fn body(self, env: &Environment) -> impl View {
+        let dialog = &self.0;
+        // Resolving first is what lets the label read a localized title: an
+        // unresolved environment-dependent `Text` has no content signal.
+        let spoken = dialog
+            .title
+            .resolve(env)
+            .content
+            .map(|title| title.to_plain())
+            .computed();
+        dialog_card(dialog, spoken)
+    }
+}
+
+fn dialog_card(dialog: &Dialog, label: Computed<Str>) -> impl View + use<> {
     let actions = dialog.resolved_actions();
     let mut seen_default = false;
     let buttons: Vec<AnyView> = actions
@@ -383,16 +418,10 @@ fn dialog_card(dialog: &Dialog) -> impl View + use<> {
             action_button(action, dialog, primary)
         })
         .collect();
-    // Bound to Return: the first Default action is the primary one. It runs on
-    // the key a focused dialog control leaves unconsumed.
-    let primary = dialog
-        .actions
-        .iter()
-        .find(|action| action.role() == DialogRole::Default)
-        .cloned();
-
     let mut contents: Vec<AnyView> = vec![AnyView::new(
-        text(dialog.title.clone()).color(Color::new(Foreground)),
+        text(dialog.title.clone())
+            .headline()
+            .color(Color::new(Foreground)),
     )];
     if let Some(message) = &dialog.message {
         contents.push(AnyView::new(
@@ -411,35 +440,31 @@ fn dialog_card(dialog: &Dialog) -> impl View + use<> {
         .alignment(alignment::Trailing),
     ));
 
-    let card = dialog.clone();
     Frame::new(
         vstack(contents)
             .spacing(CARD_CONTENT_SPACING)
             .padding_with(EdgeInsets::all(CARD_PADDING))
             .background(FixedRoundedRectangle::new(CARD_CORNER_RADIUS).fill(Color::new(Surface)))
+            .a11y_label(label)
             .a11y_role(AccessibilityRole::Dialog),
     )
     .min_width(CARD_MIN_WIDTH)
     .max_width(CARD_MAX_WIDTH)
-    .on_key_press(move |Use(press): Use<KeyPress>, env: Environment| {
-        if press.key == Key::Named(NamedKey::Enter)
-            && let Some(primary) = &primary
-        {
-            card.run_action(primary, &env);
-            return KeyHandling::Handled;
-        }
-        KeyHandling::Ignored
-    })
 }
 
-impl View for Dialog {
-    /// The self-drawn realization: a full-window `Scrim` backdrop — tapping it
-    /// runs the cancel path — with the alert card centered above it.
-    fn body(self, _env: &Environment) -> impl View {
+impl Dialog {
+    /// The self-drawn realization a backend's modal layer presents: a
+    /// full-window `Scrim` backdrop — tapping it runs the cancel path — with
+    /// the alert card centered above it.
+    ///
+    /// Backend-facing, like [`Self::run_action`]: an application presents a
+    /// dialog through [`ViewExt::dialog`](crate::ViewExt::dialog) only.
+    #[doc(hidden)]
+    pub fn modal_layer(&self) -> impl View + use<> {
         let scrim_dialog = self.clone();
         zstack((
             Color::new(Scrim).on_tap(move |env: Environment| scrim_dialog.run_cancel(&env)),
-            dialog_card(&self),
+            DialogCard(self.clone()),
         ))
     }
 }
