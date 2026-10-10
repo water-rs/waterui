@@ -153,6 +153,14 @@ impl Dispatcher {
         self.handlers.get(&type_id)
     }
 
+    /// Whether a registered handler claims `view` — distinguishes a
+    /// handler-owned leaf (a `Native` payload or a claimed metadata
+    /// wrapper) from a composite that still needs `body()` expansion,
+    /// without evaluating the view.
+    pub(crate) fn claims(&self, view: &AnyView) -> bool {
+        self.handler(view.type_id()).is_some()
+    }
+
     /// Renders `view` under `env` into the platform view it becomes.
     ///
     /// The walk: a registered handler claims the view; otherwise it expands
