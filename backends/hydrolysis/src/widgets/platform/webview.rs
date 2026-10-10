@@ -50,13 +50,9 @@ use waterui_core::Environment;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_webview::WebView;
 
-#[cfg(hydrolysis_macos_system_webview)]
-mod macos;
 #[cfg(hydrolysis_web_system_webview)]
 mod web;
 
-#[cfg(hydrolysis_macos_system_webview)]
-pub use macos::MacSystemWebViewController;
 #[cfg(hydrolysis_web_system_webview)]
 pub use web::WebSystemWebViewController;
 

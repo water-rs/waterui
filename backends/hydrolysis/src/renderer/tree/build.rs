@@ -762,7 +762,7 @@ impl RenderNode {
         // the macOS bridge a page handle from another engine.
         let view = match view.downcast::<WebView>() {
             Ok(webview) if env.get::<Hook<WebView>>().is_none() => {
-                return Self::build_webview(*webview, env, renderer);
+                return Self::build_webview(&webview, env, renderer);
             }
             Ok(webview) => AnyView::new(*webview),
             Err(view) => view,

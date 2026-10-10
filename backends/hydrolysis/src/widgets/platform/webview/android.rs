@@ -817,7 +817,9 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
         );
     }
 
-    fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> {
+    fn get_cookies(
+        &self,
+    ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
         let receiver = self.inner.start_call(
             |sender, _token| {
                 PendingCall::Cookies(Box::new(move |cookies| {
@@ -833,7 +835,7 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
                 );
             },
         );
-        async move { receiver.await.expect("get_cookies calls settle") }
+        async move { Ok(receiver.await.expect("get_cookies calls settle")) }
     }
 
     #[expect(

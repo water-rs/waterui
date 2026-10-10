@@ -269,20 +269,20 @@ impl RenderNode {
     /// mounts through the hosted-content leaf (`WKWebView` on macOS, an
     /// `<iframe>` on the web); on Android the `HydrolysisWebView` wrapper the
     /// controller opened mounts as a platform-view *instance* placement,
-    /// keyed by the id Kotlin registered it under — the `WebView` value rides
+    /// keyed by the id Kotlin registered it under — the page's handle rides
     /// in the node as the instance owner so the native peer lives exactly as
     /// long as the leaf that embeds it. Where no engine is bridged at all a
     /// `WebView` that still reaches the backend has nothing to draw it — a
     /// missing realization, not a drawable stand-in.
     pub(super) fn build_webview(
-        webview: WebView,
+        webview: &WebView,
         env: &Environment,
         renderer: &SemanticCore,
     ) -> Self {
         #[cfg(hydrolysis_system_webview)]
         {
             Self::build_hosted(
-                crate::widgets::platform::webview::hosted(&webview),
+                crate::widgets::platform::webview::hosted(webview),
                 env,
                 renderer,
             )
@@ -292,8 +292,8 @@ impl RenderNode {
             use crate::widgets::platform::platform_view::PlatformViewRenderState;
             use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
 
-            let instance = webview
-                .handle()
+            let handle = webview.handle();
+            let instance = handle
                 .downcast_ref::<AndroidSystemWebViewHandle>()
                 .map_or_else(
                     || {
@@ -307,8 +307,8 @@ impl RenderNode {
                     },
                     AndroidSystemWebViewHandle::instance,
                 );
-            let stretch = waterui_core::NativeView::stretch_axis(&webview);
-            let owner: Rc<dyn core::any::Any> = Rc::new(webview);
+            let stretch = waterui_core::NativeView::stretch_axis(webview);
+            let owner: Rc<dyn core::any::Any> = Rc::new(handle.clone());
             let state = Rc::new(RefCell::new(PlatformViewRenderState::from_instance(
                 instance, owner, env,
             )));
