@@ -9,12 +9,17 @@
 //! while reading the parts' stamps back, ships only the parts whose content
 //! hash differs from the device's stamp — one `adb push` into the shell
 //! user's staging directory, then one `run-as` copy into private storage
-//! that writes the stamps — and runs `am instrument -w`, whose return is the
-//! completion signal, before reading the produced PNGs back through
-//! `adb shell -T`. Round trips that do not depend on each other run side by
-//! side: the version check, the clock read and the preparation, and the
-//! render and the staging copy's removal.
+//! that writes the stamps — and renders through the live preview host it
+//! started earlier or starts now: one instrumentation process that answers
+//! render requests over an `adb forward`ed channel and reports the payload
+//! stamp it loaded in its greeting, so an unchanged payload reuses the
+//! process and a changed one force-stops it first. The produced PNGs come
+//! back through `adb shell -T`. Round trips that do not depend on each
+//! other run side by side: the version check, the clock read and the
+//! preparation; the push and the forward lookup; and the render and the
+//! staging copy's removal.
 
+mod device_host;
 mod payload;
 
 use std::path::{Path, PathBuf};
@@ -30,9 +35,7 @@ use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
 
 use crate::android::adb::{Adb, AdbCommandError, recent_crash_log};
 use crate::android::device::{AndroidAbiProvider as _, AndroidTarget};
-use crate::hydrolysis::android::{
-    self as hydrolysis_android, PREVIEW_HOST_INSTRUMENTATION, PREVIEW_HOST_PACKAGE,
-};
+use crate::hydrolysis::android::{self as hydrolysis_android, PREVIEW_HOST_PACKAGE};
 use crate::preview::hydrolysis::{
     HydrolysisPreviewRequest, HydrolysisPreviewScenario, scenario_frame_path,
     write_preview_bindings,
@@ -42,11 +45,6 @@ use crate::project_model::water_dir;
 use crate::toolchain::Host;
 
 use payload::{DevicePayload, HeldStamps, PAYLOAD_DIR, PayloadPart};
-
-/// `am instrument -w` is the completion signal; this bound is only the
-/// backstop for a wedged instrumentation run, not the render's expected
-/// duration.
-const PREVIEW_RENDER_DEADLINE: Duration = Duration::from_mins(3);
 
 /// The slowest transport a payload push is given time for, in bytes per
 /// second: a weak wireless `adb connect` link. The push's deadline is the
@@ -188,12 +186,13 @@ struct DeviceRender<'a> {
 
 /// Take the device lease, then prepare the run alongside the host's version
 /// check — installing the host and preparing again when it is not current —
-/// ship the payload parts the device's copy is stale in, run the
-/// instrumentation and pull its output while the push's staging copy is
-/// removed.
+/// ship the payload parts the device's copy is stale in while the `adb
+/// forward` is looked up beside the push, then probe the live host —
+/// starting one when none answers or a stale one is replaced — send it the render request and pull the output while the
+/// push's staging copy is removed.
 ///
 /// `am instrument` force-stops the host package and an install replaces
-/// it, so a second run's install or instrumentation would kill the render
+/// it, so a second run's install or host start would kill the render
 /// already running: the whole sequence holds the lease.
 async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> {
     let DeviceRender {
@@ -242,10 +241,42 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
     let pushed = !stale.is_empty();
     if pushed {
         info!(?stale, "Pushing the changed preview payload to the device");
-        push_payload(host, adb, serial, payload, &stale).await?;
     }
+    // The forward lookup rides beside the push; the host probe waits for
+    // the push, so a fresh host starts only once the payload it will report
+    // as loaded is in place, and a reused host's connection is not held
+    // open across a long resources push.
+    let ((), forward) = futures_util::try_join!(
+        async {
+            if pushed {
+                push_payload(host, adb, serial, payload, &stale).await
+            } else {
+                Ok(())
+            }
+        },
+        device_host::open_forward(host, adb, serial),
+    )?;
     let render = async {
-        run_instrumentation(host, adb, serial, &payload.library_paths(), &since).await?;
+        let mut link = forward
+            .link(
+                host,
+                adb,
+                serial,
+                &payload.library_paths(),
+                payload.stamp(PayloadPart::Libraries),
+                &since,
+            )
+            .await?;
+        if let Err(error) = link
+            .render(
+                &in_files_dir(RUN_CONFIG_FILE_NAME),
+                &in_files_dir(&DevicePayload::assets_root()),
+            )
+            .await
+        {
+            let crash_log = recent_crash_log(host, adb, serial, Some(&since)).await;
+            bail!("{error:#}\n\n=== Crash Log ===\n{crash_log}");
+        }
         pull_outputs(host, adb, serial, output_path, scenario).await
     };
     // The staging copy is dead once installed, and nothing the render reads
@@ -257,6 +288,12 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
     rendered?;
     removed.transpose()?;
     Ok(())
+}
+
+/// `path`, which the run directory holds, as the host resolves it relative
+/// to its `filesDir`.
+fn in_files_dir(path: &str) -> String {
+    format!("{FILES_PREVIEW_DIR}/{path}")
 }
 
 /// Install `apk`, the preview host at `version_code`, over whatever host
@@ -481,69 +518,6 @@ const INSTALL_SCRIPT: &str = "cd \"$1\" && staging=$2 && payload=$3 && shift 3 &
      find \"$payload/$1\" -type f -exec chmod a-w {} + && printf %s \"$3\" > \"$2\" || exit 1; \
      shift 3; done";
 
-/// Run the preview instrumentation: `am instrument -w` returns when the run
-/// finishes, and `-r` streams its result bundle. A failure reports the
-/// bundle's `error=`/`shortMsg=`/`longMsg=`, the adb status and stderr, and
-/// the logcat tail this run left behind (`since` bounds it to the run).
-async fn run_instrumentation(
-    host: &Host,
-    adb: &Adb,
-    serial: &str,
-    libraries: &[String],
-    since: &str,
-) -> Result<()> {
-    let in_run_dir = |path: &str| format!("{FILES_PREVIEW_DIR}/{path}");
-    let device_libraries: Vec<String> = libraries.iter().map(|path| in_run_dir(path)).collect();
-    let words = instrument_words(
-        &device_libraries,
-        &in_run_dir(RUN_CONFIG_FILE_NAME),
-        &in_run_dir(&DevicePayload::assets_root()),
-    );
-    let output = adb
-        .shell(
-            host,
-            serial,
-            &words.iter().map(String::as_str).collect::<Vec<_>>(),
-            PREVIEW_RENDER_DEADLINE,
-        )
-        .await?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if let Err(message) = parse_instrumentation_output(&stdout) {
-        let crash_log = recent_crash_log(host, adb, serial, Some(since)).await;
-        bail!(
-            "hydrolysis android preview failed: {message}\n\n\
-             `am instrument` exited with status {} — stderr:\n{}\n\n\
-             === Crash Log ===\n{crash_log}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(())
-}
-
-/// The `am instrument` words the run launches with. Libraries, run config
-/// and the assets root are paths relative to the host's `filesDir` — the
-/// instrumentation resolves them against it, so the device never sees an
-/// absolute private path it could be wrong about.
-fn instrument_words(libraries: &[String], run_config: &str, assets_root: &str) -> Vec<String> {
-    vec![
-        "am".to_string(),
-        "instrument".to_string(),
-        "-w".to_string(),
-        "-r".to_string(),
-        "-e".to_string(),
-        "libraries".to_string(),
-        libraries.join(":"),
-        "-e".to_string(),
-        "runConfig".to_string(),
-        run_config.to_string(),
-        "-e".to_string(),
-        "assetsRoot".to_string(),
-        assets_root.to_string(),
-        PREVIEW_HOST_INSTRUMENTATION.to_string(),
-    ]
-}
-
 /// Read the run's rendered output back and write it locally — the image at
 /// `out/preview.png`, or every captured scenario frame under
 /// `out/scenario/` at a bounded overlap of [`SCENARIO_PULL_CONCURRENCY`].
@@ -609,48 +583,10 @@ async fn pull_outputs(
     pull_png(host, adb, serial, "out/preview.png", output_path).await
 }
 
-/// Parse `am instrument -r` output: `-1` means OK, any other code or an
-/// `error=`/`shortMsg=`/`longMsg=` in the bundle is the failure text.
-fn parse_instrumentation_output(stdout: &str) -> Result<(), String> {
-    let mut code = None;
-    let mut details = Vec::new();
-    for line in stdout.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("INSTRUMENTATION_CODE:") {
-            code = rest.trim().parse::<i32>().ok();
-        } else if let Some(rest) = line.strip_prefix("INSTRUMENTATION_RESULT:") {
-            details.push(rest.trim().to_string());
-        }
-    }
-    match code {
-        Some(-1) if details.is_empty() || details.iter().all(|line| line.starts_with("time=")) => {
-            Ok(())
-        }
-        Some(other) => Err(format!(
-            "instrumentation reported code {other}: {}",
-            details.join("; ")
-        )),
-        None => Err(format!("instrumentation produced no result code: {stdout}")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::toolchain::testing::TestMachine;
-
-    #[test]
-    fn instrumentation_output_ok_on_code_minus_one() {
-        let stdout = "INSTRUMENTATION_STATUS: stream=\nINSTRUMENTATION_RESULT: time=0.01\nINSTRUMENTATION_CODE: -1\n";
-        parse_instrumentation_output(stdout).expect("code -1 is success");
-    }
-
-    #[test]
-    fn instrumentation_output_fails_on_error_bundle() {
-        let stdout = "INSTRUMENTATION_RESULT: error=preview exploded\nINSTRUMENTATION_CODE: 0\n";
-        let error = parse_instrumentation_output(stdout).expect_err("code 0 must fail");
-        assert!(error.contains("preview exploded"), "{error}");
-    }
 
     /// The fake `adb` logs every invocation's argv to `WATERUI_FAKE_ADB_LOG`;
     /// canned replies come from response files.
@@ -701,10 +637,110 @@ mod tests {
     /// The run config a test run ships.
     const RUN_CONFIG: &[u8] = br#"{"width":320,"height":240}"#;
 
-    /// A fake device whose instrumentation succeeds, whose `cat` answers a
-    /// PNG, and whose installed host is already `versionCode` 7 — plus the
-    /// staged payload and host APK a run sends it. The run config the device
-    /// receives lands in a file the test reads.
+    /// The abstract-domain socket name the fake forward names — the same
+    /// `localabstract:` spec `device_host` registers.
+    const HOST_SOCKET_SPEC: &str = "localabstract:dev.waterui.hydrolysis.preview";
+
+    /// What the fake preview host does with each connection it accepts, in
+    /// order of arrival.
+    #[cfg(unix)]
+    enum FakeHostScript {
+        /// Every connection gets the greeting and a `rendered` reply — a
+        /// live host carrying this run's payload.
+        Warm,
+        /// The first connection hangs up without greeting — a forward whose
+        /// device side is dead; the rest serve normally.
+        ColdThenWarm,
+        /// The first connection greets with a stale stamp and closes; the
+        /// rest serve the current stamp.
+        StaleThenWarm(String),
+        /// Every connection greets, then answers the request with `failed`.
+        WarmFailing,
+        /// Every connection sends a line that is not a frame.
+        Garbled,
+    }
+
+    /// A stand-in for the device-side preview host: a real localhost TCP
+    /// listener the CLI reaches through the port the fake adb's `forward`
+    /// answers, speaking the protocol's JSON lines.
+    #[cfg(unix)]
+    struct FakeHost {
+        port: u16,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[cfg(unix)]
+    impl FakeHost {
+        fn serve(script: FakeHostScript, stamp: String) -> Self {
+            use std::io::{BufRead as _, Write as _};
+
+            let listener =
+                std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind the fake host");
+            let port = listener.local_addr().expect("local address").port();
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = std::sync::Arc::clone(&requests);
+            std::thread::spawn(move || {
+                let mut first = true;
+                for connection in listener.incoming() {
+                    let mut stream = connection.expect("accept a connection");
+                    let greeting = |stream: &mut std::net::TcpStream, stamp: &str| {
+                        let hello = serde_json::json!({
+                            "type": "hello",
+                            "schema": 1,
+                            "stamp": stamp,
+                        });
+                        stream
+                            .write_all(format!("{hello}\n").as_bytes())
+                            .expect("greet");
+                    };
+                    if matches!(script, FakeHostScript::Garbled) {
+                        stream.write_all(b"not a frame\n").expect("garble");
+                        continue;
+                    }
+                    if first {
+                        first = false;
+                        match &script {
+                            FakeHostScript::Warm
+                            | FakeHostScript::WarmFailing
+                            | FakeHostScript::Garbled => {}
+                            FakeHostScript::ColdThenWarm => continue,
+                            FakeHostScript::StaleThenWarm(stale) => {
+                                greeting(&mut stream, stale);
+                                continue;
+                            }
+                        }
+                    }
+                    greeting(&mut stream, &stamp);
+                    let mut request = String::new();
+                    std::io::BufReader::new(stream.try_clone().expect("clone the stream"))
+                        .read_line(&mut request)
+                        .expect("read the render request");
+                    seen.lock().expect("recorded requests").push(request);
+                    let reply = match &script {
+                        FakeHostScript::WarmFailing => {
+                            serde_json::json!({"type": "failed", "error": "preview exploded"})
+                        }
+                        _ => serde_json::json!({"type": "rendered"}),
+                    };
+                    stream
+                        .write_all(format!("{reply}\n").as_bytes())
+                        .expect("reply");
+                }
+            });
+            Self { port, requests }
+        }
+
+        /// The request lines the host was sent, in arrival order.
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().expect("recorded requests").clone()
+        }
+    }
+
+    /// A fake device whose `cat` answers a PNG, whose installed host is
+    /// already `versionCode` 7 and whose preview host is a [`FakeHost`] the
+    /// fake adb forwards to — plus the staged payload and host APK a run
+    /// sends it. The run config the device receives lands in a file the
+    /// test reads.
     struct RenderingDevice {
         machine: TestMachine,
         host: Host,
@@ -713,17 +749,20 @@ mod tests {
         payload: DevicePayload,
         apk: PathBuf,
         run_config: PathBuf,
+        fake_host: FakeHost,
     }
 
     impl RenderingDevice {
+        /// A device with no live host: the probe's connection hangs up, and
+        /// the host the run then starts serves normally.
         fn new() -> Self {
+            Self::with_host_script(FakeHostScript::ColdThenWarm)
+        }
+
+        fn with_host_script(script: FakeHostScript) -> Self {
             let machine = TestMachine::new();
             let sdk = machine.install_android_sdk();
             machine.install_adb();
-            machine.respond(
-                "ADB_AM_INSTRUMENT",
-                "INSTRUMENTATION_STATUS: stream=\nINSTRUMENTATION_CODE: -1\n",
-            );
             machine.respond(
                 "ADB_PM_PACKAGES",
                 "package:dev.waterui.hydrolysis.preview versionCode:7",
@@ -734,6 +773,19 @@ mod tests {
                 b"\x89PNG\r\n\x1a\nfake-frame-bytes",
             )
             .expect("stage the canned cat");
+            let payload = staged_payload(&machine);
+            let fake_host =
+                FakeHost::serve(script, payload.stamp(PayloadPart::Libraries).to_string());
+            machine.respond("ADB_FORWARD_PORT", &fake_host.port.to_string());
+            // A started host's readiness line, as `logcat -m 1` prints it.
+            machine.respond(
+                "ADB_LOGCAT",
+                &format!(
+                    "01-01 00:00:01.000  4242  4242 I HydrolysisPreview: preview host serving: \
+                     stamp {}",
+                    payload.stamp(PayloadPart::Libraries)
+                ),
+            );
             let log = machine.root().join("adb-argv.log");
             let run_config = machine.root().join("received-run-config.json");
             let host = machine.host([
@@ -741,7 +793,6 @@ mod tests {
                 ("WATERUI_FAKE_ADB_LOG", log.as_os_str()),
                 ("WATERUI_FAKE_ADB_STDIN", run_config.as_os_str()),
             ]);
-            let payload = staged_payload(&machine);
             let apk = machine.file("host.apk", "apk");
             let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
             // Only the device run's own invocations are under test.
@@ -754,6 +805,7 @@ mod tests {
                 payload,
                 apk,
                 run_config,
+                fake_host,
             };
             device.holds_stamps(None, None);
             device
@@ -775,6 +827,12 @@ mod tests {
         /// [`render_on_device`] at `versionCode` 7, which the device holds
         /// unless a test answers the version query otherwise.
         async fn run(&self, out: &Path) {
+            self.try_run(out).await.expect("the device run succeeds");
+        }
+
+        /// [`run`], but the run's error comes back for a failure test to
+        /// inspect.
+        async fn try_run(&self, out: &Path) -> Result<()> {
             render_on_device(
                 &self.host,
                 &DeviceRender {
@@ -790,7 +848,6 @@ mod tests {
                 },
             )
             .await
-            .expect("the device run succeeds");
         }
 
         fn argv(&self) -> String {
@@ -871,12 +928,12 @@ mod tests {
             "the staging copy is removed once installed: {argv}"
         );
         assert!(
-            lines[instrument].contains(
-                "libraries waterui-preview/payload/lib/libx.so -e runConfig \
-                 waterui-preview/preview-run.json -e assetsRoot \
-                 waterui-preview/payload/resources/waterui_assets"
-            ),
-            "the instrumentation loads the installed payload: {}",
+            lines[instrument].contains(&format!(
+                "am instrument -e libraries waterui-preview/payload/lib/libx.so \
+                 -e payloadStamp {}",
+                device.payload.stamp(PayloadPart::Libraries)
+            )),
+            "the host starts with the installed payload and its stamp: {}",
             lines[instrument]
         );
         assert_eq!(
@@ -945,14 +1002,60 @@ mod tests {
         );
     }
 
-    /// A warm run — host installed, payload current — is the detached
-    /// server start, then the version query, the clock read and the
-    /// preparation side by side, then the instrumentation and the pull: six
-    /// adb invocations, no others.
+    /// A cold run — the probe's connection hangs up — pushes nothing when
+    /// the payload is current, then registers the forward and starts the
+    /// host with the payload's library stamp before the render pulls its
+    /// output.
     #[test]
     #[cfg(unix)]
-    fn a_warm_run_issues_the_minimal_adb_sequence() {
+    fn a_cold_run_starts_a_host() {
         let device = RenderingDevice::new();
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+
+        smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+        let argv = device.argv();
+        let lines: Vec<&str> = argv.lines().collect();
+        assert_eq!(
+            lines[line_of(&lines, "forward tcp:0")],
+            format!("-s serial forward tcp:0 {HOST_SOCKET_SPEC}"),
+            "{argv}"
+        );
+        let instrument = lines[line_of(&lines, "am instrument")];
+        assert!(
+            instrument.starts_with("-s serial shell am instrument -e libraries")
+                && instrument.contains("-e payloadStamp")
+                && instrument
+                    .ends_with("dev.waterui.hydrolysis.preview.HydrolysisPreviewInstrumentation"),
+            "the host starts with its payload and stamp, no -w: {instrument}"
+        );
+        assert!(
+            !argv.contains("force-stop"),
+            "nothing answered, so nothing was stopped: {argv}"
+        );
+        let pull = line_of(&lines, "cat files/waterui-preview/out/preview.png");
+        assert!(
+            line_of(&lines, "am instrument") < pull,
+            "the host runs before the pull: {argv}"
+        );
+    }
+
+    /// A warm run — host installed, payload current, live host answering
+    /// with the run's stamp — is the detached server start, the version
+    /// query, the clock read and the preparation side by side, then the
+    /// forward listing and the pull: five adb invocations and not a single
+    /// `am` — the render travels on the socket the live host already owns.
+    #[test]
+    #[cfg(unix)]
+    fn a_warm_run_reuses_the_live_host() {
+        let device = RenderingDevice::with_host_script(FakeHostScript::Warm);
+        device.machine.respond(
+            "ADB_FORWARD_LIST",
+            &format!("serial tcp:{} {HOST_SOCKET_SPEC}", device.fake_host.port),
+        );
         device.holds_stamps(
             Some(device.payload.stamp(PayloadPart::Libraries)),
             Some(device.payload.stamp(PayloadPart::Resources)),
@@ -984,15 +1087,134 @@ mod tests {
                     && line.ends_with(PREPARE_ARGS)),
             "{argv}"
         );
-        assert!(
-            lines[3].starts_with("-s serial shell am instrument"),
-            "{argv}"
-        );
+        assert_eq!(lines[3], "-s serial forward --list", "{argv}");
         assert_eq!(
             lines[4],
             "-s serial shell -T run-as dev.waterui.hydrolysis.preview cat \
              files/waterui-preview/out/preview.png",
             "{argv}"
+        );
+        assert!(
+            !argv.contains("am ") && !argv.contains("forward tcp"),
+            "no host start and no new forward on a warm run: {argv}"
+        );
+        assert_eq!(
+            device.fake_host.requests(),
+            [concat!(
+                r#"{"type":"render","run_config":"waterui-preview/preview-run.json","#,
+                r#""assets_root":"waterui-preview/payload/resources/waterui_assets"}"#,
+                "\n"
+            )],
+            "the render request on the wire"
+        );
+    }
+
+    /// A live host greeting with a different payload stamp is a defined
+    /// transition, never a silent reuse: the package is force-stopped and a
+    /// fresh host started — `force-stop` before `instrument` — and the run
+    /// still lands its frame.
+    #[test]
+    #[cfg(unix)]
+    fn a_stale_host_is_stopped_then_replaced() {
+        let device =
+            RenderingDevice::with_host_script(FakeHostScript::StaleThenWarm("0".repeat(64)));
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+
+        smol::block_on(device.run(&device.machine.root().join("preview.png")));
+
+        let argv = device.argv();
+        let lines: Vec<&str> = argv.lines().collect();
+        let force_stop = line_of(&lines, "am force-stop dev.waterui.hydrolysis.preview");
+        let instrument = line_of(&lines, "am instrument");
+        assert!(
+            force_stop < instrument,
+            "the stale host is stopped before the fresh one starts: {argv}"
+        );
+        assert!(
+            lines[line_of(&lines, "am instrument")].contains("-e payloadStamp"),
+            "{argv}"
+        );
+        assert!(
+            std::fs::read(device.machine.root().join("preview.png"))
+                .expect("read")
+                .starts_with(PNG_SIGNATURE),
+            "the pulled PNG landed"
+        );
+    }
+
+    /// A `failed` reply carries the host's own report; the run's error
+    /// surfaces it, alongside the logcat tail.
+    #[test]
+    #[cfg(unix)]
+    fn a_host_render_failure_surfaces_its_report() {
+        let device = RenderingDevice::with_host_script(FakeHostScript::WarmFailing);
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+
+        let error = smol::block_on(device.try_run(&device.machine.root().join("preview.png")))
+            .expect_err("a failed reply must fail the run");
+        assert!(error.to_string().contains("preview exploded"), "{error:#}");
+    }
+
+    /// A fresh host that logs a failed start fails the run with that line
+    /// and the crash log — the wait ends on the host's own report, and no
+    /// render is sent.
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_host_start_surfaces_its_log_line() {
+        let device = RenderingDevice::new();
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+        device.machine.respond(
+            "ADB_LOGCAT",
+            &format!(
+                "01-01 00:00:01.000  4242  4242 E HydrolysisPreview: preview host failed to \
+                 start: stamp {}",
+                device.payload.stamp(PayloadPart::Libraries)
+            ),
+        );
+
+        let error = smol::block_on(device.try_run(&device.machine.root().join("preview.png")))
+            .expect_err("a failed start must fail the run");
+        assert!(
+            error
+                .to_string()
+                .contains("the preview host failed to start: 01-01 00:00:01.000"),
+            "{error:#}"
+        );
+        assert!(device.fake_host.requests().is_empty(), "no render was sent");
+    }
+
+    /// A greeting that is not a frame fails the run naming what arrived —
+    /// never a restart that hides it.
+    #[test]
+    #[cfg(unix)]
+    fn a_malformed_greeting_names_what_arrived() {
+        let device = RenderingDevice::with_host_script(FakeHostScript::Garbled);
+        device.holds_stamps(
+            Some(device.payload.stamp(PayloadPart::Libraries)),
+            Some(device.payload.stamp(PayloadPart::Resources)),
+        );
+
+        let error = smol::block_on(device.try_run(&device.machine.root().join("preview.png")))
+            .expect_err("a garbled greeting must fail the run");
+        assert!(
+            error
+                .to_string()
+                .contains("the preview host sent a malformed frame: not a frame"),
+            "{error:#}"
+        );
+        assert!(
+            !device.argv().contains("am "),
+            "nothing was stopped or started: {}",
+            device.argv()
         );
     }
 
@@ -1308,9 +1530,9 @@ mod tests {
     }
 
     /// Two previews on one serial hold the device lease for the whole
-    /// device-side run: the second run's preparation, stream, install and
-    /// instrument cannot interleave the first run's, because `am instrument`
-    /// force-stops the host package the first render lives in.
+    /// device-side run: they share the run directory — `out/` is cleared
+    /// per run — and the one live host, so the second run's preparation and
+    /// render cannot interleave the first run's.
     #[test]
     #[cfg(unix)]
     fn concurrent_previews_on_one_serial_serialize() {
@@ -1404,29 +1626,12 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn an_instrumentation_failure_surfaces_with_its_bundle() {
-        let (machine, host, _log) = adb_test_machine();
-        machine.respond(
-            "ADB_AM_INSTRUMENT",
-            "INSTRUMENTATION_RESULT: error=preview exploded\nINSTRUMENTATION_CODE: 0\n",
-        );
-        let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
-        let error = smol::block_on(async {
-            run_instrumentation(&host, &adb, "serial", &[], "01-01 00:00:00.000")
-                .await
-                .expect_err("a failed instrumentation must surface")
-        });
-        assert!(error.to_string().contains("preview exploded"), "{error}");
-    }
-
-    #[test]
-    #[cfg(unix)]
     fn an_adb_timeout_names_the_invocation() {
         let (machine, host, _log) = adb_test_machine();
         let adb = smol::block_on(Adb::locate(&host)).expect("fake adb must locate");
         let host = machine.host([("WATERUI_FAKE_ADB_HANG", "1")]);
         let error = smol::block_on(async {
-            adb.shell(
+            adb.shell_run(
                 &host,
                 "serial",
                 &["am", "instrument", "-w", "x/y"],
