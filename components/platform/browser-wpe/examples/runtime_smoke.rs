@@ -1,6 +1,14 @@
 //! Native Linux validation for the staged WPE runtime and GPU DMA-BUF path.
 
 #[cfg(target_os = "linux")]
+#[path = "runtime_smoke/bridge_smoke.rs"]
+mod bridge_smoke;
+
+#[cfg(target_os = "linux")]
+#[path = "runtime_smoke/executor.rs"]
+mod executor;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use std::cell::{Cell, RefCell};
     use std::ffi::{OsStr, OsString};
@@ -9,13 +17,16 @@ mod linux {
 
     use base64::Engine as _;
     use waterui_browser_wpe::{
-        DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
+        DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpeRuntime, WpeRuntimePaths,
     };
     use waterui_graphics::cherenkov::{Display, FrameTime};
     use waterui_graphics::gpu::{GpuContentRenderer, GpuRuntime};
     use waterui_graphics::{OffscreenImage, OffscreenSize, RedrawHandle};
-    use waterui_webview::{BackendEvent, WebViewEvent};
+    use waterui_url::Url;
+    use waterui_webview::{BridgeOrigins, JsReply, OriginPolicy};
     use wgpu_external_frame::dma_buf::DmaBufFrame;
+
+    use super::executor::{SmokeExecutor, SmokePage};
 
     const WIDTH: u32 = 640;
     const HEIGHT: u32 = 360;
@@ -61,25 +72,7 @@ mod linux {
         )
     }
 
-    // Pumps the page until it has loaded the document and produced one fully
-    // rendered DMA-BUF frame, or the deadline passes.
-    fn await_rendered_frame(page: &WpePage, deadline: Instant) -> DmaBufFrame {
-        let loaded = Rc::new(Cell::new(false));
-        let load_error = Rc::new(RefCell::new(None::<String>));
-        // The guard has to outlive the pump loop below: dropping it
-        // unsubscribes, and the smoke run would then wait for a `Loaded` it can
-        // no longer observe until it times out.
-        let _load_watcher = page.watch({
-            let loaded = Rc::clone(&loaded);
-            let load_error = Rc::clone(&load_error);
-            move |event| match event {
-                BackendEvent::Event(WebViewEvent::Loaded) => loaded.set(true),
-                BackendEvent::Event(WebViewEvent::Error(error)) => {
-                    load_error.replace(Some(format!("{error:?}")));
-                }
-                _ => {}
-            }
-        });
+    fn await_loaded_page(page: &SmokePage, deadline: Instant) -> Rc<Cell<bool>> {
         let frame_ready = Rc::new(Cell::new(false));
         page.set_frame_waker({
             let frame_ready = Rc::clone(&frame_ready);
@@ -89,16 +82,20 @@ mod linux {
         let document =
             include_str!("runtime_smoke.html").replace("{{WPE_VERSION}}", WPE_WEBKIT_VERSION);
         let document = base64::engine::general_purpose::STANDARD.encode(document);
-        page.load_uri(&format!("data:text/html;base64,{document}"));
+        page.load(&format!("data:text/html;base64,{document}"), deadline);
+        frame_ready
+    }
 
-        while !loaded.get() || !frame_ready.get() {
+    fn await_rendered_frame(
+        page: &SmokePage,
+        frame_ready: &Cell<bool>,
+        deadline: Instant,
+    ) -> DmaBufFrame {
+        while !frame_ready.get() {
             page.pump();
-            if let Some(error) = load_error.borrow().as_deref() {
-                panic!("WPE smoke page load failed: {error}");
-            }
             assert!(
                 Instant::now() < deadline,
-                "WPE smoke timed out before the page loaded and submitted a frame"
+                "WPE smoke timed out before the page submitted a frame"
             );
             std::thread::yield_now();
         }
@@ -211,16 +208,107 @@ mod linux {
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));
     }
 
+    fn await_bridge_smoke(page: &SmokePage, deadline: Instant) {
+        let result = super::bridge_smoke::await_page_script(
+            page,
+            r#"
+            const nativeReply = globalThis.__wateruiNativeSend(
+              JSON.stringify({id: 0, name: "json", json: null})
+            );
+            nativeReply.catch(() => {});
+            const escape = nativeReply.constructor.constructor("return globalThis")();
+            const defaultWorld = escape === globalThis &&
+              !escape.webkit?.messageHandlers?.__waterui;
+            let rawHandlerRejected = false;
+            try {
+              const rawHandler = globalThis.webkit?.messageHandlers?.__waterui;
+              if (!rawHandler) {
+                rawHandlerRejected = true;
+              } else {
+                rawHandler.postMessage({origin: "https://wpe-smoke.invalid", envelope: "{}"});
+              }
+            } catch {
+              rawHandlerRejected = true;
+            }
+            const frame = document.createElement("iframe");
+            frame.srcdoc = "<!doctype html><title>frame</title>";
+            document.body.append(frame);
+            await new Promise((resolve) => frame.addEventListener("load", resolve, {once: true}));
+            const iframeHasTransport =
+              typeof frame.contentWindow.__wateruiNativeSend === "function";
+            location.hash = "same-document";
+            const json = await waterui.invoke("json", {});
+            const binary = await waterui.invoke("binary", {});
+            let failure = "";
+            try {
+              await waterui.invoke("failure", {});
+            } catch (error) {
+              failure = String(error.message || error);
+            }
+            const iframeHasHandler =
+              Boolean(frame.contentWindow.webkit?.messageHandlers?.__waterui);
+            return {defaultWorld, rawHandlerRejected, iframeHasTransport, iframeHasHandler,
+              json, binary: Array.from(binary), failure};
+            "#,
+            deadline,
+        );
+        assert_eq!(result["defaultWorld"], true);
+        assert_eq!(result["rawHandlerRejected"], true);
+        assert_eq!(result["iframeHasTransport"], false);
+        assert_eq!(result["iframeHasHandler"], false);
+        assert_eq!(result["json"]["answer"], 42);
+        assert_eq!(result["binary"], serde_json::json!([0, 1, 2]));
+        assert_eq!(result["failure"], "smoke failure");
+        tracing::info!("PASS basic bridge: default-world isolation and raw-handler rejection");
+        tracing::info!("PASS basic bridge: iframe transport and handler isolation");
+        tracing::info!(
+            "PASS admitted-page bridge call and JSON reply after same-document hash change"
+        );
+        tracing::info!("PASS basic bridge: binary reply");
+        tracing::info!("PASS basic bridge: handler failure reply");
+    }
+
     pub fn run() {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+        let executor = SmokeExecutor::install();
         let (runtime_root, output_path, timeout) = parse_args();
-        let gpu_runtime = pollster::block_on(GpuRuntime::new())
-            .unwrap_or_else(|error| panic!("WPE smoke GPU runtime creation failed: {error}"));
         let paths = WpeRuntimePaths::new(runtime_root);
         let runtime = WpeRuntime::initialize(&paths);
-        let page = WpePage::new(runtime);
+        let page = SmokePage::new(runtime.clone(), &executor);
+        page.set_bridge_origins(OriginPolicy::new(
+            BridgeOrigins::Any,
+            &Url::new("https://wpe-smoke.invalid/"),
+        ));
+        super::bridge_smoke::install_bridge_scripts(&page);
+        page.add_handler(
+            "json",
+            Box::new(|_| Box::pin(async { Ok(JsReply::Json(br#"{"answer":42}"#.to_vec())) })),
+        );
+        page.add_handler(
+            "binary",
+            Box::new(|_| Box::pin(async { Ok(JsReply::Bytes(vec![0, 1, 2])) })),
+        );
+        page.add_handler(
+            "failure",
+            Box::new(|_| Box::pin(async { Err(String::from("smoke failure")) })),
+        );
         let deadline = Instant::now() + timeout;
-        let frame = await_rendered_frame(&page, deadline);
+        let frame_ready = await_loaded_page(&page, deadline);
+        tracing::info!("RUN basic bridge checks");
+        await_bridge_smoke(&page, deadline);
+        tracing::info!("RUN navigation-barrier checks");
+        super::bridge_smoke::run(&runtime, &executor, deadline);
+        tracing::info!("RUN frame import and snapshot");
+        let frame = await_rendered_frame(&page, &frame_ready, deadline);
+        let gpu_runtime = pollster::block_on(GpuRuntime::new())
+            .unwrap_or_else(|error| panic!("WPE smoke GPU runtime creation failed: {error}"));
         render_to_png(&gpu_runtime, frame, &output_path);
+        tracing::info!("PASS frame import and snapshot");
     }
 }
 

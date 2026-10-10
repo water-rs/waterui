@@ -19,7 +19,9 @@ use crate::{
     android::{
         backend::AndroidBackend,
         output_metadata::{OutputKind, packaged_artifact},
-        toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
+        toolchain::{
+            AndroidNdk, AndroidSdk, Java, Kotlin, KotlinToolchain, java_proxy_properties_from_env,
+        },
     },
     assets,
     build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries},
@@ -474,15 +476,19 @@ impl AndroidPlatform {
 
     /// Build Rust library for this Android platform.
     ///
+    /// `kotlin` is the toolchain the caller's toolchain check resolved —
+    /// the build reuses it rather than probing `kotlinc` again.
+    ///
     /// # Errors
     /// Returns an error if the build fails.
     pub async fn build(
         &self,
         project: &Project,
         options: BuildOptions,
+        kotlin: &KotlinToolchain,
     ) -> eyre::Result<BuiltTarget> {
         Self::prepare_for_build(project).await?;
-        self.build_prepared(project, options).await
+        self.build_prepared(project, options, kotlin).await
     }
 
     /// The shared prologue every Android Rust build needs: render the FFI
@@ -504,7 +510,12 @@ impl AndroidPlatform {
         // Resolve fonts BEFORE cargo build - this ensures icons.json is present
         // for crates like fontawesome7 that need it during build.rs
         let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-        let font_declarations = crate::assets::scan_fonts(project, &ffi_manifest).await?;
+        let font_declarations = crate::assets::scan_fonts(
+            project,
+            &ffi_manifest,
+            &[waterui_assets_planner::FontPlatform::Android],
+        )
+        .await?;
         crate::assets::resolve_fonts(project.host(), font_declarations).await?;
         Ok(())
     }
@@ -513,12 +524,16 @@ impl AndroidPlatform {
     /// [`prepare_for_build`](Self::prepare_for_build) — a multi-ABI loop
     /// runs the prologue once, then this per ABI.
     ///
+    /// `kotlin` is the toolchain the caller's toolchain check resolved —
+    /// the build reuses it rather than probing `kotlinc` again.
+    ///
     /// # Errors
     /// Returns an error if the build fails.
     pub async fn build_prepared(
         &self,
         project: &Project,
         options: BuildOptions,
+        kotlin: &KotlinToolchain,
     ) -> eyre::Result<BuiltTarget> {
         // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
         // prebuilt `libstd.so` (its LOAD segments are 4 KB-aligned and
@@ -534,7 +549,7 @@ impl AndroidPlatform {
             .android_min_api_level()?;
         let host = project.host();
         let build_context =
-            resolve_android_build_context(host, abi, &triple, min_api_level).await?;
+            resolve_android_build_context(host, abi, &triple, min_api_level, kotlin).await?;
         let build = configure_android_rust_build(project, &triple, &build_context, &options)
             .await?
             .with_envs(options.cargo_envs().iter().cloned())
@@ -699,6 +714,7 @@ pub(crate) async fn resolve_android_build_context(
     abi: AndroidAbi,
     triple: &Triple,
     api_level: u32,
+    kotlin: &KotlinToolchain,
 ) -> eyre::Result<AndroidBuildContext> {
     let ndk_path = AndroidNdk::detect_path(host).ok_or_else(|| {
         eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
@@ -723,7 +739,7 @@ pub(crate) async fn resolve_android_build_context(
     let target_upper = target_underscore.to_uppercase();
     let llvm_envs = resolve_windows_arm64_llvm_envs(host).await?;
     let (java_home, java_bin_dir) = resolve_java_home(host).await?;
-    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home(host).await?;
+    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = kotlin_context_paths(kotlin)?;
     let (sdk_path, android_jar) = resolve_android_sdk_paths(host).await?;
     let wrapper_toolchain =
         create_android_toolchain_wrapper(host, &ndk_path, abi, api_level).await?;
@@ -775,12 +791,22 @@ async fn resolve_java_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf)> {
     Ok((java_home, java_bin_dir))
 }
 
-async fn resolve_kotlin_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
-    let kotlin_compiler = Kotlin::detect_path(host).await.ok_or_else(|| {
+/// Resolve the Kotlin toolchain on `host` for an Android build entry that
+/// runs no toolchain check of its own to take it from (the `Backend` impls,
+/// the inspector launcher).
+///
+/// # Errors
+/// Fails with the missing-compiler error `kotlinc` consumers report.
+pub(crate) async fn require_kotlin(host: &Host) -> eyre::Result<KotlinToolchain> {
+    Kotlin::resolve(host).await.ok_or_else(|| {
         eyre::eyre!(
             "Kotlin compiler (kotlinc) not found. Install Android Studio or set `KOTLIN_HOME`, then re-run `water doctor`."
         )
-    })?;
+    })
+}
+
+fn kotlin_context_paths(kotlin: &KotlinToolchain) -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
+    let kotlin_compiler = kotlin.compiler().to_path_buf();
     let kotlin_bin_dir = kotlin_compiler.parent().map(PathBuf::from).ok_or_else(|| {
         eyre::eyre!(
             "Failed to determine Kotlin bin directory from `{}`.",
@@ -1225,8 +1251,12 @@ async fn copy_assets_and_fonts(
     .await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &project.ffi_crate_path().join("Cargo.toml"),
+        &[waterui_assets_planner::FontPlatform::Android],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

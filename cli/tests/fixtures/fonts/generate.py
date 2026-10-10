@@ -5,9 +5,9 @@
 # ///
 """Regenerate the test font in this directory from a pinned upstream source.
 
-The CLI's font-subsetting tests `include_bytes!` this file at compile time,
-so it must exist before `cargo test`/`clippy --all-targets` compiles the
-crate:
+The CLI's font tests copy this file into fixture projects at run time —
+`cargo nextest run -p waterui-cli` produces it through the package's setup
+script, and a manual run needs it first:
 
     uv run cli/tests/fixtures/fonts/generate.py
 
@@ -69,6 +69,18 @@ def fetch(url: str, expected_sha256: str) -> bytes:
 
 
 def main() -> None:
+    out = OUT_DIR / "Roboto-Regular.ttf"
+    if out.is_file():
+        digest = sha256(out.read_bytes())
+        if digest == EXPECTED["Roboto-Regular.ttf"]:
+            print(f"Roboto-Regular.ttf already generated ({digest[:12]}…)")
+            return
+        raise SystemExit(
+            f"Roboto-Regular.ttf: existing sha256 {digest} != expected "
+            f"{EXPECTED['Roboto-Regular.ttf']}\n"
+            "the font bytes are part of the test contract — remove the file "
+            "and rerun, or investigate why it drifted"
+        )
     archive = fetch(ARCHIVE_URL, ARCHIVE_SHA256)
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         data = zf.read("Roboto-Regular.ttf")

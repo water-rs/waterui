@@ -38,7 +38,7 @@ class AccessibilityFocusInvalidationTest {
 
     @Test
     fun anAccessibilityFocusMoveInvalidatesTheHost() {
-        val host = HydrolysisHostView(context, HydrolysisSession(context))
+        val host = HydrolysisHostView(context, HydrolysisSession(context, onCloseRequested = {}))
         val provider = host.accessibilityNodeProvider
         val shadowHost = shadowOf(host)
 
