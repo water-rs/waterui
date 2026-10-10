@@ -107,11 +107,10 @@ webview_handle! {
         ///
         /// `key` identifies the script: injecting again under a key already in
         /// use **replaces** that script rather than adding a second copy. The
-        /// mirrored-state seed depends on that — its values are only correct for
-        /// the document it was rendered for, so it is re-rendered and replaced
-        /// before every navigation, and without replacement a view that
-        /// navigated ten times would run ten seed scripts, each staler than the
-        /// last.
+        /// mirrored-state seed depends on that: it is re-rendered before every
+        /// navigation so the next document starts from current values, and
+        /// without replacement a view that navigated ten times would run ten
+        /// seed scripts, each starting another pull loop.
         fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime);
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -223,10 +222,10 @@ webview_handle! {
         /// feature) is the check every engine's real-engine suite runs against
         /// this.
         ///
-        /// Everything typed — [`WebView::eval`](crate::WebView::eval),
-        /// [`WebView::exec`](crate::WebView::exec) and the mirrored-state
-        /// push — goes through [`call_async_javascript`](Self::call_async_javascript)
-        /// instead, because it needs the promise awaited.
+        /// Everything typed — [`WebView::eval`](crate::WebView::eval) and
+        /// [`WebView::exec`](crate::WebView::exec) — goes through
+        /// [`call_async_javascript`](Self::call_async_javascript) instead,
+        /// because it needs the promise awaited.
         fn run_javascript(&self, script: &str) -> impl Future<Output = Result<Str, Str>>;
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -375,9 +374,10 @@ webview_handle! {
 
         /// A weak reference to this handle.
         ///
-        /// The mirrored-state bridge needs one: its flush closure is stored in a
-        /// handler the backend owns, so capturing the handle strongly closes a
-        /// cycle through the backend and the native web view is never destroyed.
+        /// The mirrored-state bridge needs one: the watcher that re-seeds each
+        /// navigation is stored in this handle's own watcher set, so capturing
+        /// the handle strongly closes a cycle and the native web view is never
+        /// destroyed.
         #[must_use]
         pub fn downgrade(&self) -> WeakWebViewHandle {
             WeakWebViewHandle {

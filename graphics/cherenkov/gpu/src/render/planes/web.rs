@@ -42,7 +42,7 @@ use super::{
 };
 use crate::interop::ExternalFrame;
 use crate::render::path::shape_path;
-use crate::render::present::{OutputRequest, WindowSurface};
+use crate::render::present::{ColorSpaceRequest, OutputRequest, WindowSurface};
 
 /// The most hosted planes on one surface. Each one opens an engine part
 /// above it — a canvas and a full-surface texture — so the budget bounds
@@ -69,7 +69,7 @@ pub struct DomTarget {
     pub(crate) parent: HtmlElement,
     pub(crate) size: (u32, u32),
     pub(crate) transparent: bool,
-    pub(crate) color_space: Option<wgpu::SurfaceColorSpace>,
+    pub(crate) color_space: ColorSpaceRequest,
     pub(crate) refresh: cherenkov::RefreshRange,
 }
 
@@ -81,7 +81,7 @@ impl DomTarget {
             parent,
             size,
             transparent: false,
-            color_space: None,
+            color_space: ColorSpaceRequest::Best,
             refresh: cherenkov::DEFAULT_REFRESH,
         }
     }
@@ -94,15 +94,16 @@ impl DomTarget {
         self
     }
 
-    /// Requires every part canvas's colour space, as
-    /// [`WindowTarget::require_color_space`](crate::WindowTarget::require_color_space)
-    /// does for a window's swapchain. Without it each canvas negotiates the
-    /// browser's best advertised pair, an extended-range one where offered.
-    /// A canvas that advertises no format for the space fails the surface
-    /// with [`SurfaceError::UnsupportedTarget`].
+    /// Sets every part canvas's colour-space request, as
+    /// [`WindowTarget::color_space`](crate::WindowTarget::color_space)
+    /// does for a window's swapchain. The default,
+    /// [`ColorSpaceRequest::Best`], negotiates the browser's best
+    /// advertised pair, an extended-range one where offered. A canvas that
+    /// advertises nothing the request admits fails the surface with
+    /// [`SurfaceError::UnsupportedTarget`].
     #[must_use]
-    pub const fn require_color_space(mut self, color_space: wgpu::SurfaceColorSpace) -> Self {
-        self.color_space = Some(color_space);
+    pub const fn color_space(mut self, request: ColorSpaceRequest) -> Self {
+        self.color_space = request;
         self
     }
 

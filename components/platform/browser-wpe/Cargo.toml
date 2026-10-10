@@ -46,7 +46,7 @@ required-features = ["runtime-smoke"]
 
 [features]
 default = ["webview"]
-runtime-smoke = ["webview"]
+runtime-smoke = ["webview", "waterui-webview/conformance"]
 webview = [
     "dep:cookie",
     "dep:futures",

@@ -735,7 +735,7 @@ impl From<CaptureScale> for BackdropSpec {
 /// ```wgsl
 /// struct BackdropPixel {
 ///     p: vec2<f32>, sdf: f32, normal: vec2<f32>,
-///     own_sdf: f32, size: vec2<f32>, scale: f32,
+///     own_sdf: f32, size: vec2<f32>, scale: f32, local: vec2<f32>,
 /// }
 /// fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32>
 /// ```
@@ -747,9 +747,20 @@ impl From<CaptureScale> for BackdropSpec {
 /// `px.own_sdf` the signed distance to the member's own clip edge,
 /// `px.size` the member's device bounds size, `px.scale` the device
 /// pixels per logical pixel of the member's recording
-/// ([`BackdropSample::scale`]), and `params` the effect
-/// uniforms packed four per `vec4`, zero-filled. Without a union,
-/// `px.sdf == px.own_sdf` and `px.normal` is the member's own normal.
+/// ([`BackdropSample::scale`]), `px.local` the member pixel in the member
+/// layer's own coordinate space — the space its clip is declared in — and
+/// `params` the effect uniforms packed four per `vec4`, zero-filled.
+/// Without a union, `px.sdf == px.own_sdf` and `px.normal` is the
+/// member's own normal.
+///
+/// `fn backdrop_field(q: vec2<f32>) -> BackdropField`, with
+/// `struct BackdropField { sdf: f32, normal: vec2<f32>, weight: f32 }`,
+/// evaluates the field the member draws against at any device point `q`:
+/// the signed distance and unit outward normal of the group's union field
+/// — the same fold the composite evaluates at its own pixel — or of the
+/// member's own clip without a union, and `weight` the member's ownership
+/// of `q` under the union (1 without one). `backdrop_field(px.p)` is
+/// exactly `px.sdf` and `px.normal`.
 /// `fn backdrop_sample(q: vec2<f32>) -> vec4<f32>` bilinearly samples the
 /// filtered capture at device point `q` — at `q · s` on a group's capture
 /// grid ([`CaptureScale`]) — clamped to its region. For a group keeping

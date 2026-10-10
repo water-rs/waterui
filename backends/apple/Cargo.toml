@@ -271,6 +271,9 @@ serde_json = { workspace = true }
 waterui = { workspace = true, features = ["media"] }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }
+# The webview trials drive the shared conformance cases; the crate's own
+# edge is optional behind the `webview` feature, so this carries it too.
+waterui-webview = { workspace = true, features = ["conformance"] }
 
 # `preview`'s protocol types arrive only on macOS — the preview entry
 # exists there alone, and an iOS build of the crate keeps no trace of it.

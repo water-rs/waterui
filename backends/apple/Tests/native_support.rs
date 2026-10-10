@@ -557,16 +557,27 @@ pub mod webview {
     use cocoa_ui::MainThreadMarker;
     use waterui_backend_core::Environment;
 
-    /// A fresh `WebView` backed by the backend's own `WKWebView`, never
-    /// mounted. `mtm` is the proof the call happened on the real main
-    /// thread, which `WKWebView` requires.
+    /// The `WebViewController` the leaf's `install_service` installs.
+    ///
+    /// This is the same construction `open` drives, so a case that opens
+    /// several views shares the one service install. `mtm` is the proof
+    /// the call happened on the real main thread, which `WKWebView`
+    /// requires.
     #[must_use]
-    pub fn open(_mtm: MainThreadMarker) -> waterui_webview::WebView {
+    pub fn controller(_mtm: MainThreadMarker) -> waterui_webview::WebViewController {
         let mut env = Environment::new();
         crate::components::webview::install_service(&mut env);
         env.get::<waterui_webview::WebViewController>()
             .expect("the webview leaf installs its WebViewController")
-            .open()
+            .clone()
+    }
+
+    /// A fresh `WebView` backed by the backend's own `WKWebView`, never
+    /// mounted. `mtm` is the proof the call happened on the real main
+    /// thread, which `WKWebView` requires.
+    #[must_use]
+    pub fn open(mtm: MainThreadMarker) -> waterui_webview::WebView {
+        controller(mtm).open()
     }
 }
 
