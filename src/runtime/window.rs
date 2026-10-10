@@ -27,14 +27,17 @@
 //!     .background(Material::UltraThin);
 //! ```
 
-use std::{fmt::Debug, rc::Rc, sync::Arc};
+use std::{fmt::Debug, future::Future, rc::Rc, sync::Arc};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
-use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
+use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
 use waterui_core::{AnyView, Dynamic, Environment, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
+
+pub use super::window_close::CloseReply;
+use super::window_close::{CloseRequest, Question};
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
@@ -211,6 +214,10 @@ pub struct Window {
     /// identify an application by one icon: unsupported there, not faked
     /// through the Dock. The attribute does not cross the C ABI.
     pub icon: Binding<Option<WindowIcon>>,
+    /// The close-request machine [`Self::on_close_request`] installs into,
+    /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
+    /// window is realized.
+    close_request: CloseRequest,
 }
 
 /// A window's own icon: straight-alpha sRGB RGBA8 pixels and their size.
@@ -684,6 +691,7 @@ impl Window {
             AnyView::new(content)
         });
 
+        let close_request = CloseRequest::new(&state);
         Self {
             title: title.into_computed(),
             closable: true,
@@ -704,6 +712,7 @@ impl Window {
             attention: Binding::container(None),
             resize_increments: None,
             icon: Binding::container(None),
+            close_request,
         }
     }
 
@@ -929,6 +938,72 @@ impl Window {
             .unwrap_or_else(|| self.display_app_id())
     }
 
+    /// Asks `handler` before the window closes.
+    ///
+    /// Every close request — the title-bar close button, the window
+    /// manager's close (X11 `WM_DELETE_WINDOW`, Wayland
+    /// `xdg_toplevel.close`, `WM_CLOSE`), a Close Window menu command,
+    /// `performClose:` or [`WindowHandle::request_close`] — runs the handler
+    /// and applies its [`CloseReply`]: [`Close`](CloseReply::Close) writes
+    /// `state =` [`WindowState::Closed`] and the normal teardown runs,
+    /// [`Cancel`](CloseReply::Cancel) leaves the window open and writes
+    /// nothing. A request arriving while a question is already open is
+    /// dropped — the machine asks one question per window.
+    ///
+    /// Writing `state` to [`WindowState::Closed`] yourself, or
+    /// [`WindowHandle::close`], is not a request and never runs the handler;
+    /// a programmatic close while a question is open drops its future,
+    /// cancelling it. `closable == false` drops a request before the handler
+    /// runs.
+    ///
+    /// The handler extracts from the environment the window renders under —
+    /// a `State`, a service — and its future runs on the runner's local
+    /// executor, so the reply never arrives inside a platform delegate call.
+    ///
+    /// Platform support: Hydrolysis desktop and `AppKit`. Hydrolysis Android,
+    /// `UIKit` and web have no window close request — the handler never runs
+    /// there, and [`WindowHandle::request_close`] panics.
+    #[must_use]
+    pub fn on_close_request<H, Args, Fut>(self, handler: H) -> Self
+    where
+        H: Handler<Args, Fut>,
+        Fut: Future<Output = CloseReply> + 'static,
+    {
+        let mut action = boxed_action(handler);
+        self.close_request
+            .set_hook(Box::new(move |env| Box::pin(action(env)) as Question));
+        self
+    }
+
+    /// Arms close requests with the environment the window renders under —
+    /// a backend calls it when it realizes the window, so
+    /// [`WindowHandle::request_close`] can file before any platform request
+    /// arrives.
+    #[doc(hidden)]
+    pub fn arm_close_requests(&self, env: &Environment) {
+        self.close_request.arm(env, self.closable);
+    }
+
+    /// Files a user close request — the one entry point a backend calls when
+    /// the platform asks to close the window. `env` is the environment the
+    /// window renders under; the call arms the machine with it, so the
+    /// handler extracts from it. `closable == false` drops the request before
+    /// the handler runs.
+    #[doc(hidden)]
+    pub fn request_close(&self, env: &Environment) {
+        self.arm_close_requests(env);
+        self.close_request.request();
+    }
+
+    /// Whether an [`on_close_request`](Self::on_close_request) handler is
+    /// installed — the synchronous verdict a delegate like
+    /// `windowShouldClose:` needs.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_close_handler(&self) -> bool {
+        self.close_request.has_handler()
+    }
+
     /// Get a handle to control the window after showing it.
     #[must_use]
     pub fn handle(&self) -> WindowHandle {
@@ -939,6 +1014,7 @@ impl Window {
             style: self.style.clone(),
             background: self.background.clone(),
             icon: self.icon.clone(),
+            close_request: self.close_request.clone(),
         }
     }
 
@@ -1040,9 +1116,24 @@ pub struct WindowHandle {
     style: Binding<WindowStyle>,
     background: Binding<WindowBackground>,
     icon: Binding<Option<WindowIcon>>,
+    close_request: CloseRequest,
 }
 
 impl WindowHandle {
+    /// Files a close request the window's
+    /// [`on_close_request`](Window::on_close_request) handler decides, as the
+    /// title-bar close button would. With no handler installed the window
+    /// closes immediately; `closable == false` drops the request.
+    /// [`Self::close`] closes without asking.
+    ///
+    /// # Panics
+    ///
+    /// When the window has not been realized yet, and on the platforms with
+    /// no window close request — Hydrolysis Android, `UIKit` and web.
+    pub fn request_close(&self) {
+        self.close_request.request();
+    }
+
     /// Close the window.
     pub fn close(&self) {
         self.state.set(WindowState::Closed);
