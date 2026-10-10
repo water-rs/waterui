@@ -235,16 +235,22 @@ pub struct WebAnswers {
     /// Whether the application enables `video`: the browser's `<video>`
     /// element realizes it (the `video` Hydrolysis feature).
     pub video: bool,
+    /// Whether the application enables the standard `WebView`: an `<iframe>`
+    /// realizes it (the `webview-system` Hydrolysis feature).
+    pub webview: bool,
 }
 
 impl WebAnswers {
     /// The Hydrolysis features the generated wasm32 table enables.
-    const fn hydrolysis_features(self) -> &'static [&'static str] {
+    fn hydrolysis_features(self) -> Vec<&'static str> {
+        let mut features = vec!["web"];
         if self.video {
-            &["web", "video"]
-        } else {
-            &["web"]
+            features.push("video");
         }
+        if self.webview {
+            features.push("webview-system");
+        }
+        features
     }
 }
 
@@ -2875,11 +2881,11 @@ mod tests {
         );
     }
 
-    /// The wasm32 table bridges the browser's `<video>` element exactly when
-    /// the application uses video: an application without it compiles no
-    /// player at all (principle 5).
+    /// The wasm32 table bridges the browser's `<video>` element and the
+    /// `<iframe>` web view exactly when the application uses them: an
+    /// application without them compiles neither bridge (principle 5).
     #[test]
-    fn hydrolysis_wasm_table_bridges_video_only_for_an_app_that_uses_it() {
+    fn hydrolysis_wasm_table_bridges_only_what_the_app_uses() {
         let wasm_features = |web: super::WebAnswers| -> Vec<String> {
             let ctx = all_os_browser(project_ctx(), false, None).with_web(web);
             let cargo_toml =
@@ -2902,10 +2908,26 @@ mod tests {
                 .filter_map(|feature| feature.as_str().map(str::to_string))
                 .collect()
         };
-        assert_eq!(wasm_features(super::WebAnswers { video: false }), ["web"]);
         assert_eq!(
-            wasm_features(super::WebAnswers { video: true }),
+            wasm_features(super::WebAnswers {
+                video: false,
+                webview: false
+            }),
+            ["web"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: true,
+                webview: false
+            }),
             ["web", "video"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: true,
+                webview: true
+            }),
+            ["web", "video", "webview-system"]
         );
     }
 
@@ -6394,7 +6416,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            ctx.web.hydrolysis_features(),
+                            &ctx.web.hydrolysis_features(),
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
