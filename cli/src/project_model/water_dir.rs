@@ -1021,14 +1021,12 @@ pub const fn device_memory_key(
             crate::platform::TargetBackend::Apple,
             crate::platform::TargetPlatform::IOS | crate::platform::TargetPlatform::IOSSimulator,
         ) => Some("apple/ios"),
-        (
-            crate::platform::TargetBackend::Android,
-            crate::platform::TargetPlatform::Android,
-        ) => Some("android/android"),
-        (
-            crate::platform::TargetBackend::Hydrolysis,
-            crate::platform::TargetPlatform::Android,
-        ) => Some("hydrolysis/android"),
+        (crate::platform::TargetBackend::Android, crate::platform::TargetPlatform::Android) => {
+            Some("android/android")
+        }
+        (crate::platform::TargetBackend::Hydrolysis, crate::platform::TargetPlatform::Android) => {
+            Some("hydrolysis/android")
+        }
         _ => None,
     }
 }

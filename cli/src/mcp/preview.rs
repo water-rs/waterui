@@ -172,8 +172,10 @@ impl PreviewTool {
             request::check_toolchain_for_backend(&self.host, request.backend).await?;
         let output_path = self.output_path(&request).await?;
 
-        let android = match request.backend {
-            ResolvedPreviewBackend::Hydrolysis(crate::platform::TargetPlatform::Android) => Some(
+        let android = if request.backend
+            == ResolvedPreviewBackend::Hydrolysis(crate::platform::TargetPlatform::Android)
+        {
+            Some(
                 crate::android::device::AndroidTarget::resolve(
                     &self.host,
                     args.device.as_deref(),
@@ -183,13 +185,12 @@ impl PreviewTool {
                     ),
                 )
                 .await?,
-            ),
-            _ => {
-                if args.device.is_some() {
-                    bail!("`device` applies only with `platform: \"android\"`.");
-                }
-                None
+            )
+        } else {
+            if args.device.is_some() {
+                bail!("`device` applies only with `platform: \"android\"`.");
             }
+            None
         };
 
         match request.backend {

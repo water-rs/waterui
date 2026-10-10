@@ -1196,7 +1196,7 @@ struct DeviceCandidate {
 
 /// The `last_used_device` slot an iOS run's device choice is kept under —
 /// the same one preview and the inspector share for their targets.
-fn ios_device_memory_key() -> &'static str {
+const fn ios_device_memory_key() -> &'static str {
     waterui_cli::water_dir::device_memory_key(
         TargetBackend::Apple.lib_backend(),
         LibTargetPlatform::IOS,
@@ -1907,7 +1907,7 @@ mod tests {
     #[test]
     fn non_interactive_multi_device_error_lists_candidates() {
         let shell = crate::shell::Shell::new(true);
-        let candidates = vec![device_candidate("serial-a"), device_candidate("avd-b")];
+        let candidates = [device_candidate("serial-a"), device_candidate("avd-b")];
         let options: Vec<(&str, &str)> = candidates
             .iter()
             .map(|candidate| (candidate.label.as_str(), candidate.id.as_str()))

@@ -229,7 +229,7 @@ pub mod web;
 /// Ask which device to use among `candidates`, `(label, id)` pairs in the
 /// order a picker shows them. Non-interactive runs cannot pick, so they
 /// fail with the candidate list.
-pub(crate) fn prompt_for_device(
+pub fn prompt_for_device(
     shell: &Shell,
     prompt: &str,
     candidates: &[(&str, &str)],
@@ -262,7 +262,7 @@ pub(crate) fn prompt_for_device(
 /// `memory_key` is the `last_used_device` slot the choice is recorded
 /// under — see [`waterui_cli::water_dir::device_memory_key`]; `None` for a
 /// selection that keeps no memory.
-pub(crate) async fn select_android_target(
+pub async fn select_android_target(
     shell: &Shell,
     host: &Host,
     memory_key: Option<&str>,

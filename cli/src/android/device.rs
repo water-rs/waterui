@@ -225,7 +225,7 @@ impl AndroidTarget {
         device_id: Option<&str>,
         remembered: Option<&str>,
     ) -> eyre::Result<AndroidSelection> {
-        let candidates = Self::candidates(host).await?;
+        let mut candidates = Self::candidates(host).await?;
 
         if let Some(query) = device_id {
             let target = candidates
@@ -239,39 +239,25 @@ impl AndroidTarget {
             });
         }
 
-        let mut stale = None;
-        if let Some(id) = remembered {
-            match candidates
-                .iter()
-                .position(|candidate| candidate.id == id)
-            {
-                Some(index) => {
-                    let target = candidates
-                        .into_iter()
-                        .nth(index)
-                        .expect("the index came from the candidate list")
-                        .into_target();
-                    return Ok(AndroidSelection {
-                        stale: None,
-                        decision: AndroidDecision::Resolved(target),
-                    });
-                }
-                None => stale = Some(id.to_owned()),
+        let stale = if let Some(id) = remembered {
+            if let Some(index) = candidates.iter().position(|candidate| candidate.id == id) {
+                let target = candidates.swap_remove(index).into_target();
+                return Ok(AndroidSelection {
+                    stale: None,
+                    decision: AndroidDecision::Resolved(target),
+                });
             }
-        }
+            Some(id.to_owned())
+        } else {
+            None
+        };
 
         let decision = match candidates.len() {
             0 => eyre::bail!(
                 "No Android devices connected and no emulators available. \
                  Create an emulator with Android Studio or `avdmanager`, or connect a device."
             ),
-            1 => AndroidDecision::Resolved(
-                candidates
-                    .into_iter()
-                    .next()
-                    .expect("one candidate exists")
-                    .into_target(),
-            ),
+            1 => AndroidDecision::Resolved(candidates.swap_remove(0).into_target()),
             _ => AndroidDecision::Ambiguous(candidates),
         };
         Ok(AndroidSelection { stale, decision })
@@ -2348,10 +2334,7 @@ mod tests {
     #[cfg(unix)]
     fn an_unknown_device_id_fails_naming_it() {
         let (_machine, host) = android_machine(&[
-            (
-                "WATERUI_FAKE_ADB_DEVICES",
-                "R5CX1234 device product:caiman",
-            ),
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
             ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
         ]);
 
@@ -2370,10 +2353,7 @@ mod tests {
     #[cfg(unix)]
     fn a_named_avd_resolves_to_the_emulator() {
         let (machine, host) = android_machine(&[
-            (
-                "WATERUI_FAKE_ADB_DEVICES",
-                "R5CX1234 device product:caiman",
-            ),
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
             ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
             ("WATERUI_FAKE_EMULATOR_AVDS", "Medium_Phone_API_37"),
         ]);
@@ -2400,10 +2380,7 @@ mod tests {
     #[cfg(unix)]
     fn a_single_candidate_resolves_without_a_choice() {
         let (_machine, host) = android_machine(&[
-            (
-                "WATERUI_FAKE_ADB_DEVICES",
-                "R5CX1234 device product:caiman",
-            ),
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
             ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
         ]);
         let selection = smol::block_on(super::AndroidTarget::select(&host, None, None))
@@ -2472,9 +2449,12 @@ mod tests {
             ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
         ]);
 
-        let selection =
-            smol::block_on(super::AndroidTarget::select(&host, None, Some("gone-serial")))
-                .expect("a stale memory still resolves");
+        let selection = smol::block_on(super::AndroidTarget::select(
+            &host,
+            None,
+            Some("gone-serial"),
+        ))
+        .expect("a stale memory still resolves");
         assert_eq!(selection.stale.as_deref(), Some("gone-serial"));
         let super::AndroidDecision::Ambiguous(candidates) = selection.decision else {
             panic!("a stale memory leaves the candidates to pick: {selection:?}");

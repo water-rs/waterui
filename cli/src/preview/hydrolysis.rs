@@ -113,9 +113,8 @@ pub async fn render_preview_with_hydrolysis(
         let kotlin = kotlin_toolchain.ok_or_else(|| {
             eyre::eyre!("Internal error: Android preview has no resolved Kotlin toolchain")
         })?;
-        let target = android.ok_or_else(|| {
-            eyre::eyre!("Internal error: Android preview has no resolved device")
-        })?;
+        let target = android
+            .ok_or_else(|| eyre::eyre!("Internal error: Android preview has no resolved device"))?;
         return Box::pin(
             crate::preview::hydrolysis_android::render_preview_with_hydrolysis_android(
                 &request,
