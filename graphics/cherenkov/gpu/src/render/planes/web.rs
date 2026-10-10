@@ -42,7 +42,7 @@ use super::{
 };
 use crate::interop::ExternalFrame;
 use crate::render::path::shape_path;
-use crate::render::present::{OutputRequest, WindowSurface};
+use crate::render::present::{ColorSpaceRequest, OutputRequest, WindowSurface};
 
 /// The most hosted planes on one surface. Each one opens an engine part
 /// above it — a canvas and a full-surface texture — so the budget bounds
@@ -273,7 +273,7 @@ impl DomPlanes {
             size: target.size,
             request: OutputRequest {
                 transparent: target.transparent,
-                color_space: None,
+                color_space: ColorSpaceRequest::Best,
                 sync: crate::DisplaySync::Synchronized,
             },
             serial: page_unique(),

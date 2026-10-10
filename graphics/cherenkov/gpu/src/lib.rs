@@ -295,7 +295,7 @@ impl WindowTarget {
             refresh: cherenkov::DEFAULT_REFRESH,
             output: render::present::OutputRequest {
                 transparent: false,
-                color_space: None,
+                color_space: render::present::ColorSpaceRequest::Best,
                 sync: DisplaySync::Synchronized,
             },
             probe: None,
@@ -312,6 +312,22 @@ impl WindowTarget {
         self
     }
 
+    /// Sets the swapchain's colour-space request (#2445): the best
+    /// advertised pair (the default), the best pair inside a
+    /// [`ColorRange`](interop::ColorRange) interval, or one exact space.
+    /// The surface fails with [`SurfaceError::UnsupportedTarget`] when
+    /// nothing it advertises meets the request — at creation, or on
+    /// Apple, where the engine creates its layers on the main queue, as
+    /// the first render's [`RenderError::Render`].
+    ///
+    /// [`SurfaceError::UnsupportedTarget`]: cherenkov::SurfaceError::UnsupportedTarget
+    /// [`RenderError::Render`]: cherenkov::RenderError::Render
+    #[must_use]
+    pub const fn color_space(mut self, request: interop::ColorSpaceRequest) -> Self {
+        self.output.color_space = request;
+        self
+    }
+
     /// Requires the swapchain's colour space (#98). Without it the engine
     /// negotiates the surface's best advertised pair — an extended or HDR
     /// space where offered, otherwise a reported SDR selection. With it,
@@ -324,7 +340,7 @@ impl WindowTarget {
     /// [`RenderError::Render`]: cherenkov::RenderError::Render
     #[must_use]
     pub const fn require_color_space(mut self, color_space: wgpu::SurfaceColorSpace) -> Self {
-        self.output.color_space = Some(color_space);
+        self.output.color_space = interop::ColorSpaceRequest::Exact(color_space);
         self
     }
 
