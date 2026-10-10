@@ -27,7 +27,7 @@
 //!     .background(Material::UltraThin);
 //! ```
 
-use std::{fmt::Debug, future::Future, pin::Pin, rc::Rc};
+use std::{fmt::Debug, future::Future, rc::Rc};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
@@ -36,7 +36,8 @@ use waterui_core::{AnyView, Dynamic, Environment, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
 
-pub use super::window_close::{CloseReply, CloseRequest};
+pub use super::window_close::CloseReply;
+use super::window_close::CloseRequest;
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
@@ -198,9 +199,8 @@ pub struct Window {
     pub resize_increments: Option<Computed<Size>>,
     /// The close-request machine [`Self::on_close_request`] installs into,
     /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
-    /// window is realized. Backend-facing plumbing — not application surface.
-    #[doc(hidden)]
-    pub close_request: CloseRequest,
+    /// window is realized.
+    close_request: CloseRequest,
 }
 
 /// A connected display, as the backend resolved it for a window's placement.
@@ -559,7 +559,7 @@ impl Window {
             AnyView::new(content)
         });
 
-        let close_request = CloseRequest::new(state.clone(), true);
+        let close_request = CloseRequest::new(&state);
         Self {
             title: title.into_computed(),
             closable: true,
@@ -817,7 +817,7 @@ impl Window {
     ///
     /// Platform support: Hydrolysis desktop and AppKit. Hydrolysis Android,
     /// UIKit and web have no window close request — the handler never runs
-    /// there.
+    /// there, and [`WindowHandle::request_close`] panics.
     #[must_use]
     pub fn on_close_request<H, Args, Fut>(self, handler: H) -> Self
     where
@@ -825,46 +825,38 @@ impl Window {
         Fut: Future<Output = CloseReply> + 'static,
     {
         let mut action = boxed_action(handler);
-        self.close_request.set_hook(Box::new(move |env| {
-            Box::pin(action(env)) as Pin<Box<dyn Future<Output = CloseReply>>>
-        }));
+        self.close_request
+            .set_hook(Box::new(move |env| Box::pin(action(env))));
         self
     }
 
-    /// Files a close request — the entry point every backend calls when the
-    /// platform asks to close the window.
-    ///
-    /// `env` is the application environment the window renders under; the
-    /// request's handler extracts from it. `closable == false` drops the
-    /// request before the handler runs.
+    /// Arms close requests with the environment the window renders under —
+    /// a backend calls it when it realizes the window, so
+    /// [`WindowHandle::request_close`] can file before any platform request
+    /// arrives.
     #[doc(hidden)]
-    pub fn request_close(&self, env: &Environment) {
-        self.close_request.set_closable(self.closable);
-        self.close_request.request(env);
+    pub fn arm_close_requests(&self, env: &Environment) {
+        self.close_request.arm(env, self.closable);
     }
 
-    /// Whether an `on_close_request` handler is installed — the synchronous
-    /// verdict a delegate like `windowShouldClose:` needs.
+    /// Files a user close request — the one entry point a backend calls when
+    /// the platform asks to close the window. `env` is the environment the
+    /// window renders under; the call arms the machine with it, so the
+    /// handler extracts from it. `closable == false` drops the request before
+    /// the handler runs.
+    #[doc(hidden)]
+    pub fn request_close(&self, env: &Environment) {
+        self.arm_close_requests(env);
+        self.close_request.request();
+    }
+
+    /// Whether an [`on_close_request`](Self::on_close_request) handler is
+    /// installed — the synchronous verdict a delegate like
+    /// `windowShouldClose:` needs.
     #[doc(hidden)]
     #[must_use]
     pub fn has_close_handler(&self) -> bool {
-        self.close_request.has_close_handler()
-    }
-
-    /// Arms the close-request machine with the environment the window
-    /// renders under — call it when the backend realizes the window, before
-    /// the first request can arrive.
-    #[doc(hidden)]
-    pub fn arm_close_requests(&self, env: &Environment) {
-        self.close_request.set_closable(self.closable);
-        self.close_request.arm(env);
-    }
-
-    /// A shareable clone of this window's close-request machine, for wiring
-    /// a platform callback that outlives the declaration's scope.
-    #[doc(hidden)]
-    pub fn close_request_gate(&self) -> CloseRequest {
-        self.close_request.clone()
+        self.close_request.has_handler()
     }
 
     /// Get a handle to control the window after showing it.
@@ -981,20 +973,18 @@ pub struct WindowHandle {
 }
 
 impl WindowHandle {
-    /// Files a close request the window's `on_close_request` handler
-    /// decides, as the title-bar close button would. With no handler
-    /// installed the window closes immediately; `closable == false` drops
-    /// the request. [`Self::close`] closes without asking.
-    ///
-    /// Platform support: Hydrolysis desktop and AppKit. Hydrolysis Android,
-    /// UIKit and web have no window close request — nothing asks a handler
-    /// there and the window closes directly.
+    /// Files a close request the window's
+    /// [`on_close_request`](Window::on_close_request) handler decides, as the
+    /// title-bar close button would. With no handler installed the window
+    /// closes immediately; `closable == false` drops the request.
+    /// [`Self::close`] closes without asking.
     ///
     /// # Panics
     ///
-    /// Panics when the window has not been realized yet.
+    /// When the window has not been realized yet, and on the platforms with
+    /// no window close request — Hydrolysis Android, UIKit and web.
     pub fn request_close(&self) {
-        self.close_request.request_armed();
+        self.close_request.request();
     }
 
     /// Close the window.

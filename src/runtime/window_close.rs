@@ -3,15 +3,14 @@
 //! One [`CloseRequest`] rides inside every [`Window`](crate::window::Window)
 //! and is shared by `Rc` with the [`WindowHandle`](crate::window::WindowHandle)s
 //! the window hands out — the per-window sibling of the termination machine in
-//! `termination`. The backend arms the machine with the environment the window
-//! renders under when it realizes the window ([`CloseRequest::arm`]), and files
-//! every close request through the one entry point,
-//! [`CloseRequest::request`]: the title-bar close button, the window manager's
-//! close — X11 `WM_DELETE_WINDOW`, Wayland `xdg_toplevel.close`, `WM_CLOSE` —
-//! a Close Window menu command, `performClose:`, and
-//! [`WindowHandle::request_close`](crate::window::WindowHandle::request_close)
-//! all land there. A `state` write of [`WindowState::Closed`],
-//! [`WindowHandle::close`](crate::window::WindowHandle::close), app
+//! `termination`. The backend arms it with the environment the window renders
+//! under and the window's `closable` when it realizes the window, and files
+//! every user close through `Window::request_close`: the title-bar close
+//! button, the window manager's close — X11 `WM_DELETE_WINDOW`, Wayland
+//! `xdg_toplevel.close`, `WM_CLOSE` — a Close Window menu command and
+//! `performClose:`. [`WindowHandle::request_close`](crate::window::WindowHandle::request_close)
+//! files into the same machine. A `state` write of [`WindowState::Closed`],
+//! [`WindowHandle::close`](crate::window::WindowHandle::close), application
 //! termination and the last-window policy are not requests and never ask.
 //!
 //! With an `on_close_request` handler installed the machine asks it; the
@@ -21,23 +20,23 @@
 //! closes the window immediately; a window declared `closable == false` drops
 //! the request before the handler runs.
 //!
-//! The machine allows one question per window: a request arriving while a
-//! question is open is dropped. A programmatic close while the question is
-//! open closes the window and drops the future, cancelling it, as a
-//! `Required` termination supersedes `on_quit_request` — the machine's
-//! subscription on `window_state` watches for the `Closed` edge. A `Close`
-//! reply that lands after the window already closed is a no-op.
+//! The machine asks one question per window: a request arriving while a
+//! question is open is dropped. The machine watches `state`, so a
+//! programmatic close while the question is open drops the question's task,
+//! cancelling its future, as a `Required` termination supersedes
+//! `on_quit_request` — which is also why a `Close` reply can never land on an
+//! already-closed window.
 //!
-//! Hydrolysis Android, the UIKit runner and the web backend never call
-//! `request` — those surfaces have no window close request — so a handler
-//! installed there simply never runs. Filing a request before the window is
-//! realized panics with a clear message.
+//! Hydrolysis Android, the UIKit runner and the web backend have no window
+//! close request, so they never arm the machine: a handler installed there
+//! never runs, and `WindowHandle::request_close` panics.
 
 use alloc::boxed::Box;
-use alloc::rc::Rc;
+use alloc::rc::{Rc, Weak};
 use core::cell::RefCell;
 use core::fmt;
 use core::future::Future;
+use core::mem;
 use core::pin::Pin;
 
 use executor_core::AnyLocalExecutorTask;
@@ -60,281 +59,186 @@ pub enum CloseReply {
 }
 
 /// A close-request hook erased together with the future it returns.
-type CloseRequestHook = Box<dyn FnMut(&Environment) -> Question>;
+pub(crate) type CloseRequestHook = Box<dyn FnMut(&Environment) -> Question>;
 
 /// The future an `on_close_request` hook returns: the open question.
-type Question = Pin<Box<dyn Future<Output = CloseReply>>>;
+pub(crate) type Question = Pin<Box<dyn Future<Output = CloseReply>>>;
 
-/// The machine's one-question-at-a-time state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    /// No question open; the next request starts one.
-    Idle,
-    /// `on_close_request` is deciding a request.
-    Asking,
+/// What the backend told the machine when it realized the window.
+struct Armed {
+    /// The environment the window renders under; the handler extracts from it.
+    env: Environment,
+    /// The window's declared `closable`.
+    closable: bool,
 }
 
-/// What a single request decides to do next.
-enum Step {
-    /// Ask `on_close_request`: the question its hook returned.
-    Ask(Question),
-    /// No handler stands in the way: write `WindowState::Closed`.
-    Close,
-    /// The request was dropped — `closable` is false, a question is already
-    /// open, or the window is already closed.
-    Ignore,
+/// The machine's one-question-at-a-time state.
+enum Phase {
+    /// No question open; the next request starts one.
+    Idle,
+    /// `on_close_request` is deciding a request. The task is `None` while the
+    /// hook builds the question, and afterwards holds the task answering it —
+    /// kept because dropping it cancels the question's future.
+    Asking(Option<AnyLocalExecutorTask<()>>),
 }
 
 /// Everything `Window`, `WindowHandle` and the question's task share.
 struct Shared {
-    state: State,
-    /// The window's `closable`, mirrored by `Window::request_close` and at
-    /// `arm` so a `WindowHandle::request_close` files against the declared
-    /// value.
-    closable: bool,
-    /// The binding a `Close` reply writes, and the binding the subscription
-    /// in `close_watch` reads to drop an open question on a programmatic
-    /// close.
+    phase: Phase,
+    /// The binding a `Close` reply writes, and the one the machine watches
+    /// for a programmatic close.
     window_state: Binding<WindowState>,
-    /// The environment the window renders under, armed when the backend
-    /// realizes the window — a request filed before then panics.
-    env: Option<Environment>,
+    /// Set when the backend realizes the window; a request before then panics.
+    armed: Option<Armed>,
     hook: Option<CloseRequestHook>,
-    /// The in-flight question's task, kept because dropping it cancels the
-    /// future — how a programmatic close supersedes an open question.
-    asking: Option<AnyLocalExecutorTask<()>>,
-    /// The subscription cancelling `asking` when the window reaches
-    /// `Closed` by any path — the machine's own `Close` write finds no task
-    /// to cancel, so every edge it catches is a programmatic close.
-    /// Installed at construction through a `Weak` to the machine; the guard
-    /// lives here so the subscription dies with the machine.
-    close_watch: Option<<Binding<WindowState> as Signal>::Guard>,
+    /// The subscription dropping the open question when `window_state`
+    /// reaches `Closed` by any path. It lives here so it dies with the machine.
+    _close_watch: <Binding<WindowState> as Signal>::Guard,
 }
 
 /// The close-request machine one [`Window`](crate::window::Window) carries.
 ///
 /// Cloning shares the machine — a `WindowHandle` files requests into the same
-/// machine the backend armed. `CloseRequest` is backend-facing plumbing: the
-/// application surface is [`Window::on_close_request`](crate::window::Window::on_close_request)
-/// and [`WindowHandle::request_close`](crate::window::WindowHandle::request_close).
-#[doc(hidden)]
+/// machine the backend armed.
 #[derive(Clone)]
-pub struct CloseRequest {
+pub(crate) struct CloseRequest {
     inner: Rc<RefCell<Shared>>,
 }
 
 impl fmt::Debug for CloseRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let shared = self.inner.borrow();
         f.debug_struct("CloseRequest")
-            .field("state", &self.inner.borrow().state)
+            .field("asking", &matches!(shared.phase, Phase::Asking(_)))
+            .field("armed", &shared.armed.is_some())
+            .field("has_handler", &shared.hook.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl CloseRequest {
-    /// Builds the machine for a window: `window_state` is the binding a
-    /// `Close` reply writes and the binding watched for a programmatic close.
-    pub(crate) fn new(window_state: Binding<WindowState>, closable: bool) -> Self {
-        let this = Self {
-            inner: Rc::new(RefCell::new(Shared {
-                state: State::Idle,
-                closable,
+    /// Builds the machine for a window whose open state is `window_state`.
+    pub(crate) fn new(window_state: &Binding<WindowState>) -> Self {
+        let inner = Rc::new_cyclic(|machine: &Weak<RefCell<Shared>>| {
+            let machine = machine.clone();
+            let close_watch = window_state.watch(move |context| {
+                if *context.value() == WindowState::Closed
+                    && let Some(inner) = machine.upgrade()
+                {
+                    Self { inner }.cancel_question();
+                }
+            });
+            RefCell::new(Shared {
+                phase: Phase::Idle,
                 window_state: window_state.clone(),
-                env: None,
+                armed: None,
                 hook: None,
-                asking: None,
-                close_watch: None,
-            })),
-        };
-        let weak = Rc::downgrade(&this.inner);
-        let watch = window_state.watch(move |context| {
-            if *context.value() == WindowState::Closed
-                && let Some(inner) = weak.upgrade()
-            {
-                Self { inner }.cancel_asking();
-            }
+                _close_watch: close_watch,
+            })
         });
-        this.inner.borrow_mut().close_watch = Some(watch);
-        this
+        Self { inner }
     }
 
-    /// Installs the `on_close_request` hook — [`Window::on_close_request`]
-    /// delegates here.
+    /// Installs the `on_close_request` hook, replacing any set before.
     pub(crate) fn set_hook(&self, hook: CloseRequestHook) {
         self.inner.borrow_mut().hook = Some(hook);
     }
 
-    /// Mirrors the window's live `closable` into the machine — the file path
-    /// every `Window::request_close` takes, and `arm`.
-    pub fn set_closable(&self, closable: bool) {
-        self.inner.borrow_mut().closable = closable;
-    }
-
-    /// Arms the machine with the environment the window renders under.
-    ///
-    /// A backend calls it when it realizes the window; the handler's
-    /// extractor arguments resolve against this environment. It is idempotent
-    /// — `request` arms the same way — and a request filed through
-    /// [`WindowHandle::request_close`](crate::window::WindowHandle::request_close)
-    /// uses the armed environment.
-    pub fn arm(&self, env: &Environment) {
-        let mut shared = self.inner.borrow_mut();
-        if shared.env.is_none() {
-            shared.env = Some(env.clone());
-        }
+    /// Records the environment the window renders under and its `closable`.
+    pub(crate) fn arm(&self, env: &Environment, closable: bool) {
+        self.inner.borrow_mut().armed = Some(Armed {
+            env: env.clone(),
+            closable,
+        });
     }
 
     /// Whether the application installed an `on_close_request` handler.
-    ///
-    /// A backend reads it where the platform wants a synchronous verdict —
-    /// `windowShouldClose:` returns `NO` only when a handler could refuse.
-    #[must_use]
-    pub fn has_close_handler(&self) -> bool {
+    pub(crate) fn has_handler(&self) -> bool {
         self.inner.borrow().hook.is_some()
     }
 
-    /// Files a close request — the entry point every close path takes.
+    /// Files a close request.
     ///
-    /// `env` is the environment the window renders under; the machine is
-    /// armed with it on the way in. `closable == false` drops the request
-    /// before the handler runs; so does an open question or an already-closed
-    /// window. With no handler the request writes `WindowState::Closed`
-    /// immediately; with one the handler's future runs on the local executor.
-    pub fn request(&self, env: &Environment) {
-        match self.step(env) {
-            Step::Ask(question) => self.ask(question),
-            Step::Close => {
-                // The write sits outside the borrow: a watcher may re-enter
-                // the machine.
-                let window_state = self.inner.borrow().window_state.clone();
-                window_state.set(WindowState::Closed);
-            }
-            Step::Ignore => {}
-        }
-    }
-
-    /// Files a close request on the armed environment — the
-    /// [`WindowHandle::request_close`](crate::window::WindowHandle::request_close)
-    /// path.
+    /// `closable == false`, an open question or an already-closed window
+    /// drops it. With no handler it writes `WindowState::Closed` now; with
+    /// one, the handler's question runs on the local executor. No
+    /// application code runs while the machine is borrowed: a hook that
+    /// closes the window while it builds its question leaves that question
+    /// stale, and it is dropped unasked.
     ///
     /// # Panics
     ///
-    /// Panics when the window was never realized on a backend that arms
-    /// close requests — the backend's `arm` has not run. On a platform with
-    /// no close-request support (Android, UIKit, web) it panics the same
-    /// way: nothing ever arms the machine there.
-    pub(crate) fn request_armed(&self) {
-        let env = {
-            let shared = self.inner.borrow();
-            shared.env.clone().expect(
-                "WindowHandle::request_close called on a window that was never realized, or whose \
-                 platform has no close requests",
-            )
-        };
-        self.request(&env);
-    }
-
-    /// Moves the machine for one request and decides what follows. No
-    /// application code runs while the machine is borrowed: the question's
-    /// future is built from the hook after the borrow ends, so a hook that
-    /// re-enters `request` — or `state.set` — leaves the question stale; it
-    /// is then dropped unasked.
-    fn step(&self, env: &Environment) -> Step {
+    /// When the machine was never armed — the window was never realized, or
+    /// its platform has no window close request (Android, UIKit, web).
+    pub(crate) fn request(&self) {
         let (mut hook, env) = {
             let mut shared = self.inner.borrow_mut();
-            if shared.env.is_none() {
-                shared.env = Some(env.clone());
-            }
-            if !shared.closable
-                || shared.state == State::Asking
+            let armed = shared.armed.as_ref().expect(
+                "a close request was filed for a window that was never realized, or whose \
+                 platform has no window close request (Android, UIKit, web)",
+            );
+            if !armed.closable
+                || matches!(shared.phase, Phase::Asking(_))
                 || shared.window_state.snapshot() == WindowState::Closed
             {
-                return Step::Ignore;
+                return;
             }
+            let env = armed.env.clone();
             let Some(hook) = shared.hook.take() else {
-                return Step::Close;
+                let window_state = shared.window_state.clone();
+                drop(shared);
+                window_state.set(WindowState::Closed);
+                return;
             };
-            shared.state = State::Asking;
-            (hook, env.clone())
+            shared.phase = Phase::Asking(None);
+            (hook, env)
         };
         let question = hook(&env);
         let still_asking = {
             let mut shared = self.inner.borrow_mut();
             shared.hook = Some(hook);
-            shared.state == State::Asking
+            matches!(shared.phase, Phase::Asking(None))
         };
-        if still_asking {
-            Step::Ask(question)
-        } else {
+        if !still_asking {
             // Dropped after the borrow ends: the future is application code.
             drop(question);
-            Step::Ignore
+            return;
         }
-    }
-
-    /// Runs the open question: the answer reaches [`answer`](Self::answer)
-    /// through a local-executor task, kept in `Shared::asking` so a
-    /// programmatic close can cancel it.
-    fn ask(&self, question: Question) {
-        let inner = Rc::clone(&self.inner);
+        // The task holds the machine weakly: the machine owns the task, so a
+        // window dropped with its question open drops — and cancels — it.
+        let machine = Rc::downgrade(&self.inner);
         let task = spawn_local(async move {
             let reply = question.await;
-            Self { inner }.answer(reply);
+            if let Some(inner) = machine.upgrade() {
+                Self { inner }.answer(reply);
+            }
         });
-        self.inner.borrow_mut().asking = Some(task);
+        // `spawn_local` never polls inline, so the question is still open.
+        self.inner.borrow_mut().phase = Phase::Asking(Some(task));
     }
 
-    /// Applies the answered question. A late `Close` to an already-closed
-    /// window is a no-op; a late answer to a question a programmatic close
-    /// already superseded never arrives — the task was cancelled.
+    /// Applies the answered question.
     fn answer(&self, reply: CloseReply) {
-        enum Next {
-            Close(Binding<WindowState>),
-            Nothing,
-        }
-        let (asking, next) = {
+        let close = {
             let mut shared = self.inner.borrow_mut();
-            let asking = shared.asking.take();
-            let next = match (shared.state, reply) {
-                (State::Asking, CloseReply::Close) => {
-                    shared.state = State::Idle;
-                    if shared.window_state.snapshot() == WindowState::Closed {
-                        Next::Nothing
-                    } else {
-                        Next::Close(shared.window_state.clone())
-                    }
-                }
-                (State::Asking, CloseReply::Cancel) => {
-                    shared.state = State::Idle;
-                    Next::Nothing
-                }
-                _ => Next::Nothing,
-            };
-            (asking, next)
+            // The handle is this running task's own: detached, it finishes.
+            if let Phase::Asking(Some(task)) = mem::replace(&mut shared.phase, Phase::Idle) {
+                task.detach();
+            }
+            (reply == CloseReply::Close).then(|| shared.window_state.clone())
         };
-        // The handle is this running task's own: detached, it finishes.
-        if let Some(asking) = asking {
-            asking.detach();
-        }
-        match next {
-            Next::Close(window_state) => window_state.set(WindowState::Closed),
-            Next::Nothing => {}
+        if let Some(window_state) = close {
+            window_state.set(WindowState::Closed);
         }
     }
 
     /// Drops the open question's task, cancelling its future — the
     /// programmatic-close path.
-    fn cancel_asking(&self) {
-        let asking = {
-            let mut shared = self.inner.borrow_mut();
-            if shared.state == State::Asking {
-                shared.state = State::Idle;
-            }
-            shared.asking.take()
-        };
+    fn cancel_question(&self) {
+        let phase = mem::replace(&mut self.inner.borrow_mut().phase, Phase::Idle);
         // Dropped after the borrow ends: cancelling runs the future's drop,
-        // which may report into this machine itself.
-        drop(asking);
+        // which is application code.
+        drop(phase);
     }
 }
 
@@ -343,60 +247,12 @@ mod tests {
     use alloc::rc::Rc;
     use std::cell::Cell;
     use std::future::pending;
-    use std::sync::mpsc;
 
-    use executor_core::LocalExecutor;
-    use executor_core::async_task::{self, AsyncTask, Runnable};
     use waterui_core::binding;
 
+    use super::super::parked_executor::{drain, install as install_executor};
     use super::*;
     use crate::window::Window;
-
-    /// A `spawn_local` executor that parks runnables until [`drain`] runs
-    /// them — a hook future's progress is then observable step by step
-    /// without waiting on any clock. The same harness `termination`'s tests
-    /// use.
-    struct ParkedExecutor;
-
-    thread_local! {
-        static PARKED: (mpsc::Sender<Runnable>, mpsc::Receiver<Runnable>) =
-            mpsc::channel();
-    }
-
-    impl LocalExecutor for ParkedExecutor {
-        type Task<T: 'static> = AsyncTask<T>;
-
-        fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
-        where
-            Fut: Future + 'static,
-        {
-            let (runnable, task) = async_task::spawn_local(fut, |runnable| {
-                PARKED.with(|(sender, _)| {
-                    if let Err(unsent) = sender.send(runnable) {
-                        // The queue is gone at thread teardown; dropping a
-                        // `spawn_local` runnable off its thread panics.
-                        std::mem::forget(unsent.0);
-                    }
-                });
-            });
-            runnable.schedule();
-            task
-        }
-    }
-
-    fn install_executor() {
-        let _ = executor_core::try_init_local_executor(ParkedExecutor);
-    }
-
-    /// Runs every parked runnable, and every one those park in turn, until
-    /// the queue is empty.
-    fn drain() {
-        PARKED.with(|(_, receiver)| {
-            while let Ok(runnable) = receiver.try_recv() {
-                runnable.run();
-            }
-        });
-    }
 
     /// A flag a dropped future reports through — how a cancelled question
     /// shows it died.
@@ -412,13 +268,24 @@ mod tests {
         Window::new("w", binding(WindowState::Normal), || ())
     }
 
+    /// A window whose handler counts its questions and answers `reply`.
+    fn counting(reply: CloseReply) -> (Window, Rc<Cell<u32>>) {
+        let calls = Rc::new(Cell::new(0u32));
+        let window = window().on_close_request({
+            let calls = Rc::clone(&calls);
+            move || {
+                calls.set(calls.get() + 1);
+                async move { reply }
+            }
+        });
+        (window, calls)
+    }
+
     #[test]
     fn a_request_with_no_handler_closes_immediately() {
         install_executor();
-        let env = Environment::new();
         let window = window();
-        window.arm_close_requests(&env);
-        window.request_close(&env);
+        window.request_close(&Environment::new());
         assert_eq!(window.state.snapshot(), WindowState::Closed);
     }
 
@@ -426,37 +293,25 @@ mod tests {
     fn a_cancel_leaves_the_window_open_and_rearms_the_question() {
         install_executor();
         let env = Environment::new();
-        let calls = Rc::new(Cell::new(0u32));
-        let window = window().on_close_request({
-            let calls = Rc::clone(&calls);
-            move || {
-                calls.set(calls.get() + 1);
-                async { CloseReply::Cancel }
-            }
-        });
-        window.arm_close_requests(&env);
+        let (window, calls) = counting(CloseReply::Cancel);
         window.request_close(&env);
-        // The request filed, but the answer is a future: nothing is written
-        // until the executor runs it.
+        // The answer is a future: nothing is written until the executor runs
+        // it.
         assert_eq!(window.state.snapshot(), WindowState::Normal);
         drain();
         assert_eq!(window.state.snapshot(), WindowState::Normal);
         assert_eq!(calls.get(), 1);
 
-        // A refused close leaves the machine idle: the next request asks
-        // again.
         window.request_close(&env);
         drain();
-        assert_eq!(calls.get(), 2);
+        assert_eq!(calls.get(), 2, "a refused close leaves the machine idle");
     }
 
     #[test]
     fn a_close_reply_writes_closed() {
         install_executor();
-        let env = Environment::new();
-        let window = window().on_close_request(|| async { CloseReply::Close });
-        window.arm_close_requests(&env);
-        window.request_close(&env);
+        let (window, _) = counting(CloseReply::Close);
+        window.request_close(&Environment::new());
         assert_eq!(window.state.snapshot(), WindowState::Normal);
         drain();
         assert_eq!(window.state.snapshot(), WindowState::Closed);
@@ -474,16 +329,16 @@ mod tests {
                 pending()
             }
         });
-        window.arm_close_requests(&env);
         window.request_close(&env);
         window.request_close(&env);
-        assert_eq!(calls.get(), 1, "the second request is dropped while asking");
+        window.handle().request_close();
+        drain();
+        assert_eq!(calls.get(), 1, "requests are dropped while asking");
     }
 
-    #[test]
-    fn a_programmatic_close_supersedes_the_question() {
-        install_executor();
-        let env = Environment::new();
+    /// A pending question whose future reports its drop through the returned
+    /// flag.
+    fn pending_question() -> (Window, Rc<Cell<bool>>) {
         let dropped = Rc::new(Cell::new(false));
         let window = window().on_close_request({
             let dropped = Rc::clone(&dropped);
@@ -495,47 +350,41 @@ mod tests {
                 }
             }
         });
-        window.arm_close_requests(&env);
-        window.request_close(&env);
-        window.state.set(WindowState::Closed);
-        // Cancelling marks the task; the future dies when the executor next
-        // turns the cancelled runnable — draining drops it unpolled.
+        (window, dropped)
+    }
+
+    #[test]
+    fn a_programmatic_close_cancels_the_question() {
+        install_executor();
+        let (window, dropped) = pending_question();
+        window.request_close(&Environment::new());
         drain();
-        assert!(
-            dropped.get(),
-            "a programmatic close must drop the open question's future"
-        );
+        window.handle().close();
+        // Cancelling marks the task; the future dies when the executor next
+        // turns the cancelled runnable.
+        drain();
+        assert!(dropped.get(), "a programmatic close drops the question");
         assert_eq!(window.state.snapshot(), WindowState::Closed);
     }
 
     #[test]
-    fn a_late_close_reply_to_a_closed_window_is_a_no_op() {
+    fn dropping_the_window_cancels_the_question() {
         install_executor();
-        let env = Environment::new();
-        let window = window().on_close_request(|| async { CloseReply::Close });
-        window.arm_close_requests(&env);
-        window.request_close(&env);
-        window.state.set(WindowState::Closed);
-        // The question was superseded; draining must not resurrect or panic.
+        let (window, dropped) = pending_question();
+        window.request_close(&Environment::new());
         drain();
-        assert_eq!(window.state.snapshot(), WindowState::Closed);
+        drop(window);
+        drain();
+        assert!(dropped.get(), "the machine owns its question's task");
     }
 
     #[test]
     fn closable_false_drops_the_request_before_the_handler() {
         install_executor();
-        let env = Environment::new();
-        let calls = Rc::new(Cell::new(0u32));
-        let mut window = window().on_close_request({
-            let calls = Rc::clone(&calls);
-            move || {
-                calls.set(calls.get() + 1);
-                async { CloseReply::Close }
-            }
-        });
+        let (mut window, calls) = counting(CloseReply::Close);
         window.closable = false;
-        window.arm_close_requests(&env);
-        window.request_close(&env);
+        window.request_close(&Environment::new());
+        window.handle().request_close();
         drain();
         assert_eq!(calls.get(), 0);
         assert_eq!(window.state.snapshot(), WindowState::Normal);
@@ -544,18 +393,9 @@ mod tests {
     #[test]
     fn a_handle_request_routes_through_the_handler() {
         install_executor();
-        let env = Environment::new();
-        let calls = Rc::new(Cell::new(0u32));
-        let window = window().on_close_request({
-            let calls = Rc::clone(&calls);
-            move || {
-                calls.set(calls.get() + 1);
-                async { CloseReply::Cancel }
-            }
-        });
-        let handle = window.handle();
-        window.arm_close_requests(&env);
-        handle.request_close();
+        let (window, calls) = counting(CloseReply::Cancel);
+        window.arm_close_requests(&Environment::new());
+        window.handle().request_close();
         drain();
         assert_eq!(calls.get(), 1);
         assert_eq!(window.state.snapshot(), WindowState::Normal);
@@ -564,27 +404,17 @@ mod tests {
     #[test]
     fn a_handle_close_bypasses_the_handler() {
         install_executor();
-        let env = Environment::new();
-        let calls = Rc::new(Cell::new(0u32));
-        let window = window().on_close_request({
-            let calls = Rc::clone(&calls);
-            move || {
-                calls.set(calls.get() + 1);
-                async { CloseReply::Cancel }
-            }
-        });
-        let handle = window.handle();
-        window.arm_close_requests(&env);
-        handle.close();
+        let (window, calls) = counting(CloseReply::Cancel);
+        window.arm_close_requests(&Environment::new());
+        window.handle().close();
         drain();
         assert_eq!(calls.get(), 0);
         assert_eq!(window.state.snapshot(), WindowState::Closed);
     }
 
     #[test]
-    #[should_panic(expected = "never realized, or whose platform has no close requests")]
+    #[should_panic(expected = "never realized")]
     fn a_handle_request_before_realization_panics() {
-        let window = window();
-        window.handle().request_close();
+        window().handle().request_close();
     }
 }

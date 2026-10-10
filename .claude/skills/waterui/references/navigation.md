@@ -317,31 +317,36 @@ open from the first frame — start from `default()` for a window that opens on 
 A window that must confirm or veto a close — a terminal with a running shell, an
 editor with unsaved buffers — gates it with `.on_close_request(..)`, which mirrors
 `App::on_quit_request`: the title-bar close button, a window-manager close, the Close
-Window menu command and `handle().request_close()` all file through the handler and
-wait for its `CloseReply`. `handle().close()` and writing `WindowState::Closed`
-straight to the binding close without asking, one question is pending per window at a
-time, and a programmatic close cancels an open question. The handler runs on Hydrolysis
-desktop and AppKit; Android, UIKit and web have no window close request, so it never
-runs there.
+Window menu command and `handle().request_close()` all ask the handler, which takes
+extractors like any action handler and answers a `CloseReply` from its future.
+`Close` closes the window; `Cancel` leaves it open. One question is open per window
+at a time, and further requests are dropped until it is answered. `handle().close()`
+and writing `WindowState::Closed` to the binding close without asking — that is how
+the window closes itself after the user confirms — and cancel an open question.
+Quitting the application asks `on_quit_request`, not the windows. The handler runs on
+Hydrolysis desktop and AppKit; Android, UIKit and web have no window close request,
+so it never runs there and `request_close()` panics.
 
 ```rust
 use waterui::window::CloseReply;
 
-let dirty = binding(true); // unsaved buffers
-let window_state = binding(WindowState::Closed);
+let unsaved = binding(true);
+// While set, the editor shows a "Discard changes?" prompt whose Discard button
+// writes `WindowState::Closed` — a close that does not ask again.
+let confirm_discard = binding(false);
+let window_state = binding(WindowState::Normal);
 
-Window::new("Editor", window_state.clone(), move || editor_content()).on_close_request(
-    move || {
-        let dirty = dirty.snapshot();
-        async move {
-            if dirty {
-                CloseReply::Cancel
-            } else {
-                CloseReply::Close
-            }
+Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
+    let ask = unsaved.snapshot();
+    confirm_discard.set(ask);
+    async move {
+        if ask {
+            CloseReply::Cancel
+        } else {
+            CloseReply::Close
         }
-    },
-)
+    }
+})
 ```
 
 ## Windows that open and close

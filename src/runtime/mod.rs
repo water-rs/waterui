@@ -8,6 +8,8 @@ pub mod fullscreen;
 #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 pub mod inspector;
 pub mod metadata;
+#[cfg(test)]
+mod parked_executor;
 pub mod realization;
 #[cfg(feature = "snackbar")]
 pub mod snackbar;

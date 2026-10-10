@@ -467,21 +467,23 @@ pub fn navigation_block_13() -> waterui::window::Window {
     use waterui::window::CloseReply;
     use waterui::window::{Window, WindowState};
 
-    let dirty = binding(true); // unsaved buffers
-    let window_state = binding(WindowState::Closed);
+    let unsaved = binding(true);
+    // While set, the editor shows a "Discard changes?" prompt whose Discard button
+    // writes `WindowState::Closed` — a close that does not ask again.
+    let confirm_discard = binding(false);
+    let window_state = binding(WindowState::Normal);
 
-    Window::new("Editor", window_state.clone(), move || editor_content()).on_close_request(
-        move || {
-            let dirty = dirty.snapshot();
-            async move {
-                if dirty {
-                    CloseReply::Cancel
-                } else {
-                    CloseReply::Close
-                }
+    Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
+        let ask = unsaved.snapshot();
+        confirm_discard.set(ask);
+        async move {
+            if ask {
+                CloseReply::Cancel
+            } else {
+                CloseReply::Close
             }
-        },
-    )
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
