@@ -45,6 +45,11 @@ on:
           `include_bytes!`s the generated Cherenkov scene fonts — so the
           fonts must exist before the check.
         value: ${{ jobs.scope.outputs.scene-assets }}
+      apple-legs:
+        description: >
+          JSON list of test.yml's `macos` matrix entries — the Apple lint
+          targets with an Apple-gated crate in scope — or `[]`.
+        value: ${{ jobs.scope.outputs.apple-legs }}
 
 jobs:
   scope:
@@ -57,6 +62,7 @@ jobs:
       comment-only: ${{ steps.compute.outputs.comment-only }}
       msrv: ${{ steps.compute.outputs.msrv }}
       scene-assets: ${{ steps.compute.outputs.scene-assets }}
+      apple-legs: ${{ steps.compute.outputs.apple-legs }}
     steps:
       - uses: actions/checkout@v4
         # The diff and the base revision's package graph both need the
@@ -105,6 +111,7 @@ jobs:
               echo "comment-only=false"
               echo "msrv=true"
               echo "scene-assets=true"
+              echo "apple-legs=$(python3 .github/scripts/apple_gated.py --legs workspace)"
             } >> "$GITHUB_OUTPUT"
           else
             uv run .github/scripts/affected.py --base "${{ inputs.base }}"

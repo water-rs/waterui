@@ -415,7 +415,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(domain.density, 1.25);
+        assert_eq!(domain.density.to_bits(), 1.25_f64.to_bits());
         assert!(domain.raster().is_finite());
     }
 
@@ -432,6 +432,6 @@ mod tests {
         }
         assert!(entry.observe(4, (0, 0), 1.25));
         assert!(!entry.observe(4, (0, 0), 1.25));
-        assert_eq!(entry.density, 1.25);
+        assert_eq!(entry.density.to_bits(), 1.25_f64.to_bits());
     }
 }

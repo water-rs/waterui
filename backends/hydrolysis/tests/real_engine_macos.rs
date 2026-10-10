@@ -1,6 +1,6 @@
 //! What only a real `WKWebView` can prove.
 //!
-//! These drive a genuine WebKit engine through the same handle
+//! These drive a genuine `WebKit` engine through the same handle
 //! `MacSystemWebViewController::open` hands the renderer, load pages over a
 //! local HTTP server, and assert on what crosses the bridge in both directions —
 //! the macOS sibling of `waterui-browser-wpe`'s `real_engine` suite, asserting
@@ -23,7 +23,7 @@
 
 #[cfg(target_os = "macos")]
 mod real {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::future::Future;
     use std::pin::pin;
     use std::rc::Rc;
@@ -46,7 +46,7 @@ mod real {
 
     /// How long one wait may take before a scenario gives up.
     ///
-    /// Generous on purpose: WebKit spawns a web process and a network process
+    /// Generous on purpose: `WebKit` spawns a web process and a network process
     /// before the first byte of the page is parsed, and CI runners are slower
     /// than they look.
     const TIMEOUT: Duration = Duration::from_secs(60);
@@ -106,6 +106,94 @@ mod real {
             let reply = answer(payload);
             Box::pin(async move { reply })
         })
+    }
+
+    /// A hosted leaf mounts its content once when its node is built, keeps
+    /// it across frames, and unmounts it the moment the node retires — while
+    /// the window lives on, not when the runtime goes away.
+    fn hosted_node_mounts_once_and_unmounts_when_retired() {
+        use hydrolysis::{
+            FontFamilyResolution, HostedContent, HostedObject, HostedOcclusion, HostedView,
+            SemanticRuntime,
+        };
+        use nami::{Binding, Computed};
+        use objc2::{MainThreadMarker, rc::Retained};
+        use objc2_app_kit::NSView;
+        use waterui_core::{AnyView, Dynamic, Environment, Native, handler::AnyViewBuilder};
+
+        #[derive(Clone)]
+        struct Probe {
+            view: Retained<NSView>,
+            mounts: Rc<Cell<usize>>,
+            unmounts: Rc<Cell<usize>>,
+            focus: Binding<bool>,
+        }
+
+        impl HostedContent for Probe {
+            fn mount(&self, _occlusion: HostedOcclusion) -> HostedObject {
+                self.mounts.set(self.mounts.get() + 1);
+                cherenkov_gpu::interop::apple::HostedView::new(
+                    self.view.clone(),
+                    MainThreadMarker::new().expect("main thread"),
+                )
+            }
+
+            fn unmount(&self) {
+                self.unmounts.set(self.unmounts.get() + 1);
+                self.view.removeFromSuperview();
+            }
+
+            fn focused(&self) -> Computed<bool> {
+                self.focus.clone().into()
+            }
+
+            fn request_focus(&self) {
+                self.focus.set(true);
+            }
+        }
+
+        let mounts = Rc::new(Cell::new(0));
+        let unmounts = Rc::new(Cell::new(0));
+        let probe = Probe {
+            view: NSView::new(MainThreadMarker::new().expect("main thread")),
+            mounts: Rc::clone(&mounts),
+            unmounts: Rc::clone(&unmounts),
+            focus: Binding::bool(false),
+        };
+        let shown = Binding::bool(true);
+        let watched = shown.clone();
+        let mut runtime = SemanticRuntime::new(
+            Environment::new(),
+            AnyViewBuilder::<AnyView>::new(move || {
+                let probe = probe.clone();
+                AnyView::new(Dynamic::watch(watched.clone(), move |shown: bool| {
+                    if shown {
+                        AnyView::new(Native::new(HostedView::new(probe.clone())))
+                    } else {
+                        AnyView::new(())
+                    }
+                }))
+            }),
+            320,
+            240,
+            FontFamilyResolution::Strict,
+        );
+        for _ in 0..3 {
+            runtime.pump();
+        }
+        assert_eq!(mounts.get(), 1, "frames reuse the mounted object");
+        assert_eq!(unmounts.get(), 0, "a live node stays mounted");
+
+        shown.set(false);
+        runtime.pump();
+        assert_eq!(unmounts.get(), 1, "retiring the node unmounts its content");
+        assert_eq!(mounts.get(), 1, "retirement mounts nothing");
+
+        shown.set(true);
+        runtime.pump();
+        assert_eq!(mounts.get(), 2, "a new node mounts the content again");
+        drop(runtime);
+        assert_eq!(unmounts.get(), 2, "closing the window retires the node");
     }
 
     /// Starts the server, opens one web view and wires the shared contract.
@@ -225,7 +313,7 @@ mod real {
             }
         }
 
-        /// One turn of everything this run drives: the page server, WebKit's
+        /// One turn of everything this run drives: the page server, `WebKit`'s
         /// delegate callbacks on the main run loop, and the handler executor.
         fn step(&self) {
             self.serve();
@@ -501,6 +589,8 @@ mod real {
     pub fn run() {
         let executor = TestExecutor(Rc::new(AsyncLocalExecutor::new()));
         executor_core::init_local_executor(executor.clone());
+
+        hosted_node_mounts_once_and_unmounts_when_retired();
 
         navigation_reaches_each_url_and_history_moves_both_ways(&executor);
         a_handler_reply_reaches_the_page_as_its_value(&executor);

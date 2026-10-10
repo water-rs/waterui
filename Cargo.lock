@@ -1749,8 +1749,11 @@ dependencies = [
 name = "cherenkov-cpu"
 version = "0.0.0"
 dependencies = [
+ "arrayvec",
  "cherenkov",
  "cherenkov-oracle",
+ "cherenkov-scene",
+ "cherenkov-shader",
  "filtrate",
  "filtrate-core",
  "half",
@@ -1773,6 +1776,7 @@ dependencies = [
  "cherenkov",
  "cherenkov-oracle",
  "cherenkov-scene",
+ "cherenkov-shader",
  "dispatch2",
  "filtrate",
  "filtrate-core",
@@ -4629,6 +4633,8 @@ dependencies = [
  "waterui-testing",
  "waterui-text",
  "waterui-url",
+ "waterui-video",
+ "waterui-watcher-set",
  "waterui-webview",
  "wayland-client",
  "wayland-protocols",

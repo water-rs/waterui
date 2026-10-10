@@ -5659,14 +5659,16 @@ mod tests {
             .filter(|i| i.meta[1] == PAINT_TEXTURE)
             .map(|i| i.bounds)
             .collect();
+        // Composite bounds are whole texels: the parent's extent and the
+        // scratch region, both integer-valued.
         assert_eq!(
-            composites[0],
-            [0.0, 0.0, 64.0, 64.0],
+            composites[0].map(f32::to_bits),
+            [0.0_f32, 0.0, 64.0, 64.0].map(f32::to_bits),
             "the destructive composite covers the whole parent"
         );
         assert_eq!(
-            composites[1],
-            [1.0, 1.0, 23.0, 23.0],
+            composites[1].map(f32::to_bits),
+            [1.0_f32, 1.0, 23.0, 23.0].map(f32::to_bits),
             "the multiply composite keeps the tight region"
         );
     }
@@ -5723,7 +5725,11 @@ mod tests {
             .iter()
             .find(|i| i.meta[1] == PAINT_TEXTURE)
             .expect("the composite instance");
-        assert_eq!(composite.bounds, [9.0, 9.0, 31.0, 31.0]);
+        // The clip rect padded by a whole texel: integer-valued.
+        assert_eq!(
+            composite.bounds.map(f32::to_bits),
+            [9.0_f32, 9.0, 31.0, 31.0].map(f32::to_bits)
+        );
         assert_ne!(
             composite.meta[3] & (FLAG_HAS_CLIP << 24),
             0,
@@ -5847,6 +5853,8 @@ mod tests {
         );
     }
 
+    /// The strip tests' rects have integer coordinates, so every area and
+    /// every sum of areas is exact and they compare bits.
     fn area(r: Rect) -> f64 {
         r.width() * r.height()
     }
@@ -5877,7 +5885,10 @@ mod tests {
         assert!(disjoint(&strips));
         assert!(inside(&strips, b));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, 1600.0 - (30.0 * 10.0 + 10.0 * 30.0 - 10.0 * 10.0));
+        assert_eq!(
+            total.to_bits(),
+            (1600.0_f64 - (30.0 * 10.0 + 10.0 * 30.0 - 10.0 * 10.0)).to_bits()
+        );
     }
 
     #[test]
@@ -5892,7 +5903,7 @@ mod tests {
         assert!(disjoint(&strips));
         assert!(inside(&strips, b));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, 1600.0 - 300.0);
+        assert_eq!(total.to_bits(), (1600.0_f64 - 300.0).to_bits());
     }
 
     #[test]
@@ -5919,7 +5930,7 @@ mod tests {
         let covered = area(c.wide.intersect(b)) + area(c.tall.intersect(b))
             - area(c.wide.intersect(b).intersect(c.tall.intersect(b)));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, area(b) - covered);
+        assert_eq!(total.to_bits(), (area(b) - covered).to_bits());
     }
 
     fn sorted(clusters: Vec<Cluster>) -> Vec<([u32; 4], Vec<u32>)> {
@@ -6421,6 +6432,97 @@ mod tests {
                 Target::Scratch(0),
                 Target::Part(1),
             ]
+        );
+    }
+
+    /// A layer under an ancestor clip that encloses nothing is invisible
+    /// to the planner as it is to the lowering: a zero-radius circle is a
+    /// clip Core Animation expresses, but `with_clip` skips the holder's
+    /// whole subtree, so the video under it is never promoted and opens
+    /// no part, and the layer painted above it lands in part 0.
+    #[test]
+    fn a_layer_under_an_empty_ancestor_clip_is_not_promoted() {
+        use crate::render::planes::{self, Candidate, Source};
+        use cherenkov::testing::LayerOp;
+        use cherenkov::{Draw as _, Picture, SurfaceTree};
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let atlas = Atlas::new(&device, u64::MAX);
+        let (holder, video, above) = (LayerId::new(1), LayerId::new(2), LayerId::new(3));
+        let mut tree = SurfaceTree::new();
+        for id in [holder, video, above] {
+            tree.apply(LayerOp::Create(id));
+        }
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: holder,
+        });
+        tree.apply(LayerOp::Push {
+            parent: holder,
+            child: video,
+        });
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: above,
+        });
+        tree.apply(LayerOp::Clip(
+            holder,
+            Some(ShapeData::Circle(kurbo::Circle::new((16.0, 16.0), 0.0))),
+        ));
+        let candidates: FxHashMap<LayerId, Candidate> = std::iter::once((
+            video,
+            Candidate {
+                size: (8, 8),
+                raster: Affine::IDENTITY,
+                source: Source::Frame,
+            },
+        ))
+        .collect();
+        let ready = candidates.keys().copied().collect();
+        let plan = planes::plan::<planes::Platform>(&tree, &candidates, &ready);
+        assert!(plan.planes.is_empty(), "promoted: {:?}", plan.planes);
+        assert_eq!(plan.parts(), 1);
+        let mut caches: FxHashMap<LayerId, ContentData> = std::iter::once((
+            above,
+            ContentData::new(Picture::record(|c| {
+                c.fill(Rect::new(16.0, 0.0, 24.0, 8.0), WorkingColor::WHITE);
+            })),
+        ))
+        .collect();
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &FxHashMap::default(),
+        };
+        let mut frame = Frame::default();
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .run(
+                &tree,
+                &mut caches,
+                WorkingColor::BLACK,
+                &glyphs,
+                &FxHashMap::default(),
+                FxHashMap::default(),
+                &plan,
+            )
+            .expect("lowered");
+        assert_eq!(
+            frame
+                .passes
+                .iter()
+                .map(|p| (p.target, p.clear, p.ranges.len()))
+                .collect::<Vec<_>>(),
+            [(Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 1)]
         );
     }
 
