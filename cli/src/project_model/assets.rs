@@ -23,7 +23,8 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use waterui_assets_planner::{
-    BundleManifest, FontDeclaration, FontSource, GraphScope, dependency_font_declarations,
+    BundleManifest, FontDeclaration, FontPlatform, FontSource, GraphScope,
+    dependency_font_declarations, font_platform_scope,
 };
 use zenwave::{Client as _, Method};
 
@@ -54,6 +55,19 @@ struct RegistryFont {
     name: String,
     /// Where the face, or an archive containing it, is fetched from.
     url: String,
+    /// The SHA-256 of what `url` serves; a download that does not match is
+    /// refused.
+    sha256: String,
+}
+
+/// Where a remote font is fetched from, and the digest a download from there
+/// must match when the source pins one.
+#[derive(Debug, Clone, Copy)]
+struct FontOrigin<'a> {
+    url: &'a str,
+    /// Pinned by every built-in registry entry; a crate's `remote_path`
+    /// declaration carries none.
+    sha256: Option<&'a str>,
 }
 
 /// The built-in font registry.
@@ -91,11 +105,14 @@ impl FontRegistry {
     }
 
     /// Where `name` is fetched from, if the registry offers it.
-    fn url(&self, name: &str) -> Option<&str> {
+    fn origin(&self, name: &str) -> Option<FontOrigin<'_>> {
         self.fonts
             .iter()
             .find(|font| font.name == name)
-            .map(|font| font.url.as_str())
+            .map(|font| FontOrigin {
+                url: &font.url,
+                sha256: Some(&font.sha256),
+            })
     }
 }
 const HYDROLYSIS_DEFAULT_FONT_FAMILY: &str = "Roboto";
@@ -310,13 +327,30 @@ fn manifest_font_declarations(
             &font.name,
         )
         .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
+        let platforms =
+            font_platform_scope(font.platforms.clone(), &manifest.package.name, &font.name)
+                .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
         declarations.push(FontDeclaration {
             name: font.name.clone(),
             source,
             crate_name: manifest.package.name.clone(),
+            platforms,
         });
     }
     Ok(declarations)
+}
+
+/// Validate the project's own declarations without resolving a Cargo graph.
+pub async fn validate_manifest_fonts(
+    host: &crate::toolchain::Host,
+    manifest: &crate::project::Manifest,
+    root: &Path,
+) -> eyre::Result<()> {
+    let declarations = manifest_font_declarations(manifest, root)?;
+    if !declarations.is_empty() {
+        resolve_fonts(host, declarations).await?;
+    }
+    Ok(())
 }
 
 /// Scans the project manifest and the built crate's dependencies for font
@@ -325,12 +359,23 @@ fn manifest_font_declarations(
 /// `[[assets.font]]` tables in `Water.toml` declare the app's own fonts and
 /// rank ahead of dependency declarations between equal sources; the
 /// dependency half comes from [`scan_crate_font_declarations`].
+///
+/// Only the declarations a build for one of `platforms` bundles are kept: a
+/// declaration scoped to other platforms is left out. A build whose staged
+/// fonts serve several platforms at once — an `XCFramework` for iOS and
+/// macOS — names them all.
 pub async fn scan_fonts(
     project: &Project,
     build_manifest: &Path,
+    platforms: &[FontPlatform],
 ) -> eyre::Result<Vec<FontDeclaration>> {
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())?;
     declarations.extend(scan_crate_font_declarations(project, build_manifest).await?);
+    declarations.retain(|declaration| {
+        platforms
+            .iter()
+            .any(|platform| declaration.bundled_on(*platform))
+    });
     Ok(declarations)
 }
 
@@ -1156,7 +1201,7 @@ async fn satisfy_font(
         },
         FontSource::Remote { url } => cached_font(host, name, url, cache_dir).await,
         FontSource::BuiltIn => {
-            let Some(url) = registry.url(name) else {
+            let Some(FontOrigin { url, .. }) = registry.origin(name) else {
                 // Declared by name alone and the registry has no such
                 // family: nothing can satisfy it, so this fails here rather
                 // than at the first glyph the shaper draws in some other
@@ -1648,10 +1693,10 @@ async fn fetch_fonts(
                 },
             },
             FontSource::Remote { .. } | FontSource::BuiltIn => {
-                match declaration_url(&decl, &registry) {
-                    Some(url) => {
+                match declaration_origin(&decl, &registry) {
+                    Some(origin) => {
                         if let Some(path) =
-                            cached_font_entry(host, &decl.name, url, cache_dir).await?
+                            cached_font_entry(host, &decl.name, origin.url, cache_dir).await?
                         {
                             FetchOutcome::Satisfied {
                                 name: decl.name.clone(),
@@ -1659,7 +1704,8 @@ async fn fetch_fonts(
                             }
                         } else {
                             let path =
-                                fetch_remote_font(host, &decl.name, url, cache_dir, fetch).await?;
+                                fetch_remote_font(host, &decl.name, origin, cache_dir, fetch)
+                                    .await?;
                             FetchOutcome::Fetched {
                                 name: decl.name.clone(),
                                 path,
@@ -1682,10 +1728,13 @@ async fn fetch_fonts(
 /// The URL a declaration is fetched from, when it has one: `Remote`
 /// declarations carry their own; `BuiltIn` ones resolve through the
 /// registry; `Local` ones have none.
-fn declaration_url<'a>(decl: &'a FontDeclaration, registry: &'a FontRegistry) -> Option<&'a str> {
+fn declaration_origin<'a>(
+    decl: &'a FontDeclaration,
+    registry: &'a FontRegistry,
+) -> Option<FontOrigin<'a>> {
     match &decl.source {
-        FontSource::Remote { url } => Some(url.as_str()),
-        FontSource::BuiltIn => registry.url(&decl.name),
+        FontSource::Remote { url } => Some(FontOrigin { url, sha256: None }),
+        FontSource::BuiltIn => registry.origin(&decl.name),
         FontSource::Local { .. } => None,
     }
 }
@@ -1695,14 +1744,16 @@ fn declaration_url<'a>(decl: &'a FontDeclaration, registry: &'a FontRegistry) ->
 /// `url` lands at `{sha256(url)}.ttf` — or `.zip` for an archive — the same
 /// name the build probes, via a `.partial` sibling so an interrupted
 /// transfer never reads as a cached font. An archive is extracted the way
-/// the build's first resolution extracts it.
+/// the build's first resolution extracts it. A download that does not match
+/// the digest the origin pins is deleted and refused.
 async fn fetch_remote_font(
     host: &crate::toolchain::Host,
     name: &str,
-    url: &str,
+    origin: FontOrigin<'_>,
     cache_dir: &Path,
     fetch: FontFetch,
 ) -> eyre::Result<PathBuf> {
+    let url = origin.url;
     waterui_assets_core::ensure_http_allowed(url)
         .map_err(|error| eyre::eyre!("font '{name}' cannot be fetched from {url}: {error}"))?;
     fs::create_dir_all(cache_dir).await?;
@@ -1717,6 +1768,16 @@ async fn fetch_remote_font(
     if fs::metadata(&partial).await?.len() == 0 {
         let _ = fs::remove_file(&partial).await;
         eyre::bail!("font '{name}' fetched from {url} is empty");
+    }
+    if let Some(expected) = origin.sha256 {
+        let actual = crate::utils::file_sha256(&partial).await?;
+        if actual != expected {
+            let _ = fs::remove_file(&partial).await;
+            eyre::bail!(
+                "font '{name}' fetched from {url} has SHA-256 {actual}, but the registry pins \
+                 {expected}; the download was refused"
+            );
+        }
     }
     fs::rename(&partial, &cache_file).await.wrap_err_with(|| {
         format!(
@@ -1969,7 +2030,6 @@ pub use unified::{build_manifest as plan_library_resources, write_library_resour
 /// The directory name the staged asset bundle carries inside an Android
 /// `src/main/assets/` root.
 pub use unified::ASSET_ROOT_DIR as ANDROID_ASSET_BUNDLE_DIR;
-pub use unified::StagedAndroidAssets;
 
 /// Stage project assets for Apple packaging (Asset Catalog + raw resources).
 ///
@@ -2004,13 +2064,13 @@ pub async fn stage_project_assets_for_android(
 /// `symbols` is the target build's app library — see
 /// [`stage_project_assets_for_apple`].
 ///
-/// Returns the manifest and where the bundle was staged.
+/// Returns the manifest and the staged `waterui_assets` directory.
 pub async fn stage_project_assets_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
+) -> eyre::Result<(BundleManifest, PathBuf)> {
     unified::stage_for_android_library(project, module_dir, symbols, dev_server).await
 }
 
@@ -2100,7 +2160,12 @@ pub async fn stage_hydrolysis_web_fonts(
 ) -> eyre::Result<()> {
     let mut resolved_fonts = resolve_fonts(
         project.host(),
-        scan_fonts(project, &backend_path.join("Cargo.toml")).await?,
+        scan_fonts(
+            project,
+            &backend_path.join("Cargo.toml"),
+            &[FontPlatform::Web],
+        )
+        .await?,
     )
     .await?;
     resolved_fonts.sort_by(|left, right| left.name.cmp(&right.name));
@@ -2422,6 +2487,18 @@ mod tests {
         })
     }
 
+    /// A `FontFetch` stub that writes bytes no registry digest matches.
+    fn place_unpinned_bytes<'a>(
+        _url: &'a str,
+        dest: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<()>> + Send + 'a>> {
+        let dest = dest.to_path_buf();
+        Box::pin(async move {
+            std::fs::write(dest, b"not-the-pinned-font")?;
+            Ok(())
+        })
+    }
+
     /// A `FontFetch` stub whose download always fails.
     fn fail_download<'a>(
         _url: &'a str,
@@ -2448,6 +2525,28 @@ mod tests {
         assert_eq!(declarations[0].name, "Inter");
         assert_eq!(declarations[0].crate_name, "Demo");
         assert!(matches!(declarations[0].source, FontSource::BuiltIn));
+    }
+
+    #[test]
+    fn water_toml_font_platforms_scope_the_builds_that_bundle_it() {
+        let manifest =
+            manifest_with_fonts("[[assets.font]]\nname = \"Inter\"\nplatforms = [\"web\"]");
+        let declarations =
+            manifest_font_declarations(&manifest, Path::new("/project")).expect("declarations");
+        assert!(declarations[0].bundled_on(FontPlatform::Web));
+        assert!(!declarations[0].bundled_on(FontPlatform::Ios));
+    }
+
+    #[test]
+    fn water_toml_font_with_an_unknown_platform_does_not_parse() {
+        let mut document = "[[assets.font]]\nname = \"Inter\"\nplatforms = [\"browser\"]"
+            .parse::<toml_edit::DocumentMut>()
+            .expect("the font fixture parses as TOML");
+        document["package"]["name"] = toml_edit::value("Demo");
+        document["package"]["bundle_identifier"] = toml_edit::value("dev.example.demo");
+        let error = toml::from_str::<crate::project::Manifest>(&document.to_string())
+            .expect_err("an unknown platform must not parse");
+        assert!(error.to_string().contains("browser"), "{error}");
     }
 
     #[test]
@@ -2537,6 +2636,7 @@ mod tests {
                     url: url.to_string(),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             place_font,
@@ -2583,6 +2683,7 @@ mod tests {
                     url: url.to_string(),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             must_not_download,
@@ -2610,6 +2711,7 @@ mod tests {
                     url: "https://example.com/inter.ttf".to_string(),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             fail_download,
@@ -2624,6 +2726,36 @@ mod tests {
         assert!(message.contains("connection refused"), "{message}");
     }
 
+    /// A registry font whose download does not match the digest the registry
+    /// pins is refused, and nothing is left where the build looks.
+    #[test]
+    fn a_registry_download_with_the_wrong_digest_is_refused() {
+        let cache_dir = tempdir().expect("temp cache dir");
+
+        let error = smol::block_on(fetch_fonts(
+            &crate::toolchain::Host::current(),
+            vec![FontDeclaration {
+                name: "Noto Color Emoji".to_string(),
+                source: FontSource::BuiltIn,
+                crate_name: "some-app".to_string(),
+                platforms: None,
+            }],
+            cache_dir.path(),
+            place_unpinned_bytes,
+        ))
+        .expect_err("a digest mismatch must be an error");
+        let message = format!("{error:#}");
+        assert!(message.contains("Noto Color Emoji"), "{message}");
+        assert!(message.contains("SHA-256"), "{message}");
+        assert_eq!(
+            std::fs::read_dir(cache_dir.path())
+                .expect("read the cache dir")
+                .count(),
+            0,
+            "a refused download leaves nothing in the cache"
+        );
+    }
+
     /// A font declared by a name the registry does not know is reported
     /// exactly as the build reports it — fetching cannot fix it.
     #[test]
@@ -2636,6 +2768,7 @@ mod tests {
                 name: "No Such Family".to_string(),
                 source: FontSource::BuiltIn,
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             must_not_download,
@@ -2668,6 +2801,7 @@ mod tests {
                     relative_path: PathBuf::from("assets/fonts/Roboto-Variable.ttf"),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             must_not_download,
@@ -2687,9 +2821,13 @@ mod tests {
     fn test_font_registry_has_entries() {
         let registry = FontRegistry::builtin().expect("registry parses");
         assert!(!registry.fonts.is_empty());
-        assert!(registry.url("Inter").is_some());
-        assert!(registry.url("Roboto").is_some());
-        assert!(registry.url("Noto Sans CJK SC").is_some());
+        assert!(registry.origin("Inter").is_some());
+        assert!(registry.origin("Roboto").is_some());
+        assert!(registry.origin("Noto Sans CJK SC").is_some());
+        assert!(registry.origin("Noto Color Emoji").is_some());
+        // Every entry pins the digest of what its URL serves.
+        assert!(registry.fonts.iter().all(|font| font.sha256.len() == 64
+            && font.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())));
         // Icon pack fonts should NOT be in the built-in registry
         assert!(
             !registry
@@ -2710,11 +2848,11 @@ mod tests {
     #[test]
     fn font_registry_offers_a_math_face() {
         let registry = FontRegistry::builtin().expect("registry parses");
-        let url = registry
-            .url("STIX Two Math")
+        let origin = registry
+            .origin("STIX Two Math")
             .expect("registry must offer an OpenType MATH font");
         assert!(
-            is_zip_url(url),
+            is_zip_url(origin.url),
             "the math font must resolve through the archive path so the single \
              matching face is extracted rather than the whole distribution"
         );
@@ -2825,6 +2963,7 @@ mod tests {
                     relative_path: PathBuf::from("assets/fonts/Roboto-Variable.ttf"),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
         ))
         .expect_err("a missing crate-local font must be an error");

@@ -41,6 +41,8 @@ pub struct Host {
     /// terminal — the policy `crate::utils::command` and [`Host::output`]
     /// apply per invocation.
     std_output: bool,
+    #[cfg(test)]
+    http_responses: Option<std::sync::Arc<std::sync::Mutex<BTreeMap<String, zenwave::Response>>>>,
 }
 
 impl Host {
@@ -56,6 +58,8 @@ impl Host {
             cwd: env::current_dir().expect("process must have a working directory"),
             app_dirs: default_app_dirs(),
             std_output: false,
+            #[cfg(test)]
+            http_responses: None,
         }
     }
 
@@ -102,7 +106,44 @@ impl Host {
             cwd: env::current_dir().expect("process must have a working directory"),
             app_dirs: Vec::new(),
             std_output: false,
+            #[cfg(test)]
+            http_responses: Some(std::sync::Arc::default()),
         }
+    }
+
+    /// Fetch a URL using this host's explicitly supplied request headers.
+    pub(crate) async fn http_get(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<zenwave::Response, zenwave::Error> {
+        use zenwave::Client as _;
+
+        #[cfg(test)]
+        if let Some(responses) = &self.http_responses {
+            return Ok(responses
+                .lock()
+                .expect("HTTP fixture lock")
+                .remove(url)
+                .unwrap_or_else(|| panic!("unexpected HTTP request: {url}")));
+        }
+        let mut client = zenwave::client();
+        let mut request = client.method(zenwave::Method::GET, url)?;
+        for (name, value) in headers {
+            request = request.header(*name, *value)?;
+        }
+        request.await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_http_response(self, url: &str, response: zenwave::Response) -> Self {
+        self.http_responses
+            .as_ref()
+            .expect("HTTP fixtures require a declared host")
+            .lock()
+            .expect("HTTP fixture lock")
+            .insert(url.to_owned(), response);
+        self
     }
 
     /// Override the working directory (builder-style).
@@ -921,9 +962,8 @@ mod tests {
         let host = machine.host(Vec::<(String, String)>::new());
         smol::block_on(async {
             let mut child = host
-                .command_in_own_process_group("/bin/sh")
-                .arg("-c")
-                .arg("/bin/sleep 60")
+                .command_in_own_process_group("/bin/sleep")
+                .arg("60")
                 .kill_on_drop(true)
                 .spawn()
                 .expect("spawn a child through the process-group seam");

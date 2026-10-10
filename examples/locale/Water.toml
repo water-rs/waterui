@@ -3,3 +3,22 @@ waterui_path = "../.."
 [package]
 name = "Locale Example"
 bundle_identifier = "com.waterui.example.locale"
+
+# A browser has no system fonts, so a web build carries a face for each
+# language name the picker shows in its own script; Cyrillic is covered by
+# Roboto. The native backends use the platform's own.
+[[assets.font]]
+name = "Noto Sans CJK SC"
+platforms = ["web"]
+
+[[assets.font]]
+name = "Noto Sans CJK TC"
+platforms = ["web"]
+
+[[assets.font]]
+name = "Noto Sans CJK JP"
+platforms = ["web"]
+
+[[assets.font]]
+name = "Noto Sans CJK KR"
+platforms = ["web"]

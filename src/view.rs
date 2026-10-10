@@ -71,11 +71,16 @@ use waterui_core::id::TaggedView;
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
 
+/// Plays an impact haptic. `Haptic::impact` is async; the event that
+/// triggers it does not wait for it.
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
-    if let Err(error) = Haptic::impact(intensity) {
-        tracing::debug!(%error, "failed to trigger impact haptic");
-    }
+    spawn_local(async move {
+        if let Err(error) = Haptic::impact(intensity).await {
+            tracing::debug!(%error, "failed to trigger impact haptic");
+        }
+    })
+    .detach();
 }
 
 /// Extension trait for views, adding common styling and configuration methods.

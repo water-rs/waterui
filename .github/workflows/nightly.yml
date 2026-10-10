@@ -147,11 +147,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The instrumented run executes the styled test targets, which
-      # resolve the installed test-font families and read the generated
-      # fixtures — the repository stores none of them.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # The instrumented nextest run executes the styled test targets;
+      # nextest's fixture setup scripts produce their fonts and media
+      # through `uv run` (`.config/nextest.toml`).
+      - uses: astral-sh/setup-uv@v6
       # The instrumented nextest run executes the Cherenkov tests that
       # read the generated fonts and scenes/corpus. Neither is committed.
       - name: Generate Cherenkov scene assets
@@ -246,8 +245,8 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The cli's test binaries `include_bytes!` the generated Roboto fixture.
-      - uses: ./.github/actions/generate-test-assets
+      # The nextest run's `cli-roboto` setup script invokes `uv run`.
+      - uses: astral-sh/setup-uv@v6
       # The `create --template web` tests scaffold and build a Vite frontend.
       - uses: oven-sh/setup-bun@v2
       - run: cargo nextest run --locked --profile ci -p waterui-cli --run-ignored ignored-only

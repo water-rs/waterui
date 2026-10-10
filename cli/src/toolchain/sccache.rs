@@ -45,7 +45,7 @@ use crate::{
 /// failed build. One client of our own beforehand is the serialization point:
 /// once it returns, the socket is bound and every client Cargo spawns
 /// connects to it instead of trying to create it. Across `water` processes
-/// the per-user start lock in [`start_server`] serializes the same step.
+/// the per-user start lock in `start_server` serializes the same step.
 ///
 /// # Errors
 /// Returns an error when the socket directory under the user's Water home
