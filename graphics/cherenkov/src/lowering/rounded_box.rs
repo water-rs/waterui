@@ -238,7 +238,6 @@ fn cbrt(x: f32) -> f32 {
 /// form where it has three.
 #[expect(
     clippy::manual_clamp,
-    clippy::suboptimal_flops,
     reason = "the WGSL `cubic_root` verbatim: WGSL `clamp` is `min(max(·, lo), hi)`"
 )]
 fn cubic_root(c3: f32, c1: f32, c0: f32) -> f32 {

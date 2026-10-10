@@ -36,6 +36,12 @@ fn main() {
         hydrolysis_closable_windows: {
             all(hydrolysis_winit, any(target_os = "macos", target_os = "windows", free_unix))
         },
+        // The winit desktops whose host answers the runner's direct queries:
+        // the live pointer position, a monitor's work area, and the
+        // activation attributes winit leaves unset. iOS has none of them.
+        hydrolysis_desktop_queries: {
+            any(target_os = "macos", target_os = "windows", hydrolysis_wayland_platform)
+        },
         // The macOS `WKWebView` bridge needs a real window: it is hosted on a
         // compositor plane under the winit window's AppKit view, so a headless
         // build (the renderer `waterui-testing` drives, a `web` build) has

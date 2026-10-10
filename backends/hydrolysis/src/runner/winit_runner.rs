@@ -1221,6 +1221,7 @@ impl WinitRunner {
         };
         // The activation parts window attributes cannot express, applied
         // before the window maps (see `with_active` above).
+        #[cfg(hydrolysis_desktop_queries)]
         crate::runner::placement::apply_activation(
             event_loop,
             runtime.platform.native_window(),

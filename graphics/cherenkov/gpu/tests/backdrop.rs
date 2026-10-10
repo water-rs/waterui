@@ -901,11 +901,8 @@ fn far_members_take_two_regions() -> Result<(), Box<dyn std::error::Error>> {
     // two-region one-group render and the two single-member groups.
     for y in (0..96).chain(416..512) {
         for x in 0..512 {
-            assert_eq!(
-                pixel(&readback_a, x, y),
-                pixel(&readback_b, x, y),
-                "pixel {x},{y} differs"
-            );
+            // Same shader arithmetic on the same inputs: the comparison is byte-identity.
+            assert_eq!(pixel(&readback_a, x, y).map(f32::to_bits), pixel(&readback_b, x, y).map(f32::to_bits), "pixel {x},{y} differs");
         }
     }
     Ok(())
@@ -1832,11 +1829,8 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
     let shared = wait!(render(&engine, true))?;
     for y in 8..56 {
         for x in 600..840 {
-            assert_eq!(
-                pixel(&alone, x, y),
-                pixel(&shared, x, y),
-                "member pixel ({x}, {y}) depends on the other member"
-            );
+            // Same shader arithmetic on the same inputs: the comparison is byte-identity.
+            assert_eq!(pixel(&alone, x, y).map(f32::to_bits), pixel(&shared, x, y).map(f32::to_bits), "member pixel ({x}, {y}) depends on the other member");
         }
     }
     Ok(())
