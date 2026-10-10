@@ -1590,6 +1590,65 @@ fn frame_transaction_consumes_a_focused_fields_caret_redraw() {
     assert_eq!(runtime.presented_frames, presented + 1);
 }
 
+/// A redraw request raised before a transaction's render is served by that
+/// render, so the frame schedules no successor (water-rs/waterui#2325): an
+/// empty Choreographer callback per change was the Android symptom. Only a
+/// request raised after the render — an animation asking for its next
+/// frame — counts toward the transaction's continuation.
+#[test]
+fn a_frame_transaction_serves_redraws_raised_before_its_render() {
+    use super::window::{FrameDemand, FrameTransaction};
+
+    let transaction = FrameTransaction::default();
+    let mut runtime = test_runtime_window();
+    let env = crate::renderer::tests::test_environment();
+    let mut now = Instant::now();
+
+    // Settle the mount frames; the window must be idle before the change.
+    let mut frames = 0;
+    while frames < 60 && pump_frame_transaction(&mut runtime, &transaction, &env, now) {
+        now += Duration::from_millis(16);
+        frames += 1;
+    }
+    assert!(frames < 60, "the window never went idle");
+
+    // A reactive mark between frames is the state change that posted this
+    // frame; `advance_runtime`'s dirty-mark path then requests the refresh
+    // and the redraw — demand this render serves in full.
+    now += Duration::from_millis(16);
+    runtime.renderer.context_mark_layout();
+    assert!(
+        !pump_frame_transaction(&mut runtime, &transaction, &env, now),
+        "a redraw request the frame renders must not schedule an empty successor"
+    );
+
+    // The same request raised after the render is the continuation path: it
+    // schedules the next frame.
+    now += Duration::from_millis(16);
+    runtime.renderer.context_mark_layout();
+    transaction.begin();
+    let _ = advance_runtime(&mut runtime, &env, now);
+    let surface_attached = !runtime.platform.is_occluded();
+    assert!(FrameTransaction::take_render_request(
+        &mut runtime,
+        surface_attached,
+        HeadlessPlatformWindow::take_redraw_request,
+    ));
+    assert!(render_window(&mut runtime, &env, &mut || false));
+    runtime.request_redraw();
+    assert!(
+        transaction.finish(
+            runtime.platform.is_occluded(),
+            FrameDemand {
+                mode: runtime.mode,
+                redraw_pending: runtime.platform.take_redraw_request(),
+                signals_pending: runtime.renderer.has_pending_frame_request(),
+            },
+        ),
+        "a redraw request raised after the render must schedule another frame"
+    );
+}
+
 fn pump_frame_transaction(
     runtime: &mut RuntimeWindow<HeadlessPlatformWindow>,
     transaction: &super::window::FrameTransaction,
@@ -1601,7 +1660,14 @@ fn pump_frame_transaction(
     transaction.begin();
     let _ = advance_runtime(runtime, env, now);
     let surface_attached = !runtime.platform.is_occluded();
-    if FrameTransaction::take_render_request(runtime, surface_attached) {
+    // The platform's redraw latch drains at the render boundary, the same
+    // place `AndroidSession::on_frame` drains `redraw_pending`: a request
+    // raised before the render is served by it.
+    if FrameTransaction::take_render_request(
+        runtime,
+        surface_attached,
+        HeadlessPlatformWindow::take_redraw_request,
+    ) {
         assert!(render_window(runtime, env, &mut || false));
     }
     transaction.finish(

@@ -308,6 +308,7 @@ fn bind_root(
         };
         let mut declaration = declaration.borrow_mut();
         let toolbar = declaration.toolbar.take();
+        declaration.arm_close_requests(&observed_env);
         *observed_binding.borrow_mut() = Some(crate::windows::bind_root_window(
             window,
             root,
@@ -323,6 +324,9 @@ fn bind_root(
             &declaration.background.computed(),
             declaration.closable,
             declaration.resizable,
+            declaration
+                .has_close_handler()
+                .then(|| declaration.handle()),
             mtm,
         ));
     });

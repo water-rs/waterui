@@ -25,8 +25,8 @@ mod imp {
     use waterui::animation::Animation;
     use waterui::reactive::{Binding, Computed, Signal};
     use waterui::window::{
-        ResolvedWindowBackground, UserAttention, Window, WindowBackground, WindowLevel,
-        WindowState, WindowStyle as WuiStyle, resolve_background,
+        ResolvedWindowBackground, UserAttention, Window, WindowBackground, WindowHandle,
+        WindowLevel, WindowState, WindowStyle as WuiStyle, resolve_background,
     };
     use waterui_backend_core::Environment;
 
@@ -102,6 +102,8 @@ mod imp {
     )]
     pub fn realize(declaration: Window, env: &Environment, mtm: MainThreadMarker) -> WindowHost {
         let mut keepalive = KeepAlive::default();
+
+        declaration.arm_close_requests(env);
 
         let style = style_mask(
             declaration.style.snapshot(),
@@ -186,6 +188,9 @@ mod imp {
             let publish = publish_state.clone();
             move || publish(WindowState::Closed)
         });
+        if declaration.has_close_handler() {
+            window.on_should_close(close_gate(declaration.handle()));
+        }
         window.on_miniaturized({
             let publish = publish_state.clone();
             move || publish(WindowState::Minimized)
@@ -393,6 +398,7 @@ mod imp {
         background: &Computed<WindowBackground>,
         closable: bool,
         resizable: bool,
+        close_requests: Option<WindowHandle>,
         mtm: MainThreadMarker,
     ) -> RootWindowBinding {
         let window = Rc::new(cocoa_ui::appkit::Window::adopt(mtm, window));
@@ -442,6 +448,10 @@ mod imp {
         let (applying_state, publish_state) = state_publisher(state);
         wire_frame(&window, &mut keepalive, frame, &publish_state);
         let keepalive = wire_state(&window, keepalive, state, applying_state, publish_state);
+
+        if let Some(handle) = close_requests {
+            window.on_should_close(close_gate(handle));
+        }
 
         RootWindowBinding {
             _window: window,
@@ -579,6 +589,19 @@ mod imp {
             } else {
                 WindowState::Normal
             });
+        }
+    }
+
+    /// The `windowShouldClose:` answer of a window with an `on_close_request`
+    /// handler, for both window kinds: file the request through the armed
+    /// window's handle and veto the platform close. The handler answers on
+    /// the runner's executor; a `Close` reply writes `Closed`, and the state
+    /// wiring turns it into `NSWindow.close`, which does not ask again.
+    /// Without a handler no gate is installed and `AppKit` closes outright.
+    fn close_gate(handle: WindowHandle) -> impl Fn() -> bool + 'static {
+        move || {
+            handle.request_close();
+            false
         }
     }
 
