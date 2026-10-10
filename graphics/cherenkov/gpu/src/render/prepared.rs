@@ -6,6 +6,7 @@ use std::sync::Arc;
 use rustc_hash::FxHashMap;
 
 use cherenkov::kurbo::{Affine, Line, PathEl, Rect};
+use cherenkov::lowering::rounded_box::{BoxForm, box_form};
 use cherenkov::{
     BlendMode, BlendSpace, Command, Extend, FillRule, ImageId, ImagePattern, Interpolation, Paint,
     RenderError, ShapeData,
@@ -50,107 +51,21 @@ pub struct Boxed {
     pub bounds: Rect,
 }
 
-/// Whether `shape` encloses nothing: a line, or a circle or ellipse with a
-/// radius that is not positive. Filled it draws nothing, and as a clip it
-/// cuts its whole subtree away — the lowering skips that subtree, and the
-/// plane planner never promotes a layer inside it.
-pub fn encloses_nothing(shape: &ShapeData) -> bool {
-    match shape {
-        ShapeData::Line(_) => true,
-        ShapeData::Circle(c) => c.radius <= 0.0,
-        ShapeData::Ellipse(e) => {
-            let radii = e.radii();
-            radii.x <= 0.0 || radii.y <= 0.0
-        }
-        ShapeData::Rect(_)
-        | ShapeData::RoundedRect(_)
-        | ShapeData::Continuous(_)
-        | ShapeData::Path { .. } => false,
-    }
-}
-
 /// Converts a semantic shape into a centred rounded box plus the local
-/// transform that centres it.
+/// transform that centres it: the shared [`box_form`] mapping, packed as
+/// instance data.
 ///
-/// A shape that [`encloses_nothing`] has no box, so it returns `None`.
+/// A shape without area draws nothing, so it returns `None`.
 pub fn box_shape(shape: &ShapeData) -> Result<Option<Boxed>, RenderError> {
-    if encloses_nothing(shape) {
-        return Ok(None);
+    match box_form(shape) {
+        BoxForm::Box { extra, shape } => Ok(Some(Boxed {
+            extra,
+            shape: shape.into(),
+            bounds: rect_around_origin(shape.half),
+        })),
+        BoxForm::Empty => Ok(None),
+        BoxForm::Path => Err(RenderError::Unsupported(names::PATH)),
     }
-    let boxed = match shape {
-        ShapeData::Rect(r) => {
-            let half = [f32_f64(r.width() / 2.0), f32_f64(r.height() / 2.0)];
-            Boxed {
-                extra: Affine::translate(r.center().to_vec2()),
-                shape: Shape::rect(half),
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::RoundedRect(rr) => {
-            let r = rr.rect();
-            let half = [f32_f64(r.width() / 2.0), f32_f64(r.height() / 2.0)];
-            let radii = clamped_radii(rr.radii(), half);
-            Boxed {
-                extra: Affine::translate(r.center().to_vec2()),
-                shape: Shape {
-                    half,
-                    aspect: 1.0,
-                    exponent: 2.0,
-                    radii,
-                },
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::Continuous(c) => {
-            let r = c.rect;
-            let half = [f32_f64(r.width() / 2.0), f32_f64(r.height() / 2.0)];
-            let radii = clamped_radii(c.radii, half);
-            Boxed {
-                extra: Affine::translate(r.center().to_vec2()),
-                shape: Shape {
-                    half,
-                    aspect: 1.0,
-                    exponent: f32_f64(c.smoothing).clamp(0.0, 1.0).mul_add(2.0, 2.0),
-                    radii,
-                },
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::Circle(c) => {
-            let r = c.radius;
-            let half = [f32_f64(r), f32_f64(r)];
-            Boxed {
-                extra: Affine::translate(c.center.to_vec2()),
-                shape: Shape {
-                    half,
-                    aspect: 1.0,
-                    exponent: 2.0,
-                    radii: [f32_f64(r); 4],
-                },
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::Ellipse(e) => {
-            let radii_v = e.radii();
-            let (a, b) = (radii_v.x, radii_v.y);
-            let half = [f32_f64(a), f32_f64(b)];
-            Boxed {
-                extra: Affine::translate(e.center().to_vec2()) * Affine::rotate(e.rotation()),
-                shape: Shape {
-                    half,
-                    aspect: f32_f64(b / a),
-                    exponent: 2.0,
-                    radii: [f32_f64(a); 4],
-                },
-                bounds: rect_around_origin(half),
-            }
-        }
-        ShapeData::Line(_) => unreachable!("a line encloses nothing"),
-        ShapeData::Path { .. } => {
-            return Err(RenderError::Unsupported(names::PATH));
-        }
-    };
-    Ok(Some(boxed))
 }
 
 fn rect_around_origin(half: [f32; 2]) -> Rect {
@@ -160,16 +75,6 @@ fn rect_around_origin(half: [f32; 2]) -> Rect {
         f64::from(half[0]),
         f64::from(half[1]),
     )
-}
-
-fn clamped_radii(radii: kurbo::RoundedRectRadii, half: [f32; 2]) -> [f32; 4] {
-    let limit = f64::from(half[0].min(half[1]));
-    [
-        f32_f64(radii.top_left.clamp(0.0, limit)),
-        f32_f64(radii.top_right.clamp(0.0, limit)),
-        f32_f64(radii.bottom_right.clamp(0.0, limit)),
-        f32_f64(radii.bottom_left.clamp(0.0, limit)),
-    ]
 }
 
 /// The blur sigma the shader integrates against, modelling the oracle's

@@ -1749,8 +1749,11 @@ dependencies = [
 name = "cherenkov-cpu"
 version = "0.0.0"
 dependencies = [
+ "arrayvec",
  "cherenkov",
  "cherenkov-oracle",
+ "cherenkov-scene",
+ "cherenkov-shader",
  "filtrate",
  "filtrate-core",
  "half",

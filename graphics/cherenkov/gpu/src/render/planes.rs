@@ -32,8 +32,8 @@ use cherenkov::{BlendMode, Display, LayerId, RenderError, ShapeData, SurfaceErro
 
 use crate::interop::ExternalFrame;
 use crate::render::lower::axis_aligned;
-use crate::render::prepared::encloses_nothing;
 use crate::render::present::Presenter;
+use cherenkov::lowering::rounded_box::encloses_nothing;
 
 #[cfg(target_vendor = "apple")]
 mod animation;
