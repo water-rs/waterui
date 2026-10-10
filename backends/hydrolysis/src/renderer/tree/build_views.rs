@@ -265,17 +265,26 @@ impl RenderNode {
         Self::build_widget(renderer, shape, stretch, env)
     }
 
-    /// A `WebView` reaching the backend without a `Hook<WebView>` engine has
-    /// nothing to draw it — a missing realization, not a drawable stand-in.
-    /// The macOS bridge is no different: `hydrolysis_macos_system_webview`'s
-    /// record has no native-view layer to present the `WKWebView` through,
-    /// so it panics at build like every other engine-less path.
+    /// Mounts the system engine through the hosted-content leaf: `WKWebView`
+    /// on macOS, an `<iframe>` on the web.
     pub(super) fn build_webview(
-        _webview: WebView,
-        _env: &Environment,
-        _renderer: &mut SemanticCore,
+        webview: &WebView,
+        env: &Environment,
+        renderer: &SemanticCore,
     ) -> Self {
-        unsupported_webview()
+        #[cfg(hydrolysis_system_webview)]
+        {
+            Self::build_hosted(
+                crate::widgets::platform::webview::hosted(webview),
+                env,
+                renderer,
+            )
+        }
+        #[cfg(not(hydrolysis_system_webview))]
+        {
+            let _ = (webview, env, renderer);
+            unsupported_webview()
+        }
     }
 
     /// Build a persistent spacer node: a no-op render with zero intrinsic; it

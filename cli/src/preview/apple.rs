@@ -180,7 +180,7 @@ pub async fn render_preview_with_apple(
     dynamic_runtime::retarget_module(request.host, executable, &staged_runtime).await?;
     dynamic_runtime::prepare_host_runtime(request.host, &staged_runtime).await?;
 
-    let symbols = built.app_symbols()?;
+    let symbols = built.app_symbols().await?;
     stage_apple_preview_resources(&project, &symbols).await?;
     run_preview_binary(
         &project,

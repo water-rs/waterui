@@ -621,7 +621,9 @@ impl WebViewHandle for FfiWebViewHandle {
         clippy::future_not_send,
         reason = "WaterUI webview bridge futures resolve on the main-thread local executor and carry non-`Send` `Str` payloads by design"
     )]
-    fn get_cookies(&self) -> impl core::future::Future<Output = Vec<Cookie<'static>>> {
+    fn get_cookies(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
         unsafe extern "C" fn cookies_callback(data: *mut (), result: WuiStr) {
             // SAFETY: `data` is the sender this callback was registered with, boxed
             // by the caller below; the backend invokes the callback once, so the box
@@ -655,22 +657,24 @@ impl WebViewHandle for FfiWebViewHandle {
 
         async move {
             // A web view torn down while the query was in flight drops the
-            // callback without invoking it; that is a teardown race, not a
-            // reason to suspend the caller's task forever.
-            let Ok(text) = receiver.recv().await else {
-                return Vec::new();
-            };
+            // callback without invoking it; that is a teardown race, and the
+            // query fails rather than reporting an empty store.
+            let text = receiver.recv().await.map_err(|_| {
+                waterui_core::Error::msg(
+                    "the web view was torn down before it answered the cookie query",
+                )
+            })?;
             text.as_str()
                 .lines()
-                .filter_map(|line| match Cookie::parse(line.to_string()) {
-                    Ok(cookie) => Some(cookie.into_owned()),
-                    Err(error) => {
-                        // The store holds whatever the pages put there, so one
-                        // unparseable entry must not take down the app inside a
-                        // getter.
-                        tracing::warn!(%error, "skipping a cookie the web view could not parse");
-                        None
-                    }
+                .map(|line| {
+                    // The line itself stays out of the error: a cookie line
+                    // carries the value, and cookie values are secrets.
+                    Cookie::parse(line.to_string())
+                        .map(cookie::Cookie::into_owned)
+                        .map_err(|error| {
+                            waterui_core::Error::new(error)
+                                .context("the web view returned a cookie that does not parse")
+                        })
                 })
                 .collect()
         }

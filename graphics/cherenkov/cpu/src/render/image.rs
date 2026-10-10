@@ -187,6 +187,10 @@ mod tests {
             format: ImageFormat::Rgba8,
         };
         let decoded = CpuImage::decode(&image).expect("decode");
-        assert_eq!(decoded.pixels[0], [1.0, 0.0, 0.0, 1.0]);
+        // 255/255 and 0/255 decode to exactly one and zero under the identity transfer.
+        assert_eq!(
+            decoded.pixels[0].map(f32::to_bits),
+            [1.0, 0.0, 0.0, 1.0].map(f32::to_bits)
+        );
     }
 }

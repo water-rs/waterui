@@ -393,7 +393,8 @@ pub fn navigation_block_11(env: Environment) -> App {
 // with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
 // `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`
 // with a colour and a material, `.background(..)` with a Color or a Material,
-// the three `WindowBackground` variants, `.resizable(bool)`,
+// the three `WindowBackground` variants, `.icon(..)` with a `WindowIcon` or a
+// `Binding<Option<WindowIcon>>`, `set_icon(..)`, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
 // `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
 // `WindowHandle` controls. Not counted as a rust block.
@@ -401,7 +402,7 @@ pub fn navigation_block_11(env: Environment) -> App {
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
     use waterui::window::{
-        UserAttention, Window, WindowBackground, WindowLevel, WindowState, WindowStyle,
+        UserAttention, Window, WindowBackground, WindowIcon, WindowLevel, WindowState, WindowStyle,
     };
 
     let state = binding::<WindowState>(WindowState::default());
@@ -434,6 +435,13 @@ pub fn navigation_window_builder_prose() {
     window.handle().set_background(Material::UltraThin);
     background.set(WindowBackground::Material(Material::Thin));
     background.set(WindowBackground::Color(Color::transparent()));
+    let icon = WindowIcon::new(1, 1, vec![255_u8, 0, 0, 255]);
+    let themed_icon = binding(None::<WindowIcon>);
+    let _ = Window::new("W", binding(WindowState::Closed), || text("c")).icon(icon.clone());
+    let window =
+        Window::new("W", binding(WindowState::Closed), || text("c")).icon(themed_icon.clone());
+    window.handle().set_icon(icon);
+    window.handle().set_icon(None);
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;

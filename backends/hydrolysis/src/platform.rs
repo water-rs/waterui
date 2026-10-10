@@ -707,14 +707,6 @@ pub enum SurfaceFrame {
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
-    /// A surface frame acquired from a browser canvas (the `web` feature).
-    #[cfg(all(target_arch = "wasm32", feature = "web"))]
-    Browser {
-        /// The acquired surface texture, handed to the frame's renderer.
-        output: wgpu::SurfaceTexture,
-        /// A view of `texture` to render into or read from.
-        view: wgpu::TextureView,
-    },
 }
 
 impl SurfaceFrame {
@@ -727,8 +719,6 @@ impl SurfaceFrame {
             Self::Window { output, .. } => &output.texture,
             #[cfg(target_os = "android")]
             Self::Android { output, .. } => &output.texture,
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            Self::Browser { output, .. } => &output.texture,
         }
     }
 
@@ -741,8 +731,6 @@ impl SurfaceFrame {
             Self::Window { view, .. } => view,
             #[cfg(target_os = "android")]
             Self::Android { view, .. } => view,
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            Self::Browser { view, .. } => view,
         }
     }
 }
@@ -797,11 +785,7 @@ fn normalize_surface_format(
     format
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 #[cfg(not(target_os = "macos"))]
 pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
@@ -1820,10 +1804,6 @@ impl OffscreenSurface {
             #[cfg(target_os = "android")]
             SurfaceFrame::Android { .. } => {
                 panic!("hydrolysis offscreen surface received an android frame");
-            }
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            SurfaceFrame::Browser { .. } => {
-                panic!("hydrolysis offscreen surface received a browser frame");
             }
         }
     }
@@ -3037,12 +3017,16 @@ mod winit_impl {
         resizable: bool,
         closable: bool,
         decorations: bool,
-        /// Whether the key went down (`Pressed`) or came up (`Released`).
+        /// The window's declared `WindowState` — `Normal`, `Minimized`,
+        /// `Maximized`, `Fullscreen` or `Closed`.
         state: WindowState,
         frame: waterui_core::layout::Rect,
         level: WindowLevel,
         attention: Option<UserAttention>,
         resize_increments: Option<waterui_core::layout::Size>,
+        /// The window's own icon, or `None` for the application icon the
+        /// runner staged at creation.
+        icon: Option<waterui::window::WindowIcon>,
     }
 
     /// A monitor's logical rect: `(position, extent)` — the shape
@@ -3084,6 +3068,10 @@ mod winit_impl {
         /// updates the binding, and reading the live geometry against the
         /// stale binding would yank the window straight back to its old frame.
         applied_properties: Option<AppliedWindowProperties>,
+        /// The application icon the runner staged on the window at creation
+        /// (`with_window_icon`): what `apply_properties` restores when the
+        /// declaration's `icon` binding reads `None`.
+        application_icon: Option<winit::window::Icon>,
         /// The requested window frame and state held until the window has
         /// actually mapped (`with_visible(false)`): on X11 a request made
         /// of an unmapped window is dropped, so the first mapped-signal
@@ -3158,7 +3146,7 @@ mod winit_impl {
             wake: RedrawHandle,
             requires_transparency: bool,
         ) -> Self {
-            Self::new_with_shared_gpu(window, wake, None, requires_transparency)
+            Self::new_with_shared_gpu(window, wake, None, requires_transparency, None)
                 .await
                 .0
         }
@@ -3186,6 +3174,10 @@ mod winit_impl {
         /// the last window closes. Post the request to the event loop and
         /// redraw the window there.
         ///
+        /// `application_icon` is the icon the host staged on the window at
+        /// creation: `apply_properties` restores it when the declaration's
+        /// `icon` binding reads `None`.
+        ///
         /// # Panics
         /// Propagates panics from surface and device creation.
         pub async fn new_with_shared_gpu(
@@ -3193,6 +3185,7 @@ mod winit_impl {
             wake: RedrawHandle,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
+            application_icon: Option<winit::window::Icon>,
         ) -> (Self, WinitGpuContext) {
             let (surface, gpu) =
                 WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await;
@@ -3225,6 +3218,7 @@ mod winit_impl {
                     current_cursor_style: CursorStyle::Arrow,
                     applied_size_limits: None,
                     applied_properties: None,
+                    application_icon,
                     pending_mapped_request: MappedRequestRetry::default(),
                     transparent: requires_transparency,
                     #[cfg(any(
@@ -3288,6 +3282,38 @@ mod winit_impl {
                     UserAttention::Informational => winit::window::UserAttentionType::Informational,
                     UserAttention::Critical => winit::window::UserAttentionType::Critical,
                 }));
+        }
+
+        /// Pushes the requested window icon to the window server: the
+        /// declaration's own [`WindowIcon`] converted to winit's, or — on
+        /// `None`, the default — the application icon staged at creation.
+        /// X11 and Windows realize it; winit reports Wayland, macOS and the
+        /// remaining targets unsupported, where the call is a no-op. On
+        /// Windows `set_window_icon` covers only the small title-bar icon
+        /// (`ICON_SMALL`), so the same image also goes to the taskbar and
+        /// Alt-Tab icon (`ICON_BIG`).
+        fn apply_window_icon(&self, icon: Option<&waterui::window::WindowIcon>) {
+            let icon = icon.map_or_else(
+                || self.application_icon.clone(),
+                |icon| {
+                    // `Icon::from_rgba` only checks the buffer against the
+                    // size, which `WindowIcon::new` already guarantees.
+                    Some(
+                        winit::window::Icon::from_rgba(
+                            icon.rgba().to_vec(),
+                            icon.width(),
+                            icon.height(),
+                        )
+                        .expect("a WindowIcon's pixels match its size"),
+                    )
+                },
+            );
+            #[cfg(target_os = "windows")]
+            {
+                use winit::platform::windows::WindowExtWindows as _;
+                self.window.set_taskbar_icon(icon.clone());
+            }
+            self.window.set_window_icon(icon);
         }
 
         /// The `AppKit` half of `set_blur_behind`: while the window asks, an
@@ -3521,6 +3547,7 @@ mod winit_impl {
         /// is the only truthful source there; X11 keeps streaming motion
         /// during XDND, and the query stays right even if the drag source
         /// grabs the pointer.
+        #[cfg(hydrolysis_desktop_queries)]
         fn live_pointer_position(&self) -> Option<(f32, f32)> {
             #[cfg(target_os = "windows")]
             {
@@ -3533,14 +3560,6 @@ mod winit_impl {
             #[cfg(hydrolysis_wayland_platform)]
             {
                 self.x11_live_pointer_position()
-            }
-            #[cfg(not(any(
-                target_os = "windows",
-                target_os = "macos",
-                hydrolysis_wayland_platform
-            )))]
-            {
-                None
             }
         }
 
@@ -4276,6 +4295,7 @@ mod winit_impl {
                     .resize_increments
                     .as_ref()
                     .map(nami::Signal::snapshot),
+                icon: window.icon.snapshot(),
             };
             let previous = self.applied_properties.replace(properties.clone());
             let applied = previous.as_ref();
@@ -4304,6 +4324,9 @@ mod winit_impl {
                         LogicalSize::new(f64::from(size.width), f64::from(size.height))
                     }),
                 );
+            }
+            if applied.is_none_or(|p| p.icon != properties.icon) {
+                self.apply_window_icon(properties.icon.as_ref());
             }
             // The frame binding is pushed to the window only when it changed
             // since the previous pump. A user-driven resize or move lands in
@@ -4412,7 +4435,11 @@ mod winit_impl {
         /// the fallback keeps the stream that never went quiet (X11 motion
         /// during XDND) supplying it.
         fn pointer_position(&self) -> Option<(f32, f32)> {
-            self.live_pointer_position().or(Some(self.pointer_position))
+            #[cfg(hydrolysis_desktop_queries)]
+            let live = self.live_pointer_position();
+            #[cfg(not(hydrolysis_desktop_queries))]
+            let live = None;
+            live.or(Some(self.pointer_position))
         }
 
         /// Requests that the window be repainted.
@@ -4888,8 +4915,9 @@ mod winit_impl {
         #[test]
         fn cursor_position_is_converted_to_logical_coordinates() {
             let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
-            assert_eq!(x, 192.25);
-            assert_eq!(y, 108.125);
+            // Halving a dyadic position is exact, and both halves fit f32.
+            assert_eq!(x.to_bits(), 192.25_f32.to_bits());
+            assert_eq!(y.to_bits(), 108.125_f32.to_bits());
         }
 
         #[test]
@@ -4898,8 +4926,9 @@ mod winit_impl {
                 &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
                 2.0,
             );
-            assert_eq!(dx, 60.0);
-            assert_eq!(dy, -24.25);
+            // Halving a dyadic delta is exact, and both halves fit f32.
+            assert_eq!(dx.to_bits(), 60.0_f32.to_bits());
+            assert_eq!(dy.to_bits(), (-24.25_f32).to_bits());
             assert!(!is_line_delta);
         }
 
@@ -4907,8 +4936,9 @@ mod winit_impl {
         fn line_scroll_delta_is_preserved() {
             let (dx, dy, is_line_delta) =
                 map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
-            assert_eq!(dx, -2.0);
-            assert_eq!(dy, 3.5);
+            // A line delta passes through unscaled.
+            assert_eq!(dx.to_bits(), (-2.0_f32).to_bits());
+            assert_eq!(dy.to_bits(), 3.5_f32.to_bits());
             assert!(is_line_delta);
         }
 
@@ -5589,7 +5619,17 @@ mod winit_impl {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::ExportedBrowserSurface as BrowserSurface;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
+#[cfg(all(
+    target_arch = "wasm32",
+    feature = "web",
+    any(feature = "video", feature = "webview-system")
+))]
+pub use web_impl::OcclusionShields;
+#[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
+pub use web_impl::yield_wheel;
 
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;

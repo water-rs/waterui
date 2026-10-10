@@ -762,9 +762,14 @@ impl RenderNode {
         // the macOS bridge a page handle from another engine.
         let view = match view.downcast::<WebView>() {
             Ok(webview) if env.get::<Hook<WebView>>().is_none() => {
-                return Self::build_webview(*webview, env, renderer);
+                return Self::build_webview(&webview, env, renderer);
             }
             Ok(webview) => AnyView::new(*webview),
+            Err(view) => view,
+        };
+        #[cfg(hydrolysis_hosted)]
+        let view = match view.downcast::<Native<crate::hosted::HostedView>>() {
+            Ok(hosted) => return Self::build_hosted((*hosted).into_inner(), env, renderer),
             Err(view) => view,
         };
         // Navigation containers (navigation view / split / stack / tabs): each is a

@@ -96,8 +96,9 @@ pub struct HydrolysisPreviewRequest<'a> {
 /// renders inside the preview host's instrumentation on a device — the
 /// request shape is identical, the dispatch lives here so every caller
 /// resolves one way. `kotlin_toolchain` is the toolchain
-/// [`crate::preview::request::check_toolchain_for_backend`] resolved —
-/// required for `TargetPlatform::Android`, ignored elsewhere.
+/// [`crate::preview::request::check_toolchain_for_backend`] resolved, and
+/// `android` the device the caller's selection resolved — both required
+/// for `TargetPlatform::Android`, ignored elsewhere.
 ///
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
@@ -106,24 +107,34 @@ pub async fn render_preview_with_hydrolysis(
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
     kotlin_toolchain: Option<&crate::android::KotlinToolchain>,
+    android: Option<crate::android::device::AndroidTarget>,
 ) -> Result<()> {
     if request.platform == TargetPlatform::Android {
         let kotlin = kotlin_toolchain.ok_or_else(|| {
             eyre::eyre!("Internal error: Android preview has no resolved Kotlin toolchain")
         })?;
+        let target = android
+            .ok_or_else(|| eyre::eyre!("Internal error: Android preview has no resolved device"))?;
         return Box::pin(
             crate::preview::hydrolysis_android::render_preview_with_hydrolysis_android(
                 &request,
                 output_path,
                 scenario,
                 kotlin,
+                &target,
             ),
         )
         .await;
     }
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, None).await?;
-    stage_hydrolysis_resources(&project, request.platform, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(
+        &project,
+        request.platform,
+        theme,
+        &built.app_symbols().await?,
+    )
+    .await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
         &project,
@@ -146,7 +157,13 @@ pub async fn test_preview_with_hydrolysis(
 ) -> Result<String> {
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
-    stage_hydrolysis_resources(&project, request.platform, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(
+        &project,
+        request.platform,
+        theme,
+        &built.app_symbols().await?,
+    )
+    .await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_test_binary(&project, built.executable()?, width, height).await
 }
@@ -217,7 +234,10 @@ pub async fn discover_hydrolysis_preview_exports(
         progress,
     };
     let (_project, built) = build_preview_session(&request, None).await?;
-    Ok(built.app_symbols()?.leaves_with_prefix("waterui_preview_"))
+    Ok(built
+        .app_symbols()
+        .await?
+        .leaves_with_prefix("waterui_preview_"))
 }
 
 /// Stages the project's assets and the selected theme's fonts into the

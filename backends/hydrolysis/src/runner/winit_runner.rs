@@ -952,7 +952,17 @@ fn native_window_attributes(
     let state = window.state.snapshot();
     let fullscreen = matches!(state, waterui::window::WindowState::Fullscreen);
     let maximized = matches!(state, waterui::window::WindowState::Maximized);
-    let attributes = NativeWindow::default_attributes()
+    // Windows keeps two icons per window: `with_window_icon` sets the small
+    // title-bar one (`ICON_SMALL`); the taskbar and Alt-Tab read the big
+    // one (`ICON_BIG`), which only `with_taskbar_icon` stages.
+    #[cfg(target_os = "windows")]
+    let defaults = {
+        use winit::platform::windows::WindowAttributesExtWindows as _;
+        NativeWindow::default_attributes().with_taskbar_icon(icon.clone())
+    };
+    #[cfg(not(target_os = "windows"))]
+    let defaults = NativeWindow::default_attributes();
+    let attributes = defaults
         .with_window_icon(icon)
         .with_title(window.display_title().snapshot().as_str())
         .with_resizable(window.resizable)
@@ -1106,6 +1116,7 @@ impl WinitRunner {
             wake,
             self.gpu_context.as_ref(),
             super::window_requires_transparency(window, &self.env),
+            self.window_icon.clone(),
         ));
         if self.gpu_context.is_none() {
             self.gpu_context = Some(gpu_context);
@@ -1222,6 +1233,7 @@ impl WinitRunner {
         };
         // The activation parts window attributes cannot express, applied
         // before the window maps (see `with_active` above).
+        #[cfg(hydrolysis_desktop_queries)]
         crate::runner::placement::apply_activation(
             event_loop,
             runtime.platform.native_window(),

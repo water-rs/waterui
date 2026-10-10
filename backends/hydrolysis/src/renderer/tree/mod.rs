@@ -79,6 +79,8 @@ mod build_controls;
 mod build_views;
 mod collection;
 mod flush;
+#[cfg(hydrolysis_hosted)]
+mod hosted;
 mod layout;
 mod nodes;
 pub(super) mod safe_area;

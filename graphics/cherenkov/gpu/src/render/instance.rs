@@ -1,6 +1,7 @@
 //! CPU-side instance data matching `shader.wgsl` byte for byte.
 
 use bytemuck::{Pod, Zeroable};
+use cherenkov::lowering::rounded_box::RoundedBox;
 
 /// Fill a shape.
 pub const KIND_FILL: u32 = 0;
@@ -166,6 +167,17 @@ impl Shape {
     }
 }
 
+impl From<RoundedBox> for Shape {
+    fn from(b: RoundedBox) -> Self {
+        Self {
+            half: b.half,
+            aspect: b.aspect,
+            exponent: b.exponent,
+            radii: b.radii,
+        }
+    }
+}
+
 /// One instanced quad, mirroring the WGSL `Instance`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -184,7 +196,11 @@ pub struct Instance {
     /// The clip shape. A masked clip is a sharp rect, so `aspect` and
     /// `exponent` (unused by its SDF) carry the mask cell size.
     pub clip: Shape,
-    /// Straight-alpha working-space colour.
+    /// Straight-alpha working-space colour. `PAINT_BACKDROP`: x the
+    /// member's recording scale (device pixels per logical pixel), yz the
+    /// device origin of the backdrop copy when the member composites in
+    /// the space the pass does not store (`FLAG_BLEND_SRC`); its alpha
+    /// stays 0, so a member span is never an opaque span.
     pub color: [f32; 4],
     /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
     /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.

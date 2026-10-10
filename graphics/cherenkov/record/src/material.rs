@@ -44,6 +44,7 @@ use rustc_hash::FxHashMap;
 use crate::backdrop::{BackdropShaderSource, CaptureLevels, CaptureScale};
 use crate::record::{Content, SharedLive};
 use crate::shape::ShapeData;
+use crate::style::BlendSpace;
 
 /// The key a widget theme chooses for one of its backdrop shaders.
 ///
@@ -106,6 +107,13 @@ pub struct MaterialCapture {
     pub levels: CaptureLevels,
     /// How the class's members form groups inside a material scope.
     pub grouping: MaterialGrouping,
+    /// The space the class's members composite their samples onto their
+    /// canvas in ([`BackdropSpec::blend_space`]): a material specified
+    /// in sRGB-encoded space composites its antialiased edge and outer
+    /// extent with [`BlendSpace::SrgbEncoded`].
+    ///
+    /// [`BackdropSpec::blend_space`]: crate::BackdropSpec::blend_space
+    pub blend_space: BlendSpace,
 }
 
 /// A union field's smoothing width in the group's local **logical**
@@ -842,6 +850,7 @@ mod tests {
             scale: CaptureScale::FULL,
             levels: CaptureLevels::ONE,
             grouping: MaterialGrouping::Shared,
+            blend_space: BlendSpace::Linear,
         };
         MaterialRegistry::new()
             .register_capture_class(CHROME, capture)
@@ -854,6 +863,7 @@ mod tests {
             scale: CaptureScale::new(0.25).expect("in range"),
             levels: CaptureLevels::new(3).expect("in range"),
             grouping: MaterialGrouping::Solo,
+            blend_space: BlendSpace::SrgbEncoded,
         };
         let mut registry = MaterialRegistry::new();
         assert!(registry.is_empty());

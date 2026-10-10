@@ -130,6 +130,11 @@ pub struct InnerProgram {
 
 /// A producer-backed node's content, installed by the target at commit.
 pub enum ProducerContent {
+    #[cfg(hydrolysis_hosted)]
+    Hosted {
+        runtime: Rc<crate::hosted::HostedRuntime>,
+        bounds: kurbo::Rect,
+    },
     Scene(SceneContentSource),
     Gpu {
         runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
