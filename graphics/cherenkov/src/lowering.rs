@@ -2,9 +2,11 @@
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
+use std::num::NonZeroU32;
 use std::ops::Range;
 
 use kurbo::Affine;
+use smallvec::SmallVec;
 
 use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, ShapeData};
 
@@ -575,6 +577,10 @@ impl Seg {
     fn x_at(&self, y: f64) -> f64 {
         self.slope.mul_add(y - self.y0, self.x0)
     }
+
+    fn step(&self) -> i16 {
+        if self.dir > 0.0 { 1 } else { -1 }
+    }
 }
 
 /// Crossing ordinate of the pair `(p, q)` evaluated in operand order.
@@ -596,6 +602,9 @@ fn xing_err(appr: f64, m_glob: f64) -> f64 {
     (m_glob + appr.abs()) * (64.0 * f64::EPSILON)
 }
 
+/// (Ordinate, left, right, split-detectable, adjacency generation).
+type Crossing = (Split, u32, u32, u8, u32);
+
 /// Crossing ordinate of the pair adjacent in `active` order `(p, q)`,
 /// pushed as a pending event. Below a pair's crossing the smaller-slope
 /// segment sits left, so a pair stored `(p, q)` with `sp.slope < sq.slope`
@@ -610,12 +619,14 @@ fn xing_err(appr: f64, m_glob: f64) -> f64 {
 /// arbitrarily — and they go on `eqs` to be re-checked each band.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "segment counts stay under u32"
+    clippy::too_many_arguments,
+    reason = "segment counts stay under u32; the queues and adjacency owner describe one sweep"
 )]
 fn push_xing(
-    xings: &mut BinaryHeap<Reverse<(Split, u32, u32, u8)>>,
-    posts: &mut BinaryHeap<(Split, u32, u32)>,
-    eqs: &mut Vec<(u32, u32)>,
+    xings: &mut BinaryHeap<Reverse<Crossing>>,
+    posts: &mut BinaryHeap<(Split, u32, u32, u32)>,
+    eqs: &mut SmallVec<[(u32, u32); 4]>,
+    active: &Active,
     segs: &[Seg],
     p: usize,
     q: usize,
@@ -641,7 +652,8 @@ fn push_xing(
         return;
     }
     let det = u8::from(ds.abs() > EPS);
-    xings.push(Reverse((Split(appr), p as u32, q as u32, det)));
+    let stamp = active.state[p].neighbours.generation;
+    xings.push(Reverse((Split(appr), p as u32, q as u32, det, stamp)));
     if sp.slope < sq.slope {
         // Popped once the band's midpoint reaches below the ordinate:
         // the pair could need reverting to pre-cross order. The stored
@@ -653,7 +665,7 @@ fn push_xing(
         } else {
             (m_glob + appr.abs()) * 1e-6
         };
-        posts.push((Split(appr + err), p as u32, q as u32));
+        posts.push((Split(appr + err), p as u32, q as u32, stamp));
     }
 }
 
@@ -682,73 +694,270 @@ fn inside_at(w: f64, rule: FillRule) -> bool {
     }
 }
 
+/// One-based segment identity; `Option<SegmentId>` occupies one u32.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SegmentId(NonZeroU32);
+
+impl SegmentId {
+    const fn new(index: u32) -> Self {
+        Self(NonZeroU32::new(index + 1).expect("segment count is below u32::MAX"))
+    }
+
+    const fn index(self) -> u32 {
+        self.0.get() - 1
+    }
+}
+
+/// Links describe the current active order. Changing the right neighbour
+/// advances the generation that owns this segment's crossing events.
+#[derive(Clone, Copy)]
+struct Neighbours {
+    next: Option<SegmentId>,
+    generation: u32,
+    previous: Option<SegmentId>,
+}
+
+/// A stable chunk id and an in-chunk offset, bounded by 2*CHUNK.
+#[derive(Clone, Copy)]
+struct Position {
+    chunk: NonZeroU32,
+    offset: u8,
+}
+
+impl Position {
+    fn new(chunk: u32, offset: usize) -> Self {
+        Self {
+            chunk: NonZeroU32::new(chunk + 1).expect("chunk count is below u32::MAX"),
+            offset: u8::try_from(offset).expect("chunk offset is at most 2*CHUNK"),
+        }
+    }
+
+    const fn chunk(self) -> usize {
+        (self.chunk.get() - 1) as usize
+    }
+}
+
+/// A run is either absent, live, or awaiting its final endpoint write.
+/// Both present states own their edge and orientation.
+#[derive(Clone, Copy, Default)]
+enum BoundaryRun {
+    #[default]
+    Closed,
+    Live {
+        edge: u32,
+        orient: bool,
+    },
+    Closing {
+        edge: u32,
+        orient: bool,
+    },
+}
+
+impl BoundaryRun {
+    const fn is_live(self) -> bool {
+        matches!(self, Self::Live { .. })
+    }
+
+    const fn retire(&mut self) {
+        if let Self::Live { edge, orient } = *self {
+            *self = Self::Closing { edge, orient };
+        }
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "output coordinates are f32"
+    )]
+    fn finish(&mut self, seg: &Seg, y: f64, out: &mut [(f32, f32, f32, f32)]) {
+        if let Self::Live { edge, orient } | Self::Closing { edge, orient } = std::mem::take(self) {
+            let x = seg.x_at(y) as f32;
+            let y = y as f32;
+            let piece = &mut out[edge as usize];
+            if orient {
+                piece.2 = x;
+                piece.3 = y;
+            } else {
+                piece.0 = x;
+                piece.1 = y;
+            }
+        }
+    }
+}
+
+/// Mutable sweep bookkeeping shares one allocation per input path.
+#[derive(Clone, Copy)]
+struct SegmentState {
+    /// None after retirement; otherwise the current active location.
+    position: Option<Position>,
+    neighbours: Neighbours,
+    run: BoundaryRun,
+    /// Slot in the immutable positional ordering of the join index.
+    candidate: u32,
+}
+
 /// Chunked order-statistics list of the sweep's live segments.
 /// Keeping the list as fixed-capacity chunks bounds each admission
 /// and retirement to an in-chunk shift, and each chunk caches its
 /// winding contribution — direction sum plus the local prefix range —
-/// so the emit pass can evaluate the winding level at a rank, or
-/// enumerate the ranks where the prefix sits at a boundary level,
-/// without rescanning the list.
+/// so emission can start at an edited offset and skip chunks whose
+/// winding never reaches a fill boundary without rescanning their elements.
 struct Active {
     /// Chunks in list order. A chunk's `id` is its slot in
     /// `order_pos`; splitting inserts a chunk without renumbering the
-    /// ids `chunk_of` records.
-    chunks: Vec<Chunk>,
-    /// Segment → chunk id while admitted, `usize::MAX` otherwise.
-    chunk_of: Vec<usize>,
+    /// ids cached in each segment's position.
+    chunks: SmallVec<[Chunk; 1]>,
+    state: Vec<SegmentState>,
     /// Chunk id → position in `chunks`.
-    order_pos: Vec<u32>,
+    order_pos: SmallVec<[u32; 4]>,
     /// Next chunk id to hand out.
     next_id: u32,
     /// Fenwick tree over the chunks' (element count, direction sum)
     /// pairs — `ft[0]` unused; `ft[k]` covers the `lowbit(k)` chunks
     /// ending at `k`. Point updates are O(log n) so rank queries stay
     /// cheap through insert/remove without a per-edit rebuild.
-    ft: Vec<(u32, f64)>,
+    ft: SmallVec<[(u32, f64); 4]>,
     len: usize,
     /// Empty tombstone chunks kept in place — removing one would
     /// renumber `order_pos` for everything after it. Compacted once
     /// they dominate.
     empty: usize,
+    /// Stable ids of chunks edited since the last emitted band.
+    dirty: SmallVec<[u32; 4]>,
+    /// Structural edits require a new chunk-order snapshot after emission.
+    order_changed: bool,
+    /// Extrema only decide whether resolution is necessary at all.
+    /// Once overlap is established, maintaining them cannot affect output.
+    track_extrema: bool,
+}
+
+/// The segment and its local winding prefix move together in a chunk.
+#[derive(Clone, Copy)]
+struct ActiveEntry {
+    segment: u32,
+    level: i16,
+    step: i16,
 }
 
 #[derive(Default)]
 struct Chunk {
     /// Stable identifier into `order_pos`.
     id: u32,
-    els: Vec<u32>,
+    els: Vec<ActiveEntry>,
     /// Sum of the elements' winding directions.
     ds: f64,
     /// Min and max of the local winding prefix — the running sum of
     /// directions after each element, starting from zero.
-    mn: f64,
-    mx: f64,
+    mn: i16,
+    mx: i16,
+    /// Number of currently open boundary transitions in this chunk.
+    live: usize,
+    /// Winding entering this chunk at the last emission.
+    base: f64,
+    /// Whether this chunk has edits not yet consumed by an emission.
+    dirty: bool,
+    /// Admissions/removals invalidate local prefixes until emission.
+    /// The direction sum and Fenwick totals remain current throughout.
+    prefix_dirty: bool,
+    /// Union of offsets edited since the last emission; MAX denotes a suffix.
+    changed: Range<usize>,
 }
 
 impl Active {
     fn new(cap: usize) -> Self {
         Self {
-            chunks: Vec::new(),
-            chunk_of: vec![usize::MAX; cap],
-            order_pos: Vec::new(),
+            chunks: SmallVec::new(),
+            state: vec![
+                SegmentState {
+                    position: None,
+                    neighbours: Neighbours {
+                        next: None,
+                        generation: 0,
+                        previous: None
+                    },
+                    run: BoundaryRun::Closed,
+                    candidate: 0,
+                };
+                cap
+            ],
+            order_pos: SmallVec::new(),
             next_id: 0,
-            ft: vec![(0, 0.0)],
+            ft: SmallVec::from_slice(&[(0, 0.0)]),
             len: 0,
             empty: 0,
+            dirty: SmallVec::new(),
+            order_changed: false,
+            track_extrema: true,
+        }
+    }
+
+    /// Each new adjacency owns its events. A pair that separates and
+    /// rejoins cannot revive obsolete heap entries from its earlier life.
+    fn link(&mut self, left: u32, right: Option<SegmentId>) {
+        let entry = &mut self.state[left as usize].neighbours;
+        if entry.next != right {
+            entry.next = right;
+            entry.generation += 1;
+        }
+    }
+
+    fn adjacent(&self, left: u32, right: u32, generation: u32) -> bool {
+        let state = &self.state[left as usize];
+        state.position.is_some()
+            && state.neighbours.next == Some(SegmentId::new(right))
+            && state.neighbours.generation == generation
+    }
+
+    /// Each live adjacency owns its events. Reclaim superseded events
+    /// before they accumulate behind a distant heap root. Rebuilding only
+    /// after stale storage exceeds live order keeps the cost amortized over
+    /// the edits that created those entries, without another allocation.
+    fn discard_stale(
+        &self,
+        xings: &mut BinaryHeap<Reverse<Crossing>>,
+        posts: &mut BinaryHeap<(Split, u32, u32, u32)>,
+    ) {
+        if xings.len() > 2 * self.len {
+            xings.retain(|&Reverse((_, left, right, _, generation))| {
+                self.adjacent(left, right, generation)
+            });
+        }
+        if posts.len() > 2 * self.len {
+            posts.retain(|&(_, left, right, generation)| self.adjacent(left, right, generation));
+        }
+    }
+
+    fn position(&self, segment: u32) -> Position {
+        self.state[segment as usize]
+            .position
+            .expect("active operation requires a live segment")
+    }
+
+    fn mark(&mut self, c: usize, range: Range<usize>) {
+        let ch = &mut self.chunks[c];
+        if ch.dirty {
+            ch.changed.start = ch.changed.start.min(range.start);
+            ch.changed.end = ch.changed.end.max(range.end);
+        } else {
+            ch.dirty = true;
+            ch.changed = range;
+            self.dirty.push(ch.id);
         }
     }
 
     /// Recompute a chunk's direction sum and local prefix range.
-    fn recalc(&mut self, segs: &[Seg], c: usize) {
+    fn recalc(&mut self, c: usize) {
         let ch = &mut self.chunks[c];
-        ch.ds = 0.0;
-        ch.mn = 0.0;
-        ch.mx = 0.0;
-        for &e in &ch.els {
-            ch.ds += segs[e as usize].dir;
-            ch.mn = ch.mn.min(ch.ds);
-            ch.mx = ch.mx.max(ch.ds);
+        let mut w = 0i16;
+        ch.mn = 0;
+        ch.mx = 0;
+        for entry in &mut ch.els {
+            w += entry.step;
+            entry.level = w;
+            ch.mn = ch.mn.min(w);
+            ch.mx = ch.mx.max(w);
         }
+        ch.ds = f64::from(w);
+        ch.prefix_dirty = false;
     }
 
     /// Fenwick point update: add `(dc, dd)` to chunk `pos`.
@@ -794,6 +1003,7 @@ impl Active {
     /// Rebuild the Fenwick tree after the `chunks` vec's shape
     /// changed (chunk insert, removal or compaction).
     fn rebuild_ft(&mut self) {
+        self.order_changed = true;
         let n = self.chunks.len();
         self.ft.clear();
         self.ft.resize(n + 1, (0, 0.0));
@@ -812,6 +1022,9 @@ impl Active {
 
     /// Position of the chunk holding rank `k`, and `k`'s offset in it.
     fn locate(&self, k: usize) -> (usize, usize) {
+        if self.chunks.len() == 1 {
+            return (0, k);
+        }
         let c = self.flower(u32::try_from(k).expect("rank fits u32"));
         let base = self.fsum(c).0;
         (c, k - base as usize)
@@ -819,19 +1032,15 @@ impl Active {
 
     /// Rank of a live segment: chunk base plus its offset inside.
     fn rank(&self, e: u32) -> usize {
-        let c = self.order_pos[self.chunk_of[e as usize]] as usize;
-        self.fsum(c).0 as usize
-            + self.chunks[c]
-                .els
-                .iter()
-                .position(|&x| x == e)
-                .expect("live segment sits in its chunk")
+        let p = self.position(e);
+        let c = self.order_pos[p.chunk()] as usize;
+        self.fsum(c).0 as usize + usize::from(p.offset)
     }
 
     /// Segment at a rank.
     fn at(&self, r: usize) -> u32 {
         let (c, o) = self.locate(r);
-        self.chunks[c].els[o]
+        self.chunks[c].els[o].segment
     }
 
     /// Allocate a chunk id.
@@ -848,22 +1057,58 @@ impl Active {
         reason = "exact key equality mirrors the sort's tie-break"
     )]
     fn slot(&self, segs: &[Seg], ym: f64, xi: f64, si: f64) -> usize {
-        let (mut lo, mut hi) = (0usize, self.len);
+        let before = |e: u32| {
+            let seg = &segs[e as usize];
+            let x = seg.x_at(ym);
+            x < xi || (x == xi && seg.slope <= si)
+        };
+        // Search chunk endpoints first, then the selected chunk. Empty
+        // chunks inherit their predecessor's endpoint through the rank tree.
+        let (mut lo, mut hi) = (0usize, self.chunks.len());
         while lo < hi {
             let mid = lo.midpoint(hi);
-            let j = self.at(mid) as usize;
-            let xj = segs[j].x_at(ym);
-            if xj < xi || (xj == xi && segs[j].slope <= si) {
+            let last = self.chunks[mid]
+                .els
+                .last()
+                .map(|entry| entry.segment)
+                .or_else(|| {
+                    let rank = self.fsum(mid).0 as usize;
+                    (rank > 0).then(|| self.at(rank - 1))
+                });
+            if last.is_none_or(before) {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        lo
+        if lo == self.chunks.len() {
+            self.len
+        } else {
+            self.fsum(lo).0 as usize
+                + self.chunks[lo]
+                    .els
+                    .partition_point(|entry| before(entry.segment))
+        }
     }
 
     /// Insert a segment at a rank, splitting an overfull chunk.
     fn insert(&mut self, segs: &[Seg], at: usize, e: u32) {
+        self.link(e, (at < self.len).then(|| SegmentId::new(self.at(at))));
+        let right = self.state[e as usize].neighbours.next;
+        let left = if let Some(right) = right {
+            self.state[right.index() as usize].neighbours.previous
+        } else if self.len > 0 {
+            Some(SegmentId::new(self.at(self.len - 1)))
+        } else {
+            None
+        };
+        self.state[e as usize].neighbours.previous = left;
+        if let Some(right) = right {
+            self.state[right.index() as usize].neighbours.previous = Some(SegmentId::new(e));
+        }
+        if let Some(left) = left {
+            self.link(left.index(), Some(SegmentId::new(e)));
+        }
         if self.chunks.is_empty() {
             let id = self.new_id();
             self.order_pos.push(0);
@@ -884,18 +1129,37 @@ impl Active {
         if self.chunks[c].els.is_empty() && self.empty > 0 {
             self.empty -= 1;
         }
-        self.chunks[c].els.insert(o, e);
+        self.chunks[c].els.insert(
+            o,
+            ActiveEntry {
+                segment: e,
+                level: 0,
+                step: segs[e as usize].step(),
+            },
+        );
+        self.mark(c, o..usize::MAX);
         self.len += 1;
-        self.chunk_of[e as usize] = self.chunks[c].id as usize;
+        for (offset, entry) in self.chunks[c].els.iter().enumerate().skip(o) {
+            self.state[entry.segment as usize].position =
+                Some(Position::new(self.chunks[c].id, offset));
+        }
         self.fadd(c, 1, segs[e as usize].dir);
+        self.chunks[c].ds += segs[e as usize].dir;
+        self.chunks[c].prefix_dirty = true;
         if self.chunks[c].els.len() > 2 * CHUNK {
-            let tail: Vec<u32> = self.chunks[c].els.split_off(CHUNK);
+            let tail = self.chunks[c].els.split_off(CHUNK);
+            let live = tail
+                .iter()
+                .filter(|entry| self.state[entry.segment as usize].run.is_live())
+                .count();
+            self.chunks[c].live -= live;
             let id = self.new_id();
             self.chunks.insert(
                 c + 1,
                 Chunk {
                     id,
                     els: tail,
+                    live,
                     ..Chunk::default()
                 },
             );
@@ -906,85 +1170,155 @@ impl Active {
                 self.order_pos[self.chunks[p].id as usize] =
                     u32::try_from(p).expect("chunk index fits u32");
             }
-            for &x in &self.chunks[c + 1].els {
-                self.chunk_of[x as usize] = id as usize;
+            for (offset, entry) in self.chunks[c + 1].els.iter().enumerate() {
+                self.state[entry.segment as usize].position = Some(Position::new(id, offset));
             }
-            self.recalc(segs, c + 1);
-            self.recalc(segs, c);
+            self.recalc(c + 1);
+            self.mark(c + 1, 0..usize::MAX);
+            self.mark(c, 0..usize::MAX);
+            self.recalc(c);
             self.rebuild_ft();
         }
-        self.recalc(segs, c);
     }
 
     /// Remove a live segment; tombstones the chunk if it empties.
     fn remove(&mut self, segs: &[Seg], e: u32) {
-        let c = self.order_pos[self.chunk_of[e as usize]] as usize;
-        let o = self.chunks[c]
-            .els
-            .iter()
-            .position(|&x| x == e)
-            .expect("live segment sits in its chunk");
+        let right = self.state[e as usize].neighbours.next;
+        let left = self.state[e as usize].neighbours.previous;
+        if let Some(right) = right {
+            self.state[right.index() as usize].neighbours.previous = left;
+        }
+        if let Some(left) = left {
+            self.link(left.index(), right);
+        }
+        self.link(e, None);
+        self.state[e as usize].neighbours.previous = None;
+        let p = self.position(e);
+        let c = self.order_pos[p.chunk()] as usize;
+        let o = usize::from(p.offset);
         self.chunks[c].els.remove(o);
+        self.chunks[c].live -= usize::from(matches!(
+            self.state[e as usize].run,
+            BoundaryRun::Closing { .. }
+        ));
+        self.mark(c, o..usize::MAX);
         self.len -= 1;
-        self.chunk_of[e as usize] = usize::MAX;
+        self.state[e as usize].position = None;
+        for (offset, entry) in self.chunks[c].els.iter().enumerate().skip(o) {
+            self.state[entry.segment as usize].position =
+                Some(Position::new(self.chunks[c].id, offset));
+        }
         self.fadd(c, -1, -segs[e as usize].dir);
+        self.chunks[c].ds -= segs[e as usize].dir;
+        self.chunks[c].prefix_dirty = true;
         if self.chunks[c].els.is_empty() {
             self.empty += 1;
             if self.empty * 4 > self.chunks.len() && self.chunks.len() > 8 {
-                self.compact(segs);
-                return;
+                self.compact();
             }
         }
-        self.recalc(segs, c);
     }
 
     /// Rebuild the list from the live elements, dropping tombstones.
-    fn compact(&mut self, segs: &[Seg]) {
-        let mut els: Vec<u32> = Vec::with_capacity(self.len);
+    fn compact(&mut self) {
+        let mut els = Vec::with_capacity(self.len);
         for ch in &self.chunks {
             els.extend_from_slice(&ch.els);
         }
         self.chunks.clear();
+        self.dirty.clear();
         self.order_pos.clear();
         self.next_id = 0;
         for (i, part) in els.chunks(CHUNK).enumerate() {
             let id = self.new_id();
-            for &x in part {
-                self.chunk_of[x as usize] = id as usize;
+            for (offset, entry) in part.iter().enumerate() {
+                self.state[entry.segment as usize].position = Some(Position::new(id, offset));
             }
             self.order_pos
                 .push(u32::try_from(i).expect("chunk index fits u32"));
             self.chunks.push(Chunk {
                 id,
                 els: part.to_vec(),
+                live: part
+                    .iter()
+                    .filter(|entry| self.state[entry.segment as usize].run.is_live())
+                    .count(),
                 ..Chunk::default()
             });
             let last = self.chunks.len() - 1;
-            self.recalc(segs, last);
+            self.recalc(last);
+            self.mark(last, 0..usize::MAX);
         }
         self.empty = 0;
         self.rebuild_ft();
     }
 
-    /// Swap the adjacent pair at ranks `r`, `r + 1` in place.
-    fn swap_adj(&mut self, segs: &[Seg], r: usize) {
-        let (c0, o0) = self.locate(r);
-        let (c1, o1) = self.locate(r + 1);
+    /// Swap an adjacent pair using their cached locations and neighbours.
+    fn swap_adj(&mut self, segs: &[Seg], x: u32, y: u32) {
+        let (p0, p1) = (self.position(x), self.position(y));
+        let (o0, o1) = (usize::from(p0.offset), usize::from(p1.offset));
+        let (c0, c1) = (
+            self.order_pos[p0.chunk()] as usize,
+            self.order_pos[p1.chunk()] as usize,
+        );
+        self.mark(c0, o0..o0 + 1);
+        self.mark(c1, o1..o1 + 1);
+        let left = self.state[x as usize].neighbours.previous;
+        let right = self.state[y as usize].neighbours.next;
+        if let Some(left) = left {
+            self.link(left.index(), Some(SegmentId::new(y)));
+        }
+        if let Some(right) = right {
+            self.state[right.index() as usize].neighbours.previous = Some(SegmentId::new(x));
+        }
+        self.state[y as usize].neighbours.previous = left;
+        self.state[x as usize].neighbours.previous = Some(SegmentId::new(y));
+        self.link(x, right);
+        self.link(y, Some(SegmentId::new(x)));
         if c0 == c1 {
+            let old = self.chunks[c0].els[o0].level;
+            let after = self.chunks[c0].els[o1].level;
             self.chunks[c0].els.swap(o0, o1);
+            let dx = segs[x as usize].step();
+            let dy = segs[y as usize].step();
+            let ch = &mut self.chunks[c0];
+            if !ch.prefix_dirty {
+                ch.els[o1].level = after;
+                ch.els[o0].level = old + dy - dx;
+                // After overlap is known these bounds may be conservative:
+                // retaining an old extremum only makes the skip less selective.
+                ch.mn = ch.mn.min(ch.els[o0].level);
+                ch.mx = ch.mx.max(ch.els[o0].level);
+                if self.track_extrema {
+                    ch.mn = 0;
+                    ch.mx = 0;
+                    for entry in &ch.els {
+                        let w = entry.level;
+                        ch.mn = ch.mn.min(w);
+                        ch.mx = ch.mx.max(w);
+                    }
+                }
+            }
         } else {
-            let x = self.chunks[c0].els[o0];
-            let y = self.chunks[c1].els[o1];
-            self.chunks[c0].els[o0] = y;
-            self.chunks[c1].els[o1] = x;
-            self.chunk_of[x as usize] = self.chunks[c1].id as usize;
-            self.chunk_of[y as usize] = self.chunks[c0].id as usize;
+            let left = self.chunks[c0].els[o0];
+            self.chunks[c0].els[o0] = self.chunks[c1].els[o1];
+            self.chunks[c1].els[o1] = left;
+            let (lx, ly) = (
+                usize::from(self.state[x as usize].run.is_live()),
+                usize::from(self.state[y as usize].run.is_live()),
+            );
+            self.chunks[c0].live = self.chunks[c0].live - lx + ly;
+            self.chunks[c1].live = self.chunks[c1].live - ly + lx;
             let d = segs[y as usize].dir - segs[x as usize].dir;
             self.fadd(c0, 0, d);
             self.fadd(c1, 0, -d);
-            self.recalc(segs, c1);
+            self.chunks[c0].ds += d;
+            self.chunks[c1].ds -= d;
+            self.chunks[c0].prefix_dirty = true;
+            self.chunks[c1].prefix_dirty = true;
         }
-        self.recalc(segs, c0);
+        self.state[x as usize].position = Some(Position::new(self.chunks[c1].id, o1));
+        self.state[y as usize].position = Some(Position::new(self.chunks[c0].id, o0));
     }
 
     /// Global min and max winding prefix over all positions.
@@ -994,13 +1328,291 @@ impl Active {
         let mut base = 0.0;
         for ch in &self.chunks {
             if !ch.els.is_empty() {
-                wmin = wmin.min(base + ch.mn.min(0.0));
-                wmax = wmax.max(base + ch.mx.max(0.0));
+                wmin = wmin.min(base + f64::from(ch.mn));
+                wmax = wmax.max(base + f64::from(ch.mx));
             }
             base += ch.ds;
         }
         (wmin, wmax)
     }
+
+    /// Edits change the prefix only until their direction deltas cancel.
+    /// Unedited chunks with an unchanged incoming prefix keep all their
+    /// boundary runs, without visiting their elements.
+    #[expect(
+        clippy::float_cmp,
+        reason = "winding totals are exact sums of unit directions"
+    )]
+    fn changed_chunks(
+        &mut self,
+        rule: FillRule,
+        changed: &mut SmallVec<[(usize, Range<usize>); 4]>,
+    ) {
+        self.dirty
+            .sort_unstable_by_key(|&id| self.order_pos[id as usize]);
+        let mut next = 0;
+        while next < self.dirty.len() {
+            let mut c = self.order_pos[self.dirty[next] as usize] as usize;
+            let mut base = self.fsum(c).1;
+            while c < self.chunks.len() {
+                if self.chunks[c].prefix_dirty {
+                    self.recalc(c);
+                }
+                let ch = &mut self.chunks[c];
+                if !ch.dirty && ch.base == base {
+                    break;
+                }
+                let buried = matches!(rule, FillRule::NonZero)
+                    && ch.live == 0
+                    && (base + f64::from(ch.mn) > 0.0 || base + f64::from(ch.mx) < 0.0);
+                let range = if buried {
+                    0..0
+                } else if ch.base == base {
+                    ch.changed.start.min(ch.els.len())..ch.changed.end.min(ch.els.len())
+                } else {
+                    0..ch.els.len()
+                };
+                ch.dirty = false;
+                ch.base = base;
+                base += ch.ds;
+                if !range.is_empty() {
+                    changed.push((c, range));
+                }
+                c += 1;
+            }
+            while next < self.dirty.len()
+                && (self.order_pos[self.dirty[next] as usize] as usize) < c
+            {
+                next += 1;
+            }
+        }
+        self.dirty.clear();
+    }
+}
+
+/// A continuation candidate retains the preceding emission's order and
+/// edge even after its segment retires or moves in the active sweep.
+#[derive(Clone, Copy)]
+struct PreviousRun {
+    edge: u32,
+    chunk: u32,
+    offset: u8,
+    orient: bool,
+}
+
+/// A hierarchy of occupancy bits over immutable slots. Each upper bit
+/// denotes a nonempty word below it; finding the next occupied slot skips
+/// empty ranges in `O(log_64 n)`, without allocating during sweep updates.
+struct Occupied {
+    words: SmallVec<[u64; 1]>,
+    levels: SmallVec<[Range<usize>; 6]>,
+}
+
+impl Occupied {
+    fn new(slots: usize) -> Self {
+        let mut levels = SmallVec::new();
+        let mut total = 0;
+        let mut size = slots.div_ceil(64);
+        loop {
+            levels.push(total..total + size);
+            total += size;
+            if size <= 1 {
+                break;
+            }
+            size = size.div_ceil(64);
+        }
+        Self {
+            words: smallvec::smallvec![0; total],
+            levels,
+        }
+    }
+
+    fn set(&mut self, mut slot: usize, present: bool) {
+        for level in &self.levels {
+            let word = &mut self.words[level.start + slot / 64];
+            let mask = 1 << (slot % 64);
+            let was_empty = *word == 0;
+            if present {
+                *word |= mask;
+            } else {
+                *word &= !mask;
+            }
+            if (*word == 0) == was_empty {
+                break;
+            }
+            slot /= 64;
+        }
+    }
+
+    fn next(&self, level: usize, from: usize) -> Option<usize> {
+        let range = self.levels.get(level)?;
+        let word = from / 64;
+        if word >= range.len() {
+            return None;
+        }
+        let bits = self.words[range.start + word] & (u64::MAX << (from % 64));
+        if bits != 0 {
+            Some(word * 64 + bits.trailing_zeros() as usize)
+        } else {
+            let word = self.next(level + 1, word + 1)?;
+            Some(word * 64 + self.words[range.start + word].trailing_zeros() as usize)
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct JoinSlot {
+    intercept: f64,
+    segment: u32,
+    snapshot: Option<NonZeroU32>,
+}
+
+#[derive(Clone, Copy)]
+struct JoinSnapshot {
+    previous: PreviousRun,
+    slot: u32,
+}
+
+/// Previous-band runs, ordered once by the line's intercept at y=0.
+/// Occupied slots refer to values in a dense snapshot array owned by this
+/// index. Retirement swaps out a value and reuses its space; storage grows
+/// only with the peak number of live boundaries, not the input path size.
+/// Occupancy bits skip empty ranges without moving or rebuilding slots.
+struct JoinIndex {
+    slots: SmallVec<[JoinSlot; 4]>,
+    snapshots: SmallVec<[JoinSnapshot; 4]>,
+    occupied: Occupied,
+    /// The path's slope range also bounds accepted slope differences.
+    /// In particular, translating parallel lines far in y must not widen
+    /// their positional window as though their slopes differed by EPS.
+    slopes: (f64, f64),
+}
+
+impl JoinIndex {
+    #[expect(clippy::cast_possible_truncation, reason = "segment counts fit u32")]
+    fn new(segs: &[Seg], state: &mut [SegmentState]) -> Self {
+        let mut slots: SmallVec<[JoinSlot; 4]> = (0..segs.len())
+            .map(|i| JoinSlot {
+                intercept: segs[i].x_at(0.0),
+                segment: i as u32,
+                snapshot: None,
+            })
+            .collect();
+        slots.sort_unstable_by(|a, b| a.intercept.total_cmp(&b.intercept));
+        for (rank, slot) in slots.iter().enumerate() {
+            state[slot.segment as usize].candidate = rank as u32;
+        }
+        Self {
+            slots,
+            snapshots: SmallVec::new(),
+            occupied: Occupied::new(segs.len()),
+            slopes: segs
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), seg| {
+                    (lo.min(seg.slope), hi.max(seg.slope))
+                }),
+        }
+    }
+
+    #[expect(clippy::cast_possible_truncation, reason = "snapshot counts fit u32")]
+    fn set(&mut self, slot: u32, previous: Option<PreviousRun>) {
+        let index = slot as usize;
+        match (self.slots[index].snapshot, previous) {
+            (Some(snapshot), Some(previous)) => {
+                self.snapshots[snapshot.get() as usize - 1].previous = previous;
+            }
+            (None, Some(previous)) => {
+                self.snapshots.push(JoinSnapshot { previous, slot });
+                self.slots[index].snapshot = NonZeroU32::new(self.snapshots.len() as u32);
+                self.occupied.set(index, true);
+            }
+            (Some(snapshot), None) => {
+                let removed = snapshot.get() as usize - 1;
+                self.snapshots.swap_remove(removed);
+                if let Some(moved) = self.snapshots.get(removed) {
+                    self.slots[moved.slot as usize].snapshot = Some(snapshot);
+                }
+                self.slots[index].snapshot = None;
+                self.occupied.set(index, false);
+            }
+            (None, None) => {}
+        }
+    }
+
+    fn retire(&mut self, retired: &mut SmallVec<[u32; 4]>, state: &[SegmentState]) {
+        for segment in retired.drain(..) {
+            self.set(state[segment as usize].candidate, None);
+        }
+    }
+
+    /// Bound both position and slope before accepting a continuation.
+    /// If the original rounded slope test accepts m, |m-s| < `next_up(EPS)`.
+    /// For b = fma(m, -y0, x0), `x_at(t)` differs from b+m*t by at most a
+    /// few ulps of |m*t| + |m*y0| + |x0| (including the rounded t-y0).
+    /// `m_glob` bounds the latter two terms for every input segment. The
+    /// factor 64 also covers reconstructing the query intercept and
+    /// rounding the radius; outward-rounded endpoints enclose the window.
+    /// The original endpoint and slope predicates still decide acceptance.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the previous-band join predicate and its numeric bound"
+    )]
+    fn find(
+        &self,
+        segs: &[Seg],
+        slope: f64,
+        x: f64,
+        y: f64,
+        orient: bool,
+        order: &[u32],
+        m_glob: f64,
+    ) -> Option<u32> {
+        if self.snapshots.is_empty() {
+            return None;
+        }
+        let tol = EPS * (1.0 + x.abs());
+        let spread = (self.slopes.0 - slope)
+            .abs()
+            .max((self.slopes.1 - slope).abs());
+        let delta = spread.next_up().min(EPS.next_up());
+        let magnitude = (slope.abs() + delta).mul_add(y.abs(), m_glob) + x.abs();
+        let radius = magnitude.mul_add(64.0 * f64::EPSILON, delta.mul_add(y.abs(), tol));
+        let center = (-slope).mul_add(y, x);
+        let low = (center - radius).next_down();
+        let high = (center + radius).next_up();
+        let first = self.slots.partition_point(|slot| slot.intercept < low);
+        let mut next = self.occupied.next(0, first);
+        let mut best: Option<((u32, u8), u32)> = None;
+        while let Some(rank) = next {
+            let slot = &self.slots[rank];
+            if slot.intercept > high {
+                break;
+            }
+            if let Some(snapshot) = slot.snapshot {
+                let prev = self.snapshots[snapshot.get() as usize - 1].previous;
+                let seg = &segs[slot.segment as usize];
+                let xe = seg.x_at(y);
+                if xe >= x - tol
+                    && xe <= x + tol
+                    && prev.orient == orient
+                    && (seg.slope - slope).abs() <= EPS
+                {
+                    let position = (order[prev.chunk as usize], prev.offset);
+                    if best.is_none_or(|(old, _)| position < old) {
+                        best = Some((position, prev.edge));
+                    }
+                }
+            }
+            next = self.occupied.next(0, rank + 1);
+        }
+        best.map(|(_, edge)| edge)
+    }
+}
+
+#[derive(Default)]
+struct CrossingScratch {
+    forward: SmallVec<[Reverse<Crossing>; 4]>,
+    backward: SmallVec<[(Split, u32, u32, u32); 4]>,
 }
 
 /// Fix `active`'s inversions against the order at `ym`, which is the
@@ -1024,25 +1636,24 @@ impl Active {
     reason = "the sweep state is one borrow; segment counts stay under u32; eqs grows by push"
 )]
 fn drain_xings(
-    xings: &mut BinaryHeap<Reverse<(Split, u32, u32, u8)>>,
-    posts: &mut BinaryHeap<(Split, u32, u32)>,
-    eqs: &mut Vec<(u32, u32)>,
+    xings: &mut BinaryHeap<Reverse<Crossing>>,
+    posts: &mut BinaryHeap<(Split, u32, u32, u32)>,
+    eqs: &mut SmallVec<[(u32, u32); 4]>,
     segs: &[Seg],
     active: &mut Active,
     ya: f64,
     ym: f64,
     m_glob: f64,
-    swapped: &mut Vec<u32>,
+    scratch: &mut CrossingScratch,
 ) {
     // Alternate the passes until none moves anything: a forward swap
     // can join a pair that must revert, and a revert can join a pair
     // that must swap — the cascades settle the list into the exact
-    // order the old sort produced at `ym`. Each swap reports its
+    // order the old sort produced at `ym`. Each swap dirties its positions.
     let mut check_eqs = true;
     loop {
         let mut moved = false;
-        let mut requeue: Vec<Reverse<(Split, u32, u32, u8)>> = Vec::new();
-        while let Some(&Reverse((Split(appr), l, r, det))) = xings.peek() {
+        while let Some(&Reverse((Split(appr), l, r, det, stamp))) = xings.peek() {
             // For split-detectable pairs the stored ordinate sits within
             // `xing_err` of the true crossing; near-parallel pairs get a
             // wider bound, since the error scales with 1/|slope diff|.
@@ -1056,40 +1667,49 @@ fn drain_xings(
             }
             xings.pop();
             let (l, r) = (l as usize, r as usize);
-            if active.chunk_of[l] == usize::MAX || active.chunk_of[r] == usize::MAX {
-                continue;
-            }
-            let (pl, pr) = (active.rank(l as u32), active.rank(r as u32));
-            if pl + 1 != pr {
+            if !active.adjacent(l as u32, r as u32, stamp) {
                 continue;
             }
             if post_cross_at(&segs[l], &segs[r], ym) {
+                let left = active.state[l].neighbours.previous;
+                let right = active.state[r].neighbours.next;
                 moved = true;
-                active.swap_adj(segs, pl);
-                swapped.push(l as u32);
-                swapped.push(r as u32);
-                if pl > 0 {
+                active.swap_adj(segs, l as u32, r as u32);
+                if let Some(left) = left {
                     push_xing(
                         xings,
                         posts,
                         eqs,
+                        active,
                         segs,
-                        active.at(pl - 1) as usize,
+                        left.index() as usize,
                         r,
                         m_glob,
                     );
                 }
                 let back = xing_y(&segs[r], &segs[l]);
-                xings.push(Reverse((Split(back), r as u32, l as u32, det)));
-                posts.push((Split(ym), r as u32, l as u32));
-                if pr + 1 < active.len {
+                xings.push(Reverse((
+                    Split(back),
+                    r as u32,
+                    l as u32,
+                    det,
+                    active.state[r].neighbours.generation,
+                )));
+                posts.push((
+                    Split(ym),
+                    r as u32,
+                    l as u32,
+                    active.state[r].neighbours.generation,
+                ));
+                if let Some(right) = right {
                     push_xing(
                         xings,
                         posts,
                         eqs,
+                        active,
                         segs,
                         l,
-                        active.at(pr + 1) as usize,
+                        right.index() as usize,
                         m_glob,
                     );
                 }
@@ -1099,68 +1719,69 @@ fn drain_xings(
                 // — both stay queued. A post-cross pair already ordered
                 // with its crossing behind the band is done: `posts`
                 // covers any later dip below the crossing.
-                requeue.push(Reverse((Split(appr), l as u32, r as u32, det)));
+                scratch
+                    .forward
+                    .push(Reverse((Split(appr), l as u32, r as u32, det, stamp)));
             }
         }
-        for e in requeue {
+        for e in scratch.forward.drain(..) {
             xings.push(e);
         }
         // Bands can revisit a lower `ym` after a split, reverting pairs
         // swapped or joined into post-cross order at a higher one: pop
-        // every such pair whose crossing is below this `ym` and
+        // every such pair whose recheck threshold is above this `ym` and
         // un-swap the ones still out of order.
         // Post-cross entries carry the ordinate below which their pair
         // needs re-checking — a fresh pair's crossing plus its error
         // bound, or once verified the `ym` it checked out at — so only
         // a band dipping below that pops them. A live pair still out
         // of order un-swaps; a correct one re-keys to this `ym`.
-        let mut repost: Vec<(Split, u32, u32)> = Vec::new();
-        while let Some(&(Split(t), b, a)) = posts.peek() {
+        while let Some(&(Split(t), b, a, stamp)) = posts.peek() {
             if t <= ym {
                 break;
             }
             posts.pop();
             let (b, a) = (b as usize, a as usize);
-            if active.chunk_of[b] == usize::MAX || active.chunk_of[a] == usize::MAX {
-                continue;
-            }
-            let (pb, pa) = (active.rank(b as u32), active.rank(a as u32));
-            if pb + 1 != pa {
+            if !active.adjacent(b as u32, a as u32, stamp) {
                 continue;
             }
             if post_cross_at(&segs[b], &segs[a], ym) {
+                let left = active.state[b].neighbours.previous;
+                let right = active.state[a].neighbours.next;
                 moved = true;
-                active.swap_adj(segs, pb);
-                swapped.push(b as u32);
-                swapped.push(a as u32);
-                if pb > 0 {
+                active.swap_adj(segs, b as u32, a as u32);
+                if let Some(left) = left {
                     push_xing(
                         xings,
                         posts,
                         eqs,
+                        active,
                         segs,
-                        active.at(pb - 1) as usize,
+                        left.index() as usize,
                         a,
                         m_glob,
                     );
                 }
-                push_xing(xings, posts, eqs, segs, a, b, m_glob);
-                if pa + 1 < active.len {
+                push_xing(xings, posts, eqs, active, segs, a, b, m_glob);
+                if let Some(right) = right {
                     push_xing(
                         xings,
                         posts,
                         eqs,
+                        active,
                         segs,
                         b,
-                        active.at(pa + 1) as usize,
+                        right.index() as usize,
                         m_glob,
                     );
                 }
             } else {
-                repost.push((Split(ym), b as u32, a as u32));
+                scratch
+                    .backward
+                    .push((Split(ym), b as u32, a as u32, stamp));
             }
         }
-        for e in repost {
+        for e in scratch.backward.drain(..) {
             posts.push(e);
         }
         // Exactly-parallel pairs have no crossing to key an event on,
@@ -1175,16 +1796,15 @@ fn drain_xings(
             let mut i = 0;
             while i < eqs.len() {
                 let (e0, e1) = (eqs[i].0 as usize, eqs[i].1 as usize);
-                let (p0, p1) = (active.chunk_of[e0], active.chunk_of[e1]);
-                if p0 == usize::MAX || p1 == usize::MAX {
+                if active.state[e0].position.is_none() || active.state[e1].position.is_none() {
                     eqs.swap_remove(i);
                     continue;
                 }
-                let (p0, p1) = (active.rank(e0 as u32), active.rank(e1 as u32));
-                let (l, r, pl, pr) = if p0 + 1 == p1 {
-                    (e0, e1, p0, p1)
-                } else if p1 + 1 == p0 {
-                    (e1, e0, p1, p0)
+                let (l, r) = if active.state[e0].neighbours.next == Some(SegmentId::new(e1 as u32))
+                {
+                    (e0, e1)
+                } else if active.state[e1].neighbours.next == Some(SegmentId::new(e0 as u32)) {
+                    (e1, e0)
                 } else {
                     eqs.swap_remove(i);
                     continue;
@@ -1192,29 +1812,31 @@ fn drain_xings(
                 if post_cross_at(&segs[l], &segs[r], ym) {
                     moved = true;
                     check_eqs = true;
-                    active.swap_adj(segs, pl);
-                    swapped.push(l as u32);
-                    swapped.push(r as u32);
+                    let left = active.state[l].neighbours.previous;
+                    let right = active.state[r].neighbours.next;
+                    active.swap_adj(segs, l as u32, r as u32);
                     eqs[i] = (r as u32, l as u32);
-                    if pl > 0 {
+                    if let Some(left) = left {
                         push_xing(
                             xings,
                             posts,
                             eqs,
+                            active,
                             segs,
-                            active.at(pl - 1) as usize,
+                            left.index() as usize,
                             r,
                             m_glob,
                         );
                     }
-                    if pr + 1 < active.len {
+                    if let Some(right) = right {
                         push_xing(
                             xings,
                             posts,
                             eqs,
+                            active,
                             segs,
                             l,
-                            active.at(pr + 1) as usize,
+                            right.index() as usize,
                             m_glob,
                         );
                     }
@@ -1310,13 +1932,16 @@ pub fn resolve_winding(
     if segs.is_empty() {
         return None;
     }
-    let mut ys: Vec<f64> = Vec::with_capacity(2 * segs.len());
-    ys.extend(segs.iter().flat_map(|s| [s.y0, s.y1]));
-    ys.sort_by(f64::total_cmp);
+    // Endpoints came from f32 input; only calculated crossings need f64.
+    let mut ys: Vec<f32> = Vec::with_capacity(2 * segs.len());
+    ys.extend(segs.iter().flat_map(|s| [s.y0 as f32, s.y1 as f32]));
+    ys.sort_by(f32::total_cmp);
     ys.dedup();
     segs.sort_by(|a, b| a.y0.total_cmp(&b.y0));
 
-    let mut out: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(segs.len());
+    // Output endpoints are never read by the sweep. Narrow each write,
+    // preserving the last writer's bits without retaining an f64 copy.
+    let mut out: Vec<(f32, f32, f32, f32)> = Vec::with_capacity(segs.len());
     let mut overlap = false;
     // `next` admits segments as the sweep reaches their top. `active`
     // holds the live segments in left-to-right order just below the
@@ -1324,8 +1949,8 @@ pub fn resolve_winding(
     // produced, maintained incrementally instead of re-sorted every
     // band: a new segment is inserted at its position at the band top,
     // retirement removes in place, and order changes happen only at the
-    // crossings the sweep detects (an adjacent pair swaps). `pos` maps a
-    // segment to its slot in `active` (`usize::MAX` once retired).
+    // crossings the sweep detects (an adjacent pair swaps). Each segment's
+    // state records its chunk and offset, and whether it has retired.
     // `retire` pops segments ending at or above the band top and
     // `xings` carries the crossing ordinate of every adjacent pair,
     // computed once when the pair forms — the earliest in-band crossing
@@ -1334,53 +1959,27 @@ pub fn resolve_winding(
     let mut next = 0usize;
     let mut active = Active::new(segs.len());
     let mut retire = BinaryHeap::<Reverse<(Split, u32)>>::new();
-    let mut xings = BinaryHeap::<Reverse<(Split, u32, u32, u8)>>::new();
+    let mut xings = BinaryHeap::<Reverse<Crossing>>::new();
     // Swapped pairs awaiting possible reversion when a later band's
     // midpoint sits below their crossing; max-heap keyed by the
     // ordinate in swapped order.
-    let mut posts = BinaryHeap::<(Split, u32, u32)>::new();
+    let mut posts = BinaryHeap::<(Split, u32, u32, u32)>::new();
+    let mut crossing_scratch = CrossingScratch::default();
     // Adjacent pairs with exactly equal slopes: no crossing exists to
     // key an event on, but the old sort still ordered them by their
     // midpoint keys each band, so they are re-checked per band.
-    let mut eqs: Vec<(u32, u32)> = Vec::new();
-    // Per-segment open boundary run: (index into `out`, orientation)
-    // while `alive` marks it live. A segment that is a boundary again
-    // in the very next band with the same orientation extends its
-    // emitted edge instead of starting a new piece; a run that stops
-    // firing closes itself. The merged edge is exactly the union of
-    // the per-band pieces of the same line.
-    let mut runs: Vec<Option<(usize, bool)>> = vec![None; segs.len()];
-    // The transitions detected at the previous emitting band, kept
-    // for the cross-segment collinear merge: (rank at that band,
-    // segment, index into `out`, orientation). New births insert by
-    // their rank — the ordering the old `open` push order produced —
-    // and deaths remove their entry; a split `continue` leaves the
-    // list untouched since no band was emitted between. The matched
-    // endpoint and slope are recomputed from the segment at match
-    // time: the previous band's bottom is this band's `ya`.
-    // Open transitions of the previous and this emit — (seg, piece,
-    // orient, x at the band's bottom, slope). The last two fields are
-    // what the continuation match tests; caching them keeps each
-    // candidate check to a tuple load and two compares instead of two
-    // `segs` accesses and an `x_at` call.
-    let mut prev_open: Vec<(u32, usize, bool, f64, f64)> = Vec::new();
-    let mut open: Vec<(u32, usize, bool, f64, f64)> = Vec::new();
-    // `prev_open` sorted by endpoint abscissa: the continuation match
-    // window-searches it instead of scanning the whole list — the
-    // winning entry is still the first in emit order among the
-    // verified candidates (its stored index is the emit-order rank).
-    let mut pix: Vec<(f64, f64, bool, usize, u32)> = Vec::new();
-    // Whether each segment's transition is live: a live transition
-    // fires at every band until an event flips it, so `alive`
-    // standing means the run continued through the last band.
-    let mut alive: Vec<bool> = vec![false; segs.len()];
-    // Segments swapped during `drain_xings`, transitions dying this
-    // band — (rank, segment).
-    let mut swapped: Vec<u32> = Vec::new();
-    let mut dead: Vec<(u32, u32)> = Vec::new();
-    // Band bottoms by band index, for the deferred piece-end writes,
-    // and the last emitting band's bottom.
-    let mut yb_hist: Vec<f64> = Vec::new();
+    let mut eqs = SmallVec::<[(u32, u32); 4]>::new();
+    // A positional index of the preceding band's transitions. Retirements
+    // remain candidates until an emission completes; joins select by the
+    // saved chunk and offset, preserving the previous emit order exactly.
+    let mut candidates = JoinIndex::new(&segs, &mut active.state);
+    let mut previous_order = SmallVec::<[u32; 4]>::new();
+    let mut changed = SmallVec::<[(usize, Range<usize>); 4]>::new();
+    let mut retired = SmallVec::<[u32; 4]>::new();
+    // Runs awaiting their final endpoint write, ordered by (rank, segment).
+    let mut dead = SmallVec::<[(u32, u32); 4]>::new();
+    // Previous processed and emitting band bottoms for deferred writes.
+    let mut previous_yb = None;
     let mut last_yb = 0.0;
     // Band tops and bottoms: `cursor` walks the sorted endpoint list while
     // `pending` holds split points found inside bands. Every split a band
@@ -1391,11 +1990,11 @@ pub fn resolve_winding(
     // bottom is consumed only once the band emits (or is skipped empty):
     // a split re-runs the band with the new, smaller boundary and the
     // deferred bottom becomes a later band's bottom, exactly as the
-    // insertion left it. `band` counts processed bands for the `runs`
-    // continuation check below; a band rerun after a split does not count.
+    // insertion left it. A split retry does not advance the processed or
+    // emitted band bottoms used by continuation matching.
     let mut pending = BinaryHeap::<Reverse<Split>>::new();
     let mut cursor = 1usize;
-    let mut ya = ys[0];
+    let mut ya = f64::from(ys[0]);
     // A single operand-order bound for every pair event: the stored
     // heap ordinate sits within `xing_err` of the scan-order value for
     // any pair, so heads with ordinates beyond a target plus this bound
@@ -1405,9 +2004,13 @@ pub fn resolve_winding(
         .fold(0.0f64, |m, s| m.max((s.slope * s.y0).abs()).max(s.x0.abs()));
     loop {
         let (yb, from_pending) = match pending.peek() {
-            Some(&Reverse(Split(yc))) if ys.get(cursor).is_none_or(|&base| yc < base) => (yc, true),
+            Some(&Reverse(Split(yc)))
+                if ys.get(cursor).is_none_or(|&base| yc < f64::from(base)) =>
+            {
+                (yc, true)
+            }
             _ => match ys.get(cursor) {
-                Some(&base) => (base, false),
+                Some(&base) => (f64::from(base), false),
                 None => break,
             },
         };
@@ -1424,9 +2027,8 @@ pub fn resolve_winding(
             ya,
             ym,
             m_glob,
-            &mut swapped,
+            &mut crossing_scratch,
         );
-        swapped.clear();
         while next < segs.len() && segs[next].y0 <= ya + EPS {
             let i = next;
             next += 1;
@@ -1438,25 +2040,28 @@ pub fn resolve_winding(
             let (xi, si) = (segs[i].x_at(ym), segs[i].slope);
             let at = active.slot(&segs, ym, xi, si);
             active.insert(&segs, at, i as u32);
-            if at > 0 {
+            let neighbours = active.state[i].neighbours;
+            if let Some(previous) = neighbours.previous {
                 push_xing(
                     &mut xings,
                     &mut posts,
                     &mut eqs,
+                    &active,
                     &segs,
-                    active.at(at - 1) as usize,
+                    previous.index() as usize,
                     i,
                     m_glob,
                 );
             }
-            if at + 1 < active.len {
+            if let Some(next) = neighbours.next {
                 push_xing(
                     &mut xings,
                     &mut posts,
                     &mut eqs,
+                    &active,
                     &segs,
                     i,
-                    active.at(at + 1) as usize,
+                    next.index() as usize,
                     m_glob,
                 );
             }
@@ -1467,50 +2072,44 @@ pub fn resolve_winding(
             }
             retire.pop();
             let i = i as usize;
-            let at = active.rank(i as u32);
             // The retiring edge's own transition dies with it; its
             // last firing was the previous band.
-            if alive[i] {
-                alive[i] = false;
+            if active.state[i].run.is_live() {
+                let at = active.rank(i as u32);
+                active.state[i].run.retire();
                 dead.push((at as u32, i as u32));
+                retired.push(i as u32);
             }
+            let neighbours = active.state[i].neighbours;
             active.remove(&segs, i as u32);
-            if at > 0 && at < active.len {
+            if let (Some(previous), Some(next)) = (neighbours.previous, neighbours.next) {
                 push_xing(
                     &mut xings,
                     &mut posts,
                     &mut eqs,
+                    &active,
                     &segs,
-                    active.at(at - 1) as usize,
-                    active.at(at) as usize,
+                    previous.index() as usize,
+                    next.index() as usize,
                     m_glob,
                 );
             }
         }
+        active.discard_stale(&mut xings, &mut posts);
         // Transitions that died on retirement close their pieces in
         // the rank order they held while firing — each write is the
         // piece's endpoint at the previous band's bottom.
         dead.sort_by_key(|&(r, _)| r);
         for &(_, s) in &dead {
             let i = s as usize;
-            if let Some((edge, orient)) = runs[i].take() {
-                let y = yb_hist.last().copied().unwrap_or(last_yb);
-                let x = segs[i].x_at(y);
-                let piece = &mut out[edge];
-                if orient {
-                    piece.2 = x;
-                    piece.3 = y;
-                } else {
-                    piece.0 = x;
-                    piece.1 = y;
-                }
-            }
+            active.state[i]
+                .run
+                .finish(&segs[i], previous_yb.unwrap_or(last_yb), &mut out);
         }
         dead.clear();
         if active.len == 0 {
-            prev_open.clear();
-            pix.clear();
-            yb_hist.push(yb);
+            candidates.retire(&mut retired, &active.state);
+            previous_yb = Some(yb);
             if from_pending {
                 pending.pop();
             } else {
@@ -1529,31 +2128,30 @@ pub fn resolve_winding(
         // operand order match the old scan — the heap head is the
         // minimum without re-scoring.
         let mut split = None;
-        let mut keep: Vec<Reverse<(Split, u32, u32, u8)>> = Vec::new();
-        while let Some(&Reverse((Split(appr), l, r, det))) = xings.peek() {
+        while let Some(&Reverse((Split(appr), l, r, det, stamp))) = xings.peek() {
             if appr >= yb - EPS {
                 break;
             }
             xings.pop();
             let (l, r) = (l as usize, r as usize);
-            if active.chunk_of[l] == usize::MAX
-                || active.chunk_of[r] == usize::MAX
-                || active.rank(l as u32) + 1 != active.rank(r as u32)
-            {
+            if !active.adjacent(l as u32, r as u32, stamp) {
                 continue;
             }
-            keep.push(Reverse((Split(appr), l as u32, r as u32, det)));
+            crossing_scratch
+                .forward
+                .push(Reverse((Split(appr), l as u32, r as u32, det, stamp)));
             if det != 0 && appr > ya + EPS {
                 split = Some(appr);
                 break;
             }
         }
-        for e in keep {
+        for e in crossing_scratch.forward.drain(..) {
             xings.push(e);
         }
         if let Some(yc) = split {
             pending.push(Reverse(Split(yc)));
             overlap = true;
+            active.track_extrema = false;
             continue;
         }
         // Consume the boundary the band ends at: it stays in `pending`
@@ -1563,16 +2161,21 @@ pub fn resolve_winding(
         } else {
             cursor += 1;
         }
-        // Emit pass: every live element is evaluated once, in rank
-        // order — the same order the old `active` vec walked it in —
-        // carrying the winding prefix `w`. A live transition fires at
-        // every band, so a segment's piece endpoint is written once:
-        // at the band after its last firing — the value the old
-        // per-band writes converged to.
-        let pend = yb_hist.last().copied().unwrap_or(last_yb);
-        let mut w = 0.0;
-        for ch in &active.chunks {
-            for &e in &ch.els {
+        // Visit edited chunks and stretches whose winding changed.
+        // Unchanged runs keep firing without touching their edges.
+        let pend = previous_yb.unwrap_or(last_yb);
+        active.changed_chunks(rule, &mut changed);
+        for (c, range) in &changed {
+            let ch = &active.chunks[*c];
+            let mut live = ch.live;
+            let mut w = ch.base
+                + if range.start == 0 {
+                    0.0
+                } else {
+                    f64::from(ch.els[range.start - 1].level)
+                };
+            for entry in &ch.els[range.clone()] {
+                let e = entry.segment;
                 let i = e as usize;
                 let seg = &segs[i];
                 let dir = seg.dir;
@@ -1593,109 +2196,83 @@ pub fn resolve_winding(
                     // No transition here any more: if the run was
                     // live, it died — its last firing was the
                     // previous band.
-                    if alive[i] {
-                        alive[i] = false;
+                    if active.state[i].run.is_live() {
+                        live -= 1;
+                        active.state[i].run.retire();
                         dead.push((0, e));
                     }
                     continue;
                 }
                 let (xa, xb) = (seg.x_at(ya), seg.x_at(yb));
-                if alive[i]
-                    && let Some((edge, orient)) = runs[i]
-                {
+                let was_live = active.state[i].run.is_live();
+                if let BoundaryRun::Live { orient, .. } = active.state[i].run {
                     if orient == now {
                         // Same run keeps firing — its piece was
                         // already emitted; nothing changes.
-                        open.push((e, edge, orient, xb, seg.slope));
                         continue;
                     }
                     // The orientation flipped: the old run's last
                     // firing was the previous band — close its piece.
-                    let x = seg.x_at(pend);
-                    let piece = &mut out[edge];
-                    if orient {
-                        piece.2 = x;
-                        piece.3 = pend;
-                    } else {
-                        piece.0 = x;
-                        piece.1 = pend;
-                    }
+                    active.state[i].run.finish(seg, pend, &mut out);
                 }
-                // A new or re-born transition: continue an open
-                // run from the previous band that ends where this
-                // piece starts and shares its slope — coincident
-                // collinear segments form one boundary line, so
-                // the extension is exact; at a kink the slope
-                // differs and a new edge starts. `pix` is `prev_open`
-                // sorted by endpoint abscissa, so the match window
-                // is a binary-search range instead of a full scan;
-                // among the candidates the lowest stored index is
-                // the first entry in emit order — the same pick the
-                // linear scan made.
-                let tol = EPS * (1.0 + xa.abs());
-                let (xlo, xhi) = (xa - tol, xa + tol);
-                let lo = pix.partition_point(|&(xe, _, _, _, _)| xe < xlo);
-                let hi = pix.partition_point(|&(xe, _, _, _, _)| xe <= xhi);
-                let mut best: Option<(u32, usize)> = None;
-                for &(_, sl, orient, edge, oidx) in &pix[lo..hi] {
-                    if orient == now && (sl - seg.slope).abs() <= EPS {
-                        match best {
-                            Some((b, _)) if b <= oidx => {}
-                            _ => best = Some((oidx, edge)),
-                        }
-                    }
-                }
-                let edge = best.map_or_else(
-                    || {
+                let edge = candidates
+                    .find(&segs, seg.slope, xa, pend, now, &previous_order, m_glob)
+                    .unwrap_or_else(|| {
                         if now {
-                            out.push((xa, ya, xb, yb));
+                            out.push((xa as f32, ya as f32, xb as f32, yb as f32));
                         } else {
-                            out.push((xb, yb, xa, ya));
+                            out.push((xb as f32, yb as f32, xa as f32, ya as f32));
                         }
-                        out.len() - 1
-                    },
-                    |(_, edge)| edge,
-                );
-                runs[i] = Some((edge, now));
-                alive[i] = true;
-                open.push((e, edge, now, xb, seg.slope));
+                        (out.len() - 1) as u32
+                    });
+                active.state[i].run = BoundaryRun::Live { edge, orient: now };
+                live += usize::from(!was_live);
+            }
+            active.chunks[*c].live = live;
+        }
+        // Publish only after every new transition has queried the old
+        // snapshot, including candidates retired during a split retry.
+        candidates.retire(&mut retired, &active.state);
+        for (c, range) in &changed {
+            let ch = &active.chunks[*c];
+            for offset in range.clone() {
+                let e = ch.els[offset].segment;
+                let i = e as usize;
+                let previous = if let BoundaryRun::Live { edge, orient } = active.state[i].run {
+                    Some(PreviousRun {
+                        edge,
+                        orient,
+                        chunk: ch.id,
+                        offset: offset as u8,
+                    })
+                } else {
+                    None
+                };
+                candidates.set(active.state[i].candidate, previous);
             }
         }
-        std::mem::swap(&mut open, &mut prev_open);
-        open.clear();
-        pix.clear();
-        pix.extend(
-            prev_open
-                .iter()
-                .enumerate()
-                .map(|(idx, &(_, edge, orient, xe, sl))| (xe, sl, orient, edge, idx as u32)),
-        );
-        pix.sort_by(|a, b| a.0.total_cmp(&b.0));
+        changed.clear();
+        if active.order_changed {
+            previous_order.clear();
+            previous_order.extend_from_slice(&active.order_pos);
+            active.order_changed = false;
+        }
         // Dying transitions close their pieces in rank order — the
         // chunk walk already yielded them that way.
         for &(_, s) in &dead {
             let i = s as usize;
-            if let Some((edge, orient)) = runs[i].take() {
-                let x = segs[i].x_at(pend);
-                let piece = &mut out[edge];
-                if orient {
-                    piece.2 = x;
-                    piece.3 = pend;
-                } else {
-                    piece.0 = x;
-                    piece.1 = pend;
-                }
-            }
+            active.state[i].run.finish(&segs[i], pend, &mut out);
         }
         dead.clear();
         // A winding magnitude above one, or both signs in one band,
         // means regions overlap — only then is rewriting needed.
-        let (wmin, wmax) = active.w_minmax();
-        if wmax >= 2.0 || wmin <= -2.0 || (wmin < 0.0 && wmax > 0.0) {
-            overlap = true;
+        if !overlap {
+            let (wmin, wmax) = active.w_minmax();
+            overlap = wmax >= 2.0 || wmin <= -2.0 || (wmin < 0.0 && wmax > 0.0);
+            active.track_extrema = !overlap;
         }
         last_yb = yb;
-        yb_hist.push(yb);
+        previous_yb = Some(yb);
         ya = yb;
     }
     // Transitions still live finalize at the last emitting band's
@@ -1703,28 +2280,14 @@ pub fn resolve_winding(
     // last-emitted transition wins shared pieces.
     for r in 0..active.len {
         let i = active.at(r) as usize;
-        if alive[i]
-            && let Some((edge, orient)) = runs[i]
-        {
-            let x = segs[i].x_at(last_yb);
-            let piece = &mut out[edge];
-            if orient {
-                piece.2 = x;
-                piece.3 = last_yb;
-            } else {
-                piece.0 = x;
-                piece.1 = last_yb;
-            }
+        if active.state[i].run.is_live() {
+            active.state[i].run.finish(&segs[i], last_yb, &mut out);
         }
     }
     if !overlap {
         return None;
     }
-    Some(
-        out.iter()
-            .map(|&(x0, y0, x1, y1)| (x0 as f32, y0 as f32, x1 as f32, y1 as f32))
-            .collect(),
-    )
+    Some(out)
 }
 
 #[cfg(test)]
@@ -1797,6 +2360,25 @@ mod tests {
             (area(&resolved).abs() - 245.0).abs() < 1e-3,
             "union area {}",
             area(&resolved)
+        );
+    }
+
+    #[test]
+    fn a_collinear_join_survives_slope_window_cancellation() {
+        // The left slopes are about -1e-25 and 1e-9. Their rounded
+        // difference equals EPS, although the former lies below
+        // `1e-9 - EPS`. The small inner rectangle establishes overlap.
+        let segs = [
+            (0.0, 0.0, -1e-16, 1e9),
+            (10.0, 1e9, 10.0, 0.0),
+            (-1e-16, 1e9, 1.0, 2e9),
+            (10.0, 2e9, 10.0, 1e9),
+            (5.0, 5.0, 5.0, 6.0),
+            (6.0, 6.0, 6.0, 5.0),
+        ];
+        assert_eq!(
+            resolve_winding(&segs, FillRule::NonZero).expect("inner overlap"),
+            [(0.0, 0.0, 1.0, 2e9), (10.0, 2e9, 10.0, 0.0)],
         );
     }
 

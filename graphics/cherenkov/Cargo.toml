@@ -23,6 +23,7 @@ libm = "0.2"
 # layout. No system font backend: hosts bring their own font collection.
 parley = { version = "0.11.1", default-features = false, features = ["std"] }
 rustc-hash = "2"
+smallvec = { workspace = true, features = ["union"] }
 thiserror = "2"
 tracing = "0.1"
 

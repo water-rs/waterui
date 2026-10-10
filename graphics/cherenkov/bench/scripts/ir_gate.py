@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Callgrind Ir gate for `lower`, `encode` and `run_transaction` on the five
+"""Callgrind Ir gate for `lower`, `encode` and `run_transaction` on the gated
 perf scenes.
 
 Each profile runs `cherenkov-bench measure --pause-at P` under Callgrind with
@@ -62,7 +62,7 @@ teardown crashes when another instance layer sits in front of it.
 """
 import argparse, collections, concurrent.futures, ctypes, fnmatch, hashlib, json, os, pathlib, re, selectors, struct, subprocess, sys
 
-SCENES = ['map', 'chart', 'text-page', 'ui-list', 'effects']
+SCENES = ['map', 'chart', 'text-page', 'ui-list', 'effects', 'road-network', 'brick-grid']
 ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad'),
          'run_transaction': ('15run_transaction', 'cherenkov_record')}
 PAUSE = 'cherenkov-bench: paused before frame {}'
