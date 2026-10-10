@@ -41,7 +41,7 @@ use waterui_core::{Environment, View};
 use waterui_layout::alignment;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
-use waterui_layout::stack::{hstack, vstack, zstack};
+use waterui_layout::stack::{HorizontalAlignment, hstack, vstack, zstack};
 use waterui_text::text::{IntoText, Text, text};
 
 use crate::shape::{FixedRoundedRectangle, ShapeExt};
@@ -442,6 +442,7 @@ fn dialog_card(dialog: &Dialog, label: Computed<Str>) -> impl View + use<> {
 
     Frame::new(
         vstack(contents)
+            .alignment(HorizontalAlignment::Leading)
             .spacing(CARD_CONTENT_SPACING)
             .padding_with(EdgeInsets::all(CARD_PADDING))
             .background(FixedRoundedRectangle::new(CARD_CORNER_RADIUS).fill(Color::new(Surface)))
