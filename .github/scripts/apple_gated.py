@@ -9,12 +9,13 @@ a target with work in the affected scope; the composite reads the cargo
 
 Usage:
 
-    apple_gated.py --legs <scope>        # the matrix entries, as JSON
-    apple_gated.py <target> <scope>      # `--all-targets` args, then
-                                         # library-only args, one line each
+    apple_gated.py --legs <scope>               # the matrix entries, as JSON
+    apple_gated.py <target> <scope> [group]     # the cargo `-p` arguments
 
 `<scope>` is affected.py's `packages`: `workspace`, or space-separated
-package names. `<target>` is empty for the macOS host.
+package names. `<target>` is empty for the macOS host. `<group>` selects
+one of the iOS simulator's `SIM_GROUPS`; it is meaningless for the host,
+whose single leg lints the whole list.
 """
 
 import json
@@ -24,8 +25,11 @@ IOS_SIM = "aarch64-apple-ios-sim"
 
 # waterui-apple, cocoa-ui and cherenkov-gpu are not listed: apple.yml's
 # rust job lints them on both targets. waterui-cli and hydrolysis's
-# checked feature set have their own composite steps.
-MACOS = (
+# checked feature set have their own composite steps. The whole group
+# lints `--all-targets` on the macOS host and on `aarch64-apple-ios-sim`
+# alike; the sysinfo/libc defect that once forced library-only passes on
+# the simulator is pinned away (Cargo.lock keeps libc 0.2.189, #2485).
+CRATES = (
     "hydrolysis", "waterui", "waterui-internal",
     "cherenkov", "cherenkov-record", "cherenkov-cpu", "cherenkov-oracle",
     "cherenkov-scene", "cherenkov-shader", "cherenkov-bench",
@@ -36,28 +40,44 @@ MACOS = (
     "waterui-macros", "waterui-assets-macros", "waterui-url",
 )
 
-IOS_SIM_ALL_TARGETS = (
-    "waterui-internal",
-    "cherenkov", "cherenkov-record", "cherenkov-cpu", "cherenkov-oracle",
-    "cherenkov-scene", "cherenkov-shader",
-    "filtrate", "filtrate-core", "filtrate-derive",
-    "waterui-locale", "waterui-preview", "waterui-preview-protocol",
-    "waterui-ts", "waterui-ts-engine-jsc",
-    "waterui-assets-macros", "waterui-url",
-)
-
-# Library targets only on the simulator, because of a dependency defect:
-# sysinfo 0.39.6 calls `libc::mach_host_self` and `libc::mach_task_self`
-# on every Apple target, but libc 0.2.190 declares both for
-# `target_os = "macos"` only (0.2.189 declared them for all Apple
-# targets). These crates' test targets reach sysinfo through
-# waterui-testing and do not compile for aarch64-apple-ios-sim.
-# waterui-testing and cherenkov-bench depend on sysinfo outright and are
-# linted on the host only.
-IOS_SIM_LIB = (
-    "hydrolysis", "waterui",
-    "waterui-controls", "waterui-text", "waterui-graphics", "waterui-media",
-    "waterui-macros",
+# The simulator's share of CRATES, split into parallel legs (#2521): the
+# single leg that ran all of them cold overran the macos job's 10-minute
+# budget. Every leg recompiles its dependency closure from scratch, so
+# the groups are balanced by closure weight, not crate count — dev-dep
+# tails dominate: hydrolysis's tests and examples pull criterion, m3,
+# chart, mcp and icons-lucide; waterui and waterui-testing share the
+# testing <-> hydrolysis cycle; the cherenkov family pulls wgpu/naga and
+# the generated scene fonts; waterui-media's tests pull the video-gpu
+# stack and the software codec; the devtools leg is the light one.
+# The union of the groups is exactly CRATES: coverage is unchanged, and
+# each group still lints `--all-targets`.
+SIM_GROUPS = (
+    ("backend", ("hydrolysis",)),
+    ("facade", ("waterui", "waterui-internal", "waterui-testing")),
+    (
+        "engine",
+        (
+            "cherenkov", "cherenkov-record", "cherenkov-cpu",
+            "cherenkov-oracle", "cherenkov-scene", "cherenkov-shader",
+            "cherenkov-bench",
+        ),
+    ),
+    (
+        "components",
+        (
+            "filtrate", "filtrate-core", "filtrate-derive",
+            "waterui-controls", "waterui-text", "waterui-graphics",
+            "waterui-media", "waterui-locale",
+        ),
+    ),
+    (
+        "devtools",
+        (
+            "waterui-preview", "waterui-preview-protocol",
+            "waterui-ts", "waterui-ts-engine-jsc",
+            "waterui-macros", "waterui-assets-macros", "waterui-url",
+        ),
+    ),
 )
 
 
@@ -68,31 +88,45 @@ def in_scope(crates, scope):
     return [crate for crate in crates if crate in names]
 
 
-def crates_for(target, scope):
-    """The `--all-targets` crates and the library-only crates for `target`."""
+def crates_for(target, scope, group=""):
+    """The crates `target` lints with `--all-targets`.
+
+    `group` names one of `SIM_GROUPS` and is honoured only on the iOS
+    simulator: its legs partition `CRATES`, while the macOS host's single
+    leg lints the whole list.
+    """
     if target == "":
-        return in_scope(MACOS, scope), []
+        if group:
+            raise ValueError(f"the macOS host leg has no group {group!r}")
+        return in_scope(CRATES, scope)
     if target == IOS_SIM:
-        return in_scope(IOS_SIM_ALL_TARGETS, scope), in_scope(IOS_SIM_LIB, scope)
+        if not group:
+            return in_scope(CRATES, scope)
+        for name, crates in SIM_GROUPS:
+            if name == group:
+                return in_scope(crates, scope)
+        raise ValueError(f"unknown iOS simulator lint group {group!r}")
     raise ValueError(f"unknown Apple lint target {target!r}")
 
 
-def leg(name, target, hydrolysis=False, cli=False, gated=False):
+def leg(name, target, hydrolysis=False, cli=False, gated=False, group=""):
     return {
         "name": name,
         "target": target,
         "hydrolysis": hydrolysis,
         "waterui-cli": cli,
         "apple-gated": gated,
+        "group": group,
     }
 
 
 def legs(scope):
     """The `macos` matrix entries with work for `scope`; empty when none.
 
-    On the macOS host each pass is its own leg: every leg compiles cold,
-    and the three passes run back to back overran the 10-minute budget
-    (#2506). The simulator leg's passes share one graph and stay together.
+    Each pass — and, on the simulator, each crate group — is its own leg:
+    every leg compiles its dependency closure cold, and passes run back
+    to back overran the 10-minute budget (#2506 on the host, #2521 on the
+    simulator).
     """
     hydrolysis = bool(in_scope(("hydrolysis",), scope))
     cli = bool(in_scope(("waterui-cli",), scope))
@@ -103,17 +137,20 @@ def legs(scope):
         entries.append(leg("aarch64-apple-darwin (waterui-cli)", "", cli=True))
     if any(crates_for("", scope)):
         entries.append(leg("aarch64-apple-darwin", "", gated=True))
-    if any(crates_for(IOS_SIM, scope)):
-        entries.append(leg(IOS_SIM, IOS_SIM, hydrolysis=hydrolysis, gated=True))
+    if hydrolysis:
+        entries.append(leg(f"{IOS_SIM} (hydrolysis)", IOS_SIM, hydrolysis=True))
+    for name, _ in SIM_GROUPS:
+        if any(crates_for(IOS_SIM, scope, name)):
+            entries.append(leg(f"{IOS_SIM} ({name})", IOS_SIM, gated=True, group=name))
     return entries
 
 
 def main(argv):
     if len(argv) == 2 and argv[0] == "--legs":
         print(json.dumps(legs(argv[1]), separators=(",", ":")))
-    elif len(argv) == 2:
-        for crates in crates_for(argv[0], argv[1]):
-            print(" ".join(f"-p {crate}" for crate in crates))
+    elif len(argv) in (2, 3):
+        crates = crates_for(*argv)
+        print(" ".join(f"-p {crate}" for crate in crates))
     else:
         raise SystemExit(__doc__)
 

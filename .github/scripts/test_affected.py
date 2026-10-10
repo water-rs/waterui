@@ -279,7 +279,7 @@ def test_gaining_a_testing_edge_flags_the_rule():
 
 # The `macos` matrix: a leg exists only for a target with an Apple-gated
 # crate in scope, so no macOS runner starts to find nothing to lint.
-from apple_gated import IOS_SIM, crates_for, legs
+from apple_gated import CRATES, IOS_SIM, SIM_GROUPS, crates_for, legs
 
 
 def leg_targets(scope):
@@ -292,7 +292,8 @@ def test_no_apple_gated_crate_starts_no_leg():
 
 
 def test_workspace_starts_every_leg():
-    assert leg_targets("workspace") == ["", "", "", IOS_SIM]
+    sim = [leg for leg in legs("workspace") if leg["target"] == IOS_SIM]
+    assert leg_targets("workspace") == ["", "", ""] + [IOS_SIM] * len(sim)
     host = [leg for leg in legs("workspace") if leg["target"] == ""]
     # One pass per host leg: run back to back they overran the budget.
     assert [(leg["hydrolysis"], leg["waterui-cli"], leg["apple-gated"]) for leg in host] == [
@@ -300,6 +301,22 @@ def test_workspace_starts_every_leg():
         (False, True, False),
         (False, False, True),
     ]
+    # The simulator legs: the checked feature set, then one leg per crate
+    # group — the single all-crates leg overran the budget cold (#2521).
+    assert [(leg["hydrolysis"], leg["group"]) for leg in sim] == [
+        (True, ""),
+        *((False, name) for name, _ in SIM_GROUPS),
+    ]
+    assert all(leg["apple-gated"] == (leg["group"] != "") for leg in sim)
+
+
+def test_simulator_groups_partition_the_full_crate_list():
+    groups = [crates for _, crates in SIM_GROUPS]
+    assert sorted(crate for group in groups for crate in group) == sorted(CRATES)
+    for name, _ in SIM_GROUPS:
+        assert crates_for(IOS_SIM, "workspace", name) == next(
+            list(crates) for group_name, crates in SIM_GROUPS if group_name == name
+        )
 
 
 def test_host_only_crates_start_only_host_legs():
@@ -310,9 +327,20 @@ def test_host_only_crates_start_only_host_legs():
             "hydrolysis": False,
             "waterui-cli": True,
             "apple-gated": False,
+            "group": "",
         }
     ]
-    assert leg_targets("waterui-testing cherenkov-bench") == [""]
+    assert leg_targets("waterui-testing cherenkov-bench") == ["", IOS_SIM, IOS_SIM]
+
+
+def test_simulator_legs_follow_the_groups_the_scope_touches():
+    sim_legs = [leg["group"] for leg in legs("waterui-testing cherenkov-bench") if leg["target"] == IOS_SIM]
+    assert sim_legs == ["facade", "engine"]
+    # hydrolysis is in scope through no crate here, so its feature-set
+    # leg stays off.
+    assert not any(leg["hydrolysis"] for leg in legs("waterui-testing cherenkov-bench"))
+    sim_legs = [leg["group"] for leg in legs("hydrolysis") if leg["target"] == IOS_SIM]
+    assert sim_legs == ["", "backend"]
 
 
 def test_simulator_compatible_crates_start_both_legs():
@@ -320,9 +348,21 @@ def test_simulator_compatible_crates_start_both_legs():
     assert not any(leg["hydrolysis"] for leg in legs("cherenkov-oracle"))
 
 
-def test_simulator_splits_library_only_crates():
-    assert crates_for(IOS_SIM, "waterui cherenkov") == (["cherenkov"], ["waterui"])
-    assert crates_for("", "waterui cherenkov") == (["waterui", "cherenkov"], [])
+def test_simulator_lints_the_same_all_targets_group():
+    assert crates_for(IOS_SIM, "waterui cherenkov") == ["waterui", "cherenkov"]
+    assert crates_for("", "waterui cherenkov") == ["waterui", "cherenkov"]
+
+
+def test_a_group_selects_its_crates_within_scope():
+    assert crates_for(IOS_SIM, "waterui cherenkov", "facade") == ["waterui"]
+    assert crates_for(IOS_SIM, "waterui cherenkov", "engine") == ["cherenkov"]
+
+
+def test_an_unknown_group_or_a_host_group_is_an_error():
+    with pytest.raises(ValueError):
+        crates_for(IOS_SIM, "workspace", "bogus")
+    with pytest.raises(ValueError):
+        crates_for("", "workspace", "engine")
 
 
 def test_an_unknown_target_is_an_error():
