@@ -22,6 +22,8 @@ tracing = "0.1"
 [dev-dependencies]
 cherenkov = { path = "..", features = ["testing"] }
 cherenkov-oracle = { path = "../oracle" }
+cherenkov-scene = { path = "../scene" }
+cherenkov-shader = { path = "../shader", features = ["eval"] }
 filtrate = { path = "../../filtrate" }
 nami = { version = "0.12", default-features = false, features = ["std", "kurbo"] }
 
