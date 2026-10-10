@@ -34,9 +34,13 @@ on:
     # edited covers retargeting the pull request between dev and main.
     types: [opened, reopened, synchronize, edited]
 
+# A pull request cancels its superseded run. A `main` push queues instead:
+# its lint job is the cache writer for that ref, and a writer cancelled
+# mid-sweep or mid-save leaves no archive for the runs after it (#2338).
+# The group still drops a queued run that a newer push supersedes.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -153,12 +157,20 @@ jobs:
   # move the toolchain floor — a `rust-version`, dependency-section or
   # Cargo.lock change — because a source edit cannot raise it and the
   # signal repeats in the nightly sweep instead.
+  #
+  # A pull request is measured against its base branch, not the event's
+  # `pull_request.base.sha`: the checkout is the test merge commit of the
+  # head into the base branch's current tip, while the event's base sha can
+  # sit commits behind it, and the diff from there pulled every
+  # intervening merge — other pull requests' lockfile changes included —
+  # into this pull request's scope (#2338). The merge-base of the base
+  # branch and the merge commit is the tip the head was merged into.
   scope:
     name: Affected scope
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/affected.yml
     with:
-      base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
 
   typos:
     name: Typos
