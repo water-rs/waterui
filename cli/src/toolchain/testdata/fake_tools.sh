@@ -378,6 +378,35 @@ adb)
     if [ -n "${WATERUI_FAKE_ADB_HANG-}" ]; then
         while :; do :; done
     fi
+    # A scripted device: every `shell` command line runs for real with the
+    # host's own tools — the one place this fixture runs external commands,
+    # on a PATH of its own: `WATERUI_FAKE_DEVICE_PATH` (the `run-as` shim
+    # and any shims a test stages) ahead of the system directories. The
+    # shell user's `/data/local/tmp` is the host directory
+    # `WATERUI_FAKE_DEVICE_TMP`, and a `push` lands there with adb's own
+    # semantics: an absent target becomes a copy of the source, an existing
+    # directory receives the source inside it.
+    if [ -n "${WATERUI_FAKE_DEVICE_TMP-}" ]; then
+        PATH="${WATERUI_FAKE_DEVICE_PATH:+$WATERUI_FAKE_DEVICE_PATH:}/usr/bin:/bin:/sbin"
+        export PATH
+        case "$*" in
+            *" push "*)
+                remote="$WATERUI_FAKE_DEVICE_TMP${5#/data/local/tmp}"
+                mkdir -p "$(dirname "$remote")" || exit 1
+                if [ -d "$remote" ]; then
+                    exec cp -R "$4" "$remote/"
+                fi
+                exec cp -R "$4" "$remote"
+                ;;
+            *" shell "*)
+                # The command line is the last argument.
+                for line; do :; done
+                line=$(printf '%s' "$line" | sed "s#/data/local/tmp#$WATERUI_FAKE_DEVICE_TMP#g")
+                cd / || exit 1
+                exec sh -c "$line"
+                ;;
+        esac
+    fi
     case "$*" in
         version)
             printf 'Android Debug Bridge version 1.0.41\nVersion %s\n' "${WATERUI_FAKE_ADB_VERSION:-36.0.0-test}"
@@ -396,9 +425,6 @@ adb)
         *getprop*)
             respond_or_empty ADB_GETPROP
             ;;
-        *wait-for-device*)
-            exit 0
-            ;;
         *"pm list packages"*)
             respond_or_empty ADB_PM_PACKAGES
             ;;
@@ -411,6 +437,14 @@ adb)
             ;;
         *logcat*)
             respond_or_empty ADB_LOGCAT
+            ;;
+        *"run-as"*"cat > "*)
+            # A command that writes its stdin into a file, like a run
+            # preparation: the input lands where `WATERUI_FAKE_ADB_STDIN`
+            # points, and the canned stdout goes back.
+            /bin/cat > "${WATERUI_FAKE_ADB_STDIN:-/dev/null}"
+            (respond_or_empty ADB_RUN_AS_STDOUT)
+            exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
             ;;
         *"run-as"*cat*)
             respond_or_empty ADB_CAT
@@ -491,6 +525,18 @@ git)
         git_prev=$git_arg
     done
     case "$*" in
+        *"rev-parse --is-shallow-repository"*) respond GIT_SHALLOW ;;
+        *"rev-parse --verify refs/remotes/origin/dev"*) respond GIT_HEAD ;;
+        *"rev-parse --verify"*) respond GIT_REVISION ;;
+        *"--unshallow"*) : > .fake-git-unshallowed ;;
+        *"merge-base --is-ancestor"*)
+            if [ -f .fake-git-unshallowed ]; then
+                exit "${WATERUI_FAKE_GIT_ANCESTOR_COMPLETE:-0}"
+            fi
+            exit "${WATERUI_FAKE_GIT_ANCESTOR:-0}"
+            ;;
+        *"ls-tree"*) respond_or_empty GIT_ENTRY ;;
+        "show "*) respond GIT_FILE ;;
         "--version")
             printf 'git version %s\n' "${WATERUI_FAKE_GIT_VERSION:-2.43.0}"
             ;;

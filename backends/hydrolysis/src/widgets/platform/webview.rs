@@ -6,12 +6,9 @@
 //! crate the *application* links and installs as a `Hook<WebView>` realization,
 //! which intercepts the component before it reaches this backend.
 //!
-//! A `WebView` that still reaches the backend is a missing realization — a
-//! programmer error — and panics at the earliest point it is seen (measure or
-//! node build) rather than occupying a layout slot with no page behind it.
-//! That includes the macOS bridge today: its record has no native-view layer
-//! to present the `WKWebView` through, so it fails at build like every other
-//! engine-less path.
+//! The macOS bridge mounts an `AppKit` port through Cherenkov `Hosted` content.
+//! Other engines must install their own hook; reaching the backend without
+//! one is a programmer error rather than a layout slot with no page behind it.
 
 // Only macOS can act on this: there the feature names a bridge that exists and
 // the diagnostic tells the reader what is missing. Everywhere else the platform
@@ -52,12 +49,30 @@ impl HydroNativeView for WebView {
         _env: &Environment,
         _theme: &std::rc::Rc<dyn crate::engine::WidgetTheme>,
     ) -> LayoutSize {
+        #[cfg(hydrolysis_macos_system_webview)]
+        {
+            LayoutSize::new(0.0, 0.0)
+        }
+        #[cfg(not(hydrolysis_macos_system_webview))]
         crate::renderer::unsupported_webview()
     }
 }
 
+/// The hosted leaf showing `view`'s `WKWebView`. A page another engine opened
+/// reaches the backend only when that engine's `Hook<WebView>` is missing.
 #[cfg(hydrolysis_macos_system_webview)]
-pub(crate) fn install_controller(env: &mut Environment) {
+pub fn hosted(view: &WebView) -> crate::HostedView {
+    const FOREIGN: &str = "Hydrolysis hosts only pages the system WKWebView controller opened; \
+                           install the custom engine's WebView hook";
+    let handle = view
+        .handle()
+        .downcast_ref::<macos::MacSystemWebViewHandle>()
+        .expect(FOREIGN);
+    crate::HostedView::new(handle.clone())
+}
+
+#[cfg(hydrolysis_macos_system_webview)]
+pub fn install_controller(env: &mut Environment) {
     macos::install(env);
 }
 

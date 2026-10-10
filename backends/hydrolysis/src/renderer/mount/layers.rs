@@ -11,6 +11,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -18,12 +19,15 @@ use cherenkov::{FilterId, Layer, LayerId, ShapeData, Shared, Transaction};
 
 use waterui_graphics::HeldResources;
 
-use super::backdrop::{BackdropGroupKey, BackdropGroups, MaterialMembership};
+use super::backdrop::{
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, MaterialBackdropGroups,
+    MaterialMembership, MemberBind, ScopeAnchors, scope_id,
+};
 use super::cell::NodeCell;
 use super::placement::Placement;
 use super::program::{
-    InnerProgram, Item, MaterialRequest, ProducerContent, Program, RunKey, SceneContentSource,
-    ScopeKey, ScopeProps,
+    ChromeMaterial, InnerProgram, Item, MaterialRequest, ProducerContent, Program, RunKey,
+    SceneContentSource, ScopeKey, ScopeProps,
 };
 use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
@@ -133,6 +137,9 @@ pub struct ScopeLayer {
     placement: Rc<Placement>,
     props: LayerProps,
     runs: Vec<RunLayer>,
+    /// The `ChromeMaterial` member layers inside the scope, in program
+    /// order.
+    members: Vec<MemberLayer>,
     /// The anchor layers the scope's items lower — the same retention
     /// and registration contract the node's own list has. The `Rc`
     /// pins the scope's cell, so its `BackdropScope::Scoped` address
@@ -140,8 +147,29 @@ pub struct ScopeLayer {
     anchors: Vec<(Rc<NodeCell>, Layer)>,
     /// The `(scope, canvas, layer)` keys the scope's items' anchors
     /// registered; each entry compare-removes on the layer it installed.
-    anchor_keys: Vec<(usize, Option<LayerId>, LayerId)>,
+    anchor_keys: Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     committed: Committed,
+}
+
+/// A `ChromeMaterial` render layer (water-rs/waterui#1788): one backdrop
+/// material's member layer, mounted between the runs recorded around it.
+/// Its mount key is the node's identity plus `ordinal` — a re-recorded
+/// chrome rebinds shape and effect onto this layer and its group instead
+/// of mounting new ones.
+pub struct MemberLayer {
+    ordinal: u32,
+    layer: Layer,
+    /// The transform last written to the member layer.
+    transform: kurbo::Affine,
+    /// The material as last lowered: its live shape binds the member's
+    /// clip, its live effect binds the backdrop sample — and a group
+    /// rebuild rebinds them from these handles.
+    chrome: Option<ChromeMaterial>,
+    /// The class's resolved capture parameters — the terms a no-program
+    /// commit re-keys and re-joins by.
+    params: Option<cherenkov_record::MaterialCapture>,
+    /// The member's group membership, held so its layers' drop ends it.
+    membership: Option<MaterialMembership>,
 }
 
 /// A node's retained layers.
@@ -159,6 +187,10 @@ pub struct NodeLayers {
     install_gpu: bool,
     runs: Vec<RunLayer>,
     inner_runs: Vec<RunLayer>,
+    /// The `ChromeMaterial` member layers of the node's own item list.
+    members: Vec<MemberLayer>,
+    /// The member layers of the scroll node's inner list.
+    inner_members: Vec<MemberLayer>,
     scopes: Vec<ScopeLayer>,
     committed: Committed,
     inner_committed: Committed,
@@ -182,7 +214,7 @@ pub struct NodeLayers {
     /// anchors registered in the group table — each entry
     /// compare-removes on the layer it installed — dropped when the
     /// layers retire.
-    anchor_keys: Vec<(usize, Option<LayerId>, LayerId)>,
+    anchor_keys: Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     /// The anchor layers the inner list's items lower — the same
     /// retention and registration contract as `anchors`, owned by the
     /// inner list alone: sharing the outer list's tables would let the
@@ -191,7 +223,7 @@ pub struct NodeLayers {
     inner_anchors: Vec<(Rc<NodeCell>, Layer)>,
     /// The `(scope, canvas, layer)` keys the inner list's items'
     /// anchors registered.
-    inner_anchor_keys: Vec<(usize, Option<LayerId>, LayerId)>,
+    inner_anchor_keys: Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     /// The layer the frame is attached under.
     attached: Cell<Option<LayerId>>,
 }
@@ -203,10 +235,20 @@ impl NodeLayers {
         &self.frame
     }
 
+    /// The material member's resolver: its layer is its node's frame
+    /// layer — the [`BackdropGroups::join`] resolve shape.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a join resolver answers `Option` because a member may be absent; a material member is always its node's frame layer"
+    )]
+    pub(crate) const fn frame_layer(layers: &Self, _: LayerId) -> Option<&Layer> {
+        Some(layers.frame())
+    }
+
     #[cfg(test)]
     pub(crate) fn committed_anchor_parent_children(
         &self,
-        scope: usize,
+        scope: NonZeroU64,
         canvas: Option<LayerId>,
         anchor: LayerId,
     ) -> Option<(LayerId, Vec<LayerId>, bool)> {
@@ -256,6 +298,29 @@ impl NodeLayers {
     pub(crate) const fn material_request(&self) -> Option<MaterialRequest> {
         self.material_request
     }
+
+    /// The member layer `id` names — a `ChromeMaterial` member anywhere
+    /// in this node's lists — the layer a rebuilt chrome group re-points.
+    pub(crate) fn member_layer(&self, id: LayerId) -> Option<&Layer> {
+        self.members
+            .iter()
+            .chain(&self.inner_members)
+            .chain(self.scopes.iter().flat_map(|scope| scope.members.iter()))
+            .find(|member| member.layer.id() == id)
+            .map(|member| &member.layer)
+    }
+
+    /// The `ChromeMaterial` member layers the node mounted, across its
+    /// own, inner and scope lists — a test-facing answer.
+    #[cfg(test)]
+    pub(crate) fn chrome_members(&self) -> Vec<(u32, LayerId)> {
+        self.members
+            .iter()
+            .chain(&self.inner_members)
+            .chain(self.scopes.iter().flat_map(|scope| scope.members.iter()))
+            .map(|member| (member.ordinal, member.layer.id()))
+            .collect()
+    }
 }
 
 /// Engine work one commit did.
@@ -293,7 +358,15 @@ pub struct Mount<T: LayerTarget> {
     /// The window's backdrop-group table (water-rs/waterui#1999,
     /// re-expressed per mount): the material members' frame layers share
     /// their `(scope, level, scheme, canvas)` group's filtered capture.
-    groups: BackdropGroups<T::Group>,
+    groups: MaterialBackdropGroups<T::Group>,
+    /// The window's chrome-group table (water-rs/waterui#1788):
+    /// `ChromeMaterial` members join and leave their `(scope, class,
+    /// canvas)` groups through it.
+    chrome_groups: ChromeBackdropGroups<T::Group, T::Shader>,
+    /// The `.material_group()` scope anchors the material groups capture
+    /// beneath (water-rs/waterui#2097): each anchor item's lowering
+    /// registers its layer, and the members' group keys resolve it.
+    scope_anchors: ScopeAnchors,
     /// The window layer's own backdrop membership: the window material
     /// the root mounts over, when the window background names one.
     window_material: Option<MaterialMembership>,
@@ -311,7 +384,11 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget> {
     display_scale: f64,
     /// The mount's backdrop-group table: material members join and leave
     /// through it, and the commit's sweep releases emptied groups.
-    groups: &'m mut BackdropGroups<T::Group>,
+    groups: &'m mut MaterialBackdropGroups<T::Group>,
+    chrome_groups: &'m mut ChromeBackdropGroups<T::Group, T::Shader>,
+    /// The mount's scope-anchor registrations: anchor items register and
+    /// release through it, and material members resolve their anchor.
+    scope_anchors: &'m mut ScopeAnchors,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
     wakes: &'m mut dyn FnMut(&Rc<NodeCell>) -> ProducerWake,
@@ -337,7 +414,7 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
 
     fn retire_scope(&mut self, scope: ScopeLayer) {
         for (scope_key, canvas, layer) in scope.anchor_keys {
-            self.groups.remove_anchor(scope_key, canvas, layer);
+            self.scope_anchors.remove(scope_key, canvas, layer);
         }
         for (_, layer) in scope.anchors {
             self.retire_layer(layer);
@@ -345,7 +422,17 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
         for run in scope.runs {
             self.retire_run(run);
         }
+        for member in scope.members {
+            self.retire_member(member);
+        }
         self.retire_layer(scope.layer);
+    }
+
+    fn retire_member(&mut self, member: MemberLayer) {
+        self.chrome_groups.clear(member.layer.id());
+        self.retire_layer(member.layer);
+        self.graveyard
+            .push(Box::new((member.membership, member.chrome, member.params)));
     }
 
     fn retire_layers(&mut self, layers: NodeLayers) {
@@ -355,6 +442,8 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             install,
             runs,
             inner_runs,
+            members,
+            inner_members,
             scopes,
             anchors,
             anchor_keys,
@@ -365,13 +454,16 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             ..
         } = layers;
         for (scope, canvas, layer) in anchor_keys.into_iter().chain(inner_anchor_keys) {
-            self.groups.remove_anchor(scope, canvas, layer);
+            self.scope_anchors.remove(scope, canvas, layer);
         }
         for (_, layer) in anchors.into_iter().chain(inner_anchors) {
             self.retire_layer(layer);
         }
         for run in runs.into_iter().chain(inner_runs) {
             self.retire_run(run);
+        }
+        for member in members.into_iter().chain(inner_members) {
+            self.retire_member(member);
         }
         for scope in scopes {
             self.retire_scope(scope);
@@ -385,7 +477,25 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
 }
 
 impl<T: LayerTarget> Mount<T> {
-    pub fn new(shared: Rc<RefCell<Shared<T>>>) -> Self {
+    /// The mount binds to a target whose engine realizes materials.
+    /// `registry` is the theme's `MaterialRegistry`: a target with no
+    /// backdrop shaders — a CPU engine — panics on this attach when the
+    /// registry is not empty (water-rs/waterui#1788).
+    pub fn new(
+        shared: Rc<RefCell<Shared<T>>>,
+        registry: &cherenkov_record::MaterialRegistry,
+    ) -> Self {
+        assert!(
+            T::BACKDROP_SHADERS || registry.is_empty(),
+            "hydrolysis materials: this layer target's engine has no backdrop shaders, \
+             but the theme registered {} — the material chrome would have nothing to draw \
+             with; attach the theme to a GPU engine or register no shaders",
+            registry
+                .shaders()
+                .map(|(key, _)| format!("{key:?}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
         let root = Shared::root(&shared);
         let window = Shared::layer(&shared);
         Self {
@@ -396,7 +506,9 @@ impl<T: LayerTarget> Mount<T> {
             window_props: LayerProps::DEFAULT,
             window_committed: Vec::new(),
             window_token: Rc::new(LayerToken { owner: Weak::new() }),
-            groups: BackdropGroups::new(),
+            groups: MaterialBackdropGroups::new(),
+            chrome_groups: ChromeBackdropGroups::new(),
+            scope_anchors: ScopeAnchors::new(),
             window_material: None,
             attached: false,
             stats: MountStats {
@@ -432,8 +544,20 @@ impl<T: LayerTarget> Mount<T> {
 
     /// The mount's backdrop-group table.
     #[cfg(test)]
-    pub(crate) const fn groups(&self) -> &BackdropGroups<T::Group> {
+    pub(crate) const fn groups(&self) -> &MaterialBackdropGroups<T::Group> {
         &self.groups
+    }
+
+    /// The mount's `.material_group()` scope-anchor registrations.
+    #[cfg(test)]
+    pub(crate) const fn scope_anchors(&self) -> &ScopeAnchors {
+        &self.scope_anchors
+    }
+
+    /// The mount's chrome-group table.
+    #[cfg(test)]
+    pub(crate) const fn chrome_groups(&self) -> &ChromeBackdropGroups<T::Group, T::Shader> {
+        &self.chrome_groups
     }
 
     /// Lowers every pending program under `roots` (the window's fixed
@@ -461,6 +585,8 @@ impl<T: LayerTarget> Mount<T> {
             window_committed,
             window_token,
             groups,
+            chrome_groups,
+            scope_anchors,
             window_material: window_state,
             attached,
             stats,
@@ -493,9 +619,10 @@ impl<T: LayerTarget> Mount<T> {
                     tx,
                     groups,
                     window,
-                    BackdropGroupKey::new(window.id(), request, None),
+                    BackdropGroupKey::new(window.id(), request, None, scope_anchors),
                     display_scale,
                     membership,
+                    MemberBind::OnChange,
                 );
             } else if window_state.is_some() {
                 groups.clear(window.id());
@@ -510,6 +637,8 @@ impl<T: LayerTarget> Mount<T> {
                 window_transform,
                 display_scale,
                 groups,
+                chrome_groups,
+                scope_anchors,
                 graveyard: &mut graveyard,
                 stats,
                 wakes,
@@ -525,6 +654,8 @@ impl<T: LayerTarget> Mount<T> {
                 .collect::<Vec<_>>();
             reconcile(cx.tx, window, &wants, window_committed, window_token);
             cx.groups.sweep();
+            cx.chrome_groups.sweep();
+            cx.scope_anchors.sweep();
         });
         drop(graveyard);
     }
@@ -694,6 +825,8 @@ pub fn commit_cell<T: LayerTarget>(
                 install: None,
                 runs: Vec::new(),
                 inner_runs: Vec::new(),
+                members: Vec::new(),
+                inner_members: Vec::new(),
                 scopes: Vec::new(),
                 committed: Vec::new(),
                 inner_committed: Vec::new(),
@@ -731,6 +864,7 @@ pub fn commit_cell<T: LayerTarget>(
             .is_some()
             .then(|| layers.frame.id())
             .or(canvas);
+        commit_chrome(cx, &mut layers, child_canvas);
         for child in committed_cells(&layers) {
             commit_cell(cx, &child, child_canvas, true);
         }
@@ -840,6 +974,7 @@ fn lower_program<T: LayerTarget>(
         &mut layers.anchors,
         &mut layers.anchor_keys,
         &mut layers.runs,
+        &mut layers.members,
         &mut scopes_old,
         &mut scopes_new,
         &mut layers.committed,
@@ -869,10 +1004,12 @@ fn commit_material<T: LayerTarget>(
         // marked mount ancestor — the same identity the scope's
         // registration and any filtered canvas's anchors carry
         // (water-rs/waterui#2097).
-        let key = BackdropGroupKey::new(layers.frame.id(), request, canvas);
+        let key = BackdropGroupKey::new(layers.frame.id(), request, canvas, cx.scope_anchors);
         let membership = layers
             .material
             .get_or_insert_with(|| MaterialMembership::new(layers.token.owner.clone()));
+        // A no-program commit binds only a new membership or a rebuilt
+        // group — an unchanged member keeps its bind.
         T::mount_material(
             cx.host,
             cx.tx,
@@ -881,6 +1018,7 @@ fn commit_material<T: LayerTarget>(
             key,
             cx.display_scale,
             membership,
+            MemberBind::OnChange,
         );
     } else if layers.material.is_some() {
         cx.groups.clear(layers.frame.id());
@@ -925,6 +1063,7 @@ fn lower_inner<T: LayerTarget>(
             &mut layers.inner_anchors,
             &mut layers.inner_anchor_keys,
             &mut layers.inner_runs,
+            &mut layers.inner_members,
             scopes_old,
             scopes_new,
             &mut layers.inner_committed,
@@ -936,13 +1075,16 @@ fn lower_inner<T: LayerTarget>(
             cx.retire_layer(layer);
         }
         for (scope, canvas, layer) in std::mem::take(&mut layers.inner_anchor_keys) {
-            cx.groups.remove_anchor(scope, canvas, layer);
+            cx.scope_anchors.remove(scope, canvas, layer);
         }
         for (_, layer) in std::mem::take(&mut layers.inner_anchors) {
             cx.retire_layer(layer);
         }
         for run in std::mem::take(&mut layers.inner_runs) {
             cx.retire_run(run);
+        }
+        for member in std::mem::take(&mut layers.inner_members) {
+            cx.retire_member(member);
         }
         layers.inner_committed.clear();
     }
@@ -957,6 +1099,10 @@ fn commit_producer<T: LayerTarget>(
     producer: Option<&ProducerContent>,
 ) -> Option<HeldResources> {
     match producer {
+        #[cfg(hydrolysis_hosted)]
+        Some(ProducerContent::Hosted { runtime, bounds }) => {
+            mount_hosted(cx, layers, runtime, *bounds);
+        }
         Some(ProducerContent::Scene(source)) => {
             return Some(mount_scene(cx, cell, &layers.frame, source));
         }
@@ -1031,6 +1177,33 @@ fn ensure_install<T: LayerTarget>(
     }
     layers.install_gpu = gpu;
     fresh
+}
+
+/// Binds hosted content to the install layer at the node's extent; the
+/// engine places the platform object from the layer tree's geometry.
+#[cfg(hydrolysis_hosted)]
+fn mount_hosted<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    layers: &mut NodeLayers,
+    runtime: &crate::hosted::HostedRuntime,
+    bounds: kurbo::Rect,
+) {
+    if ensure_install(cx, layers, false) {
+        runtime.binding.replace(None);
+    }
+    let (install, props) = layers.install.as_mut().expect("install ensured");
+    if T::mount_hosted(cx.tx, install, runtime, bounds.size()) {
+        cx.stats.installs += 1;
+    }
+    write_props(
+        cx.tx,
+        install,
+        props,
+        LayerProps {
+            transform: kurbo::Affine::translate((bounds.x0, bounds.y0)),
+            ..LayerProps::DEFAULT
+        },
+    );
 }
 
 /// Binds a GPU producer to the install layer at the node's pixel size.
@@ -1114,6 +1287,8 @@ struct Want<'a> {
 enum Slot {
     Run(usize),
     Scope(usize),
+    /// A `ChromeMaterial` member layer: the index into `members`.
+    Member(usize),
     Node(Rc<NodeCell>),
     /// A `.material_group()` anchor item's layer, indexing `anchors`.
     Anchor(usize),
@@ -1149,8 +1324,9 @@ fn lower_list<T: LayerTarget>(
     leading: &[(LayerId, &Layer)],
     items: &[Item],
     anchors: &mut Vec<(Rc<NodeCell>, Layer)>,
-    anchor_keys: &mut Vec<(usize, Option<LayerId>, LayerId)>,
+    anchor_keys: &mut Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     runs: &mut Vec<RunLayer>,
+    members: &mut Vec<MemberLayer>,
     scopes_old: &mut Vec<ScopeLayer>,
     scopes_new: &mut Vec<ScopeLayer>,
     committed: &mut Committed,
@@ -1163,10 +1339,11 @@ fn lower_list<T: LayerTarget>(
     // matched entries keep their layer — a stable `LayerId` keeps the
     // group's key stable — and the rest retire below.
     for (scope, key_canvas, layer) in std::mem::take(anchor_keys) {
-        cx.groups.remove_anchor(scope, key_canvas, layer);
+        cx.scope_anchors.remove(scope, key_canvas, layer);
     }
     let mut old_anchors = std::mem::take(anchors);
     let mut old_runs = std::mem::take(runs);
+    let mut members_old = std::mem::take(members);
     let had_own = old_runs.iter().any(|run| run.layer.is_none());
     let mut own_used = false;
     let keys: Vec<_> = items.iter().map(Item::key).collect();
@@ -1191,6 +1368,10 @@ fn lower_list<T: LayerTarget>(
                 commit_cell(cx, child, canvas, true);
                 slots.push(Slot::Node(Rc::clone(child)));
             }
+            Item::Chrome(chrome) => {
+                let at = lower_chrome(cx, chrome, &mut members_old, members, token, canvas);
+                slots.push(Slot::Member(at));
+            }
             Item::Anchor(cell) => {
                 // A plain, empty layer at the scope's paint position —
                 // kept across commits — that every member of the scope's
@@ -1198,8 +1379,8 @@ fn lower_list<T: LayerTarget>(
                 // after it commit (water-rs/waterui#2097).
                 let at = anchor_slot(cx, cell, &mut old_anchors, anchors);
                 let layer = anchors[at].1.id();
-                cx.groups.set_scope_anchor(cell, canvas, layer);
-                anchor_keys.push((Rc::as_ptr(cell) as usize, canvas, layer));
+                cx.scope_anchors.set(cell, canvas, layer);
+                anchor_keys.push((scope_id(cell), canvas, layer));
                 slots.push(Slot::Anchor(at));
             }
             Item::Scope {
@@ -1226,6 +1407,9 @@ fn lower_list<T: LayerTarget>(
     for run in old_runs {
         cx.retire_run(run);
     }
+    for member in members_old {
+        cx.retire_member(member);
+    }
     // Anchor items the last lowering carried but this one does not:
     // their registrations released at the top, and their layers leave
     // `wants` — the reconcile detaches them from the parent's child
@@ -1235,13 +1419,14 @@ fn lower_list<T: LayerTarget>(
     }
 
     commit_list_slots(
-        cx, parent, leading, &slots, anchors, runs, scopes_new, committed, token,
+        cx, parent, leading, &slots, anchors, runs, members, scopes_new, committed, token,
     );
 }
 
 /// The list's retained layers as `Want`s, in item order, then the
-/// reconcile: leading anchors, run layers, scope layers, node frames and
-/// the scope anchor layers, each under this list's token.
+/// reconcile: leading anchors, run layers, scope layers, chrome member
+/// layers, node frames and the scope anchor layers, each under this
+/// list's token.
 #[expect(
     clippy::too_many_arguments,
     reason = "the slot kinds each carry their own layer store"
@@ -1253,6 +1438,7 @@ fn commit_list_slots<T: LayerTarget>(
     slots: &[Slot],
     anchors: &[(Rc<NodeCell>, Layer)],
     runs: &[RunLayer],
+    members: &[MemberLayer],
     scopes_new: &[ScopeLayer],
     committed: &mut Committed,
     token: &Rc<LayerToken>,
@@ -1289,6 +1475,15 @@ fn commit_list_slots<T: LayerTarget>(
             }
             Slot::Scope(at) => {
                 let layer = &scopes_new[*at].layer;
+                Want {
+                    id: layer.id(),
+                    token: own.clone(),
+                    layer,
+                    attached: None,
+                }
+            }
+            Slot::Member(at) => {
+                let layer = &members[*at].layer;
                 Want {
                     id: layer.id(),
                     token: own.clone(),
@@ -1374,6 +1569,7 @@ fn lower_scope<T: LayerTarget>(
                 placement: Rc::clone(placement),
                 props: LayerProps::DEFAULT,
                 runs: Vec::new(),
+                members: Vec::new(),
                 anchors: Vec::new(),
                 anchor_keys: Vec::new(),
                 committed: Vec::new(),
@@ -1395,6 +1591,7 @@ fn lower_scope<T: LayerTarget>(
     let ScopeLayer {
         layer,
         runs,
+        members,
         committed,
         anchors,
         anchor_keys,
@@ -1408,6 +1605,7 @@ fn lower_scope<T: LayerTarget>(
         anchors,
         anchor_keys,
         runs,
+        members,
         scopes_old,
         scopes_new,
         committed,
@@ -1632,5 +1830,176 @@ fn visit_list(
                 alphas.pop();
             }
         }
+    }
+}
+
+/// Lowers one `ChromeMaterial` member (water-rs/waterui#1788): the
+/// member layer mounts between the runs recorded around it, takes the
+/// chrome transform and the live clip, and joins the chrome group its
+/// `(scope, class, install canvas)` key names — `Solo` classes and
+/// scope-less members get a group of their own. A member whose ancestry
+/// is fully transparent holds no membership: the group belongs to its
+/// visible members.
+///
+/// An unregistered shader or capture class panics here — at install —
+/// naming the key.
+fn lower_chrome<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    chrome: &ChromeMaterial,
+    members_old: &mut Vec<MemberLayer>,
+    members: &mut Vec<MemberLayer>,
+    token: &Rc<LayerToken>,
+    canvas: Option<LayerId>,
+) -> usize {
+    let member_at = members_old
+        .iter()
+        .position(|member| member.ordinal == chrome.ordinal);
+    let mut member = member_at.map_or_else(
+        || MemberLayer {
+            ordinal: chrome.ordinal,
+            layer: cx.layer(),
+            transform: kurbo::Affine::IDENTITY,
+            chrome: None,
+            params: None,
+            membership: None,
+        },
+        |at| members_old.remove(at),
+    );
+    if member.transform != chrome.transform {
+        cx.tx[&member.layer].transform(chrome.transform);
+        member.transform = chrome.transform;
+    }
+    // The clip rebinds from the shape's value now: a re-lower of a
+    // cached program — a remount — must not restart from the value the
+    // recording stored.
+    cx.tx[&member.layer].clip(chrome.material.shape().rebound());
+    member.chrome = Some(chrome.clone());
+    if chrome.visible {
+        let registry = &T::material_terms(cx.host).registry;
+        let class = chrome.material.capture();
+        let params = *registry.capture_class(class).unwrap_or_else(|| {
+            panic!(
+                "hydrolysis materials: capture class {class:?} is not registered; the theme \
+                 declares its classes through `WidgetTheme::register_backdrop_shaders`"
+            )
+        });
+        let shader = chrome.material.shader();
+        assert!(
+            registry.shader(shader).is_some(),
+            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme \
+             declares its shaders through `WidgetTheme::register_backdrop_shaders`"
+        );
+        let key = ChromeGroupKey::new(
+            member.layer.id(),
+            chrome.material.scope(),
+            class,
+            params.grouping,
+            canvas,
+            cx.scope_anchors,
+        );
+        let membership = member
+            .membership
+            .get_or_insert_with(|| MaterialMembership::new(token.owner.clone()));
+        let host = cx.host;
+        T::mount_chrome(
+            host,
+            cx.tx,
+            cx.chrome_groups,
+            &member.layer,
+            key,
+            params,
+            cx.display_scale,
+            membership,
+            || chrome_member_payload::<T>(host, chrome),
+            MemberBind::Always,
+        );
+        member.params = Some(params);
+    } else {
+        cx.chrome_groups.clear(member.layer.id());
+        T::clear_chrome(cx.tx, &member.layer);
+        member.membership = None;
+        member.params = None;
+    }
+    members.push(member);
+    members.len() - 1
+}
+
+/// The member's own binding payload (water-rs/waterui#1788): the
+/// shader's engine handle and its live effect — the terms the group table
+/// stores on the member's entry so a group rebuild rebinds each member's
+/// own sample.
+fn chrome_member_payload<T: LayerTarget>(
+    host: &T::Host,
+    chrome: &ChromeMaterial,
+) -> super::backdrop::ChromeMemberPayload<T::Shader> {
+    let shader = T::material_terms(host)
+        .shaders
+        .get(&chrome.material.shader())
+        .unwrap_or_else(|| {
+            panic!(
+                "hydrolysis materials: backdrop shader {:?} is registered but has no handle \
+                 on this engine — a theme's registry is registered at engine attach",
+                chrome.material.shader(),
+            )
+        })
+        .clone();
+    super::backdrop::ChromeMemberPayload {
+        shader,
+        effect: chrome.material.effect().clone(),
+    }
+}
+
+/// Re-joins a node's chrome members on a commit that carried no program:
+/// the mount's terms — the display scale and the install canvas — may
+/// have changed without a re-flush, so every mounted member re-keys under
+/// the canvas this commit mounts under, like `commit_material` does.
+fn commit_chrome<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    layers: &mut NodeLayers,
+    canvas: Option<LayerId>,
+) {
+    for member in layers
+        .members
+        .iter_mut()
+        .chain(layers.inner_members.iter_mut())
+        .chain(
+            layers
+                .scopes
+                .iter_mut()
+                .flat_map(|scope| scope.members.iter_mut()),
+        )
+    {
+        let (Some(params), Some(chrome), Some(membership)) = (
+            member.params,
+            member.chrome.as_ref(),
+            member.membership.as_ref(),
+        ) else {
+            continue;
+        };
+        let class = chrome.material.capture();
+        let key = ChromeGroupKey::new(
+            member.layer.id(),
+            chrome.material.scope(),
+            class,
+            params.grouping,
+            canvas,
+            cx.scope_anchors,
+        );
+        // A no-program commit binds only a new membership or a rebuilt
+        // group — an unchanged member keeps its bind and its stored
+        // payload, builds none and queues no `LayerOp::Backdrop`.
+        let host = cx.host;
+        T::mount_chrome(
+            host,
+            cx.tx,
+            cx.chrome_groups,
+            &member.layer,
+            key,
+            params,
+            cx.display_scale,
+            membership,
+            || chrome_member_payload::<T>(host, chrome),
+            MemberBind::OnChange,
+        );
     }
 }

@@ -40,6 +40,9 @@ waterui-locale.workspace = true
 waterui-url = { workspace = true, features = ["std"] }
 cherenkov.workspace = true
 cherenkov-gpu.workspace = true
+# `MaterialRegistry`/`MaterialScope`/`MaterialCapture`/`Live` — the widget
+# theme's chrome terms the mount installs per member (water-rs/waterui#1788).
+cherenkov-record.workspace = true
 kurbo.workspace = true
 peniko = "0.6"
 # `imageops::resize` fits a decoded image to the engine's image limits
@@ -136,6 +139,7 @@ objc2-foundation = { workspace = true, optional = true, features = [
     "NSGeometry",
     "NSHTTPCookie",
     "NSJSONSerialization",
+    "NSKeyValueObserving",
     "NSNotification",
     "NSObject",
     "NSProcessInfo",
@@ -263,6 +267,9 @@ serde_json.workspace = true
 waterui-controls = { workspace = true, features = ["serde"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# wasm32 has no stderr: without a hook a panic reaches the page as a bare
+# `RuntimeError: unreachable`, its message and location lost.
+console_error_panic_hook = { version = "0.1", optional = true }
 # The web runner fetches its fonts while the GPU device comes up; `join!` and
 # `join_all` are the whole of what it needs from futures.
 futures = { workspace = true, optional = true }
@@ -271,6 +278,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
+# The `video` feature's realization of the two video leaves.
+waterui-video = { workspace = true, optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "Response",
     "CompositionEvent",
@@ -282,7 +291,6 @@ web-sys = { version = "0.3", optional = true, features = [
     "Element",
     "Event",
     "EventTarget",
-    "HtmlCanvasElement",
     "HtmlElement",
     "HtmlInputElement",
     "IntersectionObserver",
@@ -400,8 +408,27 @@ winit = [
     "dep:wayland-protocols",
     "dep:windows-sys",
 ]
+# The browser's `<video>` element as the web realization of `Video` and
+# `VideoPlayer`. Only a wasm32 `web` build has it; elsewhere the feature
+# selects nothing. The CLI enables it for an application that uses video.
+video = [
+    "dep:waterui-video",
+    "web-sys?/HtmlMediaElement",
+    "web-sys?/HtmlTrackElement",
+    "web-sys?/HtmlVideoElement",
+    "web-sys?/MediaError",
+    "web-sys?/MouseEvent",
+    "web-sys?/PointerEventInit",
+    "web-sys?/TextTrack",
+    "web-sys?/TextTrackList",
+    "web-sys?/TextTrackMode",
+    "web-sys?/TimeRanges",
+    "web-sys?/VideoPlaybackQuality",
+    "web-sys?/WheelEventInit",
+]
 web = [
     "accessibility",
+    "dep:console_error_panic_hook",
     "dep:futures",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",

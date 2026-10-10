@@ -70,9 +70,25 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 gloo-timers = { version = "0.3", features = ["futures"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "CssStyleDeclaration",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "Node",
+    "Window",
+] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
+web-sys = { version = "0.3", features = [
+    "CssStyleDeclaration",
+    "Document",
+    "HtmlIFrameElement",
+    "NodeList",
+    "Window",
+] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 half = "2"
@@ -81,7 +97,7 @@ half = "2"
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
-# `UNION_MAX_MEMBERS` comes from `../src/union_cap.rs` via `#[path]` —
+# `UNION_MAX_MEMBERS` comes from `../record/src/union_cap.rs` via `#[path]` —
 # the same file `cherenkov::BackdropUnion::MAX_MEMBERS` reads — so the
 # build script never depends on the engine crate.
 
@@ -102,6 +118,8 @@ libc = "0.2"
 [dev-dependencies]
 toml.workspace = true
 cherenkov-oracle = { path = "../oracle" }
+# `tests/corner_distance.rs` runs `shared.wgsl` functions on the CPU.
+cherenkov-shader = { path = "../shader", features = ["eval"] }
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
 cherenkov-scene = { path = "../scene" }
 

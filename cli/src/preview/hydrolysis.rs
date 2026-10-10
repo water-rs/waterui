@@ -48,6 +48,7 @@ impl HydrolysisPreviewTheme {
                 name: "Roboto".to_string(),
                 source: FontSource::BuiltIn,
                 crate_name: "hydrolysis-m3".to_string(),
+                platforms: None,
             }],
         }
     }
@@ -94,7 +95,9 @@ pub struct HydrolysisPreviewRequest<'a> {
 /// A desktop `platform` builds and execs the backend binary; `Android`
 /// renders inside the preview host's instrumentation on a device — the
 /// request shape is identical, the dispatch lives here so every caller
-/// resolves one way.
+/// resolves one way. `kotlin_toolchain` is the toolchain
+/// [`crate::preview::request::check_toolchain_for_backend`] resolved —
+/// required for `TargetPlatform::Android`, ignored elsewhere.
 ///
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
@@ -102,20 +105,31 @@ pub async fn render_preview_with_hydrolysis(
     request: HydrolysisPreviewRequest<'_>,
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
+    kotlin_toolchain: Option<&crate::android::KotlinToolchain>,
 ) -> Result<()> {
     if request.platform == TargetPlatform::Android {
+        let kotlin = kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android preview has no resolved Kotlin toolchain")
+        })?;
         return Box::pin(
             crate::preview::hydrolysis_android::render_preview_with_hydrolysis_android(
                 &request,
                 output_path,
                 scenario,
+                kotlin,
             ),
         )
         .await;
     }
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, None).await?;
-    stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(
+        &project,
+        request.platform,
+        theme,
+        &built.app_symbols().await?,
+    )
+    .await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
         &project,
@@ -138,7 +152,13 @@ pub async fn test_preview_with_hydrolysis(
 ) -> Result<String> {
     let (width, height, theme) = (request.width, request.height, request.theme);
     let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
-    stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(
+        &project,
+        request.platform,
+        theme,
+        &built.app_symbols().await?,
+    )
+    .await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_test_binary(&project, built.executable()?, width, height).await
 }
@@ -209,7 +229,10 @@ pub async fn discover_hydrolysis_preview_exports(
         progress,
     };
     let (_project, built) = build_preview_session(&request, None).await?;
-    Ok(built.app_symbols()?.leaves_with_prefix("waterui_preview_"))
+    Ok(built
+        .app_symbols()
+        .await?
+        .leaves_with_prefix("waterui_preview_"))
 }
 
 /// Stages the project's assets and the selected theme's fonts into the
@@ -218,6 +241,7 @@ pub async fn discover_hydrolysis_preview_exports(
 /// produced — its `waterui_meta_bundle_*` statics declare the asset mounts.
 pub async fn stage_hydrolysis_resources(
     project: &Project,
+    platform: TargetPlatform,
     theme: HydrolysisPreviewTheme,
     symbols: &ArtifactSymbols,
 ) -> Result<()> {
@@ -228,8 +252,12 @@ pub async fn stage_hydrolysis_resources(
         assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, false).await?;
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    let mut font_declarations =
-        assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
+    let mut font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     font_declarations.extend(theme.font_declarations());
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);

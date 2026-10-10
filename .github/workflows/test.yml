@@ -26,9 +26,6 @@ on:
       comment-only:
         type: boolean
         default: false
-      test-assets:
-        type: boolean
-        default: true
       # `true` when a scoped package's `--all-targets` compile
       # `include_bytes!`s a generated Cherenkov scene font
       # (cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu test targets),
@@ -37,6 +34,11 @@ on:
       scene-assets:
         type: boolean
         default: true
+      # affected.yml's `apple-legs`: the `macos` matrix entries (Apple lint
+      # targets with an Apple-gated crate in scope), `[]` for none.
+      apple-legs:
+        type: string
+        default: "[]"
 
 # Narrow by default: callers may grant actions:write for the lint job's
 # cache retirement, but every other job in this workflow keeps read-only
@@ -164,17 +166,6 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
-      # waterui-cli's `#[cfg(test)]` font-subsetting module `include_bytes!`s
-      # the generated Roboto fixture — the repository stores it nowhere, and
-      # `--all-targets` compiles the test modules, so it must exist first.
-      # The composite also installs the test fonts the styled suites resolve
-      # at run time; this gate never runs tests, so that half only matters
-      # to the `full` callers that share the step.
-      # The writer sweep lints the whole workspace with `--all-targets`
-      # whatever the scope, so it needs every generated asset too.
-      - name: Generate Hydrolysis test assets
-        if: inputs.full || inputs['test-assets'] || steps.writer.outputs.sweep == 'true'
-        uses: ./.github/actions/generate-test-assets
       # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
       # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
       # `--all-targets` compiles them, so the fonts must exist first.
@@ -512,12 +503,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # nextest runs the hydrolysis and styled test targets: they resolve
-      # the test font families through system font discovery and read the
-      # generated live-photo fixture — the repository stores none of it.
-      # Runs on both OSes: the macOS leg needs the same fonts installed.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # nextest's fixture setup scripts run the pinned generators through
+      # `uv run` (`.config/nextest.toml`); the styled and hydrolysis tests
+      # they serve run on both OSes.
+      - uses: astral-sh/setup-uv@v6
       # Cherenkov's test targets both embed (`include_bytes!`) and read
       # the generated scene fonts, and the corpus tests read scenes/corpus
       # at runtime; the tree is generated, not committed.
@@ -618,8 +607,9 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # nextest's fixture setup scripts run the pinned generators through
+      # `uv run` (`.config/nextest.toml`).
+      - uses: astral-sh/setup-uv@v6
       # nextest runs the Cherenkov CPU and GPU tests, which read
       # scenes/corpus. cherenkov-bench is excluded from this pass.
       - name: Generate Cherenkov scene assets
@@ -694,11 +684,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The all-features pass runs the styled test targets too; they
-      # resolve the installed test-font families by name — the repository
-      # stores none of them.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # nextest's fixture setup scripts run the pinned generators through
+      # `uv run` (`.config/nextest.toml`) — the all-features pass runs the
+      # styled test targets too.
+      - uses: astral-sh/setup-uv@v6
       # `--all-features` runs the cherenkov-bench tests that read
       # scenes/corpus and scenes/perf, along with the CPU and GPU corpus tests.
       - name: Generate Cherenkov scene assets
@@ -778,17 +767,17 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
           cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
-      # The clippy in `macos-lint` compiles waterui-cli's `#[cfg(test)]`
-      # modules, which `include_bytes!` the generated Roboto fixture — and
-      # the real-engine run resolves the installed test fonts by family
-      # name.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # The cherenkov-oracle and cherenkov-cpu test targets the composite
+      # lints `include_bytes!` the generated scene fonts.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
       # The macOS host lint legs for hydrolysis's `cfg(target_os =
-      # "macos")` code — `webview-system`'s WKWebView bridge is the entry
-      # point no other leg sees — and waterui-cli's Apple-side plumbing.
-      # The fast gate's `macos` job below calls the same composite, so the
-      # two legs can never drift on the commands.
+      # "macos")` code, waterui-cli's Apple-side plumbing and every other
+      # crate with Apple-gated code. The fast gate's `macos` job below
+      # calls the same composite, so the two legs can never drift on the
+      # commands.
       - name: Clippy (macOS host crates)
         uses: ./.github/actions/macos-lint
       # `cargo test` rather than nextest: CEF's browser process has to own the
@@ -843,11 +832,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # Examples that dev-depend on waterui-testing run styled tests, which
-      # resolve the installed test-font families through system font
-      # discovery — the repository stores none of them.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # Examples that dev-depend on waterui-testing run styled tests;
+      # nextest's fixture setup scripts install their fonts through
+      # `uv run` (`.config/nextest.toml`).
+      - uses: astral-sh/setup-uv@v6
       - name: Clippy (examples)
         if: runner.os == 'Linux'
         run: cargo clippy --locked --profile ci-check -p '*-example' --all-targets -- -D warnings
@@ -914,8 +902,11 @@ jobs:
   # `backends/hydrolysis/android-preview-host` (never committed), then
   # `:app:assembleDebug` compiles it against the in-tree host checkout —
   # the only place the generated app's Kotlin↔Gradle wiring is checked.
-  # The CLI renders that app, so a CLI-only change runs the job too, but
-  # only the render and the assemble: no CLI change reaches the host's
+  # The embedded-library composite gets the same treatment, rendered by
+  # `render_embedded_library`, published to the runner's mavenLocal and
+  # compiled against by a consumer app.
+  # The CLI renders both, so a CLI-only change runs the job too, but
+  # only the renders and the assembles: no CLI change reaches the host's
   # Kotlin, so the host lint and its Gradle setup run only when the scope
   # reaches Hydrolysis. The wrapper JARs are not committed (the CLI
   # materializes them), so each build installs the distribution its own
@@ -947,9 +938,9 @@ jobs:
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
         with:
           gradle-version: ${{ steps.host-gradle-version.outputs.version }}
-      - name: Lint the host and preview modules
+      - name: Lint the host, gpu and preview modules
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
-        run: gradle :host:lintDebug :preview:lintDebug
+        run: gradle :host:lintDebug :gpu:lintDebug :preview:lintDebug
       - name: Host unit tests
         if: inputs.full
         run: gradle :host:testDebugUnitTest
@@ -983,6 +974,42 @@ jobs:
       - name: Assemble the generated preview-host app
         working-directory: backends/hydrolysis/android-preview-host
         run: gradle :app:assembleDebug
+      # The embedded library: `render_embedded_library` renders the Gradle
+      # composite `water build` assembles for an embedded project (no Rust
+      # build — the AAR carries no native library here) and reports its
+      # coordinates, host version and Gradle tasks as JSON. The tasks
+      # publish the host modules and assemble and publish the library to
+      # this runner's mavenLocal; a consumer app then compiles the mount
+      # call `water build` prints against the published coordinate, which
+      # checks the composite, the substitution, the POM's `api`
+      # dependencies and the generated `WaterUi` signatures together. Both
+      # Gradle builds share the rendered wrapper's distribution set up above.
+      - name: Render the generated embedded library
+        id: embedded-library
+        working-directory: ${{ github.workspace }}
+        run: |
+          library="$(cargo run --locked --profile ci-check -p waterui-cli --no-default-features --example render_embedded_library -- examples/form backends/hydrolysis/android-embedded-library)"
+          {
+            echo "host-version=$(jq -r .host_version <<<"$library")"
+            echo "tasks=$(jq -r '.gradle_tasks | join(" ")' <<<"$library")"
+            echo "coordinate=$(jq -r '"\(.group):\(.artifact):\(.version)"' <<<"$library")"
+            echo "package=$(jq -r .group <<<"$library")"
+            echo "compile-sdk=$(jq -r .compile_sdk <<<"$library")"
+            echo "min-sdk=$(jq -r .min_sdk <<<"$library")"
+          } >> "$GITHUB_OUTPUT"
+      - name: Assemble and publish the generated embedded library
+        working-directory: backends/hydrolysis/android-embedded-library
+        env:
+          WATERUI_HYDROLYSIS_HOST_VERSION: ${{ steps.embedded-library.outputs.host-version }}
+        run: gradle ${{ steps.embedded-library.outputs.tasks }}
+      - name: Compile an app consuming the embedded library
+        working-directory: cli/tests/fixtures/android-embedded-consumer
+        run: >-
+          gradle :app:compileDebugKotlin
+          -PwateruiLibrary=${{ steps.embedded-library.outputs.coordinate }}
+          -PwateruiPackage=${{ steps.embedded-library.outputs.package }}
+          -PwateruiCompileSdk=${{ steps.embedded-library.outputs.compile-sdk }}
+          -PwateruiMinSdk=${{ steps.embedded-library.outputs.min-sdk }}
 
   # Hydrolysis's Windows leg, beside the Android one for the same reason:
   # `cfg(target_os = "windows")` code — the winit platform's cursor,
@@ -1019,39 +1046,51 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --features winit --target x86_64-pc-windows-msvc -- -D warnings
 
-  # The macOS host legs beside the cross-target ones above (#2143): the
-  # Linux lint compiles `cfg(target_os = "macos")` code away, so a
-  # macOS-only lint break in hydrolysis or waterui-cli used to surface
-  # only in the nightly's `cef` job. Same commands through the shared
-  # `macos-lint` composite; the nightly keeps them in `cef`, where they
-  # share the CEF leg's runner — running them here too under `full`
-  # would pay a second macOS slot for an identical pass.
+  # The Apple-target legs beside the cross-target ones above (#2143,
+  # #2476): the Linux lint compiles `cfg(target_os = "macos")` and
+  # `cfg(target_os = "ios")` code away, so a macOS- or iOS-only lint break,
+  # test targets included, used to surface only in the nightly's `cef` job
+  # or not at all. Same commands through the shared `macos-lint`
+  # composite; the nightly keeps the host leg in `cef`, where it shares the
+  # CEF leg's runner — running it here too under `full` would pay a second
+  # macOS slot for an identical pass. The host and the iOS simulator run
+  # in parallel so the gate keeps its 10-minute budget.
   macos:
-    name: aarch64-apple-darwin
-    if: inputs.full == false && (inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') || contains(inputs.affected, 'waterui-cli'))
+    name: ${{ matrix.name }}
+    # affected.yml lists only the targets with an Apple-gated crate in
+    # scope, so no runner starts to find nothing to lint.
+    if: inputs.full == false && inputs['apple-legs'] != '[]'
     runs-on: macos-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs['apple-legs']) }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy
+          targets: ${{ matrix.target }}
           cache: "false"
       # Reads the shared `cargo-sources` archive written by the Apple
       # gate's rust job (apple.yml); read-only lanes never save.
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      # `--all-targets` compiles waterui-cli's `#[cfg(test)]` modules,
-      # which `include_bytes!` the generated Roboto fixture — the
-      # repository stores it nowhere.
-      - name: Generate Hydrolysis test assets
-        if: inputs['test-assets']
-        uses: ./.github/actions/generate-test-assets
-      - name: Clippy (macOS host crates)
+      # The cherenkov-oracle and cherenkov-cpu test targets
+      # `include_bytes!` the generated scene fonts.
+      - name: Generate Cherenkov scene assets
+        if: inputs['scene-assets']
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
+      - name: Clippy (Apple-target crates)
         uses: ./.github/actions/macos-lint
         with:
-          hydrolysis: ${{ inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis') }}
-          waterui-cli: ${{ inputs.affected == 'workspace' || contains(inputs.affected, 'waterui-cli') }}
+          hydrolysis: ${{ matrix.hydrolysis }}
+          waterui-cli: ${{ matrix['waterui-cli'] }}
+          affected: ${{ inputs.affected }}
+          target: ${{ matrix.target }}
 
   # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
   # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,
@@ -1286,7 +1325,7 @@ jobs:
           mode: fonts
       - name: Build cherenkov-bench for aarch64-linux-android
         run: |
-          cargo ndk --target aarch64-linux-android --platform 30 \
+          cargo ndk --target aarch64-linux-android --platform "$WATERUI_ANDROID_MIN_API_LEVEL" \
             build --release -p cherenkov-bench \
             --features vello-classic,vello-hybrid,skia,cherenkov,cherenkov-cpu
           ls -l target/aarch64-linux-android/release/cherenkov-bench
@@ -1294,7 +1333,7 @@ jobs:
       # Pro over adb; CI builds and archives the prebuilt binary.
       - name: Build the Vulkan external-frame test for aarch64-linux-android
         run: |
-          cargo ndk --target aarch64-linux-android --platform 30 \
+          cargo ndk --target aarch64-linux-android --platform "$WATERUI_ANDROID_MIN_API_LEVEL" \
             build --release -p cherenkov-gpu --test vulkan_external_android
           ls target/aarch64-linux-android/release/deps/vulkan_external_android-*
       - uses: actions/upload-artifact@v4

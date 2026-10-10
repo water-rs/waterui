@@ -891,7 +891,7 @@ pub struct GpuRenderer {
     /// system-compositor parent. Platform objects stay on the render
     /// thread, outside the surface states lowering moves to its workers.
     #[cfg_attr(
-        not(any(target_vendor = "apple", target_os = "android")),
+        not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
         expect(
             clippy::zero_sized_map_values,
             reason = "no plane realization exists on this platform, so the map stays empty"
@@ -2362,7 +2362,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             adapter,
             presenter: None,
             #[cfg_attr(
-                not(any(target_vendor = "apple", target_os = "android")),
+                not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
                 expect(
                     clippy::zero_sized_map_values,
                     reason = "no plane realization exists on this platform, so the map stays empty"
@@ -2686,7 +2686,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         adapter,
         presenter: None,
         #[cfg_attr(
-            not(any(target_vendor = "apple", target_os = "android")),
+            not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")),
             expect(
                 clippy::zero_sized_map_values,
                 reason = "no plane realization exists on this platform, so the map stays empty"
@@ -2948,6 +2948,8 @@ impl Renderer for GpuRenderer {
             }
             #[cfg(target_os = "linux")]
             GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
+            #[cfg(target_arch = "wasm32")]
+            GpuTarget::Dom(target) => (None, None, self.dom_planes(id, &target)?, true),
             GpuTarget::Window(window) => {
                 let refresh = window.refresh.clone();
                 // Only Apple windows complete work after a render: a
@@ -4121,6 +4123,8 @@ impl GpuRenderer {
             GpuTarget::SurfaceControl(target) => target.size(),
             #[cfg(target_os = "linux")]
             GpuTarget::Dmabuf(target) => target.size(),
+            #[cfg(target_arch = "wasm32")]
+            GpuTarget::Dom(target) => target.size(),
         };
         if size.0 == 0 || size.1 == 0 {
             return Err(SurfaceError::ZeroSize);
@@ -4163,6 +4167,22 @@ impl GpuRenderer {
         self.presenter
             .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
         Ok(target.refresh)
+    }
+
+    /// Realizes surface `id` under a `DomTarget`'s element and returns its
+    /// refresh range.
+    #[cfg(target_arch = "wasm32")]
+    fn dom_planes(
+        &mut self,
+        id: SurfaceId,
+        target: &crate::interop::web::DomTarget,
+    ) -> Result<cherenkov::RefreshRange, SurfaceError> {
+        let system =
+            planes::web::DomPlanes::new(&self.instance, &self.adapter, &self.device, target)?;
+        self.planes.insert(id, system);
+        self.presenter
+            .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
+        Ok(target.refresh.clone())
     }
 
     /// Realizes surface `id`'s bounded pool of exportable dma-buf images
@@ -5109,7 +5129,7 @@ impl GpuRenderer {
     /// content kind at a time. The object shows in one place: a binding of
     /// it on another layer — of this surface or another — is released, and
     /// that surface lowers again so its planes let it go.
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))]
     pub fn bind_hosted(
         &mut self,
         surface: SurfaceId,
@@ -5977,7 +5997,7 @@ impl GpuRenderer {
     /// another capture is admitted.
     fn observe_static(&mut self, sf: &SurfaceFrame<'_>) -> Result<(), RenderError> {
         let surf = self.surfaces.get_mut(&sf.id).expect("registered surface");
-        if !surf.promotes {
+        if !surf.promotes || !<planes::Platform as planes::Compositor>::CAPTURES {
             return Ok(());
         }
         let output_changed = sf.display.headroom.to_bits() != surf.display.headroom.to_bits()
@@ -6473,7 +6493,7 @@ impl GpuRenderer {
         } else {
             let mut touches = std::mem::take(&mut self.commit_touches);
             touches.clear();
-            touches_len = self.replay_pins(pending, &mut touches);
+            touches_len = self.replay_pins(pending, results, &mut touches);
             self.atlas.begin_commit(&touches);
             touches.clear();
             self.commit_touches = touches;
@@ -6566,22 +6586,50 @@ impl GpuRenderer {
     /// emission's glyph instances sample plus the clip masks bound
     /// through `uv[2..3]` — all recovered from stored UVs, so the
     /// lowering records no slot list (#119).
-    fn replay_pins(&self, pending: &mut [SurfaceState], touches: &mut Vec<u32>) -> usize {
-        for surf in pending.iter_mut() {
+    fn replay_pins(
+        &self,
+        pending: &mut [SurfaceState],
+        results: &[Result<Lowered, RenderError>],
+        touches: &mut Vec<u32>,
+    ) -> usize {
+        for (surf, result) in pending.iter_mut().zip(results.iter()) {
+            // A failed lowering leaves retained emissions whose
+            // pending cells index a patch list that never applies —
+            // the surface is discarded below, so none of its pins may
+            // stand (#119).
+            let Ok(lowered) = result else {
+                continue;
+            };
             for content in surf.layers.values_mut() {
                 let (_, emissions) = content.retained.prepared();
                 for emission in emissions.iter().filter_map(|e| e.data.as_ref()) {
+                    // An emission's pending cells carry no atlas
+                    // origin until `apply_pending` places them — their
+                    // stored UVs are still `(0, 0)`, so resolving one
+                    // would pin whatever shelf covers the atlas
+                    // origin. Their patch range names them already,
+                    // ascending by instance (#2440).
+                    let pending = emission.pending_cells().map(|i| {
+                        (lowered.emission_patches[i].0 - emission.cell_inst_base()) as usize
+                    });
                     Self::for_each_glyph_shelf(
                         &self.atlas,
-                        &content.storage.instances[emission.instances.clone()],
+                        Self::placed(
+                            content.storage.instances[emission.instances.clone()].iter(),
+                            pending,
+                        ),
                         |slot| touches.push(slot),
                     );
                 }
             }
-            // Clip masks bound through `uv[2..3]` pin the same way: the
-            // frame's masked instances recover their shelf from the
-            // stored atlas coordinates (#119).
-            for inst in &surf.frame.instances {
+            // Clip masks bound through `uv[2..3]` pin the same way:
+            // the frame's masked instances recover their shelf from
+            // the stored atlas coordinates. A mask still pending its
+            // placement keeps the unpatched `(0, 0)` there — the
+            // lowering's `mask_patches` names those instances,
+            // ascending by slot (#2440).
+            let pending = lowered.mask_patches.iter().map(|&(inst, _)| inst as usize);
+            for inst in Self::placed(surf.frame.instances.iter(), pending) {
                 let flags = inst.meta[3] >> 24;
                 if flags & instance::FLAG_HAS_MASK != 0
                     && flags & instance::FLAG_MASK_TEXTURE == 0
@@ -6600,12 +6648,32 @@ impl GpuRenderer {
         touches.len()
     }
 
+    /// Drops the elements of `items` whose indices appear in
+    /// `unplaced` — an ascending set of positions whose stored UVs
+    /// still lack an atlas origin: pending cells and pending clip
+    /// masks patch it in at apply, so resolving them pins the shelf
+    /// covering `(0, 0)`, not one they sampled (#2440).
+    fn placed<'a, T: 'a>(
+        items: impl Iterator<Item = &'a T>,
+        mut unplaced: impl Iterator<Item = usize>,
+    ) -> impl Iterator<Item = &'a T> {
+        let mut next = unplaced.next();
+        items.enumerate().filter_map(move |(i, item)| {
+            if next == Some(i) {
+                next = unplaced.next();
+                None
+            } else {
+                Some(item)
+            }
+        })
+    }
+
     /// The shelves `instances`' glyph quads sample, recovered from their
     /// stored UVs — the leaf records no per-cell slot at emit time, so
     /// the commit derives them here instead (#119).
-    fn for_each_glyph_shelf(
+    fn for_each_glyph_shelf<'a>(
         atlas: &Atlas,
-        instances: &[lower::RetainedInstance],
+        instances: impl Iterator<Item = &'a lower::RetainedInstance>,
         mut f: impl FnMut(u32),
     ) {
         let mut hint = None;
@@ -6700,7 +6768,7 @@ impl GpuRenderer {
                     // (#119).
                     Self::for_each_glyph_shelf(
                         &self.atlas,
-                        &content.storage.instances[emission.instances.clone()],
+                        content.storage.instances[emission.instances.clone()].iter(),
                         |slot| {
                             content
                                 .storage

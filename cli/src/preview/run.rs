@@ -15,12 +15,22 @@ use crate::utils::command;
 
 use waterui_preview_protocol::run::{PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig};
 
+/// The file name a run config is written under.
+pub const RUN_CONFIG_FILE_NAME: &str = "preview-run.json";
+
+/// The run config's JSON document, as [`write_run_config`] writes it.
+///
+/// # Errors
+/// Returns an error when the config cannot be serialized.
+pub fn run_config_json(config: &PreviewRunConfig) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(config).wrap_err("Failed to serialize preview run config")
+}
+
 /// Writes the run config JSON next to the backend sources and returns its
 /// path; the file is overwritten per invocation.
 pub async fn write_run_config(dir: &Path, config: &PreviewRunConfig) -> Result<PathBuf> {
-    let path = dir.join("preview-run.json");
-    let json =
-        serde_json::to_vec_pretty(config).wrap_err("Failed to serialize preview run config")?;
+    let path = dir.join(RUN_CONFIG_FILE_NAME);
+    let json = run_config_json(config)?;
     smol::fs::write(&path, json)
         .await
         .wrap_err_with(|| format!("Failed to write {}", path.display()))?;

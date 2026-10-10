@@ -584,9 +584,10 @@ fn hlg_black_and_footroom_decode_to_black() -> Result<(), Box<dyn std::error::Er
         if code <= 64 {
             for y in 0..SIZE {
                 let got = pixels[(y * SIZE + x as u32) as usize];
+                // Footroom and nominal black decode to exactly black (#2107, #2108).
                 assert_eq!(
-                    got,
-                    [0.0, 0.0, 0.0, 1.0],
+                    got.map(f32::to_bits),
+                    [0.0, 0.0, 0.0, 1.0].map(f32::to_bits),
                     "hlg black or footroom code {code} at ({x}, {y})"
                 );
             }

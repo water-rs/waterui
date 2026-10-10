@@ -762,6 +762,50 @@ fn reduced_multi_band_capture_has_no_band_seams() {
 }
 
 #[test]
+fn refraction_past_the_surface_keeps_the_clamped_edge_row() {
+    for (clip, row) in [
+        (Rect::new(-100.0, 31.0, 100.0, 160.0), 31),
+        (Rect::new(-100.0, -160.0, 100.0, 1.0), 0),
+    ] {
+        let engine = engine();
+        let surface = engine
+            .surface(Offscreen::new((64, 32), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        let group = surface.backdrop_group(
+            filtrate::filters::Brightness(0.25f32),
+            cherenkov::CaptureScale::FULL,
+        );
+        let parent = surface.layer();
+        let member = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 64.0, 32.0),
+                    WorkingColor::new([0.2, 0.3, 0.4, 1.0]),
+                );
+            }));
+            tx[surface.root()].push(&parent);
+            // The inherited coverage mask spans the surface, although
+            // the parent's right edge is strictly inside it.
+            tx[&parent]
+                .clip(RoundedRect::new(4.0, 0.0, 28.0, 32.0, 4.0))
+                .push(&member);
+            tx[&member]
+                .clip(clip)
+                .backdrop(group.sample_with(cherenkov::Refraction {
+                    depth: 4.0,
+                    strength: 128.0,
+                }));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let readback = surface.readback().expect("readback");
+        // Every visible sample is displaced beyond the surface. The
+        // filtered edge row must still be captured for clamped sampling.
+        assert_pixel(pixel(&readback, 16, row), [0.45, 0.55, 0.65, 1.0], 1e-5);
+    }
+}
+
+#[test]
 fn reduced_refraction_samples_the_displaced_point_on_the_capture_grid() {
     let engine = engine();
     let surface = engine
@@ -806,6 +850,64 @@ fn reduced_refraction_samples_the_displaced_point_on_the_capture_grid() {
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
 }
 
+/// A union member's refracted sample follows the union field's gradient,
+/// which inside a member can tilt toward a sibling — landing the displaced
+/// read outside the member's own clip and outside the pixel's raster band.
+/// The capture keeps `apron + reach` extra rows past each band, so the
+/// read does not clamp to the kept window's edge row.
+#[test]
+fn union_refraction_reads_capture_rows_beyond_the_band() {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let group = surface.backdrop_group_unfiltered(
+        cherenkov::BackdropSpec::FULL.union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 26.0, 32.0, 32.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(0.0, 0.0, 32.0, 26.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(0.0, 32.0, 32.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[surface.root()].push(&b);
+        tx[&a]
+            .clip(Rect::new(0.0, 16.0, 16.0, 37.0))
+            .backdrop(group.sample_with(cherenkov::Refraction {
+                depth: 12.0,
+                strength: 6.0,
+            }));
+        tx[&b]
+            .clip(Rect::new(16.0, 30.0, 32.0, 54.0))
+            .backdrop(group.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Pixel (10, 33) is 3.5 inside a's bottom edge; the union field there
+    // blends a's (0, 1) gradient with b's (1, 0) for n ≈ (0.355, 0.935),
+    // displacing the sample to (9.78, 31.60) — two rows above the band
+    // ([32, 48)) the pixel draws in: ~0.9 of the red stripe's row 31 and
+    // ~0.1 of row 32's blue. Kept only to the band, the read clamps to
+    // row 32's blue.
+    let p = pixel(&readback, 10, 33);
+    assert!(
+        p[0] > 0.75 && p[2] < 0.25 && (p[3] - 1.0).abs() < 1e-5,
+        "pixel {p:?}, expected mostly red"
+    );
+}
+
 #[test]
 fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid() {
     let engine = engine();
@@ -844,6 +946,69 @@ fn reduced_rim_lights_the_bilinear_sample_on_the_capture_grid() {
     assert_pixel(pixel(&readback, 54, 32), [0.25, 0.781_25, 0.75, 1.0], 1e-5);
     // Past the rim's width the sample is unlit.
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
+}
+
+/// A member bound to a signal of its refraction re-renders with the new
+/// parameters on the next frame, with no transaction.
+#[test]
+fn a_bound_refraction_change_rerenders_the_member() {
+    use nami::{SignalExt, binding};
+
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let member = surface.layer();
+    let depth = binding(8.0_f32);
+    let sample = {
+        let group = group.id();
+        depth.map(move |depth| {
+            cherenkov::BackdropSample::with_effect(
+                group,
+                cherenkov::Refraction {
+                    depth,
+                    strength: 4.0,
+                },
+            )
+        })
+    };
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 52.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(52.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(sample);
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    // Pixel 54's centre is 1.5 inside the right edge. Over a depth of 8 it
+    // is displaced 4 · (1 − 1.5/8)² ≈ 2.6 px to the left, across the
+    // red/blue boundary at 52, so red mixes in.
+    let displaced = pixel(&readback, 54, 32);
+    assert!(displaced[0] > 0.25, "displaced pixel {displaced:?}");
+    let captures = engine.memory().backdrop_captures;
+
+    // Over a depth of 1 the pixel is past the rim: the unshifted blue.
+    depth.set(1.0);
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    assert_pixel(pixel(&readback, 54, 32), [0.0, 0.0, 1.0, 1.0], 1e-5);
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-5);
+    assert_eq!(
+        engine.memory().backdrop_captures,
+        captures,
+        "the group keeps its capture"
+    );
 }
 
 /// A 33×33 surface, column 32 blue and the rest red, captured at full
@@ -1004,9 +1169,10 @@ fn deep_level_reads_are_independent_of_the_other_members() {
     let shared = deep_level_member(true);
     for y in 8..56 {
         for x in 600..840 {
+            // Both renders run the same arithmetic on the same inputs: identical bits.
             assert_eq!(
-                pixel(&alone, x, y),
-                pixel(&shared, x, y),
+                pixel(&alone, x, y).map(f32::to_bits),
+                pixel(&shared, x, y).map(f32::to_bits),
                 "member pixel ({x}, {y}) depends on the other member"
             );
         }

@@ -610,6 +610,63 @@ fn shader_effect_lights_the_rim() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 split_test! {
+/// A member bound to a signal of its shader uniforms re-renders with the
+/// new uniforms on the next frame, with no transaction.
+fn a_bound_shader_effect_change_rerenders_the_member()
+-> Result<(), Box<dyn std::error::Error>> {
+    use nami::{SignalExt, binding};
+
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            let rim = clamp(1.0 + px.sdf / 4.0, 0.0, 1.0);
+            return vec4<f32>(backdrop_sample(px.p).rgb * (1.0 + params[0].x * rim), backdrop_sample(px.p).a);
+        }",
+    ))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
+    let member = surface.layer();
+    let gain = binding(3.0_f32);
+    let sample = {
+        let group = group.id();
+        gain.map(move |gain| {
+            cherenkov::BackdropSample::with_effect(group, shader.effect(vec![gain]))
+        })
+    };
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(sample);
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    let lit = pixel(&readback, 10, 32);
+    assert!(lit[0] > 1.5, "rim pixel {lit:?} under gain 3");
+    let captures = wait!(engine.memory()).backdrop_captures;
+
+    gain.set(0.0);
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    // Gain 0 leaves the plain sample in the rim too.
+    assert_pixel(pixel(&readback, 10, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
+    assert_eq!(
+        wait!(engine.memory()).backdrop_captures,
+        captures,
+        "the group keeps its capture"
+    );
+    Ok(())
+}
+}
+
+split_test! {
 fn shader_effect_size_is_the_unclipped_member_size() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
@@ -844,11 +901,8 @@ fn far_members_take_two_regions() -> Result<(), Box<dyn std::error::Error>> {
     // two-region one-group render and the two single-member groups.
     for y in (0..96).chain(416..512) {
         for x in 0..512 {
-            assert_eq!(
-                pixel(&readback_a, x, y),
-                pixel(&readback_b, x, y),
-                "pixel {x},{y} differs"
-            );
+            // Same shader arithmetic on the same inputs: the comparison is byte-identity.
+            assert_eq!(pixel(&readback_a, x, y).map(f32::to_bits), pixel(&readback_b, x, y).map(f32::to_bits), "pixel {x},{y} differs");
         }
     }
     Ok(())
@@ -1775,11 +1829,8 @@ fn render(engine: &Engine<Gpu>, with_plain: bool) -> Result<cherenkov::Readback,
     let shared = wait!(render(&engine, true))?;
     for y in 8..56 {
         for x in 600..840 {
-            assert_eq!(
-                pixel(&alone, x, y),
-                pixel(&shared, x, y),
-                "member pixel ({x}, {y}) depends on the other member"
-            );
+            // Same shader arithmetic on the same inputs: the comparison is byte-identity.
+            assert_eq!(pixel(&alone, x, y).map(f32::to_bits), pixel(&shared, x, y).map(f32::to_bits), "member pixel ({x}, {y}) depends on the other member");
         }
     }
     Ok(())

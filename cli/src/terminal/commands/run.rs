@@ -371,7 +371,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             return Ok(None);
         };
         print_run_header(shell, &context);
-        check_run_toolchain(
+        let kotlin_toolchain = check_run_toolchain(
             shell,
             context.project.host(),
             context.platform,
@@ -415,6 +415,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             context.backend,
             selection,
             config,
+            kotlin_toolchain.as_ref(),
         ))
         .await?;
         Ok(Some(RunReady {
@@ -481,7 +482,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
     }
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         ManagedBackends::NONE,
@@ -520,7 +521,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
         args.backend.map(TargetBackend::lib_backend),
     )?);
     let managed_backends = managed_backends(platform, backend);
-    let project = Box::pin(Project::open(
+    let project = Box::pin(Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,
         managed_backends,
@@ -573,14 +574,14 @@ async fn check_run_toolchain(
     host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     let spinner = shell.spinner("Checking toolchain...");
-    check_toolchain_for_backend(host, platform, backend).await?;
+    let kotlin_toolchain = check_toolchain_for_backend(host, platform, backend).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
     success!(shell, "Toolchain ready");
-    Ok(())
+    Ok(kotlin_toolchain)
 }
 
 async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
@@ -783,6 +784,7 @@ async fn build_and_run(
     backend: TargetBackend,
     selection: DeviceSelection,
     config: BuildRunConfig,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<(Running, Option<web::WebDevServer>)> {
     let build_plan = resolve_build_plan(cli_platform, &selection.device);
     let physical_ios = is_physical_ios(&selection.device);
@@ -817,6 +819,7 @@ async fn build_and_run(
         backend,
         &build_plan,
         build_options(&config).with_progress(shell.build_progress()),
+        kotlin_toolchain,
     ))
     .await?;
 
@@ -868,7 +871,7 @@ async fn start_web_dev_server(
     built: &waterui_cli::build::BuiltTarget,
     expose_on_lan: bool,
 ) -> Result<Option<web::WebDevServer>> {
-    let Some(meta) = web::web_mount(&built.app_symbols()?)? else {
+    let Some(meta) = web::web_mount(&built.app_symbols().await?)? else {
         return Ok(None);
     };
     let root = meta
@@ -1006,7 +1009,13 @@ async fn build_for_backend(
     backend: TargetBackend,
     plan: &BuildPlan,
     build_options: BuildOptions,
+    kotlin_toolchain: Option<&waterui_cli::android::KotlinToolchain>,
 ) -> Result<waterui_cli::build::BuiltTarget> {
+    let kotlin = || {
+        kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android build has no resolved Kotlin toolchain")
+        })
+    };
     match backend {
         TargetBackend::Apple => {
             Box::pin(build_rust_lib(project, plan.lib_platform, build_options)).await
@@ -1016,7 +1025,7 @@ async fn build_for_backend(
                 .android_abi
                 .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
             AndroidPlatform::clean_jni_libs(project).await?;
-            Box::pin(AndroidPlatform::new(abi).build(project, build_options)).await
+            Box::pin(AndroidPlatform::new(abi).build(project, build_options, kotlin()?)).await
         }
         TargetBackend::Gtk4 => Box::pin(build_gtk4(project, build_options)).await,
         TargetBackend::Hydrolysis => {
@@ -1025,7 +1034,13 @@ async fn build_for_backend(
                     .android_abi
                     .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
                 hydrolysis_android::clean_jni_libs(project).await?;
-                Box::pin(hydrolysis_android::build(project, abi, build_options)).await
+                Box::pin(hydrolysis_android::build(
+                    project,
+                    abi,
+                    build_options,
+                    kotlin()?,
+                ))
+                .await
             } else {
                 Box::pin(build_hydrolysis(project, plan.lib_platform, build_options)).await
             }
@@ -1504,7 +1519,7 @@ async fn check_toolchain_for_backend(
     host: &waterui_cli::toolchain::Host,
     platform: TargetPlatform,
     backend: TargetBackend,
-) -> Result<()> {
+) -> Result<Option<waterui_cli::android::KotlinToolchain>> {
     match backend {
         TargetBackend::Apple => {
             let sdk = match platform {
@@ -1526,7 +1541,7 @@ async fn check_toolchain_for_backend(
             if platform != TargetPlatform::Android {
                 bail!("Internal error: Android backend is not supported on {platform:?}");
             }
-            toolchain_checks::check_android_run(host).await?;
+            return toolchain_checks::check_android_run(host).await.map(Some);
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
@@ -1544,8 +1559,9 @@ async fn check_toolchain_for_backend(
                 bail!("Internal error: hydrolysis backend is not supported on {platform:?}");
             }
             if platform == TargetPlatform::Android {
-                toolchain_checks::check_android_run(host).await?;
-            } else if platform == TargetPlatform::Web {
+                return toolchain_checks::check_android_run(host).await.map(Some);
+            }
+            if platform == TargetPlatform::Web {
                 toolchain_checks::check_web(host).await?;
             } else {
                 toolchain_checks::check_hydrolysis(host).await?;
@@ -1558,7 +1574,7 @@ async fn check_toolchain_for_backend(
             toolchain_checks::check_winui(host).await?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 async fn find_device(
@@ -1813,7 +1829,11 @@ mod tests {
         validate_device_arg,
     };
     use clap::Parser as _;
+    #[cfg(unix)]
+    use waterui_cli::android::adb::Adb;
+    #[cfg(unix)]
     use waterui_cli::android::device::AndroidDevice;
+    use waterui_cli::android::device::AndroidEmulator;
     use waterui_cli::android::platform::AndroidAbi;
     use waterui_cli::build::BuildProfile;
     use waterui_cli::device::{ApplicationExit, DeviceEvent, Local, StopRequest};
@@ -2072,15 +2092,62 @@ mod tests {
     fn android_abi_follows_the_device() {
         // The ABI is a property of the selected device: a desktop run
         // selects the local machine and resolves no ABI, whatever backend
-        // the run uses — Hydrolysis included.
+        // the run uses — Hydrolysis included. An AVD's ABI comes from its
+        // config.
+        let home = tempfile::tempdir().expect("a scratch home");
+        let avd = home.path().join(".android/avd/Pixel_API_37.avd");
+        std::fs::create_dir_all(&avd).expect("create the AVD dir");
+        std::fs::write(avd.join("config.ini"), "abi.type=arm64-v8a\n").expect("write the AVD");
+        let host = waterui_cli::toolchain::Host::new(
+            std::iter::empty::<std::path::PathBuf>(),
+            [
+                ("HOME", home.path().as_os_str()),
+                ("USERPROFILE", home.path().as_os_str()),
+            ],
+        );
+        let emulator = smol::block_on(AndroidEmulator::open(&host, "Pixel_API_37".to_string()))
+            .expect("the AVD opens");
         assert_eq!(
-            device_android_abi(&SelectedDevice::AndroidDevice(AndroidDevice::new(
-                String::from("serial-1"),
-                AndroidAbi::Arm64V8a,
-            ))),
+            device_android_abi(&SelectedDevice::AndroidEmulator(emulator)),
             Some(AndroidAbi::Arm64V8a)
         );
         assert_eq!(device_android_abi(&SelectedDevice::Local(Local)), None);
+    }
+
+    /// A connected device's ABI is the one its scan read. The device holds an
+    /// `adb` client, which exists only once `start-server` ran — here a
+    /// stand-in `adb` in a scratch SDK that answers the scan, so no live
+    /// server is involved. A Windows `adb.exe` cannot be a script, so this
+    /// half is Unix-only.
+    #[test]
+    #[cfg(unix)]
+    fn android_abi_follows_a_connected_device() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let sdk = tempfile::tempdir().expect("a scratch SDK");
+        let adb = sdk.path().join("platform-tools/adb");
+        std::fs::create_dir_all(adb.parent().expect("platform-tools")).expect("platform-tools");
+        std::fs::write(
+            &adb,
+            "#!/bin/sh\ncase \"$*\" in\n  \"devices -l\") printf 'List of devices attached\\nserial-1 device\\n' ;;\n  *getprop*) printf 'arm64-v8a\\n' ;;\nesac\nexit 0\n",
+        )
+        .expect("write the stand-in adb");
+        std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755))
+            .expect("make the stand-in adb executable");
+        let host = waterui_cli::toolchain::Host::new(
+            std::iter::empty::<std::path::PathBuf>(),
+            [("ANDROID_SDK_ROOT", sdk.path().as_os_str())],
+        );
+        let adb = smol::block_on(Adb::locate(&host)).expect("the stand-in adb starts");
+        let device = smol::block_on(AndroidDevice::scan_with_adb(&host, &adb))
+            .expect("the stand-in adb scans")
+            .into_iter()
+            .next()
+            .expect("the scan reports serial-1");
+        assert_eq!(
+            device_android_abi(&SelectedDevice::AndroidDevice(device)),
+            Some(AndroidAbi::Arm64V8a)
+        );
     }
 
     #[cfg(target_os = "macos")]

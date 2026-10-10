@@ -1058,6 +1058,54 @@ impl AnchorScratch {
     }
 }
 
+/// One open isolation's record on [`Lowering::isolations`]: the scope's
+/// declared composite inputs (enough to reopen it identically), the
+/// scratch depth it draws into, and the enclosing state its tail
+/// restores.
+struct Isolation {
+    /// The clip the scope's body draws under.
+    inner_clip: Option<DeviceClip>,
+    filter: Option<cherenkov::FilterId>,
+    opacity: f32,
+    blend: cherenkov::BlendMode,
+    /// The scope's declared space; `storage` resolves it at open.
+    space: cherenkov::BlendSpace,
+    /// The scratch depth index this scope draws into.
+    scratch: usize,
+    /// The scratch's resolved storage space: the declared `space` for a
+    /// semantic or translucent level, the enclosing level's otherwise.
+    storage: cherenkov::BlendSpace,
+    /// The clip in force outside the scope, restored before the
+    /// composite emits.
+    outer_clip: Option<DeviceClip>,
+    /// `member_outer_clip` in force outside the scope.
+    outer_member_clip: Option<DeviceClip>,
+    /// `frame.passes.len()` when the scope's segment opened.
+    passes_start: usize,
+    /// `frame.instances.len()` when the scope's segment opened: the
+    /// tight region is measured over these.
+    inst_start: usize,
+    /// `capture_isolation` in force outside the scope.
+    saved_capture: bool,
+    /// `semantic_target` in force outside the scope.
+    saved_target: Target,
+    /// `looked_through_scratches` in force outside the scope.
+    saved_scratches: Vec<(usize, usize)>,
+}
+
+impl Isolation {
+    /// Whether the scope composites identically to drawing its items
+    /// under the intersected coverage — opacity 1, `Normal` blend,
+    /// linear storage, no filter: the scopes `run_clipped` opens, whose
+    /// segments a part boundary may split across engine parts.
+    fn clip_only(&self) -> bool {
+        self.filter.is_none()
+            && self.opacity >= 1.0
+            && self.blend == cherenkov::BlendMode::Normal
+            && self.storage == cherenkov::BlendSpace::Linear
+    }
+}
+
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
     frame: &'a mut Frame,
@@ -1138,6 +1186,11 @@ pub struct Lowering<'a> {
     /// The storage space of the enclosing level, innermost last; the
     /// surface renders in `Linear` (the implicit base).
     space_stack: Vec<cherenkov::BlendSpace>,
+    /// The open isolations, outermost first: each entry carries the
+    /// scope's declared composite and the walk state its tail restores,
+    /// so a part boundary can close and reopen them
+    /// (`Lowering::next_part`).
+    isolations: Vec<Isolation>,
     /// The engine part surface-level passes draw into.
     part: u32,
     /// The layers promoted to system planes this frame: their content is
@@ -1212,6 +1265,7 @@ impl<'a> Lowering<'a> {
             promoted: Vec::new(),
             opens: Vec::new(),
             space_stack: Vec::new(),
+            isolations: Vec::new(),
             scratch_space: Vec::new(),
             capture_space: FxHashMap::default(),
             local: None,
@@ -1840,18 +1894,57 @@ impl<'a> Lowering<'a> {
     /// Ends the current engine part at a promoted layer's paint position and
     /// starts the next one, transparent, for everything painted above it.
     ///
+    /// A part boundary inside clip-only isolations splits each enclosing
+    /// scope: its already-drawn segment composites into the current part,
+    /// and the scope reopens over the new part with a fresh scratch pass,
+    /// so its tail composites the second segment there. A clip-only
+    /// composite is identical to drawing each item under the intersected
+    /// coverage, so the split is exact.
+    ///
     /// # Panics
-    /// When lowering is inside an isolation or a projective local image:
-    /// eligibility keeps every promoted layer at the surface level, so this
-    /// is an engine defect.
+    /// When lowering is inside an isolation that is not clip-only or a
+    /// projective local image: eligibility keeps every promoted layer at
+    /// the surface level, so this is an engine defect.
     fn next_part(&mut self) {
+        // The clip state the body draws under at the boundary: clips the
+        // body merged in place since the innermost scope opened are not on
+        // the stack, and the walk unwinds them itself after the boundary.
+        let (clip, member_outer_clip) = (self.clip, self.member_outer_clip);
+        let mut split = Vec::new();
+        while self.depth > 0 {
+            let innermost = self
+                .isolations
+                .last()
+                .filter(|entry| entry.scratch == self.depth - 1 && entry.clip_only());
+            assert!(
+                innermost.is_some(),
+                "a promoted layer must composite at the surface level"
+            );
+            split.push(self.close_isolation());
+        }
         assert!(
-            self.depth == 0 && matches!(self.semantic_target, Target::Part(_)),
+            matches!(self.semantic_target, Target::Part(_)),
             "a promoted layer must composite at the surface level"
         );
         self.part += 1;
         self.semantic_target = Target::Part(self.part);
         self.begin_pass(Target::Part(self.part), Some([0.0; 4]));
+        // Each scope reopens under the clip state it first opened under,
+        // which a clip merged in place between two scopes narrows past the
+        // enclosing scope's own clip.
+        for entry in split.into_iter().rev() {
+            self.set_clip(entry.outer_clip);
+            self.member_outer_clip = entry.outer_member_clip;
+            self.open_isolation(
+                entry.inner_clip,
+                entry.filter,
+                entry.opacity,
+                entry.blend,
+                entry.space,
+            );
+        }
+        self.set_clip(clip);
+        self.member_outer_clip = member_outer_clip;
     }
 
     /// The storage space of the level currently being drawn into.
@@ -2074,14 +2167,11 @@ impl<'a> Lowering<'a> {
     /// for a body that can never fold into the parent pass — the member
     /// scope of a filtered member always opens its nested filter scope.
     #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
         clippy::too_many_arguments,
-        reason = "surface size is a small positive float; an isolate carries the
-        clip, style and pixel-space state of one scope"
+        reason = "an isolate carries the clip, style and pixel-space state of one scope"
     )]
-    // Keep isolation's saved state, live across the recursive body, off
-    // the ordinary drawing walk's stack.
+    // Keep the recursive body call off the ordinary drawing walk's
+    // stack; the scope's saved state lives on `isolations`.
     #[inline(never)]
     fn isolate_direct(
         &mut self,
@@ -2093,6 +2183,23 @@ impl<'a> Lowering<'a> {
         mut body: impl FnMut(&mut Self, &GlyphContext<'_>) -> Result<(), RenderError>,
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
+        self.open_isolation(inner_clip, filter, opacity, blend, space);
+        body(self, glyphs)?;
+        self.close_isolation();
+        Ok(())
+    }
+
+    /// Opens an isolation scope: `body` draws into the scratch at the new
+    /// depth, and [`close_isolation`](Self::close_isolation) composites it
+    /// back at `opacity` under the saved outer clip.
+    fn open_isolation(
+        &mut self,
+        inner_clip: Option<DeviceClip>,
+        filter: Option<cherenkov::FilterId>,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        space: cherenkov::BlendSpace,
+    ) {
         self.depth += 1;
         let scratch = self.depth - 1;
         let (outer_clip, outer_member_clip) = (self.clip, self.member_outer_clip.take());
@@ -2126,7 +2233,8 @@ impl<'a> Lowering<'a> {
         self.scratch_space[scratch] = storage;
         self.begin_pass(Target::Scratch(scratch), Some([0.0; 4]));
         let inst_start = self.frame.instances.len();
-        let (saved_capture, saved_target) = (self.capture_isolation, self.semantic_target);
+        let saved_capture = self.capture_isolation;
+        let saved_target = self.semantic_target;
         let saved_scratches = std::mem::take(&mut self.looked_through_scratches);
         self.capture_isolation = false;
         if semantic {
@@ -2136,18 +2244,52 @@ impl<'a> Lowering<'a> {
             self.looked_through_scratches.push((scratch, passes_start));
         }
         self.space_stack.push(storage);
-        body(self, glyphs)?;
+        self.isolations.push(Isolation {
+            inner_clip,
+            filter,
+            opacity,
+            blend,
+            space,
+            scratch,
+            storage,
+            outer_clip,
+            outer_member_clip,
+            passes_start,
+            inst_start,
+            saved_capture,
+            saved_target,
+            saved_scratches,
+        });
+    }
+
+    /// Closes the innermost open isolation: finishes its scratch segment,
+    /// sizes it to the drawn content, and emits the composite into the
+    /// enclosing target under the saved outer clip. Returns the scope's
+    /// record so a part boundary can reopen it
+    /// ([`Lowering::next_part`]).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface size is a small positive float"
+    )]
+    fn close_isolation(&mut self) -> Isolation {
+        let mut entry = self
+            .isolations
+            .pop()
+            .expect("close_isolation requires an open isolation");
+        let scratch = entry.scratch;
+        debug_assert_eq!(scratch, self.depth - 1, "scopes close in LIFO order");
         self.space_stack.pop();
         self.finish_pass();
         self.depth -= 1;
-        self.set_clip(outer_clip);
-        self.member_outer_clip = outer_member_clip;
+        self.set_clip(entry.outer_clip);
+        self.member_outer_clip = entry.outer_member_clip;
         let inner_capture = self.capture_isolation;
-        self.capture_isolation |= saved_capture;
-        self.semantic_target = saved_target;
-        self.looked_through_scratches = saved_scratches;
+        self.capture_isolation |= entry.saved_capture;
+        self.semantic_target = entry.saved_target;
+        self.looked_through_scratches = std::mem::take(&mut entry.saved_scratches);
         let outer_target = self.current_target();
-        let region = if let Some(filter) = filter {
+        let region = if let Some(filter) = entry.filter {
             self.frame
                 .filters
                 .push((self.frame.passes.len() - 1, FilterKey::Layer(filter.raw())));
@@ -2156,15 +2298,15 @@ impl<'a> Lowering<'a> {
             // A capture inside reads this scratch at texel origin (0, 0):
             // its region must cover the whole surface.
             [0, 0, self.width as u32, self.height as u32]
-        } else if is_destructive(blend) {
+        } else if is_destructive(entry.blend) {
             clip_region(
-                inner_clip.or(outer_clip),
+                entry.inner_clip.or(entry.outer_clip),
                 self.width as u32,
                 self.height as u32,
             )
         } else {
             tight_region(
-                &self.frame.instances[inst_start..],
+                &self.frame.instances[entry.inst_start..],
                 self.width as u32,
                 self.height as u32,
             )
@@ -2175,22 +2317,22 @@ impl<'a> Lowering<'a> {
             debug_assert!(!inner_capture);
             // Nothing visible in the scratch: drop this depth's segment
             // passes and the composite entirely.
-            for i in (passes_start..self.frame.passes.len()).rev() {
+            for i in (entry.passes_start..self.frame.passes.len()).rev() {
                 if self.frame.passes[i].target == Target::Scratch(scratch) {
                     self.frame.remove_pass(i);
                 }
             }
             self.begin_pass(outer_target, None);
-            return Ok(());
+            return entry;
         }
-        for pass in &mut self.frame.passes[passes_start..] {
+        for pass in &mut self.frame.passes[entry.passes_start..] {
             if pass.target == Target::Scratch(scratch) {
                 pass.region = region;
             }
         }
         self.begin_pass(outer_target, None);
         let dst_space = self.current_space();
-        if blend != cherenkov::BlendMode::Normal || storage != dst_space {
+        if entry.blend != cherenkov::BlendMode::Normal || entry.storage != dst_space {
             // A blended or cross-space composite samples the backdrop
             // explicitly: the target's current contents are copied aside
             // before this pass.
@@ -2202,23 +2344,23 @@ impl<'a> Lowering<'a> {
         // sampling it with `grad.xy` as the texel origin. A destructive
         // composite carries the effective clip itself: its coverage decides
         // where the operator applies across the whole region.
-        if is_destructive(blend) {
-            self.set_clip(inner_clip.or(outer_clip));
+        if is_destructive(entry.blend) {
+            self.set_clip(entry.inner_clip.or(entry.outer_clip));
         }
         #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
         let origin = [region[0] as f32, region[1] as f32];
         self.emit_composite(
             Source::Scratch(scratch),
             origin,
-            opacity,
+            entry.opacity,
             region,
-            blend,
-            storage,
+            entry.blend,
+            entry.storage,
         );
-        if is_destructive(blend) {
-            self.set_clip(outer_clip);
+        if is_destructive(entry.blend) {
+            self.set_clip(entry.outer_clip);
         }
-        Ok(())
+        entry
     }
 
     /// Capture a silhouette in padded device coordinates, convolve it, then
@@ -2326,7 +2468,15 @@ impl<'a> Lowering<'a> {
         let transform = self.transform;
         let capture = self.capture_isolation;
         let draws = self.projective_draws;
+        let part = self.part;
         let result = body(self, glyphs);
+        // The speculated level is translucent, and eligibility keeps every
+        // ancestor of a promoted layer opaque: its body never crosses a
+        // part boundary.
+        assert!(
+            self.part == part,
+            "a promoted layer must composite at the surface level"
+        );
         // A projective composite never takes the pass-through: the layer
         // above it isolates for real.
         let folds = result.is_ok() && self.projective_draws == draws;
@@ -5447,14 +5597,16 @@ mod tests {
             .filter(|i| i.meta[1] == PAINT_TEXTURE)
             .map(|i| i.bounds)
             .collect();
+        // Composite bounds are whole texels: the parent's extent and the
+        // scratch region, both integer-valued.
         assert_eq!(
-            composites[0],
-            [0.0, 0.0, 64.0, 64.0],
+            composites[0].map(f32::to_bits),
+            [0.0_f32, 0.0, 64.0, 64.0].map(f32::to_bits),
             "the destructive composite covers the whole parent"
         );
         assert_eq!(
-            composites[1],
-            [1.0, 1.0, 23.0, 23.0],
+            composites[1].map(f32::to_bits),
+            [1.0_f32, 1.0, 23.0, 23.0].map(f32::to_bits),
             "the multiply composite keeps the tight region"
         );
     }
@@ -5511,7 +5663,11 @@ mod tests {
             .iter()
             .find(|i| i.meta[1] == PAINT_TEXTURE)
             .expect("the composite instance");
-        assert_eq!(composite.bounds, [9.0, 9.0, 31.0, 31.0]);
+        // The clip rect padded by a whole texel: integer-valued.
+        assert_eq!(
+            composite.bounds.map(f32::to_bits),
+            [9.0_f32, 9.0, 31.0, 31.0].map(f32::to_bits)
+        );
         assert_ne!(
             composite.meta[3] & (FLAG_HAS_CLIP << 24),
             0,
@@ -5635,6 +5791,8 @@ mod tests {
         );
     }
 
+    /// The strip tests' rects have integer coordinates, so every area and
+    /// every sum of areas is exact and they compare bits.
     fn area(r: Rect) -> f64 {
         r.width() * r.height()
     }
@@ -5665,7 +5823,10 @@ mod tests {
         assert!(disjoint(&strips));
         assert!(inside(&strips, b));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, 1600.0 - (30.0 * 10.0 + 10.0 * 30.0 - 10.0 * 10.0));
+        assert_eq!(
+            total.to_bits(),
+            (1600.0_f64 - (30.0 * 10.0 + 10.0 * 30.0 - 10.0 * 10.0)).to_bits()
+        );
     }
 
     #[test]
@@ -5680,7 +5841,7 @@ mod tests {
         assert!(disjoint(&strips));
         assert!(inside(&strips, b));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, 1600.0 - 300.0);
+        assert_eq!(total.to_bits(), (1600.0_f64 - 300.0).to_bits());
     }
 
     #[test]
@@ -5707,7 +5868,7 @@ mod tests {
         let covered = area(c.wide.intersect(b)) + area(c.tall.intersect(b))
             - area(c.wide.intersect(b).intersect(c.tall.intersect(b)));
         let total: f64 = strips.iter().map(|r| area(*r)).sum();
-        assert_eq!(total, area(b) - covered);
+        assert_eq!(total.to_bits(), (area(b) - covered).to_bits());
     }
 
     fn sorted(clusters: Vec<Cluster>) -> Vec<([u32; 4], Vec<u32>)> {
@@ -5999,6 +6160,350 @@ mod tests {
                     (Target::Part(1), Some([0.0; 4]), 0),
                     (Target::Part(1), None, 1),
                 ]
+            );
+        }
+    }
+
+    /// Lowers `tree` with `contents` under a plan promoting `promoted`,
+    /// or `None` where no GPU exists.
+    fn lower_promoted(
+        tree: &cherenkov::SurfaceTree,
+        contents: impl IntoIterator<Item = (LayerId, ContentData)>,
+        promoted: LayerId,
+    ) -> Option<Frame> {
+        let (device, _queue) = device_and_queue()?;
+        let atlas = Atlas::new(&device, u64::MAX);
+        let mut caches: FxHashMap<LayerId, ContentData> = contents.into_iter().collect();
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &FxHashMap::default(),
+        };
+        let mut frame = Frame::default();
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .run(
+                tree,
+                &mut caches,
+                WorkingColor::BLACK,
+                &glyphs,
+                &FxHashMap::default(),
+                FxHashMap::default(),
+                &plan(&[promoted], true),
+            )
+            .expect("lowered");
+        Some(frame)
+    }
+
+    /// An 8×8 white fill at `(x, y)`.
+    fn square(x: f64, y: f64) -> ContentData {
+        use cherenkov::{Draw as _, Picture};
+        ContentData::new(Picture::record(|c| {
+            c.fill(Rect::new(x, y, x + 8.0, y + 8.0), WorkingColor::WHITE);
+        }))
+    }
+
+    /// A tree of `edges` (parent, child) over freshly created `layers`.
+    fn tree_of(layers: &[LayerId], edges: &[(Option<LayerId>, LayerId)]) -> cherenkov::SurfaceTree {
+        use cherenkov::testing::LayerOp;
+        let mut tree = cherenkov::SurfaceTree::new();
+        for &id in layers {
+            tree.apply(LayerOp::Create(id));
+        }
+        for &(parent, child) in edges {
+            let parent = parent.unwrap_or_else(|| tree.root());
+            tree.apply(LayerOp::Push { parent, child });
+        }
+        tree
+    }
+
+    /// A promoted layer under an ancestor clip pair (#2371) splits the
+    /// enclosing clip-only isolation at its part boundary instead of
+    /// panicking: the scope's drawn segment composites into the part
+    /// below the plane, and the reopened scope's tail composites its
+    /// second segment into the part above it. The rounded-over-rect pair
+    /// is the reported case; rect-over-rounded and rounded-over-rounded
+    /// isolate the same way.
+    #[test]
+    fn a_promoted_layer_inside_an_ancestor_clip_pair_splits_the_scope() {
+        use cherenkov::testing::LayerOp;
+        let rect = ShapeData::Rect(Rect::new(0.0, 0.0, 30.0, 30.0));
+        let round = ShapeData::RoundedRect(kurbo::RoundedRect::new(0.0, 0.0, 30.0, 30.0, 4.0));
+        let [gp, holder, video, overlay, above] = [1, 2, 3, 4, 5].map(LayerId::new);
+        for (outer, inner) in [
+            (round.clone(), rect.clone()),
+            (rect, round.clone()),
+            (round.clone(), round),
+        ] {
+            let mut tree = tree_of(
+                &[gp, holder, video, overlay, above],
+                &[
+                    (None, gp),
+                    (Some(gp), holder),
+                    (Some(holder), video),
+                    (Some(video), overlay),
+                    (None, above),
+                ],
+            );
+            tree.apply(LayerOp::Clip(gp, Some(outer)));
+            tree.apply(LayerOp::Clip(holder, Some(inner)));
+            let Some(frame) = lower_promoted(
+                &tree,
+                [
+                    (holder, square(0.0, 0.0)),
+                    (overlay, square(8.0, 0.0)),
+                    (above, square(16.0, 0.0)),
+                ],
+                video,
+            ) else {
+                return;
+            };
+            assert_eq!(
+                frame
+                    .passes
+                    .iter()
+                    .map(|p| (p.target, p.clear, p.ranges.len()))
+                    .collect::<Vec<_>>(),
+                // The holder's fill, painted below the plane, composites
+                // into part 0; the overlay, painted above it, composites
+                // through the reopened scope into part 1, before `above`.
+                [
+                    (Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 0),
+                    (Target::Scratch(0), Some([0.0; 4]), 1),
+                    (Target::Part(0), None, 1),
+                    (Target::Part(1), Some([0.0; 4]), 0),
+                    (Target::Scratch(0), Some([0.0; 4]), 1),
+                    (Target::Part(1), None, 2),
+                ]
+            );
+        }
+    }
+
+    /// A clip merged in place between two split scopes narrows the
+    /// clip the inner scope opened under past the outer scope's own
+    /// clip: the reopened inner scope composites under that merged clip,
+    /// and the walk resumes under it once the inner scope closes.
+    #[test]
+    fn a_split_scope_reopens_under_the_clip_merged_before_it() {
+        use cherenkov::testing::LayerOp;
+        let rounded = |inset: f64| {
+            ShapeData::RoundedRect(kurbo::RoundedRect::new(
+                inset,
+                inset,
+                32.0 - inset,
+                32.0 - inset,
+                4.0,
+            ))
+        };
+        let [gp, holder, mid, inner, video, overlay, tail, above] =
+            [1, 2, 3, 4, 5, 6, 7, 8].map(LayerId::new);
+        let mut tree = tree_of(
+            &[gp, holder, mid, inner, video, overlay, tail, above],
+            &[
+                (None, gp),
+                (Some(gp), holder),
+                (Some(holder), mid),
+                (Some(mid), inner),
+                (Some(inner), video),
+                (Some(video), overlay),
+                (Some(mid), tail),
+                (None, above),
+            ],
+        );
+        // `holder` isolates against `gp`; `mid` merges into `holder`'s
+        // rect in place; `inner` isolates against the merged rect.
+        tree.apply(LayerOp::Clip(gp, Some(rounded(0.0))));
+        tree.apply(LayerOp::Clip(
+            holder,
+            Some(ShapeData::Rect(Rect::new(0.0, 0.0, 32.0, 32.0))),
+        ));
+        tree.apply(LayerOp::Clip(
+            mid,
+            Some(ShapeData::Rect(Rect::new(2.0, 2.0, 30.0, 30.0))),
+        ));
+        tree.apply(LayerOp::Clip(inner, Some(rounded(4.0))));
+        let Some(frame) = lower_promoted(
+            &tree,
+            [
+                (mid, square(4.0, 4.0)),
+                (inner, square(12.0, 4.0)),
+                (overlay, square(4.0, 12.0)),
+                (tail, square(12.0, 12.0)),
+                (above, square(20.0, 20.0)),
+            ],
+            video,
+        ) else {
+            return;
+        };
+        // Everything drawn into `holder`'s scratch draws under the merged
+        // rect: `mid`'s fill, `inner`'s composites on either side of the
+        // plane, and `tail`'s fill after it.
+        let clips = frame
+            .passes
+            .iter()
+            .filter(|p| p.target == Target::Scratch(0))
+            .flat_map(|p| &p.ranges)
+            .flat_map(|r| &frame.instances[r.instances.start as usize..r.instances.end as usize])
+            .map(|inst| (inst.clip_inv, bytemuck::bytes_of(&inst.clip).to_vec()))
+            .collect::<Vec<_>>();
+        assert_eq!(clips.len(), 4);
+        assert!(clips.iter().all(|clip| *clip == clips[0]), "{clips:?}");
+        assert_eq!(
+            frame.passes.iter().map(|p| p.target).collect::<Vec<_>>(),
+            [
+                Target::Part(0),
+                Target::Scratch(0),
+                Target::Scratch(1),
+                Target::Scratch(0),
+                Target::Part(0),
+                Target::Part(1),
+                Target::Scratch(0),
+                Target::Scratch(1),
+                Target::Scratch(0),
+                Target::Part(1),
+            ]
+        );
+    }
+
+    /// A layer under an ancestor clip that encloses nothing is invisible
+    /// to the planner as it is to the lowering: a zero-radius circle is a
+    /// clip Core Animation expresses, but `with_clip` skips the holder's
+    /// whole subtree, so the video under it is never promoted and opens
+    /// no part, and the layer painted above it lands in part 0.
+    #[test]
+    fn a_layer_under_an_empty_ancestor_clip_is_not_promoted() {
+        use crate::render::planes::{self, Candidate, Source};
+        use cherenkov::testing::LayerOp;
+        use cherenkov::{Draw as _, Picture, SurfaceTree};
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let atlas = Atlas::new(&device, u64::MAX);
+        let (holder, video, above) = (LayerId::new(1), LayerId::new(2), LayerId::new(3));
+        let mut tree = SurfaceTree::new();
+        for id in [holder, video, above] {
+            tree.apply(LayerOp::Create(id));
+        }
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: holder,
+        });
+        tree.apply(LayerOp::Push {
+            parent: holder,
+            child: video,
+        });
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: above,
+        });
+        tree.apply(LayerOp::Clip(
+            holder,
+            Some(ShapeData::Circle(kurbo::Circle::new((16.0, 16.0), 0.0))),
+        ));
+        let candidates: FxHashMap<LayerId, Candidate> = std::iter::once((
+            video,
+            Candidate {
+                size: (8, 8),
+                raster: Affine::IDENTITY,
+                source: Source::Frame,
+            },
+        ))
+        .collect();
+        let ready = candidates.keys().copied().collect();
+        let plan = planes::plan::<planes::Platform>(&tree, &candidates, &ready);
+        assert!(plan.planes.is_empty(), "promoted: {:?}", plan.planes);
+        assert_eq!(plan.parts(), 1);
+        let mut caches: FxHashMap<LayerId, ContentData> = std::iter::once((
+            above,
+            ContentData::new(Picture::record(|c| {
+                c.fill(Rect::new(16.0, 0.0, 24.0, 8.0), WorkingColor::WHITE);
+            })),
+        ))
+        .collect();
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &FxHashMap::default(),
+        };
+        let mut frame = Frame::default();
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .run(
+                &tree,
+                &mut caches,
+                WorkingColor::BLACK,
+                &glyphs,
+                &FxHashMap::default(),
+                FxHashMap::default(),
+                &plan,
+            )
+            .expect("lowered");
+        assert_eq!(
+            frame
+                .passes
+                .iter()
+                .map(|p| (p.target, p.clear, p.ranges.len()))
+                .collect::<Vec<_>>(),
+            [(Target::Part(0), Some([0.0, 0.0, 0.0, 1.0]), 1)]
+        );
+    }
+
+    /// A promoted layer under an isolation that is not clip-only still
+    /// fails the lowering: neither a translucent ancestor nor a blended
+    /// one can straddle a part boundary.
+    #[test]
+    fn a_promoted_layer_inside_a_non_clip_isolation_still_panics() {
+        use cherenkov::Prop;
+        use cherenkov::testing::LayerOp;
+        let [holder, video, above] = [1, 2, 3].map(LayerId::new);
+        for style in [
+            LayerOp::Opacity(
+                holder,
+                Prop {
+                    target: 0.5,
+                    animation: None,
+                    start: None,
+                },
+            ),
+            LayerOp::Blend(holder, cherenkov::BlendMode::Multiply),
+        ] {
+            let mut tree = tree_of(
+                &[holder, video, above],
+                &[(None, holder), (Some(holder), video), (None, above)],
+            );
+            tree.apply(style);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                lower_promoted(&tree, [(above, square(16.0, 0.0))], video)
+            }));
+            let payload = match result {
+                Ok(None) => return,
+                Ok(Some(_)) => panic!("a part boundary crossed an isolation that is not clip-only"),
+                Err(payload) => payload,
+            };
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&'static str>().copied())
+                .unwrap_or_default();
+            assert_eq!(
+                message,
+                "a promoted layer must composite at the surface level"
             );
         }
     }

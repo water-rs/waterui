@@ -249,6 +249,10 @@ pub enum GpuTarget {
     /// DMA-BUF images with sync-file acquire/release fences (#1687).
     #[cfg(target_os = "linux")]
     Dmabuf(interop::dmabuf::DmabufTarget),
+    /// Canvases and the host's elements under a host element of the page,
+    /// with DOM planes for hosted content.
+    #[cfg(target_arch = "wasm32")]
+    Dom(interop::web::DomTarget),
 }
 
 /// A window the engine presents on: a raw window handle and the drawable
@@ -456,15 +460,16 @@ impl Uploads<Rgba16F> for Gpu {}
 impl cherenkov::HdrOutput for Gpu {}
 
 // System-compositor planes (#90): eligible layers of an Apple window surface
-// are promoted to Core Animation layers, and of an Android surface-control
-// surface to child surface controls — see `render::planes`.
-#[cfg(any(target_vendor = "apple", target_os = "android"))]
+// are promoted to Core Animation layers, of an Android surface-control
+// surface to child surface controls, and of a DOM surface to DOM elements —
+// see `render::planes`.
+#[cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))]
 impl cherenkov::Planes for Gpu {}
 
-// Hosted system layers (#2199): the host's `NSView` (macOS), `CALayer` (iOS)
-// or `SurfaceControl` is placed on a plane of its own, never composited —
+// Hosted system layers (#2199): the host's `NSView` (macOS), `CALayer` (iOS),
+// `SurfaceControl` or DOM element (web) is placed on a plane of its own, never composited —
 // see `render::planes`.
-#[cfg(any(target_vendor = "apple", target_os = "android"))]
+#[cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))]
 impl cherenkov::HostedLayers for Gpu {
     type Object = render::planes::Hosted;
 

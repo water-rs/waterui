@@ -709,6 +709,9 @@ pub fn components_list_item_prose() {
     let _ = ListItem::new(text("a")).section(section);
     let _ = List::content((row("a", text("1")),)).selection(&selection);
     let _ = List::content((row("a", text("1")),)).multi_selection(&multi);
+    // A row under `.disabled(true)` is inert to selection; there is no
+    // per-item selectable flag — selection follows the content's disabled state.
+    let _ = ListItem::new(text("a").disabled(true));
 }
 
 // ---------------------------------------------------------------------------

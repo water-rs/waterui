@@ -201,6 +201,7 @@ impl HydrolysisRenderer {
                 &target,
                 state,
                 Arc::clone(&self.applied_filter_metrics),
+                Rc::clone(&self.material_registry),
             ));
         }
         let mut window = self
@@ -266,6 +267,7 @@ impl HydrolysisRenderer {
                 target,
                 state,
                 Arc::clone(&self.applied_filter_metrics),
+                Rc::clone(&self.material_registry),
             ));
         }
         let mut window = window_slot
@@ -292,6 +294,70 @@ impl HydrolysisRenderer {
                 target.queue,
             );
         }
+        *window_slot = Some(window);
+        self.engine_next = Some(rendered?);
+        Ok(())
+    }
+
+    /// Commits the window's pending node programs through the browser
+    /// page's mount and renders the engine frame (§A), which the engine
+    /// presents through the page's `DomTarget` under `root`. The engine
+    /// window lives in `window_slot` per device-creation chain: a new chain
+    /// or a lost device replaces it, and the new mount remounts every node.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
+    /// to render.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    pub(crate) async fn render_dom_frame(
+        &mut self,
+        target: &FrameRenderTarget<'_>,
+        root: &web_sys::HtmlElement,
+        window_slot: &mut Option<CherenkovWindow<crate::engine::DomCherenkovSurface>>,
+    ) -> Result<(), cherenkov::RenderError> {
+        let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
+        let state = crate::engine::shared_engine_state(
+            target.gpu_context_id,
+            target.adapter,
+            target.shared_device.clone(),
+        )
+        .await;
+        if !window_slot
+            .as_ref()
+            .is_some_and(|window| window.renders_on(target))
+        {
+            if window_slot.is_some() {
+                self.unmount_for_window_replacement();
+            }
+            *window_slot = None;
+            let surface = crate::engine::DomCherenkovSurface::new(
+                Rc::clone(&state.engine),
+                root.clone(),
+                (target.width, target.height),
+                self.host_wake(),
+            )
+            .await;
+            *window_slot = Some(CherenkovWindow::new(
+                surface,
+                target,
+                state,
+                Arc::clone(&self.applied_filter_metrics),
+                Rc::clone(&self.material_registry),
+            ));
+        }
+        let mut window = window_slot
+            .take()
+            .expect("hydrolysis renderer: the window was just ensured");
+        let _frame = self.commit_window_frame(&mut window, target, 1.0);
+
+        self.applied_filter_metrics.reset();
+        let rendered = window.surface.render().await;
+        self.take_applied_filter_metrics();
         *window_slot = Some(window);
         self.engine_next = Some(rendered?);
         Ok(())
@@ -418,20 +484,26 @@ impl<S> CherenkovWindow<S> {
 }
 
 impl<S: crate::engine::EngineSurface> CherenkovWindow<S> {
-    /// Wraps `surface` with its window mount.
+    /// Wraps `surface` with its window mount. `materials` is the theme's
+    /// material registry: attaching this window's engine registers every
+    /// shader it names, so a chrome member's group binds an engine handle
+    /// (water-rs/waterui#1788). A rejected source panics at attach,
+    /// naming the key.
     fn new(
         surface: S,
         target: &FrameRenderTarget<'_>,
         state: Rc<crate::engine::SharedEngineState>,
         metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
+        materials: Rc<cherenkov_record::MaterialRegistry>,
     ) -> Self {
         let core = surface.core();
-        let mount = mount::Mount::new(Rc::clone(&core.engine_surface().shared));
+        let mount = mount::Mount::new(Rc::clone(&core.engine_surface().shared), &materials);
         let host = mount::CherenkovHost {
             engine: Rc::clone(&state.engine),
             resources: Rc::clone(&state.resources),
             metrics,
             surface: core.engine_surface_weak(),
+            materials: mount::MaterialTerms::resolve(&state.engine, materials),
             device: target.device.clone(),
             queue: target.queue.clone(),
         };

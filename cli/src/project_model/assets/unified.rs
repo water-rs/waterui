@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use askama::Template;
 use eyre::{Context, bail};
-use futures_util::StreamExt as _;
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use image::ImageEncoder;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -37,6 +37,11 @@ const ANDROID_VALUES_NIGHT_DIR: &str = "app/src/main/res/values-night";
 const ANDROID_DRAWABLE_DIR: &str = "app/src/main/res/drawable";
 /// File name of the staged sync stamp inside the asset bundle.
 const SYNC_STAMP_FILE: &str = "waterui-sync-stamp";
+/// The version of what staging writes for a given source: the copy and
+/// [`optimize_image`]'s re-encoding. It is part of every bundle stamp, so
+/// raising it restages every bundle; raise it with any change to the bytes
+/// staging produces from unchanged sources.
+const STAGING_VERSION: u32 = 1;
 /// Asset-catalog directory name the generated Xcode project refers to.
 const APPLE_APP_ICON_SET: &str = "AppIcon.appiconset";
 /// The accent color set's name inside the generated asset catalog.
@@ -155,29 +160,68 @@ pub async fn stage_library_resources(
     Ok(manifest)
 }
 
-/// Write one complete resource plan, including the content stamp.
+/// Write one complete resource plan, including the content stamp, into
+/// `dest_dir`'s [`ASSET_ROOT_DIR`], and answer that stamp — see
+/// [`stage_bundle`].
 pub async fn write_library_resources(
     manifest: &BundleManifest,
     dest_dir: &Path,
-) -> eyre::Result<()> {
-    let assets_dest = dest_dir.join(ASSET_ROOT_DIR);
-    stage_bundle(manifest, &assets_dest, &[]).await
+) -> eyre::Result<String> {
+    stage_bundle(manifest, &dest_dir.join(ASSET_ROOT_DIR), &[]).await
 }
 
-/// Stage `manifest`'s bundle into `dest_root`: drop whatever the plan no
-/// longer names, then write the assets and the sync stamp through the
-/// if-changed helpers — an unchanged build leaves every file byte- and
-/// mtime-identical (#2252). `extras` names further files the caller
-/// writes beside them, like the runtime window icon.
+/// Stage `manifest`'s bundle into `dest_root` and answer its stamp — see
+/// [`manifest_stamp`]. `extras` names further files the caller writes
+/// beside the assets, like the runtime window icon.
+///
+/// Whatever the plan no longer names is dropped first. A bundle whose
+/// recorded [`SYNC_STAMP_FILE`] matches the stamp and still holds every
+/// planned asset is current and left as it is: nothing is re-encoded,
+/// copied or rewritten. Any other bundle has its stamp removed, its assets
+/// written through the if-changed helpers — an unchanged file stays byte-
+/// and mtime-identical (#2252) — and the stamp written last, so a stage cut
+/// short is never taken for a current one.
 async fn stage_bundle(
     manifest: &BundleManifest,
     dest_root: &Path,
     extras: &[&str],
-) -> eyre::Result<()> {
+) -> eyre::Result<String> {
     fs::create_dir_all(dest_root).await?;
-    prune_unlisted(dest_root, &staged_bundle_files(manifest, extras)).await?;
+    let planned = staged_bundle_files(manifest, extras);
+    let (stamp, ()) = futures_util::try_join!(
+        manifest_stamp(manifest),
+        prune_unlisted(dest_root, &planned),
+    )?;
+    let stamp_path = dest_root.join(SYNC_STAMP_FILE);
+    let recorded = match fs::read(&stamp_path).await {
+        Ok(recorded) => Some(recorded),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).wrap_err_with(|| format!("failed to read {}", stamp_path.display()));
+        }
+    };
+    if recorded.as_deref() == Some(stamp.as_bytes()) && assets_present(manifest, dest_root).await {
+        return Ok(stamp);
+    }
+    remove_file_if_exists(stamp_path.clone()).await?;
     copy_manifest_assets(manifest, dest_root).await?;
-    write_manifest_stamp(manifest, dest_root).await
+    fs::write(&stamp_path, stamp.as_bytes())
+        .await
+        .wrap_err_with(|| format!("failed to write {}", stamp_path.display()))?;
+    Ok(stamp)
+}
+
+/// Whether every asset `manifest` plans is still a file in `dest_root`: a
+/// recorded stamp vouches only for a bundle whose files are all still
+/// there — one removed since must be restaged, not shipped without it.
+async fn assets_present(manifest: &BundleManifest, dest_root: &Path) -> bool {
+    for asset in &manifest.assets {
+        match fs::metadata(dest_root.join(&asset.logical_path)).await {
+            Ok(metadata) if metadata.is_file() => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// The project's launch screen, resolved, with the artwork it shows.
@@ -318,29 +362,20 @@ pub async fn stage_for_android(
 /// the app-level `res`/`theme`/launcher artwork belongs to the host.
 /// `symbols` is the target build's app library — see [`stage_for_apple`].
 ///
-/// Returns the manifest and where the bundle was staged.
+/// Returns the manifest and the staged `waterui_assets` directory — the
+/// only entry the library writes under `src/main/assets`, which AAR asset
+/// merging shares with the host application.
 pub async fn stage_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
+) -> eyre::Result<(BundleManifest, PathBuf)> {
     let manifest = build_manifest(project, symbols, dev_server).await?;
-    let root = module_dir.join("src/main/assets");
-    let bundle = root.join(ASSET_ROOT_DIR);
+    let bundle = module_dir.join("src/main/assets").join(ASSET_ROOT_DIR);
     stage_bundle(&manifest, &bundle, &[]).await?;
 
-    Ok((manifest, StagedAndroidAssets { root, bundle }))
-}
-
-/// Where [`stage_for_android_library`] staged a library's assets.
-#[derive(Debug, Clone)]
-pub struct StagedAndroidAssets {
-    /// The module's `src/main/assets/` root.
-    pub root: PathBuf,
-    /// The staged bundle itself, the [`ASSET_ROOT_DIR`] directory in
-    /// `root` — always present once staging returns.
-    pub bundle: PathBuf,
+    Ok((manifest, bundle))
 }
 
 /// Renders the project's macOS `.icns` app icon for hand-assembled bundles
@@ -531,25 +566,42 @@ pub async fn build_manifest(
 }
 
 async fn copy_manifest_assets(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
-    for asset in &manifest.assets {
-        let dest = dest_root.join(&asset.logical_path);
-        copy_asset(asset, &dest).await?;
-    }
-    Ok(())
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let copies: Vec<_> = manifest
+        .assets
+        .iter()
+        .map(|asset| {
+            copy_asset(
+                asset.kind,
+                asset.source_path.clone(),
+                dest_root.join(&asset.logical_path),
+            )
+        })
+        .collect();
+    futures_util::stream::iter(copies)
+        .buffer_unordered(workers)
+        .try_collect()
+        .await
 }
 
-async fn copy_asset(asset: &PlannedAsset, dest: &Path) -> eyre::Result<()> {
+/// Copy one asset of `kind` from `source` to `dest`, re-encoding an image
+/// on a blocking thread.
+async fn copy_asset(kind: AssetKind, source: PathBuf, dest: PathBuf) -> eyre::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).await?;
     }
-    match asset.kind {
+    match kind {
         AssetKind::Image => {
-            let bytes = fs::read(&asset.source_path).await?;
-            let optimized = optimize_image(&bytes, &asset.source_path)?;
-            super::super::templates::write_file_if_changed(dest, &optimized).await?;
+            let optimized = smol::unblock(move || {
+                let bytes = std::fs::read(&source)
+                    .wrap_err_with(|| format!("failed to read {}", source.display()))?;
+                optimize_image(&bytes, &source)
+            })
+            .await?;
+            super::super::templates::write_file_if_changed(&dest, &optimized).await?;
         }
         _ => {
-            crate::utils::copy_file_if_changed(&asset.source_path, dest).await?;
+            crate::utils::copy_file_if_changed(&source, &dest).await?;
         }
     }
     Ok(())
@@ -602,25 +654,27 @@ fn optimize_image(bytes: &[u8], source: &Path) -> eyre::Result<Vec<u8>> {
     }
 }
 
-async fn write_manifest_stamp(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
-    let mut hasher = Sha256::new();
-    for asset in &manifest.assets {
-        hasher.update(asset.logical_path.to_string_lossy().as_bytes());
-        let bytes = std::fs::read(&asset.source_path).wrap_err_with(|| {
-            format!(
-                "Failed to read '{}' for asset stamp",
-                asset.source_path.display()
-            )
-        })?;
-        hasher.update(&bytes);
-    }
-    let stamp = hex::encode(hasher.finalize());
-    super::super::templates::write_file_if_changed(
-        &dest_root.join(SYNC_STAMP_FILE),
-        stamp.as_bytes(),
-    )
-    .await?;
-    Ok(())
+/// The digest a staged bundle is a function of: [`STAGING_VERSION`], then
+/// every asset's logical path and its source's length and bytes, in
+/// manifest order. The sources are read on a blocking thread.
+async fn manifest_stamp(manifest: &BundleManifest) -> eyre::Result<String> {
+    let sources: Vec<(PathBuf, PathBuf)> = manifest
+        .assets
+        .iter()
+        .map(|asset| (asset.logical_path.clone(), asset.source_path.clone()))
+        .collect();
+    smol::unblock(move || {
+        let mut hasher = Sha256::new();
+        hasher.update(STAGING_VERSION.to_le_bytes());
+        for (logical_path, source_path) in &sources {
+            hasher.update(logical_path.to_string_lossy().as_bytes());
+            hasher.update([0]);
+            crate::utils::hash_file_into(&mut hasher, source_path)
+                .wrap_err("failed to read an asset for the bundle stamp")?;
+        }
+        Ok(hex::encode(hasher.finalize()))
+    })
+    .await
 }
 
 /// The relative file set a staged bundle holds once `manifest` is written:
@@ -1275,39 +1329,46 @@ mod tests {
     use crate::project::ManagedBackends;
     use waterui_assets_planner::LaunchConfig;
 
+    /// A minimal project under `root` — `Water.toml`, `Cargo.toml`,
+    /// `Cargo.lock`, `src/lib.rs` — opened through [`Project::open`].
+    /// `host_root` backs the machine's toolchain directory.
+    async fn open_fixture_project(host_root: &Path, root: &Path) -> Project {
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        std::fs::write(
+            root.join("Water.toml"),
+            "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
+        )
+        .expect("Water.toml");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::write(
+            root.join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("Cargo.lock");
+        std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
+        Project::open(
+            &crate::toolchain::testing::real_toolchain_host(host_root),
+            root,
+            ManagedBackends::NONE,
+        )
+        .await
+        .expect("fixture project opens")
+    }
+
     #[test]
     fn the_scaffold_assets_readme_never_ships() {
         smol::block_on(async {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let root = tempdir.path().join("fixture");
-            std::fs::create_dir_all(root.join("src")).expect("src");
             std::fs::create_dir_all(root.join("assets")).expect("assets");
-            std::fs::write(
-                root.join("Water.toml"),
-                "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
-            )
-            .expect("Water.toml");
-            std::fs::write(
-                root.join("Cargo.toml"),
-                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-            )
-            .expect("Cargo.toml");
-            std::fs::write(
-                root.join("Cargo.lock"),
-                "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
-            )
-            .expect("Cargo.lock");
-            std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
             std::fs::write(root.join("assets/README.md"), "# Assets\n").expect("readme");
             std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
 
-            let project = Project::open(
-                &crate::toolchain::testing::real_toolchain_host(tempdir.path()),
-                &root,
-                ManagedBackends::NONE,
-            )
-            .await
-            .expect("fixture project opens");
+            let project = open_fixture_project(tempdir.path(), &root).await;
             let assets = plan_main_assets(&project).expect("assets plan");
             assert_eq!(
                 assets
@@ -1317,6 +1378,41 @@ mod tests {
                 [Path::new("note.txt")],
                 "the scaffold README stays out of the package"
             );
+        });
+    }
+
+    /// AAR asset merging shares `src/main/assets` with the host application
+    /// and the host's files win, so the library's bundle is the one thing
+    /// the stage may place there — a sibling top-level directory like a
+    /// `fonts/` tree collides with whatever the host ships (#2348).
+    #[test]
+    fn android_library_staging_writes_only_the_namespaced_bundle() {
+        smol::block_on(async {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let root = tempdir.path().join("fixture");
+            std::fs::create_dir_all(root.join("assets")).expect("assets");
+            std::fs::write(root.join("assets/note.txt"), "hello").expect("asset");
+            let project = open_fixture_project(tempdir.path(), &root).await;
+
+            let module_dir = tempdir.path().join("waterui");
+            let (_manifest, bundle) =
+                stage_for_android_library(&project, &module_dir, &ArtifactSymbols::empty(), false)
+                    .await
+                    .expect("library assets stage");
+
+            let assets_root = module_dir.join("src/main/assets");
+            assert_eq!(bundle, assets_root.join(ASSET_ROOT_DIR));
+            let entries = std::fs::read_dir(&assets_root)
+                .expect("the module's assets root exists")
+                .map(|entry| entry.expect("a readable entry").file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                entries.as_slice(),
+                &[OsStr::new(ASSET_ROOT_DIR)],
+                "the library stages nothing beside the waterui_assets bundle"
+            );
+            assert!(bundle.join("note.txt").is_file());
+            assert!(bundle.join(SYNC_STAMP_FILE).is_file());
         });
     }
 
@@ -1571,6 +1667,16 @@ mod tests {
                     path.display()
                 );
             }
+
+            std::fs::remove_file(&staged_file).expect("remove the staged asset");
+            write_library_resources(&manifest, &tempdir.path().join("staged"))
+                .await
+                .expect("re-stage over a removed asset");
+            assert_eq!(
+                std::fs::read(&staged_file).expect("staged asset"),
+                b"asset bytes",
+                "a current stamp does not vouch for an asset removed since"
+            );
 
             std::fs::write(&source, b"changed bytes").expect("change the source");
             write_library_resources(&manifest, &tempdir.path().join("staged"))

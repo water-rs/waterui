@@ -40,7 +40,7 @@ pub mod present;
 pub mod projective;
 pub mod render;
 pub mod resources;
-mod sdf;
+pub mod sdf;
 pub mod shadow;
 pub mod tone;
 pub mod yuv;

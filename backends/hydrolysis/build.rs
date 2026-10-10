@@ -6,6 +6,9 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     cfg_aliases! {
+        // Where hosted content exists: the targets on which `cherenkov-gpu`
+        // implements `HostedLayers`, whose plane shows a platform object.
+        hydrolysis_hosted: { any(target_vendor = "apple", target_os = "android", target_arch = "wasm32") },
         apple: { any(target_os = "ios", target_os = "macos") },
         android_platform: { target_os = "android" },
         free_unix: { all(unix, not(apple), not(android_platform), not(target_os = "emscripten")) },
@@ -33,8 +36,14 @@ fn main() {
         hydrolysis_closable_windows: {
             all(hydrolysis_winit, any(target_os = "macos", target_os = "windows", free_unix))
         },
-        // The macOS `WKWebView` bridge needs a real window: it is composed into
-        // the winit window's AppKit view as a native subview, so a headless
+        // The winit desktops whose host answers the runner's direct queries:
+        // the live pointer position, a monitor's work area, and the
+        // activation attributes winit leaves unset. iOS has none of them.
+        hydrolysis_desktop_queries: {
+            any(target_os = "macos", target_os = "windows", hydrolysis_wayland_platform)
+        },
+        // The macOS `WKWebView` bridge needs a real window: it is hosted on a
+        // compositor plane under the winit window's AppKit view, so a headless
         // build (the renderer `waterui-testing` drives, a `web` build) has
         // nowhere to put it and compiles none of it. The feature alone is not
         // enough, which is why this alias exists and the module turns an

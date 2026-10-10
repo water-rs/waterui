@@ -37,8 +37,11 @@ and `IDWriteFontCollection::FindFamilyName` about every 250 ms, for up to
 120 seconds, and prints how long it waited. If the deadline passes it exits
 non-zero, naming each family still unresolved.
 
-Re-running is idempotent: a font already installed byte-identically is left
-in place; anything else is replaced. Any other platform is a hard error.
+Re-running is idempotent and cheap: a machine whose installed faces all
+match their pinned SHA-256 needs no download at all. A generated face left
+in this directory is skipped when it still matches its pin and is a hard
+failure when it does not; a font already installed byte-identically is left
+in place and anything else is replaced. Any other platform is a hard error.
 """
 
 from __future__ import annotations
@@ -464,7 +467,21 @@ def install() -> None:
         wait_for_directwrite_families([target / name for name in sorted(EXPECTED)])
 
 
-def main() -> None:
+def check_faces(directory: Path) -> tuple[list[str], list[str]]:
+    """Partition `EXPECTED` into faces missing under `directory` and faces
+    present with bytes that do not match their pin."""
+    missing, mismatched = [], []
+    for name, expected in sorted(EXPECTED.items()):
+        path = directory / name
+        if not path.is_file():
+            missing.append(name)
+        elif sha256(path.read_bytes()) != expected:
+            mismatched.append(name)
+    return missing, mismatched
+
+
+def generate() -> None:
+    """Fetch every pinned source, build the 15 faces and verify each."""
     with tempfile.TemporaryDirectory(prefix="hydrolysis-test-fonts-") as tmp:
         work = Path(tmp)
 
@@ -609,6 +626,25 @@ def main() -> None:
         )
 
     print("all 15 test fonts verified")
+
+
+def main() -> None:
+    target = user_font_dir()
+    missing_installed, mismatched_installed = check_faces(target)
+    if not missing_installed and not mismatched_installed:
+        print(f"all {len(EXPECTED)} test fonts already installed in {target}")
+        return
+    missing, mismatched = check_faces(OUT_DIR)
+    if mismatched:
+        lines = "\n".join(f"  {name}" for name in mismatched)
+        raise SystemExit(
+            "generated fonts exist that do not match their pinned sha256:\n"
+            f"{lines}\n"
+            "the font bytes are part of the test contract — remove the files "
+            "and rerun, or investigate why they drifted"
+        )
+    if missing:
+        generate()
     install()
 
 

@@ -31,6 +31,12 @@ pub struct GpuContentRuntime {
     pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
 }
 
+impl std::fmt::Debug for GpuContentRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuContentRuntime").finish_non_exhaustive()
+    }
+}
+
 impl GpuContentRuntime {
     pub(crate) const fn new(view: GpuContentView) -> Self {
         Self {
@@ -63,6 +69,13 @@ pub struct ExternalFrameRuntime {
     pub(crate) frame_pixels: Option<(u32, u32)>,
     /// The engine layer and plane size the producer is currently bound at.
     pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
+}
+
+impl std::fmt::Debug for ExternalFrameRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalFrameRuntime")
+            .finish_non_exhaustive()
+    }
 }
 
 impl ExternalFrameRuntime {

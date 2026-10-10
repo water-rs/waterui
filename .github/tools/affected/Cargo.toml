@@ -4,13 +4,17 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 license = "Apache-2.0 OR MIT"
-description = "Reports which workspace packages a diff affects, via the determinator crate"
+description = "Reports which workspace packages a diff affects, via the determinator crate, and checks the nextest fixture rules against the package graph"
 
 [dependencies]
 camino = "1"
 determinator = "0.12"
 guppy = "0.17"
+nextest-filtering = "0.22"
+nextest-metadata = "0.15"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "1"
 
 # Standalone: the root workspace excludes .github, so this tool builds with
 # its own lockfile and never joins the graph it measures.

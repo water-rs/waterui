@@ -707,14 +707,6 @@ pub enum SurfaceFrame {
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
-    /// A surface frame acquired from a browser canvas (the `web` feature).
-    #[cfg(all(target_arch = "wasm32", feature = "web"))]
-    Browser {
-        /// The acquired surface texture, handed to the frame's renderer.
-        output: wgpu::SurfaceTexture,
-        /// A view of `texture` to render into or read from.
-        view: wgpu::TextureView,
-    },
 }
 
 impl SurfaceFrame {
@@ -727,8 +719,6 @@ impl SurfaceFrame {
             Self::Window { output, .. } => &output.texture,
             #[cfg(target_os = "android")]
             Self::Android { output, .. } => &output.texture,
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            Self::Browser { output, .. } => &output.texture,
         }
     }
 
@@ -741,8 +731,6 @@ impl SurfaceFrame {
             Self::Window { view, .. } => view,
             #[cfg(target_os = "android")]
             Self::Android { view, .. } => view,
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            Self::Browser { view, .. } => view,
         }
     }
 }
@@ -797,11 +785,7 @@ fn normalize_surface_format(
     format
 }
 
-#[cfg(any(
-    hydrolysis_winit,
-    all(target_arch = "wasm32", feature = "web"),
-    target_os = "android"
-))]
+#[cfg(any(hydrolysis_winit, target_os = "android"))]
 #[cfg(not(target_os = "macos"))]
 pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
@@ -1820,10 +1804,6 @@ impl OffscreenSurface {
             #[cfg(target_os = "android")]
             SurfaceFrame::Android { .. } => {
                 panic!("hydrolysis offscreen surface received an android frame");
-            }
-            #[cfg(all(target_arch = "wasm32", feature = "web"))]
-            SurfaceFrame::Browser { .. } => {
-                panic!("hydrolysis offscreen surface received a browser frame");
             }
         }
     }
@@ -3521,6 +3501,7 @@ mod winit_impl {
         /// is the only truthful source there; X11 keeps streaming motion
         /// during XDND, and the query stays right even if the drag source
         /// grabs the pointer.
+        #[cfg(hydrolysis_desktop_queries)]
         fn live_pointer_position(&self) -> Option<(f32, f32)> {
             #[cfg(target_os = "windows")]
             {
@@ -3533,14 +3514,6 @@ mod winit_impl {
             #[cfg(hydrolysis_wayland_platform)]
             {
                 self.x11_live_pointer_position()
-            }
-            #[cfg(not(any(
-                target_os = "windows",
-                target_os = "macos",
-                hydrolysis_wayland_platform
-            )))]
-            {
-                None
             }
         }
 
@@ -4412,7 +4385,11 @@ mod winit_impl {
         /// the fallback keeps the stream that never went quiet (X11 motion
         /// during XDND) supplying it.
         fn pointer_position(&self) -> Option<(f32, f32)> {
-            self.live_pointer_position().or(Some(self.pointer_position))
+            #[cfg(hydrolysis_desktop_queries)]
+            let live = self.live_pointer_position();
+            #[cfg(not(hydrolysis_desktop_queries))]
+            let live = None;
+            live.or(Some(self.pointer_position))
         }
 
         /// Requests that the window be repainted.
@@ -4888,8 +4865,9 @@ mod winit_impl {
         #[test]
         fn cursor_position_is_converted_to_logical_coordinates() {
             let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
-            assert_eq!(x, 192.25);
-            assert_eq!(y, 108.125);
+            // Halving a dyadic position is exact, and both halves fit f32.
+            assert_eq!(x.to_bits(), 192.25_f32.to_bits());
+            assert_eq!(y.to_bits(), 108.125_f32.to_bits());
         }
 
         #[test]
@@ -4898,8 +4876,9 @@ mod winit_impl {
                 &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
                 2.0,
             );
-            assert_eq!(dx, 60.0);
-            assert_eq!(dy, -24.25);
+            // Halving a dyadic delta is exact, and both halves fit f32.
+            assert_eq!(dx.to_bits(), 60.0_f32.to_bits());
+            assert_eq!(dy.to_bits(), (-24.25_f32).to_bits());
             assert!(!is_line_delta);
         }
 
@@ -4907,8 +4886,9 @@ mod winit_impl {
         fn line_scroll_delta_is_preserved() {
             let (dx, dy, is_line_delta) =
                 map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
-            assert_eq!(dx, -2.0);
-            assert_eq!(dy, 3.5);
+            // A line delta passes through unscaled.
+            assert_eq!(dx.to_bits(), (-2.0_f32).to_bits());
+            assert_eq!(dy.to_bits(), 3.5_f32.to_bits());
             assert!(is_line_delta);
         }
 
@@ -5589,7 +5569,11 @@ mod winit_impl {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::ExportedBrowserSurface as BrowserSurface;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
+#[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
+pub use web_impl::redirect_occluded_input;
 
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;

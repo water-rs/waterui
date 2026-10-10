@@ -9,6 +9,16 @@
 //! - [`WebViewController`] - Factory injected into Environment by native backends
 //! - [`WebView`] - Reactive wrapper with `Binding<T>` state
 //!
+//! # Platform behaviour
+//!
+//! On macOS, a web view consumes every scroll-wheel event over its uncovered
+//! area, including when the page cannot scroll in that direction: `WKWebView`
+//! never forwards an unhandled wheel event and exposes no public way to learn
+//! it went unused. A web view whose page does not scroll therefore does not
+//! chain the wheel to an enclosing scroll view while the pointer is over it,
+//! as with `WKWebView` inside an `NSScrollView` in an `AppKit` app. Touch
+//! scrolling and other platforms are not affected.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -404,7 +414,7 @@ impl WebView {
     ///
     /// `server` is [`AssetServer`]: GET and HEAD only, paths handed over still
     /// percent-encoded, traversal refused before the server is consulted. See
-    /// [`assets`](crate::assets) for the contract every engine routes through.
+    /// [`assets`] for the contract every engine routes through.
     ///
     /// # Panics
     ///

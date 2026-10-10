@@ -91,8 +91,6 @@ pub mod embedded {
 
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");
     pub static ANDROID: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/android");
-    pub static ANDROID_EMBEDDED: Dir<'_> =
-        include_dir!("$CARGO_MANIFEST_DIR/src/templates/android_embedded");
     pub static ANDROID_SHARED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/android_shared");
     pub static FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/ffi");
@@ -104,6 +102,8 @@ pub mod embedded {
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_preview");
     pub static HYDROLYSIS_ANDROID_SHARED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_shared");
+    pub static HYDROLYSIS_ANDROID_EMBEDDED: Dir<'_> =
+        include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_embedded");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
     pub static PREVIEW_FFI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview_ffi");
     pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
@@ -225,6 +225,27 @@ pub enum BrowserTemplateContext {
     },
     /// The GTK4 manifest — one Linux `[dependencies]` table.
     Linux(BrowserAnswers),
+}
+
+/// What the application's wasm32 graph uses of the platform primitives
+/// Hydrolysis bridges on the web, so the generated web build compiles
+/// exactly those bridges and no other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebAnswers {
+    /// Whether the application enables `video`: the browser's `<video>`
+    /// element realizes it (the `video` Hydrolysis feature).
+    pub video: bool,
+}
+
+impl WebAnswers {
+    /// The Hydrolysis features the generated wasm32 table enables.
+    const fn hydrolysis_features(self) -> &'static [&'static str] {
+        if self.video {
+            &["web", "video"]
+        } else {
+            &["web"]
+        }
+    }
 }
 
 /// The `BrowserAnswers` for each desktop OS — the serving set the shared
@@ -473,6 +494,8 @@ pub struct TemplateContext {
     pub framework: ResolvedFramework,
     /// Browser engine and component selections for generated backend manifests.
     pub browser: BrowserTemplateContext,
+    /// The platform primitives the generated web build bridges.
+    pub web: WebAnswers,
     /// Path to the backend project being scaffolded.
     ///
     /// This may be relative to the project root or an absolute cache path.
@@ -521,6 +544,32 @@ pub struct TemplateContext {
     /// Hydrolysis Android preview host parameters — set only while the
     /// `hydrolysis_android_preview` templates render.
     pub hydrolysis_android_preview: Option<HydrolysisAndroidPreviewTemplateEntry>,
+
+    /// Hydrolysis Android embedded-library parameters — set only while the
+    /// `hydrolysis_android_embedded` templates render. Its `app` entry
+    /// carries the same painter/host values the app scaffold's entry does.
+    pub hydrolysis_android_embedded: Option<HydrolysisAndroidEmbeddedTemplateEntry>,
+}
+
+/// The `hydrolysis_android_embedded` scaffold's parameters: the app entry the
+/// shared accessors read plus the Maven version this build publishes the
+/// host modules under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HydrolysisAndroidEmbeddedTemplateEntry {
+    /// The shared host/painter parameters, rendered relative to the
+    /// generated `android-embedded/` Gradle root.
+    pub app: HydrolysisAndroidTemplateEntry,
+    /// The `dev.waterui.hydrolysis` version the host modules publish as for
+    /// this build.
+    pub host_version: String,
+    /// The host checkout's Gradle module names the embedded build
+    /// substitutes, fingerprints, and publishes — `host`, the painter
+    /// module, and any further host modules that join through
+    /// `embedded::publish_modules`.
+    pub host_modules: Vec<String>,
+    /// The `compileSdk` the host modules build against, which the library
+    /// module compiles against too and declares as its consumers' minimum.
+    pub compile_sdk: u32,
 }
 
 impl TemplateContext {
@@ -553,6 +602,7 @@ impl TemplateContext {
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -567,6 +617,7 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
+            hydrolysis_android_embedded: None,
         }
     }
 
@@ -597,6 +648,7 @@ impl TemplateContext {
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path: None,
             android_permissions: Vec::new(),
@@ -615,6 +667,7 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
+            hydrolysis_android_embedded: None,
         }
     }
 
@@ -656,6 +709,7 @@ impl TemplateContext {
             local_sources: local_sources.clone(),
             framework: framework.clone(),
             browser: BrowserTemplateContext::default(),
+            web: WebAnswers::default(),
             backend_project_path: None,
             project_root_path,
             android_permissions: Vec::new(),
@@ -670,6 +724,7 @@ impl TemplateContext {
             launch: LaunchTemplateEntry::default(),
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
+            hydrolysis_android_embedded: None,
         }
     }
 
@@ -678,6 +733,16 @@ impl TemplateContext {
     #[must_use]
     pub fn with_crate_version(mut self, version: impl Into<String>) -> Self {
         self.crate_version = version.into();
+        self
+    }
+
+    /// Set the Hydrolysis Android embedded-library scaffold parameters.
+    #[must_use]
+    pub fn with_hydrolysis_android_embedded(
+        mut self,
+        entry: HydrolysisAndroidEmbeddedTemplateEntry,
+    ) -> Self {
+        self.hydrolysis_android_embedded = Some(entry);
         self
     }
 
@@ -709,6 +774,13 @@ impl TemplateContext {
     #[must_use]
     pub(crate) const fn with_browser(mut self, browser: BrowserTemplateContext) -> Self {
         self.browser = browser;
+        self
+    }
+
+    /// Records the answers the generated web build's backend features follow.
+    #[must_use]
+    pub(crate) const fn with_web(mut self, web: WebAnswers) -> Self {
+        self.web = web;
         self
     }
 
@@ -840,9 +912,24 @@ impl TemplateContext {
     }
 
     const fn hydrolysis_android_entry(&self) -> &HydrolysisAndroidTemplateEntry {
-        self.hydrolysis_android
+        if let Some(entry) = self.hydrolysis_android.as_ref() {
+            entry
+        } else {
+            &self
+                .hydrolysis_android_embedded
+                .as_ref()
+                .expect("TemplateContext missing the Hydrolysis Android entry")
+                .app
+        }
+    }
+
+    /// The embedded-library scaffold's parameters; only valid while the
+    /// `hydrolysis_android_embedded` templates render.
+    #[must_use]
+    pub const fn hydrolysis_android_embedded(&self) -> &HydrolysisAndroidEmbeddedTemplateEntry {
+        self.hydrolysis_android_embedded
             .as_ref()
-            .expect("TemplateContext missing the Hydrolysis Android entry")
+            .expect("TemplateContext missing the Hydrolysis Android embedded entry")
     }
 
     /// The cdylib name the generated `MainActivity` loads.
@@ -1168,7 +1255,6 @@ impl TemplateContext {
 enum TemplateNamespace {
     Apple,
     Android,
-    AndroidEmbedded,
     AndroidShared,
     Ffi,
     Gtk4,
@@ -1176,6 +1262,7 @@ enum TemplateNamespace {
     HydrolysisAndroid,
     HydrolysisAndroidPreview,
     HydrolysisAndroidShared,
+    HydrolysisAndroidEmbedded,
     Inspector,
     Preview,
     PreviewFfi,
@@ -1189,7 +1276,6 @@ impl TemplateNamespace {
         match self {
             Self::Apple => "src/templates/apple",
             Self::Android => "src/templates/android",
-            Self::AndroidEmbedded => "src/templates/android_embedded",
             Self::AndroidShared => "src/templates/android_shared",
             Self::Ffi => "src/templates/ffi",
             Self::Gtk4 => "src/templates/gtk4",
@@ -1197,6 +1283,7 @@ impl TemplateNamespace {
             Self::HydrolysisAndroid => "src/templates/hydrolysis_android",
             Self::HydrolysisAndroidPreview => "src/templates/hydrolysis_android_preview",
             Self::HydrolysisAndroidShared => "src/templates/hydrolysis_android_shared",
+            Self::HydrolysisAndroidEmbedded => "src/templates/hydrolysis_android_embedded",
             Self::Inspector => "src/templates/inspector",
             Self::Preview => "src/templates/preview",
             Self::PreviewFfi => "src/templates/preview_ffi",
@@ -1421,9 +1508,6 @@ define_scaffold_templates! {
     AndroidStringsTemplate => (Android, "src/templates/android/app/src/main/res/values/strings.xml.tpl"),
     AndroidSettingsTemplate => (Android, "src/templates/android/settings.gradle.kts.tpl"),
     AndroidSharedGradleWrapperTemplate => (AndroidShared, "src/templates/android_shared/gradle/wrapper/gradle-wrapper.properties.tpl"),
-    AndroidEmbeddedSettingsTemplate => (AndroidEmbedded, "src/templates/android_embedded/settings.gradle.kts.tpl"),
-    AndroidEmbeddedModuleTemplate => (AndroidEmbedded, "src/templates/android_embedded/waterui/build.gradle.kts.tpl"),
-    AndroidEmbeddedManifestTemplate => (AndroidEmbedded, "src/templates/android_embedded/waterui/src/main/AndroidManifest.xml.tpl"),
     FfiBuildScriptTemplate => (Ffi, "src/templates/ffi/build.rs.tpl"),
     FfiLibTemplate => (Ffi, "src/templates/ffi/src/lib.rs.tpl"),
     FfiAppleMainTemplate => (Ffi, "src/templates/ffi/src/bin/waterui-apple-main.rs.tpl"),
@@ -1438,6 +1522,10 @@ define_scaffold_templates! {
     HydrolysisAndroidMainActivityTemplate => (HydrolysisAndroid, "src/templates/hydrolysis_android/app/src/main/java/MainActivity.kt.tpl"),
     HydrolysisAndroidPreviewSettingsTemplate => (HydrolysisAndroidPreview, "src/templates/hydrolysis_android_preview/settings.gradle.kts.tpl"),
     HydrolysisAndroidPreviewBuildGradleTemplate => (HydrolysisAndroidPreview, "src/templates/hydrolysis_android_preview/app/build.gradle.kts.tpl"),
+    HydrolysisAndroidEmbeddedSettingsTemplate => (HydrolysisAndroidEmbedded, "src/templates/hydrolysis_android_embedded/settings.gradle.kts.tpl"),
+    HydrolysisAndroidEmbeddedModuleTemplate => (HydrolysisAndroidEmbedded, "src/templates/hydrolysis_android_embedded/waterui/build.gradle.kts.tpl"),
+    HydrolysisAndroidEmbeddedManifestTemplate => (HydrolysisAndroidEmbedded, "src/templates/hydrolysis_android_embedded/waterui/src/main/AndroidManifest.xml.tpl"),
+    HydrolysisAndroidEmbeddedWaterUiTemplate => (HydrolysisAndroidEmbedded, "src/templates/hydrolysis_android_embedded/waterui/src/main/java/WaterUi.kt.tpl"),
     RootWebLibTemplate => (Root, "src/templates/web_lib.rs.tpl"),
     HydrolysisLibTemplate => (Hydrolysis, "src/templates/hydrolysis/src/lib.rs.tpl"),
     HydrolysisCefHelperTemplate => (Hydrolysis, "src/templates/hydrolysis/src/bin/waterui-cef-helper.rs.tpl"),
@@ -1501,6 +1589,7 @@ mod tests {
             local_sources,
             framework: stable_framework(),
             browser,
+            web: super::WebAnswers::default(),
             backend_project_path,
             project_root_path,
             android_permissions: Vec::new(),
@@ -1514,6 +1603,7 @@ mod tests {
             android_signing: None,
             hydrolysis_android: None,
             hydrolysis_android_preview: None,
+            hydrolysis_android_embedded: None,
             launch: LaunchTemplateEntry::default(),
         }
     }
@@ -1708,113 +1798,6 @@ mod tests {
             assert!(!rendered.contains("includeBuild"), "{rendered}");
             crate::assets::assert_settings_plugin_markers(&rendered);
         }
-    }
-
-    /// Embedded mode scaffolds a Gradle *library* project (`:waterui`, an
-    /// Android library publishing an AAR), never an application — the host
-    /// keeps its own application module (water-rs/cli#223).
-    #[test]
-    fn android_embedded_renders_a_publishing_library() {
-        let manifest: crate::project::Manifest = toml::from_str(
-            r#"
-                [package]
-                name = "Demo"
-                bundle_identifier = "dev.waterui.demo"
-                embedded = true
-
-                [permissions.internet]
-                enable = true
-                description = "Fetch remote content"
-
-                [permissions.camera]
-                enable = true
-                description = "Scan codes"
-            "#,
-        )
-        .expect("manifest parses");
-
-        // Permissions reach the context the way the Android backend passes
-        // them, through `manifest_permissions`, so the template sees the
-        // fully qualified names a real build hands it.
-        let ctx = TemplateContext::for_project_manifest(
-            &crate::toolchain::Host::current(),
-            &manifest,
-            CrateName::try_from("demo").expect("crate name"),
-            "Demo",
-            &stable_framework(),
-            &LocalBackendSources::default(),
-        )
-        .with_backend_project_path(PathBuf::from("/proj/android"))
-        .with_project_root_path(PathBuf::from("/proj"))
-        .with_android_permissions(crate::android::backend::manifest_permissions(&manifest))
-        .with_crate_version("1.2.3");
-
-        let render = |relative: &str, ctx: &TemplateContext| {
-            let template = embedded::ANDROID_EMBEDDED
-                .get_file(relative)
-                .unwrap_or_else(|| panic!("embedded template {relative} must exist"))
-                .contents_utf8()
-                .expect("embedded template must be utf-8");
-            render_scaffold_template(
-                TemplateNamespace::AndroidEmbedded,
-                std::path::Path::new(relative),
-                template,
-                ctx,
-            )
-            .unwrap_or_else(|error| panic!("embedded template {relative} render: {error}"))
-        };
-
-        // A library module applying `com.android.library` and publishing a
-        // `release` AAR under the crate's Maven coordinate — group is the
-        // bundle identifier, artifact is the crate name, version is the
-        // crate's Cargo version.
-        let module = render("waterui/build.gradle.kts.tpl", &ctx);
-        assert!(module.contains("id(\"com.android.library\")"), "{module}");
-        assert!(
-            module.contains("namespace = \"dev.waterui.demo.waterui\""),
-            "{module}"
-        );
-        assert!(
-            module.contains("groupId = \"dev.waterui.demo\""),
-            "{module}"
-        );
-        assert!(module.contains("artifactId = \"demo\""), "{module}");
-        assert!(module.contains("version = \"1.2.3\""), "{module}");
-        assert!(module.contains("from(components[\"release\"])"), "{module}");
-        // `api`, not `implementation`: the runtime's `WaterUiRootView` must
-        // stay on the host app's compile classpath.
-        assert!(
-            module.contains(&format!("api(\"{}\")", ctx.android_runtime_dependency())),
-            "{module}"
-        );
-
-        // JitPack stays on the repository list for the pinned runtime
-        // coordinate.
-        let settings = render("settings.gradle.kts.tpl", &ctx);
-        assert!(settings.contains("include(\":waterui\")"), "{settings}");
-        assert!(settings.contains("https://jitpack.io"), "{settings}");
-        assert!(!settings.contains("includeBuild"), "{settings}");
-
-        // Declared permissions render into the library's manifest so the AAR
-        // merges them into the host's.
-        let android_manifest = render("waterui/src/main/AndroidManifest.xml.tpl", &ctx);
-        let declared: Vec<&str> = android_manifest
-            .lines()
-            .map(str::trim)
-            .filter(|line| line.starts_with("<uses-permission"))
-            .collect();
-        assert_eq!(
-            declared,
-            [
-                "<uses-permission android:name=\"android.permission.INTERNET\" />",
-                "<uses-permission android:name=\"android.permission.CAMERA\" />",
-            ],
-            "{android_manifest}"
-        );
-        // The library manifest carries the managed components block too: the
-        // host's manifest merger folds its `<application>` children into the
-        // host's own.
-        crate::assets::assert_component_markers_inside_application(&android_manifest);
     }
 
     fn support_ctx() -> TemplateContext {
@@ -2889,6 +2872,40 @@ mod tests {
         assert!(
             helper.contains("any(target_os = \"macos\")"),
             "the helper compiles its dispatch where the CEF dep exists: {helper}"
+        );
+    }
+
+    /// The wasm32 table bridges the browser's `<video>` element exactly when
+    /// the application uses video: an application without it compiles no
+    /// player at all (principle 5).
+    #[test]
+    fn hydrolysis_wasm_table_bridges_video_only_for_an_app_that_uses_it() {
+        let wasm_features = |web: super::WebAnswers| -> Vec<String> {
+            let ctx = all_os_browser(project_ctx(), false, None).with_web(web);
+            let cargo_toml =
+                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                    .expect("hydrolysis outputs should render")
+                    .into_iter()
+                    .find_map(|(path, content)| {
+                        (path == std::path::Path::new("Cargo.toml"))
+                            .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                    })
+                    .expect("hydrolysis Cargo.toml output should exist");
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("hydrolysis Cargo.toml should parse");
+            manifest["target"]["cfg(target_arch = \"wasm32\")"]["dependencies"]["hydrolysis"]
+                ["features"]
+                .as_array()
+                .expect("the wasm32 hydrolysis dependency lists its features")
+                .iter()
+                .filter_map(|feature| feature.as_str().map(str::to_string))
+                .collect()
+        };
+        assert_eq!(wasm_features(super::WebAnswers { video: false }), ["web"]);
+        assert_eq!(
+            wasm_features(super::WebAnswers { video: true }),
+            ["web", "video"]
         );
     }
 
@@ -5609,74 +5626,6 @@ pub mod android {
     }
 }
 
-/// Embedded-mode Android templates: a Gradle *library* project whose
-/// `:waterui` module assembles the AAR a host application consumes. Unlike
-/// the app template it owns no Activity or manifest entry — the host mounts
-/// the root view through the runtime's `WaterUiRootView`.
-pub mod android_embedded {
-    use crate::android::toolchain::AndroidSdk;
-
-    use super::{
-        Path, TemplateContext, TemplateNamespace, embedded, fs, io, normalize_path_for_config,
-        scaffold_dir, write_file_if_changed,
-    };
-
-    /// Write all embedded Android templates to the given directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if file operations fail.
-    pub async fn scaffold(
-        host: &crate::toolchain::Host,
-        base_dir: &Path,
-        ctx: &TemplateContext,
-    ) -> io::Result<()> {
-        scaffold_dir(
-            TemplateNamespace::AndroidEmbedded,
-            &embedded::ANDROID_EMBEDDED,
-            base_dir,
-            ctx,
-        )
-        .await?;
-        scaffold_dir(
-            TemplateNamespace::AndroidShared,
-            &embedded::ANDROID_SHARED,
-            base_dir,
-            ctx,
-        )
-        .await?;
-        // gradle-wrapper.jar materializes at first Gradle run — see the
-        // android scaffold note above.
-
-        // Make gradlew executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let gradlew_path = base_dir.join("gradlew");
-            if gradlew_path.exists() {
-                let mut perms = fs::metadata(&gradlew_path).await?.permissions();
-                perms.set_mode(0o755);
-                fs::set_permissions(&gradlew_path, perms).await?;
-            }
-        }
-
-        // Create jniLibs directories under the library module
-        for abi in ["arm64-v8a", "x86_64", "armeabi-v7a", "x86"] {
-            let jni_dir = base_dir.join(format!("waterui/src/main/jniLibs/{abi}"));
-            fs::create_dir_all(&jni_dir).await?;
-        }
-
-        // Generate local.properties with Android SDK path
-        if let Some(sdk_path) = AndroidSdk::detect_path(host) {
-            let local_props = base_dir.join("local.properties");
-            let content = format!("sdk.dir={}\n", normalize_path_for_config(&sdk_path));
-            write_file_if_changed(&local_props, content.as_bytes()).await?;
-        }
-
-        Ok(())
-    }
-}
-
 /// GTK4 backend templates.
 pub mod gtk4 {
     use super::{
@@ -6445,7 +6394,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["web"],
+                            ctx.web.hydrolysis_features(),
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
@@ -6474,11 +6423,6 @@ pub mod hydrolysis {
     }
 }
 
-/// The generated Gradle app that runs a `WaterUI` application through the
-/// Hydrolysis Android host: a Kotlin `HydrolysisActivity` subclass, the
-/// painter band, and the Rust cdylib wiring — rendered under
-/// `<backend>/android` beside the launcher crate `templates::hydrolysis`
-/// scaffolds.
 /// The shared embedded trees every Hydrolysis Android composite writes
 /// alongside its own module tree — the Gradle root files and the generic
 /// Android wrapper set — so `scaffold` and `rendered_outputs` for both the
@@ -6526,6 +6470,11 @@ async fn scaffold_hydrolysis_android_project(
     finish_hydrolysis_android_scaffold(host, base_dir).await
 }
 
+/// The generated Gradle app that runs a `WaterUI` application through the
+/// Hydrolysis Android host: a Kotlin `HydrolysisActivity` subclass, the
+/// painter band, and the Rust cdylib wiring — rendered under
+/// `<backend>/android` beside the launcher crate `templates::hydrolysis`
+/// scaffolds.
 pub mod hydrolysis_android {
     use super::{Path, PathBuf, TemplateContext, TemplateNamespace, embedded, io};
 
@@ -6559,6 +6508,50 @@ pub mod hydrolysis_android {
         super::hydrolysis_android_rendered_outputs(
             TemplateNamespace::HydrolysisAndroid,
             &embedded::HYDROLYSIS_ANDROID,
+            ctx,
+        )
+    }
+}
+
+/// Hydrolysis Android embedded-library (`waterui` AAR) templates.
+pub mod hydrolysis_android_embedded {
+    use super::{Path, TemplateContext, TemplateNamespace, embedded, io};
+
+    #[cfg(test)]
+    use super::PathBuf;
+
+    /// Write the embedded-library Gradle project (the shared root files plus
+    /// the `waterui` AAR module) to the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations fail.
+    pub async fn scaffold(
+        host: &crate::toolchain::Host,
+        base_dir: &Path,
+        ctx: &TemplateContext,
+    ) -> io::Result<()> {
+        super::scaffold_hydrolysis_android_project(
+            host,
+            base_dir,
+            TemplateNamespace::HydrolysisAndroidEmbedded,
+            &embedded::HYDROLYSIS_ANDROID_EMBEDDED,
+            ctx,
+        )
+        .await
+    }
+
+    /// Every file `scaffold` would write, as backend-relative path and
+    /// content, without touching the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if template rendering fails.
+    #[cfg(test)]
+    pub fn rendered_outputs(ctx: &TemplateContext) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+        super::hydrolysis_android_rendered_outputs(
+            TemplateNamespace::HydrolysisAndroidEmbedded,
+            &embedded::HYDROLYSIS_ANDROID_EMBEDDED,
             ctx,
         )
     }
