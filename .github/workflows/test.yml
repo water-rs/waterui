@@ -1054,7 +1054,8 @@ jobs:
   # composite; the nightly keeps the host leg in `cef`, where it shares the
   # CEF leg's runner — running it here too under `full` would pay a second
   # macOS slot for an identical pass. The host and the iOS simulator run
-  # in parallel so the gate keeps its 10-minute budget.
+  # in parallel, and the host's three passes each get their own leg (#2506),
+  # so the gate keeps its 10-minute budget.
   macos:
     name: ${{ matrix.name }}
     # affected.yml lists only the targets with an Apple-gated crate in
@@ -1089,6 +1090,7 @@ jobs:
         with:
           hydrolysis: ${{ matrix.hydrolysis }}
           waterui-cli: ${{ matrix['waterui-cli'] }}
+          apple-gated: ${{ matrix['apple-gated'] }}
           affected: ${{ inputs.affected }}
           target: ${{ matrix.target }}
 

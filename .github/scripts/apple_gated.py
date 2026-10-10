@@ -77,19 +77,34 @@ def crates_for(target, scope):
     raise ValueError(f"unknown Apple lint target {target!r}")
 
 
+def leg(name, target, hydrolysis=False, cli=False, gated=False):
+    return {
+        "name": name,
+        "target": target,
+        "hydrolysis": hydrolysis,
+        "waterui-cli": cli,
+        "apple-gated": gated,
+    }
+
+
 def legs(scope):
-    """The `macos` matrix entries with work for `scope`; empty when none."""
+    """The `macos` matrix entries with work for `scope`; empty when none.
+
+    On the macOS host each pass is its own leg: every leg compiles cold,
+    and the three passes run back to back overran the 10-minute budget
+    (#2506). The simulator leg's passes share one graph and stay together.
+    """
     hydrolysis = bool(in_scope(("hydrolysis",), scope))
     cli = bool(in_scope(("waterui-cli",), scope))
     entries = []
-    if any(crates_for("", scope)) or cli:
-        entries.append(
-            {"name": "aarch64-apple-darwin", "target": "", "hydrolysis": hydrolysis, "waterui-cli": cli}
-        )
+    if hydrolysis:
+        entries.append(leg("aarch64-apple-darwin (hydrolysis)", "", hydrolysis=True))
+    if cli:
+        entries.append(leg("aarch64-apple-darwin (waterui-cli)", "", cli=True))
+    if any(crates_for("", scope)):
+        entries.append(leg("aarch64-apple-darwin", "", gated=True))
     if any(crates_for(IOS_SIM, scope)):
-        entries.append(
-            {"name": IOS_SIM, "target": IOS_SIM, "hydrolysis": hydrolysis, "waterui-cli": False}
-        )
+        entries.append(leg(IOS_SIM, IOS_SIM, hydrolysis=hydrolysis, gated=True))
     return entries
 
 
