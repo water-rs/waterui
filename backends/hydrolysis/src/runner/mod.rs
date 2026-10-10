@@ -270,7 +270,7 @@ fn install_native_component_hooks(env: &mut Environment) {
     crate::localization::install(env);
     // The only web engine this backend knows about is the platform's own: a
     // browser engine an application links installs its realization itself.
-    #[cfg(hydrolysis_macos_system_webview)]
+    #[cfg(hydrolysis_system_webview)]
     crate::widgets::platform::webview::install_controller(env);
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)

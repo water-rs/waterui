@@ -1724,7 +1724,7 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
 /// controller permits it — but on a build bridging no engine there is nothing
 /// to draw it with, and the backend fails rather than occupying a layout slot
 /// with no page behind it.
-#[cfg(not(hydrolysis_macos_system_webview))]
+#[cfg(not(hydrolysis_system_webview))]
 #[test]
 #[should_panic(expected = "no web engine is bridged")]
 fn a_webview_with_no_engine_to_draw_it_panics() {

@@ -45,6 +45,16 @@ fn main() {
         hydrolysis_macos_system_webview: {
             all(feature = "winit", target_os = "macos", feature = "webview-system")
         },
+        // On the web the page's own web view is an `<iframe>`, hosted on a DOM
+        // plane under the page's root element.
+        hydrolysis_web_system_webview: {
+            all(target_arch = "wasm32", feature = "web", feature = "webview-system")
+        },
+        // Either platform bridge: where `WebView` reaches a web engine this
+        // backend bridges.
+        hydrolysis_system_webview: {
+            any(hydrolysis_macos_system_webview, hydrolysis_web_system_webview)
+        },
         // The persistent pipeline cache serialises through `std::fs` into a
         // platform cache directory; targets without that filesystem contract
         // (wasm, espidf, redox) compile the renderer without it.

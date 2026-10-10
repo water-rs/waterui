@@ -12,15 +12,21 @@
 //! `State<T>` for [`Button::action`].
 
 use std::any::type_name;
+#[cfg(not(target_arch = "wasm32"))]
 use std::pin::Pin;
 
+#[cfg(not(target_arch = "wasm32"))]
 use suiteki::Str;
 use waterui_core::extract::{ExtractionState, Extractor};
+#[cfg(not(target_arch = "wasm32"))]
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, Error, impl_debug};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::Cookie;
-use crate::handler::{AnyWebViewHandle, ScriptInjectionTime};
+use crate::handler::AnyWebViewHandle;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::handler::ScriptInjectionTime;
 
 /// Imperative command surface for a [`WebView`](crate::WebView), extracted
 /// from the rendering environment via the same `Extractor` machinery used
@@ -67,26 +73,31 @@ impl WebViewProxy {
         self.handle.go_to(&url.into_url());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Refreshes the current page.
     pub fn refresh(&self) {
         self.handle.refresh();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Stops the current loading operation.
     pub fn stop(&self) {
         self.handle.stop();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Navigates back in the web view's history.
     pub fn go_back(&self) {
         self.handle.go_back();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Navigates forward in the web view's history.
     pub fn go_forward(&self) {
         self.handle.go_forward();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Runs the given JavaScript code in the context of the web view.
     ///
     /// The returned future is intentionally thread-local because native
@@ -99,11 +110,13 @@ impl WebViewProxy {
         Box::pin(self.handle.run_javascript(script))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets a cookie in the scoped web view.
     pub fn set_cookie(&self, cookie: Cookie<'static>) {
         self.handle.set_cookie(cookie);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Retrieves current cookies without blocking the UI thread.
     #[expect(
         clippy::future_not_send,
@@ -113,11 +126,13 @@ impl WebViewProxy {
         self.handle.get_cookies()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets the user agent string for the web view.
     pub fn set_user_agent(&self, user_agent: &str) {
         self.handle.set_user_agent(user_agent);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Injects a script that will run on every page load.
     ///
     /// `key` names the script; injecting again under the same key replaces it.
@@ -125,6 +140,7 @@ impl WebViewProxy {
         self.handle.inject_script(key, script, time);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Enables or disables redirect following.
     pub fn set_redirects_enabled(&self, enabled: impl IntoComputed<bool>) {
         self.handle.set_redirects_enabled(enabled);

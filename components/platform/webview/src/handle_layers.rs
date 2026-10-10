@@ -20,7 +20,8 @@
 /// the wrapper's inherent methods.
 ///
 /// A `uniform` entry has one signature that serves all four layers, and its
-/// documentation is attached once and appears on both public surfaces. The
+/// documentation is attached once and appears on both public surfaces. An
+/// entry may open with one `#[cfg(...)]`, which gates it on all four. The
 /// `_extra` sections are spliced in verbatim, for the methods whose signature
 /// differs between the ergonomic form and the object-safe one.
 macro_rules! webview_handle {
@@ -32,6 +33,7 @@ macro_rules! webview_handle {
 
         uniform {
             $(
+                $(#[cfg($cfg:meta)])?
                 $(#[doc = $doc:literal])*
                 fn $name:ident(&self $(, $arg:ident: $ty:ty)* $(,)?) $(-> $ret:ty)?;
             )*
@@ -45,6 +47,7 @@ macro_rules! webview_handle {
         $(#[doc = $trait_doc])*
         pub trait $public: Any {
             $(
+                $(#[cfg($cfg)])?
                 $(#[doc = $doc])*
                 fn $name(&self $(, $arg: $ty)*) $(-> $ret)?;
             )*
@@ -60,6 +63,7 @@ macro_rules! webview_handle {
         /// signature.
         trait $shim: Any {
             $(
+                $(#[cfg($cfg)])?
                 fn $name(&self $(, $arg: $ty)*) $(-> $ret)?;
             )*
             $($shim_extra)*
@@ -67,6 +71,7 @@ macro_rules! webview_handle {
 
         impl<T: $public> $shim for T {
             $(
+                $(#[cfg($cfg)])?
                 fn $name(&self $(, $arg: $ty)*) $(-> $ret)? {
                     $public::$name(self $(, $arg)*)
                 }
@@ -76,6 +81,7 @@ macro_rules! webview_handle {
 
         impl $wrapper {
             $(
+                $(#[cfg($cfg)])?
                 $(#[doc = $doc])*
                 pub fn $name(&self $(, $arg: $ty)*) $(-> $ret)? {
                     self.$field.$name($($arg),*)
