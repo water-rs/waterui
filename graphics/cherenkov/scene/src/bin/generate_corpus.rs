@@ -5254,6 +5254,46 @@ fn run() -> Result<(), SceneError> {
         });
     }
 
+    // A style layer batches all roads into one stroke. Its overlapping
+    // outline stresses winding resolution, rather than many tiny paths.
+    {
+        let mut rng = Rng(7);
+        let mut roads = BezPath::new();
+        for _ in 0..1600 {
+            let mut p = Point::new(rng.f64() * 1024.0, rng.f64() * 768.0);
+            let heading = rng.f64() * std::f64::consts::TAU;
+            roads.move_to(p);
+            for k in 0..40 {
+                let h = heading + (rng.f64() - 0.5) * 0.6 + f64::from(k) * 0.01;
+                p += kurbo::Vec2::new(libm::cos(h), libm::sin(h)) * 12.0;
+                roads.line_to(p);
+            }
+        }
+        perf.scene("road-network", 1024, 768, srgb(0.93, 0.95, 0.90), |l| {
+            l.layer(|pan| {
+                pan.transform(Affine::IDENTITY);
+                pan.motion(Motion::Transform {
+                    from: Affine::translate((-31.7, -23.3)),
+                    animation: MotionAnimation::Curve {
+                        duration_ms: 4000,
+                        x1: 0.25,
+                        y1: 0.25,
+                        x2: 0.75,
+                        y2: 0.75,
+                    },
+                });
+                pan.stroke(
+                    Shape::Path { path: roads },
+                    StrokeStyle {
+                        width: 3.0,
+                        ..StrokeStyle::default()
+                    },
+                    solid(srgb(0.35, 0.38, 0.40)),
+                );
+            });
+        });
+    }
+
     // The map under a smooth pan: a fractional offset per frame for 4 s,
     // then at rest at identity (= the map scene itself). Exercises the
     // path cache's behaviour when the translation's fraction changes
