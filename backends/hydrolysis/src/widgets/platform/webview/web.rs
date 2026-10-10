@@ -14,7 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use nami::{Binding, Computed, Signal};
+use nami::{Binding, Computed};
 use wasm_bindgen::{JsCast, closure::Closure};
 use waterui_core::Environment;
 use waterui_webview::{
@@ -45,6 +45,12 @@ pub fn install(env: &mut Environment) {
     env.insert(WebViewController::new(WebSystemWebViewController));
 }
 
+/// A DOM event listener, registered while it is held.
+type Listener = Closure<dyn FnMut(web_sys::Event)>;
+
+/// What one frame event does to the handle's state.
+type Handler = fn(&Inner);
+
 /// A web view's `<iframe>`, its watchers and its focus state.
 #[derive(Clone)]
 pub struct WebIframeHandle {
@@ -55,7 +61,7 @@ struct Inner {
     iframe: HtmlIFrameElement,
     watchers: WatcherSet<BackendEvent>,
     focused: Binding<bool>,
-    listeners: RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>,
+    listeners: RefCell<Vec<Listener>>,
 }
 
 impl std::fmt::Debug for WebIframeHandle {
@@ -93,7 +99,7 @@ impl WebIframeHandle {
     /// The frame's load event, and focus moving into and out of the frame.
     fn listen(&self) {
         let weak = Rc::downgrade(&self.inner);
-        let handlers: [(&str, fn(&Inner)); 3] = [
+        let handlers: [(&str, Handler); 3] = [
             ("load", |inner| {
                 inner
                     .watchers
