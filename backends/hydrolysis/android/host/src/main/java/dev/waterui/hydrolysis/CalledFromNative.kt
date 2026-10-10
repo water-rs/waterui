@@ -9,5 +9,5 @@ package dev.waterui.hydrolysis
  * file where R8 reads it; it is never observed at runtime.
  */
 @Retention(AnnotationRetention.BINARY)
-@Target(AnnotationTarget.FUNCTION)
+@Target(AnnotationTarget.FUNCTION, AnnotationTarget.CONSTRUCTOR)
 annotation class CalledFromNative

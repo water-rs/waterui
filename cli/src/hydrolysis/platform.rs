@@ -1025,15 +1025,15 @@ mod tests {
         .with_project_packages(std::collections::BTreeSet::from(["demo".to_string()]))
     }
 
-    /// `ctx` with `answers` recorded for every desktop OS — the hydrolysis
-    /// manifest writes a `cfg` section per OS, so all three must answer
-    /// for a render to compute.
+    /// `ctx` with `answers` recorded for every desktop OS and the Android
+    /// section — the hydrolysis manifest writes a `cfg` section per OS,
+    /// so all four must answer for a render to compute.
     fn all_os_browser(
         ctx: TemplateContext,
         answers: crate::templates::BrowserAnswers,
     ) -> TemplateContext {
         ctx.with_browser(crate::templates::BrowserTemplateContext::desktop(
-            answers, answers, answers,
+            answers, answers, answers, answers,
         ))
     }
 

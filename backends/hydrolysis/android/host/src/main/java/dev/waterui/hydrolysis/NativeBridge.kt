@@ -38,9 +38,15 @@ object NativeBridge {
      * session shares it; 12 = [nativeSetHighRefresh] takes a typed `active`
      * flag in place of the `-1f` sentinel float the native side decoded as a
      * release, and [nativeSurfaceAttached] carries the display's peak
-     * refresh rate that flag asks for.
+     * refresh rate that flag asks for; 13 = a platform-view placement names
+     * either a factory `kind` or a registered `instance`, and the
+     * `HydrolysisWebView` natives join the edge; 14 =
+     * `nativePlatformViewFocus` reported whether a mounted platform-view
+     * child held UI focus; 15 = the focus report reads through the frame —
+     * [HydrolysisSession.onNativePlatformViewFocus] replaces the pushed
+     * native, which left with it.
      */
-    private const val SCHEMA: Int = 12
+    private const val SCHEMA: Int = 15
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -285,4 +291,5 @@ object NativeBridge {
 
     /** Platform-view placement frame set, or null when unchanged. */
     @JvmStatic external fun nativePlatformViewFrames(sessionPtr: Long): String?
+
 }

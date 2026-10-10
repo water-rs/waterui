@@ -264,6 +264,11 @@ pub struct DesktopBrowserContext {
     pub linux: BrowserAnswers,
     /// Windows's `cfg` section.
     pub windows: BrowserAnswers,
+    /// The Android `cfg` section — the shared native manifest's fourth
+    /// table. Android is not a `NativeOs` — its serving set is ABI
+    /// triples, not host OSes — so its answers stay a field instead of a
+    /// `for_os` arm.
+    pub android: BrowserAnswers,
 }
 
 impl DesktopBrowserContext {
@@ -307,17 +312,20 @@ impl Default for BrowserTemplateContext {
 
 impl BrowserTemplateContext {
     /// A context for the shared native manifest — every desktop OS's
-    /// section renders its own resolved answers.
+    /// section renders its own resolved answers, and the Android `cfg`
+    /// section renders `android`.
     #[must_use]
     pub(crate) const fn desktop(
         macos: BrowserAnswers,
         linux: BrowserAnswers,
         windows: BrowserAnswers,
+        android: BrowserAnswers,
     ) -> Self {
         Self::Desktop(DesktopBrowserContext {
             macos,
             linux,
             windows,
+            android,
         })
     }
 
@@ -358,6 +366,20 @@ impl BrowserTemplateContext {
                 io::ErrorKind::InvalidInput,
                 "the GTK4 manifest renders a Linux section, so its context \
                  must carry Linux's answers",
+            )),
+        }
+    }
+
+    /// Android's answers — the shared native manifest's
+    /// `cfg(target_os = "android")` table requires them; a context that
+    /// serves no Android section is an error.
+    fn android_answers(&self) -> io::Result<BrowserAnswers> {
+        match self {
+            Self::Desktop(context) => Ok(context.android),
+            Self::AppleManaged { .. } | Self::Linux(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the shared native manifest renders an Android section, so \
+                 its context must carry Android's answers",
             )),
         }
     }
@@ -805,6 +827,14 @@ impl TemplateContext {
         self.browser.declares_cef_helper()
     }
 
+    /// The backend feature the launcher's Android section selects —
+    /// `webview-system` when the application enables the standard
+    /// `WebView` and the Android serving set links no engine crate of
+    /// its own.
+    pub(crate) fn webview_backend_feature(&self) -> io::Result<Option<&'static str>> {
+        Ok(webview_backend_feature(self.browser.android_answers()?))
+    }
+
     /// The `cfg` predicate matching the OSes whose tables link the CEF
     /// engine. The subprocess helper's source compiles its dispatch only
     /// where an OS's table provides `waterui-browser-cef` — on every other
@@ -1000,6 +1030,23 @@ impl TemplateContext {
             .painter_band_class
             .as_deref()
             .expect("Hydrolysis Android entry has no painter band")
+    }
+
+    /// Whether the app bridges the system `WebView` — the pinned host's
+    /// `webview/` module substitutes and joins the classpath.
+    ///
+    /// A context without the Hydrolysis Android entry scaffolds no Android
+    /// host and so bridges nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the context carries the Android entry but was built
+    /// without Android's browser answers.
+    pub fn hydrolysis_android_has_system_webview(&self) -> io::Result<bool> {
+        if self.hydrolysis_android.is_none() {
+            return Ok(false);
+        }
+        Ok(self.webview_backend_feature()?.is_some())
     }
 
     #[must_use]
@@ -1632,7 +1679,9 @@ mod tests {
             webview_enabled,
             engine,
         };
-        ctx.with_browser(BrowserTemplateContext::desktop(answers, answers, answers))
+        ctx.with_browser(BrowserTemplateContext::desktop(
+            answers, answers, answers, answers,
+        ))
     }
 
     /// A fake local framework checkout the generated crate's feature forwards
@@ -2809,6 +2858,7 @@ mod tests {
                 webview_enabled: true,
                 engine: None,
             },
+            super::BrowserAnswers::default(),
         ));
         let cargo_toml =
             crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
@@ -3050,6 +3100,53 @@ mod tests {
             app_gradle.contains("implementation(\"dev.waterui.hydrolysis:preview\")"),
             "the app must depend on the substituted preview module: {app_gradle}"
         );
+    }
+
+    /// The Android launcher's `hydrolysis` carries `webview-system` exactly
+    /// when the app uses the standard `WebView` with no engine of its own —
+    /// the platform-view instance the system `WebView` mounts through is
+    /// compiled in, and every other build ships no bridge code at all.
+    #[test]
+    fn hydrolysis_android_manifest_carries_webview_system_only_for_the_bridge() {
+        for (webview_enabled, expected) in [
+            (true, vec!["accessibility", "webview-system"]),
+            (false, vec!["accessibility"]),
+        ] {
+            // `webview_backend_feature` is the one decision: the Gradle
+            // flag and the Cargo feature both read it.
+            let ctx = all_os_browser(project_ctx(), webview_enabled, None).with_hydrolysis_android(
+                super::HydrolysisAndroidTemplateEntry {
+                    native_library_name: "waterui_test_hydrolysis".to_string(),
+                    host_project_dir: "../android-host/rev/android".to_string(),
+                    project_root: "..".to_string(),
+                    painter_dependency: "dev.waterui.hydrolysis:gpu".to_string(),
+                    painter_module: "gpu".to_string(),
+                    min_api_level: 31,
+                    painter_band_import: None,
+                    painter_band_class: None,
+                },
+            );
+            let cargo_toml =
+                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                    .expect("hydrolysis outputs should render")
+                    .into_iter()
+                    .find_map(|(path, content)| {
+                        (path == std::path::Path::new("Cargo.toml"))
+                            .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+                    })
+                    .expect("hydrolysis Cargo.toml output should exist");
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("hydrolysis Cargo.toml should parse");
+            let features = manifest["target"]["cfg(target_os = \"android\")"]["dependencies"]
+                ["hydrolysis"]["features"]
+                .as_array()
+                .expect("hydrolysis dependency features should be an array")
+                .iter()
+                .map(|feature| feature.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>();
+            assert_eq!(features, expected, "webview_enabled={webview_enabled}");
+        }
     }
 
     #[test]
@@ -6250,6 +6347,11 @@ pub mod hydrolysis {
     fn android_target_dependencies(
         ctx: &TemplateContext,
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
+        let mut hydrolysis_features = vec!["accessibility"];
+        // One predicate drives both surfaces: the Gradle `webview/` module
+        // substitution reads this same `webview_backend_feature` answer
+        // through `hydrolysis_android_has_system_webview`.
+        hydrolysis_features.extend(ctx.webview_backend_feature()?);
         Ok(BTreeMap::from([
             (
                 "hydrolysis".to_string(),
@@ -6258,7 +6360,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["accessibility"],
+                            &hydrolysis_features,
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?

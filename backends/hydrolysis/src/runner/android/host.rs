@@ -212,6 +212,32 @@ impl HostBridge {
         self.call(HostMethodId::RequestRedraw, &[]);
     }
 
+    /// The one query the bridge makes back into Kotlin: whether a mounted
+    /// platform-view child holds UI focus right now. A pull — the focus
+    /// listener that used to push this re-entered the session synchronously
+    /// from `requestFocus`/`removeView` on the host's own paths.
+    pub(crate) fn platform_view_focus_inside(&self) -> bool {
+        let method = self.methods[HostMethodId::PlatformViewFocus as usize];
+        let mut env = self
+            .vm
+            .get_env()
+            .expect("the frame's focus pull runs on the attached UI thread");
+        // SAFETY: `methods` holds the ids `GetMethodID` resolved on this
+        // object's class, in table order; `PlatformViewFocus`'s id
+        // matches the declared `()Z` signature.
+        unsafe {
+            env.call_method_unchecked(
+                &self.host_view,
+                method,
+                ReturnType::Primitive(Primitive::Boolean),
+                &[],
+            )
+        }
+        .expect("onNativePlatformViewFocus must not throw")
+        .z()
+        .expect("onNativePlatformViewFocus returns a boolean")
+    }
+
     /// `call` for a single `String` argument — the JSON pushes serialize
     /// into a `jstring` inside the env first.
     fn call_str(&self, method: HostMethodId, json: &str) {
@@ -345,6 +371,10 @@ pub struct AndroidHostWindow {
     /// for; `None` while no field holds focus. The runner syncs text-input
     /// state on every frame, and only a change here reaches the IME.
     soft_input: Option<u64>,
+    /// The session-wide "a mounted platform-view child holds UI focus" flag
+    /// report UI focus into; while it is held the IME channel belongs to the
+    /// child and a stale cleared claim must not hide its keyboard.
+    pub(crate) platform_view_focus: crate::platform_view::PlatformViewFocus,
     frame_transaction: FrameTransaction,
 }
 
@@ -525,6 +555,14 @@ impl PlatformWindow for AndroidHostWindow {
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
+        // While a platform-view child holds the IME, a renderer claim that
+        // was cleared on the focus-gain edge must not reach the host as a
+        // hide request — it would drop the web field's keyboard. A claim set
+        // during the hold is the hand-off itself: the Kotlin show path
+        // re-requests this view's focus, which ends the hold.
+        if self.platform_view_focus.is_holding() && state.is_none() {
+            return;
+        }
         let soft_input = state.map(|state| state.activation);
         if soft_input == self.soft_input {
             return;
@@ -805,6 +843,10 @@ impl AndroidSession {
         services: &'static UiThreadServices,
     ) -> Result<Box<Self>, JniError> {
         let bridge = HostBridge::new(env, vm, host_view)?;
+        // `env` is the `JNIEnv` — `into_parts` shadows it with the app
+        // `Environment` below, so bind it while it is still the JNI one.
+        #[cfg(hydrolysis_android_system_webview)]
+        let jni_env = env;
         let executor = services.executor.clone();
 
         waterui_locale::start_system_locale_listener();
@@ -849,6 +891,24 @@ impl AndroidSession {
         // into; the published table is what `nativePlatformViewFrames` serves.
         let platform_views = crate::platform_view::PlatformViewSink::new();
         env.insert(platform_views.clone());
+        // The session-wide "focus sits inside a platform-view container"
+        // state the Kotlin registry reports through
+        // `onNativePlatformViewFocus`: while a mounted child holds the IME,
+        // the renderer must not keep a `WaterUI` text-input claim, and the
+        // window reads the same state to gate its soft-input pushes.
+        let platform_view_focus = crate::platform_view::PlatformViewFocus::default();
+
+        // The system-WebView controller joins the same environment: a
+        // `WebView` opened through it mounts as a platform-view *instance*
+        // the registry resolves by id. Resolving the wrapper class must
+        // happen here, on the JNI thread — a thread that did not enter from
+        // Java cannot resolve app classes later.
+        #[cfg(hydrolysis_android_system_webview)]
+        crate::widgets::platform::webview::install_controller(
+            &mut env,
+            jni_env,
+            bridge.host_view.clone(),
+        )?;
 
         let mut windows = VecDeque::from(windows);
         let window = windows
@@ -870,6 +930,7 @@ impl AndroidSession {
             started: false,
             cursor_style: CursorStyle::default(),
             soft_input: None,
+            platform_view_focus,
             // The session mounts parked — hidden until `onStart` and the
             // surface attach report it visible — so the wake's gate opens
             // on the first occlusion sync, not at construction.
@@ -1009,6 +1070,9 @@ impl AndroidSession {
         // below instead of posting into a frame already running.
         self.runtime.platform.frame_transaction.begin();
         self.executor.drain();
+        // The frame reads this frame's focus answer: the pull precedes
+        // `render_window`'s `sync_text_input_state` hold gate.
+        self.platform_view_focus_sync();
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
         let now = Instant::now();
         let deadline = advance_runtime(&mut self.runtime, &self.env, now);
