@@ -9,7 +9,9 @@
 //! host-acquired frame; acquisition stays host-owned: the provider acquires,
 //! the presenter blits, the provider presents exactly once per presented
 //! frame. The macOS winit window renders into a `WindowCherenkovSurface`,
-//! whose `WindowTarget` the engine presents itself.
+//! whose `WindowTarget` the engine presents itself, and the browser page
+//! into a `DomCherenkovSurface`, whose `DomTarget` the engine presents as
+//! canvases and hosted elements under the page's root element.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -553,6 +555,95 @@ impl WindowCherenkovSurface {
             (self.wake)();
         }
         Ok(next)
+    }
+}
+
+/// The browser page's engine output: the engine presents through
+/// `cherenkov_gpu::interop::web::DomTarget` inside `Engine::render`,
+/// stacking its canvases and the page's hosted elements under the root
+/// element the surface was created on. Like the macOS window kind, there is
+/// nothing for the host to acquire or present.
+///
+/// Every canvas is SDR: an extended-range canvas puts Apple displays into
+/// EDR mode, which dims every screenshot of the page and draws more power,
+/// and no Hydrolysis host presents HDR. Display P3 keeps the wide gamut,
+/// and every browser that presents WebGPU offers it for a canvas.
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub struct DomCherenkovSurface {
+    core: SurfaceCore,
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl core::fmt::Debug for DomCherenkovSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DomCherenkovSurface")
+            .field("size", &self.core.size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl EngineSurface for DomCherenkovSurface {
+    fn core(&self) -> &SurfaceCore {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore {
+        &mut self.core
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl DomCherenkovSurface {
+    /// Creates the engine surface presenting under `root` at `size`
+    /// (physical pixels). `wake` is the host's display-link wake, as for
+    /// the texture kind.
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    pub(crate) async fn new(
+        engine: Rc<GpuEngine>,
+        root: web_sys::HtmlElement,
+        size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        // The page asks for SDR: an extended-range canvas puts Apple
+        // displays into EDR mode, which dims every screenshot of the page
+        // and draws more power. The Standard..=WideGamut range keeps
+        // Display P3's wide gamut where the browser offers it and keeps
+        // every HDR space out (#2445).
+        let target = cherenkov_gpu::interop::web::DomTarget::new(root, size).color_space(
+            cherenkov_gpu::interop::ColorSpaceRequest::Range(
+                cherenkov_gpu::interop::ColorRangeInterval::new(
+                    cherenkov_gpu::interop::ColorRange::Standard,
+                    cherenkov_gpu::interop::ColorRange::WideGamut,
+                ),
+            ),
+        );
+        let surface = engine
+            .surface(target, wake)
+            .await
+            .expect("hydrolysis renderer: failed to create the Cherenkov page surface");
+        Self {
+            core: SurfaceCore::new(engine, surface, size),
+        }
+    }
+
+    /// Renders the committed change set; the engine presents the frame
+    /// itself. Returns the engine's `Next` for the pump to schedule
+    /// against.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the frame
+    /// fails to render.
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    pub(crate) async fn render(&self) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.engine.render(cherenkov::FrameTime::now()).await
     }
 }
 

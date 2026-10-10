@@ -10,14 +10,14 @@ use std::{
 use nami::Signal;
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{
-    CompositionEvent, Document, Event, EventTarget, HtmlCanvasElement, HtmlElement,
-    HtmlInputElement, KeyboardEvent, PointerEvent, WheelEvent, Window as BrowserHostWindow,
+    CompositionEvent, Document, Event, EventTarget, HtmlElement, HtmlInputElement, KeyboardEvent,
+    PointerEvent, WheelEvent, Window as BrowserHostWindow,
 };
 
 use super::{
     CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
-    PointerButton, PointerKind, PresentationSurface as _, SurfaceError, SurfaceFrame,
-    SurfaceProvider, TextInputPurpose, TextInputState, WindowState, WuiWindow,
+    PointerButton, PointerKind, PresentationSurface as _, TextInputPurpose, TextInputState,
+    WindowState, WuiWindow,
 };
 
 #[derive(Clone, Copy)]
@@ -27,24 +27,29 @@ struct PendingResize {
     scale_factor: f64,
 }
 
+/// The page's presentation: the WebGPU device chain the engine renders on,
+/// and the engine surface that presents its canvases and the page's hosted
+/// elements under the root element through `DomTarget`. Nothing here
+/// acquires or presents a frame; the engine does both inside its render.
 pub struct BrowserSurface {
-    surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     /// Reports this device lost; taken when the device was opened.
     device_loss: crate::platform::DeviceLoss,
-    config: wgpu::SurfaceConfiguration,
-    /// The encoding of the negotiated canvas colour space, which the present
-    /// pass writes: a WebGPU canvas interprets its values in its configured
-    /// `colorSpace`, so the format alone does not say what to write.
-    output_color: cherenkov_gpu::interop::OutputColor,
+    /// The element the engine's stacking root is appended to.
+    root: HtmlElement,
+    /// The drawable size in device pixels.
+    size: (u32, u32),
+    /// The engine surface and mount, created on the first frame and
+    /// replaced when the device chain no longer matches.
+    engine_window: Option<crate::renderer::CherenkovWindow<crate::engine::DomCherenkovSurface>>,
 }
 
 impl core::fmt::Debug for BrowserSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BrowserSurface")
-            .field("config", &self.config)
+            .field("size", &self.size)
             .finish_non_exhaustive()
     }
 }
@@ -54,15 +59,15 @@ impl BrowserSurface {
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
     )]
-    pub async fn new(canvas: HtmlCanvasElement, width: u32, height: u32) -> Self {
+    pub async fn new(root: HtmlElement, width: u32, height: u32) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let surface = instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-            .expect("hydrolysis web surface: failed to create canvas surface");
+        // Every adapter a browser hands out presents to a canvas, so the
+        // request names no surface: the engine creates its canvases on
+        // this device itself.
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
+                compatible_surface: None,
                 force_fallback_adapter: false,
                 apply_limit_buckets: false,
             })
@@ -80,60 +85,21 @@ impl BrowserSurface {
             .expect("hydrolysis web surface: failed to request WebGPU device");
         let context_id = super::next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
-            instance: instance.clone(),
+            instance,
             adapter: adapter.clone(),
             device: device.clone(),
             queue: queue.clone(),
         };
         let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
 
-        // The canvas's (format, colour space) pair comes from the engine's
-        // output negotiation, so the configured `colorSpace` and the encoding
-        // the present pass writes always agree. The page asks for SDR: an
-        // extended-range canvas puts Apple displays into EDR mode, which dims
-        // every screenshot of the page and draws more power. The
-        // Standard..=WideGamut range keeps
-        // Display P3's wide gamut where the browser offers it, keeps every
-        // HDR space out, and still meets a canvas that reports only sRGB or
-        // no explicit space at all — the ceiling is the request's, not a
-        // retry loop's (#2445).
-        let caps = surface.get_capabilities(&adapter);
-        let selection = cherenkov_gpu::interop::select_output(
-            &caps,
-            wgpu::Backend::BrowserWebGpu,
-            cherenkov_gpu::interop::OutputRequest {
-                transparent: false,
-                color_space: cherenkov_gpu::interop::ColorSpaceRequest::Range(
-                    cherenkov_gpu::interop::ColorRangeInterval::new(
-                        cherenkov_gpu::interop::ColorRange::Standard,
-                        cherenkov_gpu::interop::ColorRange::WideGamut,
-                    ),
-                ),
-                sync: cherenkov_gpu::DisplaySync::Synchronized,
-            },
-        )
-        .unwrap_or_else(|error| panic!("hydrolysis web surface: {error}"));
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: selection.format,
-            color_space: selection.color_space,
-            width: width.max(1),
-            height: height.max(1),
-            present_mode: selection.present_mode,
-            alpha_mode: selection.alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-
         Self {
-            surface,
             adapter,
             device,
             queue,
             device_loss,
-            config,
-            output_color: selection.output_color(),
+            root,
+            size: (width.max(1), height.max(1)),
+            engine_window: None,
         }
     }
 }
@@ -156,62 +122,59 @@ impl crate::platform::PresentationSurface for BrowserSurface {
     }
 
     fn size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
+        self.size
     }
 
+    /// The engine resizes its canvases at the next render, from the size
+    /// the frame's commit hands the surface.
     fn resize(&mut self, width: u32, height: u32) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(&self.device, &self.config);
+        self.size = (width.max(1), height.max(1));
     }
 }
 
-impl SurfaceProvider for BrowserSurface {
-    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        let output = super::acquire_surface_texture(&self.surface)?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        Ok(SurfaceFrame::Browser { output, view })
-    }
-
-    fn present(&mut self, frame: SurfaceFrame) {
-        match frame {
-            SurfaceFrame::Browser { output, .. } => self.queue.present(output),
-            SurfaceFrame::Offscreen { .. } => {
-                panic!("hydrolysis web surface received an offscreen frame")
-            }
-            #[cfg(hydrolysis_winit)]
-            SurfaceFrame::Window { .. } => {
-                panic!("hydrolysis web surface received a native window frame")
-            }
-        }
-    }
-
-    fn format(&self) -> wgpu::TextureFormat {
-        self.config.format
-    }
-
-    fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
-        self.output_color
-    }
-
-    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
-        cherenkov_gpu::interop::surface_output_alpha(self.config.alpha_mode)
+impl BrowserSurface {
+    /// The frame's render inputs, the root element the engine presents
+    /// under, and the engine window slot it presents through.
+    pub(crate) fn render_targets(
+        &mut self,
+        display_scale: f64,
+        base_color: waterui_graphics::draw::WorkingColor,
+    ) -> (
+        crate::renderer::FrameRenderTarget<'_>,
+        &HtmlElement,
+        &mut Option<crate::renderer::CherenkovWindow<crate::engine::DomCherenkovSurface>>,
+    ) {
+        let context = self.device_loss.gpu_context();
+        (
+            crate::renderer::FrameRenderTarget {
+                adapter: &self.adapter,
+                device: &self.device,
+                queue: &self.queue,
+                device_loss: self.device_loss.clone(),
+                gpu_context_id: context.context_id,
+                shared_device: context.shared_device,
+                display_scale,
+                width: self.size.0,
+                height: self.size.1,
+                base_color,
+            },
+            &self.root,
+            &mut self.engine_window,
+        )
     }
 }
 
-/// The browser window: the page's canvas element plus the document, input and
+/// The browser window: the page's root element plus the document, input and
 /// pointer plumbing attached to it.
 pub struct BrowserWindow {
     host_window: BrowserHostWindow,
     document: Document,
-    canvas: HtmlCanvasElement,
+    root: HtmlElement,
     ime_input: HtmlInputElement,
     surface: BrowserSurface,
     pending_events: Rc<RefCell<Vec<InputEvent>>>,
     redraw_requested: Rc<Cell<bool>>,
-    /// The canvas's `IntersectionObserver` report: `true` while the
+    /// The root's `IntersectionObserver` report: `true` while the
     /// browser counts it off-screen — scrolled out of view, or
     /// `display:none`'d by an app-driven minimized window state.
     offscreen: Rc<Cell<bool>>,
@@ -237,8 +200,7 @@ pub struct BrowserWindow {
 impl core::fmt::Debug for BrowserWindow {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BrowserWindow")
-            .field("canvas_width", &self.canvas.width())
-            .field("canvas_height", &self.canvas.height())
+            .field("size", &self.surface.size())
             .finish_non_exhaustive()
     }
 }
@@ -250,7 +212,7 @@ impl BrowserWindow {
     ///
     /// # Panics
     ///
-    /// When the page exposes no window, document, canvas or input element
+    /// When the page exposes no window, document, root or input element
     /// the host cannot function, so the constructor panics naming the
     /// missing object rather than failing the first paint later.
     #[expect(
@@ -263,8 +225,8 @@ impl BrowserWindow {
         let document = browser_window
             .document()
             .expect("hydrolysis web platform: document unavailable");
-        let canvas = find_or_create_canvas(&document);
-        prepare_canvas(&canvas);
+        let root = find_or_create_root(&document);
+        prepare_root(&root);
         let ime_input = find_or_create_ime_input(&document);
         let safe_area_probe = create_safe_area_probe(&document);
         let safe_area = nami::binding(read_safe_area(&browser_window, &safe_area_probe));
@@ -273,8 +235,7 @@ impl BrowserWindow {
         let scale_factor = Rc::new(Cell::new(browser_window.device_pixel_ratio()));
         let pending_resize = Rc::new(Cell::new(None));
 
-        let initial_resize = measure_canvas(&browser_window, &canvas);
-        apply_canvas_resize(&canvas, initial_resize);
+        let initial_resize = measure_root(&browser_window, &root);
         pending_resize.set(Some(initial_resize));
         pending_events.borrow_mut().push(InputEvent::Resize {
             width: initial_resize.width,
@@ -282,11 +243,11 @@ impl BrowserWindow {
         });
 
         let surface =
-            BrowserSurface::new(canvas.clone(), initial_resize.width, initial_resize.height).await;
+            BrowserSurface::new(root.clone(), initial_resize.width, initial_resize.height).await;
 
         let mut listeners = register_listeners(
             &browser_window,
-            &canvas,
+            &root,
             &ime_input,
             pending_events.clone(),
             redraw_requested.clone(),
@@ -314,7 +275,7 @@ impl BrowserWindow {
             move |_event| occlusion_wake()
         }));
         // `document.hidden` covers a backgrounded tab; what it cannot see
-        // is the page visible while its canvas is not — scrolled out of
+        // is the page visible while its root is not — scrolled out of
         // view, or `display:none`'d by the app's own minimized state. The
         // IntersectionObserver is the public API that reports it.
         let offscreen = Rc::new(Cell::new(false));
@@ -333,14 +294,14 @@ impl BrowserWindow {
                 ));
             let observer = web_sys::IntersectionObserver::new(callback.as_ref().unchecked_ref())
                 .expect("hydrolysis web platform: failed to create IntersectionObserver");
-            observer.observe(&canvas);
+            observer.observe(&root);
             (observer, callback)
         };
 
         Self {
             host_window: browser_window,
             document,
-            canvas,
+            root,
             ime_input,
             surface,
             pending_events,
@@ -357,7 +318,7 @@ impl BrowserWindow {
         }
     }
 
-    /// Tells the page that the first frame is on the canvas, as a bubbling
+    /// Tells the page that the first frame is on screen, as a bubbling
     /// `waterui:first-frame` event: the page's launch screen listens for it and
     /// stands down.
     pub(crate) fn announce_first_frame(&self) {
@@ -365,7 +326,7 @@ impl BrowserWindow {
         init.set_bubbles(true);
         let event = web_sys::CustomEvent::new_with_event_init_dict("waterui:first-frame", &init)
             .expect("hydrolysis web platform: failed to build the first-frame event");
-        self.canvas
+        self.root
             .dispatch_event(&event)
             .expect("hydrolysis web platform: failed to dispatch the first-frame event");
     }
@@ -384,7 +345,8 @@ impl BrowserWindow {
 
 impl PlatformWindow for BrowserWindow {
     fn content_size(&self) -> (u32, u32) {
-        // The canvas's backing store is exactly the drawable content area.
+        // The root's box at the device pixel ratio is exactly the drawable
+        // content area: the engine's canvases fill it.
         self.surface.size()
     }
 
@@ -394,16 +356,16 @@ impl PlatformWindow for BrowserWindow {
 
         match window.state.snapshot() {
             WindowState::Normal => {
-                self.canvas
+                self.root
                     .style()
                     .set_property("display", "block")
-                    .expect("hydrolysis web platform: failed to show canvas");
+                    .expect("hydrolysis web platform: failed to show the root element");
             }
             WindowState::Minimized | WindowState::Closed => {
-                self.canvas
+                self.root
                     .style()
                     .set_property("display", "none")
-                    .expect("hydrolysis web platform: failed to hide canvas");
+                    .expect("hydrolysis web platform: failed to hide the root element");
                 return;
             }
             WindowState::Fullscreen => {
@@ -414,19 +376,18 @@ impl PlatformWindow for BrowserWindow {
             }
         }
 
-        if self.canvas.client_width() == 0 || self.canvas.client_height() == 0 {
+        if self.root.client_width() == 0 || self.root.client_height() == 0 {
             let frame = window.frame.snapshot();
-            self.canvas
+            self.root
                 .style()
                 .set_property("width", &format!("{}px", frame.width().max(1.0)))
-                .expect("hydrolysis web platform: failed to set fallback canvas width");
-            self.canvas
+                .expect("hydrolysis web platform: failed to set the fallback root width");
+            self.root
                 .style()
                 .set_property("height", &format!("{}px", frame.height().max(1.0)))
-                .expect("hydrolysis web platform: failed to set fallback canvas height");
+                .expect("hydrolysis web platform: failed to set the fallback root height");
 
-            let resize = measure_canvas(&self.host_window, &self.canvas);
-            apply_canvas_resize(&self.canvas, resize);
+            let resize = measure_root(&self.host_window, &self.root);
             self.pending_resize.set(Some(resize));
         }
     }
@@ -441,7 +402,7 @@ impl PlatformWindow for BrowserWindow {
 
     /// The page's own report: `document.hidden` covers a backgrounded
     /// tab or window, and the `IntersectionObserver` cell covers the
-    /// canvas scrolled out of view or `display:none`'d by an app-driven
+    /// root scrolled out of view or `display:none`'d by an app-driven
     /// minimized state.
     fn is_occluded(&self) -> bool {
         self.document.hidden() || self.offscreen.get()
@@ -486,7 +447,7 @@ impl PlatformWindow for BrowserWindow {
         } else {
             self.ime_input.set_value("");
             let _ = self.ime_input.blur();
-            let _ = self.canvas.focus();
+            let _ = self.root.focus();
         }
     }
 
@@ -495,7 +456,7 @@ impl PlatformWindow for BrowserWindow {
             return;
         }
         self.current_cursor_style = style;
-        self.canvas
+        self.root
             .style()
             .set_property("cursor", map_cursor_style(style))
             .expect("hydrolysis web platform: failed to update cursor style");
@@ -509,22 +470,22 @@ impl GpuSurfaceWindow for BrowserWindow {
     }
 }
 
-fn find_or_create_canvas(document: &Document) -> HtmlCanvasElement {
-    if let Some(element) = document.get_element_by_id("waterui-canvas") {
+fn find_or_create_root(document: &Document) -> HtmlElement {
+    if let Some(element) = document.get_element_by_id("waterui-root") {
         return element
-            .dyn_into::<HtmlCanvasElement>()
-            .expect("hydrolysis web platform: #waterui-canvas is not a <canvas>");
+            .dyn_into::<HtmlElement>()
+            .expect("hydrolysis web platform: #waterui-root is not an HTML element");
     }
 
-    let canvas = document
-        .create_element("canvas")
-        .expect("hydrolysis web platform: failed to create canvas")
-        .dyn_into::<HtmlCanvasElement>()
-        .expect("hydrolysis web platform: created node is not a canvas");
-    canvas.set_id("waterui-canvas");
-    let style = canvas.style();
+    let root = document
+        .create_element("div")
+        .expect("hydrolysis web platform: failed to create the root element")
+        .dyn_into::<HtmlElement>()
+        .expect("hydrolysis web platform: created node is not an HTML element");
+    root.set_id("waterui-root");
+    let style = root.style();
     // The layout viewport exactly: `100vh` is taller than the visible area on
-    // mobile browsers, which makes the page itself pannable under the canvas.
+    // mobile browsers, which makes the page itself pannable under the root.
     for (property, value) in [
         ("display", "block"),
         ("position", "fixed"),
@@ -534,33 +495,35 @@ fn find_or_create_canvas(document: &Document) -> HtmlCanvasElement {
     ] {
         style
             .set_property(property, value)
-            .expect("hydrolysis web platform: failed to style canvas");
+            .expect("hydrolysis web platform: failed to style the root element");
     }
     document
         .body()
         .expect("hydrolysis web platform: document body unavailable")
-        .append_child(&canvas)
-        .expect("hydrolysis web platform: failed to append canvas to body");
-    canvas
+        .append_child(&root)
+        .expect("hydrolysis web platform: failed to append the root element to body");
+    root
 }
 
-/// Makes the page's canvas the runtime's input surface, whether the page
-/// supplied it or the runtime created it.
+/// Makes the page's root element the runtime's input surface, whether the
+/// page supplied it or the runtime created it. The engine's canvases inside
+/// it take no pointer events, so input over engine content lands on the root
+/// itself.
 ///
 /// - `touch-action: none`: Hydrolysis recognizes every gesture itself, so
 ///   the browser must never claim a touch for panning or zooming; when it
 ///   does, it cancels the pointer (`pointercancel` instead of `pointerup`)
 ///   and a tap never reaches the view under it.
-/// - `tabindex` 0: the canvas receives the keys, which a focusable element
+/// - `tabindex` 0: the root receives the keys, which a focusable element
 ///   alone can do.
 /// - `outline: none`: Hydrolysis draws focus itself.
-fn prepare_canvas(canvas: &HtmlCanvasElement) {
-    canvas.set_tab_index(0);
-    let style = canvas.style();
+fn prepare_root(root: &HtmlElement) {
+    root.set_tab_index(0);
+    let style = root.style();
     for (property, value) in [("touch-action", "none"), ("outline", "none")] {
         style
             .set_property(property, value)
-            .expect("hydrolysis web platform: failed to style the canvas");
+            .expect("hydrolysis web platform: failed to style the root element");
     }
 }
 
@@ -674,21 +637,21 @@ fn find_or_create_ime_input(document: &Document) -> HtmlInputElement {
     input
 }
 
-fn measure_canvas(browser_window: &BrowserHostWindow, canvas: &HtmlCanvasElement) -> PendingResize {
+fn measure_root(browser_window: &BrowserHostWindow, root: &HtmlElement) -> PendingResize {
     let scale_factor = browser_window.device_pixel_ratio();
     assert!(
         scale_factor.is_finite() && scale_factor > 0.0,
         "hydrolysis web platform received invalid devicePixelRatio {scale_factor}"
     );
 
-    let rect = canvas.get_bounding_client_rect();
+    let rect = root.get_bounding_client_rect();
     let mut logical_width = rect.width();
     let mut logical_height = rect.height();
     if logical_width <= 0.0 {
-        logical_width = f64::from(canvas.client_width());
+        logical_width = f64::from(root.client_width());
     }
     if logical_height <= 0.0 {
-        logical_height = f64::from(canvas.client_height());
+        logical_height = f64::from(root.client_height());
     }
     if logical_width <= 0.0 {
         logical_width = browser_window
@@ -712,11 +675,6 @@ fn measure_canvas(browser_window: &BrowserHostWindow, canvas: &HtmlCanvasElement
     }
 }
 
-fn apply_canvas_resize(canvas: &HtmlCanvasElement, resize: PendingResize) {
-    canvas.set_width(resize.width.max(1));
-    canvas.set_height(resize.height.max(1));
-}
-
 #[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::too_many_lines,
@@ -728,7 +686,7 @@ fn apply_canvas_resize(canvas: &HtmlCanvasElement, resize: PendingResize) {
 )]
 fn register_listeners(
     browser_window: &BrowserHostWindow,
-    canvas: &HtmlCanvasElement,
+    root: &HtmlElement,
     ime_input: &HtmlInputElement,
     pending_events: Rc<RefCell<Vec<InputEvent>>>,
     redraw_requested: Rc<Cell<bool>>,
@@ -741,44 +699,47 @@ fn register_listeners(
     let suppress_next_input = Rc::new(Cell::new(false));
     let browser_window_target: EventTarget =
         <BrowserHostWindow as AsRef<EventTarget>>::as_ref(browser_window).clone();
-    let canvas_target: EventTarget =
-        <HtmlCanvasElement as AsRef<EventTarget>>::as_ref(canvas).clone();
+    let root_target: EventTarget = <HtmlElement as AsRef<EventTarget>>::as_ref(root).clone();
     let ime_input_target: EventTarget =
         <HtmlInputElement as AsRef<EventTarget>>::as_ref(ime_input).clone();
 
     {
+        let root = root.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(
-            &canvas_target,
-            "keydown",
-            move |event| {
-                let event = event
-                    .dyn_into::<KeyboardEvent>()
-                    .expect("hydrolysis web platform: keydown event had unexpected type");
-                if matches!(event.key().as_str(), "Tab" | "Enter" | " ") {
-                    event.prevent_default();
-                }
-                pending_events.borrow_mut().push(InputEvent::Key {
-                    key: map_keyboard_key(&event),
-                    logical_key: map_w3c_key(&event),
-                    physical_code: map_w3c_code(&event),
-                    repeat: event.repeat(),
-                    state: KeyState::Pressed,
-                    modifiers: map_modifiers_from_keyboard(&event),
-                });
-                redraw_requested.set(true);
-                schedule_frame();
-            },
-        ));
+        listeners.push(add_event_listener(&root_target, "keydown", move |event| {
+            if !targets_root(&event, &root) {
+                return;
+            }
+            let event = event
+                .dyn_into::<KeyboardEvent>()
+                .expect("hydrolysis web platform: keydown event had unexpected type");
+            if matches!(event.key().as_str(), "Tab" | "Enter" | " ") {
+                event.prevent_default();
+            }
+            pending_events.borrow_mut().push(InputEvent::Key {
+                key: map_keyboard_key(&event),
+                logical_key: map_w3c_key(&event),
+                physical_code: map_w3c_code(&event),
+                repeat: event.repeat(),
+                state: KeyState::Pressed,
+                modifiers: map_modifiers_from_keyboard(&event),
+            });
+            redraw_requested.set(true);
+            schedule_frame();
+        }));
     }
 
     {
+        let root = root.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(&canvas_target, "keyup", move |event| {
+        listeners.push(add_event_listener(&root_target, "keyup", move |event| {
+            if !targets_root(&event, &root) {
+                return;
+            }
             let event = event
                 .dyn_into::<KeyboardEvent>()
                 .expect("hydrolysis web platform: keyup event had unexpected type");
@@ -800,7 +761,7 @@ fn register_listeners(
 
     {
         let browser_window = browser_window.clone();
-        let canvas = canvas.clone();
+        let root = root.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         // The original `scale_factor`/`pending_resize` move straight into
@@ -810,9 +771,8 @@ fn register_listeners(
             &browser_window_target,
             "resize",
             move |_event| {
-                let resize = measure_canvas(&browser_window, &canvas);
+                let resize = measure_root(&browser_window, &root);
                 scale_factor.set(resize.scale_factor);
-                apply_canvas_resize(&canvas, resize);
                 pending_resize.set(Some(resize));
                 pending_events.borrow_mut().push(InputEvent::Resize {
                     width: resize.width,
@@ -825,32 +785,35 @@ fn register_listeners(
     }
 
     {
-        let canvas = canvas.clone();
+        let root = root.clone();
         let ime_input = ime_input.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
         listeners.push(add_event_listener(
-            &canvas_target,
+            &root_target,
             "pointerdown",
             move |event| {
+                if !targets_root(&event, &root) {
+                    return;
+                }
                 let event = event
                     .dyn_into::<PointerEvent>()
                     .expect("hydrolysis web platform: pointerdown event had unexpected type");
                 event.prevent_default();
                 // Preventing the default also prevents the press from focusing
-                // the canvas, which receives the keys. Text editing owns the
+                // the root, which receives the keys. Text editing owns the
                 // hidden input while it holds focus; anything else returns
-                // focus to the canvas.
-                let editing = canvas
+                // focus to the root.
+                let editing = root
                     .owner_document()
                     .and_then(|document| document.active_element())
                     .is_some_and(|active| active == *ime_input.as_ref());
                 if !editing {
-                    let _ = canvas.focus();
+                    let _ = root.focus();
                 }
                 let (x, y) = event_position(
-                    &canvas,
+                    &root,
                     f64::from(event.client_x()),
                     f64::from(event.client_y()),
                 );
@@ -868,20 +831,23 @@ fn register_listeners(
     }
 
     {
-        let canvas = canvas.clone();
+        let root = root.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
         listeners.push(add_event_listener(
-            &canvas_target,
+            &root_target,
             "pointerup",
             move |event| {
+                if !targets_root(&event, &root) {
+                    return;
+                }
                 let event = event
                     .dyn_into::<PointerEvent>()
                     .expect("hydrolysis web platform: pointerup event had unexpected type");
                 event.prevent_default();
                 let (x, y) = event_position(
-                    &canvas,
+                    &root,
                     f64::from(event.client_x()),
                     f64::from(event.client_y()),
                 );
@@ -899,19 +865,22 @@ fn register_listeners(
     }
 
     {
-        let canvas = canvas.clone();
+        let root = root.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
         listeners.push(add_event_listener(
-            &canvas_target,
+            &root_target,
             "pointermove",
             move |event| {
+                if !targets_root(&event, &root) {
+                    return;
+                }
                 let event = event
                     .dyn_into::<PointerEvent>()
                     .expect("hydrolysis web platform: pointermove event had unexpected type");
                 let (x, y) = event_position(
-                    &canvas,
+                    &root,
                     f64::from(event.client_x()),
                     f64::from(event.client_y()),
                 );
@@ -928,13 +897,17 @@ fn register_listeners(
     }
 
     {
+        let root = root.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
         listeners.push(add_event_listener(
-            &canvas_target,
+            &root_target,
             "pointercancel",
             move |event| {
+                if !targets_root(&event, &root) {
+                    return;
+                }
                 let event = event
                     .dyn_into::<PointerEvent>()
                     .expect("hydrolysis web platform: pointercancel event had unexpected type");
@@ -949,17 +922,20 @@ fn register_listeners(
     }
 
     {
-        let canvas = canvas.clone();
+        let root = root.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(&canvas_target, "wheel", move |event| {
+        listeners.push(add_event_listener(&root_target, "wheel", move |event| {
+            if !targets_root(&event, &root) {
+                return;
+            }
             let event = event
                 .dyn_into::<WheelEvent>()
                 .expect("hydrolysis web platform: wheel event had unexpected type");
             event.prevent_default();
             let (x, y) = event_position(
-                &canvas,
+                &root,
                 f64::from(event.client_x()),
                 f64::from(event.client_y()),
             );
@@ -1174,8 +1150,18 @@ fn add_event_listener(
     closure
 }
 
-fn event_position(canvas: &HtmlCanvasElement, client_x: f64, client_y: f64) -> (f32, f32) {
-    let rect = canvas.get_bounding_client_rect();
+/// Whether `event` was dispatched to the root element itself. The engine's
+/// canvases take no pointer events, so input over engine content targets
+/// the root; an element the engine hosts takes its own input, which bubbles
+/// up through the root and is not the engine's to handle.
+fn targets_root(event: &Event, root: &HtmlElement) -> bool {
+    event
+        .target()
+        .is_some_and(|target| target == *<HtmlElement as AsRef<EventTarget>>::as_ref(root))
+}
+
+fn event_position(root: &HtmlElement, client_x: f64, client_y: f64) -> (f32, f32) {
+    let rect = root.get_bounding_client_rect();
     (
         crate::num_cast::f64_as_f32(client_x - rect.left()),
         crate::num_cast::f64_as_f32(client_y - rect.top()),
@@ -1265,4 +1251,5 @@ fn map_cursor_style(style: CursorStyle) -> &'static str {
     }
 }
 
+pub use BrowserSurface as ExportedBrowserSurface;
 pub use BrowserWindow as ExportedBrowserWindow;

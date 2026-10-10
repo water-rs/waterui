@@ -69,6 +69,7 @@ pub struct DomTarget {
     pub(crate) parent: HtmlElement,
     pub(crate) size: (u32, u32),
     pub(crate) transparent: bool,
+    pub(crate) color_space: ColorSpaceRequest,
     pub(crate) refresh: cherenkov::RefreshRange,
 }
 
@@ -80,6 +81,7 @@ impl DomTarget {
             parent,
             size,
             transparent: false,
+            color_space: ColorSpaceRequest::Best,
             refresh: cherenkov::DEFAULT_REFRESH,
         }
     }
@@ -89,6 +91,19 @@ impl DomTarget {
     #[must_use]
     pub const fn transparent(mut self, transparent: bool) -> Self {
         self.transparent = transparent;
+        self
+    }
+
+    /// Sets every part canvas's colour-space request, as
+    /// [`WindowTarget::color_space`](crate::WindowTarget::color_space)
+    /// does for a window's swapchain. The default,
+    /// [`ColorSpaceRequest::Best`], negotiates the browser's best
+    /// advertised pair, an extended-range one where offered. A canvas that
+    /// advertises nothing the request admits fails the surface with
+    /// [`SurfaceError::UnsupportedTarget`].
+    #[must_use]
+    pub const fn color_space(mut self, request: ColorSpaceRequest) -> Self {
+        self.color_space = request;
         self
     }
 
@@ -273,7 +288,7 @@ impl DomPlanes {
             size: target.size,
             request: OutputRequest {
                 transparent: target.transparent,
-                color_space: ColorSpaceRequest::Best,
+                color_space: target.color_space,
                 sync: crate::DisplaySync::Synchronized,
             },
             serial: page_unique(),

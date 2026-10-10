@@ -400,6 +400,9 @@ pub fn run(app: App, style: impl crate::Style) {
 /// # Panics
 /// Propagates panics from `web_runner::run`.
 pub fn run(app: App, style: impl crate::Style) {
+    // The page has no stderr, so the default hook's report goes nowhere;
+    // this one sends the message and location to `console.error`.
+    console_error_panic_hook::set_once();
     init_global_executor();
     web_runner::run(app, style);
 }

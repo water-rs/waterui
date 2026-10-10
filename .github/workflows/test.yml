@@ -1296,7 +1296,7 @@ jobs:
           mode: fonts
       - name: Build cherenkov-bench for aarch64-linux-android
         run: |
-          cargo ndk --target aarch64-linux-android --platform 30 \
+          cargo ndk --target aarch64-linux-android --platform "$WATERUI_ANDROID_MIN_API_LEVEL" \
             build --release -p cherenkov-bench \
             --features vello-classic,vello-hybrid,skia,cherenkov,cherenkov-cpu
           ls -l target/aarch64-linux-android/release/cherenkov-bench
@@ -1304,7 +1304,7 @@ jobs:
       # Pro over adb; CI builds and archives the prebuilt binary.
       - name: Build the Vulkan external-frame test for aarch64-linux-android
         run: |
-          cargo ndk --target aarch64-linux-android --platform 30 \
+          cargo ndk --target aarch64-linux-android --platform "$WATERUI_ANDROID_MIN_API_LEVEL" \
             build --release -p cherenkov-gpu --test vulkan_external_android
           ls target/aarch64-linux-android/release/deps/vulkan_external_android-*
       - uses: actions/upload-artifact@v4

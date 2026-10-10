@@ -1023,9 +1023,9 @@ pub struct SurfaceRenderResult {
 
 /// How a window's presentation kind renders one frame and gets it to the
 /// display. Host-acquired surfaces ([`SurfaceProvider`]) acquire, copy the
-/// engine output in and present; the macOS winit window's engine target
-/// presents inside `Engine::render`, so it has no acquire, copy or present
-/// to call.
+/// engine output in and present; the macOS winit window's and the browser
+/// page's engine targets present inside `Engine::render`, so they have no
+/// acquire, copy or present to call.
 ///
 /// [`SurfaceProvider`]: crate::platform::SurfaceProvider
 pub trait GpuSurfaceFrame {
@@ -1217,6 +1217,39 @@ impl GpuSurfaceFrame for crate::platform::WinitSurface {
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
         renderer
             .render_window_frame(&target, engine_target)
+            .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        Ok(SurfaceRenderResult {
+            acquire: Duration::ZERO,
+            render: render_started_at.elapsed(),
+            present: Duration::ZERO,
+            snapshot: None,
+        })
+    }
+}
+
+/// The browser page's frame: `Engine::render` is the whole presentation —
+/// the engine presents its canvases and places the page's hosted elements
+/// inside it, so there is no host acquire, copy or present, and `acquire`
+/// and `present` report zero. No snapshot can be asked of this kind: a
+/// browser surface is never read back.
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl GpuSurfaceFrame for crate::platform::BrowserSurface {
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    async fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+        let render_started_at = Instant::now();
+        let (target, root, window_slot) =
+            self.render_targets(display_scale, crate::renderer::working_color(clear_color));
+        renderer
+            .render_dom_frame(&target, root, window_slot)
+            .await
             .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
         Ok(SurfaceRenderResult {
             acquire: Duration::ZERO,

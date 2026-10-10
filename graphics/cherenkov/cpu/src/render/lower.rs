@@ -9,6 +9,7 @@ use std::sync::Arc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::kurbo::{Affine, BezPath, PathEl, Point, Rect};
+use cherenkov::lowering::rounded_box::{BoxForm, RoundedBox, box_form};
 use cherenkov::{BlendMode, FillRule, FrameId, GlyphRun, GlyphStyle, ShapeData};
 
 use cherenkov::{LayerId, RenderError, SurfaceId, SurfaceTree};
@@ -170,15 +171,43 @@ pub enum Item {
     },
 }
 
+/// A member clip as the SDF reads evaluate it: its centred rounded box
+/// and the device → box-local affine that maps a sample point into it —
+/// the GPU's `clip_inv` and `Shape` pair.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxClip {
+    /// Device → box-local affine in kurbo coefficient order
+    /// `(a, b, c, d, e, f)`: `x′ = a·x + c·y + e`,
+    /// `y′ = b·x + d·y + f`.
+    pub inv: [f32; 6],
+    /// The centred box.
+    pub shape: RoundedBox,
+}
+
+impl BoxClip {
+    /// The box `shape` placed by the clip-local `extra` under the
+    /// clip's `transform`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the engines evaluate SDF fields in f32"
+    )]
+    fn new(extra: Affine, shape: RoundedBox, transform: Affine) -> Self {
+        Self {
+            inv: (transform * extra).inverse().as_coeffs().map(|v| v as f32),
+            shape,
+        }
+    }
+}
+
 /// The union-field data a member's sample composites against: every
-/// member's clip boundary edges in paint order, the smoothing distance,
+/// member's clip box in paint order, the smoothing distance,
 /// this member's index and its `outer` extent.
 #[derive(Clone, Debug)]
 pub struct UnionSample {
-    /// Each member's clip boundary edges in device space, in paint
-    /// order. A lone `outer`-band member of a non-union group is its
-    /// own one-member list with `k == 0`.
-    pub members: Arc<[Arc<[Edge]>]>,
+    /// Each member's clip box, in paint order. A lone `outer`-band
+    /// member of a non-union group is its own one-member list with
+    /// `k == 0`.
+    pub members: Arc<[BoxClip]>,
     /// The group's smoothing distance `k`; `0` folds to the member's
     /// own distance.
     pub k: f32,
@@ -222,8 +251,11 @@ pub struct CaptureItem {
     /// sampled rows.
     pub apron: usize,
     /// Extra rows around each band the capture covers: the deepest
-    /// enclosing filter-scope apron over the group's members.
+    /// enclosing filter-scope apron plus effect sampling reach over the
+    /// group's members.
     pub reach: usize,
+    /// Whether members displace their capture reads.
+    pub displaced: bool,
     /// The prepared chain, when the group is filtered.
     pub filter: Option<FrameFilter>,
     /// Looked-through isolation levels on the stack flattened over the
@@ -241,17 +273,15 @@ pub enum SampleEffect {
     /// A 3×4 premultiplied colour matrix (filtrate `ColorMatrix`
     /// layout): `dot(row, c)` per channel, alpha passes through.
     Color([f32; 12]),
-    /// An effect reading the member clip's signed distance, carried as
-    /// the clip flattened to device-space edges.
+    /// An effect reading the member clip's signed distance.
     Sdf(SdfEffect),
 }
 
 /// An SDF-reading member effect and the clip boundary it reads.
 #[derive(Clone, Debug)]
 pub struct SdfEffect {
-    /// The member clip flattened to device-space edges (implicit-close
-    /// applied; only non-`Path` shapes reach this).
-    pub edges: Arc<[Edge]>,
+    /// The member clip the distance and normal are read from.
+    pub clip: Arc<BoxClip>,
     /// Which effect the distance and normal feed.
     pub kind: SdfKind,
 }
@@ -372,7 +402,8 @@ struct BackdropPlan {
     /// rows: `apron` for a 1:1 capture, the texel window mapped back to
     /// device rows otherwise.
     device_apron: usize,
-    /// Extra rows around each band the capture must cover.
+    /// Extra rows around each band the capture must cover: the deepest
+    /// member scope apron plus effect reach over the members.
     reach: usize,
     /// The prepared chain, when the group is filtered.
     filter: Option<FrameFilter>,
@@ -384,8 +415,8 @@ struct BackdropPlan {
     /// The group's union smoothing distance; `0` when the group has no
     /// union field.
     union_k: f32,
-    /// Every member's clip edges in `order`, when the group unions.
-    union_members: Arc<[Arc<[Edge]>]>,
+    /// Every member's clip box in `order`, when the group unions.
+    union_members: Arc<[BoxClip]>,
     /// The innermost filter scope the capture item lands in.
     scope: Option<LayerId>,
 }
@@ -547,17 +578,18 @@ struct Member {
     /// The member's effect sampling reach — it inflates the capture
     /// footprint, never the draw bounds.
     reach: f64,
-    /// The member's own clip flattened to device-space edges, when the
-    /// group unions its members or the member draws an `outer` band.
-    edges: Option<Arc<[Edge]>>,
+    /// The member's own clip's analytic box, when the group unions its
+    /// members or the member draws an `outer` band.
+    field: Option<BoxClip>,
     /// The member's `outer` extent.
     outer: f32,
     /// The member's index in the group's paint order.
     ord: u32,
     /// The innermost enclosing filter scope.
     scope: Option<LayerId>,
-    /// The member's resolved per-member effect.
-    effect: SampleEffect,
+    /// The member's resolved per-member effect; `None` when its clip
+    /// has no area and the member samples nothing.
+    effect: Option<SampleEffect>,
 }
 
 /// The lowering walk state for one surface frame.
@@ -659,13 +691,13 @@ fn sigma_max(t: Affine) -> f64 {
 
 /// Resolves a member's engine effect into a [`SampleEffect`], also
 /// returning its sampling reach (the member's bounds grow by it).
-/// `Path`/`Line` clips give SDF effects no analytic boundary — the same
-/// `backdrop-effect-sdf-path` error as the GPU slice; a `Shader` effect
-/// is a GPU-only capability on this backend.
+/// `clip` is the member clip's box; a path clip has none and gives SDF
+/// effects no analytic boundary — the same `backdrop-effect-sdf-path`
+/// error as the GPU slice. A `Shader` effect is a GPU-only capability on
+/// this backend.
 fn member_effect(
     effect: Option<&cherenkov::BackdropEffect>,
-    clip: &ShapeData,
-    transform: Affine,
+    clip: Option<BoxClip>,
 ) -> Result<(SampleEffect, f64), RenderError> {
     let Some(effect) = effect else {
         return Ok((SampleEffect::None, 0.0));
@@ -720,51 +752,21 @@ fn member_effect(
             return Err(RenderError::Unsupported(names::BACKDROP_SHADER));
         }
     };
-    let edges = clip_edges(clip, transform)?;
+    let clip = clip.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
     Ok((
-        SampleEffect::Sdf(SdfEffect { edges, kind }),
+        SampleEffect::Sdf(SdfEffect {
+            clip: Arc::new(clip),
+            kind,
+        }),
         f64::from(effect.reach()),
     ))
 }
 
-/// Whether the clip's analytic shape is degenerate: a zero-radius
-/// circle or ellipse, or a line — the cases the GPU's `box_shape` maps
-/// to `None`. A union member's field cannot fold them.
-fn degenerate_clip(clip: &ShapeData) -> bool {
-    match clip {
-        ShapeData::Circle(c) => c.radius <= 0.0,
-        ShapeData::Ellipse(e) => {
-            let r = e.radii();
-            r.x <= 0.0 || r.y <= 0.0
-        }
-        ShapeData::Line(_) => true,
-        _ => false,
-    }
-}
-
-/// The clip's device-space boundary edges, with the same tolerance math
-/// [`member_effect`] uses. `Path`/`Line` clips have no analytic boundary:
-/// they fail with `backdrop-effect-sdf-path`, which is also a union
-/// member's error since the field cannot fold a mask.
-fn clip_edges(clip: &ShapeData, transform: Affine) -> Result<Arc<[Edge]>, RenderError> {
-    let sm = sigma_max(transform).max(1e-12);
-    let (path, _) = match clip {
-        ShapeData::Rect(_)
-        | ShapeData::RoundedRect(_)
-        | ShapeData::Continuous(_)
-        | ShapeData::Circle(_)
-        | ShapeData::Ellipse(_) => shape_outline(clip, FLATTEN_TOL / sm),
-        _ => None,
-    }
-    .ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
-    Ok(boundary_edges(transform * path, FLATTEN_TOL).into())
-}
-
-/// The path's flattened boundary edges, implicit-close applied.
-/// Horizontal edges are kept: the SDF reader measures to the real
-/// boundary.
+/// Flattens `path` (already in device space) into directed edges for
+/// coverage rasterization, implicit-close applied: horizontal edges
+/// carry no area and drop out.
 #[expect(clippy::cast_possible_truncation, reason = "geometry is f32")]
-fn boundary_edges(path: BezPath, tol: f64) -> Vec<Edge> {
+fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
     let mut edges = Vec::new();
     let mut cur = Point::ZERO;
     let mut start = Point::ZERO;
@@ -804,13 +806,6 @@ fn boundary_edges(path: BezPath, tol: f64) -> Vec<Edge> {
         }
     });
     close(&mut edges, cur, start);
-    edges
-}
-
-/// Flattens `path` (already in device space) into directed edges for
-/// coverage rasterization: horizontal edges carry no area and drop out.
-fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
-    let mut edges = boundary_edges(path, tol);
     #[expect(clippy::float_cmp, reason = "horizontal edges carry no area")]
     edges.retain(|e| e.y0 != e.y1);
     edges
@@ -1093,58 +1088,15 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 .clip
                 .as_ref()
                 .ok_or(RenderError::Unsupported(names::BACKDROP_UNCLIPPED))?;
-            let member = clip_device_bounds(transform, clip);
-            let outer = sample.outer_extent().get();
-            let spec = prepared.spec;
-            let union_group = spec.union_field().is_some();
-            let field_member = union_group || outer > 0.0;
-            // A union member's clip must flatten to analytic edges — it
-            // feeds the fold — and so must a member drawing an `outer`
-            // band: its own field covers the band. A degenerate clip has
-            // no SDF to fold; the check precedes effect planning.
-            if field_member && degenerate_clip(clip) {
-                return Err(RenderError::Unsupported(
-                    names::BACKDROP_UNION_DEGENERATE_MEMBER,
-                ));
-            }
-            let (effect, reach) = member_effect(sample.effect(), clip, transform)?;
-            // An SDF effect already flattened the same clip; reuse its
-            // edges rather than flattening twice.
-            let edges = field_member
-                .then(|| match &effect {
-                    SampleEffect::Sdf(sdf) => Ok(sdf.edges.clone()),
-                    _ => clip_edges(clip, transform),
-                })
-                .transpose()?;
-            let plan = self.backdrops.entry(g).or_insert_with(|| {
-                BackdropPlan::new(
-                    id,
-                    member,
-                    spec,
-                    prepared.filter.clone(),
-                    scopes.last().copied(),
-                )
-            });
-            // The capture footprint inflates the clip bounds by the
-            // effect's reach — the union pad lands in `plan_union`.
-            plan.union = plan.union.union(member.inflate(reach, reach));
-            let ord = u32::try_from(plan.order.len())
-                .expect("a group's members never exceed MAX_MEMBERS");
-            plan.order.push(id);
-            plan.members.insert(
+            self.plan_member(
                 id,
-                Member {
-                    bounds: member,
-                    draw: member,
-                    reach,
-                    edges,
-                    outer,
-                    ord,
-                    scope: scopes.last().copied(),
-                    effect,
-                },
-            );
-            if spec.anchor_layer().is_some() {
+                sample,
+                clip,
+                transform,
+                prepared,
+                scopes.last().copied(),
+            )?;
+            if prepared.spec.anchor_layer().is_some() {
                 self.anchor_scratch.members.push((g, canvas, order));
             }
         }
@@ -1170,6 +1122,84 @@ impl<'a, 'b> Lowering<'a, 'b> {
         Ok(())
     }
 
+    /// Plans layer `id`'s backdrop sample of group `prepared`: the member's
+    /// device clip bounds, its effect and, when the group unions its
+    /// members or the member draws an `outer` band, the clip's box its
+    /// field reads. `scope` is the innermost enclosing filtered layer.
+    ///
+    /// A clip without area — a line, or a circle or ellipse with a zero
+    /// radius — draws nothing, so the member keeps its place in the
+    /// group's paint order but samples nothing, as on the GPU; a union or
+    /// `outer` member needs its clip's box as its field and rejects it.
+    /// A path clip has no box: only a member that reads no distance may
+    /// use one.
+    fn plan_member(
+        &mut self,
+        id: LayerId,
+        sample: &cherenkov::BackdropSample,
+        clip: &ShapeData,
+        transform: Affine,
+        prepared: &super::filter::PreparedBackdrop,
+        scope: Option<LayerId>,
+    ) -> Result<(), RenderError> {
+        let g = sample.group().raw();
+        let outer = sample.outer_extent().get();
+        let spec = prepared.spec;
+        let field_member = spec.union_field().is_some() || outer > 0.0;
+        let (field, effect, reach) = match box_form(clip) {
+            BoxForm::Empty if field_member => {
+                return Err(RenderError::Unsupported(
+                    names::BACKDROP_UNION_DEGENERATE_MEMBER,
+                ));
+            }
+            // The member still orders the group — the capture lands at
+            // the first member in paint order — but samples nothing.
+            BoxForm::Empty => (
+                None,
+                None,
+                sample.effect().map_or(0.0, |e| f64::from(e.reach())),
+            ),
+            form => {
+                let clip_box = match form {
+                    BoxForm::Box { extra, shape } => Some(BoxClip::new(extra, shape, transform)),
+                    _ => None,
+                };
+                let field = field_member
+                    .then(|| {
+                        clip_box.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))
+                    })
+                    .transpose()?;
+                let (effect, reach) = member_effect(sample.effect(), clip_box)?;
+                (field, Some(effect), reach)
+            }
+        };
+        let member = clip_device_bounds(transform, clip);
+        let plan = self
+            .backdrops
+            .entry(g)
+            .or_insert_with(|| BackdropPlan::new(id, member, spec, prepared.filter.clone(), scope));
+        // The capture footprint inflates the clip bounds by the
+        // effect's reach — the union pad lands in `plan_union`.
+        plan.union = plan.union.union(member.inflate(reach, reach));
+        let ord =
+            u32::try_from(plan.order.len()).expect("a group's members never exceed MAX_MEMBERS");
+        plan.order.push(id);
+        plan.members.insert(
+            id,
+            Member {
+                bounds: member,
+                draw: member,
+                reach,
+                field,
+                outer,
+                ord,
+                scope,
+                effect,
+            },
+        );
+        Ok(())
+    }
+
     /// Plans every backdrop group: a paint-order walk collecting each
     /// member's device-space clip bounds, then the capture region — the
     /// union on the capture grid inflated by the chain footprint's apron
@@ -1177,11 +1207,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// to whole texels.
     ///
     /// A member inside a filter scope samples rows within that scope's
-    /// window (`band ± apron`); each group's `reach` is the deepest such
-    /// apron over its members, and a scope directly containing a capture
-    /// grows its apron to `apron + reach` so the capture's window fits.
-    /// Both bounds are monotone in each other and capped at the surface
-    /// height, so the fixed point is found by iteration.
+    /// window (`band ± apron`), and every member's samples reach its
+    /// effect's `reach` past the sampled pixel; each group's `reach` is
+    /// the deepest `apron + effect reach` over its members, and a scope
+    /// directly containing a capture grows its apron to `apron + reach`
+    /// so the capture's window fits. Both bounds are monotone in each
+    /// other and capped at the surface height, so the fixed point is
+    /// found by iteration.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1221,7 +1253,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         // outer` plus 1.5px of antialiasing so bridge pixels between
         // members and the `outer` band are captured and drawn, then
         // recompute the capture's union from the inflated bounds. The
-        // member edges, in paint order, become the fold's operands.
+        // member clip boxes, in paint order, become the fold's operands.
         for plan in self.backdrops.values_mut() {
             Self::plan_union(plan)?;
         }
@@ -1268,7 +1300,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 let reach = plan
                     .members
                     .values()
-                    .filter_map(|m| m.scope.map(|s| aprons[&s]))
+                    .map(|m| m.scope.map_or(0, |s| aprons[&s]) + m.reach.ceil() as usize)
                     .fold(0, usize::max);
                 changed |= reach != plan.reach;
                 plan.reach = reach;
@@ -1367,7 +1399,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// grow by `r(n) + outer` plus 1.5px of antialiasing so bridge pixels
     /// between members and the `outer` band are captured and drawn, and the
     /// capture's union recomputes from the inflated bounds. The member
-    /// edges, in paint order, become the fold's operands.
+    /// clip boxes, in paint order, become the fold's operands.
     fn plan_union(plan: &mut BackdropPlan) -> Result<(), RenderError> {
         let union_spec = plan.spec.union_field();
         let needs_field = union_spec.is_some() || plan.members.values().any(|m| m.outer > 0.0);
@@ -1386,10 +1418,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
             f64::NEG_INFINITY,
             f64::NEG_INFINITY,
         );
-        // Member edges are fold operands, so they are collected only
+        // Member clip boxes are fold operands, so they are collected only
         // when the group has a union — a non-union member's outer band
         // runs against its own field at raster time and no other
-        // member's edges exist.
+        // member's box exists.
         let mut members = Vec::new();
         if union_spec.is_some() {
             members.reserve_exact(n);
@@ -1414,12 +1446,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     .inflate(member.reach + pad, member.reach + pad),
             );
             if union_spec.is_some() {
-                members.push(
-                    member
-                        .edges
-                        .clone()
-                        .expect("union members carry clip edges"),
-                );
+                members.push(member.field.expect("union members carry clip boxes"));
             }
         }
         plan.union = union;
@@ -1449,7 +1476,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let Some(entry) = plan.members.get(&member) else {
             return;
         };
-        let (bounds, effect) = (entry.draw, entry.effect.clone());
+        let Some(effect) = entry.effect.clone() else {
+            return;
+        };
+        let bounds = entry.draw;
         // The device rect the region's texels cover.
         let s = f64::from(plan.spec.scale().get());
         let region = Rect::new(
@@ -1491,10 +1521,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             (
                 ancestors.cloned(),
                 Some(UnionSample {
-                    members: Arc::from([entry
-                        .edges
-                        .clone()
-                        .expect("outer members carry clip edges")]),
+                    members: Arc::from([entry.field.expect("outer members carry clip boxes")]),
                     k: 0.0,
                     ord: 0,
                     outer: entry.outer,
@@ -1879,6 +1906,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             let reach = plan.reach;
             let spec = plan.spec;
             let filter = plan.filter.clone();
+            let displaced = plan.members.values().any(|member| member.reach > 0.0);
             let flatten = self.iso_kinds.iter().rev().take_while(|&&k| k).count();
             self.items.push(Item::Capture(Box::new(CaptureItem {
                 group: gid,
@@ -1908,6 +1936,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 },
                 apron,
                 reach,
+                displaced,
                 filter,
                 flatten,
             })));
@@ -2473,9 +2502,8 @@ pub fn silhouette_bytes(content: &ContentData) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnchorScratch, boundary_edges};
+    use super::AnchorScratch;
     use cherenkov::LayerId;
-    use cherenkov::kurbo::{RoundedRect, Shape as _};
 
     #[test]
     fn anchor_scratch_clear_retains_capacity_and_drops_old_links() {
@@ -2514,26 +2542,6 @@ mod tests {
                 scratch.links.capacity(),
             ),
             capacity
-        );
-    }
-
-    /// SDF edges keep horizontal segments: coverage drops them as
-    /// area-free, but distance effects measure to the real boundary.
-    #[test]
-    fn boundary_edges_include_horizontals() {
-        let path = RoundedRect::new(0.0, 0.0, 100.0, 80.0, 12.0).to_path(0.02);
-        let edges = boundary_edges(path, 0.02);
-        let horizontal = edges
-            .iter()
-            .filter(|e| e.y0.to_bits() == e.y1.to_bits())
-            .count();
-        assert!(
-            horizontal >= 2,
-            "top and bottom edges kept, got {horizontal}"
-        );
-        assert!(
-            edges.iter().any(|e| (e.x0 - 100.0).abs() < 1e-4),
-            "right edge kept"
         );
     }
 }
