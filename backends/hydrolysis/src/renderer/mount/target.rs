@@ -40,13 +40,16 @@ pub trait LayerTarget: cherenkov::Target {
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources>;
 
+    /// Binds hosted content at `size` on `layer`; returns whether this call
+    /// (re)bound it. Only a target with system-compositor planes hosts
+    /// platform objects, so reaching this anywhere else is a build bug.
     #[cfg(hydrolysis_hosted)]
     fn mount_hosted(
         _tx: &mut Transaction<'_, Self>,
         _layer: &Layer,
         _runtime: &crate::hosted::HostedRuntime,
         _size: kurbo::Size,
-    ) {
+    ) -> bool {
         panic!("hydrolysis: this target cannot mount hosted content");
     }
 
@@ -227,12 +230,14 @@ impl LayerTarget for cherenkov_gpu::Gpu {
         layer: &Layer,
         runtime: &crate::hosted::HostedRuntime,
         size: kurbo::Size,
-    ) {
+    ) -> bool {
         let binding = (layer.id(), size);
-        if *runtime.binding.borrow() != Some(binding) {
-            tx[layer].content(runtime.hosted.at(size));
-            runtime.binding.replace(Some(binding));
+        if *runtime.binding.borrow() == Some(binding) {
+            return false;
         }
+        tx[layer].content(runtime.hosted.at(size));
+        runtime.binding.replace(Some(binding));
+        true
     }
 
     fn resources(host: &CherenkovHost) -> &Rc<SceneResources> {

@@ -999,17 +999,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
 
     let rebuilt = pump_window_scene(runtime, env, &mut || false).built;
     apply_window_size_limits(runtime, env);
-    runtime.renderer.sync_hosted_focus();
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position
-        && !runtime.renderer.hosted_owns_cursor(x, y)
-    {
-        runtime
-            .platform
-            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
-    }
+    sync_platform_input(runtime);
     if runtime.renderer.take_redraw_request() {
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -1491,17 +1481,7 @@ crate::engine::cfg_async_fn! {
         }
     }
 
-    runtime.renderer.sync_hosted_focus();
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position
-        && !runtime.renderer.hosted_owns_cursor(x, y)
-    {
-        runtime
-            .platform
-            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
-    }
+    sync_platform_input(runtime);
     if runtime.renderer.take_redraw_request() {
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -1660,8 +1640,9 @@ where
     // flag set at the press is read by the very next `TextInput` event.
     let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
-        runtime.renderer.sync_hosted_focus();
-        if runtime.renderer.hosted_has_focus()
+        // Hosted content holding platform focus receives its own key and
+        // IME delivery; none of it reaches Hydrolysis's dispatch.
+        if runtime.renderer.sync_hosted_focus()
             && matches!(
                 event,
                 InputEvent::Key { .. }
@@ -2116,10 +2097,23 @@ where
         }
         schedule_redraw_or_refresh(runtime, changed);
     }
+    sync_platform_input(runtime);
+    should_close
+}
+
+/// Settles focus ownership between Hydrolysis and hosted content, then pushes
+/// the focused text input's state to the platform IME.
+fn sync_platform_focus<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
     runtime.renderer.sync_hosted_focus();
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
+}
+
+/// [`sync_platform_focus`], then the cursor under the pointer — left to the
+/// hosted view wherever uncovered hosted content is under it.
+fn sync_platform_input<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+    sync_platform_focus(runtime);
     if let Some((x, y)) = runtime.pointer_position
         && !runtime.renderer.hosted_owns_cursor(x, y)
     {
@@ -2127,7 +2121,6 @@ where
             .platform
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
     }
-    should_close
 }
 
 pub(super) fn advance_runtime<P: PlatformWindow>(
@@ -2152,10 +2145,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
             runtime.render_diagnostics.set_refresh_rate(hz);
         }
     }
-    runtime.renderer.sync_hosted_focus();
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
+    sync_platform_focus(runtime);
     // A gesture tick can mount a popup window — an armed context-menu hold
     // fires here — and the popup anchors in absolute coordinates through
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.

@@ -58,10 +58,16 @@ impl HydroNativeView for WebView {
     }
 }
 
+/// The hosted leaf showing `view`'s `WKWebView`. A page another engine opened
+/// reaches the backend only when that engine's `Hook<WebView>` is missing.
 #[cfg(hydrolysis_macos_system_webview)]
 pub fn hosted(view: &WebView) -> crate::HostedView {
-    let handle = view.handle().downcast_ref::<macos::MacSystemWebViewHandle>()
-        .expect("Hydrolysis WKWebView requires the system controller; install the custom engine's WebView hook");
+    const FOREIGN: &str = "Hydrolysis hosts only pages the system WKWebView controller opened; \
+                           install the custom engine's WebView hook";
+    let handle = view
+        .handle()
+        .downcast_ref::<macos::MacSystemWebViewHandle>()
+        .expect(FOREIGN);
     crate::HostedView::new(handle.clone())
 }
 

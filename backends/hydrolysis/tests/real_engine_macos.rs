@@ -108,14 +108,18 @@ mod real {
         })
     }
 
+    /// A hosted leaf mounts its content once when its node is built, keeps
+    /// it across frames, and unmounts it the moment the node retires — while
+    /// the window lives on, not when the runtime goes away.
     fn hosted_node_mounts_once_and_unmounts_when_retired() {
         use hydrolysis::{
-            FontFamilyResolution, HostedContent, HostedObject, HostedView, SemanticRuntime,
+            FontFamilyResolution, HostedContent, HostedObject, HostedOcclusion, HostedView,
+            SemanticRuntime,
         };
         use nami::{Binding, Computed};
         use objc2::{MainThreadMarker, rc::Retained};
         use objc2_app_kit::NSView;
-        use waterui_core::{AnyView, Environment, Native, handler::AnyViewBuilder};
+        use waterui_core::{AnyView, Dynamic, Environment, Native, handler::AnyViewBuilder};
 
         #[derive(Clone)]
         struct Probe {
@@ -126,7 +130,7 @@ mod real {
         }
 
         impl HostedContent for Probe {
-            fn mount(&self, _occlusion: Rc<RefCell<Vec<kurbo::Rect>>>) -> HostedObject {
+            fn mount(&self, _occlusion: HostedOcclusion) -> HostedObject {
                 self.mounts.set(self.mounts.get() + 1);
                 cherenkov_gpu::interop::apple::HostedView::new(
                     self.view.clone(),
@@ -156,10 +160,19 @@ mod real {
             unmounts: Rc::clone(&unmounts),
             focus: Binding::bool(false),
         };
+        let shown = Binding::bool(true);
+        let watched = shown.clone();
         let mut runtime = SemanticRuntime::new(
             Environment::new(),
             AnyViewBuilder::<AnyView>::new(move || {
-                AnyView::new(Native::new(HostedView::new(probe.clone())))
+                let probe = probe.clone();
+                AnyView::new(Dynamic::watch(watched.clone(), move |shown: bool| {
+                    if shown {
+                        AnyView::new(Native::new(HostedView::new(probe.clone())))
+                    } else {
+                        AnyView::new(())
+                    }
+                }))
             }),
             320,
             240,
@@ -169,13 +182,18 @@ mod real {
             runtime.pump();
         }
         assert_eq!(mounts.get(), 1, "frames reuse the mounted object");
-        assert_eq!(unmounts.get(), 0);
+        assert_eq!(unmounts.get(), 0, "a live node stays mounted");
+
+        shown.set(false);
+        runtime.pump();
+        assert_eq!(unmounts.get(), 1, "retiring the node unmounts its content");
+        assert_eq!(mounts.get(), 1, "retirement mounts nothing");
+
+        shown.set(true);
+        runtime.pump();
+        assert_eq!(mounts.get(), 2, "a new node mounts the content again");
         drop(runtime);
-        assert_eq!(
-            unmounts.get(),
-            1,
-            "retiring the node explicitly unmounts it"
-        );
+        assert_eq!(unmounts.get(), 2, "closing the window retires the node");
     }
 
     /// Starts the server, opens one web view and wires the shared contract.

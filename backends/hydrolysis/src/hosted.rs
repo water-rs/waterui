@@ -4,9 +4,43 @@ use std::{cell::RefCell, fmt, rc::Rc};
 
 use waterui_core::{Computed, NativeView, layout::StretchAxis};
 
-/// The engine's platform-selected hosted object (`NSView` on macOS,
-/// `SurfaceControl` on Android, `HtmlElement` on wasm32).
+/// The engine's platform-selected hosted object: an `NSView` on macOS, a
+/// `CALayer` on iOS, a `SurfaceControl` on Android and an `HtmlElement` on
+/// wasm32.
 pub type HostedObject = <cherenkov_gpu::Gpu as cherenkov::HostedLayers>::Object;
+
+/// Where Hydrolysis paints interactive content above a hosted plane.
+///
+/// The renderer republishes the rectangles every frame, in window hit-test
+/// space (logical points, y down from the window content's top-left). A host
+/// refuses a hit that [`covers`](Self::covers) reports, so the event reaches
+/// Hydrolysis's own hit testing instead.
+#[derive(Clone, Default)]
+pub struct HostedOcclusion {
+    rects: Rc<RefCell<Vec<kurbo::Rect>>>,
+}
+
+impl HostedOcclusion {
+    /// Whether Hydrolysis content painted above the plane takes a hit at
+    /// `point`, in window hit-test space.
+    #[must_use]
+    pub fn covers(&self, point: kurbo::Point) -> bool {
+        self.rects.borrow().iter().any(|rect| rect.contains(point))
+    }
+
+    /// The renderer's write side, published by the hit-test materialization.
+    pub(crate) fn sink(&self) -> Rc<RefCell<Vec<kurbo::Rect>>> {
+        Rc::clone(&self.rects)
+    }
+}
+
+impl fmt::Debug for HostedOcclusion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("HostedOcclusion")
+            .field(&self.rects.borrow())
+            .finish()
+    }
+}
 
 /// The input and lifecycle half of hosted content.
 ///
@@ -17,11 +51,11 @@ pub type HostedObject = <cherenkov_gpu::Gpu as cherenkov::HostedLayers>::Object;
 /// There are deliberately no `Send`/`Sync` bounds: both DOM and `AppKit` objects live
 /// on the UI thread. A content instance can be mounted in only one node.
 pub trait HostedContent: 'static {
-    /// Mounts this instance and returns its platform object. The published
-    /// rectangles are in window logical coordinates and identify interactive
-    /// Hydrolysis content painted above this plane. The host must reject hits
-    /// in these rectangles, converting through its platform view hierarchy.
-    fn mount(&self, occlusion: Rc<RefCell<Vec<kurbo::Rect>>>) -> HostedObject;
+    /// Mounts this instance and returns its platform object.
+    ///
+    /// The host refuses every hit `occlusion` covers, converting the hit's
+    /// point into window hit-test space through its platform view hierarchy.
+    fn mount(&self, occlusion: HostedOcclusion) -> HostedObject;
 
     /// Detaches the platform object and releases its focus observation. Called
     /// explicitly when the retained node retires, before engine binding cleanup.
@@ -67,7 +101,7 @@ pub struct HostedRuntime {
     pub content: Rc<dyn HostedContent>,
     pub hosted: cherenkov::Hosted<cherenkov_gpu::Gpu>,
     pub focused: Computed<bool>,
-    pub occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
+    pub occlusion: HostedOcclusion,
     pub binding: RefCell<Option<(cherenkov::LayerId, kurbo::Size)>>,
 }
 
@@ -81,8 +115,8 @@ impl fmt::Debug for HostedRuntime {
 
 impl HostedRuntime {
     pub fn new(view: HostedView) -> Rc<Self> {
-        let occlusion = Rc::new(RefCell::new(Vec::new()));
-        let object = view.content.mount(Rc::clone(&occlusion));
+        let occlusion = HostedOcclusion::default();
+        let object = view.content.mount(occlusion.clone());
         Rc::new(Self {
             focused: view.content.focused(),
             content: view.content,

@@ -747,7 +747,7 @@ fn answer_scheme_task(
     let ns_response = NSHTTPURLResponse::initWithURL_statusCode_HTTPVersion_headerFields(
         NSHTTPURLResponse::alloc(),
         &url,
-        NSInteger::try_from(response.status).expect("HTTP status fits NSInteger"),
+        NSInteger::from(response.status),
         Some(&NSString::from_str("HTTP/1.1")),
         Some(&headers),
     )
@@ -789,7 +789,7 @@ impl core::fmt::Debug for MacSystemWebViewHandle {
 }
 
 impl crate::HostedContent for MacSystemWebViewHandle {
-    fn mount(&self, occlusion: Rc<RefCell<Vec<kurbo::Rect>>>) -> crate::HostedObject {
+    fn mount(&self, occlusion: crate::HostedOcclusion) -> crate::HostedObject {
         let mut port = self.inner.port.borrow_mut();
         assert!(
             port.is_none(),
@@ -812,6 +812,8 @@ impl crate::HostedContent for MacSystemWebViewHandle {
             .borrow_mut()
             .take()
             .expect("WKWebView unmounted without a mount");
+        // A page leaving with the window's focus hands it back to the content
+        // view, whose first-responder status Hydrolysis's own focus rides on.
         if self.inner.focused.snapshot()
             && let Some(window) = port.window()
         {

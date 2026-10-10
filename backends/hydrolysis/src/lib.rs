@@ -29,7 +29,7 @@ pub(crate) use waterui_backend_core::{animation, gesture, scroll, time};
 
 pub use engine::{IconOnlyButtonLabel, WidgetTheme};
 #[cfg(hydrolysis_hosted)]
-pub use hosted::{HostedContent, HostedObject, HostedView};
+pub use hosted::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 use std::time::Duration;
 use waterui_core::Environment;
 
