@@ -1181,7 +1181,7 @@ const REDIRECTED_INPUT: [&str; 8] = [
 /// not clicks.
 ///
 /// The returned listeners stay registered while they are held.
-pub(crate) fn redirect_occluded_input(
+pub fn redirect_occluded_input(
     element: &HtmlElement,
     occlusion: crate::HostedOcclusion,
 ) -> Vec<Closure<dyn FnMut(Event)>> {
@@ -1210,13 +1210,14 @@ pub(crate) fn redirect_occluded_input(
                 }
                 event.stop_immediate_propagation();
                 event.prevent_default();
-                let copy: Option<Event> = if let Some(pointer) = event.dyn_ref::<PointerEvent>() {
-                    Some(pointer_event_copy(pointer).into())
-                } else {
-                    event
-                        .dyn_ref::<WheelEvent>()
-                        .map(|wheel| wheel_event_copy(wheel).into())
-                };
+                let copy: Option<Event> = event.dyn_ref::<PointerEvent>().map_or_else(
+                    || {
+                        event
+                            .dyn_ref::<WheelEvent>()
+                            .map(|wheel| wheel_event_copy(wheel).into())
+                    },
+                    |pointer| Some(pointer_event_copy(pointer).into()),
+                );
                 if let Some(copy) = copy {
                     root.dispatch_event(&copy)
                         .expect("hydrolysis web platform: failed to redirect occluded input");

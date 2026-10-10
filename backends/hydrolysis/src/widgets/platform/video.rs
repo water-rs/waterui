@@ -58,7 +58,7 @@ pub fn install(env: &mut Environment) {
             projection,
             loops,
         } = config;
-        leaf(env, playback, content_mode, projection, false, loops)
+        leaf(env, playback, content_mode, &projection, false, loops)
     });
     env.insert_hook::<VideoPlayerConfig, AnyView>(|env, config| {
         let VideoPlayerConfig {
@@ -84,7 +84,7 @@ fn leaf(
     env: &Environment,
     playback: PlaybackConfiguration,
     content_mode: ContentMode,
-    projection: VideoProjection,
+    projection: &VideoProjection,
     controls: bool,
     loops: bool,
 ) -> AnyView {
@@ -151,6 +151,12 @@ fn video_element(content_mode: ContentMode, controls: bool) -> HtmlVideoElement 
     element
 }
 
+/// A DOM event listener, registered while it is held.
+type Listener = Closure<dyn FnMut(web_sys::Event)>;
+
+/// What one media event does to the coordinator.
+type Handler = fn(&Rc<Player>);
+
 /// The bindings the coordinator watches and writes, lifted off
 /// [`PlaybackConfiguration`].
 struct Bindings {
@@ -207,7 +213,7 @@ struct Player {
     /// The `<track>` children the current source's sidecar subtitles added.
     tracks: RefCell<Vec<HtmlTrackElement>>,
     focused: Binding<bool>,
-    listeners: RefCell<Vec<Closure<dyn FnMut(web_sys::Event)>>>,
+    listeners: RefCell<Vec<Listener>>,
     guards: RefCell<Vec<BoxWatcherGuard>>,
 }
 
@@ -268,7 +274,7 @@ impl Player {
             path: PlaybackOutputPath::PlatformManaged,
         });
         player.apply_audio();
-        player.load(player.bindings.source.snapshot());
+        player.load(&player.bindings.source.snapshot());
         player
     }
 
@@ -303,7 +309,7 @@ impl Player {
 
     /// Loads `media` into the element, unless it is the source already
     /// loaded.
-    fn load(&self, media: MediaItem) {
+    fn load(&self, media: &MediaItem) {
         let url = media.source.to_string();
         let key = (url.clone(), media.delivery);
         if self.source_key.borrow().as_ref() == Some(&key) {
@@ -339,7 +345,7 @@ impl Player {
         }
 
         self.element.set_src(&url);
-        self.add_subtitle_tracks(&media);
+        self.add_subtitle_tracks(media);
         self.set_phase(PlaybackPhase::Preparing);
     }
 
@@ -358,7 +364,7 @@ impl Player {
                 .expect("hydrolysis web video: failed to create a <track> element")
                 .unchecked_into();
             element.set_kind("subtitles");
-            element.set_src(&track.source.to_string());
+            element.set_src(track.source.as_ref());
             if let Some(language) = &track.language {
                 element.set_srclang(language);
             }
@@ -562,12 +568,11 @@ impl Player {
         let position = self.element.current_time();
         let buffered = self.element.buffered();
         (0..buffered.length())
-            .filter_map(|index| {
+            .find_map(|index| {
                 let start = buffered.start(index).ok()?;
                 let end = buffered.end(index).ok()?;
                 (start <= position && position <= end).then_some(end - position)
             })
-            .next()
             .map_or(0, |ahead| {
                 crate::num_cast::f64_as_u32((ahead * 1000.0).round())
             })
@@ -706,7 +711,7 @@ impl Player {
 
     /// Registers the element's media, picture-in-picture and focus events.
     fn listen(self: &Rc<Self>) {
-        let handlers: [(&str, fn(&Rc<Self>)); 16] = [
+        let handlers: [(&str, Handler); 16] = [
             ("canplay", Self::can_play),
             ("playing", |player| player.playing()),
             ("pause", |player| player.paused()),
@@ -750,16 +755,15 @@ impl Player {
         guards.push(Box::new(bindings.source.watch(watcher(
             self,
             |player, media| {
-                player.load(media);
+                player.load(&media);
             },
         ))));
-        guards.push(Box::new(
-            bindings
-                .desired_playing
-                .watch(watcher(self, |player, desired| {
-                    player.apply_desired_playing(desired)
-                })),
-        ));
+        guards.push(Box::new(bindings.desired_playing.watch(watcher(
+            self,
+            |player, desired| {
+                player.apply_desired_playing(desired);
+            },
+        ))));
         guards.push(Box::new(
             bindings
                 .volume
@@ -780,48 +784,42 @@ impl Player {
                 .preserve_pitch
                 .watch(watcher(self, |player, _: bool| player.apply_audio())),
         ));
-        guards.push(Box::new(
-            bindings
-                .seek_generation
-                .watch(watcher(self, |player, generation| {
-                    player.apply_seek(generation)
-                })),
-        ));
-        guards.push(Box::new(
-            bindings
-                .step_forward_generation
-                .watch(watcher(self, |player, generation| {
-                    player.apply_step(true, generation)
-                })),
-        ));
-        guards.push(Box::new(
-            bindings
-                .step_backward_generation
-                .watch(watcher(self, |player, generation| {
-                    player.apply_step(false, generation)
-                })),
-        ));
-        guards.push(Box::new(
-            bindings
-                .subtitle_selection
-                .watch(watcher(self, |player, _: SubtitleSelection| {
-                    player.apply_subtitle_selection()
-                })),
-        ));
-        guards.push(Box::new(
-            bindings
-                .audio_track_selection
-                .watch(watcher(self, |player, _: AudioTrackSelection| {
-                    player.apply_track_selections()
-                })),
-        ));
-        guards.push(Box::new(
-            bindings
-                .video_track_selection
-                .watch(watcher(self, |player, _: VideoTrackSelection| {
-                    player.apply_track_selections()
-                })),
-        ));
+        guards.push(Box::new(bindings.seek_generation.watch(watcher(
+            self,
+            |player, generation| {
+                player.apply_seek(generation);
+            },
+        ))));
+        guards.push(Box::new(bindings.step_forward_generation.watch(watcher(
+            self,
+            |player, generation| {
+                player.apply_step(true, generation);
+            },
+        ))));
+        guards.push(Box::new(bindings.step_backward_generation.watch(watcher(
+            self,
+            |player, generation| {
+                player.apply_step(false, generation);
+            },
+        ))));
+        guards.push(Box::new(bindings.subtitle_selection.watch(watcher(
+            self,
+            |player, _: SubtitleSelection| {
+                player.apply_subtitle_selection();
+            },
+        ))));
+        guards.push(Box::new(bindings.audio_track_selection.watch(watcher(
+            self,
+            |player, _: AudioTrackSelection| {
+                player.apply_track_selections();
+            },
+        ))));
+        guards.push(Box::new(bindings.video_track_selection.watch(watcher(
+            self,
+            |player, _: VideoTrackSelection| {
+                player.apply_track_selections();
+            },
+        ))));
     }
 
     /// Stops the element and releases its source and listeners.
