@@ -22,6 +22,10 @@ inputs:
     description: '"true" runs the waterui-cli clippy.'
     required: false
     default: "true"
+  apple-gated:
+    description: '"true" runs the clippy of the affected Apple-gated crates.'
+    required: false
+    default: "true"
   affected:
     description: >
       The affected scope from affected.yml: `workspace`, or the
@@ -75,6 +79,7 @@ runs:
     # `mach_task_self` for macOS only, so test targets reaching sysinfo
     # through waterui-testing do not compile for aarch64-apple-ios-sim.
     - name: Clippy (affected Apple-gated crates)
+      if: inputs['apple-gated'] == 'true'
       shell: bash
       env:
         AFFECTED: ${{ inputs.affected }}

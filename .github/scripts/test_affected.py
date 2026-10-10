@@ -291,14 +291,27 @@ def test_no_apple_gated_crate_starts_no_leg():
     assert legs("waterui-core waterui-layout") == []
 
 
-def test_workspace_starts_both_legs():
-    assert leg_targets("workspace") == ["", IOS_SIM]
-    assert all(leg["hydrolysis"] for leg in legs("workspace"))
+def test_workspace_starts_every_leg():
+    assert leg_targets("workspace") == ["", "", "", IOS_SIM]
+    host = [leg for leg in legs("workspace") if leg["target"] == ""]
+    # One pass per host leg: run back to back they overran the budget.
+    assert [(leg["hydrolysis"], leg["waterui-cli"], leg["apple-gated"]) for leg in host] == [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ]
 
 
-def test_host_only_crates_start_only_the_host_leg():
-    assert leg_targets("waterui-cli") == [""]
-    assert legs("waterui-cli")[0]["waterui-cli"]
+def test_host_only_crates_start_only_host_legs():
+    assert legs("waterui-cli") == [
+        {
+            "name": "aarch64-apple-darwin (waterui-cli)",
+            "target": "",
+            "hydrolysis": False,
+            "waterui-cli": True,
+            "apple-gated": False,
+        }
+    ]
     assert leg_targets("waterui-testing cherenkov-bench") == [""]
 
 
