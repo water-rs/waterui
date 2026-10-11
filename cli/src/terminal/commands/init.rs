@@ -13,6 +13,7 @@ use crate::{header, line, success};
 use waterui_cli::framework::FrameworkChannel;
 use waterui_cli::project::{CreateOptions, Project, WebScaffold};
 use waterui_cli::project_types::{BundleIdentifier, default_bundle_identifier};
+use waterui_cli::toolchain::Host;
 use waterui_cli::web::{
     self, ExistingFrontendMode, InitAction, InitAnswers, PackageManager, WebSource, plan_init,
 };
@@ -79,7 +80,8 @@ impl From<WebMode> for ExistingFrontendMode {
 
 /// Run the init command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
-    let project_root = std::env::current_dir()?;
+    let host = Host::current();
+    let project_root = host.cwd().to_path_buf();
     let entries = top_level_entries(&project_root)?;
     let answers = resolve_answers(shell, &args, &entries)?;
     let actions = plan_init(&project_root, &entries, &answers)?;
@@ -87,7 +89,6 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         .package_manager
         .expect("resolve_answers always settles the package manager");
 
-    let host = waterui_cli::toolchain::Host::current();
     super::web::ensure_installed(&host, package_manager).await?;
 
     let name = match &args.name {
@@ -114,6 +115,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     )
     .await?;
     scaffold_shell(
+        &host,
         shell,
         &project_root,
         &args,
@@ -228,7 +230,7 @@ fn prompt_web_mode() -> Result<ExistingFrontendMode> {
 /// Execute the planned actions in order; returns the `include_web!` argument
 /// the shell's root view must use.
 async fn execute_plan(
-    host: &waterui_cli::toolchain::Host,
+    host: &Host,
     shell: &Shell,
     root: &std::path::Path,
     actions: &[InitAction],
@@ -274,6 +276,7 @@ async fn execute_plan(
 
 /// The Rust shell: the root view is `include_web!(resources, <include_arg>)`.
 async fn scaffold_shell(
+    host: &Host,
     shell: &Shell,
     root: &std::path::Path,
     args: &Args,
@@ -290,7 +293,7 @@ async fn scaffold_shell(
 
     let spinner = shell.spinner("Scaffolding the Rust shell...");
     let project = Project::init(
-        &waterui_cli::toolchain::Host::current(),
+        host,
         root,
         CreateOptions {
             name,

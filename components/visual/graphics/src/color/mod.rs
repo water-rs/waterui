@@ -535,6 +535,7 @@ environment_color!(
     ErrorForegroundColor,
     "Error-foreground color key for environment queries."
 );
+environment_color!(ScrimColor, "Scrim color key for environment queries.");
 
 /// The light or dark appearance the application is drawn in.
 ///

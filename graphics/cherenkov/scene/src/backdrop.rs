@@ -87,6 +87,16 @@ pub struct BackdropGroup {
     /// every member against its own clip only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub union: Option<f64>,
+    /// The space every member composites its sample onto its canvas in:
+    /// the sample at its coverage — antialiased edge and outer extent
+    /// included — and the canvas convert into it, blend source-over, and
+    /// the result converts back. [`BlendSpace::Linear`] (the default)
+    /// composites in the linear working space; a member's own content
+    /// composites as before either way.
+    ///
+    /// [`BlendSpace::Linear`]: crate::BlendSpace::Linear
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub blend_space: crate::BlendSpace,
 }
 
 impl BackdropGroup {
@@ -94,8 +104,9 @@ impl BackdropGroup {
     /// rejects a scene file asking for more.
     pub const MAX_LEVELS: u32 = 8;
 
-    /// A plain group description: unanchored, no union field — set
-    /// `anchor` or `union` on the returned value to compose them.
+    /// A plain group description: unanchored, no union field, members
+    /// compositing in linear space — set `anchor`, `union` or
+    /// `blend_space` on the returned value to compose them.
     #[must_use]
     pub const fn new(id: u32, filters: Vec<BackdropFilter>, scale: f64, levels: u32) -> Self {
         Self {
@@ -105,8 +116,17 @@ impl BackdropGroup {
             levels,
             anchor: None,
             union: None,
+            blend_space: crate::BlendSpace::Linear,
         }
     }
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if takes a reference"
+)]
+fn is_linear(space: &crate::BlendSpace) -> bool {
+    *space == crate::BlendSpace::Linear
 }
 
 const fn default_levels() -> u32 {

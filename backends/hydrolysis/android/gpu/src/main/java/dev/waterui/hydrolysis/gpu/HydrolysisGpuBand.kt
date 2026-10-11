@@ -72,12 +72,20 @@ constructor(
     private fun attemptAttach() {
         val surface = holder.surface
         if (surface == null || !surface.isValid) return
+        val peakRefreshHz = peakRefreshHz()
         // The accessor sits outside the retry: a destroyed session is a
         // named error, not an attach failure to retry.
         val attached =
             session.withNativePtr(NativeBridge::nativeSurfaceAttached.name) { ptr ->
                 try {
-                    NativeBridge.nativeSurfaceAttached(ptr, surface, width, height, generation)
+                    NativeBridge.nativeSurfaceAttached(
+                        ptr,
+                        surface,
+                        peakRefreshHz,
+                        width,
+                        height,
+                        generation,
+                    )
                 } catch (error: RuntimeException) {
                     retryAttachOrThrow(error)
                     return
@@ -90,6 +98,23 @@ constructor(
                 ),
             )
         }
+    }
+
+    /**
+     * The highest refresh rate the band's display offers at its current
+     * resolution — the rate a high-refresh demand asks for. A band whose
+     * surface exists is attached to a window, so it has a display.
+     */
+    private fun peakRefreshHz(): Float {
+        val display =
+            checkNotNull(display) { "hydrolysis android: GPU band surface exists without a display" }
+        val current = display.mode
+        return display.supportedModes
+            .filter {
+                it.physicalWidth == current.physicalWidth &&
+                    it.physicalHeight == current.physicalHeight
+            }
+            .maxOf { it.refreshRate }
     }
 
     private fun retryAttachOrThrow(error: RuntimeException) {

@@ -3015,10 +3015,11 @@ mod tests {
     }
 }
 
-/// The union field's quadratic smooth-min fold on two distances, sorted
-/// ascending as in the shader: `m ← min(m, d) − h²·k/4` with
-/// `h = max(k − |m − d|, 0)/k`. Shared by the GPU and CPU backdrop test
-/// suites.
+/// The union field's quadratic smooth-min fold of two distances.
+///
+/// The step is `m ← min(m, d) − h²·k/4` with `h = max(k − |m − d|, 0)/k`,
+/// applied to distances sorted ascending as in the shader. Shared by the GPU
+/// and CPU backdrop test suites.
 #[must_use]
 pub fn smin(field: f32, dist: f32, smoothing: f32) -> f32 {
     let blend = (smoothing - (field - dist).abs()).max(0.0) / smoothing;
@@ -3127,6 +3128,15 @@ pub fn ownership(members: &[(f32, [f32; 2])], member: usize) -> f32 {
 
 /// Retained-lowering equivalence checks for first-party backends.
 pub mod incremental;
+
+/// A surface wake-up with no host behind it, for a harness that drives a
+/// renderer directly and renders on its own schedule.
+#[must_use]
+pub fn unhosted_waker() -> crate::CompletionWaker {
+    crate::CompletionWaker::new(&std::sync::Arc::new(crate::engine::SurfaceWaker::new(
+        || {},
+    )))
+}
 
 /// The browser executor's registration lifetimes (#150). Resource
 /// registration is synchronous and queued in order, so its handle owns the

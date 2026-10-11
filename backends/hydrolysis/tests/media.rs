@@ -19,6 +19,18 @@ use std::time::Duration;
 /// that it does so quickly.
 const MOTION_PLAYBACK_BUDGET: Duration = Duration::from_secs(30);
 
+/// How many pumped frames a media mount may take.
+///
+/// Mounts are in-runtime work: the long-press deadline fires at 40ms of
+/// virtual time — each pump advances the clock one 16.67ms frame — and the
+/// `is_playing` flip it produces rebuilds the `Dynamic` into the motion's
+/// video surface on the next flush, a handful of frames in all; the initial
+/// still's `ReactiveImage` mounts sooner still. Bound them in frames rather
+/// than wall seconds: under load the same fixed pumps cost more real time,
+/// and a wall budget can expire while the mount is still in flight even
+/// though every pump made progress (water-rs/waterui#2501).
+const MOUNT_FRAME_BUDGET: usize = 60;
+
 use image::ImageEncoder as _;
 use waterui::ViewExt as _;
 use waterui_media::{
@@ -85,10 +97,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers(
 
     let initial_still = app.expect_exists(Selector::default().role(Role::IMAGE));
     assert_eq!(
-        app.wait_for(
-            &[initial_still],
-            WaitOptions::new(Duration::from_millis(750)),
-        ),
+        app.wait_for_frames(&[initial_still], MOUNT_FRAME_BUDGET),
         WaitResult::Completed,
         "the live photo must expose its initial still image"
     );
@@ -110,7 +119,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers(
     app.queue_pointer_down_at(center_x, center_y);
     let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(
-        app.wait_for(&[motion], WaitOptions::new(Duration::from_secs(1))),
+        app.wait_for_frames(&[motion], MOUNT_FRAME_BUDGET),
         WaitResult::Completed,
         "holding past the activation duration must mount live photo motion"
     );
@@ -131,7 +140,7 @@ fn live_photo_long_press_plays_motion_once_and_recovers(
     app.queue_pointer_down_at(center_x, center_y);
     let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(
-        app.wait_for(&[motion], WaitOptions::new(Duration::from_secs(1))),
+        app.wait_for_frames(&[motion], MOUNT_FRAME_BUDGET),
         WaitResult::Completed,
         "live photo must support replay after returning to its still image"
     );

@@ -9,6 +9,8 @@ pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
+#[cfg(feature = "dialog")]
+pub use runtime::dialog;
 #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
@@ -60,6 +62,8 @@ pub mod prelude {
     pub use crate::include_markdown;
 
     pub use super::color::*;
+    #[cfg(feature = "dialog")]
+    pub use super::dialog::{Dialog, DialogAction, DialogRole};
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};

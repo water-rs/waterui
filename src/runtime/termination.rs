@@ -404,59 +404,12 @@ impl_extractor!(Quit);
 mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
-    use std::sync::mpsc;
 
-    use executor_core::LocalExecutor;
-    use executor_core::async_task::{self, AsyncTask, Runnable};
     use nami::Signal as _;
 
+    use super::super::parked_executor::{drain, install as install_executor};
     use super::*;
     use crate::app::{App, QuitReply};
-
-    /// A `spawn_local` executor that parks runnables until [`drain`] runs
-    /// them — a hook future's progress is then observable step by step
-    /// without waiting on any clock.
-    struct ParkedExecutor;
-
-    thread_local! {
-        static PARKED: (mpsc::Sender<Runnable>, mpsc::Receiver<Runnable>) =
-            mpsc::channel();
-    }
-
-    impl LocalExecutor for ParkedExecutor {
-        type Task<T: 'static> = AsyncTask<T>;
-
-        fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
-        where
-            Fut: Future + 'static,
-        {
-            let (runnable, task) = async_task::spawn_local(fut, |runnable| {
-                PARKED.with(|(sender, _)| {
-                    if let Err(unsent) = sender.send(runnable) {
-                        // The queue is gone at thread teardown; dropping a
-                        // `spawn_local` runnable off its thread panics.
-                        std::mem::forget(unsent.0);
-                    }
-                });
-            });
-            runnable.schedule();
-            task
-        }
-    }
-
-    fn install_executor() {
-        let _ = executor_core::try_init_local_executor(ParkedExecutor);
-    }
-
-    /// Runs every parked runnable, and every one those park in turn, until
-    /// the queue is empty.
-    fn drain() {
-        PARKED.with(|(_, receiver)| {
-            while let Ok(runnable) = receiver.try_recv() {
-                runnable.run();
-            }
-        });
-    }
 
     /// A `TerminationHost` that records the machine's decisions.
     #[derive(Clone, Default)]

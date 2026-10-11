@@ -9,8 +9,7 @@
 //!   "merge_base": "…",
 //!   "workspace": false,
 //!   "affected": ["waterui-core"],
-//!   "owners": {"core/src/lib.rs": "waterui-core"},
-//!   "test_asset_consumers": ["hydrolysis", "waterui-testing"]
+//!   "owners": {"core/src/lib.rs": "waterui-core"}
 //! }
 //! ```
 //!
@@ -28,19 +27,6 @@
 //! crate is a fact about the path, not about the diff — so it comes from
 //! this tool's package graph rather than a second, hand-rolled mapper.
 //!
-//! `test_asset_consumers` is the set of workspace members whose test
-//! code needs a generated, uncommitted asset in place. `waterui-cli` is
-//! the compile-time consumer: its `#[cfg(test)]` font-subsetting module
-//! `include_bytes!`s `cli/tests/fixtures/fonts/Roboto-Regular.ttf`, which
-//! the generate-test-assets composite regenerates — a path membership,
-//! not a dependency edge, so the graph cannot derive it. The rest qualify
-//! through the package graph: any member whose dev-dependency closure
-//! reaches `waterui-testing` runs styled tests that resolve the test
-//! font families `backends/hydrolysis/test-fonts/install.py` installs
-//! through system font discovery — no font bytes are compiled into any
-//! crate. Dev edges count only at the first hop, matching cargo's rule
-//! that dev-dependencies do not chain.
-//!
 //! The root package (`waterui`, manifest at the repository root) gets one
 //! correction on top of ancestor matching: its package directory is the
 //! repository root, so every unmatched path resolves to it — `Clippy.toml`,
@@ -50,6 +36,11 @@
 //! is one of its declared target files (`facade.rs`, `tests/*.rs`) or sits
 //! directly inside a directory holding one (`tests/`); anything else is
 //! reported as unmatched, which selects the whole workspace.
+//!
+//! `affected nextest-fixtures [--root <dir>]` is a separate check on the
+//! same package graph; the `fixtures` module documents it.
+
+mod fixtures;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -134,10 +125,27 @@ impl Drop for BaseWorktree {
     }
 }
 
-fn parse_args() -> (String, String) {
+enum Invocation {
+    /// `--base <rev> [--head <rev>]`: report the packages a diff affects.
+    Affected { base: String, head: String },
+    /// `nextest-fixtures [--root <dir>]`: see the `fixtures` module.
+    NextestFixtures { root: Utf8PathBuf },
+}
+
+fn parse_args() -> Invocation {
+    let mut args = std::env::args().skip(1).peekable();
+    if args.next_if(|arg| arg == "nextest-fixtures").is_some() {
+        let mut root = Utf8PathBuf::from(".");
+        while let Some(arg) = args.next() {
+            match arg.as_ref() {
+                "--root" => root = Utf8PathBuf::from(args.next().expect("--root needs a value")),
+                other => panic!("unknown argument: {other}"),
+            }
+        }
+        return Invocation::NextestFixtures { root };
+    }
     let mut base = None;
     let mut head: String = "HEAD".to_string();
-    let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_ref() {
             "--base" => base = Some(args.next().expect("--base needs a value")),
@@ -145,7 +153,10 @@ fn parse_args() -> (String, String) {
             other => panic!("unknown argument: {other}"),
         }
     }
-    (base.expect("--base <rev> is required"), head)
+    Invocation::Affected {
+        base: base.expect("--base <rev> is required"),
+        head,
+    }
 }
 
 /// What the root package itself can own: its declared target files
@@ -200,59 +211,6 @@ impl<'a> RootOwnership<'a> {
     }
 }
 
-/// The workspace members whose test code needs a generated, uncommitted
-/// asset in place. `waterui-cli` is the compile-time consumer: its
-/// `#[cfg(test)]` code `include_bytes!`s the generated Roboto fixture
-/// under `cli/tests/fixtures/fonts/` — a path membership, not a
-/// dependency edge, so it is named here instead of being derived. The
-/// rest qualify through the package graph: a member whose
-/// dev-dependency closure reaches `waterui-testing` — through
-/// normal/build links, since cargo does not make dev-dependencies
-/// transitive — runs styled tests that resolve the font families
-/// `install.py` installs; no font bytes are compiled into any crate, so
-/// the gate's use of this set over-provisions for those members and
-/// narrows never. `waterui-testing` itself is a consumer: checking it
-/// compiles the dep.
-fn test_asset_consumers(graph: &PackageGraph) -> BTreeSet<String> {
-    let members: Vec<_> = graph
-        .query_workspace()
-        .resolve()
-        .packages(DependencyDirection::Forward)
-        .collect();
-    let Some(testing) = members.iter().find(|p| p.name() == "waterui-testing") else {
-        return BTreeSet::new();
-    };
-    let testing_id = testing.id().clone();
-    let mut consumers = BTreeSet::new();
-    for member in &members {
-        let mut seeds: BTreeSet<&PackageId> = member
-            .direct_links()
-            .filter(|link| link.dev().is_present())
-            .map(|link| link.to().id())
-            .collect();
-        seeds.insert(member.id());
-        // Forward closure over normal and build links only.
-        let mut reached: BTreeSet<&PackageId> = seeds.iter().copied().collect();
-        let mut stack: Vec<&PackageId> = seeds.iter().copied().collect();
-        while let Some(id) = stack.pop() {
-            for link in graph.metadata(id).expect("known id").direct_links() {
-                if (link.normal().is_present() || link.build().is_present())
-                    && reached.insert(link.to().id())
-                {
-                    stack.push(link.to().id());
-                }
-            }
-        }
-        if reached.contains(&testing_id) {
-            consumers.insert(member.name().to_string());
-        }
-    }
-    if members.iter().any(|p| p.name() == "waterui-cli") {
-        consumers.insert("waterui-cli".to_string());
-    }
-    consumers
-}
-
 /// The package a path would ancestor-match to, using the same
 /// `member_by_path` walk the determinator performs after its rules: the
 /// first ancestor directory that is a workspace member's source
@@ -271,16 +229,28 @@ fn ancestor_owner(graph: &PackageGraph, path: &Utf8Path) -> Option<PackageId> {
 }
 
 fn main() {
-    let (base, head) = parse_args();
+    match parse_args() {
+        Invocation::Affected { base, head } => report_affected(&base, &head),
+        Invocation::NextestFixtures { root } => {
+            let graph = cargo_metadata(&root.join("Cargo.toml"), false)
+                .build_graph()
+                .expect("the workspace's package graph did not resolve");
+            if !fixtures::check(&root, &graph) {
+                std::process::exit(1);
+            }
+        }
+    }
+}
 
+fn report_affected(base: &str, head: &str) {
     // The merge-base is the honest comparison point: a pull request's
     // reported base sha may sit behind commits the branch already merged.
-    let merge_base = String::from_utf8(git(&["merge-base", &base, &head]))
+    let merge_base = String::from_utf8(git(&["merge-base", base, head]))
         .expect("merge-base output is not UTF-8")
         .trim()
         .to_string();
 
-    let changed: Vec<String> = git(&["diff", "--name-only", "-z", &merge_base, &head])
+    let changed: Vec<String> = git(&["diff", "--name-only", "-z", &merge_base, head])
         .split(|&byte| byte == 0)
         .filter(|token| !token.is_empty())
         .map(|token| String::from_utf8(token.to_vec()).expect("path is not UTF-8"))
@@ -302,7 +272,6 @@ fn main() {
     determinator.add_changed_paths(changed.iter().map(String::as_str));
 
     let root = RootOwnership::new(&new_graph);
-    let test_assets = test_asset_consumers(&new_graph);
 
     // A path that matched nothing, matched only the root package by
     // directory without being part of its declared sources, or hit a rule
@@ -386,7 +355,6 @@ fn main() {
             "merge_base": merge_base,
             "affected": affected,
             "owners": owners,
-            "test_asset_consumers": test_assets,
         })
     );
 }

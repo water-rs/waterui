@@ -3,15 +3,21 @@
 //! from imperatively.
 //!
 //! `elements` turns [`MenuTreeNode`]s into `UIMenuElement`s — dividers
-//! become inline groups, commands become `UIAction`s carrying the command's
-//! attributes (disabled, destructive, checked) — and `menu` wraps them into
-//! a `UIMenu`. Actions run the command's Rust callback.
+//! become inline groups, commands become `UIAction`s — or `UIKeyCommand`s
+//! when the command declares a shortcut, the only `UIMenuElement` that
+//! arms a chord — carrying the command's attributes (disabled,
+//! destructive, checked) — and `menu` wraps them into a `UIMenu`. Both
+//! element kinds run the command's Rust callback: a `UIAction` calls its
+//! handler block, while a `UIKeyCommand` has no block and names its
+//! callback through the [`KeyCommands`] scope it is armed in (see
+//! `key_commands`).
 //!
 //! # Safety
 //!
-//! The `unsafe` here builds `UIAction`s from `RcBlock`s and calls `objc2`/
-//! `UIKit` bindings marked unsafe because `UIKit` objects are main-thread
-//! only, which [`MainThreadMarker`] guarantees at construction. `UIAction`'s
+//! The `unsafe` here builds `UIAction`s from `RcBlock`s and `UIKeyCommand`s
+//! from a selector `AppDelegate` implements, and calls `objc2`/`UIKit`
+//! bindings marked unsafe because `UIKit` objects are main-thread only,
+//! which [`MainThreadMarker`] guarantees at construction. `UIAction`'s
 //! handler block is `copy`ed by the call that consumes it, so the stack
 //! block it is built from may be dropped once construction returns.
 
@@ -19,28 +25,38 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{MainThreadMarker, sel};
 use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{
-    UIAction, UIColor, UIImage, UIMenu, UIMenuElement, UIMenuElementAttributes, UIMenuElementState,
-    UIMenuOptions, UIView,
+    UIAction, UIColor, UIImage, UIKeyCommand, UIMenu, UIMenuElement, UIMenuElementAttributes,
+    UIMenuElementState, UIMenuOptions, UIView,
 };
 
+use super::key_commands::KeyCommands;
 use crate::menu::{Command, MenuTreeNode};
 use crate::uikit::button::{Button, Chrome};
 
-/// A `UIMenu` from a menu tree.
+/// A `UIMenu` from a menu tree, its shortcut commands armed in
+/// `key_commands`.
 #[must_use]
-pub fn menu(mtm: MainThreadMarker, title: &Command, nodes: &[MenuTreeNode]) -> Retained<UIMenu> {
-    menu_with_identifier(mtm, title, None, nodes)
+pub fn menu(
+    mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
+    title: &Command,
+    nodes: &[MenuTreeNode],
+) -> Retained<UIMenu> {
+    menu_with_identifier(mtm, key_commands, title, None, nodes)
 }
 
 /// A `UIMenu` from a menu tree, named `identifier` for `UIMenuBuilder`
-/// lookups — the application menu bar relies on that stability.
+/// lookups — the application menu bar relies on that stability — its
+/// shortcut commands armed in `key_commands`.
 #[must_use]
 pub fn menu_with_identifier(
     mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
     title: &Command,
     identifier: Option<&str>,
     nodes: &[MenuTreeNode],
@@ -52,7 +68,7 @@ pub fn menu_with_identifier(
         identifier.map(NSString::from_str).as_deref(),
         UIMenuOptions::empty(),
         &objc2_foundation::NSArray::from_slice(
-            &elements(mtm, nodes)
+            &elements(mtm, key_commands, nodes)
                 .iter()
                 .map(|e| &**e)
                 .collect::<Vec<_>>(),
@@ -62,9 +78,13 @@ pub fn menu_with_identifier(
 }
 
 /// `UIMenuElement`s from a menu tree — dividers split the list into inline
-/// groups.
+/// groups — their shortcut commands armed in `key_commands`.
 #[must_use]
-pub fn elements(mtm: MainThreadMarker, nodes: &[MenuTreeNode]) -> Vec<Retained<UIMenuElement>> {
+pub fn elements(
+    mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
+    nodes: &[MenuTreeNode],
+) -> Vec<Retained<UIMenuElement>> {
     // `MenuTreeNode` is not `Clone`; walk references.
     let mut current: Vec<&MenuTreeNode> = Vec::new();
     let mut group_refs: Vec<Vec<&MenuTreeNode>> = Vec::new();
@@ -83,8 +103,10 @@ pub fn elements(mtm: MainThreadMarker, nodes: &[MenuTreeNode]) -> Vec<Retained<U
     let mut out: Vec<Retained<UIMenuElement>> = Vec::new();
     let single = group_refs.len() == 1;
     for group in group_refs {
-        let children: Vec<Retained<UIMenuElement>> =
-            group.iter().filter_map(|node| element(mtm, node)).collect();
+        let children: Vec<Retained<UIMenuElement>> = group
+            .iter()
+            .filter_map(|node| element(mtm, key_commands, node))
+            .collect();
         if single {
             out.extend(children);
             continue;
@@ -106,18 +128,25 @@ pub fn elements(mtm: MainThreadMarker, nodes: &[MenuTreeNode]) -> Vec<Retained<U
     out
 }
 
-fn element(mtm: MainThreadMarker, node: &MenuTreeNode) -> Option<Retained<UIMenuElement>> {
+fn element(
+    mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
+    node: &MenuTreeNode,
+) -> Option<Retained<UIMenuElement>> {
     match node {
         MenuTreeNode::Divider => None,
-        MenuTreeNode::Submenu(command, children) => Some(menu(mtm, command, children).into_super()),
+        MenuTreeNode::Submenu(command, children) => {
+            Some(menu(mtm, key_commands, command, children).into_super())
+        }
         MenuTreeNode::Command(command, action) => {
-            Some(command_element(mtm, command, action.clone()))
+            Some(command_element(mtm, key_commands, command, action.clone()))
         }
     }
 }
 
 fn command_element(
     mtm: MainThreadMarker,
+    key_commands: &KeyCommands,
     command: &Command,
     action: Rc<dyn Fn()>,
 ) -> Retained<UIMenuElement> {
@@ -133,28 +162,53 @@ fn command_element(
     } else {
         UIMenuElementState::Off
     };
-    let block = RcBlock::new(move |_action: NonNull<UIAction>| {
-        action();
-    });
-    // SAFETY: `actionWithTitle:image:identifier:handler:` retains the block.
-    let ui_action = unsafe {
-        UIAction::actionWithTitle_image_identifier_handler(
-            &NSString::from_str(&command.label),
-            menu_image(command.symbol.as_deref()).as_deref(),
-            None,
-            block2::RcBlock::into_raw(block),
-            mtm,
-        )
-    };
-    ui_action.setAttributes(attributes);
-    ui_action.setState(state);
-    if let Some(subtitle) = &command.subtitle {
-        ui_action.setSubtitle(Some(&NSString::from_str(subtitle)));
+    let title = NSString::from_str(&command.label);
+    let image = menu_image(command.symbol.as_deref());
+    if command.key_equivalent.is_empty() {
+        let block = RcBlock::new(move |_action: NonNull<UIAction>| {
+            action();
+        });
+        // SAFETY: `actionWithTitle:image:identifier:handler:` copies the
+        // block, so `block` may be dropped once the call returns.
+        let ui_action = unsafe {
+            UIAction::actionWithTitle_image_identifier_handler(
+                &title,
+                image.as_deref(),
+                None,
+                RcBlock::as_ptr(&block).cast(),
+                mtm,
+            )
+        };
+        ui_action.setAttributes(attributes);
+        ui_action.setState(state);
+        if let Some(subtitle) = &command.subtitle {
+            ui_action.setSubtitle(Some(&NSString::from_str(subtitle)));
+        }
+        ui_action.into_super()
+    } else {
+        let property_list = key_commands.arm(action);
+        // SAFETY: `commandWithTitle:...` is `UIKeyCommand`'s designated
+        // constructor, `cocoaUiMenuCommandFired:` is a selector
+        // `AppDelegate` implements, and an `NSNumber` is a property-list
+        // object.
+        let key_command = unsafe {
+            UIKeyCommand::commandWithTitle_image_action_input_modifierFlags_propertyList(
+                &title,
+                image.as_deref(),
+                sel!(cocoaUiMenuCommandFired:),
+                &NSString::from_str(&command.key_equivalent),
+                command.modifiers.native(),
+                Some(AsRef::<AnyObject>::as_ref(&*property_list)),
+                mtm,
+            )
+        };
+        key_command.setAttributes(attributes);
+        key_command.setState(state);
+        if let Some(subtitle) = &command.subtitle {
+            key_command.setSubtitle(Some(&NSString::from_str(subtitle)));
+        }
+        key_command.into_super().into_super()
     }
-    if !command.key_equivalent.is_empty() {
-        ui_action.setDiscoverabilityTitle(Some(&NSString::from_str(&command.key_equivalent)));
-    }
-    ui_action.into_super()
 }
 
 fn menu_image(symbol: Option<&str>) -> Option<Retained<UIImage>> {
@@ -173,7 +227,7 @@ pub enum MenuElement {
 impl MenuElement {
     fn native(&self) -> Retained<UIMenuElement> {
         match self {
-            Self::Action(action) => action.action.clone().into_super(),
+            Self::Action(action) => action.action.clone(),
             Self::Submenu(menu) => menu.menu.clone().into_super(),
         }
     }
@@ -221,80 +275,35 @@ impl Menu {
     }
 }
 
-/// A `UIAction`: one pickable row of a [`Menu`].
+/// A leaf element of a [`Menu`]: a `UIAction`, or a `UIKeyCommand` when
+/// the command declares a shortcut.
 ///
-/// A `MenuAction` is a handle: clones refer to the same action.
+/// A `MenuAction` is a handle: clones refer to the same element.
 #[derive(Debug, Clone)]
 pub struct MenuAction {
-    action: Retained<UIAction>,
+    action: Retained<UIMenuElement>,
 }
 
 impl MenuAction {
-    /// An action titled `title` that runs `handler` when picked.
+    /// The element `command` describes, running `handler` when chosen —
+    /// the same shape [`menu`] gives the same command — its shortcut, when
+    /// it declares one, armed in `key_commands`.
     #[must_use]
-    pub fn new(mtm: MainThreadMarker, title: &str, handler: impl Fn() + 'static) -> Self {
-        let block = RcBlock::new(move |_action: NonNull<UIAction>| handler());
-        // SAFETY: `handler` takes a block the call copies, so the stack
-        // block may be dropped once the call returns.
-        let action = unsafe {
-            UIAction::actionWithTitle_image_identifier_handler(
-                &NSString::from_str(title),
-                None,
-                None,
-                RcBlock::as_ptr(&block).cast(),
-                mtm,
-            )
-        };
-        Self { action }
-    }
-
-    /// The same action, subtitled `subtitle` beneath its title when given.
-    #[must_use]
-    pub fn with_subtitle(self, subtitle: Option<&str>) -> Self {
-        self.action
-            .setSubtitle(subtitle.map(NSString::from_str).as_deref());
-        self
-    }
-
-    /// The same action, drawn with the `SF Symbols` image `name` when
-    /// given.
-    #[must_use]
-    pub fn with_icon(self, name: Option<&str>) -> Self {
-        if let Some(name) = name {
-            self.action
-                .setImage(UIImage::systemImageNamed(&NSString::from_str(name)).as_deref());
+    pub fn command(
+        mtm: MainThreadMarker,
+        key_commands: &KeyCommands,
+        command: &Command,
+        handler: impl Fn() + 'static,
+    ) -> Self {
+        Self {
+            action: command_element(mtm, key_commands, command, Rc::new(handler)),
         }
-        self
     }
 
-    /// The same action, greyed out when `disabled` is true.
+    /// The wrapped `UIMenuElement`.
     #[must_use]
-    pub fn with_disabled(self, disabled: bool) -> Self {
-        let mut attributes = self.action.attributes();
-        attributes.set(UIMenuElementAttributes::Disabled, disabled);
-        self.action.setAttributes(attributes);
-        self
-    }
-
-    /// The same action, drawn in the system's destructive red when
-    /// `destructive` is true.
-    #[must_use]
-    pub fn with_destructive(self, destructive: bool) -> Self {
-        let mut attributes = self.action.attributes();
-        attributes.set(UIMenuElementAttributes::Destructive, destructive);
-        self.action.setAttributes(attributes);
-        self
-    }
-
-    /// The same action, drawn with a checkmark when `selected` is true.
-    #[must_use]
-    pub fn with_selected(self, selected: bool) -> Self {
-        self.action.setState(if selected {
-            UIMenuElementState::On
-        } else {
-            UIMenuElementState::Off
-        });
-        self
+    pub fn element(&self) -> &UIMenuElement {
+        &self.action
     }
 }
 

@@ -195,34 +195,159 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     return out;
 }
 
-// Second-order signed distance from `q` (corner-local, both components
-// > 0, in the same units as `r`) to the Lamé quarter curve
-// (q.x/r.x)^n + (q.y/r.y)^n = 1, with n >= 2. Three Newton projections
-// along the implicit gradient land a point `c` on the curve within
-// O(d²κ) of the foot point; the distance is then measured along the
-// curve normal at `c`, which is second-order accurate. Returns
-// (d, unit normal in q space, radius of curvature at c).
-fn lame_corner(q: vec2<f32>, r: vec2<f32>, n: f32) -> vec4<f32> {
-    var c = q;
-    for (var i = 0; i < 3; i++) {
-        let u = max(c / r, vec2<f32>(0.0));
-        let f = pow(u.x, n) + pow(u.y, n) - 1.0;
-        let grad = n * pow(max(u, vec2<f32>(1e-6)), vec2<f32>(n - 1.0)) / r;
-        c = max(c - f * grad / max(dot(grad, grad), 1e-12), vec2<f32>(0.0));
+// Distance evaluations `lame_corner` spends on one point.
+const LAME_EVALS: i32 = 6;
+const QUARTER_PI: f32 = 0.7853981633974483;
+const SQRT_HALF: f32 = 0.7071067811865476;
+
+// A point on the Lamé quarter curve (x/r.x)^n + (y/r.y)^n = 1 at the
+// parameter w = (y/r.y) / (x/r.x), w in [0, 1] from the x axis to the
+// diagonal of the normalised curve: c = r·(1, w)·s with
+// s = (1 + w^n)^(-1/n).
+struct LamePoint {
+    c: vec2<f32>,
+    // (r.y, r.x·w^(n-1)): the outward normal, unnormalised.
+    normal: vec2<f32>,
+    // w^(n-2).
+    wm2: f32,
+    s: f32,
+    // 1 + w^n.
+    one: f32,
+}
+
+fn lame_point(r: vec2<f32>, n: f32, w: f32) -> LamePoint {
+    // w^(n-2) is 1 at w = 0 for an ellipse (n = 2) and 0 for n > 2.
+    let wm2 = pow(max(w, 1e-30), n - 2.0);
+    let p = w * wm2;
+    let one = 1.0 + w * p;
+    let s = pow(one, -1.0 / n);
+    return LamePoint(r * vec2<f32>(1.0, w) * s, vec2<f32>(r.y, r.x * p), wm2, s, one);
+}
+
+fn cbrt(x: f32) -> f32 {
+    return sign(x) * pow(max(abs(x), 1e-30), 1.0 / 3.0);
+}
+
+// The largest real root of c3·x³ + c1·x + c0 = 0 with c3 > 0: Cardano's
+// form where the cubic has one real root, the trigonometric form where it
+// has three.
+fn cubic_root(c3: f32, c1: f32, c0: f32) -> f32 {
+    let p = c1 / c3;
+    let h = 0.5 * c0 / c3;
+    let disc = h * h + p * p * p / 27.0;
+    if disc >= 0.0 {
+        let e = sqrt(disc);
+        return cbrt(e - h) + cbrt(-e - h);
     }
-    let u = max(c / r, vec2<f32>(1e-6));
-    let g1 = n * pow(u, vec2<f32>(n - 1.0)) / r;           // f_x, f_y
-    let g2 = n * (n - 1.0) * pow(u, vec2<f32>(n - 2.0)) / (r * r); // f_xx, f_yy
-    let len = max(length(g1), 1e-12);
-    let normal = g1 / len;
-    let d = dot(q - c, normal);
-    // Implicit-curve curvature with f_xy = 0: (f_xx f_y² + f_yy f_x²)/|∇f|³.
-    let kappa = (g2.x * g1.y * g1.y + g2.y * g1.x * g1.x) / (len * len * len);
-    return vec4<f32>(d, normal, 1.0 / max(kappa, 1e-6));
+    let m = sqrt(-p / 3.0);
+    return 2.0 * m * cos(acos(clamp(-h / (m * m * m), -1.0, 1.0)) / 3.0);
+}
+
+// Where the solve of an elliptical corner starts: its w = 0 end is a
+// vertex of the ellipse. There the foot condition is
+// F(w) = r.y·q.y - w·(r.x·q.x - Δ/√(1 + w²)), Δ = r.x² - r.y². Across a
+// major vertex (Δ > 0) -F is convex and its Taylor cubic
+// (Δ/2)w³ + (r.x·q.x - Δ)w - r.y·q.y bounds it from above, so the cubic's
+// largest root lies just below the foot, with an error of order w⁵: the
+// evolute cusp, where the foot is a near-triple root that Newton's method
+// approaches only linearly, sits at small w. Across a minor vertex -F is
+// concave with a slope bounded away from zero and the linear term is the
+// start.
+fn ellipse_start(q: vec2<f32>, r: vec2<f32>) -> f32 {
+    let delta = r.x * r.x - r.y * r.y;
+    let c1 = r.x * q.x - delta;
+    if delta <= 0.0 {
+        return clamp(r.y * q.y / c1, 0.0, 1.0);
+    }
+    return clamp(cubic_root(0.5 * delta, c1, -r.y * q.y), 0.0, 1.0);
+}
+
+// Where the solve of a continuous corner (r.x = r.y = r) starts: its w = 1
+// end is the corner's diagonal, a vertex whose evolute cusp lies on the
+// diagonal. The corner's support function about the diagonal normal is
+// h(π/4 + ψ) = h0·(1 + K2·ψ² + K4·ψ⁴) with p = n/(n - 1) the dual
+// exponent, so the stationarity of q·m - h(ψ) is, to third order,
+// B - (A - h0 + ρ0)·ψ - ((h4 - A)/6)·ψ³ = 0 with A, B the components of q
+// along and across the diagonal, ρ0 = h0·(1 + 2·K2) the radius of
+// curvature and h4 = 24·h0·K4. Its largest root is the normal angle ψ away
+// from the diagonal, and w = tan(π/4 - ψ)^(1/(n - 1)).
+fn diagonal_start(q: vec2<f32>, r: f32, n: f32) -> f32 {
+    let p = n / (n - 1.0);
+    let c2 = 0.5 * p * (p - 1.0);
+    let c4 = p * (p - 1.0) * (p - 2.0) * (p - 3.0) / 24.0;
+    let k2 = c2 / p - 0.5;
+    let k4 = (2.0 * c2 / 3.0 + c4) / p + 0.5 * (1.0 / p - 1.0) * c2 * c2 / p - 0.5 * c2 / p + 1.0 / 24.0;
+    let h0 = r * exp2(1.0 / p - 0.5);
+    let along = (q.x + q.y) * SQRT_HALF;
+    let across = (q.x - q.y) * SQRT_HALF;
+    let k3 = (24.0 * h0 * k4 - along) / 6.0;
+    let k1 = along - h0 + h0 * (1.0 + 2.0 * k2);
+    var psi = QUARTER_PI;
+    if k3 > 0.0 {
+        psi = cubic_root(k3, k1, -across);
+    } else if k1 > 0.0 {
+        psi = across / k1;
+    }
+    let theta = clamp(QUARTER_PI - psi, 0.0, QUARTER_PI);
+    return clamp(pow(max(tan(theta), 1e-30), 1.0 / (n - 1.0)), 0.0, 1.0);
+}
+
+// Exact signed distance from `q` (corner-local, both components >= 0, in
+// the units of `r`) to the Lamé quarter curve (q.x/r.x)^n + (q.y/r.y)^n = 1,
+// for an elliptical corner (n = 2) or a continuous one (r.x = r.y, n > 2).
+// Returns (d, unit normal in q space, radius of curvature at the foot).
+//
+// The foot is the root of F(w) = (q - c)·T, T the tangent. Folding the
+// quarter at w = 1 puts it in [0, 1] with F(0) >= 0 >= F(1): an ellipse
+// quarter runs between two vertices, and a continuous corner is symmetric
+// about its diagonal, so the half that holds q's foot has monotone
+// curvature and F changes sign on it once. The solve starts from a
+// closed-form model of F about the half's vertex, where the evolute cusp
+// makes the foot a near-triple root (`ellipse_start`, `diagonal_start`),
+// then takes Newton steps clamped to the sign bracket, bisecting where F
+// is not falling. The box is convex, so the tangent at every curve point
+// supports it: the result, the distance to the tangent at the last
+// iterate, never exceeds the box's signed distance and equals it at the
+// foot.
+fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
+    let k = exp2(-1.0 / n);
+    let swap = dot(q_in - r_in * k, vec2<f32>(-r_in.x, r_in.y)) > 0.0;
+    let q = select(q_in, q_in.yx, swap);
+    let r = select(r_in, r_in.yx, swap);
+    var w: f32;
+    if n == 2.0 {
+        w = ellipse_start(q, r);
+    } else {
+        w = diagonal_start(q, r.x, n);
+    }
+    var lo = 0.0;
+    var hi = 1.0;
+    var foot = vec4<f32>(0.0);
+    for (var i = 0; i < LAME_EVALS; i++) {
+        let pt = lame_point(r, n, w);
+        let len = length(pt.normal);
+        let normal = pt.normal / len;
+        let qc = q - pt.c;
+        // Curvature from the implicit form,
+        // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
+        let p = pt.normal.y / r.x;
+        let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
+        foot = vec4<f32>(dot(qc, normal), normal, kappa);
+        let t = vec2<f32>(-pt.normal.y, pt.normal.x);
+        let f = dot(qc, t);
+        let df = -pt.s / pt.one * dot(t, t) - qc.x * r.x * (n - 1.0) * pt.wm2;
+        if f > 0.0 {
+            lo = w;
+        } else {
+            hi = w;
+        }
+        w = select(0.5 * (lo + hi), clamp(w - f / df, lo, hi), df < 0.0);
+    }
+    return vec4<f32>(foot.x, select(foot.yz, foot.zy, swap), 1.0 / max(foot.w, 1e-6));
 }
 
 // Distance and differential geometry evaluated at the same local point.
-// In particular, a Lamé corner needs only one Newton projection.
+// In particular, a Lamé corner needs only one foot-point solve.
 struct DistanceSample {
     distance: f32,
     gradient: vec4<f32>,
@@ -251,8 +376,8 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
         return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
     }
     let q = a + vec2<f32>(rx, ry);
-    if q.x > 0.0 && q.y > 0.0 {
-        if abs(s.exponent - 2.0) < 1e-4 && abs(s.aspect - 1.0) < 1e-4 {
+    if abs(s.exponent - 2.0) < 1e-4 && abs(s.aspect - 1.0) < 1e-4 {
+        if q.x > 0.0 && q.y > 0.0 {
             let u = q / vec2<f32>(rx, ry);
             let len = length(u);
             let grad = length(u / vec2<f32>(rx, ry)) / max(len, 1e-6);
@@ -261,9 +386,13 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
             let normal = v / max(length(v), 1e-12);
             return DistanceSample(d, vec4<f32>(sgn * normal, rx, 0.0));
         }
+    } else if q.x >= 0.0 && q.y >= 0.0 {
+        // A Lamé corner owns the lines through its centre too: on an
+        // ellipse's major axis, a point deeper than the vertex's radius
+        // of curvature is nearest to the curve on either side of the
+        // axis, not to the vertex the straight-edge distance measures.
         // Coverage replay knows the common ellipse exponent exactly. Give
-        // compilation a constant argument without changing the solver's
-        // projections, clamps, normal, or curvature calculation.
+        // compilation a constant argument without changing the solve.
         var l: vec4<f32>;
         if specialize_quadratic && s.exponent == 2.0 {
             l = lame_corner(q, vec2<f32>(rx, ry), 2.0);

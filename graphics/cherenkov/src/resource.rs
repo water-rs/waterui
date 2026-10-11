@@ -479,12 +479,13 @@ impl<B: crate::GpuContent> GpuProducer<B> {
 /// A system layer the host supplies, shown in the layer tree on a
 /// system-compositor plane of its own ([`HostedLayers`](crate::HostedLayers)).
 ///
-/// The host keeps the platform object's owner — on Apple the view that
-/// owns the `CALayer` stays in the host's view hierarchy, so it keeps
-/// receiving events and first-responder status — and goes on drawing into
-/// it; the engine owns only where it sits: its order among the layers
-/// painted below and above it, and the transform, clip and scroll of its
-/// path, committed with the rest of the frame.
+/// The host keeps the platform object's owner — on iOS the view that owns
+/// the `CALayer` stays in the host's view hierarchy, so it keeps receiving
+/// events and first-responder status, and on macOS the `NSView` itself is
+/// hosted in the engine's own view chain where the same holds — and goes
+/// on drawing into it; the engine owns only where it sits: its order among
+/// the layers painted below and above it, and the transform, clip and
+/// scroll of its path, committed with the rest of the frame.
 pub struct Hosted<B: crate::HostedLayers> {
     object: B::Object,
 }
@@ -504,9 +505,9 @@ impl<B: crate::HostedLayers> Hosted<B> {
     }
 
     /// Binds the hosted object to a layer with `size` as its extent in the
-    /// layer's content coordinates — the object's own coordinates, so a
-    /// `CALayer`'s points or a `SurfaceControl`'s pixels are the layer's
-    /// content units. Returns the layer content
+    /// layer's content coordinates — the object's own coordinates, so an
+    /// `NSView`'s or `CALayer`'s points or a `SurfaceControl`'s pixels are
+    /// the layer's content units. Returns the layer content
     /// [`LayerEdit::content`](crate::LayerEdit::content) installs.
     ///
     /// The object shows in one place: binding it again on the same layer

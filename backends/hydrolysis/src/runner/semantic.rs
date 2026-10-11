@@ -18,6 +18,7 @@ use crate::renderer::accessibility::{
     AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
 };
 use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
+use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
@@ -84,6 +85,10 @@ impl SemanticWindow {
         );
         core.set_window_id(window_id);
         core.set_window_closable(window.closable);
+        // The semantic pump is driven explicitly by the harness — a request
+        // recorded on the frame signals is consumed by the next `pump` the
+        // test calls, so the host wake does nothing.
+        core.install_host_wake(Rc::new(|| {}));
         #[cfg(feature = "accessibility")]
         {
             core.set_window_frame(kurbo_frame(window.frame.snapshot()));
@@ -246,6 +251,7 @@ impl SemanticRuntime {
             .get::<MenuShortcutRegistry>()
             .expect("install_headless_window_managers seeds MenuShortcutRegistry")
             .mint_window_id();
+        window.arm_close_requests(&env);
         Self {
             env,
             window: SemanticWindow::new(window, &fonts, window_id, family_resolution),
@@ -461,6 +467,7 @@ impl SemanticRuntime {
                 .get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id();
+            window.arm_close_requests(&self.env);
             self.popup_windows.push(SemanticWindow::new(
                 window,
                 &fonts,
@@ -541,13 +548,14 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
         let changed = match event {
             InputEvent::CloseRequested => {
                 // The rendered runner's close gate (`handle_input_events`):
-                // a non-closable window ignores every close request.
+                // a non-closable window ignores every close request, and a
+                // closable one files it through the close-request machine —
+                // an `on_close_request` handler answers it on the local
+                // executor.
                 if window.window.closable {
-                    window
-                        .window
-                        .state
-                        .set(waterui::window::WindowState::Closed);
-                    should_close = true;
+                    window.window.request_close(env);
+                    should_close =
+                        window.window.state.snapshot() == waterui::window::WindowState::Closed;
                 }
                 true
             }

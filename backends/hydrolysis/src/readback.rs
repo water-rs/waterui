@@ -6,7 +6,7 @@
 //! `render_to_rgba` and `waterui-testing`'s snapshots — never by the
 //! interactive frame loop, which stays GPU-resident end to end.
 
-use crate::platform::SurfaceProvider;
+use crate::platform::{OffscreenSurface, PresentationSurface};
 
 /// wgpu's `COPY_BYTES_PER_ROW_ALIGNMENT`: texture-copy rows pad to 256 bytes.
 const COPY_BYTES_PER_ROW_ALIGNMENT: u64 = 256;
@@ -46,7 +46,18 @@ pub enum ReadbackError {
 ///
 /// Panics when a padded row of `width` pixels exceeds `u32::MAX` bytes.
 pub fn readback_texture_rgba8(
-    surface: &(impl SurfaceProvider + ?Sized),
+    surface: &OffscreenSurface,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, ReadbackError> {
+    readback_surface_texture_rgba8(surface, texture, width, height)
+}
+
+/// [`readback_texture_rgba8`] for any presentation surface the crate's
+/// headless paths render into.
+pub fn readback_surface_texture_rgba8(
+    surface: &(impl PresentationSurface + ?Sized),
     texture: &wgpu::Texture,
     width: u32,
     height: u32,

@@ -6,3 +6,9 @@
 
 # The annotation itself must survive for the rule above to match.
 -keep class dev.waterui.hydrolysis.CalledFromNative
+
+# JNI export names (`Java_dev_waterui_*` on the native side) — R8 cannot see
+# the calls either, and renamed `external` functions break the link.
+-keepclasseswithmembernames class dev.waterui.hydrolysis.** {
+    native <methods>;
+}

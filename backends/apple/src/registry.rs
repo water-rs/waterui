@@ -66,6 +66,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
     // walk's `body()` expansion.
     #[cfg(feature = "anchored_overlay")]
     crate::components::anchored_overlay::install(dispatcher);
+    #[cfg(feature = "dialog")]
+    crate::components::dialog::install(dispatcher);
     #[cfg(feature = "draggable")]
     crate::components::draggable::install(dispatcher);
     #[cfg(feature = "drop_destination")]

@@ -108,6 +108,9 @@ pub enum Feature {
     /// A member layer extends its backdrop composite past its clip edge
     /// (`Layer::backdrop_outer`).
     BackdropOuter,
+    /// A backdrop group's members composite their samples in a
+    /// non-linear space (`BackdropGroup::blend_space`).
+    BackdropBlendSpace,
     /// A layer with a projective pose.
     Projective,
 }
@@ -208,6 +211,9 @@ impl Scene {
             }
             if group.union.is_some() {
                 f.insert(Feature::BackdropUnion);
+            }
+            if group.blend_space != crate::BlendSpace::Linear {
+                f.insert(Feature::BackdropBlendSpace);
             }
             for filter in &group.filters {
                 match filter {

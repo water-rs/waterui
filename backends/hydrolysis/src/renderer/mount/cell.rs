@@ -133,6 +133,11 @@ pub struct NodeCell {
     /// `attach`ed under it. At record end a subview the record did not
     /// place has its subtree retired (§D's unplaced rule).
     pub(crate) subviews: RefCell<Vec<Weak<Self>>>,
+    /// The node is a `.material_group()` scope marker: its record pushes
+    /// this cell onto `material_group_scopes` while its child flushes.
+    /// Set once at build (the effect never changes) so a partial descent
+    /// can find every enclosing scope from the subtree root's ancestry.
+    pub(crate) material_group_scope: Cell<bool>,
     /// The record sequence this cell's placement was last linked under —
     /// the "placed during that record" stamp `subviews` retires against.
     placed_seq: Cell<u64>,
@@ -200,6 +205,7 @@ impl NodeCell {
             registered: Cell::new(false),
             children: RefCell::new(Vec::new()),
             subviews: RefCell::new(Vec::new()),
+            material_group_scope: Cell::new(false),
             placed_seq: Cell::new(0),
             retired: Cell::new(false),
             #[cfg(feature = "accessibility")]
@@ -222,6 +228,23 @@ impl NodeCell {
     /// The `.focused()` scope walk and the a11y unit rule climb it.
     pub fn parent(&self) -> Option<Rc<Self>> {
         self.parent.borrow().clone()
+    }
+
+    /// The `.material_group()` scope cells enclosing this node, outermost
+    /// first — the state a partial descent replays onto
+    /// `material_group_scopes` before it re-records the subtree so a member
+    /// reads the same scope as under a full flush (#2268).
+    pub(crate) fn enclosing_material_group_scopes(&self) -> Vec<Rc<Self>> {
+        let mut scopes = Vec::new();
+        let mut cursor = self.parent();
+        while let Some(cell) = cursor {
+            if cell.material_group_scope.get() {
+                scopes.push(Rc::clone(&cell));
+            }
+            cursor = cell.parent();
+        }
+        scopes.reverse();
+        scopes
     }
 
     /// Live child cells — pruned of dead entries as it is handed out, so

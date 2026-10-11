@@ -51,7 +51,9 @@ pub(crate) fn install_theme_tokens(env: &mut Environment, style: Option<&dyn cra
                 .selection_container(color(0x25_63_EB))
                 .selection_foreground(color(0xFF_FF_FF))
                 .error(color(0xDC_26_26))
-                .error_foreground(color(0xFF_FF_FF)),
+                .error_foreground(color(0xFF_FF_FF))
+                // Scrim: black at 32% over the content beneath a modal layer.
+                .scrim(Srgb::BLACK.resolve().with_alpha(0.32)),
         )
         .fonts(FontSettings::default_scale())
         .install(&mut defaults);

@@ -1035,21 +1035,60 @@ impl AccessibilityBuilder {
     /// root over the registered nodes, with the current focus. Factored so
     /// the merged multi-window path can re-emit a quiet window's last state
     /// from the live registry instead of cloning a stored update.
+    ///
+    /// A modal node — a presented dialog's alert — makes the rest of the
+    /// window inert: the root holds that node alone, and only its subtree is
+    /// published, with focus kept inside it.
     fn assembled_tree_update(&self) -> AccessibilityTreeUpdate {
         let mut root = AccessibilityNode::new(AccessibilityNodeRole::Window);
         root.set_label(self.root_label.clone());
         if self.root_bounds.width() > 0.0 && self.root_bounds.height() > 0.0 {
             root.set_bounds(kurbo_rect_to_accesskit_rect(self.root_bounds));
         }
-        root.set_children(self.root_children.clone());
-        let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+        let modal = self
+            .nodes
+            .iter()
+            .find_map(|(id, node)| node.is_modal().then_some(*id));
+        let Some(modal) = modal else {
+            root.set_children(self.root_children.clone());
+            let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+            nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
+            nodes.extend(self.nodes.iter().cloned());
+            return AccessibilityTreeUpdate {
+                nodes,
+                tree: Some(AccessibilityTree::new(ACCESSIBILITY_ROOT_NODE_ID)),
+                tree_id: AccessibilityTreeId::ROOT,
+                focus: self.focus,
+            };
+        };
+        root.set_children(vec![modal]);
+        let mut reachable = BTreeSet::new();
+        let mut pending = vec![modal];
+        while let Some(id) = pending.pop() {
+            if reachable.insert(id)
+                && let Some(node) = self.node(id)
+            {
+                pending.extend_from_slice(node.children());
+            }
+        }
+        let mut nodes = Vec::with_capacity(reachable.len() + 1);
         nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
-        nodes.extend(self.nodes.iter().cloned());
+        nodes.extend(
+            self.nodes
+                .iter()
+                .filter(|(id, _)| reachable.contains(id))
+                .cloned(),
+        );
+        let focus = if reachable.contains(&self.focus) {
+            self.focus
+        } else {
+            modal
+        };
         AccessibilityTreeUpdate {
             nodes,
             tree: Some(AccessibilityTree::new(ACCESSIBILITY_ROOT_NODE_ID)),
             tree_id: AccessibilityTreeId::ROOT,
-            focus: self.focus,
+            focus,
         }
     }
 
@@ -1911,6 +1950,17 @@ impl SemanticCore {
             env,
             AccessibilityNodeRole::Group,
         ));
+        // A presented dialog's card: the window's modal alert. Publication
+        // keeps a modal node alone under the window, so the content beneath
+        // the modal layer is inert for assistive technology.
+        if node.role() == AccessibilityNodeRole::Dialog
+            && env
+                .get::<crate::renderer::input::DialogLayerScope>()
+                .is_some()
+        {
+            node.set_role(AccessibilityNodeRole::AlertDialog);
+            node.set_modal();
+        }
         if let Some(label) = self.resolve_accessibility_label(env, None) {
             node.set_label(label);
         }

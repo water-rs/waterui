@@ -7,6 +7,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use core::fmt;
 
 use nami::{
     Computed, Signal, SignalExt, SignalIdentity, impl_constant,
@@ -119,6 +120,67 @@ impl ShortcutKey {
             Self::Named(named) => Key::Named(*named),
         }
     }
+}
+
+/// The label a menu hint draws for a shortcut key: a letter in upper case,
+/// the space bar as `Space`, and a named key in the platform's own notation —
+/// the `⌦`/`↩`/`←` glyphs of Apple menus, the `Del`/`Enter`/`Left` text of
+/// Windows and Linux menus. A named key without a platform abbreviation
+/// shows its W3C name, which is already the label those menus print (`F5`,
+/// `Home`).
+impl fmt::Display for ShortcutKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Character(' ') => f.write_str("Space"),
+            Self::Character(character) => {
+                for upper in character.to_uppercase() {
+                    write!(f, "{upper}")?;
+                }
+                Ok(())
+            }
+            Self::Named(named) => match named_key_label(*named) {
+                Some(label) => f.write_str(label),
+                None => fmt::Display::fmt(named, f),
+            },
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "⌦",
+        NamedKey::Backspace => "⌫",
+        NamedKey::Enter => "↩",
+        NamedKey::Escape => "⎋",
+        NamedKey::Tab => "⇥",
+        NamedKey::ArrowUp => "↑",
+        NamedKey::ArrowDown => "↓",
+        NamedKey::ArrowLeft => "←",
+        NamedKey::ArrowRight => "→",
+        NamedKey::PageUp => "⇞",
+        NamedKey::PageDown => "⇟",
+        NamedKey::Home => "↖",
+        NamedKey::End => "↘",
+        NamedKey::Clear => "⌧",
+        _ => return None,
+    })
+}
+
+#[cfg(not(target_vendor = "apple"))]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "Del",
+        NamedKey::Insert => "Ins",
+        NamedKey::Escape => "Esc",
+        NamedKey::PageUp => "PgUp",
+        NamedKey::PageDown => "PgDn",
+        NamedKey::ArrowUp => "Up",
+        NamedKey::ArrowDown => "Down",
+        NamedKey::ArrowLeft => "Left",
+        NamedKey::ArrowRight => "Right",
+        _ => return None,
+    })
 }
 
 /// Whether `key` can name a shortcut: `Unidentified` and `Dead` are reported
@@ -273,6 +335,45 @@ impl Shortcut {
     pub const fn control(mut self) -> Self {
         self.modifiers = self.modifiers.inserting(ShortcutModifiers::CONTROL);
         self
+    }
+}
+
+/// The trailing hint a menu row draws for the shortcut — `⌃⌥⇧⌘` glyphs on
+/// Apple targets, `Ctrl+Alt+Shift+` text elsewhere, where the command
+/// modifier is control, the platform's menu accelerator. The key renders
+/// through [`ShortcutKey`]'s own `Display`, so a menu row and an
+/// application's own listing of its chords cannot disagree.
+impl fmt::Display for Shortcut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let modifiers = self.modifiers;
+        #[cfg(target_vendor = "apple")]
+        {
+            if modifiers.control() {
+                f.write_str("⌃")?;
+            }
+            if modifiers.option() {
+                f.write_str("⌥")?;
+            }
+            if modifiers.shift() {
+                f.write_str("⇧")?;
+            }
+            if modifiers.command() {
+                f.write_str("⌘")?;
+            }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            if modifiers.control() || modifiers.command() {
+                f.write_str("Ctrl+")?;
+            }
+            if modifiers.option() {
+                f.write_str("Alt+")?;
+            }
+            if modifiers.shift() {
+                f.write_str("Shift+")?;
+            }
+        }
+        fmt::Display::fmt(&self.key, f)
     }
 }
 
@@ -1214,6 +1315,28 @@ mod tests {
     #[should_panic(expected = "`NamedKey::Tab`")]
     fn shortcut_key_refuses_a_control_character_naming_its_key() {
         let _ = ShortcutKey::from('\t');
+    }
+
+    /// `Display` is the platform's menu hint: `⇧⌘P` on Apple targets,
+    /// `Ctrl+Shift+P` where the command modifier is control.
+    #[test]
+    fn shortcut_displays_its_platform_hint() {
+        let shortcut = Shortcut::new('p').command().shift();
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(shortcut.to_string(), "⇧⌘P");
+        #[cfg(not(target_vendor = "apple"))]
+        assert_eq!(shortcut.to_string(), "Ctrl+Shift+P");
+    }
+
+    /// A named key draws the platform's own label — `⌦` on Apple targets,
+    /// `Del` elsewhere.
+    #[test]
+    fn shortcut_displays_named_key_labels() {
+        let shortcut = Shortcut::new(NamedKey::Delete).command();
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(shortcut.to_string(), "⌘⌦");
+        #[cfg(not(target_vendor = "apple"))]
+        assert_eq!(shortcut.to_string(), "Ctrl+Del");
     }
 
     #[test]

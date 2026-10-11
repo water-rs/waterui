@@ -102,6 +102,10 @@ struct MenuState {
     /// The proposal a Rust parent last placed this leaf at —
     /// `selectedProposal`.
     selected: Cell<Option<ProposalSize>>,
+    /// The scope the live menu's key commands are armed in, replaced with
+    /// the menu on every rebuild.
+    #[cfg(target_os = "ios")]
+    key_commands: Option<cocoa_ui::uikit::KeyCommands>,
     /// Main-thread proof, captured for menu rebuilds inside watchers.
     mtm: cocoa_ui::MainThreadMarker,
 }
@@ -175,7 +179,11 @@ fn rebuild_menu(state: &Rc<RefCell<MenuState>>) {
             state.mtm,
         )
     };
-    button.set_menu(&build_menu(mtm, "", None, &items, &env));
+    let key_commands = cocoa_ui::uikit::KeyCommands::new(mtm);
+    button.set_menu(&build_menu(mtm, &key_commands, "", None, &items, &env));
+    // `setMenu:` has replaced the rows of a menu that is open, so the
+    // previous menu's commands are unreachable and retire with its scope.
+    state.borrow_mut().key_commands = Some(key_commands);
 }
 
 /// The container's layout face: the label's measurement plus the label
@@ -261,6 +269,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             items: Vec::new(),
             item_watchers: Vec::new(),
             selected: Cell::new(None),
+            #[cfg(target_os = "ios")]
+            key_commands: None,
             mtm,
         }));
 

@@ -26,7 +26,7 @@ use cocoa_ui::appkit::HostView;
 use cocoa_ui::uikit::HostView;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
-use waterui_backend_core::{AnyView, Environment};
+use waterui_backend_core::{AnyView, Environment, View};
 use waterui_core::layout::SubView;
 
 use cocoa_ui::Retained;
@@ -485,6 +485,46 @@ impl Renderer {
     #[must_use]
     pub fn try_render(&self, view: impl Into<AnyView>) -> Option<NativeLeaf> {
         self.dispatcher.render(view.into(), &self.env, self.mtm)
+    }
+
+    /// Renders `view` and answers the environment its leaf resolved
+    /// under: the scope of the *leading* `Metadata<Environment>` chain —
+    /// the environment layers at the root of `view` and the composite
+    /// bodies that produce them — and nothing below the first
+    /// handler-claimed view, so a scope a descendant installs (a
+    /// `.disabled` child inside the content) never leaks into the
+    /// answer. `body()` runs once per expansion, the same single pass
+    /// [`Renderer::render`] makes, and the peeled view renders under the
+    /// scope its outermost environment layers resolved to — each
+    /// `Metadata<Environment>` replaces the environment for its subtree,
+    /// matching `with_env`.
+    #[must_use]
+    pub fn render_resolved(&self, view: impl Into<AnyView>) -> (NativeLeaf, Environment) {
+        let mut env = self.env.clone();
+        let mut view = view.into();
+        loop {
+            match view.downcast::<waterui_core::Metadata<Environment>>() {
+                Ok(metadata) => {
+                    let waterui_core::Metadata { content, value } = *metadata;
+                    env = value;
+                    view = content;
+                }
+                Err(back) => {
+                    view = back;
+                    if self.dispatcher.claims(&view) {
+                        break;
+                    }
+                    view = AnyView::new(view.body(&env));
+                }
+            }
+        }
+        let leaf = Self {
+            env: env.clone(),
+            dispatcher: self.dispatcher.clone(),
+            mtm: self.mtm,
+        }
+        .render(view);
+        (leaf, env)
     }
 
     /// The captured environment and dispatcher as a context.

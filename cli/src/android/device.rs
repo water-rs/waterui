@@ -31,29 +31,45 @@ enum AndroidRuntimeEvent {
 
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `adb wait-for-device` waits until the device is online, so its bound
-/// covers a device mid-boot, not a stalled transport alone.
-const WAIT_FOR_DEVICE_TIMEOUT: Duration = Duration::from_secs(120);
-
 /// The launch-intent extra carrying the `--logs` level to a Hydrolysis
 /// Android app — `HydrolysisActivity` reads it and hands it to the native
 /// logging setup. Unlike `waterui.env.*` extras it never becomes an
 /// environment variable.
 const ANDROID_LOG_LEVEL_EXTRA: &str = "waterui.log.level";
 
-/// Represents an Android device (physical or emulator).
+/// An Android device (physical or emulator) that `adb` reported online.
+///
+/// Every value comes from an `adb devices` scan that listed the device in
+/// the `device` state — a connected device, or an emulator whose boot the
+/// launch waited out — so it needs no launch of its own.
 #[derive(Debug)]
 pub struct AndroidDevice {
     identifier: String,
     /// Primary ABI of the device (e.g., "arm64-v8a", "`x86_64`")
     abi: AndroidAbi,
+    /// The client whose server reported this device — every later command
+    /// addressed to it reuses that running server instead of starting one.
+    adb: Adb,
 }
 
 impl AndroidDevice {
-    /// Create a new Android device with the given identifier and ABI.
+    /// Create a new Android device with the given identifier and ABI, reached
+    /// through `adb`. Crate-private: [`Self::scan_with_adb`] is the only
+    /// caller, so a value can only ever come from a scan that saw the
+    /// device online.
     #[must_use]
-    pub const fn new(identifier: String, abi: AndroidAbi) -> Self {
-        Self { identifier, abi }
+    pub(crate) const fn new(identifier: String, abi: AndroidAbi, adb: Adb) -> Self {
+        Self {
+            identifier,
+            abi,
+            adb,
+        }
+    }
+
+    /// The `adb` client this device is reached through.
+    #[must_use]
+    pub const fn adb(&self) -> &Adb {
+        &self.adb
     }
 
     /// Get the device identifier.
@@ -74,21 +90,11 @@ impl Device for AndroidDevice {
         &self.identifier
     }
 
-    async fn launch(&self, host: &Host) -> eyre::Result<()> {
-        let adb = Adb::locate(host).await?;
-        // `wait-for-device` returns only once the device is online — a
-        // device mid-boot legitimately spends the bound; the timeout is the
-        // backstop for a transport that never comes up, not the expected
-        // wait.
-        run_bounded_adb_command(
-            host,
-            &adb,
-            ["-s", self.identifier.as_str(), "wait-for-device"],
-            "waiting for the Android device",
-            WAIT_FOR_DEVICE_TIMEOUT,
-        )
-        .await?;
-        Ok(())
+    /// The scan that produced this device already saw it online, so there
+    /// is nothing to wait for: a device that dropped off since fails the
+    /// first command addressed to it, naming that command.
+    fn launch(&self, _host: &Host) -> impl Future<Output = eyre::Result<()>> + Send {
+        std::future::ready(Ok(()))
     }
 
     async fn run(
@@ -97,7 +103,7 @@ impl Device for AndroidDevice {
         artifact: Artifact,
         options: RunOptions,
     ) -> Result<Running, FailToRun> {
-        run_on_android(host, &self.identifier, artifact, options).await
+        run_on_android(host, &self.adb, &self.identifier, artifact, options).await
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
@@ -145,7 +151,7 @@ impl AndroidDevice {
                     .parse::<AndroidAbi>()
                     .map_err(|e| eyre!("Unsupported device ABI: {e}"))?;
 
-                devices.push(Self::new(identifier, abi));
+                devices.push(Self::new(identifier, abi, adb.clone()));
             }
         }
 
@@ -164,31 +170,150 @@ pub enum AndroidTarget {
 }
 
 impl AndroidTarget {
-    /// The first connected device, or else the first AVD.
-    ///
-    /// # Errors
-    /// Returns an error when `adb` or the emulator cannot be queried, when the
-    /// chosen AVD's configuration cannot be read, or when there is neither a
-    /// connected device nor an AVD.
-    pub async fn first_available(host: &Host) -> eyre::Result<Self> {
-        if let Some(device) = AndroidDevice::scan(host).await?.into_iter().next() {
-            return Ok(Self::Device(device));
+    /// The id `--device` and the last-used record name this target by: a
+    /// connected device's adb serial, or an AVD name.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Device(device) => device.identifier(),
+            Self::Emulator(emulator) => emulator.avd_name(),
         }
-        let avd_name = crate::android::platform::AndroidPlatform::list_avds(host)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| eyre!("No Android devices or emulators available."))?;
-        Ok(Self::Emulator(AndroidEmulator::open(host, avd_name).await?))
     }
 
-    /// The `adb` serial of the target: the device's own, or the one the
-    /// emulator came up as once it has been launched.
-    #[must_use]
-    pub fn serial(&self) -> Option<&str> {
+    /// Every target `adb` and the AVD list offer, in the order a picker
+    /// shows them: connected devices first, then bootable AVDs.
+    ///
+    /// # Errors
+    /// Returns an error when `adb` or the emulator cannot be queried, a
+    /// device's ABI cannot be read, or an AVD's configuration cannot be
+    /// opened.
+    async fn candidates(host: &Host) -> eyre::Result<Vec<AndroidCandidate>> {
+        let (devices, emulators) =
+            futures_util::try_join!(AndroidDevice::scan(host), AndroidEmulator::scan(host))?;
+        Ok(devices
+            .into_iter()
+            .map(|device| AndroidCandidate {
+                label: format!("{} (connected)", device.identifier()),
+                id: device.identifier().to_owned(),
+                target: Self::Device(device),
+            })
+            .chain(emulators.into_iter().map(|emulator| AndroidCandidate {
+                label: format!("{} (emulator)", emulator.avd_name()),
+                id: emulator.avd_name().to_owned(),
+                target: Self::Emulator(emulator),
+            }))
+            .collect())
+    }
+
+    /// Decide the Android target a command runs on.
+    ///
+    /// `device_id` — a `--device` value — selects the connected device
+    /// whose serial it equals or the AVD it names, and a miss is an error
+    /// naming it. Otherwise `remembered`, the caller's last-used id, wins
+    /// when it still names a candidate; a stale one is dropped (the
+    /// outcome's `stale` reports it for a warning) and the count decides:
+    /// one candidate is taken, several come back
+    /// [`AndroidDecision::Ambiguous`] for an interactive picker or
+    /// [`AndroidSelection::ambiguous_error`] to resolve.
+    ///
+    /// # Errors
+    /// Returns an error when `adb` or the emulator cannot be queried, a
+    /// device ABI or an AVD config cannot be read, `device_id` names
+    /// nothing found, or no device or AVD exists at all.
+    pub async fn select(
+        host: &Host,
+        device_id: Option<&str>,
+        remembered: Option<&str>,
+    ) -> eyre::Result<AndroidSelection> {
+        let mut candidates = Self::candidates(host).await?;
+
+        if let Some(query) = device_id {
+            let target = candidates
+                .into_iter()
+                .find(|candidate| candidate.id == query)
+                .ok_or_else(|| eyre!("Device not found: {query}"))?
+                .into_target();
+            return Ok(AndroidSelection {
+                stale: None,
+                decision: AndroidDecision::Resolved(target),
+            });
+        }
+
+        let stale = if let Some(id) = remembered {
+            if let Some(index) = candidates.iter().position(|candidate| candidate.id == id) {
+                let target = candidates.swap_remove(index).into_target();
+                return Ok(AndroidSelection {
+                    stale: None,
+                    decision: AndroidDecision::Resolved(target),
+                });
+            }
+            Some(id.to_owned())
+        } else {
+            None
+        };
+
+        let decision = match candidates.len() {
+            0 => eyre::bail!(
+                "No Android devices connected and no emulators available. \
+                 Create an emulator with Android Studio or `avdmanager`, or connect a device."
+            ),
+            1 => AndroidDecision::Resolved(candidates.swap_remove(0).into_target()),
+            _ => AndroidDecision::Ambiguous(candidates),
+        };
+        Ok(AndroidSelection { stale, decision })
+    }
+
+    /// Decide the target and finish it for a caller that cannot ask.
+    ///
+    /// `memory_key` is the `last_used_device` slot the caller keeps its
+    /// choice under — see [`crate::water_dir::device_memory_key`]; `None`
+    /// for a selection that keeps no memory. Its value is the `remembered`
+    /// of [`Self::select`], a stale one drops with a `tracing::warn`, and
+    /// an explicit id or a resolution repairing it is recorded back. An
+    /// [`AndroidDecision::Ambiguous`] decision fails with
+    /// [`AndroidSelection::ambiguous_error`].
+    ///
+    /// # Errors
+    /// As [`Self::select`], plus the ambiguous-decision error.
+    pub async fn resolve(
+        host: &Host,
+        device_id: Option<&str>,
+        memory_key: Option<&str>,
+    ) -> eyre::Result<Self> {
+        let remembered = match memory_key {
+            Some(key) => crate::water_dir::last_used_device(host, key).await,
+            None => None,
+        };
+        let selection = Self::select(host, device_id, remembered.as_deref()).await?;
+        if let Some(stale) = &selection.stale {
+            tracing::warn!("the last-used Android device \"{stale}\" is not available");
+        }
+        let target = match selection.decision {
+            AndroidDecision::Resolved(target) => target,
+            AndroidDecision::Ambiguous(candidates) => {
+                return Err(AndroidSelection::ambiguous_error(&candidates));
+            }
+        };
+        if let Some(key) = memory_key
+            && (selection.stale.is_some() || device_id.is_some())
+        {
+            crate::water_dir::record_last_used_device(host, key, target.id()).await;
+        }
+        Ok(target)
+    }
+
+    /// Bring the target up and answer the device it is: a connected device
+    /// itself, or the one the emulator booted as.
+    ///
+    /// # Errors
+    /// Returns an error when the emulator cannot be booted.
+    pub async fn launch(&self, host: &Host) -> eyre::Result<&AndroidDevice> {
         match self {
-            Self::Device(device) => Some(device.identifier()),
-            Self::Emulator(emulator) => emulator.launched_device().map(AndroidDevice::identifier),
+            Self::Device(device) => {
+                device.launch(host).await?;
+                Ok(device)
+            }
+            Self::Emulator(emulator) => emulator.boot(host).await,
         }
     }
 }
@@ -202,10 +327,7 @@ impl Device for AndroidTarget {
     }
 
     async fn launch(&self, host: &Host) -> eyre::Result<()> {
-        match self {
-            Self::Device(device) => device.launch(host).await,
-            Self::Emulator(emulator) => emulator.launch(host).await,
-        }
+        Self::launch(self, host).await.map(|_| ())
     }
 
     async fn run(
@@ -265,6 +387,71 @@ impl AndroidAbiProvider for AndroidEmulator {
     }
 }
 
+/// One entry in an Android target choice: a connected device, or an AVD
+/// [`Device::launch`] boots.
+#[derive(Debug)]
+pub struct AndroidCandidate {
+    /// The id `--device` names and the last-used record persists.
+    id: String,
+    /// The line a picker or an error listing shows.
+    label: String,
+    target: AndroidTarget,
+}
+
+impl AndroidCandidate {
+    /// The id `--device` names: the adb serial or the AVD name.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The label a picker or an error listing shows.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Consume the candidate into the target it runs on.
+    #[must_use]
+    pub fn into_target(self) -> AndroidTarget {
+        self.target
+    }
+}
+
+/// What [`AndroidTarget::select`] decided for a command.
+#[derive(Debug)]
+pub struct AndroidSelection {
+    /// A `remembered` id that named no candidate — it was dropped before
+    /// the decision, and is reported for the caller to warn about; the
+    /// choice that follows repairs the record.
+    pub stale: Option<String>,
+    /// The decision itself.
+    pub decision: AndroidDecision,
+}
+
+impl AndroidSelection {
+    /// The error a caller that cannot ask resolves an `Ambiguous`
+    /// decision with: every candidate it could not pick among.
+    pub fn ambiguous_error(candidates: &[AndroidCandidate]) -> eyre::Report {
+        crate::device::ambiguous_device_error(
+            candidates
+                .iter()
+                .map(|candidate| (candidate.label(), candidate.id())),
+        )
+    }
+}
+
+/// The decision an [`AndroidSelection`] carries.
+#[derive(Debug)]
+pub enum AndroidDecision {
+    /// One target — an explicit `--device`, a still-present remembered
+    /// device, or the single candidate.
+    Resolved(AndroidTarget),
+    /// Several candidates survive: an interactive picker, or
+    /// [`AndroidSelection::ambiguous_error`] where nothing can ask.
+    Ambiguous(Vec<AndroidCandidate>),
+}
+
 /// Shared implementation for running an app on any Android device.
 ///
 /// This handles:
@@ -276,13 +463,16 @@ impl AndroidAbiProvider for AndroidEmulator {
 /// - Streaming logs
 async fn run_on_android(
     host: &Host,
+    adb: &Adb,
     device_id: &str,
     artifact: Artifact,
     options: RunOptions,
 ) -> Result<Running, FailToRun> {
-    let adb = Adb::locate(host)
+    // The device was found before the build; a server that died while the
+    // build ran is restarted here, detached, before any command needs it.
+    adb.start_server(host)
         .await
-        .map_err(|error| FailToRun::Run(error.into()))?;
+        .map_err(|error| FailToRun::Launch(eyre!(error)))?;
     let env_vars = options
         .env_vars()
         .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -295,22 +485,22 @@ async fn run_on_android(
         crate::web::dev_url_port(env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .map_err(|error| FailToRun::Launch(eyre!("Invalid dev-server handoff: {error}")))?
     {
-        reverse_dev_server_port(host, &adb, device_id, port).await?;
+        reverse_dev_server_port(host, adb, device_id, port).await?;
     }
 
     // The preview support app listens on the device's loopback; `adb forward`
     // maps each candidate host port onto it so the CLI can reach the server.
     for port in options.forward_tcp_ports() {
-        forward_device_port(host, &adb, device_id, *port).await?;
+        forward_device_port(host, adb, device_id, *port).await?;
     }
 
-    install_android_artifact(host, &adb, device_id, artifact.path()).await?;
+    install_android_artifact(host, adb, device_id, artifact.path()).await?;
     let start_args =
         build_android_start_args(device_id, &artifact, &env_vars, options.log_level())?;
-    launch_android_app(host, &adb, start_args).await?;
+    launch_android_app(host, adb, start_args).await?;
 
     // Wait for the process to start and get its PID
-    let pid = wait_for_app_pid(host, &adb, device_id, artifact.bundle_id()).await?;
+    let pid = wait_for_app_pid(host, adb, device_id, artifact.bundle_id()).await?;
 
     let (mut running, sender, control) = Running::new();
     if !options.forward_tcp_ports().is_empty() {
@@ -324,7 +514,7 @@ async fn run_on_android(
 
     let logcat = spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
         host,
-        adb: &adb,
+        adb,
         device_id,
         bundle_id: artifact.bundle_id(),
         pid,
@@ -1369,20 +1559,18 @@ impl AndroidEmulator {
         self.expected_abi
     }
 
-    /// The device this emulator came up as, once [`Device::launch`] has
-    /// returned.
-    #[must_use]
-    pub fn launched_device(&self) -> Option<&AndroidDevice> {
-        self.device.get()
-    }
-}
-
-impl Device for AndroidEmulator {
-    fn name(&self) -> &str {
-        &self.avd_name
-    }
-
-    async fn launch(&self, host: &Host) -> eyre::Result<()> {
+    /// Boot the AVD — or wait for the instance already running it — until
+    /// it is fully ready, and answer the device it came up as. A booted
+    /// emulator answers that device again without asking adb.
+    ///
+    /// # Errors
+    /// Returns an error when the emulator is missing, exits before it is
+    /// ready, reports a different ABI than its config, or is not ready
+    /// within five minutes.
+    pub async fn boot(&self, host: &Host) -> eyre::Result<&AndroidDevice> {
+        if let Some(device) = self.device.get() {
+            return Ok(device);
+        }
         let emulator_path = AndroidSdk::emulator_path(host)
             .ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
         let adb = Adb::locate(host).await?;
@@ -1485,14 +1673,21 @@ impl Device for AndroidEmulator {
                     continue;
                 }
 
-                self.device
-                    .set(device)
-                    .map_err(|_| eyre::eyre!("Emulator device already initialized"))?;
-                return Ok(());
+                return Ok(self.device.get_or_init(|| device));
             }
 
             smol::Timer::after(std::time::Duration::from_secs(2)).await;
         }
+    }
+}
+
+impl Device for AndroidEmulator {
+    fn name(&self) -> &str {
+        &self.avd_name
+    }
+
+    async fn launch(&self, host: &Host) -> eyre::Result<()> {
+        self.boot(host).await.map(|_| ())
     }
 
     async fn run(
@@ -1507,7 +1702,7 @@ impl Device for AndroidEmulator {
                 self.avd_name
             ))
         })?;
-        run_on_android(host, device.identifier(), artifact, options).await
+        run_on_android(host, device.adb(), device.identifier(), artifact, options).await
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
@@ -2084,14 +2279,81 @@ mod tests {
         (machine, host)
     }
 
+    /// Two connected devices and no `--device`: the non-interactive
+    /// resolution fails naming every candidate.
     #[test]
     #[cfg(unix)]
-    fn a_connected_device_wins_over_an_avd() {
-        let (machine, host) = android_machine(&[
+    fn several_devices_without_a_name_fail_listing_every_candidate() {
+        let (_machine, host) = android_machine(&[
             (
                 "WATERUI_FAKE_ADB_DEVICES",
-                "R5CX1234 device product:caiman model:Pixel_9_Pro",
+                "R5CX1234 device product:caiman model:Pixel_9_Pro\n\
+                 emulator-5554 device product:sdk_phone64_arm64 model:sdk_gphone64_arm64",
             ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let error = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect_err("several devices need a choice");
+        let message = error.to_string();
+        assert!(message.contains("--device"), "{message}");
+        assert!(message.contains("R5CX1234"), "{message}");
+        assert!(message.contains("emulator-5554"), "{message}");
+    }
+
+    /// `--device` selects the connected device it names, whichever order
+    /// `adb devices` listed them in.
+    #[test]
+    #[cfg(unix)]
+    fn a_named_device_resolves_to_that_serial() {
+        let (_machine, host) = android_machine(&[
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman\n\
+                 emulator-5554 device product:sdk_phone64_arm64",
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let target = smol::block_on(super::AndroidTarget::resolve(
+            &host,
+            Some("emulator-5554"),
+            None,
+        ))
+        .expect("the named device resolves");
+        assert_eq!(target.id(), "emulator-5554");
+        assert!(
+            matches!(target, super::AndroidTarget::Device(_)),
+            "{target:?}"
+        );
+    }
+
+    /// A `--device` value naming no connected serial and no AVD fails
+    /// naming what was asked for.
+    #[test]
+    #[cfg(unix)]
+    fn an_unknown_device_id_fails_naming_it() {
+        let (_machine, host) = android_machine(&[
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let error = smol::block_on(super::AndroidTarget::resolve(
+            &host,
+            Some("not-a-device"),
+            None,
+        ))
+        .expect_err("an unknown id fails");
+        assert!(error.to_string().contains("not-a-device"), "{error}");
+    }
+
+    /// `--device` naming an AVD selects the emulator it boots, not the
+    /// connected device.
+    #[test]
+    #[cfg(unix)]
+    fn a_named_avd_resolves_to_the_emulator() {
+        let (machine, host) = android_machine(&[
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
             ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
             ("WATERUI_FAKE_EMULATOR_AVDS", "Medium_Phone_API_37"),
         ]);
@@ -2100,27 +2362,42 @@ mod tests {
             "abi.type=arm64-v8a\n",
         );
 
-        let target = smol::block_on(super::AndroidTarget::first_available(&host))
-            .expect("a target is available");
-        assert!(
-            matches!(target, super::AndroidTarget::Device(_)),
-            "{target:?}"
-        );
-        assert_eq!(target.serial(), Some("R5CX1234"));
+        let target = smol::block_on(super::AndroidTarget::resolve(
+            &host,
+            Some("Medium_Phone_API_37"),
+            None,
+        ))
+        .expect("the named AVD resolves");
+        let super::AndroidTarget::Emulator(emulator) = &target else {
+            panic!("expected the AVD, got {target:?}");
+        };
+        assert_eq!(emulator.avd_name(), "Medium_Phone_API_37");
     }
 
+    /// One candidate needs no choosing: a connected device resolves
+    /// directly, and so does a lone AVD.
     #[test]
     #[cfg(unix)]
-    fn without_a_device_the_first_avd_is_chosen() {
+    fn a_single_candidate_resolves_without_a_choice() {
+        let (_machine, host) = android_machine(&[
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+        let selection = smol::block_on(super::AndroidTarget::select(&host, None, None))
+            .expect("a single candidate resolves");
+        let super::AndroidDecision::Resolved(target) = selection.decision else {
+            panic!("a single candidate resolves without a choice: {selection:?}");
+        };
+        assert_eq!(target.id(), "R5CX1234");
+
         let (machine, host) =
             android_machine(&[("WATERUI_FAKE_EMULATOR_AVDS", "Medium_Phone_API_37")]);
         machine.file(
             "home/.android/avd/Medium_Phone_API_37.avd/config.ini",
             "abi.type=arm64-v8a\n",
         );
-
-        let target = smol::block_on(super::AndroidTarget::first_available(&host))
-            .expect("the AVD is available");
+        let target = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect("the lone AVD resolves");
         let super::AndroidTarget::Emulator(emulator) = &target else {
             panic!("expected the AVD, got {target:?}");
         };
@@ -2129,10 +2406,103 @@ mod tests {
             super::AndroidAbiProvider::android_abi(&target),
             crate::android::platform::AndroidAbi::Arm64V8a
         );
-        assert_eq!(
-            target.serial(),
+    }
+
+    /// The remembered device resolves without a choice, however many
+    /// candidates the scan found.
+    #[test]
+    #[cfg(unix)]
+    fn the_remembered_device_resolves_without_a_choice() {
+        let (_machine, host) = android_machine(&[
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman\n\
+                 emulator-5554 device product:sdk_phone64_arm64",
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let selection = smol::block_on(super::AndroidTarget::select(
+            &host,
             None,
-            "an emulator has no serial before launch"
+            Some("emulator-5554"),
+        ))
+        .expect("the remembered device resolves");
+        assert_eq!(selection.stale, None);
+        let super::AndroidDecision::Resolved(target) = selection.decision else {
+            panic!("the remembered device wins without a choice: {selection:?}");
+        };
+        assert_eq!(target.id(), "emulator-5554");
+    }
+
+    /// A remembered id no device or AVD carries anymore is dropped as
+    /// stale, and the remaining candidates still need a choice.
+    #[test]
+    #[cfg(unix)]
+    fn a_stale_remembered_device_falls_back_to_a_choice() {
+        let (_machine, host) = android_machine(&[
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman\n\
+                 emulator-5554 device product:sdk_phone64_arm64",
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let selection = smol::block_on(super::AndroidTarget::select(
+            &host,
+            None,
+            Some("gone-serial"),
+        ))
+        .expect("a stale memory still resolves");
+        assert_eq!(selection.stale.as_deref(), Some("gone-serial"));
+        let super::AndroidDecision::Ambiguous(candidates) = selection.decision else {
+            panic!("a stale memory leaves the candidates to pick: {selection:?}");
+        };
+        assert_eq!(candidates.len(), 2);
+    }
+
+    /// A connected device carries the client its scan located, and the scan
+    /// already saw it online: launching it issues no adb command at all, so
+    /// the scan's `start-server` is the only server start and nothing waits
+    /// for the device.
+    #[test]
+    #[cfg(unix)]
+    fn launching_a_scanned_device_starts_no_second_server() {
+        // The argv log lives in the scratch root, known only once the
+        // machine exists, so the host is declared after it.
+        let (machine, _) = android_machine(&[]);
+        let log = machine.root().join("adb-argv.log");
+        let sdk = machine.root().join("sdk");
+        let host = machine.host([
+            ("ANDROID_SDK_ROOT", sdk.as_os_str()),
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman model:Pixel_9_Pro".as_ref(),
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a".as_ref()),
+            ("WATERUI_FAKE_ADB_LOG", log.as_os_str()),
+        ]);
+
+        smol::block_on(async {
+            let target = super::AndroidTarget::resolve(&host, None, None)
+                .await
+                .expect("a target is available");
+            crate::device::Device::launch(&target, &host)
+                .await
+                .expect("the device is online");
+        });
+
+        let argv = std::fs::read_to_string(&log).expect("read the argv log");
+        let lines: Vec<&str> = argv.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "start-server",
+                "devices -l",
+                "-s R5CX1234 shell getprop ro.product.cpu.abi",
+            ],
+            "{argv}"
         );
     }
 
@@ -2141,11 +2511,12 @@ mod tests {
     fn without_a_device_or_an_avd_there_is_no_target() {
         let (_machine, host) = android_machine(&[]);
 
-        let error = smol::block_on(super::AndroidTarget::first_available(&host))
+        let error = smol::block_on(super::AndroidTarget::select(&host, None, None))
             .expect_err("nothing to run on");
         assert_eq!(
             error.to_string(),
-            "No Android devices or emulators available."
+            "No Android devices connected and no emulators available. \
+             Create an emulator with Android Studio or `avdmanager`, or connect a device."
         );
     }
 }

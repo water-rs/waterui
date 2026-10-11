@@ -305,7 +305,7 @@ pub fn measure_morph_shape_node(
 /// Renders a retained morph-shape leaf every flush: emits a11y (unless hidden) then
 /// fills the morphed path at the current animation progress. The morph progress is
 /// resolved via the animation controller every frame (explicit `progress` signal
-/// watched through `resolve_animated_scalar_with_discriminator`; time-based
+/// watched through `resolve_owned_scalar`; time-based
 /// animation driven by `sample_morph_progress`), so the morph stays live.
 pub fn render_morph_shape_node(
     ctx: &mut WidgetRenderContext<'_>,
@@ -329,17 +329,13 @@ pub fn render_morph_shape_parts(
 ) {
     let bounds = ctx.bounds;
     let transform = ctx.local;
-    // Stable identity of this morph node: the retained shape `Rc`'s address keys the
-    // time-based morph slot so it survives structural changes (no `render_depth`).
-    let node_id = Rc::as_ptr(shape) as usize;
     let renderer = ctx.renderer_mut();
     let (path, fill) = {
         let resolved = shape.borrow();
         let progress = if let Some(progress) = resolved.progress.as_ref() {
-            renderer
-                .resolve_animated_scalar_with_discriminator(progress, MORPH_PROGRESS_ANIMATION_KEY)
+            renderer.resolve_owned_scalar(progress, shape, MORPH_PROGRESS_ANIMATION_KEY)
         } else {
-            renderer.sample_morph_progress(resolved.animation, node_id)
+            renderer.sample_morph_progress(resolved.animation, shape)
         };
         let fill = renderer.read_signal(&resolved.fill);
         (

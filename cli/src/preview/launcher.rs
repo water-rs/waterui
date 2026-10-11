@@ -37,7 +37,6 @@ use crate::project::{ManagedBackends, Project};
 use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
 use crate::runtime_fingerprint::{compute_runtime_fingerprint, runtime_package_identity};
 use crate::support_app;
-use waterui_preview_protocol::registry::preview_instance_registry_dir;
 
 const PREVIEW_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const PREVIEW_METADATA_FILE: &str = ".waterui-preview-signature";
@@ -486,16 +485,9 @@ fn preview_run_options(host: &crate::toolchain::Host) -> RunOptions {
     run_options.set_log_level(LogLevel::Info);
     // Point the support app's registry at the cache directory the CLI
     // watches.
-    let preview_cache_root = waterui_preview_protocol::registry::preview_cache_root_dir();
-    let water_cache_dir = preview_cache_root.parent().unwrap_or_else(|| {
-        panic!(
-            "preview cache root must have a parent directory: {}",
-            preview_cache_root.display()
-        )
-    });
     run_options.insert_env_var(
         "WATER_CACHE_DIR".to_string(),
-        water_cache_dir.display().to_string(),
+        crate::preview::water_cache_dir(host).display().to_string(),
     );
     for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
         run_options.insert_env_var(key.to_string(), value.to_string());
@@ -1060,7 +1052,7 @@ async fn wait_for_registered_preview_ready(
         PreviewProbe::Silent => {}
     }
 
-    let registry_dir = preview_instance_registry_dir();
+    let registry_dir = crate::preview::preview_instance_registry_dir(host);
     if let Err(error) = smol::fs::create_dir_all(&registry_dir).await {
         error!(path = %registry_dir.display(), "Failed to create preview registry dir: {error}");
         return ConnectionWaitResult::Timeout(rejection);
@@ -1470,7 +1462,7 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             Some(project.root()),
             Some(
                 &project
-                    .project_packages(&framework, &preview_targets())
+                    .project_packages(framework, &preview_targets())
                     .await?,
             ),
         )
@@ -1797,7 +1789,7 @@ async fn resolve_preview_metadata(
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
     let project_packages = project
-        .project_packages(&framework, &preview_targets())
+        .project_packages(framework, &preview_targets())
         .await?;
     let metadata_start = Instant::now();
     let abi_feature = PreviewLinkMode::for_platform(platform)
@@ -1818,7 +1810,8 @@ async fn resolve_preview_metadata(
     );
     Ok(ResolvedPreviewMetadata {
         metadata,
-        framework,
+        // The metadata outlives the project opened above, so it owns a copy.
+        framework: framework.clone(),
         app_crate_name,
         app_path,
         project_packages,

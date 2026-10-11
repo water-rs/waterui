@@ -30,6 +30,7 @@
 //! );
 //! ```
 
+pub mod alert;
 mod appearance;
 mod application;
 mod badge;
@@ -55,6 +56,7 @@ pub mod colors;
 mod host_view;
 pub mod image;
 pub mod input_view;
+mod key_commands;
 pub mod keyboard;
 mod menu;
 mod navigation;
@@ -67,6 +69,8 @@ mod trait_change;
 pub mod view_controller;
 mod window;
 
+#[cfg(feature = "dialog")]
+pub use alert::AlertController;
 pub use appearance::{ColorSchemeObservation, current_scheme};
 pub use application::{
     ApplicationHandlers, MenuBuilder, WindowScene, request_main_menu_rebuild, run,
@@ -81,6 +85,7 @@ pub use gesture::GestureAttachment;
 pub use host_view::{HitTest, HostView, window_root};
 pub use image::ImageView;
 pub mod label;
+pub use key_commands::KeyCommands;
 pub use menu::{Menu, MenuAction, MenuButton, MenuElement};
 mod picker;
 mod pointer;

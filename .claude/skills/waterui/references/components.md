@@ -286,6 +286,11 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 type parameter. `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. Switch and checkbox map to different
 accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to tests.
+`ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
+checkbox on macOS — so a test that must pass on every host queries a default toggle
+with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
+width it is offered (label leading, switch trailing); a checkbox and a toggle with a
+hidden label are content-sized.
 
 `Label` composes text with an icon; `Label::new` makes a whole composed row read as one
 accessibility node:
@@ -494,6 +499,12 @@ list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
 tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 
+A row whose content sits under `.disabled(true)` is inert to selection the way a
+disabled `Button` cannot be pressed: pointer, keyboard and accessibility input leave
+the selection unchanged, and the row's accessibility node reports disabled without
+offering the click action. There is no per-item selectable flag — selection follows
+the row content's own disabled state.
+
 When the row set is *derived* — filtered or sorted from other state — do not fall back to
 `watch`: wrap the derived signal in `SignalCollection` (see
 [reactivity.md](reactivity.md), Reactive collections).
@@ -621,3 +632,34 @@ build it with `Label::new(semantic_text, || content)`, which does this for you.
 `.a11y_id` is the escape hatch for views that are hard to label meaningfully; the same
 identifier is what `waterui-testing` queries with `.identifier(..)`. Prefer a real label
 where one exists — the label serves users, the id only serves tests.
+
+## Dialogs (alerts, confirmations)
+
+`.dialog(...)` presents a window-modal alert while its `Binding<bool>` is true — the
+platform's native alert on Apple (`NSAlert` sheet on AppKit, `UIAlertController` on
+UIKit), and elsewhere the self-drawn card on a modal layer that dims the window with
+the `Scrim` theme colour and leaves the wrapped content inert for pointer, keyboard
+and the accessibility tree. Actions declare their role — `Default`, `Cancel`,
+`Destructive` — and the platform does the ordering: the primary (first `Default`)
+action sits rightmost and answers Return, `Cancel` is visually separated on
+iOS, and declaration order holds within each role. Tapping an action runs its handler
+then writes `false` to the binding; writing `false` yourself dismisses without a
+handler. Escape, Android back and the scrim tap are the *cancel path*: they run the
+`Cancel` action's handler, and are no-ops when no `Cancel` exists. At most one
+`Cancel` action is allowed — a second panics; no actions at all gains a single
+acknowledgement in the platform's wording. One dialog presents per window at a time; a
+second one presented meanwhile waits until the first closes.
+
+```rust
+use waterui::dialog::{Dialog, DialogAction};
+
+let presented = binding(false);
+button("Delete")
+    .action({ let presented = presented.clone(); move || presented.set(true) })
+    .dialog(
+        Dialog::new(&presented, "Delete photo?")        // title takes impl IntoText
+            .message("This cannot be undone.")          // optional, also IntoText
+            .action(DialogAction::cancel("Cancel", || {}))
+            .action(DialogAction::destructive("Delete", |_: Environment| trash_photo())),
+    )
+```

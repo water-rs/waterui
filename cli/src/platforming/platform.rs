@@ -63,7 +63,8 @@ pub enum TargetPlatform {
 }
 
 /// Backend types available for building.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TargetBackend {
     /// Apple backend (Xcode, UIKit/AppKit)
     Apple,
@@ -314,6 +315,32 @@ impl TargetPlatform {
             Self::Linux => Some(TargetBackend::Gtk4),
             Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => None,
         }
+    }
+
+    /// The platform name a font declaration's `platforms` scope uses for
+    /// this target: simulators share their device's name, and Mac Catalyst
+    /// runs on macOS.
+    ///
+    /// # Errors
+    ///
+    /// The ESP32 firmware targets stage no declared fonts, so they have no
+    /// font platform.
+    pub fn font_platform(self) -> eyre::Result<waterui_assets_planner::FontPlatform> {
+        use waterui_assets_planner::FontPlatform;
+        Ok(match self {
+            Self::MacOS | Self::MacCatalyst => FontPlatform::Macos,
+            Self::IOS | Self::IOSSimulator => FontPlatform::Ios,
+            Self::TvOS | Self::TvOSSimulator => FontPlatform::Tvos,
+            Self::WatchOS | Self::WatchOSSimulator => FontPlatform::Watchos,
+            Self::VisionOS | Self::VisionOSSimulator => FontPlatform::Visionos,
+            Self::Android => FontPlatform::Android,
+            Self::Linux => FontPlatform::Linux,
+            Self::Windows => FontPlatform::Windows,
+            Self::Web => FontPlatform::Web,
+            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => eyre::bail!(
+                "{self:?} firmware stages no declared fonts, so it has no font platform"
+            ),
+        })
     }
 
     /// Whether the host builds for this platform with its own toolchain —

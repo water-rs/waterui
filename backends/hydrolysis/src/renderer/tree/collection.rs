@@ -262,8 +262,6 @@ pub struct CollectionNode {
     /// are rebuilt while every other surviving id keeps its node and state.
     /// Shared with the watcher closure via `Rc`.
     pub(super) replaced_ids: Rc<RefCell<std::collections::HashSet<CollectionItemId>>>,
-    /// Stable allocation whose address is this collection's patch dirty-key.
-    pub(super) _dirty_key: Rc<()>,
     /// Membership-change watcher; a change sets `dirty` and schedules a refresh.
     pub(super) _guard: BoxWatcherGuard,
     /// The collection layout's own `watch_invalidation` subscriptions — a
@@ -340,9 +338,6 @@ pub struct LazyStackNode {
     /// drops exactly those ids' retained rows; untouched rows keep their
     /// nodes. Shared with the watcher closure via `Rc`.
     pub(super) replaced_ids: Rc<RefCell<std::collections::HashSet<CollectionItemId>>>,
-    /// Stable allocation whose address is this collection's patch dirty-key,
-    /// owned so the key cannot be reused by another allocation while it lives.
-    pub(super) _dirty_key: Rc<()>,
     /// Membership-change watcher: a change schedules a window refresh, which
     /// re-resolves the visible window (the collection `len`/items are re-read).
     pub(super) _guard: BoxWatcherGuard,

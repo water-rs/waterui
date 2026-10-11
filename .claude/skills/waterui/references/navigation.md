@@ -237,6 +237,12 @@ erasure happens below the authoring layer. It adapts to a sliding pane on a phon
 side-by-side columns on a large window. Both closures are re-invoked on rebuild, so state
 they read must be owned outside them.
 
+At compact widths a two-column split shows exactly one column, chosen by the
+selection binding: `Some` shows the detail and `None` shows the sidebar. The
+platform back control, including a completed swipe back, writes `None`. The
+binding is the single source of truth on every backend: start with `None` if the
+app should open on the sidebar. At wider widths the columns remain side by side.
+
 ## Windows
 
 A single-window app needs nothing beyond `App::new(view, env)`. For window chrome,
@@ -278,6 +284,11 @@ The `Window` builder, precisely:
   and draws a material window background as the opaque theme background. The background is reactive:
   setting the binding (or `window.handle().set_background(..)`) re-applies it to the
   open window, e.g. to switch between opaque, a translucent colour and a material.
+- `.icon(..)` — a `WindowIcon` (`WindowIcon::new(width, height, rgba)`, straight-alpha
+  RGBA8 pixels) or a `Binding<Option<WindowIcon>>`; `None`, the default, keeps the
+  application icon. Reactive like the style: `window.handle().set_icon(..)` swaps it on
+  the open window. Only platforms with a per-window icon show it (X11 and Windows);
+  Wayland, macOS, iOS and Android always show the application icon.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
   take one `impl IntoComputed<Size>` (a `Size` or a signal of one, not two floats);
   without a min, the backend derives one by measuring content at a zero proposal.
@@ -293,7 +304,7 @@ The `Window` builder, precisely:
 minimizing, maximizing, and restoring are ordinary reactive state changes:
 
 `Window::handle()` returns a `WindowHandle` that survives after the window is shown:
-`close()`, `minimize()`, `maximize()`, `fullscreen()`, `restore()`,
+`close()`, `request_close()`, `minimize()`, `maximize()`, `fullscreen()`, `restore()`,
 `request_attention(UserAttention::Informational | UserAttention::Critical)` (the
 backend clears it when the window gains focus), `cancel_attention()`, and
 `set_frame(Rect)`.
@@ -307,6 +318,41 @@ button("Open Window")
 Note the inference: `binding::<WindowState>(WindowState::default())` needs the turbofish
 (nothing downstream pins `T`), and `binding(WindowState::Normal)` means the window is
 open from the first frame — start from `default()` for a window that opens on demand.
+
+A window that must confirm or veto a close — a terminal with a running shell, an
+editor with unsaved buffers — gates it with `.on_close_request(..)`, which mirrors
+`App::on_quit_request`: the title-bar close button, a window-manager close, the Close
+Window menu command and `handle().request_close()` all ask the handler, which takes
+extractors like any action handler and answers a `CloseReply` from its future.
+`Close` closes the window; `Cancel` leaves it open. One question is open per window
+at a time, and further requests are dropped until it is answered. `handle().close()`
+and writing `WindowState::Closed` to the binding close without asking — that is how
+the window closes itself after the user confirms — and cancel an open question.
+Quitting the application asks `on_quit_request`, not the windows. The handler runs on
+Hydrolysis desktop and AppKit; Android, UIKit and web have no window close request,
+so it never runs there and `request_close()` panics.
+
+```rust
+use waterui::window::CloseReply;
+
+let unsaved = binding(true);
+// While set, the editor shows a "Discard changes?" prompt whose Discard button
+// writes `WindowState::Closed` — a close that does not ask again.
+let confirm_discard = binding(false);
+let window_state = binding(WindowState::Normal);
+
+Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
+    let ask = unsaved.snapshot();
+    confirm_discard.set(ask);
+    async move {
+        if ask {
+            CloseReply::Cancel
+        } else {
+            CloseReply::Close
+        }
+    }
+})
+```
 
 ## Windows that open and close
 

@@ -16,7 +16,7 @@ mod subview;
 mod view_helpers;
 
 pub use compositor::HydrolysisRenderTarget;
-pub use compositor::{CherenkovWindow, EngineFrame, FrameRenderTarget};
+pub use compositor::{CherenkovWindow, FrameRenderTarget};
 pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
 pub use render_context::RenderContext;

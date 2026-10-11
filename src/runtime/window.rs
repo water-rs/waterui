@@ -27,14 +27,17 @@
 //!     .background(Material::UltraThin);
 //! ```
 
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, future::Future, rc::Rc, sync::Arc};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
-use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
+use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
 use waterui_core::{AnyView, Dynamic, Environment, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
+
+pub use super::window_close::CloseReply;
+use super::window_close::{CloseRequest, Question};
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
@@ -194,6 +197,142 @@ pub struct Window {
     /// Platform support: hydrolysis/winit (X11 `WM_NORMAL_HINTS`, macOS),
     /// macOS (`NSWindow.contentResizeIncrements`). Others ignore it.
     pub resize_increments: Option<Computed<Size>>,
+    /// The window's own icon, or `None` for the application icon.
+    ///
+    /// Reactive: backends observe the binding and re-apply the icon to a
+    /// shown window, so an app can switch icons at runtime — following a
+    /// theme change, say — through [`WindowHandle::set_icon`] or its own
+    /// binding. `None`, the default, keeps the application icon the `water`
+    /// CLI stages next to the asset bundle, and setting the binding back to
+    /// `None` restores it.
+    ///
+    /// Platform support: hydrolysis/winit's `set_window_icon` realizes the
+    /// icon on X11, and on Windows alongside `set_taskbar_icon` (the
+    /// taskbar and Alt-Tab read the separate big icon). Wayland and macOS
+    /// are unsupported — winit 0.30 cannot set a window icon there — and
+    /// Hydrolysis on Android has no per-window icon. `AppKit` and `UIKit`
+    /// identify an application by one icon: unsupported there, not faked
+    /// through the Dock. The attribute does not cross the C ABI.
+    pub icon: Binding<Option<WindowIcon>>,
+    /// The close-request machine [`Self::on_close_request`] installs into,
+    /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
+    /// window is realized.
+    close_request: CloseRequest,
+}
+
+/// A window's own icon: straight-alpha sRGB RGBA8 pixels and their size.
+///
+/// Cloning shares the pixels, so a [`Binding`] snapshot is cheap. Platforms
+/// pick or scale the size they show; a square image of 32 or 64 pixels suits
+/// title bars and taskbars.
+#[derive(Clone)]
+pub struct WindowIcon {
+    width: u32,
+    height: u32,
+    rgba: Arc<[u8]>,
+}
+
+impl WindowIcon {
+    /// An icon of `width × height` pixels, `rgba` holding them row by row,
+    /// top to bottom, four bytes each — red, green, blue and straight
+    /// (non-premultiplied) alpha.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the icon has no pixels, or when `rgba` is not exactly
+    /// `width * height * 4` bytes long.
+    #[must_use]
+    pub fn new(width: u32, height: u32, rgba: impl Into<Arc<[u8]>>) -> Self {
+        let rgba = rgba.into();
+        assert!(
+            width > 0 && height > 0,
+            "WindowIcon::new: a window icon needs at least one pixel, got {width}x{height}"
+        );
+        let expected = usize::try_from(width)
+            .ok()
+            .and_then(|width| width.checked_mul(usize::try_from(height).ok()?))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .unwrap_or_else(|| {
+                panic!("WindowIcon::new: a {width}x{height} icon does not fit in memory")
+            });
+        assert_eq!(
+            rgba.len(),
+            expected,
+            "WindowIcon::new: a {width}x{height} icon takes {expected} RGBA8 bytes, got {}",
+            rgba.len()
+        );
+        Self {
+            width,
+            height,
+            rgba,
+        }
+    }
+
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The pixels, `width * height * 4` bytes of straight-alpha RGBA, row by
+    /// row from the top.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+impl PartialEq for WindowIcon {
+    fn eq(&self, other: &Self) -> bool {
+        // Snapshots of one binding share their pixels, so the common
+        // comparison — has the icon changed since the last sync? — never
+        // reads them.
+        self.width == other.width
+            && self.height == other.height
+            && (Arc::ptr_eq(&self.rgba, &other.rgba) || self.rgba == other.rgba)
+    }
+}
+
+impl Eq for WindowIcon {}
+
+impl Debug for WindowIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowIcon")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Converts a fixed icon or an application-owned icon binding into the
+/// reactive value carried by a [`Window`].
+pub trait IntoWindowIcon {
+    /// Converts this value into a window-icon binding.
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>>;
+}
+
+impl IntoWindowIcon for WindowIcon {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        Binding::container(Some(self))
+    }
+}
+
+impl IntoWindowIcon for Option<WindowIcon> {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        Binding::container(self)
+    }
+}
+
+impl IntoWindowIcon for Binding<Option<WindowIcon>> {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        self
+    }
 }
 
 /// A connected display, as the backend resolved it for a window's placement.
@@ -552,6 +691,7 @@ impl Window {
             AnyView::new(content)
         });
 
+        let close_request = CloseRequest::new(&state);
         Self {
             title: title.into_computed(),
             closable: true,
@@ -571,6 +711,8 @@ impl Window {
             level: Computed::constant(WindowLevel::Normal),
             attention: Binding::container(None),
             resize_increments: None,
+            icon: Binding::container(None),
+            close_request,
         }
     }
 
@@ -630,6 +772,18 @@ impl Window {
     #[must_use]
     pub fn resize_increments(mut self, increments: impl IntoComputed<Size>) -> Self {
         self.resize_increments = Some(increments.into_computed());
+        self
+    }
+
+    /// Set the window's own icon.
+    ///
+    /// Takes a [`WindowIcon`] for a fixed icon, an `Option<WindowIcon>`, or a
+    /// `Binding<Option<WindowIcon>>` the app keeps to change the icon after
+    /// the window is shown. See [`Self::icon`] for the default and platform
+    /// support notes.
+    #[must_use]
+    pub fn icon(mut self, icon: impl IntoWindowIcon) -> Self {
+        self.icon = icon.into_window_icon();
         self
     }
 
@@ -784,6 +938,72 @@ impl Window {
             .unwrap_or_else(|| self.display_app_id())
     }
 
+    /// Asks `handler` before the window closes.
+    ///
+    /// Every close request — the title-bar close button, the window
+    /// manager's close (X11 `WM_DELETE_WINDOW`, Wayland
+    /// `xdg_toplevel.close`, `WM_CLOSE`), a Close Window menu command,
+    /// `performClose:` or [`WindowHandle::request_close`] — runs the handler
+    /// and applies its [`CloseReply`]: [`Close`](CloseReply::Close) writes
+    /// `state =` [`WindowState::Closed`] and the normal teardown runs,
+    /// [`Cancel`](CloseReply::Cancel) leaves the window open and writes
+    /// nothing. A request arriving while a question is already open is
+    /// dropped — the machine asks one question per window.
+    ///
+    /// Writing `state` to [`WindowState::Closed`] yourself, or
+    /// [`WindowHandle::close`], is not a request and never runs the handler;
+    /// a programmatic close while a question is open drops its future,
+    /// cancelling it. `closable == false` drops a request before the handler
+    /// runs.
+    ///
+    /// The handler extracts from the environment the window renders under —
+    /// a `State`, a service — and its future runs on the runner's local
+    /// executor, so the reply never arrives inside a platform delegate call.
+    ///
+    /// Platform support: Hydrolysis desktop and `AppKit`. Hydrolysis Android,
+    /// `UIKit` and web have no window close request — the handler never runs
+    /// there, and [`WindowHandle::request_close`] panics.
+    #[must_use]
+    pub fn on_close_request<H, Args, Fut>(self, handler: H) -> Self
+    where
+        H: Handler<Args, Fut>,
+        Fut: Future<Output = CloseReply> + 'static,
+    {
+        let mut action = boxed_action(handler);
+        self.close_request
+            .set_hook(Box::new(move |env| Box::pin(action(env)) as Question));
+        self
+    }
+
+    /// Arms close requests with the environment the window renders under —
+    /// a backend calls it when it realizes the window, so
+    /// [`WindowHandle::request_close`] can file before any platform request
+    /// arrives.
+    #[doc(hidden)]
+    pub fn arm_close_requests(&self, env: &Environment) {
+        self.close_request.arm(env, self.closable);
+    }
+
+    /// Files a user close request — the one entry point a backend calls when
+    /// the platform asks to close the window. `env` is the environment the
+    /// window renders under; the call arms the machine with it, so the
+    /// handler extracts from it. `closable == false` drops the request before
+    /// the handler runs.
+    #[doc(hidden)]
+    pub fn request_close(&self, env: &Environment) {
+        self.arm_close_requests(env);
+        self.close_request.request();
+    }
+
+    /// Whether an [`on_close_request`](Self::on_close_request) handler is
+    /// installed — the synchronous verdict a delegate like
+    /// `windowShouldClose:` needs.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_close_handler(&self) -> bool {
+        self.close_request.has_handler()
+    }
+
     /// Get a handle to control the window after showing it.
     #[must_use]
     pub fn handle(&self) -> WindowHandle {
@@ -793,6 +1013,8 @@ impl Window {
             attention: self.attention.clone(),
             style: self.style.clone(),
             background: self.background.clone(),
+            icon: self.icon.clone(),
+            close_request: self.close_request.clone(),
         }
     }
 
@@ -893,9 +1115,25 @@ pub struct WindowHandle {
     attention: Binding<Option<UserAttention>>,
     style: Binding<WindowStyle>,
     background: Binding<WindowBackground>,
+    icon: Binding<Option<WindowIcon>>,
+    close_request: CloseRequest,
 }
 
 impl WindowHandle {
+    /// Files a close request the window's
+    /// [`on_close_request`](Window::on_close_request) handler decides, as the
+    /// title-bar close button would. With no handler installed the window
+    /// closes immediately; `closable == false` drops the request.
+    /// [`Self::close`] closes without asking.
+    ///
+    /// # Panics
+    ///
+    /// When the window has not been realized yet, and on the platforms with
+    /// no window close request — Hydrolysis Android, `UIKit` and web.
+    pub fn request_close(&self) {
+        self.close_request.request();
+    }
+
     /// Close the window.
     pub fn close(&self) {
         self.state.set(WindowState::Closed);
@@ -948,6 +1186,13 @@ impl WindowHandle {
     pub fn set_background(&self, background: impl Into<WindowBackground>) {
         self.background.set(background.into());
     }
+
+    /// Set the window's own icon, or `None` for the application icon; the
+    /// backend re-applies it to the shown window. See [`Window::icon`] for
+    /// platform support.
+    pub fn set_icon(&self, icon: impl Into<Option<WindowIcon>>) {
+        self.icon.set(icon.into());
+    }
 }
 
 #[cfg(test)]
@@ -962,7 +1207,8 @@ mod tests {
     };
 
     use super::{
-        ResolvedWindowBackground, Window, WindowBackground, WindowState, resolve_background,
+        ResolvedWindowBackground, Window, WindowBackground, WindowIcon, WindowState,
+        resolve_background,
     };
     use crate::background::Material;
     use crate::theme::{
@@ -1056,5 +1302,28 @@ mod tests {
         accent.set(red);
         assert_eq!(color(last()), red);
         assert_eq!(color(resolved.snapshot()), red);
+    }
+
+    /// The icon validates its pixel buffer against its size.
+    #[test]
+    #[should_panic(expected = "a 2x1 icon takes 8 RGBA8 bytes, got 4")]
+    fn window_icon_rejects_a_short_buffer() {
+        let _ = WindowIcon::new(2, 1, vec![0_u8; 4]);
+    }
+
+    /// An icon without pixels is rejected rather than handed to a platform.
+    #[test]
+    #[should_panic(expected = "at least one pixel")]
+    fn window_icon_rejects_an_empty_icon() {
+        let _ = WindowIcon::new(0, 4, Vec::<u8>::new());
+    }
+
+    /// Icons compare by their pixels, whether or not they share them.
+    #[test]
+    fn window_icons_compare_by_pixels() {
+        let icon = WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]);
+        assert_eq!(icon, icon.clone());
+        assert_eq!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]));
+        assert_ne!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 5]));
     }
 }

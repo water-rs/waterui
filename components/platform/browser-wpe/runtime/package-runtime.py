@@ -352,6 +352,9 @@ def main() -> None:
     bridge = root / "lib/libwaterui_wpe.so"
     if not bridge.is_file():
         raise RuntimeError(f"WPE bridge was not installed at {bridge}")
+    extension = root / "lib/waterui-wpe/extensions/waterui_wpe_extension.so"
+    if not extension.is_file():
+        raise RuntimeError(f"WPE web-process extension was not installed at {extension}")
     for tool, requirement in SANDBOX_TOOLS.items():
         if not tool.is_file():
             raise RuntimeError(f"WPE sandbox requires {requirement} at {tool}")
