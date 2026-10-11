@@ -2,7 +2,7 @@
 //     bun run components/platform/ts/scripts/build-test-library.mjs
 // from the repository root, or run the script through
 // scripts/build-test-library.sh. tests/js/library.test.js fails when this
-// file is not what the current src/js produces.
+// file is not what the current sources produce.
 //
 // The WaterUI JavaScript library, flattened into one classic script and
 // published on globalThis.waterui, which is how the Rust tests reach it: the
@@ -939,9 +939,12 @@
     const { invoke } = getHost();
     return (...args) => invoke(id, ...args);
   }
-  function installRuntimeGlobal(modules) {
+  function installRuntimeGlobal(modules, contracts = {}) {
     if (modules === null || typeof modules !== "object") {
       throw new TypeError("installRuntimeGlobal(modules) expects an object mapping each module id to its default export");
+    }
+    if (contracts === null || typeof contracts !== "object") {
+      throw new TypeError("installRuntimeGlobal(modules, contracts) expects an object mapping each module id to the hexadecimal props contract hash it was built against");
     }
     const runtime = Object.freeze({
       installHost,
@@ -957,7 +960,8 @@
       createSignal,
       createMemo,
       makeCallback,
-      modules
+      modules,
+      contracts
     });
     globalThis[RUNTIME_GLOBAL] = runtime;
     return runtime;

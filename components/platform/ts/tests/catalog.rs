@@ -9,70 +9,13 @@
 //! running from, so a payload the linker drops, truncates, or lets drift from
 //! the constant fails here rather than in a project build.
 
-use std::collections::BTreeSet;
-
-use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 use waterui::ts::catalog::{CATALOG, CATALOG_ENCODED};
 use waterui_ts::schema::{Catalog, decode_catalog};
 
-/// The leaf segment of a demangled symbol name.
-fn leaf_of(name: &str) -> Option<&str> {
-    name.rsplit("::").next().filter(|leaf| !leaf.is_empty())
-}
+#[path = "support/artifact.rs"]
+mod artifact;
 
-/// Demangle a raw symbol name, dropping the trailing disambiguation hash and
-/// the leading underscore Mach-O adds to unmangled names.
-fn demangled_name(raw: &str) -> String {
-    let demangled = format!("{:#}", rustc_demangle::demangle(raw));
-    demangled
-        .strip_prefix('_')
-        .map_or_else(|| demangled.clone(), str::to_owned)
-}
-
-/// Bytes of the `#[used] static` whose demangled leaf is `leaf`, read from the
-/// running executable exactly the way the CLI reads them from an rlib.
-fn meta_static(leaf: &str) -> Vec<u8> {
-    let path = std::env::current_exe().expect("the test binary has a path");
-    let data = std::fs::read(&path).expect("the test binary is readable");
-    let file = object::File::parse(&*data).expect("the test binary parses as an object file");
-    let mut payloads = BTreeSet::new();
-    for symbol in file.symbols() {
-        let Ok(raw) = symbol.name() else { continue };
-        if leaf_of(&demangled_name(raw)) != Some(leaf) {
-            continue;
-        }
-        let Some(index) = symbol.section_index() else {
-            continue;
-        };
-        let Ok(section) = file.section_by_index(index) else {
-            continue;
-        };
-        let Ok(section_data) = section.data() else {
-            continue;
-        };
-        let Ok(offset) = usize::try_from(symbol.address().wrapping_sub(section.address())) else {
-            continue;
-        };
-        if let Some(bytes) = section_data.get(offset..) {
-            payloads.insert(
-                bytes
-                    .split(|byte| *byte == 0)
-                    .next()
-                    .unwrap_or_default()
-                    .to_vec(),
-            );
-        }
-    }
-    let mut payloads = payloads.into_iter();
-    let found = payloads
-        .next()
-        .unwrap_or_else(|| panic!("no symbol with leaf `{leaf}` carries section data"));
-    assert!(
-        payloads.next().is_none(),
-        "`{leaf}` is defined more than once with different payloads"
-    );
-    found
-}
+use artifact::meta_static;
 
 #[test]
 fn ts_the_catalog_symbol_decodes_to_the_registry() {

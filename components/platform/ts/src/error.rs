@@ -60,10 +60,101 @@ pub enum TsError {
     },
 
     /// A module id no bundle entry carries.
-    #[error("the bundle carries no module \"{id}\"")]
+    #[error("the bundle carries no module \"{id}\"; it carries {available}")]
     UnknownModule {
         /// The requested module id.
         id: Str,
+        /// The ids the bundle does carry, so a mismatched bundle says what it
+        /// holds instead of only what it does not.
+        available: Str,
+    },
+
+    /// The runtime global's `contracts` entry is not a table of hashes.
+    #[error(
+        "globalThis.__waterui_runtime.contracts is {found}, not an object mapping each module \
+         id to the hexadecimal props contract hash it was built against"
+    )]
+    ContractTable {
+        /// What was found there instead.
+        found: &'static str,
+    },
+
+    /// A `contracts` entry is not a hexadecimal 64-bit hash.
+    #[error(
+        "the contract hash of module \"{id}\" is \"{found}\", not the hexadecimal digits of a \
+         64-bit props contract hash: a JavaScript number cannot hold one exactly, so it crosses \
+         as a string"
+    )]
+    ContractHash {
+        /// The module whose hash could not be read.
+        id: Str,
+        /// The text the bundle declared.
+        found: Str,
+    },
+
+    /// The bundle declares no contract for a module being mounted.
+    #[error(
+        "the bundle declares no props contract for module \"{id}\": every module a binary mounts \
+         is built against one, and a bundle that does not say which cannot be checked against \
+         the binary"
+    )]
+    MissingContract {
+        /// The module being mounted.
+        id: Str,
+    },
+
+    /// The bundle's module was built against a different props contract.
+    #[error(
+        "module \"{id}\" was built against props contract {declared:#018x}, and this binary \
+         mounts it with `{props}`, whose contract is {expected:#018x}: the bundle and the binary \
+         are from different builds"
+    )]
+    ContractMismatch {
+        /// The module being mounted.
+        id: Str,
+        /// The props type the binary mounts it with.
+        props: &'static str,
+        /// The hash the binary's props contract has.
+        expected: u64,
+        /// The hash the bundle declares for the module.
+        declared: u64,
+    },
+
+    /// A mount was attempted with no runtime in the environment.
+    #[error(
+        "no TypeScript runtime is installed in the environment, so module \"{id}\" cannot be \
+         mounted: the application's bundle loader installs one at launch with \
+         RuntimeHandle::install"
+    )]
+    NoRuntimeInstalled {
+        /// The module that was being mounted.
+        id: Str,
+    },
+
+    /// What `mount` handed back is not a mounted tree.
+    #[error(
+        "mounting module \"{id}\" produced {found}, not the {{ handle, dispose }} the runtime \
+         contract requires"
+    )]
+    NotMounted {
+        /// The module that was mounted.
+        id: Str,
+        /// What came back instead.
+        found: &'static str,
+    },
+
+    /// A mounted tree is missing one of its two entries.
+    #[error(
+        "the tree mounted for module \"{id}\" carries {found} under `{name}`, not what the \
+         runtime contract requires"
+    )]
+    MountedEntry {
+        /// The module that was mounted.
+        id: Str,
+        /// The entry that failed the check: `handle` or `dispose`.
+        name: &'static str,
+        /// What was found there.
+        found: &'static str,
     },
 
     /// Clearing `globalThis.__waterui_runtime` left something behind.
