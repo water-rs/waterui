@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use nami::{Binding, Computed, Signal};
 use waterui_core::{AnyView, Environment, Error};
-use waterui_graphics::ResolvedColor;
+use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{AccentColor, ColorScheme};
 use waterui_ts::engine::{JsError, JsFunction, JsRuntime, JsValue};
 use waterui_ts::schema::{TsProps, TsType, TypeSchema};
@@ -201,7 +201,11 @@ fn a_javascript_signal_becomes_a_two_way_binding() {
     let binding: Binding<u32> = bridge
         .materialize_binding(&source)
         .expect("a signal materializes");
-    assert_eq!(binding.get(), 1, "the binding is seeded from the signal");
+    assert_eq!(
+        binding.snapshot(),
+        1,
+        "the binding is seeded from the signal"
+    );
     let (notifications, _guard) = watch_count(&binding);
 
     // JavaScript to Rust: one notification, and the value the binding came to
@@ -209,7 +213,7 @@ fn a_javascript_signal_becomes_a_two_way_binding() {
     // nothing more — the value is already there, so no `set` is made and no
     // JavaScript subscriber hears anything.
     eval(&runtime, "globalThis.fixture.counter.set(5)");
-    assert_eq!(binding.get(), 5);
+    assert_eq!(binding.snapshot(), 5);
     assert_eq!(notifications.get(), 1, "one change, one notification");
     assert_eq!(
         integer(&runtime, "globalThis.fixture.writes"),
@@ -276,7 +280,7 @@ fn an_effect_that_bounces_a_write_leaves_both_sides_agreeing() {
         "JavaScript came to rest at 5"
     );
     assert_eq!(
-        binding.get(),
+        binding.snapshot(),
         5,
         "and so did Rust: an intermediate value the effect passed through is \
          not where the write ended"
@@ -309,7 +313,7 @@ fn an_effect_that_clamps_a_write_is_read_back_once() {
 
     binding.set(40);
     assert_eq!(integer(&runtime, "globalThis.fixture.counter()"), 10);
-    assert_eq!(binding.get(), 10, "the correction came back to Rust");
+    assert_eq!(binding.snapshot(), 10, "the correction came back to Rust");
     assert_eq!(
         notifications.get(),
         2,
@@ -359,7 +363,7 @@ fn a_rust_watcher_that_writes_during_an_inbound_apply_reaches_javascript() {
     binding.set(40);
 
     assert_eq!(
-        binding.get(),
+        binding.snapshot(),
         0,
         "the Rust answer to the clamp is the state"
     );
@@ -393,7 +397,7 @@ fn a_rust_watcher_that_answers_an_inbound_change_reaches_javascript() {
 
     eval(&runtime, "globalThis.fixture.text.set('x')");
 
-    assert_eq!(binding.get(), "y");
+    assert_eq!(binding.snapshot(), "y");
     assert_eq!(
         eval(&runtime, "globalThis.fixture.text()"),
         JsValue::String(String::from("y")),
@@ -410,10 +414,10 @@ fn a_host_accessor_becomes_a_pushed_computed() {
         .bridge()
         .materialize_computed(&source)
         .expect("an accessor materializes");
-    assert_eq!(label.get(), "start");
+    assert_eq!(label.snapshot(), "start");
 
     eval(&runtime, "globalThis.fixture.pushLabel('next')");
-    assert_eq!(label.get(), "next", "the push reached the Rust value");
+    assert_eq!(label.snapshot(), "next", "the push reached the Rust value");
     assert_eq!(
         integer(&runtime, "globalThis.fixture.writes"),
         0,
@@ -430,10 +434,10 @@ fn a_function_accessor_becomes_a_pushed_computed() {
         .bridge()
         .materialize_computed(&source)
         .expect("an accessor materializes");
-    assert_eq!(doubled.get(), 2);
+    assert_eq!(doubled.snapshot(), 2);
 
     eval(&runtime, "globalThis.fixture.counter.set(6)");
-    assert_eq!(doubled.get(), 12);
+    assert_eq!(doubled.snapshot(), 12);
 }
 
 #[test]
@@ -445,7 +449,7 @@ fn a_constant_becomes_a_constant_computed_and_subscribes_to_nothing() {
         .bridge()
         .materialize_computed(&JsValue::Number(7.0))
         .expect("a constant materializes");
-    assert_eq!(plain.get(), 7);
+    assert_eq!(plain.snapshot(), 7);
 
     // Readable, but it announces nothing: one read is all it will ever say.
     let source = eval(&runtime, "globalThis.fixture.readOnce");
@@ -453,7 +457,7 @@ fn a_constant_becomes_a_constant_computed_and_subscribes_to_nothing() {
         .bridge()
         .materialize_computed(&source)
         .expect("a read-only value materializes");
-    assert_eq!(once.get(), 41);
+    assert_eq!(once.snapshot(), 41);
 
     assert_eq!(
         integer(&runtime, "globalThis.fixture.subscribes"),
@@ -529,11 +533,11 @@ fn an_object_payload_confirmed_back_does_not_re_notify_javascript() {
         .bridge()
         .materialize_binding(&source)
         .expect("a signal materializes");
-    assert_eq!(binding.get(), Point { x: 1, y: 2 });
+    assert_eq!(binding.snapshot(), Point { x: 1, y: 2 });
 
     eval(&runtime, "globalThis.fixture.point.set({ x: 3, y: 4 })");
     assert_eq!(
-        binding.get(),
+        binding.snapshot(),
         Point { x: 3, y: 4 },
         "the change reached Rust"
     );
@@ -583,7 +587,11 @@ fn a_rust_binding_exported_to_javascript_round_trips() {
     );
 
     eval(&runtime, "globalThis.fixture.held.set(8)");
-    assert_eq!(binding.get(), 8, "a JavaScript write reaches the binding");
+    assert_eq!(
+        binding.snapshot(),
+        8,
+        "a JavaScript write reaches the binding"
+    );
 }
 
 #[test]
@@ -607,7 +615,7 @@ fn a_hole_javascript_authored_is_replaced_by_the_value_rust_holds() {
     // `null` — an array walked with `every` would skip the index entirely
     // and call the two equal.
     eval(&runtime, "globalThis.fixture.held.set([1, , 3])");
-    assert_eq!(binding.get(), vec![Some(1_u32), None, Some(3)]);
+    assert_eq!(binding.snapshot(), vec![Some(1_u32), None, Some(3)]);
     assert_eq!(
         eval(&runtime, "1 in globalThis.fixture.held()"),
         JsValue::Bool(true),
@@ -682,7 +690,7 @@ fn a_javascript_write_a_filter_rejects_is_corrected_in_javascript() {
         .expect("JavaScript holds it");
 
     eval(&runtime, "globalThis.fixture.held.set(50)");
-    assert_eq!(source.get(), 5, "the filter rejected the write");
+    assert_eq!(source.snapshot(), 5, "the filter rejected the write");
     assert_eq!(
         integer(&runtime, "globalThis.fixture.held()"),
         5,
@@ -714,7 +722,7 @@ fn a_javascript_write_a_setter_normalizes_comes_back_normalized() {
         .expect("JavaScript holds it");
 
     eval(&runtime, "globalThis.fixture.held.set(50)");
-    assert_eq!(source.get(), 10, "the setter normalized the write");
+    assert_eq!(source.snapshot(), 10, "the setter normalized the write");
     assert_eq!(
         integer(&runtime, "globalThis.fixture.held()"),
         10,
@@ -748,7 +756,7 @@ fn a_watcher_registered_before_the_export_cannot_push_a_stale_value() {
 
     binding.set(1);
 
-    assert_eq!(binding.get(), 2);
+    assert_eq!(binding.snapshot(), 2);
     assert_eq!(
         integer(&runtime, "globalThis.fixture.held()"),
         2,
@@ -809,7 +817,7 @@ fn a_float_keeps_the_value_rust_set_it_to() {
     );
 
     binding.set(f64::NAN);
-    assert!(binding.get().is_nan(), "Rust kept the NaN it set");
+    assert!(binding.snapshot().is_nan(), "Rust kept the NaN it set");
     assert_eq!(
         eval(&runtime, "Number.isNaN(globalThis.fixture.held())"),
         JsValue::Bool(true)
@@ -826,7 +834,7 @@ fn a_float_keeps_the_value_rust_set_it_to() {
     binding.set(0.0);
     binding.set(-0.0);
     assert!(
-        binding.get().is_sign_negative(),
+        binding.snapshot().is_sign_negative(),
         "Rust kept the negative zero it set, instead of being corrected to +0"
     );
     assert_eq!(
@@ -1192,7 +1200,7 @@ fn a_derived_struct_round_trips() {
 
     // The binding came back bound to the same signal, so the two are one
     // value: writing the one JavaScript holds moves the one Rust read.
-    assert_eq!(read.unread.get(), 4);
+    assert_eq!(read.unread.snapshot(), 4);
     read.unread.set(11);
     assert_eq!(card_unread(&value, bridge), 11);
 }
@@ -1571,13 +1579,9 @@ fn the_host_table_is_installed_and_reached_from_javascript() {
 fn the_environment_reaches_javascript_as_theme_and_locale() {
     let environment = Environment::new()
         .store::<ColorScheme, Computed<ColorScheme>>(Computed::constant(ColorScheme::Dark))
-        .store::<AccentColor, Computed<ResolvedColor>>(Computed::constant(ResolvedColor {
-            red: 0.25,
-            green: 0.5,
-            blue: 0.75,
-            headroom: 1.0,
-            opacity: 1.0,
-        }));
+        .store::<AccentColor, Computed<WorkingColor>>(Computed::constant(WorkingColor::new([
+            0.25, 0.5, 0.75, 1.0,
+        ])));
     let runtime = with_environment(environment);
     // Everything exported into JavaScript belongs to the mount that asked
     // for it; the mount leaf opens this scope, a test opens its own.
