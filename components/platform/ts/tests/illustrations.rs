@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use hydrolysis_m3::Material3;
 use waterui::ViewExt as _;
 use waterui::graphics::color::Color;
 use waterui::text::text;
@@ -30,7 +31,9 @@ use waterui_testing::ui;
 /// where a regenerated pair is uploaded to replace the old one.
 ///
 /// The subject is the text the guide shows, on a fixed 240×120 viewport at
-/// scale 1, in the same blue for both orders so only the order changes.
+/// scale 1, in the same blue for both orders so only the order changes. A
+/// rendered session draws, so it carries a style: Material 3's defaults,
+/// the style the crate's other offscreen tests render under.
 #[test]
 #[ignore = "documentation generator: writes the guide's frames; run with --run-ignored all"]
 fn export_jsx_order_illustrations() {
@@ -40,11 +43,14 @@ fn export_jsx_order_illustrations() {
 
     // `<Text padding={16} background={…}>`: the padding sits inside the
     // background, so the colour covers the inset too.
-    let mut padding_then_background = ui().viewport(240, 120).mount_offscreen(|| {
-        text("Attribute order")
-            .padding_with(16.0)
-            .background(Color::srgb(64, 128, 216))
-    });
+    let mut padding_then_background = ui()
+        .theme(Material3::defaults())
+        .viewport(240, 120)
+        .mount_offscreen(|| {
+            text("Attribute order")
+                .padding_with(16.0)
+                .background(Color::srgb(64, 128, 216))
+        });
     padding_then_background
         .snapshot()
         .save_png(illustrations.join("jsx-order-padding-then-background.png"))
@@ -52,11 +58,14 @@ fn export_jsx_order_illustrations() {
 
     // `<Text background={…} padding={16}>`: the background hugs the text and
     // the padding is the transparent ring around it.
-    let mut background_then_padding = ui().viewport(240, 120).mount_offscreen(|| {
-        text("Attribute order")
-            .background(Color::srgb(64, 128, 216))
-            .padding_with(16.0)
-    });
+    let mut background_then_padding = ui()
+        .theme(Material3::defaults())
+        .viewport(240, 120)
+        .mount_offscreen(|| {
+            text("Attribute order")
+                .background(Color::srgb(64, 128, 216))
+                .padding_with(16.0)
+        });
     background_then_padding
         .snapshot()
         .save_png(illustrations.join("jsx-order-background-then-padding.png"))
