@@ -100,22 +100,97 @@ describe("Show", () => {
 describe("For", () => {
   const row = (item) => jsx("Text", { children: `row ${item.id}` });
 
-  test("reconciles by referential identity without `by`", () => {
-    const a = { id: 1 };
-    const b = { id: 2 };
-    const c = { id: 3 };
-    const d = { id: 4 };
-    const items = createSignal([a, b, c]);
+  test("reconciles a primitive item by the item itself", () => {
+    const items = createSignal(["a", "b", "c"]);
     createRoot((dispose) => {
-      const slot = jsx(For, { each: items, children: (item) => row(item) });
+      const slot = jsx(For, {
+        each: items,
+        children: (item) => jsx("Text", { children: `row ${item}` }),
+      });
       const before = [...slot.entries];
-      items.set([c, a, d]);
+      items.set(["c", "a", "d"]);
       expect(slot.entries[0].handle).toBe(before[2].handle);
       expect(slot.entries[1].handle).toBe(before[0].handle);
-      expect(slot.entries[2].item).toBe(d);
-      expect(host.calls).toContainEqual(["dispose-item", b]);
+      expect(slot.entries[2].item).toBe("d");
+      expect(host.calls).toContainEqual(["dispose-item", "b"]);
       dispose();
     });
+  });
+
+  test("refuses a list of objects with no `by`", () => {
+    const items = createSignal([{ id: 1 }]);
+    expect(() =>
+      createRoot(() => jsx(For, { each: items, children: (item) => row(item) })),
+    ).toThrow(/a `by` that answers a stable key/);
+  });
+
+  // The next six are the edges where the native key domain and a JavaScript
+  // `Set` disagree. Each one is a list the two would answer differently, so a
+  // fake keyed by the raw value would pass a test the real host fails.
+  test("a number and a bigint of one value are one key", () => {
+    const items = createSignal([1, 1n]);
+    expect(() =>
+      createRoot(() => jsx(For, { each: items, children: (item) => row({ id: item }) })),
+    ).toThrow(/have the key/);
+  });
+
+  test("two whole numbers past the integer range stay two keys", () => {
+    const items = createSignal([1e21, 2e21]);
+    createRoot((dispose) => {
+      const slot = jsx(For, { each: items, children: (item) => row({ id: item }) });
+      expect(slot.entries).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  test("two NaN rows are one key", () => {
+    const items = createSignal([Number.NaN, Number.NaN]);
+    expect(() =>
+      createRoot(() => jsx(For, { each: items, children: (item) => row({ id: item }) })),
+    ).toThrow(/have the key/);
+  });
+
+  test("refuses a `by` that answers something no key can be", () => {
+    const items = createSignal([{ id: "a" }]);
+    expect(() =>
+      createRoot(() =>
+        jsx(For, { each: items, by: (item) => ({ of: item.id }), children: (item) => row(item) }),
+      ),
+    ).toThrow(/cannot be a key/);
+  });
+
+  test("refuses a `by` that answers nothing for a row", () => {
+    const items = createSignal([{ id: "a" }, { name: "b" }]);
+    expect(() =>
+      createRoot(() =>
+        jsx(For, { each: items, by: (item) => item.id, children: () => row({ id: 0 }) }),
+      ),
+    ).toThrow(/cannot be a key/);
+  });
+
+  test("refuses a `by` answering past the range of an integer key", () => {
+    const items = createSignal([{ id: 1n << 70n }]);
+    expect(() =>
+      createRoot(() =>
+        jsx(For, { each: items, by: (item) => item.id, children: (item) => row(item) }),
+      ),
+    ).toThrow(/64-bit integer/);
+  });
+
+  test("refuses two rows sharing one key", () => {
+    const items = createSignal(["a", "a"]);
+    expect(() =>
+      createRoot(() => jsx(For, { each: items, children: (item) => row(item) })),
+    ).toThrow(/have the key/);
+  });
+
+  test("refuses two rows whose `by` answers one key", () => {
+    const items = createSignal([{ id: "a" }, { id: "a" }]);
+    expect(() =>
+      createRoot(() =>
+        jsx(For, { each: items, by: (item) => item.id, children: (item) => row(item) }),
+      ),
+    ).toThrow(/have the key/);
   });
 
   test("reconciles by `by` and keeps an index accessor current", () => {
@@ -146,6 +221,7 @@ describe("For", () => {
         get each() {
           return items();
         },
+        by: (item) => item.id,
         children: (item) => row(item),
       });
       expect(slot.entries).toHaveLength(1);
@@ -174,21 +250,18 @@ describe("Suspense", () => {
     });
   });
 
-  test("presents the fallback while pending, then the children", () => {
+  test("never builds the fallback, because nothing built from JSX is pending", () => {
     const log = [];
     createRoot((dispose) => {
-      host.setPending(true);
       const slot = jsx(Suspense, {
         fallback: () => {
-          onCleanup(() => log.push("fallback disposed"));
+          log.push("fallback built");
           return jsx("Text", { children: "loading" });
         },
         children: () => jsx("Text", { children: "ready" }),
       });
-      expect(slot.branch.handle.children).toEqual(["loading"]);
-      host.setPending(false);
       expect(slot.branch.handle.children).toEqual(["ready"]);
-      expect(log).toEqual(["fallback disposed"]);
+      expect(log).toEqual([]);
       dispose();
     });
   });

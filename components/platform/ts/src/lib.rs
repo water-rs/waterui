@@ -65,14 +65,14 @@ pub use waterui_ts_engine as engine;
 /// every item the expansion uses.
 pub use waterui_ts_schema as schema;
 
-pub use bridge::{Bridge, MountScope, ReactiveSource};
-pub use convert::{FromJs, IntoJs, support};
+pub use bridge::{Bridge, MountScope, ReactiveSource, ScopeOwner, WeakBridge};
+pub use convert::{FromJs, IntoJs, expected, support};
 pub use environment::{HostLocale, Theme, locale, theme};
-pub use error::TsError;
+pub use error::{TsError, kind_of};
 pub use host::HostTable;
 pub use runtime::TsRuntime;
 pub use runtime_global::RuntimeGlobal;
-pub use view::ViewSlot;
+pub use view::{JsViewBuilder, ViewSlot};
 
 /// The JavaScript engine implementation for this target.
 #[cfg(all(target_vendor = "apple", not(target_os = "watchos")))]

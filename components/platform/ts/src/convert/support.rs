@@ -75,6 +75,38 @@ pub fn field<T: FromJs>(
     })
 }
 
+/// Refuses a property the schema does not declare.
+///
+/// A property nobody reads is not harmless: it is what the author wrote and
+/// what they expect to have an effect, so dropping it turns a typo — `onClick`
+/// for `onTap`, `opacity` where the modifier is spelled differently — into a
+/// view that renders and does nothing. The error names what was given and what
+/// is accepted, because that pair is the whole diagnosis.
+///
+/// # Errors
+///
+/// Returns [`JsError`] naming the first property `accepted` does not list.
+pub fn reject_unknown(
+    entries: &[(String, JsValue)],
+    type_name: &str,
+    accepted: &[&str],
+) -> Result<(), JsError> {
+    let Some((name, _)) = entries
+        .iter()
+        .find(|(key, _)| !accepted.contains(&key.as_str()))
+    else {
+        return Ok(());
+    };
+    Err(JsError::conversion(if accepted.is_empty() {
+        format!("<{type_name}> takes no attributes, and was given `{name}`")
+    } else {
+        format!(
+            "<{type_name}> has no `{name}` attribute. It accepts: {}",
+            accepted.join(", ")
+        )
+    }))
+}
+
 /// Converts one positional field of a tuple variant.
 ///
 /// # Errors

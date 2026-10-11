@@ -135,20 +135,64 @@ struct Scope {
 #[must_use = "dropping the scope immediately releases everything exported into it"]
 pub struct MountScope {
     bridge: WeakBridge,
-    scope: Rc<Scope>,
+    scope: Option<Rc<Scope>>,
 }
 
-impl Drop for MountScope {
-    fn drop(&mut self) {
-        if let Some(bridge) = self.bridge.upgrade() {
+impl MountScope {
+    /// Closes the scope without releasing what it owns.
+    ///
+    /// Exports made while it was open stay alive for as long as the returned
+    /// [`ScopeOwner`] does, and later exports go to whatever scope is open
+    /// then. This is how a value shorter-lived than the mount owns its own
+    /// exports: a `<For>` item's index accessor belongs to the item, so a list
+    /// that churns releases each departed item's signal with the item instead
+    /// of accumulating one per row in the mount's scope.
+    ///
+    /// # Panics
+    ///
+    /// Never from outside this crate: a scope's own `Drop` is the only other
+    /// thing that empties it, and a value cannot be dropped and closed.
+    pub fn close(mut self) -> ScopeOwner {
+        let scope = self.scope.take().expect("a mount scope closes once");
+        Self::detach(&self.bridge, &scope);
+        ScopeOwner(scope)
+    }
+
+    /// Takes the scope off the bridge's stack, leaving what it owns alone.
+    fn detach(bridge: &WeakBridge, scope: &Rc<Scope>) {
+        if let Some(bridge) = bridge.upgrade() {
             bridge
                 .0
                 .scopes
                 .borrow_mut()
-                .retain(|open| !Rc::ptr_eq(open, &self.scope));
+                .retain(|open| !Rc::ptr_eq(open, scope));
         }
     }
 }
+
+impl Drop for MountScope {
+    fn drop(&mut self) {
+        let Some(scope) = self.scope.take() else {
+            return;
+        };
+        Self::detach(&self.bridge, &scope);
+    }
+}
+
+/// What a closed [`MountScope`] exported, still alive.
+///
+/// Dropping it releases every callback registration, outbound cell and
+/// exported signal the scope owned, exactly as dropping the open scope would
+/// have.
+#[derive(Debug)]
+#[must_use = "dropping the owner immediately releases everything the scope exported"]
+pub struct ScopeOwner(
+    #[expect(
+        dead_code,
+        reason = "the scope is held, not read: what it owns lives exactly as long as this value"
+    )]
+    Rc<Scope>,
+);
 
 /// The engine, the loaded runtime, and the state that crosses between them.
 #[derive(Debug, Clone)]
@@ -197,8 +241,25 @@ impl Bridge {
         self.0.scopes.borrow_mut().push(Rc::clone(&scope));
         MountScope {
             bridge: self.downgrade(),
-            scope,
+            scope: Some(scope),
         }
+    }
+
+    /// How many values the open mount scopes are currently keeping alive.
+    ///
+    /// One export is one cell: a JavaScript signal materialized inbound, or a
+    /// `Binding`/`Computed` exported outbound. The number is what a devtools
+    /// panel shows for a mount, and what a test watches while a view's content
+    /// churns — a count that climbs as rows come and go is an export that
+    /// outlived the row it belonged to.
+    #[must_use]
+    pub fn exported_count(&self) -> usize {
+        self.0
+            .scopes
+            .borrow()
+            .iter()
+            .map(|scope| scope.retained.borrow().len())
+            .sum()
     }
 
     /// The environment a mounted module's framework values come from.
@@ -405,7 +466,8 @@ impl Bridge {
     }
 
     /// A weak handle for a closure the engine or a watcher will hold.
-    pub(crate) fn downgrade(&self) -> WeakBridge {
+    #[must_use]
+    pub fn downgrade(&self) -> WeakBridge {
         WeakBridge(Rc::downgrade(&self.0))
     }
 
@@ -610,7 +672,8 @@ impl Bridge {
 
 impl WeakBridge {
     /// The bridge, or `None` once the runtime has been dropped.
-    pub(crate) fn upgrade(&self) -> Option<Bridge> {
+    #[must_use]
+    pub fn upgrade(&self) -> Option<Bridge> {
         self.0.upgrade().map(Bridge)
     }
 }

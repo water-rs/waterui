@@ -13450,6 +13450,7 @@ dependencies = [
  "syn 3.0.6",
  "toml 1.1.6+spec-1.1.0",
  "trybuild",
+ "unicode-ident",
  "waterui",
  "waterui-testing",
 ]
@@ -13736,13 +13737,18 @@ dependencies = [
 name = "waterui-ts"
 version = "0.1.0"
 dependencies = [
+ "hydrolysis-m3",
  "nami",
+ "object",
+ "rustc-demangle",
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
+ "waterui",
  "waterui-core",
  "waterui-graphics",
  "waterui-locale",
+ "waterui-testing",
  "waterui-ts-engine",
  "waterui-ts-engine-jsc",
  "waterui-ts-engine-quickjs",
