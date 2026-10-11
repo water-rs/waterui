@@ -23,10 +23,12 @@
 //! installs a collection carrying the same registered faces.
 
 use alloc::rc::Rc;
+use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt::{self, Debug, Formatter};
 
 use parley::FontContext;
+use parley::fontique::{Collection, FamilyId, Script, ScriptExt};
 use waterui_core::Environment;
 
 /// The message a component reports when the host installed no collection.
@@ -56,10 +58,75 @@ impl Debug for FontCollection {
     }
 }
 
+/// The faces, in order, that can answer a Common-script symbol on this
+/// platform.
+///
+/// Symbols, arrows and dingbats like `U+2713 CHECK MARK` report the `Zyyy`
+/// ("Common") script: they have no script of their own, so one resolves
+/// through the fallback list of whatever script its run took. No platform's
+/// script-keyed fallback reaches a face that maps them — on macOS the Latin
+/// fallback resolves to Helvetica, which has no such glyph — so they drew
+/// `.notdef` (water-rs/waterui#1370). Entries are family names; a name that
+/// is not installed is skipped, and the platform's last-resort face stays
+/// last.
+#[cfg(target_vendor = "apple")]
+const SYMBOL_FALLBACK_FAMILIES: &[&str] = &[
+    "Apple Symbols",
+    "Zapf Dingbats",
+    "Arial Unicode MS",
+    ".LastResort",
+];
+/// See [`SYMBOL_FALLBACK_FAMILIES`].
+#[cfg(target_os = "windows")]
+const SYMBOL_FALLBACK_FAMILIES: &[&str] = &["Segoe UI Symbol"];
+/// See [`SYMBOL_FALLBACK_FAMILIES`].
+#[cfg(not(any(target_vendor = "apple", target_os = "windows")))]
+const SYMBOL_FALLBACK_FAMILIES: &[&str] = &["DejaVu Sans", "Noto Sans Symbols 2"];
+
+/// Appends the platform's symbol faces to the tail of every script-keyed
+/// fallback list.
+///
+/// fontique keys a fallback query to the script of the run that needed it,
+/// and `Script::sample` has no `Zyyy` entry, so a Common-script symbol only
+/// ever reaches whatever its run's script resolves — a script-keyed list —
+/// then the Han list fontique appends to every query for common
+/// punctuation. Giving every script's list the same tail covers the symbol
+/// no matter which script the run reports, and the `Zyyy` key itself for a
+/// consumer that queries it directly.
+///
+/// Each script's own platform fallback is resolved first, exactly as an
+/// unconfigured collection resolves it lazily, so the symbol faces sit
+/// behind the script's real coverage and ahead of the last-resort face
+/// rather than replacing either.
+fn configure_fallbacks(collection: &mut Collection) {
+    let families: Vec<FamilyId> = SYMBOL_FALLBACK_FAMILIES
+        .iter()
+        .filter_map(|name| collection.family_id(name))
+        .collect();
+    if families.is_empty() {
+        return;
+    }
+    for &(script, _) in Script::all_samples() {
+        // Reading the key once lets the platform install its own fallback
+        // for the script before the symbols are appended behind it: writing
+        // an entry first would make fontique skip that lookup entirely.
+        let _ = collection.fallback_families(script);
+        collection.append_fallbacks(script, families.iter().copied());
+    }
+    collection.append_fallbacks(Script::from_bytes(*b"Zyyy"), families.iter().copied());
+}
+
 impl FontCollection {
     /// Shares `fonts` as the application's collection.
+    ///
+    /// The platform's symbol faces are appended to the collection's
+    /// script-keyed fallback lists before it is shared, so a Common-script
+    /// symbol resolves to a face that maps it on every host that installs
+    /// its fonts through this type.
     #[must_use]
     pub fn new(fonts: FontContext) -> Self {
+        let mut fonts = fonts;
+        configure_fallbacks(&mut fonts.collection);
         Self(Rc::new(RefCell::new(fonts)))
     }
 
@@ -222,5 +289,42 @@ mod tests {
         crate::install_system_font_collection(&mut env);
 
         assert_eq!(FontCollection::from_env(&env).identity(), identity);
+    }
+
+    /// `U+2713 CHECK MARK` reports the `Zyyy` ("Common") script, so it reaches
+    /// fonts only through the fallback tail of whatever script its run took —
+    /// `Latn` for a bare `text("✓")`, which is the key this query uses. The
+    /// collection must answer it with a face that maps the codepoint, and not
+    /// the last-resort placeholder face, or it draws as tofu
+    /// (water-rs/waterui#1370).
+    #[cfg(feature = "system-fonts")]
+    #[test]
+    fn a_common_script_symbol_resolves_to_a_face_that_maps_it() {
+        use parley::fontique::{QueryStatus, Script};
+
+        let collection = FontCollection::system();
+        collection.use_fonts(|fonts| {
+            let mut covered = None;
+            {
+                let mut query = fonts.collection.query(&mut fonts.source_cache);
+                query.set_fallbacks(Script::from_bytes(*b"Latn"));
+                query.matches_with(|font| {
+                    if font.charmap().is_some_and(|charmap| {
+                        charmap.map('\u{2713}').is_some_and(|glyph| glyph != 0)
+                    }) {
+                        covered = Some(font.family.0);
+                        QueryStatus::Stop
+                    } else {
+                        QueryStatus::Continue
+                    }
+                });
+            }
+            let covered = covered.expect("no face in the collection maps U+2713 CHECK MARK");
+            let name = fonts.collection.family_name(covered).unwrap_or_default();
+            assert_ne!(
+                name, ".LastResort",
+                "U+2713 resolved to the last-resort placeholder face: no real face answered it"
+            );
+        });
     }
 }

@@ -10,7 +10,7 @@ use crate::{IntoFFI, WuiAnyView, WuiEnv};
 use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::Id;
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::WorkingColor;
 use waterui_navigation::tab::{
     NativeTabStyle, Tab, TabBarMinimizeBehavior, TabIcon, TabRole, TabsLayout,
 };
@@ -218,7 +218,7 @@ pub struct WuiBar {
     /// The bar's optional search field configuration.
     pub search: WuiOptionalNavigationSearch,
     /// Reactive computed bar tint color, resolved against the environment.
-    pub color: *mut WuiComputed<ResolvedColor>,
+    pub color: *mut WuiComputed<WorkingColor>,
     /// Reactive signal controlling whether the bar is hidden.
     pub hidden: *mut WuiComputed<bool>,
     /// The title's display mode (automatic, inline, or large).

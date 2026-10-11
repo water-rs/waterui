@@ -8,8 +8,10 @@ packages with `publish = false` are excluded.
 ## Before merging the release pull request
 
 1. Verify `dev` and `main` share history and GitHub can compare them normally.
-2. Confirm `apple-backend-version` and `android-backend-revision` in the root
-   manifest's `[package.metadata.waterui]` name published backend revisions.
+2. Confirm `android-backend-revision` in the root manifest's
+   `[package.metadata.waterui]` names a published backend revision; the Apple
+   backend is in-tree at `backends/apple` and rides the framework commit
+   (`apple-backend-path`), so there is no Apple pin to confirm.
 3. Run the workspace CI matrix and the declared Rust 1.95 MSRV check.
 4. Package every publishable crate in the workspace.
 5. Rehearse registry publication in dependency order, then install the
@@ -30,9 +32,10 @@ visible in the crates.io index:
    `waterui-build-support` 0.1.0, Filtrate Derive 0.1.0, and Filtrate 0.2.0.
 3. The complete WaterKit 0.1.1 workspace.
 4. The complete WaterUI workspace — the WaterUI 0.3 cohort. `waterui-cli`
-   is not part of it: the CLI releases from water-rs/cli on its own
-   cadence, with `waterui-cli-v*` tags, cargo-dist binaries, and the
-   Homebrew tap handoff all owned by that repository.
+   is not part of it: the CLI releases from this repository on its own
+   cadence under `cli/v*` tags, with the cargo-dist binaries and
+   the Homebrew tap handoff owned by the `cli-dist`/`cli-release-assets`
+   jobs in `release.yml`.
 
 Cargo publishes every selected workspace in dependency order. The split
 release workflow runs `release-plz release` independently from
@@ -42,8 +45,9 @@ following release PR finds a changelog or history problem.
 After each release commit reaches its repository's `main` branch, monitor the
 release workflow until crates.io publication, tags, GitHub releases, and the
 `framework.json` manifest upload have all completed. CLI archives, checksums,
-and the Homebrew formula are produced by water-rs/cli's own release workflow,
-not this one. If publication stops after some crate versions are immutable on
+and the Homebrew formula are produced by this workflow's `cli-dist` and
+`cli-release-assets` jobs when the run's release-plz report names a
+`cli/v*` tag. If publication stops after some crate versions are immutable on
 crates.io, fix forward with new versions; do not delete tags or attempt to
 overwrite published versions.
 

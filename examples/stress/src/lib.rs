@@ -325,7 +325,7 @@ mod bench {
     // `water bench --max-p95-us`, which knows its own hardware.
     #[waterui::bench(
         stress_scene,
-        theme = hydrolysis_m3::install,
+        theme = hydrolysis_m3::Material3::defaults(),
         viewport = (390, 844),
         max_rebuild_ratio = 0.05,
         max_scene_layers = 4,

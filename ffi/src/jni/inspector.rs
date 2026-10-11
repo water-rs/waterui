@@ -8,6 +8,7 @@ use jni::EnvUnowned;
 use jni::objects::JClass;
 use jni::sys::{jboolean, jlong};
 
+#[cfg(feature = "inspector")]
 use crate::WuiEnv;
 
 /// Reads the environment a Kotlin caller holds, if it is not null.
@@ -15,6 +16,7 @@ use crate::WuiEnv;
 /// # Safety
 ///
 /// `env_ptr` must be an environment handle the runtime is keeping alive.
+#[cfg(feature = "inspector")]
 const unsafe fn environment<'a>(env_ptr: jlong) -> Option<&'a WuiEnv> {
     let pointer = env_ptr as *const WuiEnv;
     if pointer.is_null() {
@@ -34,17 +36,26 @@ extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_isAvailable<'local>
     _class: JClass<'local>,
     env_ptr: jlong,
 ) -> jboolean {
-    // SAFETY: the Kotlin caller passes the handle the runtime holds for the
-    // lifetime of the application.
-    let available = unsafe { environment(env_ptr) }
-        .is_some_and(|env| env.get::<waterui::inspector::InspectorRuntime>().is_some());
-    jboolean::from(available)
+    #[cfg(feature = "inspector")]
+    {
+        // SAFETY: the Kotlin caller passes the handle the runtime holds for the
+        // lifetime of the application.
+        let available = unsafe { environment(env_ptr) }
+            .is_some_and(|env| env.get::<waterui::inspector::InspectorRuntime>().is_some());
+        jboolean::from(available)
+    }
+    #[cfg(not(feature = "inspector"))]
+    {
+        let _ = env_ptr;
+        jboolean::from(false)
+    }
 }
 
 /// Opens the inspector on this application.
 ///
 /// A phone is inspected from the developer's computer, so this reports where to
 /// attach rather than launching anything on the device.
+#[cfg(feature = "inspector")]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_open<'local>(
     _env: EnvUnowned<'local>,
@@ -61,7 +72,19 @@ extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_open<'local>(
     inspector.open();
 }
 
+/// Without the `inspector` feature there is nothing to open: `isAvailable`
+/// answers false, so the runtime never offers inspection.
+#[cfg(not(feature = "inspector"))]
+#[unsafe(no_mangle)]
+const extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_open<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    _env_ptr: jlong,
+) {
+}
+
 /// Reveals one accessibility node in the inspector.
+#[cfg(feature = "inspector")]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_inspectNode<'local>(
     _env: EnvUnowned<'local>,
@@ -83,6 +106,17 @@ extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_inspectNode<'local>
     inspector.inspect_node(waterui::inspector::protocol::NodeId(node as u64));
 }
 
+/// Without the `inspector` feature there is no inspector to reveal a node in.
+#[cfg(not(feature = "inspector"))]
+#[unsafe(no_mangle)]
+const extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_inspectNode<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    _env_ptr: jlong,
+    _node: jlong,
+) {
+}
+
 /// Whether anything is watching the accessibility tree.
 ///
 /// Android walks its view hierarchy only when the answer is yes.
@@ -92,11 +126,19 @@ extern "system" fn Java_dev_waterui_android_ffi_InspectorJni_wantsTree<'local>(
     _class: JClass<'local>,
     env_ptr: jlong,
 ) -> jboolean {
-    // SAFETY: the Kotlin caller passes the handle the runtime holds for the
-    // lifetime of the application.
-    let wants = unsafe { environment(env_ptr) }.is_some_and(|env| {
-        env.get::<waterui::inspector::TreeRecorder>()
-            .is_some_and(waterui::inspector::TreeRecorder::is_active)
-    });
-    jboolean::from(wants)
+    #[cfg(feature = "inspector")]
+    {
+        // SAFETY: the Kotlin caller passes the handle the runtime holds for the
+        // lifetime of the application.
+        let wants = unsafe { environment(env_ptr) }.is_some_and(|env| {
+            env.get::<waterui::inspector::TreeRecorder>()
+                .is_some_and(waterui::inspector::TreeRecorder::is_active)
+        });
+        jboolean::from(wants)
+    }
+    #[cfg(not(feature = "inspector"))]
+    {
+        let _ = env_ptr;
+        jboolean::from(false)
+    }
 }

@@ -10,6 +10,8 @@
 - Pointer cursor
 - Drag and drop
 - Reactive pressed/hover visuals
+- Reporting a control's state
+- Selected controls
 
 The compiled examples for this file are `examples/gesture`, `examples/hover`, and
 `examples/drag_drop` in the WaterUI repository.
@@ -29,7 +31,7 @@ crate root, so import the types explicitly:
 
 ```rust
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 ```
 
@@ -75,6 +77,18 @@ Two argument types are traps:
 `MagnificationGesture::new(initial_scale)` and `RotationGesture::new(initial_angle)`
 complete the set. All gesture structs are `#[non_exhaustive]` — construct them only
 through these constructors.
+
+`.buttons(..)` restricts tap, long-press, and drag recognizers to a `PointerButtons`
+mask (default `PRIMARY`). A recognizer activates only when the pressing
+`PointerButton` is in the mask; a pointer sequence belongs to one button, so a
+second button pressed mid-sequence does not join it. `TapEvent`, `LongPressEvent`,
+and `DragEvent` carry the pressing `button`.
+
+```rust
+use waterui::gesture::PointerButtons;
+
+view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler) // middle click
+```
 
 ## Combining gestures
 
@@ -130,14 +144,22 @@ pointing hand by default. Like hover, cursors exist only on pointer platforms.
 
 ## Drag and drop
 
-Three modifiers, one payload type. `DragData::text(..)` / `DragData::url(..)` accept
-`impl Into<Str>`, so runtime `String`s are fine:
+Three modifiers; a drag carries one typed value. `.draggable(value)` takes any
+`Transferable` type, and a destination accepts exactly the type of its handler's first
+argument. `Str`, `Url` and `Files` also cross to other applications; an app type marked
+`Transferable` stays in the process:
 
 ```rust
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::Transferable;
+use waterui::reactive::impl_constant;
+
+#[derive(Debug, Clone, PartialEq)]
+struct Fruit(&'static str);
+impl Transferable for Fruit {}
+impl_constant!(Fruit); // lets a plain `Fruit` value be passed to `.draggable(..)`
 
 fn fruit_card(name: &'static str) -> impl View {
-    text(name).padding().draggable(DragData::text(name))
+    text(name).padding().draggable(Fruit(name))
 }
 
 // `+ use<>` keeps the borrowed parameters out of the returned view's lifetime (they are
@@ -146,8 +168,8 @@ fn basket(collected: &Binding<Vec<String>>, hovering: &Binding<bool>) -> impl Vi
     vstack((text("Basket"), text!("{count} items", count = collected.map(|v| v.len()))))
         .padding()
         .drop_destination(
-            |State(collected): State<Binding<Vec<String>>>, data: DragData| {
-                collected.with_mut(|v| v.push(data.as_str().to_string()));
+            |fruit: Fruit, State(collected): State<Binding<Vec<String>>>| {
+                collected.with_mut(|v| v.push(fruit.0.to_string()));
             },
         )
         .drop_hover(hovering)
@@ -157,18 +179,52 @@ fn basket(collected: &Binding<Vec<String>>, hovering: &Binding<bool>) -> impl Vi
 
 The parts an agent cannot guess:
 
-- **The dropped payload arrives as a handler parameter.** `DragData` is an extractor, so
-  `data: DragData` sits alongside `State<T>` parameters in any order. There is no
-  `|data| ...` callback form.
+- **The dropped value is the handler's first parameter, and its type is the filter.**
+  `|text: Str| ..` accepts text drags only, `|files: Files| ..` file drags only,
+  `|fruit: Fruit| ..` in-process `Fruit` drags only; any other drag is neither
+  highlighted nor delivered. Extractors such as `State<T>` follow it.
 - **`.drop_hover(&binding)` must chain directly on `.drop_destination(..)`.** It exists
   only on the value that call returns; inserting another modifier between them is a
   compile error. It sets the binding `true` on drag-enter, `false` on exit — feed it to
   a background or scale signal for a highlight. `.on_enter(f)` / `.on_exit(f)` chain in
   the same position and *add* handlers rather than replacing them.
-- `.draggable(..)` takes `impl IntoComputed<DragData>`, so the payload may itself be
-  reactive.
+- `.draggable(..)` takes a plain transferable value or any signal of one (`Binding<T>`,
+  `Computed<T>`); the payload type is inferred from it. A plain value of your own type
+  needs `impl_constant!` (as above). Text is `.draggable(Str::from(..))`.
 - The initiating gesture is platform-defined: click-drag on macOS, long-press-drag on
   iOS and Android. Do not add your own long-press recognizer on top.
+
+## Key handling
+
+`.on_key_press(handler)` attaches a key handler to a view. The focused view sees each
+key first; a key it does not consume bubbles to the nearest ancestor with an
+`OnKeyPress` handler, then the next, stopping at the first `KeyHandling::Handled`. The
+handler runs with `KeyPress` in its environment — read it with `Use<KeyPress>` — and
+returns `Handled` or `Ignored`. The backend is what decides "consumed": a single-line
+`field` eats text-editing keys and submits Return through `.on_submit(..)` when one is
+set; Escape, Up/Down, PageUp/PageDown and a Return with no `on_submit` bubble out.
+
+```rust
+use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
+
+search_panel()
+    .on_key_press(|Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+        if press.key == Key::Named(NamedKey::Escape) {
+            open.set(false);
+            KeyHandling::Handled
+        } else {
+            KeyHandling::Ignored
+        }
+    })
+    .state(&open)
+```
+
+- Return `Ignored`, never a missing `Handled` — `Ignored` is what keeps the key bubbling.
+- `press.modifiers` is a `keyboard_types::Modifiers` bitset (`Modifiers::SHIFT`,
+  `Modifiers::CONTROL`, `Modifiers::ALT`, `Modifiers::META`); `press.code` is the
+  physical `Code`, `press.repeat` marks auto-repeat.
+- `field("Search", &query).on_submit(handler)` fires on Return in a line-limited
+  field; with no line limit Return inserts a newline and never submits.
 
 ## Reactive pressed/hover visuals
 
@@ -195,3 +251,49 @@ Note the two opacities: `Color::with_opacity(0.2)` bakes alpha into the color va
 while `.opacity(signal)` is the reactive view modifier doing the cross-fade. Signal
 transforms (`.select`, `.map`, `.zip`) take `&self`, so no `.clone()` is needed before
 them — clone only when a finished signal is consumed twice, as `.scale(x, y)` does.
+
+## Reporting a control's state
+
+`.on_hover_enter`/`.on_hover_exit` report the pointer position of *that* modifier's
+view. When chrome lives around a control it does not own — a floating surface's
+shadow, a chip's outline, a split button's half — ask the backend for the whole
+interaction state instead: `.interaction_state(&binding)` writes the
+`InteractionState` of the outermost interactive control at or inside the view it
+is applied to, every time it changes. The binding sits at `InteractionState::empty()`
+while no interactive control is there.
+
+```rust
+use waterui::interaction::InteractionState;
+use waterui::reactive::{Binding, binding};
+
+let state: Binding<InteractionState> = binding(InteractionState::empty());
+let lift = state.map(|s| if s.contains(InteractionState::HOVERED) { -6.0 } else { 0.0 });
+
+vstack((
+    text!("Chip"),
+    button("Action").action(|| {}),
+))
+.offset(0.0, lift)            // chrome follows the control's state
+.interaction_state(&state)
+```
+
+`InteractionState` is a bitflags set — `HOVERED`, `FOCUSED` (focus-visible only,
+like `:focus-visible`: keyboard focus, never a click), `PRESSED`, `DRAGGED`,
+`SELECTED`, `DISABLED` — so test it with `.contains(...)`, never `==`.
+
+## Selected controls
+
+`.selected(..)` takes `impl IntoComputed<bool>` and marks the interactive control
+it modifies as selected: the control gains `InteractionState::SELECTED` (so its
+style's selected values apply) and assistive technology announces it as selected.
+It applies to the control it modifies — unlike `.disabled(..)` it is *not*
+inherited by nested controls.
+
+```rust
+let selection: Binding<i32> = binding(0);
+text!("Inbox").selected(selection.map(|s| s == 0))
+```
+
+Navigation destinations, tabs, and list items are the usual carriers; combine
+with `.interaction_state` when the row's own chrome (a selection indicator,
+say) must also follow hover or press.

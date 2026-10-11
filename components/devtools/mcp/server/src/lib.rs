@@ -3,8 +3,8 @@
 //!
 //! The server mounts a [`waterui_testing::OffscreenApp`] and exposes its
 //! accessibility tree, input dispatch, and screenshots as MCP tools —
-//! `snapshot`, `find`, `act`, `pointer`, `key`, `type_text`, `wait`,
-//! `screenshot`, `restart`, and `advance`.
+//! `snapshot`, `find`, `act`, `pointer`, `key`, `drop_files`, `type_text`,
+//! `wait`, `screenshot`, `restart`, and `advance`.
 //!
 //! # Threading
 //!

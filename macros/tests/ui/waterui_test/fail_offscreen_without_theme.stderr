@@ -1,0 +1,7 @@
+error: `offscreen` mounts the rendered runtime, which needs a style — pass `theme = <style>`
+ --> tests/ui/waterui_test/fail_offscreen_without_theme.rs:5:1
+  |
+5 | #[waterui::test(sample_view, offscreen)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `waterui::test` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,51 @@
+# Korean translations
+
+# Title and description
+"WaterUI World Fair" = "WaterUI 세계 박람회"
+"Locale is injected from native side via FFI" = "로케일은 FFI를 통해 네이티브 측에서 주입됩니다"
+"Live translations for a tiny world-fair kiosk" = "작은 세계 박람회 키오스크를 위한 실시간 번역"
+
+# Section headers
+"Welcome Desk" = "환영 데스크"
+"Festival Date (2006-03-20)" = "축제 날짜 (2006-03-20)"
+"Passport Stamps" = "여권 도장"
+"Distance Guide" = "거리 안내"
+"Local Flavor" = "지역 색채"
+"Language Booth" = "언어 부스"
+"Human Rights - Article 1" = "인권 - 제1조"
+
+# Greeting
+"Welcome to the World Fair!" = "세계 박람회에 오신 것을 환영합니다!"
+
+# Labels
+"Color" = "색"
+"Favorite" = "좋아하는 것"
+"Language:" = "언어:"
+"Detected Locale:" = "감지된 로케일:"
+"Chosen Language:" = "선택한 언어:"
+"Short:" = "짧은 형식:"
+"Long:" = "긴 형식:"
+"City Walk:" = "도시 산책:"
+"Marathon Route:" = "마라톤 코스:"
+"Computer:" = "컴퓨터:"
+"Software:" = "소프트웨어:"
+
+# Language names
+"en" = "영어"
+"zh" = "중국어"
+"ja" = "일본어"
+"ko" = "한국어"
+"de" = "독일어"
+"fr" = "프랑스어"
+"es" = "스페인어"
+"ru" = "러시아어"
+
+# Regional vocabulary
+"computer" = "컴퓨터"
+"software" = "소프트웨어"
+
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "모든 인간은 태어날 때부터 자유롭고 존엄과 권리에 있어 동등하다. 인간은 이성과 양심을 부여받았으며 서로 형제애의 정신으로 행동해야 한다."
+
+# Plural forms - Korean has no plural distinction
+"I have {#count} passport stamp" = { other = "여권 도장 {count}개가 있습니다" }

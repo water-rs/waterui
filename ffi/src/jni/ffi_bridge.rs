@@ -56,17 +56,18 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_app<'local>(
     super::with_env(&mut env, |env| app_to_java(env, &app).into_raw())
 }
 
-/// Convert the two transferred Android app handles to Java `AppStruct`.
+/// Convert the transferred Android app handles to Java `AppStruct`.
 fn app_to_java<'local>(env: &mut Env<'local>, app: &WuiAndroidAppHandles) -> JObject<'local> {
     let app_struct_class = env
         .find_class(jni_str!("dev/waterui/android/runtime/AppStruct"))
         .expect("AppStruct class not found");
     env.new_object(
         &app_struct_class,
-        jni_sig!("(JJ)V"),
+        jni_sig!("(JJJ)V"),
         &[
             JValue::Long(app.content as jlong),
             JValue::Long(app.env as jlong),
+            JValue::Long(app.background as jlong),
         ],
     )
     .expect("Failed to create AppStruct")
@@ -141,17 +142,6 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_emptyId<'local>(
     _class: JClass<'local>,
 ) -> jobject {
     let type_id = WuiTypeId::of::<()>();
-    super::with_env(&mut env, |env| type_id_to_java(env, type_id).into_raw())
-}
-
-/// Get the spacer type ID.
-/// `Spacer` is defined specially in `layout.rs`.
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_spacerId<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-) -> jobject {
-    let type_id = WuiTypeId::of::<waterui_core::Native<waterui::component::spacer::Spacer>>();
     super::with_env(&mut env, |env| type_id_to_java(env, type_id).into_raw())
 }
 
@@ -244,7 +234,7 @@ struct AndroidGpuRuntimeCompletion {
 
 #[cfg(feature = "gpu")]
 impl AndroidGpuRuntimeCompletion {
-    fn complete(self, runtime: waterui_graphics::shared_context::GpuRuntime) {
+    fn complete(self, runtime: waterui_graphics::gpu::GpuRuntime) {
         let runtime = crate::IntoFFI::into_ffi(runtime);
         super::with_attached_env(&self.jvm, |env| {
             env.call_method(

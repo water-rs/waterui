@@ -1,7 +1,6 @@
 waterui_path = "../.."
 
 [package]
-type = "playground"
 name = "WaterUI Gallery"
 bundle_identifier = "com.waterui.example.gallery"
 

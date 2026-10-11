@@ -1,11 +1,19 @@
 //! Wire-format constants shared by the const encoder and the runtime decoder.
 //!
 //! Every byte a payload may contain is non-zero. The `water` CLI recovers a
-//! `#[used] static` from an artifact by reading its section from the symbol
-//! address and cutting at the first NUL — Mach-O symbols carry no size — so a
-//! NUL inside the payload would truncate it. The encoder asserts that
-//! invariant on every byte it emits, and the static appends exactly one NUL as
-//! its terminator.
+//! metadata record from an artifact by reading a name and a payload, each
+//! cut at its first NUL, so a NUL inside the payload would truncate it. The
+//! encoder asserts that invariant on every byte it emits, and the payload
+//! appends exactly one NUL as its terminator.
+//!
+//! The symbol lookup alone cannot carry the channel into a linked Windows
+//! image: the PE header's symbol-table fields are deprecated and lld-link
+//! leaves them at zero, so a `#[used]` static lands in `.rdata` unnamed. The
+//! derive's metadata static therefore lives in
+//! [`waterui_meta::DIR_SECTION`] (`__wmeta` on Mach-O) and its bytes form the
+//! self-describing record `name`, NUL, `payload`, NUL — a directory the
+//! reader walks by name on every format, in object files and linked images
+//! alike.
 
 /// Version of the encoded payload format, the first byte of every payload.
 ///

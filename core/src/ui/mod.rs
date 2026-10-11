@@ -2,6 +2,7 @@ pub mod accessibility;
 pub mod event;
 pub mod gesture;
 pub mod interaction;
+pub mod key;
 pub mod layout;
 pub mod view;
 pub mod view_renderer;

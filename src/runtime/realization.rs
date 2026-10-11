@@ -3,7 +3,8 @@
 //!
 //! A component such as `video` describes what is on screen, not what draws it.
 //! On a platform whose system frameworks own that domain the backend bridges
-//! the native primitive and registers nothing here. On a platform with no such
+//! the native primitive and registers nothing here: `AVPlayer` on Apple
+//! platforms, the `<video>` element on the web. On a platform with no such
 //! primitive the application links `WaterUI`'s own GPU realization, selected by
 //! the `video-gpu` feature, and this is where that realization is installed —
 //! from the composition root, before any view resolves, so a backend never has
@@ -24,41 +25,46 @@ use waterui_core::Environment;
 /// building an `App` — an offscreen preview harness, for one — calls this
 /// itself.
 #[cfg_attr(
-    target_vendor = "apple",
+    any(target_vendor = "apple", target_arch = "wasm32"),
     expect(
         clippy::missing_const_for_fn,
-        reason = "the body is empty only on Apple, where the native player owns the realization; elsewhere it calls the non-const install_video"
+        reason = "the body is empty only on Apple and the web, where the native player owns the realization; elsewhere it calls the non-const install_video"
     )
 )]
 pub fn install(env: &mut Environment) {
-    // Apple bridges AVPlayer: even if the application enabled `video-gpu`
-    // unconditionally, the self-drawn player must not shadow the native
-    // realization there.
-    #[cfg(not(target_vendor = "apple"))]
+    // Apple bridges AVPlayer and the web the `<video>` element: even if the
+    // application enabled `video-gpu` unconditionally, the self-drawn player
+    // must not shadow the native realization there.
+    #[cfg(not(any(target_vendor = "apple", target_arch = "wasm32")))]
     install_video(env);
     let _ = env;
 }
 
 /// Installs the self-drawn video realization without consulting the platform.
 ///
-/// [`install`] skips this on Apple because the platform backend bridges a
-/// native player. A host that renders through a self-drawn backend on every
+/// [`install`] skips this on Apple and the web because the platform backend
+/// bridges a native player there; a wasm32 build links no self-drawn player
+/// at all. A host that renders through a self-drawn backend on every
 /// host OS — the semantic/offscreen test harness — has no such bridge and
 /// installs this unconditionally.
 #[cfg_attr(
-    not(feature = "video-gpu"),
+    not(all(feature = "video-gpu", not(target_arch = "wasm32"))),
     expect(
         clippy::missing_const_for_fn,
-        reason = "the body is empty only in the configuration being linted; selecting the video-gpu feature makes it install a realization"
+        reason = "the body is empty only in the configuration being linted; selecting the video-gpu feature off wasm32 makes it install a realization"
     )
 )]
 pub fn install_video(env: &mut Environment) {
-    #[cfg(feature = "video-gpu")]
+    #[cfg(all(feature = "video-gpu", not(target_arch = "wasm32")))]
     waterui_video_gpu::install(env);
     let _ = env;
 }
 
-#[cfg(all(test, feature = "video-gpu", not(target_vendor = "apple")))]
+#[cfg(all(
+    test,
+    feature = "video-gpu",
+    not(any(target_vendor = "apple", target_arch = "wasm32"))
+))]
 mod tests {
     use waterui_core::{Environment, view::Hook};
 
