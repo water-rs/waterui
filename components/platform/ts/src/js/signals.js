@@ -15,6 +15,16 @@
 // Signal states: CLEAN (value current), CHECK (a source may have changed),
 // DIRTY (a source definitely changed). Signals themselves have no state —
 // a write is always a real change once `equals` has accepted it.
+//
+// The default `equals` is SameValue (`Object.is`), not the `===` most signal
+// libraries use. The difference is exactly two values: `NaN` equals itself
+// here, so writing it twice propagates once instead of on every write, and
+// `-0` differs from `0`, so writing one over the other is a real change. That
+// is the equality the Rust half of this runtime already has — one `f64` is
+// distinct from another bit for bit — and a seam whose two halves disagree
+// about what counts as a change writes values back and forth that neither
+// side asked for. A computation wanting `===`, or a deep comparison, passes
+// its own `equals`.
 
 const CLEAN = 0;
 const CHECK = 1;
@@ -43,13 +53,124 @@ const effectQueue = [];
 // each queued effect once, so the bound is generous, not tight.
 const MAX_FLUSH_EVALUATIONS = 10000;
 
-const referenceEquals = (a, b) => a === b;
+const sameValue = (a, b) => Object.is(a, b);
 const neverEquals = () => false;
+
+/** The symbol a source carries its own comparator under. */
+const EQUALS = Symbol("waterui.equals");
+
+/**
+ * The comparator `source` settles a write with: its own if it is a signal or
+ * a memo, SameValue for anything else, including a host-side `{ read, write }`
+ * value, which has no comparator to offer.
+ *
+ * `write` asks rather than restating an equality of its own: a signal created
+ * with a custom `equals` would otherwise be told a write did not stand every
+ * time its comparator accepted a value this one calls different.
+ *
+ * @param {unknown} source
+ * @returns {(a: unknown, b: unknown) => boolean}
+ */
+export function comparatorOf(source) {
+  return source?.[EQUALS] ?? sameValue;
+}
+
+/**
+ * The deepest a bridge comparison walks. A value that crossed the seam cannot
+ * be cyclic — the engine refuses a cyclic graph on the way in — and cannot be
+ * deeper than the engine's own conversion limit, so this is a backstop: past
+ * it the two are reported different and the write goes through, which is the
+ * safe answer.
+ */
+const MAX_BRIDGE_DEPTH = 128;
+
+/** Whether `value` is a plain object: data, not an instance or a handle. */
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function equalAtDepth(a, b, depth) {
+  if (Object.is(a, b)) {
+    return true;
+  }
+  if (depth >= MAX_BRIDGE_DEPTH) {
+    return false;
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) {
+      return false;
+    }
+    // Index by index rather than with `every`, which skips holes: a hole and
+    // a value at the same index are different values, and an array walked by
+    // `every` would have neither visited.
+    for (let index = 0; index < a.length; index += 1) {
+      const present = index in a;
+      if (present !== (index in b)) {
+        return false;
+      }
+      if (present && !equalAtDepth(a[index], b[index], depth + 1)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    // In order, because the native side's own equality is: an object crosses
+    // as its entries in insertion order, and the same entries in another
+    // order are a different value there. Calling them equal here would drop
+    // a reordering the native side made.
+    const keys = Object.keys(a);
+    const otherKeys = Object.keys(b);
+    if (keys.length !== otherKeys.length) {
+      return false;
+    }
+    for (const [index, key] of keys.entries()) {
+      if (key !== otherKeys[index] || !equalAtDepth(a[key], b[key], depth + 1)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Whether two values that crossed the seam are the same value.
+ *
+ * This is the seam's equality rather than a signal's, which is why it lives
+ * beside `comparatorOf` instead of inside any one source: a value arriving
+ * from the native side is always a *copy* — a struct is a fresh object and a
+ * list a fresh array every time it crosses — so comparing it by reference
+ * would call every push a change and re-run every subscriber for a value
+ * nobody altered. Data is therefore compared structurally: primitives by
+ * SameValue, arrays and plain objects recursively over their own keys.
+ * Everything else — a function, a signal, a native handle, a class instance —
+ * is compared by identity, the only meaningful answer for a thing that was
+ * never copied.
+ *
+ * Two details follow from the native side's own equality rather than from
+ * JavaScript's. Arrays are compared index by index including their holes,
+ * because a hole and a value are different values. Objects are compared in
+ * key order, because a native object is a list of entries in insertion order
+ * and reordering it is a change there even though nothing was added or
+ * removed.
+ *
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {boolean}
+ */
+export function bridgeEquals(a, b) {
+  return equalAtDepth(a, b, 0);
+}
 
 function equalsOf(options) {
   const equals = options?.equals;
   if (equals === undefined) {
-    return referenceEquals;
+    return sameValue;
   }
   if (equals === false) {
     return neverEquals;
@@ -79,7 +200,7 @@ function newNode(owner) {
     observers: new Set(),
     compute: null,
     isEffect: false,
-    equals: referenceEquals,
+    equals: sameValue,
     queued: false,
     disposed: false,
     evaluating: false,
@@ -303,6 +424,7 @@ export function createSignal(initial, options) {
   signal.map = (f) => createMemo(() => f(signal()));
   signal.peek = () => node.value;
   signal[SIGNAL] = true;
+  signal[EQUALS] = node.equals;
   signal[Symbol.iterator] = function* () {
     yield signal;
     yield (value) => signal.set(value);
@@ -329,6 +451,7 @@ export function createMemo(compute, options) {
     return node.value;
   };
   memo[MEMO] = true;
+  memo[EQUALS] = node.equals;
   return memo;
 }
 
@@ -491,7 +614,7 @@ function unwrapStore(value) {
 function trackProp(node, key) {
   let signal = node.signals.get(key);
   if (signal === undefined) {
-    signal = newSource(node.raw[key], referenceEquals);
+    signal = newSource(node.raw[key], sameValue);
     node.signals.set(key, signal);
   }
   track(signal);

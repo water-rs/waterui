@@ -12,6 +12,17 @@ categories = ["gui"]
 
 [dependencies]
 waterui-ts-engine.workspace = true
+waterui-ts-schema.workspace = true
+waterui-core.workspace = true
+# The theme the mounted module sees: `ColorScheme` and the environment's
+# colour tokens. `default-features = false` keeps the GPU stack out — this
+# crate reads colour values, it never draws.
+waterui-graphics = { workspace = true, default-features = false }
+waterui-locale.workspace = true
+nami.workspace = true
+suiteki.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 # Apple platforms use the system JavaScriptCore — zero added binary size.
 # watchOS is excluded: it ships no JavaScriptCore and the runtime is
