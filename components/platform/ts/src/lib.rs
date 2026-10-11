@@ -28,6 +28,11 @@
 //! Materialization is lazy: a signal a TypeScript module never hands to a
 //! native view creates nothing on the Rust side.
 //!
+//! A host that mounts a view outside an application — a `waterui-testing`
+//! session, the `water preview` support app — has no bundle loader of its
+//! own: it installs the runtime [`configured_runtime`] loads from the bundle
+//! the `water` CLI names in [`BUNDLE_VARIABLE`].
+//!
 //! [`Binding<T>`]: nami::Binding
 //! [`Computed<T>`]: nami::Computed
 
@@ -45,6 +50,7 @@ compile_error!(
 extern crate self as waterui_ts;
 
 mod bridge;
+mod bundle;
 mod callback;
 mod cell;
 mod convert;
@@ -67,6 +73,7 @@ pub use waterui_ts_engine as engine;
 pub use waterui_ts_schema as schema;
 
 pub use bridge::{Bridge, MountScope, ReactiveSource, ScopeOwner, WeakBridge};
+pub use bundle::{BUNDLE_VARIABLE, BundleError, configured_runtime};
 pub use convert::{FromJs, IntoJs, expected, support};
 pub use environment::{HostLocale, Theme, locale, theme};
 pub use error::{TsError, kind_of};

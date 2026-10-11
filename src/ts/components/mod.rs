@@ -300,10 +300,12 @@ fn leaves(
             let attributes = AvatarAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
             let avatar = Avatar::new(Text::new(attributes.name), || ());
-            AnyView::new(match attributes.image {
+            #[cfg(feature = "media")]
+            let avatar = match attributes.image {
                 Some(source) => avatar.image(source.map(|url| url.0).computed()),
                 None => avatar,
-            })
+            };
+            AnyView::new(avatar)
         }
         #[cfg(feature = "media")]
         "Image" => {
