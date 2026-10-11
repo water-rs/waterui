@@ -18,6 +18,11 @@ fn texel(p: vec2<i32>) -> vec4<f32> {
 fn sample_at(p: vec2<f32>) -> vec4<f32> {
     let origin = vec2<i32>(floor(p));
     let phase = fract(p);
+    // Bilinear interpolation at a texel center has one nonzero weight.
+    // Keep the other three loads out of axis-aligned convolution taps.
+    if all(phase == vec2<f32>(0.)) {
+        return texel(origin);
+    }
     return mix(mix(texel(origin),texel(origin+vec2<i32>(1,0)),phase.x),
                mix(texel(origin+vec2<i32>(0,1)),texel(origin+vec2<i32>(1,1)),phase.x),phase.y);
 }
