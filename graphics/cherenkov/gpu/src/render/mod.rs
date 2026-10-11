@@ -990,7 +990,7 @@ pub struct GpuRenderer {
     bound_globals_size: u64,
     atlas: Atlas,
     /// Per-commit cell writes, rebuilt in place each frame.
-    commit_writes: Vec<glyph::CellWrite>,
+    commit_writes: glyph::CellWrites,
     /// Per-surface pending origins, rebuilt in place each apply.
     pending_origins: Vec<PendingOrigin>,
     /// Replay-pin slots, reused across evicting commits (#119).
@@ -2430,7 +2430,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             bound_stop_size: 32 * 16,
             bound_globals_size: 256,
             atlas,
-            commit_writes: Vec::new(),
+            commit_writes: glyph::CellWrites::default(),
             pending_origins: Vec::new(),
             commit_touches: Vec::new(),
             surfaces: FxHashMap::default(),
@@ -2747,7 +2747,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         bound_stop_size: 32 * 16,
         bound_globals_size: 256,
         atlas,
-        commit_writes: Vec::new(),
+        commit_writes: glyph::CellWrites::default(),
         pending_origins: Vec::new(),
         commit_touches: Vec::new(),
         surfaces: FxHashMap::default(),
@@ -3695,6 +3695,7 @@ impl Renderer for GpuRenderer {
             .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
+            + self.commit_writes.heap_bytes()
             + self
                 .surfaces
                 .values()
@@ -6349,6 +6350,7 @@ impl GpuRenderer {
             lowered.emission_patches = std::mem::take(&mut lowering.emission_patches);
             lowered.mask_patches = std::mem::take(&mut lowering.mask_patches);
             lowered.pending = std::mem::take(&mut lowering.pending);
+            lowered.path_arena = std::mem::take(&mut lowering.path_arena);
             result
         };
         surf.layers = layers;
@@ -6726,13 +6728,16 @@ impl GpuRenderer {
         &mut self,
         surf: &mut SurfaceState,
         lowered: &mut Lowered,
-        writes: &mut Vec<glyph::CellWrite>,
+        writes: &mut glyph::CellWrites,
     ) -> Result<(), RenderError> {
         let pending = std::mem::take(&mut lowered.pending);
+        // The batch's texel arena moves into the commit's writes, which
+        // keep it alive until the upload below has consumed its bytes.
+        let arena = writes.push_arena(std::mem::take(&mut lowered.path_arena));
         let mut origins = std::mem::take(&mut self.pending_origins);
         origins.clear();
         for raster in pending {
-            origins.push(self.apply_raster(raster, writes)?);
+            origins.push(self.apply_raster(raster, arena, writes)?);
         }
         let cell_origin = |p: u32, c: u32| {
             let PendingOrigin::Cells(cells, _) = &origins[p as usize] else {
@@ -6817,7 +6822,8 @@ impl GpuRenderer {
     fn apply_raster(
         &mut self,
         raster: PendingRaster,
-        writes: &mut Vec<glyph::CellWrite>,
+        arena: u32,
+        writes: &mut glyph::CellWrites,
     ) -> Result<PendingOrigin, RenderError> {
         match raster {
             PendingRaster::Glyph {
@@ -6845,7 +6851,7 @@ impl GpuRenderer {
             }
             PendingRaster::Path { key, emit, cells } => {
                 self.atlas
-                    .place_path(key, emit, cells, writes)
+                    .place_path(key, emit, cells, arena, writes)
                     .ok_or(RenderError::AtlasFull)?;
                 Ok(PendingOrigin::Cells(
                     self.atlas.path_origins(key).expect("just stored"),
