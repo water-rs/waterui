@@ -1182,9 +1182,9 @@ impl OffscreenGpuContext {
 
     /// Requests a context for `WaterUI` test hosts.
     ///
-    /// Unlike a production context, this allows compute-capable software
-    /// adapters so CI can run Hydrolysis accessibility tests on llvmpipe
-    /// without opting the runtime path into fallback adapters.
+    /// Unlike a production context, this allows software adapters so CI can
+    /// run Hydrolysis accessibility tests on llvmpipe without opting the
+    /// runtime path into fallback adapters.
     #[cfg(any(test, feature = "testing"))]
     pub async fn new_for_tests() -> Self {
         Self::new_with_adapter_selection(AdapterSelection::TEST).await
@@ -1215,11 +1215,6 @@ impl OffscreenGpuContext {
         let (instance, adapter) =
             request_instance_and_adapter("hydrolysis offscreen surface", selection).await;
 
-        ensure_compute_capable_adapter(
-            &adapter,
-            "hydrolysis offscreen surface",
-            "failed to find compute-capable wgpu adapter",
-        );
         let required_limits = required_device_limits(&adapter);
         // PIPELINE_CACHE is requested wherever the adapter has it: without the
         // feature `create_pipeline_cache` errors, so the persistent store in
@@ -1400,11 +1395,11 @@ const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
 ///
 /// Hydrolysis is GPU-required by design, so the honest answer is another host
 /// or another renderer. The escape hatch is named as diagnostics and nothing
-/// more: a software adapter reports compute support and still aborts the
-/// process inside shader compilation (Microsoft Basic Render Driver on
-/// Windows Server does exactly that), so recommending it as the remedy sends
-/// the user somewhere worse than the refusal.
-const GPU_REQUIRED_GUIDANCE: &str = "Hydrolysis renders through GPU compute pipelines and has no CPU path: \
+/// more: a software adapter can still abort the process inside shader
+/// compilation (Microsoft Basic Render Driver on Windows Server does exactly
+/// that), so recommending it as the remedy sends the user somewhere worse
+/// than the refusal.
+const GPU_REQUIRED_GUIDANCE: &str = "Hydrolysis renders through GPU pipelines and has no CPU path: \
 run on a machine with a GPU, or on a virtual machine enable hardware 3D acceleration and install the vendor driver. \
 For targets without a GPU, waterui-dew is the CPU renderer. \
 WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1 widens adapter selection to software adapters for diagnostics only; \
@@ -1450,9 +1445,9 @@ mod adapter_selection_tests {
 
     #[test]
     fn the_refusal_does_not_recommend_the_escape_hatch_as_a_remedy() {
-        // A software adapter that reports compute support can still abort the
-        // process in shader compilation, so the guidance must offer another
-        // host or Dew and name the flag as diagnostics only.
+        // A software adapter can still abort the process in shader
+        // compilation, so the guidance must offer another host or Dew and
+        // name the flag as diagnostics only.
         assert!(GPU_REQUIRED_GUIDANCE.contains("waterui-dew"));
         assert!(GPU_REQUIRED_GUIDANCE.contains("diagnostics only"));
     }
@@ -1469,22 +1464,13 @@ const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
     }
 }
 
-fn is_compute_capable_adapter(adapter: &wgpu::Adapter) -> bool {
-    let downlevel_caps = adapter.get_downlevel_capabilities();
-    let limits = adapter.limits();
-    downlevel_caps
-        .flags
-        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-        && limits.max_compute_workgroups_per_dimension > 0
-}
-
 /// The wgpu backend masks Hydrolysis probes for an adapter, in order.
 ///
 /// `WGPU_BACKEND` is an absolute override — its mask is the only tier probed.
 /// Without it, `PRIMARY` (Vulkan, Metal, DX12, browser WebGPU) probes first and
 /// `GL` follows only when no primary adapter is acceptable, so wgpu
 /// instantiates the GL backend's EGL driver stack only on hosts that need it —
-/// a headless CI box where Mesa llvmpipe supplies GL 4.5 compute shaders —
+/// a headless CI box where Mesa llvmpipe supplies a GL adapter —
 /// never alongside a Vulkan adapter it would sit idle next to.
 #[cfg(not(target_arch = "wasm32"))]
 #[expect(
@@ -1505,8 +1491,8 @@ fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDes
 }
 
 /// Probe `instance` over `backends` for the best adapter that is
-/// surface-compatible, not `Noop`, software only when `selection` allows it,
-/// and compute-capable. `None` means this tier satisfied nothing; the
+/// surface-compatible, not `Noop`, and software only when `selection`
+/// allows it. `None` means this tier satisfied nothing; the
 /// inspected list comes back either way for the no-adapter panic.
 #[cfg(not(target_arch = "wasm32"))]
 async fn probe_adapters(
@@ -1520,9 +1506,9 @@ async fn probe_adapters(
         // The diagnostics escape hatch widens which adapters are eligible
         // (`AdapterSelection::allow_software_adapter`); it does not hand the
         // renderer whatever `request_adapter` returns. Asking wgpu for a
-        // fallback adapter directly skipped the compute-capability filter and
-        // the ranking below, which is how a CPU adapter that cannot run the
-        // compute pipelines reached the engine's shader init.
+        // fallback adapter directly skipped the ranking below, which is how
+        // an adapter the engine cannot drive reached the engine's shader
+        // init.
         let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
         let mut inspected_adapters: Vec<String> = Vec::new();
 
@@ -1531,16 +1517,12 @@ async fn probe_adapters(
             let surface_supported = compatible_surface
                 .as_ref()
                 .is_none_or(|surface| adapter.is_surface_supported(surface));
-            let limits = adapter.limits();
-            let compute_capable = is_compute_capable_adapter(&adapter);
 
             tracing::info!(
                 target: "hydrolysis::gpu",
                 context,
                 adapter = ?info,
                 surface_supported,
-                compute_capable,
-                max_compute_workgroups_per_dimension = limits.max_compute_workgroups_per_dimension,
                 "hydrolysis adapter candidate"
             );
 
@@ -1549,12 +1531,8 @@ async fn probe_adapters(
             }
 
             inspected_adapters.push(format!(
-                "'{}' ({:?}, {:?}, compute={}, max_compute_workgroups_per_dimension={})",
-                info.name,
-                info.backend,
-                info.device_type,
-                compute_capable,
-                limits.max_compute_workgroups_per_dimension
+                "'{}' ({:?}, {:?})",
+                info.name, info.backend, info.device_type
             ));
 
             if info.backend == wgpu::Backend::Noop
@@ -1567,10 +1545,6 @@ async fn probe_adapters(
                     adapter = ?info,
                     "skipping software/noop adapter because fallback adapter was not requested"
                 );
-                continue;
-            }
-
-            if !compute_capable {
                 continue;
             }
 
@@ -1821,9 +1795,9 @@ impl OffscreenSurface {
 
     /// Creates an offscreen surface for `WaterUI` test hosts.
     ///
-    /// Unlike production surfaces, this constructor allows compute-capable
-    /// software adapters so CI can run Hydrolysis accessibility tests on
-    /// llvmpipe without opting the runtime path into fallback adapters.
+    /// Unlike production surfaces, this constructor allows software adapters
+    /// so CI can run Hydrolysis accessibility tests on llvmpipe without
+    /// opting the runtime path into fallback adapters.
     #[cfg(any(test, feature = "testing"))]
     pub async fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         Self::on_context(
@@ -1867,40 +1841,15 @@ impl OffscreenSurface {
     }
 }
 
+/// The limits a host requests of its wgpu device: the WebGPU defaults with
+/// resolution and alignment taken from the adapter. The engine's raster
+/// pipeline is written against the defaults, so an adapter below them fails
+/// the device request — there is no downlevel limits fallback.
 pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let adapter_limits = adapter.limits();
-    let downlevel_caps = adapter.get_downlevel_capabilities();
-    let base_limits = if downlevel_caps.is_webgpu_compliant()
-        || downlevel_caps
-            .flags
-            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-    {
-        wgpu::Limits::default()
-    } else {
-        wgpu::Limits::downlevel_webgl2_defaults()
-    };
-
-    base_limits
+    wgpu::Limits::default()
         .using_resolution(adapter_limits.clone())
         .using_alignment(adapter_limits)
-}
-
-pub fn ensure_compute_capable_adapter(
-    adapter: &wgpu::Adapter,
-    context: &str,
-    no_compute_message: &str,
-) {
-    let limits = adapter.limits();
-    if is_compute_capable_adapter(adapter) {
-        return;
-    }
-
-    let info = adapter.get_info();
-    panic!(
-        "{context}: {no_compute_message}. Selected adapter '{}' ({:?}) reports max_compute_workgroups_per_dimension = {}. \
-{GPU_REQUIRED_GUIDANCE}",
-        info.name, info.backend, limits.max_compute_workgroups_per_dimension
-    );
 }
 
 impl PresentationSurface for OffscreenSurface {
@@ -1978,7 +1927,7 @@ impl OffscreenSceneSurface {
         /// application on, at `width × height` sRGB pixels.
         ///
         /// # Panics
-        /// Panics when no compute-capable adapter exists or the engine cannot
+        /// Panics when no usable adapter exists or the engine cannot
         /// be created — same failure contract as [`OffscreenGpuContext::new`].
         /// Async on wasm32, where the engine surface creation inside awaits
         /// the browser's GPU device.
@@ -1994,8 +1943,8 @@ impl OffscreenSceneSurface {
 
     #[cfg(any(test, feature = "testing"))]
     crate::engine::cfg_async_fn! {
-        /// Creates the host on a test context, allowing compute-capable
-        /// software adapters so CI can run on llvmpipe.
+        /// Creates the host on a test context, allowing software
+        /// adapters so CI can run on llvmpipe.
         #[must_use]
         pub fn new_for_tests(width: u32, height: u32) -> Self {
             crate::engine::engine_await!(Self::on_context(
@@ -2117,7 +2066,7 @@ impl OffscreenWindow {
     /// Creates an offscreen window for `WaterUI` test hosts.
     ///
     /// This keeps production adapter selection strict while allowing
-    /// `waterui-testing` to run on compute-capable software adapters in CI.
+    /// `waterui-testing` to run on software adapters in CI.
     /// Requests a device of its own; a caller that builds several windows
     /// should request one [`OffscreenGpuContext`] and use [`Self::on_context`].
     #[cfg(any(test, feature = "testing"))]
@@ -2344,15 +2293,9 @@ mod winit_impl {
         /// engine presents instead (macOS).
         ///
         /// # Panics
-        /// Panics when the adapter is not compute-capable or the device
-        /// request fails — the same failure contract as the windowed
-        /// surface that constructs it.
+        /// Panics when the device request fails — the same failure contract
+        /// as the windowed surface that constructs it.
         async fn open(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Self {
-            super::ensure_compute_capable_adapter(
-                &adapter,
-                "hydrolysis winit surface",
-                "failed to find compute-capable wgpu adapter",
-            );
             let required_limits = super::required_device_limits(&adapter);
             let required_features = crate::platform::required_media_features(adapter.features())
                 | (adapter.features()
