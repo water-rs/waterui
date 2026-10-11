@@ -17,7 +17,7 @@ thiserror.workspace = true
 waterui-assets.workspace = true
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
 png = "0.18"
-waterui = { workspace = true, features = ["gpu", "inspector"] }
+waterui = { workspace = true, features = ["dialog", "gpu", "inspector"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 nami.workspace = true
@@ -40,6 +40,10 @@ waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { workspace = true, features = ["std"] }
+# The Android WebView bridge's per-call result token. Only the
+# `webview-system` protocol uses it; the test build repeats it as a
+# dev-dependency.
+getrandom = { workspace = true, optional = true }
 cherenkov.workspace = true
 cherenkov-gpu.workspace = true
 # `MaterialRegistry`/`MaterialScope`/`MaterialCapture`/`Live` — the widget
@@ -267,6 +271,9 @@ serde_json.workspace = true
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
+# The system `WebView` bridge's one-shot completions (`run_javascript`,
+# `call_async_javascript`, `get_cookies`) are `futures::channel::oneshot`.
+futures = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # wasm32 has no stderr: without a hook a panic reaches the page as a bare
@@ -305,6 +312,11 @@ web-sys = { version = "0.3", optional = true, features = [
 ] }
 
 [dev-dependencies]
+# The crate's own test targets need the `accessibility` and `testing`
+# feature APIs — the headless runtimes' `new_for_tests` constructors, the
+# merged-tree queries and `testing::TestStyle` — and a dev-dependency on the
+# package itself is what turns them on for test builds (water-rs/waterui#1673).
+hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 # The renderer itself knows nothing about `Canvas`: it resolves to a
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
@@ -312,26 +324,19 @@ waterui-canvas.workspace = true
 # The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine
 # crate does not re-export.
 cherenkov-record.workspace = true
-# The wayland examples need a widget theme; m3 is independently maintained.
-hydrolysis-m3.workspace = true
-waterui-testing.workspace = true
 waterui-navigation.workspace = true
-# The presentation tests received from waterui exercise these component crates
-# directly: live photos (media), the MCP session harness (mcp, aither-mcp,
-# futures-lite, serde_json).
-waterui-media.workspace = true
 # The #210 regression test drives a real `ReactiveImage`: its handle's `set`
 # is the same call the decode pipeline makes when an image lands.
 waterui-image.workspace = true
-waterui-mcp.workspace = true
-aither-mcp = { workspace = true, features = ["server"] }
-futures-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# The protocol tests compose the async-call script on the host too —
+# repeats the optional `webview-system` edge above.
+getrandom.workspace = true
 toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
-waterui = { workspace = true, features = ["flow-markdown", "gpu", "snackbar", "video-gpu"] }
+waterui = { workspace = true, features = ["dialog", "flow-markdown", "gpu", "snackbar", "video-gpu"] }
 base64 = "0.22"
 # Tolerance assertions for computed geometry and animation values in tests.
 approx = "0.5"
@@ -346,10 +351,6 @@ waterui-webview = { workspace = true, features = ["conformance"] }
 # `complex-scripts` on the parley dep, no warning may be emitted at all.
 icu_provider = { version = "2.3", features = ["logging"] }
 tracing-log = "0.2"
-# The frame-profile example renders a packaged icon set and a chart through
-# the real pipeline.
-waterui-icons-lucide.workspace = true
-waterui-chart.workspace = true
 # Drives the text-measure bench (`benches/text_measure.rs`).
 criterion = "0.8"
 # The text-measure bench rides the real layout path; `harness = false` hands
@@ -366,12 +367,6 @@ name = "real_engine_macos"
 harness = false
 required-features = ["webview-system", "winit"]
 
-# The headless frame-pipeline profiler: representative scenes rendered
-# offscreen through the real pipeline, one JSON document per scene.
-[[example]]
-name = "frame_profile"
-required-features = ["frame-profile"]
-
 [features]
 default = []
 accessibility = ["dep:accesskit"]
@@ -383,12 +378,14 @@ testing = []
 frame-profile = ["testing"]
 inspector-signals = ["waterui/inspector-signals"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
-# each hosted on a compositor plane. Every other engine is a crate the
+# each hosted on a compositor plane, and `android.webkit.WebView` on Android,
+# mounted as a platform-view instance. Every other engine is a crate the
 # application links and installs; this backend never names one.
 webview-system = [
     "dep:block2",
     "dep:cookie",
     "dep:futures",
+    "dep:getrandom",
     "dep:objc2-web-kit",
     "dep:serde_json",
     "web-sys?/HtmlIFrameElement",

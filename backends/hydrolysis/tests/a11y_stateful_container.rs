@@ -1,19 +1,21 @@
-//! A labelled container carrying semantic state of its own is a distinct
-//! element: collapsing it into its only child would drop that state and
-//! overwrite the child's own label and role. Regression coverage for the
-//! modal-drawer panel behind water-rs/hydrolysis#148, whose decorative leaf
-//! stopped emitting and left the labelled panel with a single child.
-//!
-//! Exercises both runtimes — the headless semantic walk (`mount`) and the
-//! rendered flush (`mount_offscreen`) — since the collapse runs in each.
+//! Rendered-flush twin of the facade's `a11y_containers` suite: a labelled
+//! container carrying semantic state of its own is a distinct element, and
+//! the collapse that would merge it into its only child runs in the rendered
+//! flush's accessibility publish exactly as it does on the semantic walk.
+//! Regression coverage for the modal-drawer panel behind
+//! water-rs/hydrolysis#148.
 
-use hydrolysis_m3::Material3;
+mod support;
+
+use accesskit::{Role as AccessibilityRole_, Toggled, TreeUpdate as AccessibilityTreeUpdate};
+use support::{mount_rendered, node, node_id_with_role};
 use waterui::ViewExt as _;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::component::vstack;
 use waterui::shape::{Circle, ShapeExt as _};
 use waterui_controls::button;
-use waterui_testing::{NodeSnapshot, Role, TreeSnapshot, ui};
+use waterui_core::Computed;
+use waterui_core::Environment;
 
 /// A labelled `Group` container holding exactly one child — the shape a
 /// navigation drawer or disclosure panel takes once its decorative leaves
@@ -27,27 +29,18 @@ fn stateful_panel(state: AccessibilityState) -> impl waterui::View {
 
 /// The container node must survive intact: its own role, label, and state,
 /// with the child still nested beneath it.
-fn assert_panel(tree: &TreeSnapshot, check_state: impl Fn(&NodeSnapshot)) {
-    let panel = tree
-        .nodes()
-        .values()
-        .find(|node| node.label() == Some("Panel"))
-        .expect("the labelled panel must survive as its own node");
-    assert_eq!(
-        panel.role(),
-        Role::GROUP,
-        "the panel keeps its container role instead of collapsing into the child"
-    );
+fn assert_panel(tree: &AccessibilityTreeUpdate, check_state: impl Fn(&accesskit::Node)) {
+    let panel_id = node_id_with_role(tree, AccessibilityRole_::Group, "Panel");
+    let panel = node(tree, panel_id);
     check_state(panel);
     assert_eq!(
         panel.children().len(),
         1,
         "the panel keeps its single child beneath it"
     );
-    let child = tree
-        .node(panel.children()[0])
-        .expect("the child node is still registered");
-    assert_eq!(child.role(), Role::BUTTON);
+    let child_id = panel.children()[0];
+    let child = node(tree, child_id);
+    assert_eq!(child.role(), AccessibilityRole_::Button);
     assert_eq!(
         child.label(),
         Some("Inbox"),
@@ -55,79 +48,48 @@ fn assert_panel(tree: &TreeSnapshot, check_state: impl Fn(&NodeSnapshot)) {
     );
 }
 
-fn expanded_panel_survives(tree: &TreeSnapshot) {
+fn expanded_panel_survives(tree: &AccessibilityTreeUpdate) {
     assert_panel(tree, |panel| {
-        assert_eq!(panel.expanded(), Some(true));
+        assert_eq!(panel.is_expanded(), Some(true));
     });
 }
 
-fn selected_panel_survives(tree: &TreeSnapshot) {
+fn selected_panel_survives(tree: &AccessibilityTreeUpdate) {
     assert_panel(tree, |panel| {
-        assert!(panel.selected());
+        assert_eq!(panel.is_selected(), Some(true));
     });
 }
 
-fn toggled_panel_survives(tree: &TreeSnapshot) {
+fn toggled_panel_survives(tree: &AccessibilityTreeUpdate) {
     assert_panel(tree, |panel| {
-        assert_eq!(panel.checked(), Some(true));
+        assert_eq!(panel.toggled(), Some(Toggled::True));
     });
 }
 
-#[test]
-fn expanded_panel_survives_on_semantic_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .mount(move || stateful_panel(AccessibilityState::new().expanded(Some(true))));
-    app.settle();
-    expanded_panel_survives(app.tree());
+/// A container hidden through a state signal still registers its own node —
+/// the `hidden` flag follows the signal every publish — while its subtree
+/// stays suppressed.
+fn signal_panel(state: AccessibilityState) -> impl waterui::View {
+    vstack((button("Inbox").action(|| {}),))
+        .a11y_label("Panel")
+        .a11y_role(AccessibilityRole::Group)
+        .a11y_state_signal(Computed::constant(state))
 }
 
-#[test]
-fn expanded_panel_survives_on_offscreen_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || stateful_panel(AccessibilityState::new().expanded(Some(true))));
-    app.settle();
-    expanded_panel_survives(app.tree());
-}
-
-#[test]
-fn selected_panel_survives_on_semantic_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .mount(move || stateful_panel(AccessibilityState::new().selected(true)));
-    app.settle();
-    selected_panel_survives(app.tree());
-}
-
-#[test]
-fn selected_panel_survives_on_offscreen_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || stateful_panel(AccessibilityState::new().selected(true)));
-    app.settle();
-    selected_panel_survives(app.tree());
-}
-
-#[test]
-fn toggled_panel_survives_on_semantic_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .mount(move || stateful_panel(AccessibilityState::new().checked(Some(true))));
-    app.settle();
-    toggled_panel_survives(app.tree());
-}
-
-#[test]
-fn toggled_panel_survives_on_offscreen_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || stateful_panel(AccessibilityState::new().checked(Some(true))));
-    app.settle();
-    toggled_panel_survives(app.tree());
+fn hidden_panel_survives(tree: &AccessibilityTreeUpdate) {
+    let panel_id = node_id_with_role(tree, AccessibilityRole_::Group, "Panel");
+    let panel = node(tree, panel_id);
+    assert!(
+        panel.is_hidden(),
+        "the panel keeps its hidden state instead of collapsing into the child"
+    );
+    assert!(
+        !tree
+            .nodes
+            .iter()
+            .any(|(_, node)| !node.is_hidden() && node.role() == AccessibilityRole_::Button),
+        "the child must not surface as a visible standalone node"
+    );
 }
 
 /// The same single-child shape the modal navigation drawer takes once its
@@ -145,83 +107,68 @@ fn panel_with_decorative_leaf(state: AccessibilityState) -> impl waterui::View {
     .a11y_state(state)
 }
 
-/// A container hidden through a state signal still registers its own node —
-/// the accesskit `hidden` flag follows the signal every flush — while its
-/// subtree stays suppressed. Collapsing it would drop the flag and surface
-/// the child as a visible standalone node.
-fn signal_panel(state: AccessibilityState) -> impl waterui::View {
-    vstack((button("Inbox").action(|| {}),))
-        .a11y_label("Panel")
-        .a11y_role(AccessibilityRole::Group)
-        .a11y_state_signal(waterui_core::Computed::constant(state))
-}
-
-fn hidden_panel_survives(tree: &TreeSnapshot) {
-    let panel = tree
-        .nodes()
-        .values()
-        .find(|node| node.label() == Some("Panel"))
-        .expect("the hidden panel must survive as its own node");
-    assert_eq!(
-        panel.role(),
-        Role::GROUP,
-        "the panel keeps its container role instead of collapsing into the child"
-    );
-    assert!(
-        panel.hidden(),
-        "the panel keeps its hidden state instead of collapsing into the child"
-    );
-    assert!(
-        !tree
-            .nodes()
-            .values()
-            .any(|node| !node.hidden() && node.role() == Role::BUTTON),
-        "the child must not surface as a visible standalone node"
-    );
-}
-
-fn leaf_panel_survives(tree: &TreeSnapshot) {
+fn leaf_panel_survives(tree: &AccessibilityTreeUpdate) {
     assert_panel(tree, |panel| {
-        assert_eq!(panel.expanded(), Some(true));
+        assert_eq!(panel.is_expanded(), Some(true));
     });
 }
 
 #[test]
-fn hidden_panel_survives_on_semantic_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .mount(move || signal_panel(AccessibilityState::new().hidden(true)));
+fn expanded_panel_survives_on_offscreen_mount() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || stateful_panel(AccessibilityState::new().expanded(Some(true))),
+        300,
+        300,
+    );
     app.settle();
-    hidden_panel_survives(app.tree());
+    expanded_panel_survives(app.tree());
+}
+
+#[test]
+fn selected_panel_survives_on_offscreen_mount() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || stateful_panel(AccessibilityState::new().selected(true)),
+        300,
+        300,
+    );
+    app.settle();
+    selected_panel_survives(app.tree());
+}
+
+#[test]
+fn toggled_panel_survives_on_offscreen_mount() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || stateful_panel(AccessibilityState::new().checked(Some(true))),
+        300,
+        300,
+    );
+    app.settle();
+    toggled_panel_survives(app.tree());
 }
 
 #[test]
 fn hidden_panel_survives_on_offscreen_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || signal_panel(AccessibilityState::new().hidden(true)));
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || signal_panel(AccessibilityState::new().hidden(true)),
+        300,
+        300,
+    );
     app.settle();
     hidden_panel_survives(app.tree());
 }
 
 #[test]
-fn leaf_reduced_panel_survives_on_semantic_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .mount(move || panel_with_decorative_leaf(AccessibilityState::new().expanded(Some(true))));
-    app.settle();
-    leaf_panel_survives(app.tree());
-}
-
-#[test]
 fn leaf_reduced_panel_survives_on_offscreen_mount() {
-    let mut app = ui()
-        .viewport(300, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || {
-            panel_with_decorative_leaf(AccessibilityState::new().expanded(Some(true)))
-        });
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || panel_with_decorative_leaf(AccessibilityState::new().expanded(Some(true))),
+        300,
+        300,
+    );
     app.settle();
     leaf_panel_survives(app.tree());
 }

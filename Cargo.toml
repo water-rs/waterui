@@ -419,6 +419,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 default = [
     "gpu",
     "assets",
+    "dialog",
     "snackbar",
     "highlight",
     "locale-datetime",
@@ -446,6 +447,7 @@ highlight = ["waterui-internal/highlight", "waterui-dylib?/highlight"]
 # a release package that never attaches the hub leaves its server stack out.
 inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
 inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
+dialog = ["waterui-internal/dialog", "waterui-dylib?/dialog"]
 snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
 media = ["waterui-internal/media", "waterui-dylib?/media"]
@@ -460,9 +462,9 @@ remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # link it. The backend without one selects this.
 video-gpu = ["waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
-# The TypeScript props contract schema (`waterui::ts::schema`): the
-# `TsType`/`TsProps` derives whose encoded contract the `water` CLI reads back
-# out of a debug artifact.
+# TypeScript views: the embedded JavaScript engine, the signal bridge, the
+# `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
+# encoded contract the `water` CLI reads back out of a debug artifact.
 ts = ["waterui-internal/ts", "waterui-dylib?/ts"]
 navigation-restoration = [
     "waterui-internal/navigation-restoration",
@@ -508,6 +510,7 @@ all = [
     "video-gpu",
     "navigation-restoration",
     "snackbar",
+    "dialog",
     "remote",
 ]
 

@@ -12,6 +12,17 @@ categories = ["gui"]
 
 [dependencies]
 waterui-ts-engine.workspace = true
+waterui-ts-schema.workspace = true
+waterui-core.workspace = true
+# The theme the mounted module sees: `ColorScheme` and the environment's
+# colour tokens. `default-features = false` keeps the GPU stack out — this
+# crate reads colour values, it never draws.
+waterui-graphics = { workspace = true, default-features = false }
+waterui-locale.workspace = true
+nami.workspace = true
+suiteki.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 # Apple platforms use the system JavaScriptCore — zero added binary size.
 # watchOS is excluded: it ships no JavaScriptCore and the runtime is
@@ -22,6 +33,23 @@ waterui-ts-engine-jsc.workspace = true
 # Everywhere else — Android, Linux, Windows — the embedded QuickJS-NG engine.
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 waterui-ts-engine-quickjs.workspace = true
+
+[dev-dependencies]
+# The equivalence tests mount the JSX form and the Rust form of every catalog
+# entry and compare accessibility trees, so they need both the facade's host
+# table — `waterui::ts::Components`, which is where the component vocabulary
+# lives — and the facade's own views to compare it against. A dev-dependency
+# may close the cycle the library one cannot.
+waterui = { path = "../../..", features = ["ts", "media"] }
+waterui-testing = { path = "../../../testing" }
+# The style the offscreen test mounts run under — the pointer and geometry
+# tests need a rendered session, and a rendered session needs a `Style`.
+hydrolysis-m3.workspace = true
+# The catalog test reads `waterui_meta_ts_catalog` back out of the test
+# executable's own symbol table, which is the path the `water` CLI takes
+# through a user crate's rlib.
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
+rustc-demangle = "0.1"
 
 [lints]
 workspace = true

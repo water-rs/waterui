@@ -6,7 +6,7 @@ use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection,
 };
-use waterui_backend_core::widget::NavigationMotion;
+use waterui_backend_core::widget::{ModalInteraction, NavigationMotion};
 use waterui_core::id::Id;
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
@@ -678,8 +678,13 @@ impl SemanticCore {
         )
     )]
     #[must_use]
-    pub(crate) const fn has_back_navigation_target(&self) -> bool {
+    pub(crate) fn has_back_navigation_target(&self) -> bool {
         !self.hit_test.back_targets.is_empty()
+            || self
+                .hit_test
+                .modal_interaction
+                .as_ref()
+                .is_some_and(ModalInteraction::is_active)
     }
 
     /// Drives one system-back phase against the frontmost target.
@@ -693,6 +698,23 @@ impl SemanticCore {
         event: crate::BackNavigation,
         env: &Environment,
     ) -> bool {
+        // A modal scope owns system back while it is up: the gesture never
+        // reaches a navigation stack beneath it, and only a committed back
+        // runs the scope's escape action — the presented dialog's cancel path,
+        // shared with Escape (water-rs/waterui#1210). A started, progressing
+        // or cancelled gesture answers nothing, so a back swipe the user
+        // abandons leaves the dialog up.
+        if let Some(modal) = self
+            .hit_test
+            .modal_interaction
+            .clone()
+            .filter(|modal| modal.is_active() && modal.close_on_escape())
+        {
+            if matches!(event, crate::BackNavigation::Invoked) {
+                modal.handle_escape(env);
+            }
+            return true;
+        }
         match event {
             crate::BackNavigation::Started { .. } => self.begin_system_back(env),
             crate::BackNavigation::Progressed { progress } => self.progress_system_back(progress),

@@ -20,6 +20,9 @@ syn = { version = "3.0", features = ["full", "visit-mut"] }
 icu_locale_core = { version = "2.3", features = ["alloc"] }
 toml = "1.1"
 proc-macro-crate = "3"
+# A TypeScript property name is an ECMAScript IdentifierName, whose character
+# classes are the Unicode ID_Start/ID_Continue sets; syn already links this.
+unicode-ident = "1"
 
 [dev-dependencies]
 trybuild = "1.0"

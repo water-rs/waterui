@@ -41,6 +41,6 @@ pub fn main() {
 
     run(
         App::new_with_windows([window], Environment::new()),
-        hydrolysis_m3::Material3::defaults(),
+        hydrolysis::testing::TestStyle::new(),
     );
 }

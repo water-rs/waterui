@@ -39,7 +39,7 @@ use crate::{
     device::{Artifact, Device, FailToRun, RunOptions, Running},
     framework::ResolvedFramework,
     hydrolysis::backend::HydrolysisBackend,
-    platform::PackageOptions,
+    platform::{PackageOptions, TargetBackend, TargetPlatform},
     project::Project,
     templates::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
@@ -272,24 +272,46 @@ async fn require_painter_module(
     let host_root = materialize_android_host(project, resolved).await?;
     let subdirectory = resolved.hydrolysis_android_host_subdirectory()?;
     let host_project_dir = host_root.join(subdirectory);
-    let module_dir = host_project_dir.join(painter.host_module());
+    require_host_module(
+        &host_project_dir,
+        painter.host_module(),
+        "painter selection is explicit and never falls back",
+    )
+    .await?;
+    Ok(host_project_dir)
+}
+
+/// The pinned host checkout must ship the Gradle `module` the selection
+/// needs — a painter band (`gpu`), the system-WebView bridge (`webview`) or
+/// the preview host (`preview`) — or the scaffold is an error here, never at
+/// Gradle's dependency substitution.
+///
+/// # Errors
+///
+/// Returns an error when the checkout has no `module/` directory.
+async fn require_host_module(
+    host_project_dir: &Path,
+    module: &str,
+    reason: &str,
+) -> eyre::Result<()> {
+    let module_dir = host_project_dir.join(module);
     let metadata = fs::metadata(&module_dir).await.wrap_err_with(|| {
         format!(
-            "the hydrolysis android host at {} ships no `{painter}` painter: {} does not exist; \
-             painter selection is explicit and never falls back",
-            host_root.display(),
+            "the hydrolysis android host at {} ships no `{module}` module: {} does not exist; \
+             {reason}",
+            host_project_dir.display(),
             module_dir.display()
         )
     })?;
     if !metadata.is_dir() {
         bail!(
-            "the hydrolysis android host at {} ships no `{painter}` painter: {} is not a directory; \
-             painter selection is explicit and never falls back",
-            host_root.display(),
+            "the hydrolysis android host at {} ships no `{module}` module: {} is not a \
+             directory; {reason}",
+            host_project_dir.display(),
             module_dir.display()
         );
     }
-    Ok(host_project_dir)
+    Ok(())
 }
 
 /// The `hydrolysis_android*` template entry, with the host checkout and the
@@ -301,7 +323,22 @@ async fn template_entry(
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
     gradle_dir: &Path,
+    system_webview: bool,
 ) -> eyre::Result<HydrolysisAndroidTemplateEntry> {
+    // The system-WebView decision arrives already made: the context's
+    // `webview_backend_feature` is the one predicate the Gradle module flag
+    // and the Cargo `webview-system` feature both read. An engine this pair
+    // cannot host is an error upstream in `browser_runtime_plan`, before the
+    // scaffold ever runs.
+    if system_webview {
+        require_host_module(
+            host_project_dir,
+            "webview",
+            "the app's `webview` feature selection needs the system-WebView bridge",
+        )
+        .await?;
+    }
+
     let host_project_dir = pathdiff::diff_paths(host_project_dir, gradle_dir).ok_or_else(|| {
         eyre::eyre!(
             "cannot express the hydrolysis android host at {} relative to {}",
@@ -321,6 +358,7 @@ async fn template_entry(
         .resolved_framework()
         .await?
         .android_min_api_level()?;
+
     Ok(HydrolysisAndroidTemplateEntry {
         native_library_name: templates::hydrolysis::hydrolysis_library_target_name(
             &project.hydrolysis_backend_crate_name(),
@@ -350,14 +388,21 @@ async fn android_template_context(
         .bundle_identifier()
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
-    Ok(
-        HydrolysisBackend::template_context(project, project.resolved_framework().await?)
-            .await?
-            .with_hydrolysis_android(
-                template_entry(project, painter, host_project_dir, gradle_dir).await?,
+    let ctx =
+        HydrolysisBackend::template_context(project, project.resolved_framework().await?).await?;
+    let system_webview = ctx.webview_backend_feature()?.is_some();
+    Ok(ctx
+        .with_hydrolysis_android(
+            template_entry(
+                project,
+                painter,
+                host_project_dir,
+                gradle_dir,
+                system_webview,
             )
-            .with_android_permissions(manifest_permissions(project.manifest())),
-    )
+            .await?,
+        )
+        .with_android_permissions(manifest_permissions(project.manifest())))
 }
 
 /// Render the generated Gradle app into `<backend>/android` for `painter`.
@@ -378,6 +423,15 @@ pub async fn scaffold_android_project(
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
 ) -> eyre::Result<()> {
+    // Validate the engine plan for this pair before anything is scaffolded:
+    // an app linking an engine (Android, Hydrolysis) cannot host fails here.
+    project
+        .browser_runtime_plan(
+            TargetPlatform::Android,
+            TargetBackend::Hydrolysis,
+            &TargetPlatform::Android.triple(),
+        )
+        .await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
     project.scaffold_ffi_companion().await?;
     let android_dir = android_dir(&backend_path);
@@ -504,16 +558,25 @@ pub async fn build_with_features(
     build_prepared(project, abi, options, features, kotlin).await
 }
 
-/// The ABI-independent prologue of [`build`]: require the generated
-/// launcher crate and stage the font metadata its dependencies' build
-/// scripts read. A build over several ABIs runs it once, then
-/// [`build_prepared`] per ABI.
+/// The ABI-independent prologue of [`build`]: validate the app's browser
+/// engine plan for Android and Hydrolysis, require the generated launcher
+/// crate and stage the font metadata its dependencies' build scripts read. A
+/// build over several ABIs runs it once, then [`build_prepared`] per ABI.
 ///
 /// # Errors
 ///
-/// Returns an error when the launcher crate has not been generated or the
-/// font resolution fails.
+/// Returns an error when the app links an engine this pair cannot host, the
+/// launcher crate has not been generated or the font resolution fails.
 pub(crate) async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
+    // Validate the engine plan for this pair before any work runs: the same
+    // bound the desktop `hydrolysis::backend` enforces on its own path.
+    project
+        .browser_runtime_plan(
+            TargetPlatform::Android,
+            TargetBackend::Hydrolysis,
+            &TargetPlatform::Android.triple(),
+        )
+        .await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
     if !fs::metadata(backend_path.join("Cargo.toml"))
         .await
@@ -1089,21 +1152,12 @@ impl PreviewHostComposite {
         let resolved = project.resolved_framework().await?;
         let host_root = materialize_android_host(project, resolved).await?;
         let host_project_dir = host_root.join(resolved.hydrolysis_android_host_subdirectory()?);
-        let preview_module = host_project_dir.join("preview");
-        let metadata = fs::metadata(&preview_module).await.wrap_err_with(|| {
-            format!(
-                "the hydrolysis android host at {} ships no `preview` module: {} does not exist",
-                host_root.display(),
-                preview_module.display()
-            )
-        })?;
-        if !metadata.is_dir() {
-            bail!(
-                "the hydrolysis android host at {} ships no `preview` module: {} is not a directory",
-                host_root.display(),
-                preview_module.display()
-            );
-        }
+        require_host_module(
+            &host_project_dir,
+            "preview",
+            "the preview host composes the generated app against it",
+        )
+        .await?;
         let relative_host = pathdiff::diff_paths(&host_project_dir, out).ok_or_else(|| {
             eyre::eyre!(
                 "cannot express the hydrolysis android host at {} relative to {}",
@@ -1216,6 +1270,16 @@ mod tests {
     /// resolution so `resolved_framework` answers offline — the release
     /// provenance pointing at a fixture mirror `fixture_project` stages.
     async fn fixture_project(host: &Host, extra_manifest: &str) -> (tempfile::TempDir, Project) {
+        fixture_project_with_deps(host, extra_manifest, "").await
+    }
+
+    /// [`fixture_project`] with extra `[dependencies]` entries on the
+    /// fixture's `Cargo.toml`.
+    async fn fixture_project_with_deps(
+        host: &Host,
+        extra_manifest: &str,
+        cargo_dependencies: &str,
+    ) -> (tempfile::TempDir, Project) {
         let temporary = tempfile::tempdir().expect("tempdir");
         let root = temporary.path().join("fixture");
         std::fs::create_dir_all(root.join("src")).expect("crate src");
@@ -1231,7 +1295,9 @@ mod tests {
         .expect("Water.toml");
         std::fs::write(
             root.join("Cargo.toml"),
-            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            format!(
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{cargo_dependencies}"
+            ),
         )
         .expect("Cargo.toml");
         // `cargo metadata --locked` reads the lockfile; a dependency-free
@@ -1253,7 +1319,7 @@ mod tests {
         crate::framework::test_fixtures::write_vendor_stub(
             &vendor_dir.join("waterui"),
             "waterui",
-            &["dynamic_linking", "media"],
+            &["dynamic_linking", "media", "webview"],
         );
         crate::framework::test_fixtures::write_vendor_stub(
             &vendor_dir.join("waterui-ffi"),
@@ -1624,6 +1690,217 @@ mod tests {
         });
     }
 
+    /// The application's own graph selects the engine: a `webview` feature
+    /// edge on the vendored `waterui` stub is the signal `uses_standard_webview`
+    /// resolves through `cargo tree`.
+    fn stage_webview_feature(temporary: &tempfile::TempDir, project: &Project) {
+        let manifest_path = project.root().join("Cargo.toml");
+        let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
+            .expect("project Cargo.toml exists")
+            .parse()
+            .expect("project Cargo.toml parses");
+        document["dependencies"]["waterui"]["path"] = toml_edit::value(
+            temporary
+                .path()
+                .join("vendor/waterui")
+                .to_string_lossy()
+                .as_ref(),
+        );
+        document["dependencies"]["waterui"]["features"] =
+            toml_edit::value(toml_edit::Array::from_iter(["webview"]));
+        std::fs::write(&manifest_path, document.to_string()).expect("write Cargo.toml");
+    }
+
+    /// The Cargo feature and the Gradle module flag are one decision,
+    /// `webview_backend_feature`: a project using the standard `WebView`
+    /// compiles `webview-system` into the launcher's `hydrolysis` and marks
+    /// the Gradle context so the scaffold substitutes the `:webview` module.
+    /// Both assertions run through `HydrolysisBackend::template_context` —
+    /// the context the launcher `Cargo.toml` actually renders from.
+    #[test]
+    fn the_launcher_manifest_enables_webview_system_for_a_webview_app() {
+        smol::block_on(async {
+            let (_machine, host) =
+                machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
+            let (temporary, project) = fixture_project(&host, "").await;
+            stage_webview_feature(&temporary, &project);
+
+            let resolved = project
+                .resolved_framework()
+                .await
+                .expect("the fixture's framework resolves");
+            let ctx = HydrolysisBackend::template_context(&project, resolved)
+                .await
+                .expect("template context builds");
+            assert_eq!(
+                ctx.webview_backend_feature()
+                    .expect("the launcher context carries Android's answers"),
+                Some("webview-system")
+            );
+            let outputs =
+                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
+                    .expect("hydrolysis outputs render");
+            let cargo_toml = outputs
+                .iter()
+                .find(|(path, _)| path == Path::new("Cargo.toml"))
+                .map(|(_, content)| String::from_utf8_lossy(content).into_owned())
+                .expect("a Cargo.toml output");
+            // Only the Android target's hydrolysis edge counts: the desktop
+            // section may carry the same feature name.
+            let manifest = cargo_toml
+                .parse::<toml::Table>()
+                .expect("launcher Cargo.toml should parse");
+            let features = manifest["target"]["cfg(target_os = \"android\")"]["dependencies"]
+                ["hydrolysis"]["features"]
+                .as_array()
+                .expect("hydrolysis dependency features should be an array")
+                .iter()
+                .map(|feature| feature.as_str().expect("feature should be a string"))
+                .collect::<Vec<_>>();
+            assert!(
+                features.contains(&"webview-system"),
+                "android hydrolysis features: {features:?}"
+            );
+
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
+            let ctx = android_template_context(
+                &project,
+                HydrolysisAndroidPainter::Gpu,
+                &host_project_dir,
+                &android_dir(&project.backend_path::<HydrolysisBackend>()),
+            )
+            .await
+            .expect("android template context builds");
+            assert!(
+                ctx.hydrolysis_android_has_system_webview()
+                    .expect("android context carries Android browser answers")
+            );
+        });
+    }
+
+    /// An app that enables the facade `webview` feature composites the pinned
+    /// host's `webview/` module the same way it composites the painter:
+    /// `dependencySubstitution` for the coordinate and the module on the app
+    /// classpath. An app without it renders neither line.
+    #[test]
+    fn the_scaffold_composites_the_webview_module_for_a_webview_app() {
+        smol::block_on(async {
+            let (_machine, host) =
+                machine_with_staged_host(Path::new("staged"), &["gpu", "webview"]);
+            let (temporary, project) = fixture_project(&host, "").await;
+            stage_webview_feature(&temporary, &project);
+
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
+
+            let files = rendered_files(
+                rendered_android_outputs(
+                    &project,
+                    HydrolysisAndroidPainter::Gpu,
+                    &host_project_dir,
+                )
+                .await
+                .expect("scaffold renders"),
+            );
+
+            let settings = files["settings.gradle.kts"].as_str();
+            assert!(
+                settings.contains(
+                    "substitute(module(\"dev.waterui.hydrolysis:webview\")).using(project(\":webview\"))"
+                ),
+                "webview module substitution: {settings}"
+            );
+            let gradle = files["app/build.gradle.kts"].as_str();
+            assert!(
+                gradle.contains("implementation(\"dev.waterui.hydrolysis:webview\")"),
+                "webview module on the classpath: {gradle}"
+            );
+
+            // The embedded library's launcher compiles the same
+            // `webview-system` bridge, so its AAR publishes and depends on
+            // the module too.
+            let embedded = rendered_files(
+                embedded::rendered_embedded_outputs(
+                    &project,
+                    HydrolysisAndroidPainter::Gpu,
+                    &host_project_dir,
+                    "0.0.0-webview",
+                    "0.1.0",
+                )
+                .await
+                .expect("embedded scaffold renders"),
+            );
+            let settings = embedded["settings.gradle.kts"].as_str();
+            assert!(
+                settings.contains(
+                    "substitute(module(\"dev.waterui.hydrolysis:webview\")).using(project(\":webview\"))"
+                ),
+                "embedded webview module substitution: {settings}"
+            );
+            let module = embedded["waterui/build.gradle.kts"].as_str();
+            assert!(
+                module.contains("api(\"dev.waterui.hydrolysis:webview:0.0.0-webview\")"),
+                "embedded webview module dependency: {module}"
+            );
+
+            // A staged host without the module is a scaffold-time error, not
+            // a Gradle failure downstream. A fresh fixture keeps the pinned
+            // checkout from the first half out of the way — it is keyed by
+            // project and fake-git only overlays into it.
+            let (_machine2, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let (temporary2, project2) = fixture_project(&host, "").await;
+            stage_webview_feature(&temporary2, &project2);
+            let missing_dir = require_painter_module(&project2, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
+            let error =
+                rendered_android_outputs(&project2, HydrolysisAndroidPainter::Gpu, &missing_dir)
+                    .await
+                    .expect_err("a host without webview/ is an error");
+            assert!(
+                error.to_string().contains("webview"),
+                "the error names the missing module: {error}"
+            );
+        });
+    }
+
+    /// The same project without the `webview` feature renders neither the
+    /// substitution nor the dependency.
+    #[test]
+    fn a_non_webview_app_composites_no_webview_module() {
+        smol::block_on(async {
+            let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["gpu"]);
+            let (_temporary, project) = fixture_project(&host, "").await;
+            let host_project_dir = require_painter_module(&project, HydrolysisAndroidPainter::Gpu)
+                .await
+                .expect("host project dir");
+
+            let files = rendered_files(
+                rendered_android_outputs(
+                    &project,
+                    HydrolysisAndroidPainter::Gpu,
+                    &host_project_dir,
+                )
+                .await
+                .expect("scaffold renders"),
+            );
+
+            let settings = files["settings.gradle.kts"].as_str();
+            assert!(
+                !settings.contains("hydrolysis:webview"),
+                "no webview substitution: {settings}"
+            );
+            let gradle = files["app/build.gradle.kts"].as_str();
+            assert!(
+                !gradle.contains("hydrolysis:webview"),
+                "no webview dependency: {gradle}"
+            );
+        });
+    }
+
     /// Release builds carry only the permissions the project declares: one
     /// declaring none gets no INTERNET in its main manifest, while its debug
     /// source set still declares it for the inspector endpoint.
@@ -1680,6 +1957,7 @@ mod tests {
                 HydrolysisAndroidPainter::Gpu,
                 &host_project_dir,
                 &android_dir,
+                false,
             )
             .await
             .expect("template entry");

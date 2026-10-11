@@ -47,7 +47,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
      * always above the GPU band. Populated from the session's placement frames
      * by [platformViewRegistry].
      */
-    val platformViewRegistry: PlatformViewRegistry = PlatformViewRegistry(context, session)
+    val platformViewRegistry: PlatformViewRegistry =
+        PlatformViewRegistry(context, session, this)
 
     private val accessibilityProvider: HydrolysisAccessibilityProvider =
         HydrolysisAccessibilityProvider(this, session)
@@ -356,6 +357,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     }
 
     // ------------------------------------------------------------------
+    // Frame scheduling — the session's scheduler, which stops with it.
+
+    internal open fun requestFrame() {
+        session?.frameScheduler?.requestFrame("redraw-request")
+    }
+
+    // ------------------------------------------------------------------
     // Close — native asks through the session bridge.
 
     // ------------------------------------------------------------------
@@ -594,7 +602,10 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         val imm =
             context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         if (visible) {
-            if (!hasFocus()) requestFocus()
+            // `hasFocus` is also true while a platform-view child (the
+            // WebView) holds focus — `isFocused` asks for this view itself,
+            // which is what pulls the IME back to the Hydrolysis field.
+            if (!isFocused) requestFocus()
             imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
         } else {
             imm.hideSoftInputFromWindow(windowToken, 0)
