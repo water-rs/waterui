@@ -849,6 +849,8 @@ pub struct Lowered {
     pub paths: u32,
     /// Deferred rasters, in lowering order.
     pub pending: Vec<PendingRaster>,
+    /// Path cell texels the `PendingRaster::Path` byte ranges index.
+    pub path_arena: Vec<u8>,
     /// `uv.xy` patches: `(instance, pending index, cell index)`.
     pub cell_patches: Vec<(u32, u32, u32)>,
     /// The producing emission's view of the same triples, indexed by
@@ -1166,6 +1168,9 @@ pub struct Lowering<'a> {
     member_outer_clip: Option<DeviceClip>,
     /// Atlas writes and cache updates to commit, in lowering order.
     pub(crate) pending: Vec<PendingRaster>,
+    /// The texel arena `pending`'s path cells index — per batch, so per
+    /// worker when lowering runs in parallel.
+    pub(crate) path_arena: Vec<u8>,
     /// Path identities admitted during this lowering, before atlas commit.
     /// A second use must replay the admitted layout as well as its texels.
     pending_paths: FxHashMap<u64, u32>,
@@ -1261,6 +1266,7 @@ impl<'a> Lowering<'a> {
             emission_patches: Vec::new(),
             mask_patches: Vec::new(),
             pending: Vec::new(),
+            path_arena: Vec::new(),
             pending_paths: FxHashMap::default(),
             commands_lowered: 0,
             layers_composed: 0,
@@ -4577,7 +4583,7 @@ impl<'a> Lowering<'a> {
                 break 'stored (PathEmit::default(), None);
             };
             self.paths += 1;
-            let (emit, cells) = path::emit(&coverage)?;
+            let (emit, cells) = path::emit(&coverage, &mut self.path_arena)?;
             // Emission rects are relative to the placement offset; the
             // stored record keeps that frame.
             let stored = emit.translated(-pl.offset.x, -pl.offset.y);
