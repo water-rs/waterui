@@ -5944,7 +5944,7 @@ mod local_patch_tests {
         };
         assert_eq!(
             vello.git.as_deref(),
-            Some("https://github.com/lexoliu/vello")
+            Some("https://github.com/testerliu/vello")
         );
     }
 
