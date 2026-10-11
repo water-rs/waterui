@@ -33,9 +33,6 @@ futures-lite = "2.6"
 # Dynamic library loading
 libloading = "0.9"
 
-# PNG encoding
-image = { version = "0.25", default-features = false, features = ["png"] }
-
 [features]
 # TypeScript views in a preview: a `#[preview]` that returns a `tsx!` view
 # renders when `water preview` names the bundle it built in
@@ -44,5 +41,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # previewed project uses TypeScript views, which keeps the JavaScript engine
 # out of every other project's support app.
 ts = ["waterui-internal/ts"]
+
 [lints]
 workspace = true

@@ -17,7 +17,7 @@ use waterui::app::App;
 use waterui::tsx;
 use waterui_core::{AnyView, Environment};
 use waterui_preview::with_configured_runtime;
-use waterui_testing::{UiBuilder, install_default_theme, ui};
+use waterui_testing::{Style, UiBuilder, ui};
 use waterui_ts::schema::TsProps;
 
 #[path = "support/bundle.rs"]
@@ -95,9 +95,9 @@ fn ts_a_preview_render_installs_the_runtime_for_the_view() {
     bundle::configure(PromoProps::CONTRACT_HASH);
     let dismissed = Rc::new(Cell::new(false));
     // The support app's environment carries its backend's theme, which the
-    // module reads its colours from; the session's default theme stands in.
+    // module reads its colours from; the session's theme stands in.
     let mut environment = Environment::new();
-    install_default_theme(&mut environment);
+    hydrolysis_m3::Material3::defaults().install_tokens(&mut environment);
     let view = with_configured_runtime(
         &environment,
         AnyView::new(promo(Binding::container(3), &dismissed)),
@@ -114,7 +114,10 @@ fn ts_a_preview_render_installs_the_runtime_for_the_view() {
         },
         environment,
     );
-    let mut app = ui().viewport(320, 240).mount_app(app);
+    let mut app = ui()
+        .theme(hydrolysis_m3::Material3::defaults())
+        .viewport(320, 240)
+        .mount_app(app);
 
     app.query().label(HEADLINE).assert_exists();
     app.query().label("3 unread").assert_exists();

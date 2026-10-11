@@ -762,7 +762,12 @@ fn ts_a_text_field_writes_through_to_the_javascript_signal() {
         r#"waterui.jsx("TextField", { value: globalThis.name, children: "Name" })"#,
     ));
     let mut app = module.app();
-    app.query().label("Name").set_text("Grace");
+    // The field's label also names the label node beside it, so the field
+    // itself is the one carrying the text input role.
+    app.query()
+        .role(Role::TEXT_INPUT)
+        .label("Name")
+        .set_text("Grace");
     app.settle();
     assert_eq!(
         module.eval("globalThis.name()"),

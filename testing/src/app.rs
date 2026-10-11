@@ -210,7 +210,7 @@ impl UiBuilder<NoStyle> {
         F: Fn() -> V + 'static,
     {
         self.mount_semantic(
-            AnyViewBuilder::new(move || AnyView::new(view_fn())),
+            AnyViewBuilder::new(move || Self::with_session_runtime(view_fn())),
             FontFamilyResolution::Lenient,
         )
     }
@@ -292,12 +292,22 @@ impl<S> UiBuilder<S> {
         // that staged them itself — a CLI-launched runtime binary, which
         // installs an empty `DeclaredFonts` — needs no cargo resolution here.
         crate::declared_fonts::install_declared_fonts(&mut env);
-        // A view that reaches a `tsx!` mount finds its runtime here: the one
-        // loaded from the bundle `water test` named, installed over the
-        // themed environment so the modules it builds see the theme.
-        #[cfg(feature = "ts")]
-        let env = crate::ts::install_configured_runtime(env);
         env
+    }
+
+    /// `view` with the session's TypeScript runtime installed for its
+    /// subtree, so a view that reaches a `tsx!` mount finds the runtime
+    /// loaded from the bundle `water test` named.
+    ///
+    /// The install is scoped to the mounted view, not to
+    /// [`Self::mount_env`]: a module reads the host's theme out of the
+    /// environment its runtime was created in, and the theme is installed by
+    /// the Hydrolysis runtime and the builder's style, both of which sit
+    /// above the builder environment.
+    fn with_session_runtime(view: impl View + 'static) -> AnyView {
+        #[cfg(feature = "ts")]
+        let view = crate::ts::with_configured_runtime(view);
+        AnyView::new(view)
     }
 
     /// Mounts `content` on the semantic runtime — the construction shared by
@@ -388,7 +398,12 @@ impl<S: Style> UiBuilder<Styled<S>> {
         let style = Rc::new(style);
         builder.mount_semantic(
             AnyViewBuilder::new(move || {
-                AnyView::new(view_fn().install(StyleTokens(Rc::clone(&style))))
+                // The style's tokens go on outside the runtime install, so a
+                // module reads the colours this session's style package
+                // resolves rather than only the framework defaults.
+                AnyView::new(
+                    Self::with_session_runtime(view_fn()).install(StyleTokens(Rc::clone(&style))),
+                )
             }),
             FontFamilyResolution::Strict,
         )
@@ -408,7 +423,10 @@ impl<S: Style> UiBuilder<Styled<S>> {
         F: Fn() -> V + 'static,
     {
         let env = self.mount_env();
-        self.mount_rendered(env, AnyViewBuilder::new(move || AnyView::new(view_fn())))
+        self.mount_rendered(
+            env,
+            AnyViewBuilder::new(move || Self::with_session_runtime(view_fn())),
+        )
     }
 
     /// Mounts a whole [`App`] on the rendered runtime and returns the
