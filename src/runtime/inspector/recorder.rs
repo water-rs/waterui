@@ -168,7 +168,7 @@ mod tests {
 
         assert!(!recorder.is_active());
         recorder.record_snapshot(NodeId(0), None, vec![node(1, "a")]);
-        assert!(receiver.is_empty());
+        assert_eq!(receiver.len(), 0);
     }
 
     /// The first update a subscriber sees must be the whole tree; after that
@@ -187,7 +187,8 @@ mod tests {
 
         // An identical tree is the common case and must cost nothing.
         recorder.record_snapshot(NodeId(0), None, vec![node(1, "a"), node(2, "b")]);
-        assert!(drain(&receiver).is_empty());
+        let updates = drain(&receiver);
+        assert!(updates.is_empty(), "expected no updates, got {updates:?}");
 
         // One relabelled node, one removed.
         recorder.record_snapshot(NodeId(0), None, vec![node(1, "renamed")]);

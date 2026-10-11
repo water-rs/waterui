@@ -1,3 +1,3 @@
 fn main() {
-    let _ = waterui_assets_macros::include_web!("web", bogus = true);
+    let _ = waterui_assets_macros::include_web!(resources, "web", bogus = true);
 }

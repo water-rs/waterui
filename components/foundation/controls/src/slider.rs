@@ -7,8 +7,12 @@
 
 use core::ops::RangeInclusive;
 
+use alloc::rc::Rc;
+
 use crate::label::{IntoLabel, Label, impl_label_style_methods};
+use crate::size::ControlSize;
 use nami::Binding;
+use waterui_core::Str;
 use waterui_core::{AnyView, Environment, configurable, layout::StretchAxis};
 
 /// Configuration for the [`Slider`] widget.
@@ -25,6 +29,34 @@ pub struct SliderConfig {
     pub range: RangeInclusive<f64>,
     /// The binding to the current value of the slider.
     pub value: Binding<f64>,
+    /// How large the slider is drawn.
+    pub size: ControlSize,
+    /// How the value indicator shown above the thumb while it is dragged
+    /// formats the value; `None` shows no indicator.
+    pub value_indicator: Option<ValueFormatter>,
+}
+
+/// Formats a slider's value for its value indicator.
+#[derive(Clone)]
+pub struct ValueFormatter(Rc<dyn Fn(f64) -> Str>);
+
+impl ValueFormatter {
+    /// Creates a formatter from a function of the value.
+    pub fn new(format: impl Fn(f64) -> Str + 'static) -> Self {
+        Self(Rc::new(format))
+    }
+
+    /// Formats `value`.
+    #[must_use]
+    pub fn format(&self, value: f64) -> Str {
+        (self.0)(value)
+    }
+}
+
+impl core::fmt::Debug for ValueFormatter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ValueFormatter")
+    }
 }
 
 configurable!(
@@ -73,7 +105,8 @@ configurable!(
     Slider,
     SliderConfig,
     StretchAxis::Horizontal,
-    resolve |config, env| config.resolve(env)
+    resolve | config,
+    env | config.resolve(env)
 );
 
 impl SliderConfig {
@@ -108,6 +141,8 @@ impl Slider {
             max_value_label: AnyView::default(),
             range: 0.0..=1.0,
             value: value.clone(),
+            size: ControlSize::ExtraSmall,
+            value_indicator: None,
         })
     }
 
@@ -115,6 +150,22 @@ impl Slider {
     #[must_use]
     pub const fn range(mut self, range: RangeInclusive<f64>) -> Self {
         self.0.range = range;
+        self
+    }
+
+    /// Sets how large the slider is drawn. Sliders default to
+    /// [`ControlSize::ExtraSmall`], the thinnest track.
+    #[must_use]
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.0.size = size;
+        self
+    }
+
+    /// Shows the value above the thumb while it is dragged, formatted by
+    /// `format`.
+    #[must_use]
+    pub fn value_indicator(mut self, format: impl Fn(f64) -> Str + 'static) -> Self {
+        self.0.value_indicator = Some(ValueFormatter::new(format));
         self
     }
 

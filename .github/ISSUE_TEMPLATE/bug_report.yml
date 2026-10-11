@@ -32,11 +32,11 @@ body:
       description: Where the defect shows up. Select every surface that applies.
       multiple: true
       options:
-        - Android backend
         - Apple backend (iOS / macOS)
-        - GTK backend (Linux)
-        - Hydrolysis backend (desktop webview)
-        - Web / WASM frontend
+        - Android backend
+        - Hydrolysis backend (self-drawn)
+        - Experimental backends (GTK, WinUI, TUI)
+        - Web / WASM
         - water CLI
         - Core framework (runtime, layout, reactivity)
         - Components

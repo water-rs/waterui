@@ -26,9 +26,11 @@
 
   // Ids are unique to this document, not just within it.
   //
-  // A handler may still be awaiting I/O when the page navigates. The reply is
-  // then evaluated in the *new* document, whose own `pending` map started over
-  // from the same low numbers — so a stale reply could settle an unrelated call
+  // A handler may still be awaiting I/O when the page navigates. A backend
+  // that answers by evaluating the reply in whatever document is current,
+  // rather than on a channel the engine binds to the sender, then evaluates it
+  // in the *new* document, whose own `pending` map started over from the same
+  // low numbers — so a stale reply could settle an unrelated call
   // with another call's value. Starting each document at a random point makes
   // an id from a previous document essentially certain not to be pending here,
   // and `__wateruiResolve` already ignores ids it does not know.

@@ -1,0 +1,15 @@
+# Event order source: macOS Character Viewer / emoji picker inserting into
+# an NSTextInputClient client with no marked text (winit-0.30
+# src/platform_impl/macos/view.rs `insert_text`): with nothing marked, the
+# insert produces `Ime::Commit` only — no preedit, no key events.
+# Order derived from the documented NSTextInputClient flow above; not an
+# observed platform trace.
+final_text = "🙂"
+selection = [4, 4]
+committing_key_swallowed = true
+
+# The palette commits directly: no composition ever existed.
+[[step]]
+events = [
+    { commit = "🙂" },
+]

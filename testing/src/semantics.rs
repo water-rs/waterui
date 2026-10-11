@@ -6,6 +6,9 @@ use accesskit::{
     Rect as AccessibilityRect, Role as AccessibilityRole, Toggled as AccessibilityToggled,
     TreeUpdate as AccessibilityTreeUpdate,
 };
+use hydrolysis::AccessibilityContentTypes;
+use waterui::component::text_field::ContentType;
+use waterui::component::toggle::ToggleStyle;
 
 use crate::selector::{ScopeRelation, Selector};
 
@@ -117,6 +120,26 @@ impl Role {
     #[must_use]
     pub const fn new(role: AccessibilityRole) -> Self {
         Self(role)
+    }
+
+    /// The role a toggle of `style` reports: [`Self::SWITCH`] for a switch,
+    /// [`Self::CHECKBOX`] for a checkbox.
+    ///
+    /// [`ToggleStyle::Automatic`] is the target's default style — a checkbox
+    /// on macOS, a switch elsewhere — so a query for a default-style toggle
+    /// that must hold on every host asks for
+    /// `Role::toggle(ToggleStyle::Automatic)`.
+    ///
+    /// # Panics
+    ///
+    /// When `style` is a variant this testing crate does not know.
+    #[must_use]
+    pub const fn toggle(style: ToggleStyle) -> Self {
+        match style.resolved() {
+            ToggleStyle::Switch => Self::SWITCH,
+            ToggleStyle::Checkbox => Self::CHECKBOX,
+            _ => panic!("waterui-testing has no role for this ToggleStyle"),
+        }
     }
 
     /// The underlying AccessKit role.
@@ -254,6 +277,9 @@ pub struct NodeSnapshot {
     pub(crate) hidden: bool,
     pub(crate) children: Vec<NodeId>,
     pub(crate) actions: Vec<AccessibilityAction>,
+    pub(crate) scroll_x: Option<f64>,
+    pub(crate) scroll_y: Option<f64>,
+    pub(crate) content_type: Option<ContentType>,
 }
 
 impl NodeSnapshot {
@@ -354,7 +380,36 @@ impl NodeSnapshot {
         &self.actions
     }
 
-    fn from_accesskit(id: AccessibilityNodeId, node: &AccessibilityNode) -> Self {
+    /// Returns the horizontal scroll offset the node reported, in the
+    /// coordinate space the backend exposes — a semantic list reports row
+    /// units — or `None` when the node reports no scroll position.
+    #[must_use]
+    pub const fn scroll_x(&self) -> Option<f64> {
+        self.scroll_x
+    }
+
+    /// Returns the vertical scroll offset the node reported, in the same
+    /// units as [`Self::scroll_x`].
+    #[must_use]
+    pub const fn scroll_y(&self) -> Option<f64> {
+        self.scroll_y
+    }
+
+    /// The content type the text field declared for autofill, if any.
+    ///
+    /// The value travels beside the accessibility tree — `accesskit` has no
+    /// node property for it — so it is read from the publish's typed map,
+    /// not from the node.
+    #[must_use]
+    pub const fn content_type(&self) -> Option<ContentType> {
+        self.content_type
+    }
+
+    fn from_accesskit(
+        id: AccessibilityNodeId,
+        node: &AccessibilityNode,
+        content_type: Option<ContentType>,
+    ) -> Self {
         let checked = match node.toggled() {
             Some(AccessibilityToggled::True) => Some(CheckedState::True),
             Some(AccessibilityToggled::False) => Some(CheckedState::False),
@@ -386,6 +441,9 @@ impl NodeSnapshot {
                 .into_iter()
                 .filter(|action| node.supports_action(*action))
                 .collect(),
+            scroll_x: node.scroll_x(),
+            scroll_y: node.scroll_y(),
+            content_type,
         }
     }
 }
@@ -410,7 +468,11 @@ impl TreeSnapshot {
         }
     }
 
-    pub(crate) fn from_update(revision: u64, update: AccessibilityTreeUpdate) -> Self {
+    pub(crate) fn from_update(
+        revision: u64,
+        update: AccessibilityTreeUpdate,
+        content_types: &AccessibilityContentTypes,
+    ) -> Self {
         let root = update.tree.as_ref().map_or_else(
             || NodeId::from(AccessibilityNodeId(0)),
             |tree| NodeId::from(tree.root),
@@ -419,7 +481,10 @@ impl TreeSnapshot {
         let mut nodes = BTreeMap::new();
         for (id, node) in update.nodes {
             let stable_id = NodeId::from(id);
-            nodes.insert(stable_id, NodeSnapshot::from_accesskit(id, &node));
+            nodes.insert(
+                stable_id,
+                NodeSnapshot::from_accesskit(id, &node, content_types.get(&id).copied()),
+            );
         }
 
         Self {

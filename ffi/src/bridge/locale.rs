@@ -127,7 +127,7 @@ mod tests {
                 .get::<Binding<Locale>>()
                 .expect("locale binding should be installed")
                 .clone();
-            assert_eq!(binding.get().canonical_tag(), "en-GB");
+            assert_eq!(binding.snapshot().canonical_tag(), "en-GB");
 
             let observed = Rc::new(RefCell::new(None));
             let callback_observed = Rc::clone(&observed);
@@ -139,7 +139,7 @@ mod tests {
 
             let updated = CString::new("ja-JP").expect("valid locale C string");
             waterui_env_install_locale_tag(env_ptr, updated.as_ptr());
-            assert_eq!(binding.get().canonical_tag(), "ja-JP");
+            assert_eq!(binding.snapshot().canonical_tag(), "ja-JP");
             assert_eq!(observed.borrow().as_deref(), Some("ja-JP"));
 
             drop(Box::from_raw(env_ptr));

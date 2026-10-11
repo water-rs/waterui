@@ -1,0 +1,42 @@
+# Event order source: Windows IMM (winit-0.30
+# src/platform_impl/windows/event_loop.rs: WM_IME_COMPOSITION with
+# GCS_RESULTSTR | GCS_COMPSTR in one message emits `Ime::Preedit("")`,
+# `Ime::Commit`, then `Ime::Preedit` for the remaining segment). Japanese
+# kana-to-kanji conversion commits one clause at a time while the rest keeps
+# composing, and GCS_CURSORPOS reports the conversion caret INSIDE the
+# marked string. Keys are consumed by the IME entirely.
+# Order derived from the documented IMM message flow above; not an
+# observed platform trace.
+final_text = "今日は"
+selection = [9, 9]
+committing_key_swallowed = true
+
+# Typed "きょうは": the whole phrase is one composition.
+[[step]]
+events = [
+    { preedit = { text = "きょうは", caret = 9 } },
+]
+
+# Space converts the first clause: IMM delivers the committed segment and
+# the still-composing remainder together — the caret is now inside the
+# preedit string rather than at its end.
+[[step]]
+events = [
+    { preedit = { text = "" } },
+    { commit = "今日" },
+    { preedit = { text = "は", caret = 0 } },
+]
+
+# The conversion caret moves to the end of the remaining segment — same
+# preedit text, different caret offset.
+[[step]]
+events = [
+    { preedit = { text = "は", caret = 3 } },
+]
+
+# Enter commits the rest.
+[[step]]
+events = [
+    { preedit = { text = "" } },
+    { commit = "は" },
+]

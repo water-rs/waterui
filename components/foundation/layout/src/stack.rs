@@ -17,7 +17,7 @@ macro_rules! impl_stack_for_each {
         impl<C, F, V> $Stack<ForEach<C, F, V>>
         where
             C: Collection,
-            C::Item: Identifiable,
+            C::Item: Identifiable + Clone,
             F: 'static + Fn(C::Item) -> V,
             V: View,
         {
@@ -35,7 +35,7 @@ macro_rules! impl_stack_for_each {
 
 pub(crate) use impl_stack_for_each;
 
-mod distribute;
+pub(crate) mod distribute;
 mod vstack;
 pub use vstack::*;
 mod hstack;
@@ -96,6 +96,34 @@ pub(crate) fn stack_stretch_axis(main: Axis, children: &[StretchAxis]) -> Stretc
         (fills_cross, fills_main)
     };
     match (horizontal, vertical) {
+        (true, true) => StretchAxis::Both,
+        (true, false) => StretchAxis::Horizontal,
+        (false, true) => StretchAxis::Vertical,
+        (false, false) => StretchAxis::None,
+    }
+}
+
+/// The union of child stretch claims for a container that has no main axis of
+/// its own (`ZStack`, `Grid`). Axis-relative claims resolve the way the
+/// container resolves them for its children: `MainAxis` wants whatever the
+/// main axis offers, and with no main axis there is nothing to claim — a
+/// spacer claims nothing in a `ZStack` — while `CrossAxis` resolves to its
+/// default orientation, filling horizontally.
+pub(crate) fn axisless_stretch_union(children: &[StretchAxis]) -> StretchAxis {
+    let mut fills_h = false;
+    let mut fills_v = false;
+    for child in children {
+        match child {
+            StretchAxis::None | StretchAxis::MainAxis => {}
+            StretchAxis::Both => {
+                fills_h = true;
+                fills_v = true;
+            }
+            StretchAxis::Horizontal | StretchAxis::CrossAxis => fills_h = true,
+            StretchAxis::Vertical => fills_v = true,
+        }
+    }
+    match (fills_h, fills_v) {
         (true, true) => StretchAxis::Both,
         (true, false) => StretchAxis::Horizontal,
         (false, true) => StretchAxis::Vertical,

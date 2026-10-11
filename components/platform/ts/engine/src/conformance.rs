@@ -233,7 +233,7 @@ pub fn js_exceptions_arrive_with_stack<R: JsRuntime>() {
 
     // A syntax error is an error too, not a panic and not `undefined`.
     let error = rt.eval("(", "conformance.js").expect_err("fails to parse");
-    assert!(!error.message.is_empty());
+    assert_ne!(error.message, "");
 }
 
 /// A `Err` from a host function throws in JavaScript, catchably.

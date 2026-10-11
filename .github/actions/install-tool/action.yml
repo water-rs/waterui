@@ -1,0 +1,42 @@
+name: Install a Cargo tool
+description: >-
+  Installs one Cargo tool binary through taiki-e/install-action behind a
+  dedicated actions/cache entry for the installed binary. install-action
+  retries its downloads, but its retry budget is about a minute — shorter
+  than a real CDN outage (#1120). On a cache hit the install step never
+  runs, so a healthy job does not touch the tool's release CDN at all; on
+  a miss the tool spec is pinned, so the key and the fetched artifact are
+  the same version.
+
+inputs:
+  tool:
+    description: >-
+      install-action `tool` input: the crate name and pinned version,
+      e.g. `cargo-nextest@0.9.145`. The value is part of the cache key, so
+      a version bump is one edit here and at every caller.
+    required: true
+  path:
+    description: >-
+      Glob(s) of the installed binaries to cache, one per line, e.g.
+      `~/.cargo/bin/cargo-nextest*`. The trailing `*` covers the `.exe`
+      suffix on Windows runners. Tools that ship several binaries (such as
+      cargo-edit) list each of them.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The primary key carries the pinned tool spec, so a hit restores exactly
+    # the version the install step would have fetched. No restore-keys: a
+    # prefix hit would hand back a different version while still skipping
+    # the install. Concurrent jobs racing to save the same key lose with a
+    # warning, which is harmless — the next run reads the winner's entry.
+    - uses: actions/cache@v4
+      id: cache
+      with:
+        path: ${{ inputs.path }}
+        key: install-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.tool }}
+    - uses: taiki-e/install-action@v2
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        tool: ${{ inputs.tool }}

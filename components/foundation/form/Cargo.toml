@@ -1,6 +1,6 @@
 [package]
 name = "waterui-form"
-version = "0.3.2"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -55,7 +55,6 @@ password-hash = ["dep:bcrypt"]
 regex-validation = ["dep:regex"]
 
 [dev-dependencies]
-hydrolysis-m3.workspace = true
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
 # Both gated surfaces have tests, and neither feature is in `default`. A

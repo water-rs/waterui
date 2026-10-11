@@ -13,7 +13,10 @@ use crate::{
     container::FixedContainer,
     stack::{
         Axis,
-        distribute::{ChildMeasurement, measure_stack, place_cross_extent, stack_spacing},
+        distribute::{
+            ChildMeasurement, LineAnchor, container_line, cross_envelope, empty_placement,
+            measure_stack, place_cross_extent, stack_members, stack_spacing,
+        },
         stack_stretch_axis,
     },
 };
@@ -45,38 +48,30 @@ impl Default for VStackLayout {
 /// A child that answers an unbounded width is answering "as much as you have"
 /// rather than naming a size, so it sets no floor here — the fill pass in
 /// [`Layout::place`] is what gives it the column's width.
+/// The horizontal envelope of the column's children lined up on `alignment`.
 fn vstack_intrinsic_cross_metrics(
     measurements: &[ChildMeasurement],
     alignment: HorizontalAlignment,
 ) -> (f32, f32) {
-    let mut max_leading = 0.0_f32;
-    let mut max_trailing = 0.0_f32;
-
-    for measurement in measurements
-        .iter()
-        .filter(|measurement| measurement.size().width.is_finite())
-    {
-        let size = measurement.size();
-        let guide = measurement
-            .horizontal_guide(alignment)
-            .clamp(0.0, size.width);
-        max_leading = max_leading.max(guide);
-        max_trailing = max_trailing.max((size.width - guide).max(0.0));
-    }
-
-    (max_leading, max_trailing)
+    cross_envelope(measurements.iter().map(|measurement| {
+        (
+            measurement.size().width,
+            measurement.horizontal_guide(alignment),
+        )
+    }))
 }
 
 impl Layout for VStackLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
+        let members = stack_members(children);
+        if members.is_empty() {
             return Size::zero();
         }
 
-        let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Vertical, proposal, spacing, children);
+        let spacing = self.spacing.snapshot();
+        let measurements = measure_stack(Axis::Vertical, proposal, spacing, &members);
         let final_height = measurements.iter().map(|m| m.size().height).sum::<f32>()
-            + stack_spacing(spacing, children.len());
+            + stack_spacing(spacing, members.len());
 
         let (leading, trailing) = vstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let width = if measurements.iter().any(|m| m.size().width.is_infinite()) {
@@ -90,36 +85,58 @@ impl Layout for VStackLayout {
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
-        let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Vertical, proposal, spacing, children);
+        let spacing = self.spacing.snapshot();
+        // Placement is a fresh negotiation against the bounds the column was
+        // placed in: every child is allocated from the column's resolved
+        // height and proposed the column's resolved width, so what a child
+        // lays out under is the extent it actually has, never the offer the
+        // column was measured with. A column widened past its proposal by an
+        // unshrinkable row hands that width to every child, so a title lays
+        // out across the column it actually has.
+        let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let members = stack_members(children);
+        let measurements = measure_stack(Axis::Vertical, placement, spacing, &members);
 
-        let has_explicit_alignment_guides = measurements.iter().any(|measurement| {
-            measurement
-                .dimensions
-                .explicit_horizontal(self.alignment)
-                .is_some()
-        });
-        let guide_line = has_explicit_alignment_guides.then(|| {
-            let (intrinsic_leading, _intrinsic_trailing) =
-                vstack_intrinsic_cross_metrics(&measurements, self.alignment);
-            bounds.x() + intrinsic_leading
-        });
+        let (above, below) = vstack_intrinsic_cross_metrics(&measurements, self.alignment);
+        let guide_line = bounds.x()
+            + container_line(
+                bounds.width(),
+                LineAnchor::horizontal(self.alignment),
+                above,
+                below,
+            );
 
-        // Place children
+        // Place children: members claim a slot each, spaced; a non-member is
+        // answered with a zero-size frame at the cursor so the returned
+        // placements still line up one-for-one with `children`.
         let mut placements = Vec::with_capacity(children.len());
+        let mut measurements = measurements.iter();
         let mut current_y = bounds.y();
+        let mut members_placed = 0usize;
 
-        for (i, measurement) in measurements.iter().enumerate() {
-            if i > 0 {
+        for child in children {
+            if child.is_empty() {
+                placements.push(empty_placement(
+                    Point::new(bounds.x(), current_y),
+                    placement,
+                ));
+                continue;
+            }
+
+            let measurement = measurements
+                .next()
+                .expect("stack members and measurements diverged");
+            if members_placed > 0 {
                 current_y += spacing;
             }
+            members_placed += 1;
 
             let child_width = place_cross_extent(
                 measurement.size().width,
@@ -135,22 +152,13 @@ impl Layout for VStackLayout {
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = Size::new(child_width, child_height);
 
+            // A child that fills the cross axis spans the bounds; every other
+            // child sits with its guide on the column's line, wherever that
+            // guide lies.
             let x = if measurement.stretches_cross_axis() {
                 bounds.x()
-            } else if let Some(guide_line) = guide_line {
-                let guide = adjusted_dimensions
-                    .horizontal(self.alignment)
-                    .clamp(0.0, child_width);
-                guide_line - guide
-            } else if self.alignment == HorizontalAlignment::Leading {
-                bounds.x()
-            } else if self.alignment == HorizontalAlignment::Trailing {
-                bounds.x() + bounds.width() - child_width
             } else {
-                let guide = adjusted_dimensions
-                    .horizontal(self.alignment)
-                    .clamp(0.0, child_width);
-                bounds.x() + bounds.width() * 0.5 - guide
+                guide_line - adjusted_dimensions.horizontal(self.alignment)
             };
 
             placements.push(SubviewPlacement::new(
@@ -307,7 +315,7 @@ pub fn vstack<C: TupleViews>(contents: C) -> VStack<(C,)> {
 impl<C, F, V> View for VStack<ForEach<C, F, V>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable,
+    C::Item: Identifiable + Clone,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
@@ -348,6 +356,7 @@ impl<C: TupleViews + 'static> View for VStack<(C,)> {
 mod tests {
     use super::*;
     use crate::ViewDimensions;
+    use crate::tests::CompressibleHeightView;
 
     struct MockSubView {
         size: Size,
@@ -647,26 +656,5 @@ mod tests {
             "the middle row reported a 50pt floor, got {}",
             placements[1].frame.height()
         );
-    }
-
-    /// A row that shrinks to whatever height it is proposed, down to `floor`.
-    struct CompressibleHeightView {
-        ideal: Size,
-        floor: f32,
-    }
-
-    impl SubView for CompressibleHeightView {
-        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-            let height = proposal.height.map_or(self.ideal.height, |proposed| {
-                proposed.clamp(self.floor, self.ideal.height)
-            });
-            ViewDimensions::new(Size::new(self.ideal.width, height))
-        }
-        fn stretch_axis(&self) -> StretchAxis {
-            StretchAxis::None
-        }
-        fn priority(&self) -> i32 {
-            0
-        }
     }
 }

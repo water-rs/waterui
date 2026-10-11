@@ -379,7 +379,7 @@ impl Bridge {
         if let Some(exported) = Self::already_exported(&scope, identity) {
             return Ok(exported);
         }
-        let seed = binding.get().into_js(self)?;
+        let seed = binding.snapshot().into_js(self)?;
         let signal = self.create_js_signal(seed)?;
         let cell = ReactiveCell::attach(self, signal.clone(), binding.clone(), Flow::TwoWay)?;
         Self::retain(&scope, cell, identity, &signal);
@@ -406,7 +406,7 @@ impl Bridge {
         if let Some(exported) = Self::already_exported(&scope, identity) {
             return Ok(exported);
         }
-        let seed = computed.get().into_js(self)?;
+        let seed = computed.snapshot().into_js(self)?;
         let signal = self.create_js_signal(seed)?;
         let cell = OutboundCell::push(self, signal.clone(), computed);
         let memo = self.create_js_memo(&signal)?;

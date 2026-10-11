@@ -336,6 +336,7 @@ macro_rules! impl_deref {
 macro_rules! configure_environment {
     ($env:expr) => {{
         let mut __waterui_env = $env;
+        $crate::install_application_resources(&mut __waterui_env);
         $crate::plugin::Plugin::install($crate::catalog!(), &mut __waterui_env);
         __waterui_env
     }};

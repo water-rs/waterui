@@ -1,0 +1,23 @@
+# Event order source: AppKit NSTextInputClient (winit-0.30
+# src/platform_impl/macos/view.rs). A dead key (Option-e) sets marked text
+# holding the pending accent; the following letter resolves it through
+# `insertText`, which emits `Ime::Preedit("")` then `Ime::Commit`. The
+# resolving keystroke never reaches the app.
+# Order derived from the documented NSTextInputClient flow above; not an
+# observed platform trace.
+final_text = "é"
+selection = [2, 2]
+committing_key_swallowed = true
+
+# Option-e arms the acute accent as marked text.
+[[step]]
+events = [
+    { preedit = { text = "´", caret = 2 } },
+]
+
+# 'e' resolves the accent: cleared preedit, then the combined character.
+[[step]]
+events = [
+    { preedit = { text = "" } },
+    { commit = "é" },
+]

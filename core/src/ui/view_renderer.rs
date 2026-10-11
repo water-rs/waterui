@@ -4,6 +4,7 @@
 //! install via FFI. It allows capturing `WaterUI` views as RGBA pixel data.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use core::future::Future;
@@ -39,6 +40,26 @@ pub struct RenderResult {
     pub height: u32,
 }
 
+/// Why a [`CustomViewRenderer`] produced no image.
+///
+/// A failed capture is always an error, never an empty or partial
+/// [`RenderResult`]: callers read a successful result as the view's actual
+/// pixels. The boxed sources carry the backend's own typed error.
+#[derive(Debug, thiserror::Error)]
+pub enum RenderError {
+    /// The GPU work behind the capture failed: a render pass, a lost device,
+    /// or the pixel readback.
+    #[error("GPU rendering failed")]
+    Gpu(#[source] Box<dyn core::error::Error + Send + Sync>),
+    /// The platform did not provide a resource the capture needs, such as a
+    /// bitmap context or a window to host the view.
+    #[error("view capture failed")]
+    Capture(#[source] Box<dyn core::error::Error + Send + Sync>),
+    /// A native host completed the render with this failure message.
+    #[error("native host failed to render the view: {0}")]
+    Host(String),
+}
+
 /// Trait for custom view renderers.
 ///
 /// Native backends implement this to provide view-to-RGBA capture. The method
@@ -53,8 +74,16 @@ pub trait CustomViewRenderer: 'static {
     /// 2. Render the view hierarchy (native widgets + GPU surfaces)
     /// 3. Capture the final composited result to RGBA pixels
     /// 4. Return the pixel data
-    fn render_to_rgba(&self, view: AnyView, size: RenderSize)
-    -> impl Future<Output = RenderResult>;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError`] when the capture cannot produce the view's
+    /// pixels.
+    fn render_to_rgba(
+        &self,
+        view: AnyView,
+        size: RenderSize,
+    ) -> impl Future<Output = Result<RenderResult, RenderError>>;
 }
 
 /// Object-safe shim over [`CustomViewRenderer`] so [`ViewRenderer`] can box the
@@ -65,7 +94,7 @@ trait CustomViewRendererImpl: 'static {
         &'a self,
         view: AnyView,
         size: RenderSize,
-    ) -> Pin<Box<dyn 'a + Future<Output = RenderResult>>>;
+    ) -> Pin<Box<dyn 'a + Future<Output = Result<RenderResult, RenderError>>>>;
 }
 
 impl<T: CustomViewRenderer> CustomViewRendererImpl for T {
@@ -73,7 +102,7 @@ impl<T: CustomViewRenderer> CustomViewRendererImpl for T {
         &'a self,
         view: AnyView,
         size: RenderSize,
-    ) -> Pin<Box<dyn 'a + Future<Output = RenderResult>>> {
+    ) -> Pin<Box<dyn 'a + Future<Output = Result<RenderResult, RenderError>>>> {
         Box::pin(CustomViewRenderer::render_to_rgba(self, view, size))
     }
 }
@@ -91,8 +120,20 @@ impl ViewRenderer {
     }
 
     /// Render a view to RGBA pixel data.
-    #[allow(clippy::future_not_send)]
-    pub async fn render(&self, view: AnyView, size: RenderSize) -> RenderResult {
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`RenderError`] the installed renderer reports when the
+    /// capture fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the erased `CustomViewRenderer` future is not Send; `render` runs on the caller's thread"
+    )]
+    pub async fn render(
+        &self,
+        view: AnyView,
+        size: RenderSize,
+    ) -> Result<RenderResult, RenderError> {
         self.0.render_to_rgba(view, size).await
     }
 }

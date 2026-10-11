@@ -11,7 +11,10 @@ use crate::{
     Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
     ViewDimensions,
     container::FixedContainer,
-    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+    stack::{
+        Alignment, HorizontalAlignment, VerticalAlignment,
+        distribute::{LineAnchor, container_line},
+    },
 };
 
 /// Layout that clamps a single child's proposal to reactive frame constraints.
@@ -38,32 +41,61 @@ struct ResolvedFrameLayout {
 
 impl FrameLayout {
     fn resolved(&self) -> ResolvedFrameLayout {
-        ResolvedFrameLayout {
-            min_width: self.min_width.as_ref().map(Signal::get),
-            ideal_width: self.ideal_width.as_ref().map(Signal::get),
-            max_width: self.max_width.as_ref().map(Signal::get),
-            min_height: self.min_height.as_ref().map(Signal::get),
-            ideal_height: self.ideal_height.as_ref().map(Signal::get),
-            max_height: self.max_height.as_ref().map(Signal::get),
+        let mut resolved = ResolvedFrameLayout {
+            min_width: self.min_width.as_ref().map(Signal::snapshot),
+            ideal_width: self.ideal_width.as_ref().map(Signal::snapshot),
+            max_width: self.max_width.as_ref().map(Signal::snapshot),
+            min_height: self.min_height.as_ref().map(Signal::snapshot),
+            ideal_height: self.ideal_height.as_ref().map(Signal::snapshot),
+            max_height: self.max_height.as_ref().map(Signal::snapshot),
+        };
+        // A `min` above its `max` is not an error: chained setters compose one
+        // `FrameLayout`, so an ordinary chain can land the minimum past the
+        // maximum without either literal being wrong. `min` wins — the same
+        // precedence CSS gives a `min-width` over a conflicting `max-width` —
+        // the effective maximum is the minimum, and the axis resolves to `min`.
+        for (min, max) in [
+            (&mut resolved.min_width, &mut resolved.max_width),
+            (&mut resolved.min_height, &mut resolved.max_height),
+        ] {
+            if let (Some(minimum), Some(maximum)) = (*min, *max)
+                && minimum > maximum
+            {
+                *max = Some(minimum);
+            }
         }
+        resolved
     }
 }
 
 impl ResolvedFrameLayout {
-    /// A constrained frame owns that axis's placement region. Other axes
-    /// preserve the incoming offer instead of reconstructing it from bounds.
-    fn placement_proposal(&self, bounds: Rect, proposal: ProposalSize) -> ProposalSize {
+    /// The frame's own extent for a child answer under `proposal`.
+    fn resolve(&self, proposal: ProposalSize, child: Size) -> Size {
+        Size::new(
+            frame_resolved_axis(
+                proposal.width,
+                child.width,
+                self.min_width,
+                self.ideal_width,
+                self.max_width,
+            ),
+            frame_resolved_axis(
+                proposal.height,
+                child.height,
+                self.min_height,
+                self.ideal_height,
+                self.max_height,
+            ),
+        )
+    }
+
+    /// Placement negotiates on both axes against the bounds the frame was
+    /// resolved to: every axis — constrained or not — re-proposes the
+    /// resolved extent, still bound by the frame's own `min`/`max`.
+    fn placement_proposal(&self, bounds: Rect) -> ProposalSize {
         self.child_proposal(ProposalSize {
-            width: if self.min_width.is_some() || self.max_width.is_some() {
-                Some(bounds.width())
-            } else {
-                proposal.width
-            },
-            height: if self.min_height.is_some() || self.max_height.is_some() {
-                Some(bounds.height())
-            } else {
-                proposal.height
-            },
+            width: Some(bounds.width()),
+            height: Some(bounds.height()),
         })
     }
 
@@ -112,42 +144,33 @@ impl Layout for FrameLayout {
         // the parent left unspecified. Either way the frame's own min/max limit
         // what it passes down.
         let child_proposal = resolved.child_proposal(proposal);
-
-        // Measure the child with our constrained proposal
-        let child_dimensions = children
-            .first()
-            .map_or(ViewDimensions::new(Size::zero()), |c| {
-                c.measure(child_proposal)
-            });
-        let child_size = child_dimensions.size;
+        let Some(child) = children.first() else {
+            return resolved.resolve(proposal, Size::zero());
+        };
 
         // Resolve the frame size on each axis. With no bound on an axis the
         // frame is exactly as big as the child it just measured; a maximum is
         // something to grow into, so there the frame takes the extent it was
-        // offered instead. `place` proposes that resolved extent back to the
-        // child, so the child is measured at the extent it will be placed in.
-        let final_width = frame_resolved_axis(
-            proposal.width,
-            child_size.width,
-            resolved.min_width,
-            resolved.ideal_width,
-            resolved.max_width,
-        );
-        let final_height = frame_resolved_axis(
-            proposal.height,
-            child_size.height,
-            resolved.min_height,
-            resolved.ideal_height,
-            resolved.max_height,
-        );
+        // offered instead.
+        let first = resolved.resolve(proposal, child.measure(child_proposal).size);
 
-        Size::new(final_width, final_height)
+        // `place` proposes the resolved bounds back to the child on every
+        // axis, and the child's answer can depend on it (text wraps to the
+        // width it is given). The frame's answer is therefore taken from the
+        // child measured under the proposal it will be placed with, so
+        // measurement and placement agree.
+        let placement = resolved.placement_proposal(Rect::from_size(first));
+        if placement == child_proposal {
+            first
+        } else {
+            resolved.resolve(proposal, child.measure(placement).size)
+        }
     }
 
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
@@ -155,9 +178,9 @@ impl Layout for FrameLayout {
         }
 
         let resolved = self.resolved();
-        // The frame selects the region it owns on constrained axes; an
-        // unconstrained axis retains the incoming offer, including None.
-        let child_proposal = resolved.placement_proposal(bounds, proposal);
+        // Placement is a fresh negotiation against the bounds: the child is
+        // re-proposed the resolved extent on every axis.
+        let child_proposal = resolved.placement_proposal(bounds);
 
         let child_dimensions = children
             .first()
@@ -183,40 +206,29 @@ impl Layout for FrameLayout {
         let mut adjusted_dimensions = child_dimensions;
         adjusted_dimensions.size = final_child_size;
 
-        // Calculate the child's origin point (top-left) based on alignment.
+        // The child sits with its guide on the frame's alignment line,
+        // wherever that guide lies; a child larger than the frame overflows.
         let horizontal = self.alignment.horizontal();
-        let horizontal_target = if horizontal == HorizontalAlignment::Leading {
-            0.0
-        } else if horizontal == HorizontalAlignment::Trailing {
-            bounds.width()
-        } else if horizontal == HorizontalAlignment::Center {
-            bounds.width() * 0.5
-        } else {
-            adjusted_dimensions
-                .horizontal(horizontal)
-                .clamp(0.0, final_child_size.width)
-        };
-        let child_x = bounds.x() + horizontal_target
-            - adjusted_dimensions
-                .horizontal(horizontal)
-                .clamp(0.0, final_child_size.width);
+        let guide_x = adjusted_dimensions.horizontal(horizontal);
+        let child_x = bounds.x()
+            + container_line(
+                bounds.width(),
+                LineAnchor::horizontal(horizontal),
+                guide_x,
+                final_child_size.width - guide_x,
+            )
+            - guide_x;
 
         let vertical = self.alignment.vertical();
-        let vertical_target = if vertical == VerticalAlignment::Top {
-            0.0
-        } else if vertical == VerticalAlignment::Bottom {
-            bounds.height()
-        } else if vertical == VerticalAlignment::Center {
-            bounds.height() * 0.5
-        } else {
-            adjusted_dimensions
-                .vertical(vertical)
-                .clamp(0.0, final_child_size.height)
-        };
-        let child_y = bounds.y() + vertical_target
-            - adjusted_dimensions
-                .vertical(vertical)
-                .clamp(0.0, final_child_size.height);
+        let guide_y = adjusted_dimensions.vertical(vertical);
+        let child_y = bounds.y()
+            + container_line(
+                bounds.height(),
+                LineAnchor::vertical(vertical),
+                guide_y,
+                final_child_size.height - guide_y,
+            )
+            - guide_y;
 
         vec![SubviewPlacement::new(
             Rect::new(Point::new(child_x, child_y), final_child_size),
@@ -311,6 +323,13 @@ fn frame_child_proposal_axis(
 /// to a hundred points. The extent it grows into is the one it was offered —
 /// the parent's proposal, or the ideal when the parent proposed nothing.
 ///
+/// A zero proposal is not an offer, though: it is the min-size query, and the
+/// frame's floor is its child's answer, clamped by the frame's own
+/// constraints. A frame that claims it can shrink to nothing while the content
+/// it aligns needs room reports a minimum it cannot honour — and a stack that
+/// trusts that minimum starves the slot while the child is still laid out at
+/// its full extent, centred over the frame's surroundings.
+///
 /// Without a maximum there is nothing to grow into, so the frame adopts its
 /// child's sizing behaviour on that axis: it is exactly as big as the child it
 /// measured, clamped up by any minimum. That is what keeps `.frame(minHeight:
@@ -331,8 +350,16 @@ fn frame_resolved_axis(
     ideal: Option<f32>,
     max: Option<f32>,
 ) -> f32 {
-    let content = if max.is_some() {
-        parent_proposal.or(ideal).unwrap_or(child_size)
+    let content = if max.is_some() && parent_proposal != Some(0.0) {
+        let extent = parent_proposal.or(ideal).unwrap_or(child_size);
+        // An unbounded answer is legal only on an axis the child left
+        // unbounded: a maximum is something to grow into, not a source of
+        // infinity of its own.
+        if extent.is_infinite() && child_size.is_finite() {
+            child_size
+        } else {
+            extent
+        }
     } else {
         child_size
     };
@@ -468,7 +495,7 @@ mod tests {
     use super::*;
     use crate::StretchAxis;
     use alloc::rc::Rc;
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
     use nami::{SignalExt, binding};
 
     #[test]
@@ -492,10 +519,77 @@ mod tests {
                 layout.place(Rect::from_size(size), ProposalSize::UNSPECIFIED, &[&child]);
             assert_eq!(
                 placements[0].proposal,
-                ProposalSize::new(Some(expected), None)
+                ProposalSize::new(Some(expected), Some(10.0))
             );
             assert_eq!(*placements[0].frame.size(), Size::new(expected, 10.0));
         }
+    }
+
+    /// An inverted constraint — `min` above `max` on one axis — resolves the
+    /// way CSS treats the same conflict: `min` wins, the effective maximum is
+    /// the minimum, and the axis resolves to `min`.
+    #[test]
+    fn an_inverted_frame_width_resolves_to_the_minimum() {
+        let layout = FrameLayout {
+            min_width: Some(Computed::constant(80.0)),
+            max_width: Some(Computed::constant(40.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[&child]);
+        assert_eq!(size, Size::new(80.0, 20.0));
+    }
+
+    #[test]
+    fn an_inverted_frame_height_resolves_to_the_minimum() {
+        let layout = FrameLayout {
+            min_height: Some(Computed::constant(30.0)),
+            max_height: Some(Computed::constant(10.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[&child]);
+        assert_eq!(size, Size::new(30.0, 30.0));
+    }
+
+    /// Chained setters mutate one `FrameLayout`, so `.size(40, 20)` followed by
+    /// `.min_width(60)` inverts the width axis — and `min` wins: the chain asks
+    /// for a 60x20 frame and gets exactly that.
+    #[test]
+    fn a_size_then_min_width_chain_resolves_to_the_minimum() {
+        // `ViewExt::size` is `Frame::new(_).width(40).height(20)`: each pin
+        // sets all three bounds on its axis, then `min_width` raises the
+        // minimum alone — an inversion composed, not written as a literal.
+        let frame = Frame::new(()).width(40.0).height(20.0).min_width(60.0);
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = frame
+            .layout
+            .size_that_fits(ProposalSize::new(Some(200.0), Some(200.0)), &[&child]);
+        assert_eq!(size, Size::new(60.0, 20.0));
+    }
+
+    /// `.size(50, 80)` with `.min_height(100)` and `.min_width(60)` inverts
+    /// both axes; each resolves to its minimum.
+    #[test]
+    fn a_size_then_min_height_and_min_width_chain_resolves_to_the_minimum() {
+        let frame = Frame::new(())
+            .width(50.0)
+            .height(80.0)
+            .min_height(100.0)
+            .min_width(60.0);
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = frame
+            .layout
+            .size_that_fits(ProposalSize::new(Some(200.0), Some(200.0)), &[&child]);
+        assert_eq!(size, Size::new(60.0, 100.0));
     }
 
     struct FramedChild<C> {
@@ -566,6 +660,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_max_only_frame_reports_the_child_floor_on_a_min_size_query() {
+        // `.frame(maxWidth: .infinity)` around a rigid 220pt child: a zero
+        // proposal is the min-size query, and the frame's floor is the child's
+        // answer, not the bare offer. Reporting 0 lets a stack starve the slot
+        // while the frame still centres the child's full extent over its
+        // surroundings.
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(f32::INFINITY)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(220.0, 40.0),
+        };
+
+        let size = layout.size_that_fits(ProposalSize::ZERO, &[&child]);
+        assert_extent(size.width, 220.0, "the frame's minimum width");
+
+        // A real offer still grows into it.
+        let size = layout.size_that_fits(ProposalSize::new(Some(500.0), None), &[&child]);
+        assert_extent(size.width, 500.0, "the frame's offered width");
+    }
+
+    #[test]
+    fn a_bounded_maximum_clamps_the_reported_floor() {
+        // `.frame(maxWidth: 100)` over a 220pt child: the reported floor is the
+        // child's answer limited by the frame's own maximum, neither the offer
+        // nor the child's whole extent.
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(100.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(220.0, 40.0),
+        };
+
+        let size = layout.size_that_fits(ProposalSize::ZERO, &[&child]);
+        assert_extent(size.width, 100.0, "the frame's clamped minimum width");
+    }
+
     struct MockSubView {
         size: Size,
     }
@@ -604,30 +738,36 @@ mod tests {
         }
     }
 
-    /// Wraps a child so a test can see the proposal the frame handed it.
+    /// Wraps a child so a test can see the proposals the frame handed it.
     struct RecordingSubView<C> {
         inner: C,
-        proposal: Cell<Option<ProposalSize>>,
+        proposals: RefCell<Vec<ProposalSize>>,
     }
 
     impl<C> RecordingSubView<C> {
         fn new(inner: C) -> Self {
             Self {
                 inner,
-                proposal: Cell::new(None),
+                proposals: RefCell::new(Vec::new()),
             }
         }
 
         fn proposal(&self) -> ProposalSize {
-            self.proposal
-                .get()
+            self.proposals
+                .borrow()
+                .last()
+                .copied()
                 .expect("the frame never measured its child")
+        }
+
+        fn proposals(&self) -> Vec<ProposalSize> {
+            self.proposals.borrow().clone()
         }
     }
 
     impl<C: SubView> SubView for RecordingSubView<C> {
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-            self.proposal.set(Some(proposal));
+            self.proposals.borrow_mut().push(proposal);
             self.inner.measure(proposal)
         }
         fn stretch_axis(&self) -> StretchAxis {
@@ -664,9 +804,12 @@ mod tests {
         let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
 
         assert_eq!(
-            child.proposal(),
-            ProposalSize::new(Some(100.0), Some(50.0)),
-            "the ideal should answer the dimensions the parent left unspecified"
+            child.proposals().as_slice(),
+            &[
+                ProposalSize::new(Some(100.0), Some(50.0)),
+                ProposalSize::new(Some(30.0), Some(20.0)),
+            ],
+            "the ideal answers the unspecified axes, then the child is re-probed with the resolved bounds"
         );
         assert_extent(size.width, 30.0, "the frame's width");
         assert_extent(size.height, 20.0, "the frame's height");
@@ -727,9 +870,9 @@ mod tests {
         });
         let hugged = layout.size_that_fits(proposal, &[&rigid]);
         assert_eq!(
-            rigid.proposal(),
-            proposal,
-            "a rigid child hears the proposal too; it just declines it"
+            rigid.proposals().as_slice(),
+            &[proposal, ProposalSize::new(Some(24.0), Some(24.0)),],
+            "a rigid child hears the proposal too; it just declines it — and placement re-probes with the resolved bounds"
         );
         assert_extent(hugged.width, 24.0, "a rigid child's frame width");
         assert_extent(hugged.height, 24.0, "a rigid child's frame height");
@@ -893,6 +1036,48 @@ mod tests {
             "expected the frame to fill the proposal, got {}",
             size.width
         );
+    }
+
+    #[test]
+    fn frame_max_probe_does_not_invent_infinity() {
+        // A filling frame grows into a finite offer, but a maximum query
+        // cannot manufacture an infinite answer out of a finite child: an
+        // unbounded answer is only legal on an axis the child itself left
+        // unbounded.
+        for (layout, proposal, bounds, expected_frame) in [
+            (
+                FrameLayout {
+                    max_width: Some(Computed::constant(f32::INFINITY)),
+                    ..Default::default()
+                },
+                ProposalSize::new(Some(f32::INFINITY), Some(10.0)),
+                Rect::from_size(Size::new(100.0, 10.0)),
+                Rect::new(Point::new(40.0, 0.0), Size::new(20.0, 10.0)),
+            ),
+            (
+                FrameLayout {
+                    max_height: Some(Computed::constant(f32::INFINITY)),
+                    ..Default::default()
+                },
+                ProposalSize::new(Some(10.0), Some(f32::INFINITY)),
+                Rect::from_size(Size::new(10.0, 100.0)),
+                Rect::new(Point::new(-5.0, 45.0), Size::new(20.0, 10.0)),
+            ),
+        ] {
+            let child = MockSubView {
+                size: Size::new(20.0, 10.0),
+            };
+            assert_eq!(
+                layout.size_that_fits(proposal, &[&child]),
+                Size::new(20.0, 10.0),
+                "an infinite probe meets a finite child: the frame's answer stays finite"
+            );
+
+            // Under later finite bounds ordinary filling placement is
+            // unchanged: the child centers in the offered extent.
+            let placements = layout.place(bounds, proposal, &[&child]);
+            assert_eq!(placements[0].frame, expected_frame);
+        }
     }
 
     #[test]
@@ -1067,33 +1252,115 @@ mod tests {
         assert_extent(resized.height, 10.0, "the resized height");
     }
 
+    /// A child whose width follows the height it is proposed: it answers
+    /// `min(proposedHeight, 80)` wide and 20 tall, reading 20 for an
+    /// unspecified height. Its width therefore changes with the height axis,
+    /// which is what a stale placement proposal corrupts.
+    struct HeightCoupledSubView;
+
+    impl SubView for HeightCoupledSubView {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            let offered_height = proposal.height.unwrap_or(20.0);
+            ViewDimensions::new(Size::new(offered_height.min(80.0), 20.0))
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    /// The transposed counterpart of [`HeightCoupledSubView`]: its height
+    /// follows the width it is proposed.
+    struct WidthCoupledSubView;
+
+    impl SubView for WidthCoupledSubView {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            let offered_width = proposal.width.unwrap_or(20.0);
+            ViewDimensions::new(Size::new(20.0, offered_width.min(80.0)))
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
     #[test]
-    fn a_filling_frame_reproposes_its_offer_to_a_rigid_child() {
-        // `.frame(maxWidth: .infinity)` around a 30x20 icon in a 320x180 slot.
-        // The frame fills the width and stays the icon's height; in placement
-        // the icon hears the proposal the frame itself was measured under —
-        // never the resolved bounds — declines it, and is centred in it.
+    fn frame_unconstrained_axis_uses_resolved_bounds() {
+        // `.frame(maxWidth: .infinity)` around a child whose width follows
+        // the height it is proposed, offered 100x80. The frame fills the
+        // width and keeps the child's 20pt height; placement negotiates on
+        // both axes, so the child is re-proposed the resolved 100x20 region —
+        // never the stale 100x80 offer.
         let layout = FrameLayout {
             max_width: Some(Computed::constant(f32::INFINITY)),
             ..Default::default()
         };
+        let child = RecordingSubView::new(HeightCoupledSubView);
 
-        let child = RecordingSubView::new(MockSubView {
-            size: Size::new(30.0, 20.0),
-        });
-
-        let proposal = ProposalSize::new(Some(320.0), Some(180.0));
+        let proposal = ProposalSize::new(Some(100.0), Some(80.0));
         let size = layout.size_that_fits(proposal, &[&child]);
-        assert_extent(size.width, 320.0, "the frame's width");
-        assert_extent(size.height, 20.0, "the frame's height");
+        assert_eq!(size, Size::new(100.0, 20.0));
 
         let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&child]);
         assert_eq!(
             child.proposal(),
-            ProposalSize::new(Some(320.0), Some(180.0)),
-            "a rigid child is re-proposed the frame's own measurement proposal"
+            ProposalSize::new(Some(100.0), Some(20.0)),
+            "the unconstrained height axis re-proposes the resolved bounds"
         );
-        assert_extent(placements[0].frame.width(), 30.0, "the child's width");
-        assert_extent(placements[0].frame.x(), 145.0, "the child's x");
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::new(40.0, 0.0), Size::new(20.0, 20.0))
+        );
+
+        // The transpose: `.frame(maxHeight: .infinity)` with the axes
+        // swapped, offered 80x100.
+        let layout = FrameLayout {
+            max_height: Some(Computed::constant(f32::INFINITY)),
+            ..Default::default()
+        };
+        let child = RecordingSubView::new(WidthCoupledSubView);
+
+        let proposal = ProposalSize::new(Some(80.0), Some(100.0));
+        let size = layout.size_that_fits(proposal, &[&child]);
+        assert_eq!(size, Size::new(20.0, 100.0));
+
+        let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&child]);
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(20.0), Some(100.0)),
+            "the unconstrained width axis re-proposes the resolved bounds"
+        );
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::new(0.0, 40.0), Size::new(20.0, 20.0))
+        );
+
+        // An axis that carries only an ideal still re-proposes the resolved
+        // bounds, not the unspecified offer it answered through the ideal.
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(f32::INFINITY)),
+            ideal_height: Some(Computed::constant(60.0)),
+            ..Default::default()
+        };
+        let child = RecordingSubView::new(HeightCoupledSubView);
+
+        let proposal = ProposalSize::new(Some(100.0), None);
+        let size = layout.size_that_fits(proposal, &[&child]);
+        assert_eq!(size, Size::new(100.0, 20.0));
+
+        let placements = layout.place(Rect::new(Point::new(0.0, 0.0), size), proposal, &[&child]);
+        assert_eq!(
+            child.proposal(),
+            ProposalSize::new(Some(100.0), Some(20.0)),
+            "an ideal-only axis re-proposes the resolved bounds"
+        );
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::new(40.0, 0.0), Size::new(20.0, 20.0))
+        );
     }
 }

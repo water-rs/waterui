@@ -1,0 +1,11 @@
+# The Android toolchain every Hydrolysis Android build uses: this host
+# checkout, the apps, preview hosts and embedded libraries the CLI generates
+# against it (their settings import this catalog), and the CLI itself, which
+# reads `android-compile-sdk` to declare an embedded library's requirement.
+[versions]
+android-gradle-plugin = "9.3.0"
+android-compile-sdk = "36"
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "android-gradle-plugin" }
+android-library = { id = "com.android.library", version.ref = "android-gradle-plugin" }

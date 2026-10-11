@@ -18,8 +18,8 @@ use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_core::AnyView;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
-use waterui_graphics::ResolvedColor;
-use waterui_graphics::color::Color;
+use waterui_graphics::WorkingColor;
+use waterui_graphics::color::{Color, Working, working};
 use waterui_layout::padding::EdgeInsets;
 use waterui_locale::{Locale, TranslationCatalog};
 use waterui_text::text::{IntoText, Text, TextConfig};
@@ -125,26 +125,33 @@ pub struct ColorValue {
     pub opacity: Option<f32>,
 }
 
-impl From<ColorValue> for ResolvedColor {
+impl From<ColorValue> for WorkingColor {
+    /// The channels are the working colour itself: a theme token that echoes
+    /// them back stays the same colour. A `headroom` past one on channels
+    /// still inside the SDR range is the exposure the author asked for; once
+    /// the channels reach past one the range is already theirs and `headroom`
+    /// is descriptive, never applied twice.
     fn from(value: ColorValue) -> Self {
-        Self {
-            red: value.red,
-            green: value.green,
-            blue: value.blue,
-            headroom: value.headroom.unwrap_or(1.0),
-            opacity: value.opacity.unwrap_or(1.0),
+        let [red, green, blue] = [value.red, value.green, value.blue];
+        let color = Self::new([red, green, blue, value.opacity.unwrap_or(1.0)]);
+        match value.headroom.unwrap_or(1.0) {
+            headroom if headroom > 1.0 && red.max(green).max(blue) <= 1.0 => {
+                working::with_headroom(color, headroom - 1.0)
+            }
+            _ => color,
         }
     }
 }
 
-impl From<ResolvedColor> for ColorValue {
-    fn from(color: ResolvedColor) -> Self {
+impl From<WorkingColor> for ColorValue {
+    fn from(color: WorkingColor) -> Self {
+        let [red, green, blue, opacity] = color.components;
         Self {
-            red: color.red,
-            green: color.green,
-            blue: color.blue,
-            headroom: Some(color.headroom),
-            opacity: Some(color.opacity),
+            red,
+            green,
+            blue,
+            headroom: Some(red.max(green).max(blue).max(1.0)),
+            opacity: Some(opacity),
         }
     }
 }
@@ -154,7 +161,7 @@ impl From<ResolvedColor> for ColorValue {
 pub fn color_of(value: &Computed<ColorValue>) -> Color {
     waterui_graphics::color::signal_color(
         value
-            .map(|value| Color::new(ResolvedColor::from(value)))
+            .map(|value| Color::new(Working(WorkingColor::from(value))))
             .computed(),
     )
 }

@@ -142,6 +142,7 @@ pub type AssetServer = Arc<dyn Fn(&AssetRequest) -> AssetResponse + Send + Sync>
 /// a method that could be called later.
 #[derive(Clone, Default)]
 pub struct WebViewConfig {
+    #[cfg(not(target_arch = "wasm32"))]
     /// The server behind the engine's local asset origin, when the view was
     /// opened with one.
     pub asset_server: Option<AssetServer>,
@@ -149,9 +150,10 @@ pub struct WebViewConfig {
 
 impl std::fmt::Debug for WebViewConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebViewConfig")
-            .field("asset_server", &self.asset_server.as_ref().map(|_| ".."))
-            .finish()
+        let mut debug = f.debug_struct("WebViewConfig");
+        #[cfg(not(target_arch = "wasm32"))]
+        debug.field("asset_server", &self.asset_server.as_ref().map(|_| ".."));
+        debug.finish()
     }
 }
 
@@ -290,8 +292,12 @@ mod tests {
         let response = dispatch(&server, "HEAD", "/index.html", None);
 
         assert_eq!(response.status, 200);
-        assert!(response.body.is_empty());
-        assert!(!response.headers.is_empty());
+        assert_eq!(response.body, Vec::<u8>::new());
+        assert!(
+            matches!(response.headers.as_slice(), [_, ..]),
+            "expected headers, got {:?}",
+            response.headers
+        );
     }
 
     #[test]

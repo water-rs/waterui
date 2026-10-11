@@ -1,0 +1,49 @@
+{
+  "$schema-comment": "Per-example policy for the example E2E shard script. mode=verify waits for a settled frame and compares it to e2e/goldens/<example>.png; mode=smoke only requires the app to start and show non-blank content; mode=skip does not run the example at all. env is forwarded to the app as waterui.env.* intent extras (the generated MainActivity applies them via Os.setenv before the native library loads).",
+  "defaults": {
+    "settle_timeout_seconds": 25,
+    "poll_interval_ms": 400,
+    "pixel_tolerance": 8,
+    "max_diff_fraction": 0.005
+  },
+  "examples": {
+    "chromium": {
+      "mode": "skip",
+      "reason": "CEF has no Android realization; the example cannot function on an emulator"
+    },
+    "webview-cef": {
+      "mode": "skip",
+      "reason": "CEF has no Android realization; the example cannot function on an emulator"
+    },
+    "animation": { "mode": "smoke", "reason": "continuous animation never reaches a settled frame" },
+    "audio_visualizer": { "mode": "smoke", "reason": "continuous animation driven by audio input" },
+    "chart": { "mode": "smoke", "reason": "GPU-rendered surface; software-renderer antialiasing is not golden-stable" },
+    "filter": { "mode": "smoke", "reason": "GPU-rendered filter effects; the repository boundary contract requires visual verification and forbids pixel-exact golden comparison" },
+    "flame": { "mode": "smoke", "reason": "continuous GPU animation" },
+    "gallery": { "mode": "smoke", "reason": "loads remote images over the network" },
+    "gradient": { "mode": "smoke", "reason": "animated mesh gradient never reaches a settled frame" },
+    "image": { "mode": "smoke", "reason": "remote images arrive asynchronously over the network" },
+    "map": {
+      "mode": "smoke",
+      "settle_timeout_seconds": 120,
+      "reason": "SwiftShader kills the wgpu device roughly every 35s; water-rs/waterui#914 rebuilds the runtime on loss, so this verifies survival, not pixels. Tile fetch plus a loss-recovery cycle needs well over the default window"
+    },
+    "multi_window": { "mode": "smoke", "reason": "secondary windows need windowing the single-display emulator lacks" },
+    "particle": { "mode": "smoke", "reason": "continuous GPU particle animation" },
+    "reminders": { "mode": "smoke", "reason": "may raise a runtime permission prompt over the content" },
+    "reply": { "mode": "smoke", "reason": "avatars and message photos load over the network from a remote repository, so a settled frame may or may not contain them" },
+    "starfield": { "mode": "smoke", "reason": "continuous GPU animation" },
+    "stress": {
+      "mode": "smoke",
+      "reason": "stress drivers mutate state on timers; counts scaled to emulator capacity (android-backend#86)",
+      "env": {
+        "WATERUI_STRESS_SYSTEM_COUNT": "18",
+        "WATERUI_STRESS_CUSTOM_COUNT": "14",
+        "WATERUI_STRESS_FILTER_COUNT": "12"
+      }
+    },
+    "video_player": { "mode": "smoke", "reason": "video playback never reaches a settled frame" },
+    "waterkit_camera_filters": { "mode": "smoke", "reason": "camera preview stream never reaches a settled frame" },
+    "webview": { "mode": "smoke", "reason": "remote page loads asynchronously over the network" }
+  }
+}

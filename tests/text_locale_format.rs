@@ -7,11 +7,10 @@
 //! printed the wrapper itself, so `text!("{selection:?}")` rendered
 //! `LocalizedArgument { value: Apple, locale: Locale(en-US) }`.
 
-use hydrolysis_m3::install as install_m3;
 use waterui::prelude::*;
 use waterui_testing::{Role, UiBuilder};
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test()]
 fn text_macro_pads_numeric_arguments(ui: UiBuilder) {
     let mut app = ui.mount(|| waterui::text!("Record #{id:06}", id = 0));
     app.query()
@@ -20,7 +19,7 @@ fn text_macro_pads_numeric_arguments(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test()]
 fn text_macro_debug_formats_the_wrapped_value(ui: UiBuilder) {
     #[derive(Debug, Clone, PartialEq)]
     enum Fruit {
