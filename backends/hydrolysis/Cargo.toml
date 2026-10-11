@@ -40,6 +40,10 @@ waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { workspace = true, features = ["std"] }
+# The Android WebView bridge's per-call result token. Only the
+# `webview-system` protocol uses it; the test build repeats it as a
+# dev-dependency.
+getrandom = { workspace = true, optional = true }
 cherenkov.workspace = true
 cherenkov-gpu.workspace = true
 # `MaterialRegistry`/`MaterialScope`/`MaterialCapture`/`Live` — the widget
@@ -267,6 +271,9 @@ serde_json.workspace = true
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
+# The system `WebView` bridge's one-shot completions (`run_javascript`,
+# `call_async_javascript`, `get_cookies`) are `futures::channel::oneshot`.
+futures = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # wasm32 has no stderr: without a hook a panic reaches the page as a bare
@@ -328,6 +335,9 @@ aither-mcp = { workspace = true, features = ["server"] }
 futures-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# The protocol tests compose the async-call script on the host too —
+# repeats the optional `webview-system` edge above.
+getrandom.workspace = true
 toml.workspace = true
 jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -383,12 +393,14 @@ testing = []
 frame-profile = ["testing"]
 inspector-signals = ["waterui/inspector-signals"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
-# each hosted on a compositor plane. Every other engine is a crate the
+# each hosted on a compositor plane, and `android.webkit.WebView` on Android,
+# mounted as a platform-view instance. Every other engine is a crate the
 # application links and installs; this backend never names one.
 webview-system = [
     "dep:block2",
     "dep:cookie",
     "dep:futures",
+    "dep:getrandom",
     "dep:objc2-web-kit",
     "dep:serde_json",
     "web-sys?/HtmlIFrameElement",

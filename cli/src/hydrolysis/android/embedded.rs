@@ -84,9 +84,18 @@ const HOST_HASH_READ_CONCURRENCY: usize = 16;
 
 /// The host checkout's Gradle modules an embedded build substitutes,
 /// fingerprints (see [`host_version`]) and publishes — one table so a new
-/// host module joins with a single entry here.
-pub(crate) fn publish_modules(painter: HydrolysisAndroidPainter) -> Vec<&'static str> {
-    vec!["host", painter.host_module()]
+/// host module joins with a single entry here. `system_webview` adds the
+/// system-WebView bridge, which the library's `webview-system` launcher
+/// calls into.
+pub(crate) fn publish_modules(
+    painter: HydrolysisAndroidPainter,
+    system_webview: bool,
+) -> Vec<&'static str> {
+    let mut modules = vec!["host", painter.host_module()];
+    if system_webview {
+        modules.push("webview");
+    }
+    modules
 }
 
 /// The embedded library's Gradle project, rendered and ready to assemble.
@@ -161,7 +170,10 @@ pub async fn render_library(
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
     let host_project_dir = require_painter_module(project, painter).await?;
-    let modules = publish_modules(painter);
+    let base =
+        HydrolysisBackend::template_context(project, project.resolved_framework().await?).await?;
+    let system_webview = base.webview_backend_feature()?.is_some();
+    let modules = publish_modules(painter, system_webview);
     let (host_version, crate_version, compile_sdk) = futures_util::try_join!(
         host_version(&host_project_dir, &modules),
         project.crate_version(),
@@ -169,6 +181,7 @@ pub async fn render_library(
     )?;
     let ctx = embedded_template_context(
         project,
+        base,
         painter,
         &host_project_dir,
         dir,
@@ -378,33 +391,33 @@ async fn host_compile_sdk(host_project_dir: &Path) -> Result<u32> {
 }
 
 /// The template context the generated `android-embedded/` Gradle project
-/// renders with: the shared launcher context plus the crate-version and
-/// permission entries and the embedded entry carrying the published host
-/// version.
+/// renders with: the shared launcher context `base` plus the crate-version
+/// and permission entries and the embedded entry carrying the published host
+/// version. `base` also answers whether the launcher compiles the
+/// system-WebView bridge, the same predicate [`publish_modules`] was given.
 async fn embedded_template_context(
     project: &Project,
+    base: crate::templates::TemplateContext,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
     dir: &Path,
     host: EmbeddedHost<'_>,
     crate_version: &str,
 ) -> Result<crate::templates::TemplateContext> {
-    Ok(
-        HydrolysisBackend::template_context(project, project.resolved_framework().await?)
-            .await?
-            .with_crate_version(crate_version)
-            .with_android_permissions(manifest_permissions(project.manifest()))
-            .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
-                app: template_entry(project, painter, host_project_dir, dir).await?,
-                host_version: host.version.to_owned(),
-                host_modules: host
-                    .modules
-                    .iter()
-                    .map(|module| (*module).to_owned())
-                    .collect(),
-                compile_sdk: host.compile_sdk,
-            }),
-    )
+    let system_webview = base.webview_backend_feature()?.is_some();
+    Ok(base
+        .with_crate_version(crate_version)
+        .with_android_permissions(manifest_permissions(project.manifest()))
+        .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
+            app: template_entry(project, painter, host_project_dir, dir, system_webview).await?,
+            host_version: host.version.to_owned(),
+            host_modules: host
+                .modules
+                .iter()
+                .map(|module| (*module).to_owned())
+                .collect(),
+            compile_sdk: host.compile_sdk,
+        }))
 }
 
 /// The host `compileSdk` [`rendered_embedded_outputs`] renders with.
@@ -428,14 +441,18 @@ pub(super) async fn rendered_embedded_outputs(
     let dir = project
         .backend_path::<HydrolysisBackend>()
         .join("android-embedded");
+    let base =
+        HydrolysisBackend::template_context(project, project.resolved_framework().await?).await?;
+    let system_webview = base.webview_backend_feature()?.is_some();
     let ctx = embedded_template_context(
         project,
+        base,
         painter,
         host_project_dir,
         &dir,
         EmbeddedHost {
             version,
-            modules: &publish_modules(painter),
+            modules: &publish_modules(painter, system_webview),
             compile_sdk: TEST_COMPILE_SDK,
         },
         crate_version,
@@ -613,7 +630,8 @@ mod tests {
         host
     }
 
-    /// The modules [`publish_modules`] reports for the GPU painter.
+    /// The modules [`publish_modules`] reports for the GPU painter without
+    /// the system `WebView`.
     const GPU_MODULES: [&str; 2] = ["host", "gpu"];
 
     #[test]

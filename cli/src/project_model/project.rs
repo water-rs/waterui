@@ -1487,10 +1487,26 @@ impl Project {
         os: crate::platform::NativeOs,
         section: GraphSection,
     ) -> eyre::Result<crate::templates::BrowserAnswers> {
-        let targets = os.serving_triples();
+        self.browser_answers_for(&os.serving_triples(), section)
+            .await
+    }
+
+    /// The same two answers for a serving set that names its triples
+    /// directly — a manifest section outside the `NativeOs` model, like
+    /// the Android `cfg` table whose set is ABI triples.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot resolve the application graph or
+    /// an answer differs across `targets`.
+    pub(crate) async fn browser_answers_for(
+        &self,
+        targets: &[Triple],
+        section: GraphSection,
+    ) -> eyre::Result<crate::templates::BrowserAnswers> {
         let (webview_enabled, engine) = futures_util::future::try_join(
-            self.uses_standard_webview_for(&targets, section),
-            self.linked_browser_engine_for(&targets, section),
+            self.uses_standard_webview_for(targets, section),
+            self.linked_browser_engine_for(targets, section),
         )
         .await?;
         Ok(crate::templates::BrowserAnswers {
@@ -3940,8 +3956,10 @@ impl ResolvedWebViewBackend {
                         | TargetPlatform::VisionOS
                         | TargetPlatform::VisionOSSimulator,
                     TargetBackend::Apple
-                ) | (TargetPlatform::Android, TargetBackend::Android)
-                    | (TargetPlatform::Linux, TargetBackend::Gtk4)
+                ) | (
+                    TargetPlatform::Android,
+                    TargetBackend::Android | TargetBackend::Hydrolysis
+                ) | (TargetPlatform::Linux, TargetBackend::Gtk4)
                     | (TargetPlatform::Web, TargetBackend::Hydrolysis)
             ),
             Self::Wpe => {
@@ -4346,6 +4364,12 @@ mod webview_backend_tests {
                 .expect("GTK bridges WebKitGTK"),
             ResolvedWebViewBackend::System
         );
+        assert_eq!(
+            ResolvedWebViewBackend::System
+                .validate(TargetPlatform::Android, TargetBackend::Hydrolysis)
+                .expect("Hydrolysis on Android bridges the system WebView"),
+            ResolvedWebViewBackend::System
+        );
         assert!(
             ResolvedWebViewBackend::System
                 .validate(TargetPlatform::Linux, TargetBackend::Hydrolysis)
@@ -4354,6 +4378,20 @@ mod webview_backend_tests {
         assert!(
             ResolvedWebViewBackend::System
                 .validate(TargetPlatform::Windows, TargetBackend::Hydrolysis)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bundled_engines_do_not_stand_in_for_the_android_bridge() {
+        assert!(
+            ResolvedWebViewBackend::Cef
+                .validate(TargetPlatform::Android, TargetBackend::Hydrolysis)
+                .is_err()
+        );
+        assert!(
+            ResolvedWebViewBackend::Wpe
+                .validate(TargetPlatform::Android, TargetBackend::Hydrolysis)
                 .is_err()
         );
     }
