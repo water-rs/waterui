@@ -17,9 +17,16 @@ on:
 permissions:
   contents: read
 
+# Queue, never cancel in progress: the lint job of a push that misses the
+# exact `lint-target` key is the cache writer, a cold workspace sweep of
+# about twelve minutes, and merges landing faster than that cancelled every
+# writer mid-sweep or mid-save, so no archive existed for the pull requests
+# after a lockfile change (#2338). The group still keeps one queued run and
+# drops the ones a newer push supersedes, so only the newest pending push is
+# checked after the running one.
 concurrency:
   group: dev-ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # The diff scopes the compile: on a push it is `github.event.before`;
