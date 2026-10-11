@@ -1,11 +1,11 @@
 //! Accessibility semantics coverage for graphics views.
 
-use cherenkov::Draw as _;
-use cherenkov::kurbo::{Rect, Shape as _};
 use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::{Srgb, WorkingColor};
+use waterui::graphics::draw::Draw as _;
+use waterui::graphics::draw::kurbo::{Rect, Shape as _};
 use waterui::layout::Size;
 use waterui::reactive::constant;
 use waterui_graphics::{

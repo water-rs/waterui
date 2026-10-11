@@ -1,7 +1,7 @@
 use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
-use cherenkov::WorkingColor;
+use crate::draw::WorkingColor;
 
 use super::{Srgb, linear_to_srgb, oklch_to_linear_srgb, working};
 

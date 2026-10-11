@@ -17,7 +17,7 @@ macro_rules! impl_stack_for_each {
         impl<C, F, V> $Stack<ForEach<C, F, V>>
         where
             C: Collection,
-            C::Item: Identifiable,
+            C::Item: Identifiable + Clone,
             F: 'static + Fn(C::Item) -> V,
             V: View,
         {

@@ -23,7 +23,7 @@ pub use external::{
 };
 pub use runtime::{
     DeviceLoss, ExternalFrameRenderer, GpuContentRenderer, GpuRuntime, GpuRuntimeError,
-    SharedGpuContext, preferred_surface_format,
+    HostedLayerError, SharedGpuContext, preferred_surface_format,
 };
 
 use alloc::boxed::Box;
@@ -39,7 +39,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
 use wgpu::{Adapter, Device, Queue, Texture, TextureFormat, TextureView};
 
-use cherenkov::kurbo;
+use crate::draw::kurbo;
 
 use crate::input::SurfaceInputEvent;
 
@@ -56,7 +56,9 @@ type Shared<T> = Rc<T>;
 /// browser's compositor callback, a network task.
 ///
 /// The backend supplies it in [`Context`]; requesting a redraw while a frame
-/// is already scheduled is a no-op.
+/// is already scheduled is a no-op. It wakes the same view instance only: a
+/// [`GpuContentView`] that a parent rebuild tears down takes its content with
+/// it, and a later request through its handle redraws nothing.
 #[derive(Clone)]
 pub struct RedrawHandle(Arc<dyn Fn() + Send + Sync>);
 
@@ -164,7 +166,10 @@ impl<'a> Frame<'a> {
 pub trait GpuContent: Send + 'static {
     /// Creates pipelines and resources against the engine's device.
     ///
-    /// Called once, on the render thread, before the first [`render`](Self::render).
+    /// Called on the render thread before the first [`render`](Self::render),
+    /// and again on each new device after the GPU runtime replaces a lost one.
+    /// Each call replaces every device resource the previous call created:
+    /// resources from the old device must not be used after it.
     fn setup(&mut self, gpu: &Context<'_>);
 
     /// Draws one frame into `frame`'s texture.
@@ -242,6 +247,14 @@ pub type FrameHook = Rc<dyn Fn()>;
 pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
 
 /// A view whose pixels come from [`GpuContent`].
+///
+/// # Content lifetime
+///
+/// The view owns one [`GpuContent`] instance for its whole lifetime, and
+/// [`GpuContent::setup`] is where that instance creates its persistent GPU
+/// resources. When a parent rebuild tears the view down, the content goes
+/// with it and the rebuilt view starts a new instance. Content state does not
+/// move into hidden shared caches to survive that.
 ///
 /// # Layout Behavior
 ///
@@ -431,17 +444,15 @@ impl GpuContentView {
 
     /// Transfers this producer to a Cherenkov GPU layer.
     ///
-    /// `wake` schedules the host's display link or event loop when asynchronous
-    /// producer work finishes. The UI hooks and input handlers stay in this view.
+    /// Asynchronous producer work wakes the host through the wake of each
+    /// engine surface that draws the layer. The UI hooks and input handlers
+    /// stay in this view.
     ///
     /// # Panics
     /// Panics if the content has already been transferred.
     #[must_use]
-    pub fn take_engine_content(
-        &mut self,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> cherenkov_gpu::interop::GpuContentBox {
-        cherenkov_gpu::interop::GpuContentBox::new(self.engine_content(), wake)
+    pub fn take_engine_content(&mut self) -> cherenkov_gpu::interop::GpuContentBox {
+        cherenkov_gpu::interop::GpuContentBox::new(self.engine_content())
     }
 
     /// A shareable handle to this view's content for the engine.

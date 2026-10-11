@@ -17,7 +17,16 @@
 //!
 //! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
 //! feeds a `Send` value slot the render side samples, and a change carrying
-//! an [`Animation`] in its metadata hands an interpolator to every watcher.
+//! a public [`Animation`] in its metadata hands an interpolator to every
+//! watcher. The engine consumes its own `crate::draw::Animation`, so the
+//! metadata type is mapped through the public `curve()`/`duration()`
+//! contract at the watcher boundary.
+//!
+//! With the `gpu` feature, [`WithEffect`] pairs a view with an arbitrary
+//! [`Effect`](filtrate::Effect) — a [`filtrate::ShaderEffect`], whose
+//! [`param`](WithEffect::param) and [`animated`](WithEffect::animated)
+//! bindings feed the same [`Reactive`] slots — and erases to the same
+//! [`FilteredView`].
 
 extern crate alloc;
 
@@ -30,15 +39,32 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
-use cherenkov::{Animation, RenderTransfer, curve_value, settled, spring_step};
+use crate::draw::{curve_value, settled, spring_step};
+
+/// Values crossing the render-thread boundary, mirroring the engine's
+/// `RenderTransfer` marker so `effects` builds without it.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait RenderTransfer: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> RenderTransfer for T {}
+
+/// Values retained by the local browser executor; they need not be `Send`.
+#[cfg(target_arch = "wasm32")]
+pub trait RenderTransfer {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> RenderTransfer for T {}
 pub use filtrate::filters::{BlendMode, TransitionDirection};
 use filtrate::{
     AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, Filter, FilterExt as _,
-    FilterParam, ImageVisitor, Interpolator, ParamArray, Placed, SignalVisitor, SpatialStage,
-    StageCollector, WatchGuard,
+    FilterLink, FilterParam, ImageVisitor, Interpolator, LinkVisitor, ParamArray, Placed,
+    SignalVisitor, SpatialStage, StageCollector, WatchGuard,
 };
 pub use filtrate::{FilterImage, LutImage};
+#[cfg(feature = "gpu")]
+use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};
+use waterui_core::animation::Animation;
+use waterui_core::easing::EasingCurve;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
@@ -206,6 +232,14 @@ struct OutputSizeState {
     watchers: Arc<Watchers<ChangeCallback>>,
 }
 
+impl fmt::Debug for OutputSizeState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutputSizeState")
+            .field("declared", &self.declared())
+            .finish_non_exhaustive()
+    }
+}
+
 impl OutputSizeState {
     fn new() -> Self {
         Self {
@@ -248,7 +282,10 @@ impl ParamGuards {
         });
         let target = Arc::clone(&slot);
         let guard = signal.watch(move |context| {
-            let animation = context.metadata().try_get::<Animation>();
+            let animation = context
+                .metadata()
+                .try_get::<Animation>()
+                .map(|animation| cherenkov_animation(&animation));
             let value = context.into_value();
             target.value.store(value.to_bits(), Ordering::Release);
             target.watchers.for_each(|callback| {
@@ -274,8 +311,28 @@ impl ParamGuards {
     }
 }
 
-/// A Cherenkov [`Animation`] driving a scalar filter parameter.
-struct AnimationInterpolator(Animation);
+/// Maps the public [`Animation`] onto the engine's execution type through
+/// its `curve()`/`duration()` contract — [`Animation::Default`] resolves
+/// through those accessors to the documented ease-in-out 250 ms.
+fn cherenkov_animation(animation: &Animation) -> crate::draw::Animation {
+    match animation.curve() {
+        EasingCurve::CubicBezier(x1, y1, x2, y2) => {
+            crate::draw::Animation::Curve(crate::draw::Curve::bezier(
+                animation.duration(),
+                f64::from(x1),
+                f64::from(y1),
+                f64::from(x2),
+                f64::from(y2),
+            ))
+        }
+        EasingCurve::Spring { stiffness, damping } => crate::draw::Animation::Spring(
+            crate::draw::Spring::from_physics(f64::from(stiffness), f64::from(damping)),
+        ),
+    }
+}
+
+/// A Cherenkov animation driving a scalar filter parameter.
+struct AnimationInterpolator(crate::draw::Animation);
 
 const SPRING_STEP: f64 = 1.0 / 240.0;
 const SPRING_STEP_NANOS: u128 = 1_000_000_000 / 240;
@@ -283,7 +340,12 @@ const SPRING_LIMIT: Duration = Duration::from_secs(10);
 
 #[allow(clippy::cast_possible_truncation)]
 impl AnimationInterpolator {
-    fn spring_at(spring: &cherenkov::Spring, from: f32, to: f32, elapsed: Duration) -> (f64, bool) {
+    fn spring_at(
+        spring: &crate::draw::Spring,
+        from: f32,
+        to: f32,
+        elapsed: Duration,
+    ) -> (f64, bool) {
         let (mut pos, mut velocity) = ([f64::from(from)], [0.0]);
         let target = [f64::from(to)];
         let steps = (elapsed.min(SPRING_LIMIT).as_nanos() / SPRING_STEP_NANOS) + 1;
@@ -301,15 +363,15 @@ impl AnimationInterpolator {
 impl Interpolator for AnimationInterpolator {
     fn duration(&self) -> Duration {
         match &self.0 {
-            Animation::Curve(curve) => curve.duration,
-            Animation::Spring(_) => SPRING_LIMIT,
-            Animation::Decay(_) => Duration::ZERO,
+            crate::draw::Animation::Curve(curve) => curve.duration,
+            crate::draw::Animation::Spring(_) => SPRING_LIMIT,
+            crate::draw::Animation::Decay(_) => Duration::ZERO,
         }
     }
 
     fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
         match &self.0 {
-            Animation::Curve(curve) => {
+            crate::draw::Animation::Curve(curve) => {
                 let t = if curve.duration.is_zero() {
                     1.0
                 } else {
@@ -318,14 +380,16 @@ impl Interpolator for AnimationInterpolator {
                 let k = curve_value(curve, t);
                 (f64::from(to) - f64::from(from)).mul_add(k, f64::from(from)) as f32
             }
-            Animation::Spring(spring) => Self::spring_at(spring, from, to, elapsed).0 as f32,
-            Animation::Decay(_) => to,
+            crate::draw::Animation::Spring(spring) => {
+                Self::spring_at(spring, from, to, elapsed).0 as f32
+            }
+            crate::draw::Animation::Decay(_) => to,
         }
     }
 
     fn is_complete(&self, elapsed: Duration) -> bool {
         match &self.0 {
-            Animation::Spring(spring) => {
+            crate::draw::Animation::Spring(spring) => {
                 elapsed >= SPRING_LIMIT || Self::spring_at(spring, 0.0, 1.0, elapsed).1
             }
             _ => elapsed >= self.duration(),
@@ -343,6 +407,7 @@ trait FilterSource: RenderTransfer {
     /// The flattened parameter values, in the order the stages index them.
     fn dyn_params(&self) -> Vec<f32>;
     fn dyn_collect_stages(&self, collector: &mut dyn StageCollector);
+    fn dyn_visit_links(&self, visit: &mut dyn FnMut(FilterLink<'_>));
     fn dyn_visit_signals(&self, visit: &mut dyn FnMut(FilterSignal<'_>));
     fn dyn_visit_images(&self, visit: &mut dyn FnMut(usize, &dyn AuxImage));
     /// Lowers the filter into `filtrate`'s executor on the render thread.
@@ -361,6 +426,10 @@ impl<F: Filter + RenderTransfer> FilterSource for F {
         self.collect_stages(&mut DynStages(collector));
     }
 
+    fn dyn_visit_links(&self, visit: &mut dyn FnMut(FilterLink<'_>)) {
+        self.visit_links(&mut DynLinks(visit));
+    }
+
     fn dyn_visit_signals(&self, visit: &mut dyn FnMut(FilterSignal<'_>)) {
         self.visit_signals(&mut DynSignals(visit));
     }
@@ -372,6 +441,15 @@ impl<F: Filter + RenderTransfer> FilterSource for F {
     #[cfg(feature = "gpu")]
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
         gpu::lower_filter(*self, output_size)
+    }
+}
+
+/// A [`LinkVisitor`] handing each link to a `dyn` sink.
+struct DynLinks<'a>(&'a mut dyn FnMut(FilterLink<'_>));
+
+impl LinkVisitor for DynLinks<'_> {
+    fn link(&mut self, link: FilterLink<'_>) {
+        (self.0)(link);
     }
 }
 
@@ -547,6 +625,16 @@ impl FilterDescription<'_> {
     /// place its parameter and image indices.
     pub fn collect_stages(&self, collector: &mut impl StageCollector) {
         self.0.dyn_collect_stages(collector);
+    }
+
+    /// Visits every link of the filter in application order.
+    ///
+    /// A link's current values are
+    /// <code>[params](Self::params)()[link.param_base..]</code>, and its
+    /// reactive updates arrive through [`visit_signals`](Self::visit_signals)
+    /// at those indices.
+    pub fn visit_links(&self, mut visit: impl FnMut(FilterLink<'_>)) {
+        self.0.dyn_visit_links(&mut visit);
     }
 
     /// Visits every reactive parameter, by index in [`params`](Self::params).
@@ -737,10 +825,129 @@ impl FilteredView {
     }
 }
 
-waterui_core::raw_view!(FilteredView);
+// `raw_view!` only takes a constant axis; an effect never changes how its
+// subtree stretches, so both impls report the content's axis, as `Filtered`
+// does.
+impl waterui_core::NativeView for FilteredView {
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
 
+impl View for FilteredView {
+    fn body(self, _env: &Environment) -> impl View {
+        waterui_core::Native::new(self)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
+
+/// A view with an arbitrary GPU effect applied to its rendered subtree.
+///
+/// Unlike [`Filtered`], which carries a portable [`Filter`], `WithEffect`
+/// pairs the view with an [`Effect`](filtrate::Effect) only a GPU can run:
+/// its body erases both into a [`FilteredView`] whose
+/// [`description`](AnyEffect::description) is `None`. The subscriptions of
+/// the effect's reactive parameters live in `guards` and cross to the
+/// backend with the lowered view, exactly as a filter's do.
+///
+/// For a [`filtrate::ShaderEffect`], [`param`](Self::param) and
+/// [`animated`](Self::animated) bind reactive parameters without rebuilding
+/// the view.
+#[cfg(feature = "gpu")]
+#[derive(Debug)]
+pub struct WithEffect<V, E> {
+    view: V,
+    effect: E,
+    guards: ParamGuards,
+    /// The declared output-size policy; the erased [`AnyEffect`] adopts it.
+    output_size: OutputSizeState,
+}
+
+#[cfg(feature = "gpu")]
+impl<V: View, E: filtrate::Effect + RenderTransfer> WithEffect<V, E> {
+    /// Applies `effect` to `view`.
+    pub fn new(view: V, effect: E) -> Self {
+        Self {
+            view,
+            effect,
+            guards: ParamGuards::default(),
+            output_size: OutputSizeState::new(),
+        }
+    }
+
+    /// Sets the output texture dimensions without changing layout.
+    #[must_use]
+    pub fn output_size(mut self, size: impl IntoComputed<OutputSize>) -> Self {
+        self.output_size.bind(size, &mut self.guards);
+        self
+    }
+
+    /// Erases the view and the effect into the form a backend receives.
+    fn erase(self) -> FilteredView {
+        let mut effect = AnyEffect::new(self.effect);
+        effect.output_size = self.output_size;
+        FilteredView {
+            content: AnyView::new(self.view),
+            effect,
+            guards: self.guards,
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
+    /// Adds a reactive parameter, readable in the shader as `effect_param(n)`
+    /// where `n` counts the parameters added before it — including any
+    /// constants the effect already carries.
+    ///
+    /// Each change follows the animation the signal carries, and the
+    /// subscription lives in the lowered [`FilteredView`] for as long as the
+    /// backend keeps the effect.
+    #[must_use]
+    pub fn param(mut self, value: impl IntoSignalF32) -> Self {
+        let param = self.guards.bind(value);
+        let (effect, guard) = self.effect.watch_param(&param);
+        self.effect = effect;
+        self.guards.retain(guard);
+        self
+    }
+
+    /// Drives the effect's animation flag: while `animated` holds `true` the
+    /// effect asks its host for another frame after each one it renders —
+    /// the reactive form of [`filtrate::ShaderEffect::animated`].
+    #[must_use]
+    pub fn animated(mut self, animated: impl IntoComputed<bool>) -> Self {
+        let flag = self.guards.bind(animated.into_computed().map(f32::from));
+        let (effect, guard) = self.effect.watch_animated(&flag);
+        self.effect = effect;
+        self.guards.retain(guard);
+        self
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<V: View, E: filtrate::Effect + RenderTransfer> View for WithEffect<V, E> {
+    fn body(self, _env: &Environment) -> impl View {
+        self.erase()
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.view.stretch_axis()
+    }
+}
+
+/// Generates the inherent method appending a single-parameter filter.
+///
+/// The filter is built by `$constructor` from the bound parameter; without
+/// one, by the filter's tuple constructor.
 macro_rules! inherent_single_param_filter {
     ($method:ident, $filter:ident) => {
+        inherent_single_param_filter!($method, $filter, filtrate::filters::$filter);
+    };
+    ($method:ident, $filter:ident, $constructor:path) => {
         #[doc = concat!("Append a `", stringify!($filter), "` filter to the chain.")]
         #[must_use]
         pub fn $method<P: IntoSignalF32>(
@@ -748,7 +955,7 @@ macro_rules! inherent_single_param_filter {
             value: P,
         ) -> Filtered<V, Chain<F, filtrate::filters::$filter<Reactive>>> {
             let mut guards = ParamGuards::default();
-            let filter = filtrate::filters::$filter(guards.bind(value));
+            let filter = $constructor(guards.bind(value));
             self.then_bound(filter, guards)
         }
     };
@@ -761,7 +968,11 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     inherent_single_param_filter!(crystallize, Crystallize);
     inherent_single_param_filter!(exposure, Exposure);
     inherent_single_param_filter!(gamma, Gamma);
-    inherent_single_param_filter!(gaussian_blur, GaussianBlur);
+    inherent_single_param_filter!(
+        gaussian_blur,
+        GaussianBlur,
+        filtrate::filters::GaussianBlur::new
+    );
     inherent_single_param_filter!(grayscale, Grayscale);
     inherent_single_param_filter!(hue_rotation, HueRotation);
     inherent_single_param_filter!(pixellate, Pixellate);
@@ -921,10 +1132,13 @@ pub trait FilterViewExt: View + Sized {
     /// Apply a custom `filtrate` effect to this view.
     ///
     /// An arbitrary effect has no portable description, so only a backend
-    /// that runs effects on a GPU can realize it.
+    /// that runs effects on a GPU can realize it. For a
+    /// [`filtrate::ShaderEffect`], the returned [`WithEffect`] binds
+    /// reactive parameters through [`WithEffect::param`] and
+    /// [`WithEffect::animated`].
     #[cfg(feature = "gpu")]
-    fn effect(self, effect: impl filtrate::Effect + RenderTransfer) -> FilteredView {
-        FilteredView::new(self, effect)
+    fn effect<E: filtrate::Effect + RenderTransfer>(self, effect: E) -> WithEffect<Self, E> {
+        WithEffect::new(self, effect)
     }
 
     /// Apply a blur filter.
@@ -1238,7 +1452,7 @@ pub trait FilterViewExt: View + Sized {
         let mut guards = ParamGuards::default();
         Filtered::bound(
             self,
-            filtrate::filters::GaussianBlur(guards.bind(sigma)),
+            filtrate::filters::GaussianBlur::new(guards.bind(sigma)),
             guards,
         )
     }
@@ -1828,9 +2042,13 @@ mod tests {
     #[cfg(feature = "gpu")]
     use super::AnyEffect;
     use super::{
-        ColorStage, FilterParam as _, FilterSignal, FilterViewExt as _, FilteredView, OutputSize,
-        ParamGuards, Placed, SpatialStage, StageCollector,
+        AnimationInterpolator, Brightness, ColorStage, FilterLink, FilterParam as _, FilterSignal,
+        FilterViewExt as _, FilteredView, GaussianBlur, OutputSize, ParamGuards, Placed,
+        SPRING_LIMIT, SpatialStage, StageCollector, cherenkov_animation,
     };
+    use core::time::Duration;
+    use filtrate::Interpolator as _;
+    use nami::SignalExt as _;
     #[cfg(feature = "gpu")]
     use std::sync::Arc;
     #[cfg(feature = "gpu")]
@@ -1838,6 +2056,9 @@ mod tests {
     use std::sync::mpsc;
     #[cfg(feature = "gpu")]
     use waterui_core::AnyView;
+    use waterui_core::animation::Animation;
+    use waterui_core::layout::StretchAxis;
+    use waterui_core::{Native, NativeView, View};
 
     /// Records each stage's kind, name and parameter offset, and checks that
     /// it carries its shader source.
@@ -1871,6 +2092,26 @@ mod tests {
             ]
         );
         assert_eq!(description.params(), [0.25, 4.0]);
+        drop(guards);
+    }
+
+    #[test]
+    fn described_filter_links_are_the_concrete_filters() {
+        let FilteredView { effect, guards, .. } =
+            ().gaussian_blur(1.5_f32).brightness(0.25_f32).erase();
+        let description = effect.description().expect("a filter is portable");
+
+        let mut links = Vec::new();
+        description.visit_links(|link: FilterLink<'_>| {
+            links.push((
+                link.downcast_ref::<GaussianBlur>().is_some(),
+                link.downcast_ref::<Brightness>().is_some(),
+                link.param_base,
+                link.image_base,
+            ));
+        });
+        assert_eq!(links, [(true, false, 0, 0), (false, true, 1, 0)]);
+        assert_eq!(description.params(), [1.5, 0.25]);
         drop(guards);
     }
 
@@ -1971,6 +2212,101 @@ mod tests {
 
         assert_eq!(effect.output_size(10, 20), (1920, 1080));
         drop(guards);
+    }
+
+    /// Content that stretches horizontally only.
+    struct HorizontalRule;
+    waterui_core::raw_view!(HorizontalRule, StretchAxis::Horizontal);
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn effect_view_reports_its_content_stretch_axis() {
+        let effected = HorizontalRule.effect(NoopEffect);
+        assert_eq!(View::stretch_axis(&effected), StretchAxis::Horizontal);
+        let erased = effected.erase();
+        assert_eq!(View::stretch_axis(&erased), StretchAxis::Horizontal);
+        assert_eq!(NativeView::stretch_axis(&erased), StretchAxis::Horizontal);
+    }
+
+    /// A shader effect's reactive parameter reaches the built effect: the
+    /// binding's change crosses the lowered view's subscriptions and wakes
+    /// the engine's redraw callback, exactly as a filter parameter does.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn shader_effect_param_updates_reach_the_built_effect() {
+        let strength = nami::binding(0.25_f32);
+        let shader = filtrate::ShaderEffect::new(
+            "@fragment
+            fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+                return textureSample(input_texture, input_sampler, in.uv);
+            }",
+        )
+        .expect("the test shader is valid WGSL");
+        let FilteredView { effect, guards, .. } = ().effect(shader).param(strength.clone()).erase();
+        let mut effect = effect.build();
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        strength.set(0.75);
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            1,
+            "the update wakes the host"
+        );
+        assert!(effect.redraw_hint(), "the update wants a frame");
+        drop(guards);
+    }
+
+    /// The reactive animation flag reaches the render side through the built
+    /// effect: toggling it wakes the host and flips the redraw hint.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn shader_effect_animated_signal_reaches_the_render_side() {
+        let animated = nami::binding(false);
+        let shader = filtrate::ShaderEffect::new(
+            "@fragment
+            fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+                return textureSample(input_texture, input_sampler, in.uv);
+            }",
+        )
+        .expect("the test shader is valid WGSL");
+        let FilteredView { effect, guards, .. } =
+            ().effect(shader).animated(animated.clone()).erase();
+        let mut effect = effect.build();
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        animated.set(true);
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            1,
+            "the toggle wakes the host"
+        );
+        assert!(effect.redraw_hint(), "the flag is set on the render side");
+
+        animated.set(false);
+        assert_eq!(redraws.load(Ordering::Relaxed), 2);
+        drop(guards);
+    }
+
+    #[test]
+    fn output_sized_view_reports_its_content_stretch_axis() {
+        let sized = HorizontalRule
+            .brightness(0.25_f32)
+            .erase()
+            .output_size(OutputSize::Scale(2.0));
+        assert_eq!(View::stretch_axis(&sized), StretchAxis::Horizontal);
+        assert_eq!(NativeView::stretch_axis(&sized), StretchAxis::Horizontal);
+        assert_eq!(
+            View::stretch_axis(&Native::new(sized)),
+            StretchAxis::Horizontal
+        );
     }
 
     #[cfg(feature = "gpu")]
@@ -2092,5 +2428,73 @@ mod tests {
         drop(guards);
         value.set(1.0_f32);
         assert_eq!(parameter.snapshot().to_bits(), 0.75_f32.to_bits());
+    }
+
+    #[test]
+    fn animation_metadata_reaches_param_interpolators() {
+        let value = nami::binding(0.25_f32);
+        let mut guards = ParamGuards::default();
+        let parameter = guards.bind(value.with(Animation::ease_in_out(Duration::from_millis(300))));
+        let (send, receive) = mpsc::channel();
+        let subscription = parameter.watch_animated(Box::new(move |target| {
+            send.send(target).expect("receiver exists");
+        }));
+        value.set(0.5_f32);
+        let target = receive.try_recv().expect("animated update");
+        assert_eq!(target.value.to_bits(), 0.5_f32.to_bits());
+        let interpolator = target.interpolator.expect("metadata interpolator");
+        assert_eq!(interpolator.duration(), Duration::from_millis(300));
+        let mid = interpolator.interpolate(0.0, 1.0, Duration::from_millis(150));
+        assert!((mid - 0.5).abs() < 1e-3, "symmetric ease-in-out midpoint");
+        assert!(interpolator.is_complete(Duration::from_millis(300)));
+        drop(subscription);
+        drop(guards);
+    }
+
+    #[test]
+    fn animation_default_resolves_documented_ease_in_out() {
+        let interpolator = AnimationInterpolator(cherenkov_animation(&Animation::Default));
+        assert_eq!(interpolator.duration(), Duration::from_millis(250));
+        let mid = interpolator.interpolate(0.0, 1.0, Duration::from_millis(125));
+        assert!(
+            (mid - 0.5).abs() < 1e-3,
+            "Default ease-in-out midpoint, got {mid}"
+        );
+    }
+
+    #[test]
+    fn animation_bezier_preserves_duration_and_shape() {
+        let interpolator = AnimationInterpolator(cherenkov_animation(&Animation::bezier(
+            Duration::from_millis(400),
+            0.25,
+            0.1,
+            0.25,
+            1.0,
+        )));
+        assert_eq!(interpolator.duration(), Duration::from_millis(400));
+        let quarter = interpolator.interpolate(0.0, 1.0, Duration::from_millis(100));
+        assert!(
+            quarter > 0.25,
+            "ease curve leads linear early, got {quarter}"
+        );
+        assert_eq!(
+            interpolator
+                .interpolate(0.0, 1.0, Duration::from_millis(400))
+                .to_bits(),
+            1.0_f32.to_bits()
+        );
+    }
+
+    #[test]
+    fn animation_spring_uses_engine_physics() {
+        let interpolator =
+            AnimationInterpolator(cherenkov_animation(&Animation::spring(200.0, 15.0)));
+        assert_eq!(interpolator.duration(), SPRING_LIMIT);
+        let early = interpolator.interpolate(0.0, 1.0, Duration::from_millis(30));
+        assert!(
+            early > 0.0 && early < 1.0,
+            "spring progresses without snapping, got {early}"
+        );
+        assert!(!interpolator.is_complete(Duration::from_millis(30)));
     }
 }

@@ -1,0 +1,19 @@
+[package]
+name = "waterui-ts-engine"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../../README.md"
+repository.workspace = true
+description = "Engine-agnostic JavaScript runtime contract for WaterUI TypeScript views"
+keywords = ["typescript", "javascript", "waterui", "ui", "gui"]
+categories = ["gui"]
+
+[features]
+# The conformance suite every engine implementation runs. Assertions, so off
+# by default and on in engine test binaries only.
+conformance = []
+
+[lints]
+workspace = true

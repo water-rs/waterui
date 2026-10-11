@@ -2,4 +2,4 @@ waterui_path = "../.."
 
 [package]
 name = "Hover Example"
-bundle_identifier = "com.waterui.hover_example"
+bundle_identifier = "com.waterui.hoverexample"

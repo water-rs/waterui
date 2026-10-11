@@ -33,8 +33,8 @@ pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;
 use waterui_layout::{
-    AspectRatio, ContentMode, EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority,
-    Overlay, VerticalAlignmentGuide,
+    AspectRatio, ContentMode, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
+    VerticalAlignmentGuide,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -71,11 +71,16 @@ use waterui_core::id::TaggedView;
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
 
+/// Plays an impact haptic. `Haptic::impact` is async; the event that
+/// triggers it does not wait for it.
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
-    if let Err(error) = Haptic::impact(intensity) {
-        tracing::debug!(%error, "failed to trigger impact haptic");
-    }
+    spawn_local(async move {
+        if let Err(error) = Haptic::impact(intensity).await {
+            tracing::debug!(%error, "failed to trigger impact haptic");
+        }
+    })
+    .detach();
 }
 
 /// Extension trait for views, adding common styling and configuration methods.
@@ -259,7 +264,7 @@ pub trait ViewExt: View + Sized {
     /// // Color background
     /// text!("Hello").background(Color::red());
     ///
-    /// // Material background (platform backend best-effort)
+    /// // Material background: a frosted treatment of the content behind the view
     /// text!("Hello").background(Material::Regular);
     ///
     /// // Any view as background
@@ -268,6 +273,29 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn background<B: IntoBackground>(self, background: B) -> B::Output<Self> {
         background.apply_background(self)
+    }
+
+    /// Groups the backdrop materials in this view's subtree.
+    ///
+    /// The materials inside share one capture of what lies behind the
+    /// group, and the style may merge them into one shape where they come
+    /// close, as a toolbar's glass controls do. The style decides whether
+    /// and how they merge; the nearest enclosing group wins. See
+    /// [`MaterialGroup`](crate::background::MaterialGroup) for the contract.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// hstack((
+    ///     text!("Back").padding().background(Glass::regular()),
+    ///     text!("Share").padding().background(Glass::regular()),
+    /// ))
+    /// .material_group();
+    /// ```
+    fn material_group(self) -> IgnorableMetadata<crate::background::MaterialGroup> {
+        IgnorableMetadata::new(AnyView::new(self), crate::background::MaterialGroup)
     }
 
     /// Sets the foreground color for this view and all its descendants.
@@ -1153,6 +1181,40 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, overlay)
     }
 
+    /// Presents `dialog` window-modal while its `is_presented` binding is
+    /// `true`.
+    ///
+    /// The dialog renders full-window wherever it is attached — the content
+    /// beneath is inert to pointer, keyboard and accessibility while it is up.
+    /// Choosing an action runs that action's handler and writes
+    /// `is_presented = false`; Escape, the Android back gesture and the scrim
+    /// tap run the `Cancel` action's handler the same way, and do nothing when
+    /// no `Cancel` action was declared. One dialog presents per window at a
+    /// time; a second one waits in presentation order.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::dialog::{Dialog, DialogAction};
+    /// use waterui::prelude::*;
+    ///
+    /// let confirm = binding(false);
+    /// button("Discard")
+    ///     .action({
+    ///         let confirm = confirm.clone();
+    ///         move || confirm.set(true)
+    ///     })
+    ///     .dialog(
+    ///         Dialog::new(&confirm, "Discard changes?")
+    ///             .action(DialogAction::destructive("Discard", || {}))
+    ///             .action(DialogAction::cancel("Keep", || {})),
+    ///     );
+    /// ```
+    #[cfg(feature = "dialog")]
+    fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog> {
+        Metadata::new(self, dialog)
+    }
+
     /// Sets the minimum row height of every list inside this view, in points.
     ///
     /// Replaces the theme's one-line row height as the floor rows are measured
@@ -1179,14 +1241,18 @@ pub trait ViewExt: View + Sized {
         waterui_core::env::with(self, crate::component::list::ListMinRowHeight(height))
     }
 
-    /// Extends this view's bounds to ignore safe area insets on the specified edges.
+    /// Extends this view's bounds to ignore safe area insets on the specified
+    /// regions and edges.
     ///
-    /// This allows backgrounds, images, and other visual elements to extend edge-to-edge
-    /// while content remains in the safe area. The native renderer will expand the
-    /// view's frame to include the unsafe regions on the specified edges.
+    /// This allows backgrounds, images, and other visual elements to extend
+    /// edge-to-edge while content remains in the safe area. The native renderer
+    /// lays the view out clear of every region it does not ignore.
     ///
     /// # Arguments
-    /// * `edges` - The edges on which to ignore safe area insets
+    /// * `ignore` - The regions and edges to ignore: an
+    ///   [`EdgeSet`](waterui_layout::EdgeSet) ignores every region on its
+    ///   edges, and [`SafeAreaRegions::on`](waterui_layout::SafeAreaRegions::on)
+    ///   names one region.
     ///
     /// # Example
     ///
@@ -1200,9 +1266,13 @@ pub trait ViewExt: View + Sized {
     /// // Only extend to top (under status bar)
     /// let header = text!("Title")
     ///     .ignore_safe_area(EdgeSet::TOP);
+    ///
+    /// // Lay an editor under the keyboard but still above the container inset
+    /// let editor = text!("editor")
+    ///     .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM));
     /// ```
-    fn ignore_safe_area(self, edges: EdgeSet) -> Metadata<IgnoreSafeArea> {
-        Metadata::new(self, IgnoreSafeArea::new(edges))
+    fn ignore_safe_area(self, ignore: impl Into<IgnoreSafeArea>) -> Metadata<IgnoreSafeArea> {
+        Metadata::new(self, ignore.into())
     }
 
     /// Installs a plugin into the environment.

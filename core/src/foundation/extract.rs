@@ -157,7 +157,8 @@ impl<T: 'static + Clone> Extractor for State<T> {
             || {
                 Err(Error::msg(format!(
                     "Environment state `{}` not found; install the value with \
-                     `.state(&value)` in the handler's modifier chain or on an ancestor",
+                     `.state(&value)` in the handler's modifier chain, on an ancestor, \
+                     or with `App::state` for an application-scoped handler",
                     type_name::<T>()
                 )))
             },
@@ -172,7 +173,8 @@ impl<T: 'static + Clone> Extractor for State<T> {
                 Err(Error::msg(format!(
                     "Environment state `{}` not found at position {}; install \
                      the value with `.state(&value)` in the handler's modifier \
-                     chain or on an ancestor",
+                     chain, on an ancestor, or with `App::state` for an \
+                     application-scoped handler",
                     type_name::<T>(),
                     position
                 )))

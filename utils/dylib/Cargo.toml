@@ -26,6 +26,7 @@ default = [
     "assets",
     "webview",
     "snackbar",
+    "dialog",
     "highlight",
     "locale-datetime",
     "locale-list",
@@ -42,8 +43,10 @@ video = ["waterui-internal/video"]
 remote = ["waterui-internal/remote"]
 video-gpu = ["waterui-internal/video-gpu"]
 webview = ["waterui-internal/webview"]
+ts = ["waterui-internal/ts"]
 navigation-restoration = ["waterui-internal/navigation-restoration"]
 snackbar = ["waterui-internal/snackbar"]
+dialog = ["waterui-internal/dialog"]
 flow-markdown = ["waterui-internal/flow-markdown"]
 markdown-math = ["waterui-internal/markdown-math"]
 std = ["waterui-internal/std"]

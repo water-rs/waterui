@@ -1,0 +1,21 @@
+[package]
+name = "waterui-ts-engine-quickjs"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../../../README.md"
+repository.workspace = true
+description = "QuickJS-NG implementation of the WaterUI JavaScript runtime contract"
+keywords = ["typescript", "javascript", "quickjs", "waterui", "gui"]
+categories = ["gui"]
+
+[dependencies]
+waterui-ts-engine.workspace = true
+rquickjs.workspace = true
+
+[dev-dependencies]
+waterui-ts-engine = { workspace = true, features = ["conformance"] }
+
+[lints]
+workspace = true

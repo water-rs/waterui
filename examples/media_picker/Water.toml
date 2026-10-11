@@ -2,7 +2,7 @@ waterui_path = "../.."
 
 [package]
 name = "Media Picker Example"
-bundle_identifier = "com.waterui.media_picker_example"
+bundle_identifier = "com.waterui.mediapickerexample"
 
 # No photo library permission needed - system photo picker (PHPickerViewController)
 # only provides access to user-selected media without requiring library access

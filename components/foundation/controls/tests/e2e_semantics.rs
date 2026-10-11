@@ -10,11 +10,15 @@ use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, Str};
 use waterui_controls::{
-    Menu, TextField, Toggle, button, label, slider::slider, stepper::stepper, toggle,
+    Menu, TextField, Toggle, ToggleStyle, button, label, slider::slider, stepper::stepper, toggle,
 };
 use waterui_testing::{Role, Selector, SemanticApp, UiBuilder};
 
 use support::control_shell;
+
+/// The role a default-style toggle reports on this host — the platform's
+/// default style decides it, so queries for one hold on every host.
+const DEFAULT_TOGGLE: Role = Role::toggle(ToggleStyle::Automatic);
 
 /// Asserts that an interaction panics because the runtime rejected it —
 /// the contract for actions on disabled or clamped controls.
@@ -84,7 +88,7 @@ fn disabled_scope_reaches_every_control_in_the_subtree(ui: UiBuilder) {
 
     for (role, label) in [
         (Some(Role::BUTTON), "Act"),
-        (Some(Role::SWITCH), "Flag"),
+        (Some(DEFAULT_TOGGLE), "Flag"),
         (Some(Role::SLIDER), "Amount"),
         // The stepper reports accesskit's spin-button role, which the testing
         // harness has no `Role` constant for yet, so it is matched by label.
@@ -178,14 +182,17 @@ fn toggle_tap_toggles_binding(ui: UiBuilder) {
     });
 
     app.query()
-        .role(Role::SWITCH)
+        .role(DEFAULT_TOGGLE)
         .label("Airplane Mode")
         .checked(false)
         .assert_exists();
-    app.query().role(Role::SWITCH).label("Airplane Mode").tap();
+    app.query()
+        .role(DEFAULT_TOGGLE)
+        .label("Airplane Mode")
+        .tap();
     assert!(enabled.snapshot(), "toggle tap should flip binding");
     app.query()
-        .role(Role::SWITCH)
+        .role(DEFAULT_TOGGLE)
         .label("Airplane Mode")
         .checked(true)
         .assert_exists();
@@ -196,17 +203,39 @@ fn toggle_tap_toggles_binding(ui: UiBuilder) {
 }
 
 #[waterui::test(viewport = (320, 240))]
-fn toggle_accessibility_role_is_switch(ui: UiBuilder) {
-    let enabled = Binding::bool(false);
-    let enabled_for_view = enabled;
+fn toggle_accessibility_role_follows_the_resolved_style(ui: UiBuilder) {
+    let wifi = Binding::bool(false);
+    let bluetooth = Binding::bool(false);
+    let airdrop = Binding::bool(false);
 
-    let mut app = ui.mount(move || control_shell(Toggle::new("Wi-Fi", &enabled_for_view)));
+    let mut app = ui.mount(move || {
+        control_shell(vstack((
+            Toggle::new("Wi-Fi", &wifi).switch(),
+            Toggle::new("Bluetooth", &bluetooth).checkbox(),
+            Toggle::new("AirDrop", &airdrop),
+        )))
+    });
 
-    app.query()
-        .role(Role::SWITCH)
-        .label("Wi-Fi")
-        .checked(false)
-        .assert_exists();
+    for (label, role) in [
+        ("Wi-Fi", Role::SWITCH),
+        ("Bluetooth", Role::CHECKBOX),
+        // The default style is the platform's: a checkbox on macOS, a switch
+        // elsewhere.
+        (
+            "AirDrop",
+            if cfg!(target_os = "macos") {
+                Role::CHECKBOX
+            } else {
+                Role::SWITCH
+            },
+        ),
+    ] {
+        app.query()
+            .role(role)
+            .label(label)
+            .checked(false)
+            .assert_exists();
+    }
 }
 
 #[waterui::test(viewport = (320, 240))]
@@ -466,7 +495,7 @@ fn disabled_toggle_ignores_input_and_reports_disabled(ui: UiBuilder) {
     let mut app =
         ui.mount(move || control_shell(toggle("Wi-Fi", &enabled_for_view).disabled(true)));
 
-    let element = app.query().role(Role::SWITCH).label("Wi-Fi").single();
+    let element = app.query().role(DEFAULT_TOGGLE).label("Wi-Fi").single();
     assert!(
         !element.node().enabled(),
         "disabled-toggle: switch should expose disabled accessibility state"
@@ -474,7 +503,7 @@ fn disabled_toggle_ignores_input_and_reports_disabled(ui: UiBuilder) {
     assert_rejected(
         "disabled-toggle: accessibility tap should be rejected",
         || {
-            app.query().role(Role::SWITCH).label("Wi-Fi").tap();
+            app.query().role(DEFAULT_TOGGLE).label("Wi-Fi").tap();
         },
     );
     assert!(
@@ -499,7 +528,7 @@ fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
 
     let element = app
         .query()
-        .role(Role::SWITCH)
+        .role(DEFAULT_TOGGLE)
         .label("Notifications")
         .single();
     assert!(
@@ -509,7 +538,10 @@ fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
     assert_rejected(
         "disabled-scope: tap inside a disabled container must be rejected",
         || {
-            app.query().role(Role::SWITCH).label("Notifications").tap();
+            app.query()
+                .role(DEFAULT_TOGGLE)
+                .label("Notifications")
+                .tap();
         },
     );
     assert!(
@@ -520,13 +552,16 @@ fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
     form_locked.set(false);
     assert!(
         app.query()
-            .role(Role::SWITCH)
+            .role(DEFAULT_TOGGLE)
             .label("Notifications")
             .enabled(true)
             .wait_for_existence(core::time::Duration::from_secs(2)),
         "disabled-scope: re-enabling the container must re-enable the toggle"
     );
-    app.query().role(Role::SWITCH).label("Notifications").tap();
+    app.query()
+        .role(DEFAULT_TOGGLE)
+        .label("Notifications")
+        .tap();
     assert!(
         enabled.snapshot(),
         "disabled-scope: tap after re-enable must flip the binding"

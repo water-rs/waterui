@@ -2,8 +2,8 @@
 
 They run against the repository's own root manifest, so the split the
 release workflows record is the one asserted here: `framework_scaffold` in
-the CLI (`water-rs/cli`, `src/project_model/framework.rs`) derives the same
-tables for the same tree — the certification contract holds them to
+the CLI (`cli/src/project_model/framework.rs` in this tree) derives the
+same tables for the same tree — the certification contract holds them to
 agreement.
 """
 
@@ -61,29 +61,37 @@ def test_stable_scaffolds_every_released_package_by_version():
         assert name not in experimental
 
     # Backend coordinates are not scaffold packages: they stay in the table.
-    assert "apple-backend-url" in scaffold
+    assert "apple-backend-path" in scaffold
     assert "android-backend-revision" in scaffold
-    # Host coordinates are not scaffold packages either.
-    assert "hydrolysis-android-host-url" in scaffold
-    assert "hydrolysis-android-host-revision" in scaffold
+    # `hydrolysis` is an in-tree member resolved through `hydrolysis-path`
+    # (#1635): the `-path` member declaration stays in the table, and it is
+    # never a scaffold package with a requirement of its own.
+    assert scaffold["hydrolysis-path"] == "backends/hydrolysis"
+    assert "hydrolysis" not in SCAFFOLD_PACKAGES
+    assert "hydrolysis-version" not in scaffold
+    # Host coordinates are not scaffold packages either. The Hydrolysis
+    # Android host lives in this repository (#1428): no external pin exists,
+    # and the subdirectory names the Gradle composite root inside the
+    # certified framework checkout.
     assert "hydrolysis-android-host-subdirectory" in scaffold
+    assert "hydrolysis-android-host-url" not in scaffold
+    assert "hydrolysis-android-host-revision" not in scaffold
 
 
-def test_hydrolysis_android_host_pin_is_scaffolded_on_every_channel():
+def test_hydrolysis_android_host_path_is_scaffolded_on_every_channel():
     """`--platform android --backend hydrolysis` reads the host coordinates
-    through the resolved framework on all three channels, so the pin must
-    survive the scaffold split regardless of which packages the channel
-    withholds."""
+    through the resolved framework on all three channels, so the in-tree
+    path must survive the scaffold split regardless of which packages the
+    channel withholds. The host is part of this repository (#1428): the
+    revision the manifest certifies is the revision the host is checked out
+    at, so no external URL or second pin may reappear."""
     for channel in ("dev", "nightly", "stable"):
         scaffold, _ = framework_manifest.channel_scaffold(FRAMEWORK, channel)
-        assert scaffold["hydrolysis-android-host-url"].startswith(
-            "https://github.com/water-rs/"
-        ), f"{channel} must carry hydrolysis-android-host-url"
-        revision = scaffold["hydrolysis-android-host-revision"]
-        assert len(revision) == 40 and all(
-            character in "0123456789abcdef" for character in revision
-        ), f"{channel} must carry an immutable hydrolysis-android-host-revision"
-        assert scaffold["hydrolysis-android-host-subdirectory"] == "android"
+        assert scaffold["hydrolysis-android-host-subdirectory"] == (
+            "backends/hydrolysis/android"
+        ), f"{channel} must carry the in-tree hydrolysis-android-host-subdirectory"
+        assert "hydrolysis-android-host-url" not in scaffold
+        assert "hydrolysis-android-host-revision" not in scaffold
 
 
 def test_stable_withholds_git_pinned_packages_from_the_scaffold_table():
@@ -91,19 +99,20 @@ def test_stable_withholds_git_pinned_packages_from_the_scaffold_table():
     # dependency's shape alone, so a synthetic pin exercises it on every tree.
     name = SCAFFOLD_PACKAGES[-1]
     pinned = with_git_pin(FRAMEWORK, name)
-    dependency = pinned["workspace"]["dependencies"][name]
-
     scaffold, experimental = framework_manifest.channel_scaffold(pinned, "stable")
 
     assert not any(key.startswith(f"{name}-") for key in scaffold), (
         f"stable must not scaffold git-pinned {name}"
     )
+    pinned_dependencies = pinned["workspace"]["dependencies"]
     assert experimental == {
-        name: {
-            "version": dependency["version"],
-            "git": dependency["git"],
-            "rev": dependency["rev"],
+        package: {
+            "version": pinned_dependencies[package]["version"],
+            "git": pinned_dependencies[package]["git"],
+            "rev": pinned_dependencies[package]["rev"],
         }
+        for package in SCAFFOLD_PACKAGES
+        if package == name or git_pinned(package)
     }
     for other in SCAFFOLD_PACKAGES:
         if other != name and not git_pinned(other):
@@ -124,22 +133,21 @@ def test_nightly_carries_git_pinned_packages_in_the_scaffold_table():
     assert experimental == {}
 
 
-def test_nami_pinned_backends_resolve_through_patch_pins():
+def test_nami_pinned_backends_are_git_pinned_scaffold_packages():
     """A scaffolded graph carries this workspace's nami pin, which the
-    published `waterui-dew`/`waterui-gtk`/`waterui-winui` cannot satisfy —
+    published `waterui-gtk`/`waterui-winui` cannot satisfy —
     their releases still require the nami line that kept `Signal::get`
     (nami#26). Until each backend releases a migrated version, its
-    `[patch.crates-io]` pin is what keeps a generated project resolving;
-    without it `water fetch` fails resolution before scaffolding finishes.
-    Drop this test with the pins."""
-    patches = FRAMEWORK["patch"]["crates-io"]
-    for name in ("waterui-dew", "waterui-gtk", "waterui-winui"):
-        dependency = patches.get(name)
-        assert isinstance(dependency, dict), (
-            f"[patch.crates-io] must pin {name} to its nami-migration head"
+    `[workspace.dependencies]` requirement pins the nami-migration head, so
+    `dev` and `nightly` scaffold that commit and `stable` withholds the
+    package under `experimental-packages`. Drop this test with the pins."""
+    for name in ("waterui-gtk", "waterui-winui"):
+        assert git_pinned(name), (
+            f"[workspace.dependencies].{name} must pin its nami-migration head"
         )
+        dependency = WORKSPACE[name]
         rev = dependency.get("rev", "")
         assert len(rev) == 40 and all(c in "0123456789abcdef" for c in rev), (
-            f"[patch.crates-io].{name} must pin an immutable revision"
+            f"[workspace.dependencies].{name} must pin an immutable revision"
         )
         assert dependency["git"].startswith("https://github.com/water-rs/")

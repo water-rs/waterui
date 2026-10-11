@@ -3,7 +3,7 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::fmt;
 
-use cherenkov::Recorder;
+use crate::draw::Recorder;
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
@@ -42,7 +42,7 @@ pub trait SceneContent: 'static {
     /// through `resources` whatever engine resource the drawing uses.
     ///
     /// The recorder is the engine's live recording target: constant operands
-    /// freeze into the [`Content`](cherenkov::Content) it finishes, and
+    /// freeze into the [`Content`](crate::draw::Content) it finishes, and
     /// `nami` signals handed to it stay bound, so a colour or transform the
     /// content draws from a signal animates without another call here.
     ///
@@ -66,9 +66,10 @@ pub trait SceneContent: 'static {
     /// Registering returns a [`Registered`] handle, which content keeps for
     /// as long as it goes on drawing the resource; asking again for a source
     /// it still holds returns the same registration without a new upload.
-    /// A new registration is a round trip to the render thread and blocks
-    /// this call — and so the host's frame — until the engine has the
-    /// resource; see the blocking contract on
+    /// A new registration is validated on the calling thread and queued on
+    /// the target — an image beyond
+    /// [`RecordingResources::image_limits`](crate::resources::RecordingResources::image_limits)
+    /// fails right there with `ResourceError::TooLarge`; see the contract on
     /// [`SceneResources`](crate::resources::SceneResources#blocking).
     /// The id to record comes from [`RecordingResources::name`], which holds
     /// the registration for this recording. It is the only way to get an id
@@ -97,6 +98,25 @@ pub trait SceneContent: 'static {
         width: f32,
         height: f32,
     ) -> bool;
+
+    /// Reconstructs this content for a newly created engine generation.
+    ///
+    /// A `SceneContent` may own registrations, a Cherenkov recording, or
+    /// another object whose identity belongs to the engine that created it.
+    /// Those values cannot be carried into a replacement engine. Recovery
+    /// clears or rebuilds this content's engine-bound state while retaining
+    /// its semantic/source state for the next [`build_scene`](Self::build_scene)
+    /// call. The host invokes this before it records the first scene on the
+    /// replacement engine, and then supplies that call's `RecordingResources`
+    /// as usual.
+    ///
+    /// Content that owns no engine-bound state must implement this explicitly
+    /// as an empty reset.
+    /// Content that caches a [`Registered`](crate::scene::resources::Registered),
+    /// a [`PictureRecording`](crate::picture::PictureRecording), or another
+    /// generation-bound value must preserve its semantic inputs while
+    /// rebuilding that value.
+    fn rebuild_for_engine(&mut self);
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     ///
@@ -204,7 +224,7 @@ pub trait SceneContent: 'static {
     /// Backends place the input-method candidate window against it, so
     /// content that accepts composed text reports its caret. `None` — the
     /// default — means there is no caret to place the panel against.
-    fn ime_caret(&self) -> Option<cherenkov::kurbo::Rect> {
+    fn ime_caret(&self) -> Option<crate::draw::kurbo::Rect> {
         None
     }
 }
@@ -275,9 +295,12 @@ fn scale_across(named: f32, natural_along: f32, natural_across: f32) -> f32 {
 ///
 /// Content with no size of its own takes whatever it is offered, exactly as it
 /// always has. Content that *is* a size is content-sized and claims no leftover
-/// space: an icon in a row must not eat the row, and a container that wants it
-/// bigger says so with a frame, which [`resolve_scene_proposal`] then honours.
-/// This is the rule `waterui-image` already measures its own surfaces by.
+/// space: an icon in a row must not eat the row. [`resolve_scene_proposal`]
+/// honours finite proposals for the scene itself; `waterui-image` adds its own
+/// non-resizable layout, which answers the natural size to an unspecified
+/// proposal and only scales down under smaller finite proposals, preserving
+/// the aspect ratio. It never scales up and remains `StretchAxis::None`.
+/// A `.resizable()` image instead fills the proposal per its `content_mode`.
 #[must_use]
 pub const fn scene_stretch_axis(intrinsic: Option<Size>) -> StretchAxis {
     if intrinsic.is_some() {
@@ -345,6 +368,18 @@ impl SceneView {
     pub fn into_content(self) -> Box<dyn SceneContent> {
         self.content
     }
+
+    /// Replaces this view's content with its source-preserving reconstruction
+    /// for a newly created engine generation.
+    ///
+    /// The returned view keeps the same layout and accessibility contract;
+    /// only engine-bound scene state is reconstructed. The host must call this
+    /// before the first recording made with the replacement engine.
+    #[must_use]
+    pub fn rebuild_for_engine(mut self) -> Self {
+        self.content.rebuild_for_engine();
+        self
+    }
 }
 
 impl NativeView for SceneView {
@@ -368,6 +403,8 @@ impl View for SceneView {
 
 #[cfg(test)]
 mod tests {
+    use crate::draw::{Draw, kurbo::Shape};
+
     use super::{
         NativeView, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView, Size,
         StretchAxis, resolve_scene_proposal, scene_stretch_axis,
@@ -375,6 +412,33 @@ mod tests {
 
     /// Content that is naturally 100x200 — twice as tall as it is wide.
     struct Tall;
+
+    struct Rebuildable {
+        value: f32,
+    }
+
+    impl SceneContent for Rebuildable {
+        fn build_scene(
+            &mut self,
+            recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            width: f32,
+            height: f32,
+        ) -> bool {
+            recorder.fill(
+                crate::draw::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+                    .to_path(0.1),
+                crate::draw::WorkingColor::BLACK,
+            );
+            false
+        }
+
+        fn intrinsic_size(&self) -> Option<Size> {
+            Some(Size::new(self.value, 1.0))
+        }
+
+        fn rebuild_for_engine(&mut self) {}
+    }
 
     impl SceneContent for Tall {
         fn build_scene(
@@ -390,6 +454,8 @@ mod tests {
         fn intrinsic_size(&self) -> Option<Size> {
             Some(Size::new(100.0, 200.0))
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content with no size of its own, which is the trait's default.
@@ -405,6 +471,8 @@ mod tests {
         ) -> bool {
             false
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content that says what it draws, the way a formula or a chart does.
@@ -424,6 +492,8 @@ mod tests {
         fn accessibility_value(&self) -> Option<alloc::string::String> {
             Some("x squared plus one".into())
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// The view must forward exactly what its content offers a screen reader:
@@ -444,6 +514,17 @@ mod tests {
             SceneView::new(Sizeless).accessibility_value(),
             None,
             "content with nothing to say must not invent a value either"
+        );
+    }
+
+    #[test]
+    fn reconstruction_replaces_engine_bound_content_and_preserves_semantic_state() {
+        let view = SceneView::new(Rebuildable { value: 37.0 });
+        let rebuilt = view.rebuild_for_engine();
+        assert_eq!(
+            rebuilt.intrinsic_size(),
+            Some(Size::new(37.0, 1.0)),
+            "reconstruction must carry semantic state into the new content"
         );
     }
 

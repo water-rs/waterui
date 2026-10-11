@@ -146,8 +146,11 @@ impl IntoFFI for App {
             menu_bar,
             env,
             last_window,
+            // The FFI host drives the application lifetime — the machine is
+            // never started.
+            termination: _,
         } = self.into_parts();
-        let menu_bar = crate::menu_items_views(resolve_menu_bar_items(&menu_bar, &env));
+        let menu_bar = crate::menu_items_views(&resolve_menu_bar_items(&menu_bar, &env));
         WuiApp {
             windows: windows.into_ffi(),
             menu_bar,
@@ -240,7 +243,7 @@ mod tests {
         menu_drops: &Rc<Cell<usize>>,
         env_drops: &Rc<Cell<usize>>,
     ) -> WuiApp {
-        let menu_bar = crate::menu_items_views(Computed::new(TrackedMenuSignal {
+        let menu_bar = crate::menu_items_views(&Computed::new(TrackedMenuSignal {
             _probe: Rc::new(DropProbe(menu_drops.clone())),
         }));
         let mut env = Environment::new();

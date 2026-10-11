@@ -6,7 +6,7 @@
 
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 pub const MAX_PLANES: usize = 4;
 
 #[repr(C)]
@@ -16,6 +16,11 @@ pub struct WaterWpeRuntime {
 
 #[repr(C)]
 pub struct WaterWpePage {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct WaterWpeReply {
     _private: [u8; 0],
 }
 
@@ -47,10 +52,10 @@ pub type DestroyNotify = unsafe extern "C" fn(*mut c_void);
 pub type EventCallback =
     unsafe extern "C" fn(*mut c_void, c_uint, *const c_char, *const c_char, c_double);
 pub type FrameCallback = unsafe extern "C" fn(*mut c_void, *const WaterWpeFrame);
-/// Receives the calling document's origin and one bridge envelope verbatim, and
-/// returns the reply script.
+/// Receives the calling document's authenticated origin, bridge envelope, and
+/// owned reply token.
 pub type MessageCallback =
-    unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> WaterWpeBytes;
+    unsafe extern "C" fn(*mut c_void, *mut WaterWpeReply, *const c_char, *const c_char);
 pub type ResultCallback = unsafe extern "C" fn(*mut c_void, bool, *const c_char, usize);
 
 /// One answer to a `waterui://localhost` request. `headers` is `"Name: value"`
@@ -87,6 +92,11 @@ pub struct WpeApi {
     pub page_free: unsafe extern "C" fn(*mut WaterWpePage),
     pub page_set_asset_server:
         unsafe extern "C" fn(*mut WaterWpePage, AssetCallback, *mut c_void, DestroyNotify),
+    pub page_set_bridge_origins: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
+    pub page_get_web_process_identifier:
+        unsafe extern "C" fn(*mut WaterWpePage, ResultCallback, *mut c_void),
+    pub reply_return: unsafe extern "C" fn(*mut WaterWpeReply, *const c_char, usize),
+    pub reply_free: unsafe extern "C" fn(*mut WaterWpeReply),
     pub page_load_uri: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
     pub page_go_back: unsafe extern "C" fn(*mut WaterWpePage),
     pub page_go_forward: unsafe extern "C" fn(*mut WaterWpePage),
@@ -121,7 +131,6 @@ pub struct WpeApi {
         c_uint,
     ),
     pub page_key: unsafe extern "C" fn(*mut WaterWpePage, bool, c_uint, c_uint, c_uint, c_uint),
-    pub page_evaluate: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
     pub page_add_script:
         unsafe extern "C" fn(*mut WaterWpePage, *const c_char, *const c_char, c_uint),
     pub page_set_cookie: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
@@ -158,6 +167,13 @@ impl WpeApi {
                 page_new: symbol(library, b"water_wpe_page_new\0"),
                 page_free: symbol(library, b"water_wpe_page_free\0"),
                 page_set_asset_server: symbol(library, b"water_wpe_page_set_asset_server\0"),
+                page_set_bridge_origins: symbol(library, b"water_wpe_page_set_bridge_origins\0"),
+                page_get_web_process_identifier: symbol(
+                    library,
+                    b"water_wpe_page_get_web_process_identifier\0",
+                ),
+                reply_return: symbol(library, b"water_wpe_reply_return\0"),
+                reply_free: symbol(library, b"water_wpe_reply_free\0"),
                 page_load_uri: symbol(library, b"water_wpe_page_load_uri\0"),
                 page_go_back: symbol(library, b"water_wpe_page_go_back\0"),
                 page_go_forward: symbol(library, b"water_wpe_page_go_forward\0"),
@@ -176,7 +192,6 @@ impl WpeApi {
                 page_pointer_move: symbol(library, b"water_wpe_page_pointer_move\0"),
                 page_scroll: symbol(library, b"water_wpe_page_scroll\0"),
                 page_key: symbol(library, b"water_wpe_page_key\0"),
-                page_evaluate: symbol(library, b"water_wpe_page_evaluate\0"),
                 page_add_script: symbol(library, b"water_wpe_page_add_script\0"),
                 page_set_cookie: symbol(library, b"water_wpe_page_set_cookie\0"),
                 page_get_cookies: symbol(library, b"water_wpe_page_get_cookies\0"),

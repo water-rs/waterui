@@ -1,0 +1,43 @@
+name: Store the WPE WebKit prefix
+description: >-
+  Packs `<work-directory>/runtime`, the install prefix build-webkit.sh just
+  produced, and pushes it to the GHCR store under the reference the parent
+  `wpe-webkit-prefix` action resolved. Runs only after that action, in the
+  same job: it relies on the `oras` install and the ghcr.io login it left
+  behind. The calling job needs `packages: write`.
+
+inputs:
+  reference:
+    description: The `reference` output of the `wpe-webkit-prefix` action.
+    required: true
+  work-directory:
+    description: The build-runtime.sh work directory the prefix lives under.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The stored layout is one zstd tarball of `runtime/`, unpacked by the
+    # parent action into the same work directory. cmake bakes the absolute
+    # prefix path into the installed pkg-config files, which is why the
+    # prefix is restored to the same place it was built rather than anywhere
+    # else. `org.opencontainers.image.source` links the package to this
+    # repository.
+    - shell: bash
+      env:
+        REFERENCE: ${{ inputs.reference }}
+        WORK_DIRECTORY: ${{ inputs.work-directory }}
+      run: |
+        set -euo pipefail
+        upload="$RUNNER_TEMP/wpe-webkit-prefix-upload"
+        mkdir -p "$upload"
+        tar --use-compress-program 'zstd -T0' --create --file "$upload/prefix.tar.zst" \
+          --directory "$WORK_DIRECTORY" runtime
+        cd "$upload"
+        oras push \
+          --artifact-type application/vnd.water-rs.wpe-webkit-prefix.v1 \
+          --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+          "$REFERENCE" \
+          prefix.tar.zst:application/vnd.water-rs.wpe-webkit-prefix.v1.tar+zstd
+        cd /
+        rm -rf "$upload"

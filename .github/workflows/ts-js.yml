@@ -1,0 +1,35 @@
+name: TypeScript Runtime JavaScript
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Runtime unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.4"
+      - name: Run JavaScript runtime tests
+        id: suite
+        run: bun test components/platform/ts/tests/js/ --reporter=junit --reporter-outfile=ts-js.xml
+      - name: Upload JavaScript test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ts-js-results
+          path: ts-js.xml
+          if-no-files-found: error
+      - name: Report JavaScript test result
+        if: always()
+        env:
+          RESULT: ${{ steps.suite.outcome }}
+        run: |
+          printf '### TypeScript Runtime JavaScript\n\nRuntime unit tests: **%s**\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"

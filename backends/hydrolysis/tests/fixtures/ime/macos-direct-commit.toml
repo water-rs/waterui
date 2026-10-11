@@ -1,0 +1,27 @@
+# Event order source: AppKit NSTextInputClient as implemented by winit
+# (winit-0.30 src/platform_impl/macos/view.rs). With no marked text, a
+# keystroke that produces text goes through `insertText`: winit reports the
+# `KeyboardInput` for the key AND an `Ime::Commit` carrying the character
+# the input-method translation produced — the same keystroke delivered
+# twice, once as a key and once as text. fcitx5/IBus in direct-commit mode
+# deliver the same shape on Linux. Order derived from the documented flow
+# above; not an observed platform trace.
+final_text = "hi"
+selection = [2, 2]
+committing_key_swallowed = false
+
+# Typing "hi" with no composition: each keystroke pairs its key event with
+# the commit it produced, and the commit alone must carry the text.
+[[step]]
+events = [
+    { key = { logical = "h", code = "KeyH", state = "pressed" } },
+    { commit = "h" },
+    { key = { logical = "h", code = "KeyH", state = "released" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "i", code = "KeyI", state = "pressed" } },
+    { commit = "i" },
+    { key = { logical = "i", code = "KeyI", state = "released" } },
+]

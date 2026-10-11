@@ -200,15 +200,16 @@ fn emit_module(
 /// - one `const _: &[u8] = include_bytes!(<abs file>);` per planned asset, so
 ///   adding or editing a file retriggers expansion (a proc macro's own reads
 ///   are invisible to Cargo's dependency graph otherwise);
-/// - one metadata static named `waterui_meta_bundle_<mount>` whose
-///   NUL-terminated [`BundleMountMeta`] payload the CLI reads back from the
-///   compiled artifact's symbol table, in every profile — a `water build
-///   --release` mounts the same bundle a debug build does. It carries no
-///   `#[used]`: the CLI reads the crate's own rlib
+/// - one metadata static named `waterui_meta_bundle_<mount>` parked in the
+///   `.wmeta` section and holding the self-describing record — the name,
+///   NUL, the [`BundleMountMeta`] payload, NUL — the CLI reads back from the
+///   compiled artifact's metadata directory, in every profile — a `water
+///   build --release` mounts the same bundle a debug build does. It carries
+///   no `#[used]`: the CLI reads the crate's own rlib
 ///   (`waterui-cli::build::app_library_artifact` selects the app crate's rlib
-///   over any linked artifact), and archive members keep their symbols
-///   whether or not downstream code references them, so nothing marks the
-///   static for retention into a shipped binary — the linker dead-strips it.
+///   over any linked artifact), and archive members keep their bytes whether
+///   or not downstream code references them, so nothing marks the record for
+///   retention into a shipped binary — the linker dead-strips it.
 fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
     if !root.is_dir() {
         return syn::Error::new(
@@ -254,10 +255,10 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
         path: root,
         project: None,
     };
-    let meta_ident = syn_ident(&meta.symbol_leaf());
-    let payload = meta.to_payload();
-    let payload_len = payload.len();
-    let payload_lit = syn::LitByteStr::new(&payload, span);
+    let meta_ident = syn_ident(&meta.record_name());
+    let record = meta.to_record();
+    let record_len = record.len();
+    let record_lit = syn::LitByteStr::new(&record, span);
     let module_doc = format!("Bundle assets mounted at `{mount}`.");
 
     quote! {
@@ -267,9 +268,14 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
 
             #(#tracking)*
 
+            // The record lives in the metadata directory section, not on the
+            // symbol table: a linked image need not carry one (a PE keeps
+            // none), so the record names itself.
             #[allow(non_upper_case_globals)]
+            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
             #[doc(hidden)]
-            pub static #meta_ident: [u8; #payload_len] = *#payload_lit;
+            pub static #meta_ident: [u8; #record_len] = *#record_lit;
         }
     }
 }
@@ -401,9 +407,9 @@ const WEB_MOUNT: &str = "web";
 ///
 /// Building the frontend and staging `<root>/<out_dir>` into the platform
 /// bundle are the CLI's job (`water package` / `water run`); the macro records
-/// the resolved paths in a `waterui_meta_bundle_web` artifact-channel symbol
-/// the CLI reads back from the compiled artifact's symbol table, in every
-/// profile. The macro never runs a bundler, never reads `Water.toml`, and
+/// the resolved paths in a `waterui_meta_bundle_web` artifact-channel record
+/// the CLI reads back from the compiled artifact's metadata directory, in
+/// every profile. The macro never runs a bundler, never reads `Water.toml`, and
 /// embeds no frontend bytes in the binary. On a development-linkage build
 /// (the crate's `dev` feature, which the generated backend enables for `water
 /// run`/`preview`/`build`) the expansion first consults the dev-server
@@ -413,8 +419,8 @@ const WEB_MOUNT: &str = "web";
 /// serves the staged bundle.
 ///
 /// One `include_web!` per application: a second invocation emits a metadata
-/// symbol with the same leaf and a different payload, which the CLI's artifact
-/// enumeration reports as an error.
+/// record with the same name and a different payload, which the CLI's
+/// artifact enumeration reports as an error.
 ///
 /// The expansion is an ordinary [`WebViewOpen`](waterui_webview::WebViewOpen),
 /// so everything chains as usual:
@@ -475,10 +481,10 @@ pub fn include_web(input: TokenStream) -> TokenStream {
         path: out,
         project: Some(root.clone()),
     };
-    let meta_ident = syn_ident(&meta.symbol_leaf());
-    let payload = meta.to_payload();
-    let payload_len = payload.len();
-    let payload_lit = syn::LitByteStr::new(&payload, root_span);
+    let meta_ident = syn_ident(&meta.record_name());
+    let record = meta.to_record();
+    let record_len = record.len();
+    let record_lit = syn::LitByteStr::new(&record, root_span);
     let package_json = LitStr::new(
         root.join("package.json").to_string_lossy().as_ref(),
         root_span,
@@ -489,11 +495,13 @@ pub fn include_web(input: TokenStream) -> TokenStream {
     quote! {
         {
             #[allow(non_upper_case_globals)]
+            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
             #[doc(hidden)]
-            static #meta_ident: [u8; #payload_len] = *#payload_lit;
+            static #meta_ident: [u8; #record_len] = *#record_lit;
             // A block-scoped static is private: it is only emitted into the
             // object file when the surrounding code refers to it, so this
-            // throwaway reference is what puts the symbol into the rlib the
+            // throwaway reference is what puts the record into the rlib the
             // CLI reads. `#[used]` would do that too, but it also survives
             // the linker's dead stripping and ships in the binary.
             let _ = &#meta_ident;

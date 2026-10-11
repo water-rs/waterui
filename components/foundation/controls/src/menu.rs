@@ -1,6 +1,13 @@
 //! Semantic menu and command APIs shared by popup menus and future system chrome.
 
-use alloc::{rc::Rc, vec, vec::Vec};
+use alloc::{
+    format,
+    rc::Rc,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+use core::fmt;
 
 use nami::{
     Computed, Signal, SignalExt, SignalIdentity, impl_constant,
@@ -8,11 +15,13 @@ use nami::{
     watcher::{BoxWatcherGuard, Context, WatcherGuard},
 };
 use waterui_core::Str;
+pub use waterui_core::key::NamedKey;
 use waterui_core::{
     AnyView, Environment, View,
     extract::State,
     handler::{Handler, SharedAction, shared_action},
     interaction::Disabled,
+    key::Key,
     layout::StretchAxis,
     raw_view,
 };
@@ -68,19 +77,232 @@ impl ShortcutModifiers {
     }
 }
 
+/// The key a [`Shortcut`] fires on: one character, or a named key from the
+/// W3C `KeyboardEvent.key` vocabulary — the same [`NamedKey`] that
+/// `SurfaceInputEvent::Key` carries.
+///
+/// The variants are public so backends can match on them; constructing one
+/// directly bypasses validation — a `Named` modifier or lock key, or a
+/// `Character` control character, names a key no press reports, so build
+/// keys through the `From`/`FromStr` conversions that refuse them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ShortcutKey {
+    /// A key that produces one character. Letters match regardless of case;
+    /// Shift is a separate modifier.
+    Character(char),
+    /// A named key such as `Delete`, `Enter`, `F5` or `ArrowLeft`.
+    Named(NamedKey),
+}
+
+impl ShortcutKey {
+    /// Whether a key press reporting `key` fires this shortcut key. A
+    /// character matches case-insensitively, so `Shift` stays a separate
+    /// modifier rather than changing which key a chord names.
+    #[must_use]
+    pub fn matches(&self, key: &Key) -> bool {
+        match (self, key) {
+            (Self::Character(expected), Key::Character(pressed)) => {
+                let mut chars = pressed.chars();
+                chars.next().is_some_and(|pressed| {
+                    chars.next().is_none() && expected.to_lowercase().eq(pressed.to_lowercase())
+                })
+            }
+            (Self::Named(expected), Key::Named(pressed)) => expected == pressed,
+            _ => false,
+        }
+    }
+
+    /// The W3C key value of a press that fires this shortcut key.
+    #[must_use]
+    pub fn to_key(&self) -> Key {
+        match self {
+            Self::Character(character) => Key::Character(character.to_string()),
+            Self::Named(named) => Key::Named(*named),
+        }
+    }
+}
+
+/// The label a menu hint draws for a shortcut key: a letter in upper case,
+/// the space bar as `Space`, and a named key in the platform's own notation —
+/// the `⌦`/`↩`/`←` glyphs of Apple menus, the `Del`/`Enter`/`Left` text of
+/// Windows and Linux menus. A named key without a platform abbreviation
+/// shows its W3C name, which is already the label those menus print (`F5`,
+/// `Home`).
+impl fmt::Display for ShortcutKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Character(' ') => f.write_str("Space"),
+            Self::Character(character) => {
+                for upper in character.to_uppercase() {
+                    write!(f, "{upper}")?;
+                }
+                Ok(())
+            }
+            Self::Named(named) => match named_key_label(*named) {
+                Some(label) => f.write_str(label),
+                None => fmt::Display::fmt(named, f),
+            },
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "⌦",
+        NamedKey::Backspace => "⌫",
+        NamedKey::Enter => "↩",
+        NamedKey::Escape => "⎋",
+        NamedKey::Tab => "⇥",
+        NamedKey::ArrowUp => "↑",
+        NamedKey::ArrowDown => "↓",
+        NamedKey::ArrowLeft => "←",
+        NamedKey::ArrowRight => "→",
+        NamedKey::PageUp => "⇞",
+        NamedKey::PageDown => "⇟",
+        NamedKey::Home => "↖",
+        NamedKey::End => "↘",
+        NamedKey::Clear => "⌧",
+        _ => return None,
+    })
+}
+
+#[cfg(not(target_vendor = "apple"))]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "Del",
+        NamedKey::Insert => "Ins",
+        NamedKey::Escape => "Esc",
+        NamedKey::PageUp => "PgUp",
+        NamedKey::PageDown => "PgDn",
+        NamedKey::ArrowUp => "Up",
+        NamedKey::ArrowDown => "Down",
+        NamedKey::ArrowLeft => "Left",
+        NamedKey::ArrowRight => "Right",
+        _ => return None,
+    })
+}
+
+/// Whether `key` can name a shortcut: `Unidentified` and `Dead` are reported
+/// for presses the layout could not or did not resolve, and a modifier or
+/// lock key only changes the presses around it, so a chord on any of them
+/// could never fire.
+#[expect(
+    deprecated,
+    reason = "the legacy `Hyper` and `Super` still parse from their W3C names, so they are refused \
+              like the other modifiers"
+)]
+const fn named_key_fires(key: NamedKey) -> bool {
+    !matches!(
+        key,
+        NamedKey::Unidentified
+            | NamedKey::Dead
+            | NamedKey::Alt
+            | NamedKey::AltGraph
+            | NamedKey::CapsLock
+            | NamedKey::Control
+            | NamedKey::Fn
+            | NamedKey::FnLock
+            | NamedKey::Meta
+            | NamedKey::NumLock
+            | NamedKey::ScrollLock
+            | NamedKey::Shift
+            | NamedKey::Symbol
+            | NamedKey::SymbolLock
+            | NamedKey::Hyper
+            | NamedKey::Super
+    )
+}
+
+/// The named key a control character stands for, when it has one.
+const fn named_key_for_control(character: char) -> Option<NamedKey> {
+    match character {
+        '\u{8}' => Some(NamedKey::Backspace),
+        '\t' => Some(NamedKey::Tab),
+        '\n' | '\r' => Some(NamedKey::Enter),
+        '\u{1b}' => Some(NamedKey::Escape),
+        '\u{7f}' => Some(NamedKey::Delete),
+        _ => None,
+    }
+}
+
+impl From<char> for ShortcutKey {
+    /// # Panics
+    ///
+    /// Panics on a control character: a press reports the key it stands for
+    /// as a named key (`'\t'` is `NamedKey::Tab`), never as that character.
+    fn from(character: char) -> Self {
+        assert!(
+            !character.is_control(),
+            "{character:?} is a control character, not a shortcut key: {}",
+            named_key_for_control(character).map_or_else(
+                || String::from("no key press reports it, so the shortcut could never fire"),
+                |named| format!("the key press reports it as `NamedKey::{named}`, so use that"),
+            )
+        );
+        Self::Character(character)
+    }
+}
+
+impl From<NamedKey> for ShortcutKey {
+    /// # Panics
+    ///
+    /// Panics on `NamedKey::Unidentified`, `NamedKey::Dead` and the modifier
+    /// and lock keys: a shortcut on them could never fire.
+    fn from(key: NamedKey) -> Self {
+        assert!(
+            named_key_fires(key),
+            "`NamedKey::{key}` is not a valid shortcut key: it is unidentified, dead, a modifier \
+             or a lock key, so the shortcut could never fire"
+        );
+        Self::Named(key)
+    }
+}
+
+/// Parses a single character or a W3C named key; anything else is an error.
+impl core::str::FromStr for ShortcutKey {
+    type Err = InvalidShortcutKey;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut chars = value.chars();
+        if let (Some(character), None) = (chars.next(), chars.next()) {
+            if character.is_control() {
+                return Err(InvalidShortcutKey(value.to_string()));
+            }
+            return Ok(Self::Character(character));
+        }
+        value
+            .parse::<NamedKey>()
+            .ok()
+            .filter(|key| named_key_fires(*key))
+            .map(Self::Named)
+            .ok_or_else(|| InvalidShortcutKey(value.to_string()))
+    }
+}
+
+/// A string that is neither a single character nor a W3C named key.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{0}` is neither a single character nor a W3C KeyboardEvent.key name")]
+pub struct InvalidShortcutKey(pub String);
+
 /// Keyboard shortcut metadata attached to a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shortcut {
-    /// The key equivalent used to trigger the command.
-    pub key: Str,
+    /// The key the shortcut fires on.
+    pub key: ShortcutKey,
     /// Modifier flags required alongside the key.
     pub modifiers: ShortcutModifiers,
 }
 
 impl Shortcut {
-    /// Creates a shortcut from a key equivalent.
+    /// Creates a shortcut on `key` — a `char` or a [`NamedKey`].
+    ///
+    /// A backend whose platform menu cannot arm `key` — as an `AppKit` key
+    /// equivalent, a `UIKit` key command, a Win32 menu accelerator or an
+    /// Android menu shortcut character — panics when it builds the menu
+    /// item, so choose a key the target platforms' menus support.
     #[must_use]
-    pub fn new(key: impl Into<Str>) -> Self {
+    pub fn new(key: impl Into<ShortcutKey>) -> Self {
         Self {
             key: key.into(),
             modifiers: ShortcutModifiers::default(),
@@ -113,6 +335,45 @@ impl Shortcut {
     pub const fn control(mut self) -> Self {
         self.modifiers = self.modifiers.inserting(ShortcutModifiers::CONTROL);
         self
+    }
+}
+
+/// The trailing hint a menu row draws for the shortcut — `⌃⌥⇧⌘` glyphs on
+/// Apple targets, `Ctrl+Alt+Shift+` text elsewhere, where the command
+/// modifier is control, the platform's menu accelerator. The key renders
+/// through [`ShortcutKey`]'s own `Display`, so a menu row and an
+/// application's own listing of its chords cannot disagree.
+impl fmt::Display for Shortcut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let modifiers = self.modifiers;
+        #[cfg(target_vendor = "apple")]
+        {
+            if modifiers.control() {
+                f.write_str("⌃")?;
+            }
+            if modifiers.option() {
+                f.write_str("⌥")?;
+            }
+            if modifiers.shift() {
+                f.write_str("⇧")?;
+            }
+            if modifiers.command() {
+                f.write_str("⌘")?;
+            }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            if modifiers.control() || modifiers.command() {
+                f.write_str("Ctrl+")?;
+            }
+            if modifiers.option() {
+                f.write_str("Alt+")?;
+            }
+            if modifiers.shift() {
+                f.write_str("Shift+")?;
+            }
+        }
+        fmt::Display::fmt(&self.key, f)
     }
 }
 
@@ -218,8 +479,12 @@ impl Command {
         }
     }
 
+    /// Resolves the command against `env` into the payload backends render
+    /// — what every declared command goes through, and how a backend builds
+    /// a command of its own (the platform's Quit) on the same path.
+    #[doc(hidden)]
     #[must_use]
-    fn resolve(self, env: &Environment) -> ResolvedCommand {
+    pub fn resolve(self, env: &Environment) -> ResolvedCommand {
         let label = self.label;
         let resolved_label = label.semantic_text().resolve(env);
         let icon = label.semantic_icon();
@@ -258,7 +523,7 @@ impl Command {
 
     /// Attaches keyboard shortcut metadata to the command.
     #[must_use]
-    pub fn shortcut(mut self, shortcut: Shortcut) -> Self {
+    pub const fn shortcut(mut self, shortcut: Shortcut) -> Self {
         self.shortcut = Some(shortcut);
         self
     }
@@ -341,6 +606,64 @@ pub enum MenuItem {
     Divider,
     /// A nested menu.
     Menu(Menu),
+    /// The application's own Quit item.
+    ///
+    /// Declaring it is how an application relocates the standard Quit — it
+    /// renders once, with the platform's label and accelerator (⌘Q on
+    /// macOS, Ctrl+Q elsewhere), and requests a cancellable termination
+    /// through `waterui::app::Quit`, so `App::on_quit_request` still
+    /// decides. On macOS it never appears in the menu bar — the standard
+    /// application menu already carries the platform Quit — but it can
+    /// appear in menus the window mounts.
+    ///
+    /// Platforms with no application quit — iOS, Android, the web, and
+    /// headless or embedded hosts, whose process the system or the host
+    /// ends — omit it from every menu and arm no chord for it, so a
+    /// portable menu may declare it unconditionally.
+    ///
+    /// Do not redeclare the platform's quit chord on a plain [`Command`]:
+    /// the macOS menu bar rejects ⌘Q, ⌘H and ⌥⌘H on ordinary commands, and
+    /// a homemade Quit bypasses the termination hooks.
+    Quit,
+    /// The application's own Close Window item.
+    ///
+    /// It renders once, with the platform's label ("Close"), and closes a
+    /// window through that window's ordinary close path — the same one its
+    /// title-bar close button takes — so the key window closes exactly as
+    /// that button would close it, and closing the last window still
+    /// follows the `LastWindowPolicy` passed to `App::on_last_window_closed`.
+    /// A window declared without a close button ignores it.
+    ///
+    /// Its accelerator is the platform's close chord — ⌘W on macOS, Ctrl+W
+    /// where the command modifier maps to control — unless the application
+    /// binds the chord itself, which it may: a tabbed app's ⌘W is Close
+    /// Tab. The chord is decided once for the whole application, from the
+    /// declared menu bar at any depth — ⌘W when no declared command binds
+    /// it, ⇧⌘W when one does and none binds ⇧⌘W, no chord at all when the
+    /// application binds both — and every Close Window item carries that
+    /// one decision: the menu bar, a window-mounted menu, a context menu
+    /// and a chord-table entry alike. On Windows the menu-bar row shows
+    /// Alt+F4, the system's own close chord, and the decided chord reaches
+    /// the focused window through the chord registry; Linux has no menu
+    /// bar, so there it works through the shortcut registry and the item
+    /// shows only in mounted and context menus.
+    ///
+    /// On Windows the menu bar is one menu every window shares, and its
+    /// Close row is the platform's own item, which cannot be disabled per
+    /// window: it stays enabled while a non-closable window is focused, and
+    /// choosing it there does nothing.
+    ///
+    /// Declaring it is how an application places Close Window. When no menu
+    /// in the menu bar declares it, the macOS menu bar carries it in the
+    /// standard Window menu; once one does, it appears only where it is
+    /// declared, never twice. It can also appear in menus the window mounts
+    /// and in context menus.
+    ///
+    /// Platforms whose windows the application cannot close — iOS, Android,
+    /// the web, and FFI hosts, whose windows the host owns — omit it from
+    /// every menu and arm no chord for it, so a portable menu may declare
+    /// it unconditionally.
+    CloseWindow,
 }
 
 impl_constant!(MenuItem);
@@ -352,7 +675,36 @@ impl MenuItem {
             Self::Command(command) => ResolvedMenuItem::Command(command.resolve(env)),
             Self::Divider => ResolvedMenuItem::Divider,
             Self::Menu(menu) => ResolvedMenuItem::Menu(menu.resolve(env)),
+            Self::Quit => ResolvedMenuItem::Quit,
+            Self::CloseWindow => ResolvedMenuItem::CloseWindow,
         }
+    }
+
+    /// The command a declared [`MenuItem::CloseWindow`] stands for — how a
+    /// backend that draws it as an ordinary command row (a popup-menu row, a
+    /// chord in its shortcut table) builds that row: the platform's word for
+    /// closing a window, the `chord` [`CloseWindowChord`] resolves from the
+    /// environment — the application's one decision, ⌘W on macOS, Ctrl+W
+    /// where the backend maps the command modifier to control, ceded when
+    /// the application binds it — and `action`, which the backend supplies
+    /// because the backend owns window targeting — which window the request
+    /// reaches, and how it closes.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn close_window_command<Args>(
+        env: &Environment,
+        chord: Option<Shortcut>,
+        action: impl Handler<Args, ()> + 'static,
+    ) -> ResolvedCommand {
+        // "Close" is the item AppKit's File and Window menus, the Windows
+        // window menu and GTK/Qt desktops all carry for ⌘W / Ctrl+W.
+        let command = "Close".action(action);
+        let command = if let Some(chord) = chord {
+            command.shortcut(chord)
+        } else {
+            command
+        };
+        command.resolve(env)
     }
 }
 
@@ -689,6 +1041,42 @@ impl ResolvedCommand {
     pub fn semantic_id(&self) -> usize {
         Rc::as_ptr(&self.identity) as usize
     }
+
+    /// Rejects a command the macOS menu bar may not carry.
+    ///
+    /// ⌘Q, ⌘H and ⌥⌘H belong to the standard application-menu items — Quit,
+    /// Hide, Hide Others. A plain command redeclaring one would shadow the
+    /// item the system expects to find, and a homemade Quit bypasses the
+    /// termination hooks. Every backend that builds a macOS menu bar calls
+    /// this for each declared command, so the rule holds whichever backend
+    /// renders the bar.
+    ///
+    /// # Panics
+    ///
+    /// When the command's shortcut is one of the reserved chords; the
+    /// message names `MenuItem::Quit` and `App::on_terminate` as the APIs to
+    /// use instead.
+    #[doc(hidden)]
+    pub fn assert_allowed_in_macos_menu_bar(&self) {
+        let Some(shortcut) = &self.shortcut else {
+            return;
+        };
+        let reserved = [
+            (Shortcut::new('q').command(), "⌘Q", "Quit"),
+            (Shortcut::new('h').command(), "⌘H", "Hide"),
+            (Shortcut::new('h').command().option(), "⌥⌘H", "Hide Others"),
+        ];
+        for (chord, chord_text, item) in reserved {
+            assert!(
+                !(chord.modifiers == shortcut.modifiers
+                    && shortcut.key.matches(&chord.key.to_key())),
+                "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
+                 belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
+                 behavior and `App::on_terminate` for shutdown work instead of redeclaring the \
+                 chord"
+            );
+        }
+    }
 }
 
 /// Raw resolved nested menu payload consumed by native backends.
@@ -727,6 +1115,131 @@ pub enum ResolvedMenuItem {
     Divider,
     /// A resolved nested menu.
     Menu(ResolvedNestedMenu),
+    /// The application's declared Quit item — see [`MenuItem::Quit`].
+    Quit,
+    /// The application's declared Close Window item — see
+    /// [`MenuItem::CloseWindow`].
+    CloseWindow,
+}
+
+impl ResolvedMenuItem {
+    /// Whether `items` declare [`MenuItem::CloseWindow`] at any depth.
+    ///
+    /// A backend that supplies a standard Close Window item when the
+    /// application declares none asks this of the resolved menu bar, so the
+    /// item never appears twice.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn declares_close_window(items: &[Self]) -> bool {
+        items.iter().any(|item| match item {
+            Self::CloseWindow => true,
+            Self::Menu(menu) => Self::declares_close_window(&menu.items.snapshot()),
+            Self::Command(_) | Self::Divider | Self::Quit => false,
+        })
+    }
+
+    /// The chord a menu bar's Close Window item carries, decided once from
+    /// the commands `items` declare at any depth: the platform's close
+    /// chord — ⌘W, which backends map to Ctrl+W where the command modifier
+    /// is control — while no declared command binds it; ⇧⌘W when one does
+    /// and none binds ⇧⌘W (the tabbed-app convention: a browser's ⌘W is
+    /// Close Tab); and no chord at all when the application binds both, so
+    /// Close Window never shadows a command's own binding.
+    ///
+    /// The comparison is [`ResolvedCommand::assert_allowed_in_macos_menu_bar`]'s:
+    /// equal modifier sets, and the key matched case-insensitively.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn close_window_chord(items: &[Self]) -> Option<Shortcut> {
+        let close = Shortcut::new('w').command();
+        let shifted = Shortcut::new('w').command().shift();
+        if binds_chord(items, &close) {
+            (!binds_chord(items, &shifted)).then_some(shifted)
+        } else {
+            Some(close)
+        }
+    }
+}
+
+/// Whether a declared command in `items` — at any depth — binds `chord`,
+/// compared the way [`ResolvedCommand::assert_allowed_in_macos_menu_bar`]
+/// does: equal modifiers, key matched case-insensitively.
+fn binds_chord(items: &[ResolvedMenuItem], chord: &Shortcut) -> bool {
+    items.iter().any(|item| match item {
+        ResolvedMenuItem::Command(command) => command.shortcut.as_ref().is_some_and(|shortcut| {
+            chord.modifiers == shortcut.modifiers && shortcut.key.matches(&chord.key.to_key())
+        }),
+        ResolvedMenuItem::Menu(menu) => binds_chord(&menu.items.snapshot(), chord),
+        ResolvedMenuItem::Divider | ResolvedMenuItem::Quit | ResolvedMenuItem::CloseWindow => false,
+    })
+}
+
+/// The application's decided Close Window chord: one decision for the whole
+/// application, taken from its declared menu bar through
+/// [`ResolvedMenuItem::close_window_chord`], that every Close Window item
+/// carries wherever it renders — the menu bar, window-mounted menus,
+/// context menus and chord-table entries alike.
+///
+/// `App::into_parts` installs it into the application environment as a
+/// signal over the resolved menu bar, so a bar whose declared items change
+/// re-decides it.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct CloseWindowChord(Computed<Option<Shortcut>>);
+
+impl CloseWindowChord {
+    /// The decision over `menu_bar`, resolved under `env` — a signal, so a
+    /// menu bar whose items change re-decides the chord.
+    #[must_use]
+    pub fn new(menu_bar: &Computed<Vec<Menu>>, env: &Environment) -> Self {
+        Self(
+            resolve_menu_bar_items(menu_bar, env)
+                .map(|items| ResolvedMenuItem::close_window_chord(&items))
+                .computed(),
+        )
+    }
+
+    /// The chord this environment's application decided.
+    ///
+    /// # Panics
+    ///
+    /// When `env` carries no decision — every environment a runner hands
+    /// its menus comes from `App::into_parts`, which installs the decision;
+    /// a bare `Environment` must install it itself.
+    #[must_use]
+    pub fn of(env: &Environment) -> Option<Shortcut> {
+        env.get::<Self>()
+            .expect("the Close Window chord is installed by `App::into_parts`")
+            .0
+            .snapshot()
+    }
+}
+
+/// Where a menu bar's Close Window item lives: in the standard Window menu
+/// the platform or backend builds, or only where the application declared
+/// [`MenuItem::CloseWindow`] — never both, so it never appears twice.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseWindowPlacement {
+    /// No declared menu carries `MenuItem::CloseWindow`: the standard
+    /// Window menu carries Close, so the close chord works without the
+    /// application declaring anything.
+    WindowMenu,
+    /// A declared menu carries it, at whatever depth; the standard Window
+    /// menu does not repeat it.
+    Declared,
+}
+
+impl CloseWindowPlacement {
+    /// The placement the declared menu bar's resolved `items` call for.
+    #[must_use]
+    pub fn for_declared(items: &[ResolvedMenuItem]) -> Self {
+        if ResolvedMenuItem::declares_close_window(items) {
+            Self::Declared
+        } else {
+            Self::WindowMenu
+        }
+    }
 }
 
 impl_constant!(ResolvedMenuItem);
@@ -753,6 +1266,78 @@ mod tests {
     use core::cell::Cell;
     use nami::Signal;
     use waterui_icon::system_icon;
+
+    #[test]
+    fn shortcut_key_parses_characters_and_w3c_named_keys() {
+        assert_eq!("q".parse(), Ok(ShortcutKey::Character('q')));
+        assert_eq!("Q".parse(), Ok(ShortcutKey::Character('Q')));
+        assert_eq!("Delete".parse(), Ok(ShortcutKey::Named(NamedKey::Delete)));
+        assert_eq!("F5".parse(), Ok(ShortcutKey::Named(NamedKey::F5)));
+        for rejected in ["", "ab", "Unidentified", "Dead", "\t", "Shift", "CapsLock"] {
+            assert_eq!(
+                rejected.parse::<ShortcutKey>(),
+                Err(InvalidShortcutKey(rejected.to_string())),
+                "`{rejected}` is not a shortcut key"
+            );
+        }
+    }
+
+    #[test]
+    fn shortcut_key_matches_letters_regardless_of_case() {
+        let lower = ShortcutKey::from('q');
+        let upper = ShortcutKey::from('Q');
+        for pressed in ["q", "Q"] {
+            let pressed = Key::Character(pressed.to_string());
+            assert!(lower.matches(&pressed));
+            assert!(upper.matches(&pressed));
+        }
+        assert!(!lower.matches(&Key::Character("w".to_string())));
+        assert!(!lower.matches(&Key::Character("qq".to_string())));
+        assert!(!lower.matches(&Key::Named(NamedKey::Delete)));
+        let delete = ShortcutKey::from(NamedKey::Delete);
+        assert!(delete.matches(&Key::Named(NamedKey::Delete)));
+        assert!(!delete.matches(&Key::Named(NamedKey::Backspace)));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a valid shortcut key")]
+    fn shortcut_key_refuses_a_named_key_no_press_resolves_to() {
+        let _ = ShortcutKey::from(NamedKey::Unidentified);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a valid shortcut key")]
+    fn shortcut_key_refuses_a_modifier_key() {
+        let _ = ShortcutKey::from(NamedKey::Shift);
+    }
+
+    #[test]
+    #[should_panic(expected = "`NamedKey::Tab`")]
+    fn shortcut_key_refuses_a_control_character_naming_its_key() {
+        let _ = ShortcutKey::from('\t');
+    }
+
+    /// `Display` is the platform's menu hint: `⇧⌘P` on Apple targets,
+    /// `Ctrl+Shift+P` where the command modifier is control.
+    #[test]
+    fn shortcut_displays_its_platform_hint() {
+        let shortcut = Shortcut::new('p').command().shift();
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(shortcut.to_string(), "⇧⌘P");
+        #[cfg(not(target_vendor = "apple"))]
+        assert_eq!(shortcut.to_string(), "Ctrl+Shift+P");
+    }
+
+    /// A named key draws the platform's own label — `⌦` on Apple targets,
+    /// `Del` elsewhere.
+    #[test]
+    fn shortcut_displays_named_key_labels() {
+        let shortcut = Shortcut::new(NamedKey::Delete).command();
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(shortcut.to_string(), "⌘⌦");
+        #[cfg(not(target_vendor = "apple"))]
+        assert_eq!(shortcut.to_string(), "Ctrl+Del");
+    }
 
     #[test]
     fn menu_view_accepts_plain_buttons() {
@@ -928,6 +1513,93 @@ mod tests {
             N,
             "one leaf change must evaluate each of the {N} children exactly once"
         );
+    }
+
+    /// The Close Window chord the declared `items` leave: ⌘W while nothing
+    /// binds it, ⇧⌘W once a declared command takes it, and no chord at all
+    /// when the application binds both — the deciding command counts at any
+    /// depth.
+    #[test]
+    fn close_window_chord_yields_to_a_declared_binding() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let command = |label, shortcut: Shortcut| -> MenuItem {
+            Command::builder(label)
+                .action(|| {})
+                .shortcut(shortcut)
+                .into()
+        };
+
+        assert_eq!(
+            ResolvedMenuItem::close_window_chord(&resolve_menu_items_now(
+                vec![MenuItem::CloseWindow],
+                &env
+            )),
+            Some(Shortcut::new('w').command()),
+            "⌘W is Close Window's while no command binds it"
+        );
+
+        let bound = resolve_menu_items_now(
+            vec![
+                Menu::new(
+                    "File",
+                    (command("Close Tab", Shortcut::new('w').command()),),
+                )
+                .into(),
+                MenuItem::CloseWindow,
+            ],
+            &env,
+        );
+        assert_eq!(
+            ResolvedMenuItem::close_window_chord(&bound),
+            Some(Shortcut::new('w').command().shift()),
+            "a declared ⌘W at any depth moves Close Window to ⇧⌘W"
+        );
+
+        let both = resolve_menu_items_now(
+            vec![
+                command("Close Tab", Shortcut::new('w').command()),
+                command("Close All Tabs", Shortcut::new('w').command().shift()),
+                MenuItem::CloseWindow,
+            ],
+            &env,
+        );
+        assert_eq!(
+            ResolvedMenuItem::close_window_chord(&both),
+            None,
+            "with both chords bound, Close Window carries none"
+        );
+    }
+
+    #[test]
+    fn close_window_resolves_and_is_found_at_any_depth() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let top_level = resolve_menu_items_now(vec![MenuItem::CloseWindow], &env);
+        assert!(matches!(top_level[..], [ResolvedMenuItem::CloseWindow]));
+        assert!(ResolvedMenuItem::declares_close_window(&top_level));
+
+        let nested = resolve_menu_items_now(
+            vec![
+                Menu::new("File", (button("Open").action(|| {}),)).into(),
+                Menu::new(
+                    "Window",
+                    (Menu::new("Arrange", vec![MenuItem::CloseWindow]),),
+                )
+                .into(),
+            ],
+            &env,
+        );
+        assert!(ResolvedMenuItem::declares_close_window(&nested));
+
+        let without = resolve_menu_items_now(
+            vec![
+                MenuItem::Quit,
+                Menu::new("File", (button("Open").action(|| {}),)).into(),
+            ],
+            &env,
+        );
+        assert!(!ResolvedMenuItem::declares_close_window(&without));
     }
 
     #[test]

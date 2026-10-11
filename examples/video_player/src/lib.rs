@@ -198,7 +198,9 @@ fn player_shell(
         text("WaterUI Video Player").headline(),
         text!("Now Playing: {title}").body(),
         text!("Source Profile: {profile}").footnote(),
-        overlay(player, buffering_overlay).height(360.0),
+        // A `Fit` player is as tall as its source's aspect ratio makes it at
+        // the width it is given.
+        overlay(player, buffering_overlay).max_width(640.0),
         text!("Status: {status}").footnote(),
         source_grid,
     ))

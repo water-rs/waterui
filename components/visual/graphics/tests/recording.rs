@@ -1,7 +1,7 @@
 //! The recording boundary's contract: constant and signal operands, engine
 //! resource handles, and what a rasterizer draws for each.
 //!
-//! These tests draw into `cherenkov::Recorder`, mount the result on a real
+//! These tests draw into `waterui_graphics::draw::Recorder`, mount the result on a real
 //! `cherenkov_cpu` engine through [`waterui_graphics::raster::Rasterizer`]
 //! and read pixels back, because the signature is only half the contract —
 //! the other half is that what was recorded is what the engine draws.
@@ -11,26 +11,28 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cherenkov::kurbo::{Affine, Rect, Shape};
-use cherenkov::{
-    ContentChange, Draw, FontSource, Glyph, GlyphRun, GlyphStyle, ImageColorSpace, ImageData,
-    Recorder, Rgba8, Sampling, WorkingColor,
-};
 use nami::{Binding, SignalExt};
+use waterui_graphics::draw::kurbo::{Affine, Rect, Shape};
+use waterui_graphics::draw::{
+    Content, ContentChange, Draw, Glyph, GlyphRun, GlyphStyle, ImageId, LayoutSize, Recorder,
+    Sampling, StaticRecorder, WorkingColor,
+};
 use waterui_graphics::raster::{Rasterizer, RgbaBitmap};
-use waterui_graphics::{Picture, RecordingResources, Registered, SceneContent, SceneView};
+use waterui_graphics::{FontSource, ImageColorSpace, ImageData, Rgba8};
+use waterui_graphics::{
+    Picture, PictureSource, RecordingResources, Registered, SceneContent, SceneView,
+};
 
 /// sRGB red as the engine's working colour — `WorkingColor::new` names
 /// Display P3 components directly, which sRGB cannot hold, so pixel
 /// expectations come from converting a named sRGB colour.
 fn srgb(red: f32, green: f32, blue: f32) -> WorkingColor {
-    cherenkov::Color::<cherenkov::Srgb>::new([red, green, blue, 1.0]).into()
+    waterui_graphics::draw::Color::<waterui_graphics::draw::Srgb>::new([red, green, blue, 1.0])
+        .into()
 }
 
-fn filled_square(color: WorkingColor) -> Recorder {
-    let mut recorder = Recorder::new();
+fn filled_square(recorder: &mut Recorder, color: WorkingColor) {
     recorder.fill(Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05), color);
-    recorder
 }
 
 fn pixel(bitmap: &RgbaBitmap, x: usize, y: usize) -> [u8; 4] {
@@ -45,13 +47,14 @@ fn pixel(bitmap: &RgbaBitmap, x: usize, y: usize) -> [u8; 4] {
 
 #[test]
 fn a_fill_is_one_command_in_the_recorded_content() {
-    let mut recorder = filled_square(srgb(1.0, 0.0, 0.0));
-    recorder.stroke(
-        Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05),
-        cherenkov::Stroke::new(1.0),
-        srgb(0.0, 0.0, 1.0),
-    );
-    let content = recorder.finish();
+    let content = Content::record(&LayoutSize::new(), |recorder| {
+        filled_square(recorder, srgb(1.0, 0.0, 0.0));
+        recorder.stroke(
+            Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05),
+            waterui_graphics::draw::Stroke::new(1.0),
+            srgb(0.0, 0.0, 1.0),
+        );
+    });
     assert_eq!(content.len(), 2);
 }
 
@@ -91,6 +94,57 @@ fn tiny_image() -> ImageData<Rgba8> {
         .premultiplied()
 }
 
+struct TinyImageSource {
+    bytes: Arc<[u8]>,
+}
+
+impl PictureSource for TinyImageSource {
+    fn record(&self, recorder: &mut StaticRecorder, resources: &mut RecordingResources<'_>) {
+        let image = resources
+            .image(
+                ImageData::<Rgba8>::new(2, 1, Arc::clone(&self.bytes))
+                    .expect("image source")
+                    .color_space(ImageColorSpace::Srgb)
+                    .premultiplied(),
+            )
+            .expect("image registration failed");
+        recorder.image(
+            resources.name(&image),
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+            Sampling::Nearest,
+        );
+    }
+}
+
+struct GlyphSource {
+    bytes: Arc<[u8]>,
+    glyph: u32,
+}
+
+impl PictureSource for GlyphSource {
+    fn record(&self, recorder: &mut StaticRecorder, resources: &mut RecordingResources<'_>) {
+        let font = resources
+            .font(FontSource::bytes(Arc::clone(&self.bytes)))
+            .expect("font registration failed");
+        recorder.glyphs(
+            GlyphRun {
+                font: resources.name(&font),
+                size: 28.0,
+                coords: Vec::new().into(),
+                glyphs: vec![Glyph {
+                    id: self.glyph,
+                    x: 4.0,
+                    y: 28.0,
+                    transform: None,
+                }]
+                .into(),
+                style: GlyphStyle::Fill,
+            },
+            srgb(1.0, 1.0, 1.0),
+        );
+    }
+}
+
 #[test]
 fn image_data_rejects_zero_size_and_byte_length_mismatch() {
     assert!(ImageData::<Rgba8>::new(0, 1, Vec::from([0u8; 4])).is_err());
@@ -103,22 +157,8 @@ fn image_data_rejects_zero_size_and_byte_length_mismatch() {
 #[test]
 fn an_image_draws_where_the_recording_put_it() {
     let mut rasterizer = Rasterizer::new(8, 8).expect("engine failed to start");
-    let image = rasterizer
-        .resources()
-        .image(tiny_image())
-        .expect("image registration failed");
-
-    let recording = Picture::record_with(rasterizer.resources(), |recorder, names| {
-        // The image's own rect fills its destination: left half red, right
-        // blue.
-        recorder.image(
-            names.name(&image),
-            Rect::new(0.0, 0.0, 8.0, 8.0),
-            Sampling::Nearest,
-        );
-    });
-    // The recording holds the image; the code that registered it need not.
-    drop(image);
+    let source = Arc::<[u8]>::from([255, 0, 0, 255, 0, 0, 255, 255]);
+    let recording = Picture::record_with(rasterizer.resources(), TinyImageSource { bytes: source });
     let bitmap = rasterizer
         .rasterize(&recording, Affine::IDENTITY)
         .expect("rasterise failed");
@@ -128,37 +168,44 @@ fn an_image_draws_where_the_recording_put_it() {
     assert!(right[2] > 200 && right[0] < 40, "right texel: {right:?}");
 }
 
+/// Raw data of an installed font face: a [`FontSource`] carries font bytes,
+/// and the repository commits none, so the recording tests resolve a family
+/// through system font discovery — the same lookup a test runtime makes for
+/// a named family. `backends/hydrolysis/test-fonts/install.py` installs the
+/// fixtures; a missing family fails naming it and the script.
+fn installed_font_bytes(family_name: &str) -> Arc<[u8]> {
+    let mut collection = fontique::Collection::new(fontique::CollectionOptions::default());
+    let family = collection.family_by_name(family_name).unwrap_or_else(|| {
+        panic!(
+            "font family `{family_name}` is not installed; install the test fonts \
+             with `uv run backends/hydrolysis/test-fonts/install.py`"
+        )
+    });
+    let font = family
+        .default_font()
+        .expect("the resolved family carries no default face");
+    Arc::from(
+        font.load(None)
+            .expect("the resolved face failed to load")
+            .as_ref(),
+    )
+}
+
 #[test]
 fn a_glyph_run_draws_its_glyphs() {
-    const FONT: &[u8] = include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf");
+    let source = installed_font_bytes("Roboto");
 
-    let face = ttf_parser::Face::parse(FONT, 0).expect("test font did not parse");
+    let face = ttf_parser::Face::parse(source.as_ref(), 0).expect("test font did not parse");
     let glyph = face.glyph_index('A').expect("the test font has no 'A'").0;
 
     let mut rasterizer = Rasterizer::new(32, 32).expect("engine failed to start");
-    let font = rasterizer
-        .resources()
-        .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
-        .expect("font registration failed");
-
-    let recording = Picture::record_with(rasterizer.resources(), |recorder, names| {
-        recorder.glyphs(
-            GlyphRun {
-                font: names.name(&font),
-                size: 28.0,
-                coords: Vec::new().into(),
-                glyphs: vec![Glyph {
-                    id: u32::from(glyph),
-                    x: 4.0,
-                    y: 28.0,
-                    transform: None,
-                }]
-                .into(),
-                style: GlyphStyle::Fill,
-            },
-            srgb(1.0, 1.0, 1.0),
-        );
-    });
+    let recording = Picture::record_with(
+        rasterizer.resources(),
+        GlyphSource {
+            bytes: source,
+            glyph: u32::from(glyph),
+        },
+    );
     let bitmap = rasterizer
         .rasterize(&recording, Affine::IDENTITY)
         .expect("rasterise failed");
@@ -170,16 +217,16 @@ fn a_glyph_run_draws_its_glyphs() {
 
 #[test]
 fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
-    const FONT: &[u8] = include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf");
+    let font_bytes = installed_font_bytes("Roboto");
 
     let rasterizer = Rasterizer::new(8, 8).expect("engine failed to start");
     let resources = rasterizer.resources();
     let (first_id, image_id) = {
         let first = resources
-            .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
+            .font(FontSource::bytes(Arc::clone(&font_bytes)))
             .expect("font registration failed");
         let second = resources
-            .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
+            .font(FontSource::bytes(Arc::<[u8]>::from(&font_bytes[..])))
             .expect("font registration failed");
         assert_eq!(
             first, second,
@@ -203,7 +250,7 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
     // The table outlives the handles but never kept them: the released
     // registrations are gone, so the same sources register fresh.
     let third = resources
-        .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
+        .font(FontSource::bytes(Arc::clone(&font_bytes)))
         .expect("font registration failed");
     let image_c = resources
         .image(tiny_image())
@@ -221,7 +268,7 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
 /// image on its third, registering it in the frame that draws it.
 struct LateImage {
     frame: u32,
-    image: Option<Registered<cherenkov::Image<Rgba8>>>,
+    image: Option<Registered<ImageId>>,
 }
 
 impl SceneContent for LateImage {
@@ -246,6 +293,10 @@ impl SceneContent for LateImage {
             );
         }
         false
+    }
+
+    fn rebuild_for_engine(&mut self) {
+        self.image = None;
     }
 }
 
@@ -286,9 +337,9 @@ fn an_image_first_drawn_on_the_third_frame_reaches_the_pixels() {
 fn a_signal_operand_updates_the_content_without_recording_again() {
     let color = Binding::container(srgb(1.0, 0.0, 0.0));
     let paint = color.computed();
-    let mut recorder = Recorder::new();
-    recorder.fill(Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05), paint);
-    let mut content = recorder.finish();
+    let mut content = Content::record(&LayoutSize::new(), |recorder| {
+        recorder.fill(Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05), paint);
+    });
 
     let Some(ContentChange::Replace(_)) = content.take_change() else {
         panic!("a finished recording reports its initial replacement");

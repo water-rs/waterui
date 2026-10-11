@@ -8,6 +8,7 @@
 use waterui::Binding;
 use waterui::Signal;
 use waterui::component::badge::Badge;
+use waterui::component::toggle::ToggleStyle;
 use waterui::widget::accordion::Accordion;
 use waterui::widget::card::Card;
 use waterui_testing::{Role, SemanticApp, UiBuilder};
@@ -134,7 +135,8 @@ fn derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
         "text input edits must reach the derived struct binding"
     );
 
-    app.query().role(Role::SWITCH).tap();
+    // A derived bool field is a default-style toggle: the platform's style.
+    app.query().role(Role::toggle(ToggleStyle::Automatic)).tap();
     assert!(
         profile.snapshot().active,
         "toggle flips must reach the derived struct binding"

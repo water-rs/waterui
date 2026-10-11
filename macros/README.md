@@ -130,7 +130,7 @@ Implements the `Project` trait, enabling decomposition of struct bindings into s
 - Tuple structs
 - Unit structs
 
-**Example from `/Users/lexoliu/Coding/waterui/derive/src/lib.rs` documentation:**
+**Example from `derive/src/lib.rs` documentation:**
 
 ```rust
 use waterui::Signal;
@@ -319,7 +319,7 @@ cargo test -p waterui-macros
 cargo expand --package waterui-macros
 
 # Test in a real project
-cargo install --locked --git https://github.com/water-rs/cli waterui-cli
+cargo install --path cli --locked
 water create macro-test
 # Add #[form] to a struct and run
 water run --platform ios

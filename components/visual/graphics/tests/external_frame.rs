@@ -26,7 +26,7 @@ use objc2_core_video::{
 use objc2_metal::{
     MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
-use waterui_graphics::cherenkov::{Display, Readback};
+use waterui_graphics::cherenkov::{Display, FrameTime, Readback};
 use waterui_graphics::cherenkov_gpu::interop::{ExternalFrame, FrameColor, metal};
 use waterui_graphics::gpu::{
     ExternalFrameRenderer, ExternalFrameSource, ExternalFrameView, FrameOutput, GpuRuntime,
@@ -74,10 +74,12 @@ fn size(width: usize, height: usize) -> OffscreenSize {
 fn renderer(runtime: &GpuRuntime, view: &ExternalFrameView) -> ExternalFrameRenderer {
     ExternalFrameRenderer::new(
         runtime,
+        runtime.context(),
         &view.stream(),
         size(FRAME.0, FRAME.1),
         RedrawHandle::new(|| {}),
     )
+    .expect("the external frame renderer settles")
 }
 
 /// The two YUV layouts a decoder hands out.
@@ -368,7 +370,9 @@ fn planes_are_sampled_in_place() {
         .expect("the output is live");
 
     let first = host_target(device, (64, 32));
-    renderer.present(&first, SDR);
+    renderer
+        .present(&first, SDR, FrameTime(std::time::Instant::now()))
+        .expect("the frame presents");
     let shown = read(device, queue, &first).pixel(32, 16);
     assert!(
         shown[0] > 200 && shown[2] < 40,
@@ -378,7 +382,9 @@ fn planes_are_sampled_in_place() {
     fill(&buffer, Layout::Nv12, dimensions, flat(BLUE));
     // A resize forces the next pass to draw; nothing new was published.
     let second = host_target(device, (96, 48));
-    renderer.present(&second, SDR);
+    renderer
+        .present(&second, SDR, FrameTime(std::time::Instant::now()))
+        .expect("the frame presents");
     let shown = read(device, queue, &second).pixel(48, 24);
     assert!(
         shown[2] > 200 && shown[0] < 40,
@@ -419,7 +425,9 @@ fn frames_add_no_textures_beyond_their_planes() {
 
     // The first frame builds the engine's external-frame pipeline state.
     publish(RED);
-    renderer.present(&target, SDR);
+    renderer
+        .present(&target, SDR, FrameTime(std::time::Instant::now()))
+        .expect("the frame presents");
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("the frame completes");
@@ -427,7 +435,9 @@ fn frames_add_no_textures_beyond_their_planes() {
 
     for code in [BLUE, RED, BLUE] {
         publish(code);
-        renderer.present(&target, SDR);
+        renderer
+            .present(&target, SDR, FrameTime(std::time::Instant::now()))
+            .expect("the frame presents");
         device
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("the frame completes");
@@ -492,6 +502,87 @@ fn a_rebuilt_host_restarts_the_source_and_retires_the_old_output() {
     );
     drop(second);
     assert!(outputs.borrow()[1].is_retired());
+}
+
+/// A renderer is bound to the context it is handed, not to whatever the
+/// runtime currently publishes: building one on a context from an older
+/// generation reports that generation.
+#[test]
+fn the_renderer_reports_the_generation_of_the_context_it_was_given() {
+    let lost_runtime = runtime();
+    let live_runtime = runtime();
+    lost_runtime
+        .context()
+        .mark_device_lost_for_testing("test device loss");
+    let fresh = pollster::block_on(lost_runtime.context_after(0));
+    assert!(
+        fresh.generation() > live_runtime.context().generation(),
+        "the rebuild advanced the lost runtime past the live one"
+    );
+    let (view, _outputs) = producer_view();
+    let renderer = ExternalFrameRenderer::new(
+        &lost_runtime,
+        live_runtime.context(),
+        &view.stream(),
+        size(FRAME.0, FRAME.1),
+        RedrawHandle::new(|| {}),
+    )
+    .expect("the external frame renderer settles");
+    assert_eq!(
+        renderer.generation(),
+        live_runtime.context().generation(),
+        "the renderer is bound to the context it was given"
+    );
+}
+
+/// A device lost while the host is idle — no frame pending, no display tick
+/// — is still recovered: the rebuild publishes through `context_after`, and
+/// a renderer built on that fresh context presents on the new device.
+#[test]
+fn an_idle_device_loss_recovers_through_context_publication() {
+    let runtime = runtime();
+    let (view, outputs) = producer_view();
+    let stale_renderer = renderer(&runtime, &view);
+    let stale_generation = stale_renderer.generation();
+    runtime
+        .context()
+        .mark_device_lost_for_testing("test device loss");
+    let fresh = pollster::block_on(runtime.context_after(stale_generation));
+    assert!(fresh.generation() > stale_generation);
+    drop(stale_renderer);
+
+    let device = fresh.device().clone();
+    let mut second = ExternalFrameRenderer::new(
+        &runtime,
+        fresh.clone(),
+        &view.stream(),
+        size(FRAME.0, FRAME.1),
+        RedrawHandle::new(|| {}),
+    )
+    .expect("the rebuilt external frame renderer settles");
+    assert_eq!(second.generation(), fresh.generation());
+    let dimensions = (64, 32);
+    let buffer = pixel_buffer(Layout::Nv12, dimensions);
+    fill(&buffer, Layout::Nv12, dimensions, flat(RED));
+    let (red, _planes) = frame(
+        &device,
+        &buffer,
+        Layout::Nv12,
+        dimensions,
+        FrameColor::BT709_VIDEO,
+    );
+    outputs.borrow()[1]
+        .present(red)
+        .expect("the restarted source's output is live");
+    let target = host_target(&device, dimensions);
+    second
+        .present(&target, SDR, FrameTime(std::time::Instant::now()))
+        .expect("the frame presents");
+    let shown = read(&device, fresh.queue(), &target).pixel(32, 16);
+    assert!(
+        shown[0] > 200 && shown[2] < 40,
+        "the rebuilt host presents the red frame, got {shown:?}"
+    );
 }
 
 /// The linear-light colours the gallery frames encode, as linear BT.709:
@@ -661,7 +752,9 @@ fn gpu_export_external_frame_images() {
             .present(frame)
             .expect("the output is live");
         let target = host_target(device, FRAME);
-        renderer.present(&target, SDR);
+        renderer
+            .present(&target, SDR, FrameTime(std::time::Instant::now()))
+            .expect("the frame presents");
         read(device, queue, &target)
             .save_png(directory.join(name))
             .expect("the render encodes");

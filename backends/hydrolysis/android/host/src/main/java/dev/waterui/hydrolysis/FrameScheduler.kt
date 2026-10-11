@@ -1,0 +1,152 @@
+package dev.waterui.hydrolysis
+
+import android.util.Log
+import android.view.Choreographer
+
+/**
+ * The frame pump: one Choreographer callback at a time drives one native frame
+ * transaction. The transaction's outcome decides what happens next —
+ *
+ * - bit 1 (wants next frame): the engine has pending work → post again.
+ * - bit 4 (deadline): a gesture/animation deadline exists → a delayed frame
+ *   lands at that point in case no other wake arrives first.
+ * - nothing set: the window is idle. No callbacks, no CPU or GPU work — an
+ *   idle window never pumps.
+ *
+ * Every wake is logged at debug with its cause so an idle-CPU reading on a
+ * device can attribute its jiffies: a frame nobody posted shows as
+ * `cause=external`, anything else names the post that scheduled it.
+ *
+ * Refresh-rate demand is separate: while the scheduler is running continuous
+ * frames or a touch is held, the session asks the surface for its display's
+ * peak refresh; the demand releases only once both have ended, so a touch
+ * lifting mid-animation (a fling) keeps the rate the animation needs.
+ *
+ * The session owns the scheduler and [stop]s it when it is destroyed; a
+ * stopped scheduler is inert for the rest of its life.
+ */
+internal class FrameScheduler(private val session: HydrolysisSession) :
+    Choreographer.FrameCallback {
+
+    private val choreographer = Choreographer.getInstance()
+    private var posted = false
+    private var deadlinePosted = false
+    private var pumping = false
+
+    /** A touch is held on the host view. */
+    private var touching = false
+
+    /** [stop] ran: the session is destroyed and nothing posts again. */
+    private var stopped = false
+
+    /** Which post queued the pending callback; null when nobody did. */
+    private var wakeCause: String? = null
+
+    /**
+     * Posts the next vsync frame if none is already queued. A pending
+     * deadline frame is not a queued vsync frame: it is replaced, so the
+     * request runs at the next vsync instead of waiting for the deadline.
+     */
+    fun requestFrame(cause: String = "redraw-request") {
+        if (stopped) return
+        if (deadlinePosted) {
+            choreographer.removeFrameCallback(this)
+            deadlinePosted = false
+        } else if (posted) {
+            return
+        }
+        posted = true
+        wakeCause = cause
+        choreographer.postFrameCallback(this)
+    }
+
+    /** The host reports a touch going down (`true`) or ending (`false`). */
+    fun setInteractionActive(active: Boolean) {
+        touching = active
+        publishHighRefresh()
+    }
+
+    /**
+     * Makes the scheduler inert once the session's native state is gone:
+     * the posted callback — a vsync or a deadline frame, including one a
+     * request during teardown queued — is removed, and every later
+     * [requestFrame] posts nothing.
+     */
+    fun stop() {
+        stopped = true
+        if (posted) {
+            choreographer.removeFrameCallback(this)
+            posted = false
+            deadlinePosted = false
+            wakeCause = null
+        }
+    }
+
+    /** Sends the combined demand; the native side ignores a repeat. */
+    private fun publishHighRefresh() {
+        session.withNativePtr(NativeBridge::nativeSetHighRefresh.name) { ptr ->
+            NativeBridge.nativeSetHighRefresh(ptr, touching || pumping)
+        }
+    }
+
+    override fun doFrame(vsyncNanos: Long) {
+        posted = false
+        deadlinePosted = false
+        val cause = wakeCause ?: "external"
+        wakeCause = null
+        val outcome =
+            session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
+                NativeBridge.nativeOnFrame(ptr, vsyncNanos)
+            }
+        // The frame can end the session: a teardown requested inside it ran
+        // as the frame returned and stopped this scheduler.
+        if (stopped) return
+        val wantsNext = outcome and WANTS_NEXT_FRAME != 0L
+        val deadlineNanos =
+            if (outcome and HAS_DEADLINE != 0L) {
+                session.withNativePtr(NativeBridge::nativeFrameDeadlineInNanos.name) { ptr ->
+                    NativeBridge.nativeFrameDeadlineInNanos(ptr)
+                }
+            } else {
+                -1L
+            }
+        Log.d(
+            TAG,
+            "frame wake: cause=$cause outcome=0x${java.lang.Long.toHexString(outcome)} deadlineNs=$deadlineNanos",
+        )
+
+        if (wantsNext) {
+            requestFrame("next-frame")
+        } else if (deadlineNanos >= 0 && !posted) {
+            // The engine's next wake is a deadline, not continuous work — a
+            // single delayed frame covers it. An elapsed deadline returns -1
+            // from the native side (its tick already ran inside this
+            // transaction) and never reaches here. A vsync frame the
+            // transaction itself requested already covers the deadline: it
+            // runs first and reports the deadline again.
+            deadlinePosted = true
+            wakeCause = "deadline"
+            choreographer.postFrameCallbackDelayed(
+                this,
+                deadlineNanos / NANOS_PER_MILLI,
+            )
+            posted = true
+        }
+
+        val nowPumping = wantsNext || posted
+        if (nowPumping != pumping) {
+            pumping = nowPumping
+            // Continuous pumping asks for high refresh; an idle pump with no
+            // touch held releases the request so the panel can drop to its
+            // base rate.
+            publishHighRefresh()
+        }
+    }
+
+    private companion object {
+        const val TAG = "hydrolysis"
+        const val WANTS_NEXT_FRAME = 1L
+        const val HAS_DEADLINE = 4L
+        const val NANOS_PER_MILLI = 1_000_000L
+    }
+}
