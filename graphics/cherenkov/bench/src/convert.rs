@@ -1700,14 +1700,7 @@ mod tests {
     #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
     #[test]
     fn capture_scale_narrows_exactly_or_fails() {
-        let group = |scale| cherenkov_scene::BackdropGroup {
-            id: 1,
-            filters: Vec::new(),
-            scale,
-            levels: 1,
-            anchor: None,
-            union: None,
-        };
+        let group = |scale| cherenkov_scene::BackdropGroup::new(1, Vec::new(), scale, 1);
         let quarter = capture_scale(&group(0.25)).expect("0.25 is exact in f32");
         assert_eq!(quarter.get().to_bits(), 0.25f32.to_bits());
         assert!(matches!(
