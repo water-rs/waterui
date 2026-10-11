@@ -270,6 +270,7 @@ filter = '''
  or package(waterui-navigation)
  or package(waterui-testing)
  or package(waterui-text)
+ or package(waterui-ts)
  or package(waterui-webview)
 '''
 setup = 'test-fonts'
