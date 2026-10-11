@@ -7010,6 +7010,11 @@ impl GpuRenderer {
                 self.scratch_format,
                 tile_slots,
             );
+            // The pipelines the new plan names exist before the first
+            // encode reaches them; creating them here keeps the cost in
+            // the same preparation step the plan is built in.
+            self.tile_executor
+                .prepare(&self.device, &self.pipeline_layout, surf);
         }
         let max_scratch = surf
             .frame

@@ -168,6 +168,67 @@ impl Executor {
     }
 }
 
+impl Executor {
+    /// Builds every pipeline `surf`'s composition plan will encode, while
+    /// the plan is made — not on the first frame's render pass, where the
+    /// lazy `pipeline` lookup would otherwise call
+    /// `create_render_pipeline`. The set mirrors `encode`'s key selection:
+    /// a clear pipeline for each slot a `begin` op reuses, and the
+    /// shader/slot/replace pipeline per range the epoch names.
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::PipelineLayout,
+        surf: &SurfaceState,
+    ) {
+        for segment in &surf.composition.segments {
+            let super::plan::Segment::NativeEpoch(epoch) = segment else {
+                continue;
+            };
+            let mut used = [false; 4];
+            for op in &epoch.ops {
+                if op.begin && used[usize::from(op.target)] {
+                    self.pipeline(
+                        device,
+                        layout,
+                        Key {
+                            target: op.target,
+                            source: op.target,
+                            variant: 3,
+                            replace: true,
+                            slots: epoch.slots,
+                        },
+                    );
+                }
+                used[usize::from(op.target)] = true;
+                for (range, source) in surf.frame.passes[op.pass].ranges.iter().zip(&op.sources) {
+                    let variant = match range.variant {
+                        ShaderVariant::Simple => 0,
+                        ShaderVariant::Shadow => 1,
+                        ShaderVariant::Full => 2,
+                        ShaderVariant::Union => {
+                            unreachable!(
+                                "a union sample reads its capture; no tile epoch admits it"
+                            )
+                        }
+                    };
+                    self.pipeline(
+                        device,
+                        layout,
+                        Key {
+                            target: op.target,
+                            source: source.unwrap_or(op.target),
+                            variant,
+                            replace: range.pipeline == PipelineKind::Replace,
+                            slots: epoch.slots,
+                        },
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Borrowed resources shared with the materialized encoder; attachment
 /// textures are never installed in sampled bind groups.
 pub struct Resources<'a> {
