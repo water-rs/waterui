@@ -966,7 +966,7 @@ impl ToJavaStruct for crate::WuiMetadataContextMenu {
     }
 }
 
-/// `MetadataAnchoredOverlayStruct(contentPtr: Long, overlayContentPtr: Long,
+/// `MetadataAnchoredOverlayStruct(contentPtr: Long, overlayContentBuilderPtr: Long,
 /// isPresentedPtr: Long, edge: Int, alignment: Int, gap: Float, flip: Boolean,
 /// clampTag: Int, clampMargin: Float, dismissal: Int, placedEdgePtr: Long)`.
 /// `clampTag` is 0 for `Clamp::Off` and 1 for `Clamp::Window`, when
@@ -984,7 +984,7 @@ impl ToJavaStruct for crate::WuiMetadataAnchoredOverlay {
             jni_sig!("(JJJIIFZIFIJ)V"),
             &[
                 JValue::Long(self.content as jlong),
-                JValue::Long(self.value.content as jlong),
+                JValue::Long(self.value.content_builder as jlong),
                 JValue::Long(self.value.is_presented as jlong),
                 JValue::Int(placement.edge as jint),
                 JValue::Int(placement.alignment as jint),

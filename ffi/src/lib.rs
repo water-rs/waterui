@@ -2512,6 +2512,7 @@ use nami::Signal;
 use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchorPlacement, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
 };
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{LayoutDirection, Rect, Size, layout_direction};
 
 #[cfg(feature = "c-api")]
@@ -2773,12 +2774,19 @@ impl IntoRust for WuiAnchorPlacement {
     }
 }
 
+opaque!(
+    WuiAnchoredOverlayContent,
+    AnyViewBuilder,
+    anchored_overlay_content
+);
+
 /// FFI-safe representation of an anchored overlay.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiAnchoredOverlay {
-    /// The view presented next to the anchor.
-    pub content: *mut WuiAnyView,
+    /// Builds a fresh view for each presentation; materialize it with
+    /// `waterui_anchored_overlay_build_content`.
+    pub content_builder: *mut WuiAnchoredOverlayContent,
     /// Whether the overlay is presented; the backend writes `false` when it
     /// dismisses the overlay itself.
     pub is_presented: *mut WuiBinding<bool>,
@@ -2795,7 +2803,7 @@ impl IntoFFI for AnchoredOverlay {
     type FFI = WuiAnchoredOverlay;
     fn into_ffi(self) -> Self::FFI {
         WuiAnchoredOverlay {
-            content: self.content.into_ffi(),
+            content_builder: self.content.into_ffi(),
             is_presented: self.is_presented.into_ffi(),
             placement: self.placement.into_ffi(),
             dismissal: self.dismissal.into_ffi(),
@@ -2813,6 +2821,42 @@ ffi_metadata!(
     WuiMetadataAnchoredOverlay,
     anchored_overlay
 );
+
+/// Builds a fresh overlay-content view from `builder`.
+///
+/// The returned view is owned by the caller. `builder` is only borrowed: it
+/// stays alive inside the `WuiAnchoredOverlay` until the anchor's owner drops
+/// it, and every presentation calls this so each one gets an independent
+/// view instance.
+///
+/// # Safety
+///
+/// `builder` must be a valid `WuiAnchoredOverlayContent` pointer obtained
+/// from a `WuiAnchoredOverlay`'s `content_builder` field, alive for this
+/// call.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_anchored_overlay_build_content(
+    builder: *const WuiAnchoredOverlayContent,
+) -> *mut WuiAnyView {
+    // SAFETY: forwarded caller contract.
+    unsafe { anchored_overlay_build_content(builder) }
+}
+
+/// The shared core of `waterui_anchored_overlay_build_content` and the JNI
+/// entrypoint: borrows the retained builder and returns the view it builds.
+///
+/// # Safety
+///
+/// `builder` must be a valid, borrowed `WuiAnchoredOverlayContent` pointer.
+pub(crate) unsafe fn anchored_overlay_build_content(
+    builder: *const WuiAnchoredOverlayContent,
+) -> *mut WuiAnyView {
+    // SAFETY: the caller contract makes `builder` a valid pointer borrowed
+    // for this call; the handle stays owned by the anchor's owner.
+    let builder = unsafe { borrow_ffi(builder) };
+    builder.build().into_ffi()
+}
 
 /// C ABI mirror of [`waterui_backend_core::overlay::AnchoredOverlayPlacement`]:
 /// the overlay's frame in window space and the anchor edge it was placed

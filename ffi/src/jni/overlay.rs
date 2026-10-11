@@ -106,6 +106,30 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anchoredOv
     })
 }
 
+/// JNI: builds a fresh overlay-content view from the retained builder —
+/// every presentation calls this so each shown overlay is an independent
+/// view instance.
+///
+/// `(builderPtr: Long)` → `Long` (`*mut WuiAnyView`, owned by the caller).
+///
+/// # Safety
+///
+/// `builder_ptr` must be a valid `WuiAnchoredOverlayContent` handle the
+/// runtime took from `MetadataAnchoredOverlayStruct.overlayContentBuilderPtr`,
+/// still owned by the anchor's owner; it is only borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anchoredOverlayBuildContent<
+    'local,
+>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    builder_ptr: jlong,
+) -> jlong {
+    // SAFETY: the caller contract above makes `builder_ptr` a valid, borrowed
+    // content-builder handle retained by the anchor's owner.
+    unsafe { crate::anchored_overlay_build_content(jlong_to_ptr(builder_ptr)) as jlong }
+}
+
 const fn jint_to_anchor_edge(edge: jint) -> AnchorEdge {
     match edge {
         1 => AnchorEdge::Bottom,
