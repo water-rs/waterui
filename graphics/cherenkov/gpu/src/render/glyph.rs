@@ -1982,33 +1982,49 @@ pub struct CellWrite {
 /// An arena's bytes are consumed by [`Atlas::upload_committed`], which
 /// copies them into the upload ring's GPU staging — so the arenas live
 /// inside this container until the commit's upload has run. `clear`
-/// then moves the emptied buffers into `spares`, and the next commit's
-/// lowering batches refill them via `take_spares`: a byte buffer is
-/// reused only after the upload consumed it, and CPU buffers never
-/// alias the ring's in-flight staging copies, whose lifetime is the
-/// ring's (see `upload.rs`).
+/// then returns only the lowering batches' arenas to `spares` — glyph
+/// and mask rasters are dropped with the commit — and the next
+/// commit's lowering batches refill the pool via `take_spares`: a
+/// byte buffer is reused only after the upload consumed it, and CPU
+/// buffers never alias the ring's in-flight staging copies, whose
+/// lifetime is the ring's (see `upload.rs`).
 #[derive(Default)]
 pub struct CellWrites {
     /// Texel arenas the staged `texels` ranges index.
     arenas: Vec<Vec<u8>>,
+    /// Indexes into `arenas` of the lowering batches' path arenas —
+    /// the only buffers `clear` returns to the spare pool.
+    path_arenas: Vec<u32>,
     /// The staged writes in commit order.
     cells: Vec<CellWrite>,
-    /// Arena buffers `clear` emptied, ready to seed new lowering
-    /// batches with their capacity intact.
+    /// Cleared path-batch arenas kept for reuse, capped at one per
+    /// lowering worker (`take_spares`' count).
     spares: Vec<Vec<u8>>,
+    /// `spares` size limit recorded by the last `take_spares` call.
+    spare_cap: usize,
 }
 
 impl CellWrites {
     /// Moves `arena` in and returns its index for [`CellWrite::arena`].
+    /// The buffer is dropped by the next `clear`.
     pub fn push_arena(&mut self, arena: Vec<u8>) -> u32 {
         let idx = u32::try_from(self.arenas.len()).expect("commit arenas fit u32");
         self.arenas.push(arena);
         idx
     }
 
+    /// Moves a lowering batch's arena in; `clear` returns its emptied
+    /// buffer to `spares` instead of dropping it.
+    pub fn push_path_arena(&mut self, arena: Vec<u8>) -> u32 {
+        let idx = self.push_arena(arena);
+        self.path_arenas.push(idx);
+        idx
+    }
+
     /// Pops up to `n` cleared arena buffers for reuse as new lowering
-    /// batches' texel arenas.
+    /// batches' texel arenas; the pool never holds more than `n`.
     pub fn take_spares(&mut self, n: usize) -> Vec<Vec<u8>> {
+        self.spare_cap = n;
         self.spares
             .drain(self.spares.len().saturating_sub(n)..)
             .collect()
@@ -2034,15 +2050,27 @@ impl CellWrites {
         self.cells.is_empty()
     }
 
-    /// Clears the staged writes; the emptied arena buffers pool in
-    /// `spares` for the next commit's lowering batches rather than
-    /// freeing.
+    /// Clears the staged writes. Path-batch arenas empty into
+    /// `spares` for the next commit's lowering batches; glyph and
+    /// mask rasters drop with the commit.
     pub fn clear(&mut self) {
         self.cells.clear();
-        self.spares.extend(self.arenas.drain(..).map(|mut arena| {
+        self.spares.extend(self.path_arenas.drain(..).map(|idx| {
+            let mut arena = std::mem::take(&mut self.arenas[idx as usize]);
             arena.clear();
             arena
         }));
+        self.spares.truncate(self.spare_cap);
+        self.arenas.clear();
+    }
+
+    /// Heap bytes the staged arenas and the spare pool retain.
+    pub fn heap_bytes(&self) -> u64 {
+        self.arenas
+            .iter()
+            .chain(self.spares.iter())
+            .map(Vec::capacity)
+            .sum::<usize>() as u64
     }
 
     /// The cell's `w` × `h` texel bytes.
@@ -3139,6 +3167,30 @@ mod tests {
         assert!(
             matches!(atlas.plan(&refs), AtlasPlan::Recycle),
             "a batch exceeding cap × max_pages must still recycle"
+        );
+    }
+
+    #[test]
+    fn only_path_arenas_pool_and_the_pool_caps_at_the_worker_count() {
+        let mut writes = CellWrites::default();
+        writes.take_spares(2);
+        for _ in 0..8 {
+            for _ in 0..64 {
+                writes.push_arena(vec![0xAB; 256]);
+            }
+            writes.clear();
+        }
+        assert_eq!(writes.spares.len(), 0);
+        for _ in 0..8 {
+            for _ in 0..8 {
+                writes.push_path_arena(vec![0xCD; 512]);
+            }
+            writes.clear();
+        }
+        assert_eq!(writes.spares.len(), 2);
+        assert_eq!(
+            writes.heap_bytes(),
+            writes.spares.iter().map(Vec::capacity).sum::<usize>() as u64
         );
     }
 }

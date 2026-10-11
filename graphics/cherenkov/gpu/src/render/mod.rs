@@ -3694,6 +3694,7 @@ impl Renderer for GpuRenderer {
             .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
+            + self.commit_writes.heap_bytes()
             + self
                 .surfaces
                 .values()
@@ -6751,7 +6752,7 @@ impl GpuRenderer {
         let pending = std::mem::take(&mut lowered.pending);
         // The batch's texel arena moves into the commit's writes, which
         // keep it alive until the upload below has consumed its bytes.
-        let arena = writes.push_arena(std::mem::take(&mut lowered.path_arena));
+        let arena = writes.push_path_arena(std::mem::take(&mut lowered.path_arena));
         let mut origins = std::mem::take(&mut self.pending_origins);
         origins.clear();
         for raster in pending {
