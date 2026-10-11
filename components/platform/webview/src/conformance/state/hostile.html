@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>hostile</title>
+    <script>
+      // A document the bridge refuses, written the way an attacker would:
+      // it records what the engine injected before it ran, takes every raw
+      // transport it can reach, defines the bridge's globals itself so that
+      // anything evaluated into it lands in a recorder, and asks for the
+      // application's state and a handler's reply on every transport.
+      (function () {
+        var record = { injected: null, transports: [], calls: [], outcomes: [] };
+        globalThis.__hostile = record;
+
+        var mirror = globalThis.waterui && globalThis.waterui.state;
+        record.injected = {
+          waterui: typeof globalThis.waterui,
+          stateKeys: mirror ? Object.keys(mirror) : [],
+        };
+
+        var transports = [];
+        var handlers = globalThis.webkit && globalThis.webkit.messageHandlers;
+        if (handlers && handlers.__wateruiSend) {
+          var webkit = handlers.__wateruiSend;
+          transports.push(["webkit", function (envelope) {
+            return webkit.postMessage(envelope);
+          }]);
+        }
+        if (typeof globalThis.__wateruiNativeSend === "function") {
+          var native = globalThis.__wateruiNativeSend;
+          transports.push(["native", function (envelope) {
+            return native(envelope);
+          }]);
+        }
+        if (typeof globalThis.__wateruiSend === "function") {
+          var send = globalThis.__wateruiSend;
+          transports.push(["send", function (envelope) {
+            return send(envelope);
+          }]);
+        }
+        record.transports = transports.map(function (transport) {
+          return transport[0];
+        });
+
+        function recorder(name) {
+          return function () {
+            record.calls.push([name, Array.prototype.slice.call(arguments)]);
+          };
+        }
+        globalThis.__wateruiResolve = recorder("__wateruiResolve");
+        globalThis.__wateruiEval = recorder("__wateruiEval");
+        globalThis.__wateruiState = {
+          define: recorder("define"),
+          apply: recorder("apply"),
+          start: recorder("start"),
+        };
+        globalThis.waterui = {
+          invoke: recorder("invoke"),
+          watch: recorder("watch"),
+          state: {},
+        };
+
+        var envelopes = [
+          { id: 1, name: "__wateruiPullState", json: { since: null } },
+          { id: 2, name: "__wateruiPullState", json: { since: 0 } },
+          { id: 3, name: "echo", json: "hostile" },
+        ];
+        transports.forEach(function (transport) {
+          envelopes.forEach(function (envelope) {
+            var outcome;
+            try {
+              outcome = transport[1](JSON.stringify(envelope));
+            } catch (error) {
+              record.outcomes.push([transport[0], envelope.id, "threw", String(error)]);
+              return;
+            }
+            if (outcome && typeof outcome.then === "function") {
+              outcome.then(
+                function (value) {
+                  record.outcomes.push([transport[0], envelope.id, "resolved", value]);
+                },
+                function (error) {
+                  record.outcomes.push([transport[0], envelope.id, "rejected", String(error)]);
+                }
+              );
+            }
+          });
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <p>A document the bridge refuses.</p>
+  </body>
+</html>

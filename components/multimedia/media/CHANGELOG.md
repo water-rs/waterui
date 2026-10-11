@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/media-v0.3.2...media-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(testing)* [**breaking**] split the test harness into a semantic pipeline and a styled rendered pipeline
+
+### Fixed
+
+- *(deps)* keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))
+- *(testing)* wait for in-flight work while settling; queue presses for transients
+- declare stretch_axis on composite views before body resolution ([#952](https://github.com/water-rs/waterui/pull/952))
+
+### Other
+
+- Revert "fix(deps): keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))" ([#1129](https://github.com/water-rs/waterui/pull/1129))
+- consume waterkit from crates.io instead of the kit gitlink ([#942](https://github.com/water-rs/waterui/pull/942))
+
 ## [0.3.2](https://github.com/water-rs/waterui/compare/media-v0.3.1...media-v0.3.2) - 2026-09-11
 
 ### Added

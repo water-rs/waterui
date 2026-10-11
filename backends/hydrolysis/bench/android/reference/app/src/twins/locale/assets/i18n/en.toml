@@ -1,0 +1,53 @@
+# English translations (fallback)
+
+# Title and description
+"WaterUI World Fair" = "WaterUI World Fair"
+"Locale is injected from native side via FFI" = "Locale is injected from native side via FFI"
+"Live translations for a tiny world-fair kiosk" = "Live translations for a tiny world-fair kiosk"
+
+# Section headers
+"Welcome Desk" = "Welcome Desk"
+"Festival Date (2006-03-20)" = "Festival Date (2006-03-20)"
+"Passport Stamps" = "Passport Stamps"
+"Distance Guide" = "Distance Guide"
+"Local Flavor" = "Local Flavor"
+"Language Booth" = "Language Booth"
+"Human Rights - Article 1" = "Human Rights - Article 1"
+
+# Greeting
+"Welcome to the World Fair!" = "Welcome to the World Fair!"
+
+# Labels
+"Color" = "Color"
+"Favorite" = "Favorite"
+"Language:" = "Language:"
+"Detected Locale:" = "Detected Locale:"
+"Chosen Language:" = "Chosen Language:"
+"Short:" = "Short:"
+"Long:" = "Long:"
+"City Walk:" = "City Walk:"
+"Marathon Route:" = "Marathon Route:"
+"Computer:" = "Computer:"
+"Software:" = "Software:"
+
+# Language names (used to display current locale)
+"en" = "English"
+"en-US" = "English (US)"
+"en-GB" = "English (UK)"
+"zh" = "Chinese"
+"ja" = "Japanese"
+"ko" = "Korean"
+"de" = "German"
+"fr" = "French"
+"es" = "Spanish"
+"ru" = "Russian"
+
+# Regional vocabulary
+"computer" = "computer"
+"software" = "software"
+
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "All human beings are born free and equal in dignity and rights. They are endowed with reason and conscience and should act towards one another in a spirit of brotherhood."
+
+# Plural forms
+"I have {#count} passport stamp" = { one = "I have {count} passport stamp", other = "I have {count} passport stamps" }

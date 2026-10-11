@@ -1,0 +1,4 @@
+release_base_url = "https://github.com/water-rs/waterui/releases/download"
+wpe_version = "2.52.5"
+cef_version = "150.0.14"
+cef_sbom_created = "2026-07-28T00:00:00Z"

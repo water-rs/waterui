@@ -26,7 +26,7 @@ mod error;
 mod kind;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 mod remote;
-#[cfg(all(feature = "std", target_arch = "wasm32"))]
+#[cfg(all(feature = "remote", target_arch = "wasm32"))]
 mod remote_web;
 #[cfg(feature = "std")]
 mod url;
@@ -36,9 +36,11 @@ pub const WINDOW_ICON_FILE: &str = ".window-icon.png";
 
 pub use error::AssetError;
 pub use kind::AssetKind;
+#[cfg(all(feature = "remote", not(target_arch = "wasm32")))]
+pub use remote::download_remote_bytes;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-pub use remote::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
-#[cfg(all(feature = "std", target_arch = "wasm32"))]
+pub use remote::{AtomicWriteOutcome, write_bytes_atomically};
+#[cfg(all(feature = "remote", target_arch = "wasm32"))]
 pub use remote_web::download_remote_bytes;
 #[cfg(feature = "std")]
 pub use url::{ensure_http_allowed, is_loopback_http_url, is_remote_url};

@@ -132,7 +132,7 @@ handle.set(Some(new_handle));
 window.show(env);
 
 // Close window later
-if let Some(h) = handle.get() {
+if let Some(h) = handle.snapshot() {
     h.close();
 }
 ```

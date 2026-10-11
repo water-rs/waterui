@@ -10,11 +10,11 @@
 
 /// `CARGO_MANIFEST_DIR` is the `waterui` package root (`src/`), so the fixture
 /// web project is addressed as `tests/fixtures/web_project`.
-fn web_view() -> waterui::webview::WebViewOpen {
-    waterui::include_web!("tests/fixtures/web_project")
+fn web_view(resources: &waterui::ResourceContext) -> waterui::webview::WebViewOpen {
+    waterui::include_web!(resources, "tests/fixtures/web_project")
 }
 
 #[test]
 fn include_web_expands_to_a_webview_open() {
-    let _: fn() -> waterui::webview::WebViewOpen = web_view;
+    let _: fn(&waterui::ResourceContext) -> waterui::webview::WebViewOpen = web_view;
 }

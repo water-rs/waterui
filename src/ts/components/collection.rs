@@ -365,7 +365,7 @@ pub fn each(
         items: RefCell::new(BTreeMap::new()),
     });
 
-    let keys = Binding::container(state.reconcile(bridge, &source.get())?);
+    let keys = Binding::container(state.reconcile(bridge, &source.snapshot())?);
     let guard = source.watch({
         let state = Rc::clone(&state);
         let bridge = bridge.downgrade();

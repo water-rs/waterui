@@ -1,6 +1,6 @@
 [package]
 name = "waterui-layout"
-version = "0.3.2"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -19,7 +19,14 @@ waterui-graphics.workspace = true
 num-traits = { version = "0.2", default-features = false }
 
 [dev-dependencies]
-waterui = { path = "../../..", default-features = false }
+# `snackbar` for the bar's container-width-bounds tests; the rest of the
+# facade surface these tests touch (stacks, scroll, text, controls) is
+# feature-free.
+waterui = { path = "../../..", default-features = false, features = ["snackbar"] }
+# The tests mount the components this crate owns on the shared headless
+# runtimes — semantic for tree assertions, `TestStyle` offscreen where the
+# contract is geometry (water-rs/waterui#1673).
+waterui-testing = { path = "../../../testing" }
 
 
 [lints]

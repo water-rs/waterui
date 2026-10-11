@@ -37,12 +37,15 @@
 //! # The artifact channel
 //!
 //! `#[derive(TsProps)]` emits a `#[cfg(debug_assertions)] #[used] static`
-//! named `waterui_meta_tsprops_<Type>` holding the encoded schema followed by
-//! one NUL. That is the canonical proc-macro to CLI channel: `#[used]` keeps
-//! the item in the object file and the rlib, so the CLI enumerates it by name
-//! from a dev-profile host build and reads its bytes. Because the whole
-//! encoding happens during const evaluation, the static is data — the macro
-//! runs no tool and reads no file.
+//! named `waterui_meta_tsprops_<Type>` whose bytes form a self-describing
+//! record in the [`DIR_SECTION`] (`__wmeta` on Mach-O) linker section: the
+//! static's name, NUL, the encoded schema followed by its NUL, NUL. That is
+//! the canonical proc-macro to CLI channel: `#[used]` keeps the item in the
+//! object file and the rlib — and in the linked image, where a Windows PE
+//! keeps no symbol table to name it — so the CLI walks the section's records
+//! by name from a dev-profile host build. Because the whole encoding happens
+//! during const evaluation, the static is data — the macro runs no tool and
+//! reads no file.
 //!
 //! The debug gate is what keeps a shipped binary free of it: `#[used]` emits
 //! `no_dead_strip` on Mach-O, so a release artifact would carry the payload
@@ -114,6 +117,7 @@ pub use tree::{
     EnumRepresentation, EnumSchema, FieldSchema, NumberKind, StructSchema, TypeSchema,
     VariantPayload, VariantSchema,
 };
+pub use waterui_meta::{DIR_SECTION, DirRecord, DirRecords, dir_entry, dir_record, dir_records};
 
 /// Derives the TypeScript projection of a struct or enum.
 ///

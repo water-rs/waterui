@@ -1,6 +1,6 @@
 [package]
 name = "waterui-locale"
-version = "0.1.2"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -46,6 +46,11 @@ sys-locale.workspace = true
 
 [target.'cfg(not(target_os = "espidf"))'.dependencies]
 iana-time-zone.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+sys-locale = { workspace = true, features = ["js"] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window", "EventTarget"] }
 
 [features]
 default = []

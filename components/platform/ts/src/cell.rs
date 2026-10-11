@@ -167,7 +167,7 @@ fn settle<T: FromJs + IntoJs + Clone + 'static>(
     binding: &Binding<T>,
 ) {
     for _ in 0..SETTLE_ROUNDS {
-        match push(bridge, source, echo, binding.get()) {
+        match push(bridge, source, echo, binding.snapshot()) {
             // Nothing more to do: either the value stands, or the write
             // failed and was reported, and JavaScript keeps what it had.
             None | Some(Settled::Stood) => return,
@@ -350,7 +350,7 @@ impl<T: IntoJs + Clone + 'static> OutboundCell<T> {
             };
             // The current value, not the notification's: a watcher that runs
             // before this one may have moved the source on already.
-            push(&bridge, &source, &echo, signal.get());
+            push(&bridge, &source, &echo, signal.snapshot());
         });
         Self {
             signal: computed.clone(),

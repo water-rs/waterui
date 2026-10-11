@@ -9,7 +9,6 @@
 //! declines.
 #![cfg(feature = "flow-markdown")]
 
-use hydrolysis_m3::install as install_m3;
 use waterui::ViewExt as _;
 use waterui::env::use_env;
 use waterui::metadata::Metadata;
@@ -33,7 +32,7 @@ this is not a programming language
 /// The `Code` widget names its language in its header, which is the assertion
 /// `FlowMarkdown`'s old parallel path could never have passed: it captioned
 /// every block \"Code\" and put the language nowhere.
-#[waterui::test(viewport = (700, 900), theme = install_m3)]
+#[waterui::test(viewport = (700, 900))]
 fn an_unclaimed_fence_names_its_language(ui: UiBuilder) {
     let mut app = ui.mount(|| RichText::from_markdown(DOC));
 
@@ -46,7 +45,7 @@ fn an_unclaimed_fence_names_its_language(ui: UiBuilder) {
 /// and comes back as the ordinary code block — `Hook::from` having removed the
 /// hook from the environment it handed the closure, so `render()` does not
 /// recurse.
-#[waterui::test(viewport = (700, 900), theme = install_m3)]
+#[waterui::test(viewport = (700, 900))]
 fn a_hook_claims_only_the_token_it_recognises(ui: UiBuilder) {
     let mut app = ui.mount(|| {
         use_env(|mut env: Environment| {
@@ -64,7 +63,7 @@ fn a_hook_claims_only_the_token_it_recognises(ui: UiBuilder) {
 
 /// A streamed document renders its fences through the same `Code` widget, so
 /// the hook covers it too and the language reaches the accessibility tree.
-#[waterui::test(viewport = (700, 900), theme = install_m3)]
+#[waterui::test(viewport = (700, 900))]
 fn a_fence_in_flow_markdown_names_its_language(ui: UiBuilder) {
     let mut app = ui.mount(|| flow_markdown(DOC));
 

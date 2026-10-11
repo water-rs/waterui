@@ -162,11 +162,11 @@ fn enforce_budgets(crate_name: &str, bench_name: &str, budgets: BenchBudgets, re
             );
         }
         if let Some(limit) = budgets.max_gpu_surface_layers
-            && stats.gpu_surface_layers > limit
+            && stats.gpu_content_layers > limit
         {
             violation(
                 "GPU surface layers",
-                stats.gpu_surface_layers.to_string(),
+                stats.gpu_content_layers.to_string(),
                 limit.to_string(),
             );
         }

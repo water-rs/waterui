@@ -1,39 +1,35 @@
-// Gated on `gpu` alone, like `gpu_surface`: Android drives both of these through
-// the JNI bindings, which are compiled with `android-jni` and without `c-api`.
+//! Views whose pixels are drawn rather than bridged: GPU content a native host
+//! presents, and pictures rasterized for it.
+
+// Gated on `gpu` alone: Android drives these through the JNI bindings, which
+// are compiled with `android-jni` and without `c-api`.
 #[cfg(feature = "gpu")]
-pub mod applied_filter;
-#[cfg(all(target_os = "android", feature = "gpu"))]
-pub mod capture_composite;
+pub mod gpu_content;
 #[cfg(feature = "gpu")]
-pub mod capture_format;
+pub mod gpu_content_input;
 #[cfg(feature = "gpu")]
 pub mod gpu_runtime;
-#[cfg(feature = "gpu")]
-pub mod gpu_surface;
-#[cfg(feature = "gpu")]
-pub mod gpu_surface_input;
-#[cfg(all(target_os = "android", feature = "gpu"))]
-pub mod hardware_buffer;
 pub mod picture;
-#[cfg(feature = "gpu")]
-pub mod view_effect;
 pub mod view_renderer;
+
+#[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
+use std::sync::Arc;
 
 /// Acquires the next texture of a configured surface, reconfiguring once when
 /// the swapchain is lost or outdated.
 ///
-/// `None` means the frame was skipped because the surface is occluded: nothing
-/// was drawn, and the caller must report the frame as still pending so the host
-/// comes back for it — a view whose only clock is its own render loop has no
-/// other way to be woken.
+/// `None` means the frame was skipped because the surface is occluded, the
+/// acquire timed out, or the device is dead: nothing was drawn, and the caller
+/// must report the frame as still pending so the host comes back for it — a
+/// view whose only clock is its own render loop has no other way to be woken.
 #[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
 fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
-    gpu: &waterui_graphics::shared_context::SharedGpuContext,
+    gpu: &Arc<waterui_graphics::gpu::SharedGpuContext>,
     config: &wgpu::SurfaceConfiguration,
     context: &'static str,
 ) -> Option<wgpu::SurfaceTexture> {
-    let device = &gpu.device;
+    let device = gpu.device();
     match checked_surface_acquire(surface, device) {
         Ok(
             wgpu::CurrentSurfaceTexture::Success(output)
@@ -43,7 +39,10 @@ fn acquire_surface_texture(
             tracing::debug!(context, "surface is occluded; skipping frame");
             None
         }
-        Ok(wgpu::CurrentSurfaceTexture::Timeout) => panic!("{context}: surface timeout"),
+        Ok(wgpu::CurrentSurfaceTexture::Timeout) => {
+            tracing::debug!(context, "surface acquire timed out; skipping frame");
+            None
+        }
         // `Lost`/`Outdated` name the stale swapchain; `Validation` is what a
         // dead device reports, and `Err` carries whatever the error scope
         // caught. Every one of them earns one reconfigure + retry — on a lost
@@ -59,12 +58,12 @@ fn acquire_surface_texture(
 
 /// One reconfigure-and-retry for a failed swapchain acquire, after ruling out
 /// a dead device: when the device-lost callback has already fired, surface
-/// state is unrecoverable and the panic must name that cause instead of the
-/// generic acquire status.
+/// state is unrecoverable and the skipped frame must name that cause instead
+/// of the generic acquire status.
 #[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
 fn retry_surface_acquire(
     surface: &wgpu::Surface<'_>,
-    gpu: &waterui_graphics::shared_context::SharedGpuContext,
+    gpu: &Arc<waterui_graphics::gpu::SharedGpuContext>,
     config: &wgpu::SurfaceConfiguration,
     context: &'static str,
     first_failure: std::fmt::Arguments<'_>,
@@ -77,7 +76,7 @@ fn retry_surface_acquire(
         tracing::debug!(context, reason, "GPU device lost; skipping the frame");
         return None;
     }
-    let device = &gpu.device;
+    let device = gpu.device();
     tracing::debug!(
         context,
         "surface acquire failed ({first_failure}); reconfiguring and retrying"
@@ -92,6 +91,14 @@ fn retry_surface_acquire(
             tracing::debug!(context, "surface is occluded; skipping frame");
             None
         }
+        Ok(wgpu::CurrentSurfaceTexture::Timeout) => {
+            tracing::debug!(context, "surface acquire timed out; skipping frame");
+            None
+        }
+        // One reconfigure-and-retry is the whole budget: a persistent failure
+        // is a dead or misconfigured surface, and the panic names the cause
+        // like `checked_surface_configure` does instead of leaving a black
+        // surface plus per-frame error spam.
         Ok(status) => {
             panic!("{context}: acquire after reconfigure failed: {status:?} with {config:?}")
         }
@@ -108,15 +115,15 @@ fn retry_surface_acquire(
 /// notices the dead driver — and `wgpu-core` purges its resource storage as it
 /// marks the loss. Any later call in the same frame that resolves one of the
 /// dead device's handles then panics inside `wgpu` rather than erroring; the
-/// semantic renderer (`vello` uploads, `queue.write_buffer`, submits) cannot
-/// be taught to bail, so the frame body runs inside `catch_unwind` here.
+/// engine's render (`queue.write_buffer`, submits) cannot be taught to bail,
+/// so the frame body runs inside `catch_unwind` here.
 ///
 /// A caught panic is only swallowed when the context confirms the device was
 /// actually lost — that is the recoverable fallout this exists for, and it
 /// returns `None`. Anything else is a real bug and is re-raised unchanged.
 #[cfg(all(feature = "gpu", not(any(target_os = "macos", target_os = "ios"))))]
 pub fn run_gpu_frame<T>(
-    gpu: &waterui_graphics::shared_context::SharedGpuContext,
+    gpu: &Arc<waterui_graphics::gpu::SharedGpuContext>,
     scope: &'static str,
     frame: impl FnOnce() -> T,
 ) -> Option<T> {

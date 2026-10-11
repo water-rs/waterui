@@ -1,5 +1,11 @@
 //! Drives `waterui_mcp::serve` over a `DuplexTransport`: initialize, list the
 //! tools, find a button, click it through `act`, and screenshot.
+//!
+//! The session mounts an `OffscreenApp` and drives pointer and screenshot
+//! behavior, asserted under `Material3::defaults()`.
+//!
+//! Returned from `backends/hydrolysis/tests/mcp.rs` under
+//! water-rs/waterui#1673: the suite belongs to the crate that owns `serve`.
 
 use aither_mcp::protocol::{
     CallToolParams, CallToolResult, Content, InitializeParams, InitializeResult, JsonRpcRequest,
@@ -9,17 +15,17 @@ use aither_mcp::transport::{DuplexTransport, Transport};
 use futures_lite::future::block_on;
 use waterui::component::{button, field, toggle, vstack};
 use waterui::text;
-use waterui::{Binding, Str};
+use waterui::{Binding, Signal as _, Str};
 use waterui_mcp::{ServerInfo, serve};
-use waterui_testing::{OffscreenApp, install_default_theme, ui};
+use waterui_testing::{OffscreenApp, ui};
 
 fn mount() -> OffscreenApp {
     let enabled = Binding::bool(false);
     let count = Binding::container(0_i32);
     let label = Binding::container(String::from("count: 0"));
     let name = Binding::container(Str::from_static(""));
-    ui().theme(install_default_theme)
-        .viewport(200, 100)
+    ui().theme(hydrolysis_m3::Material3::defaults())
+        .viewport(200, 180)
         .mount_offscreen(move || {
             let count = count.clone();
             let label = label.clone();
@@ -29,7 +35,7 @@ fn mount() -> OffscreenApp {
                 toggle("Enable", &enabled),
                 field("Name", &name),
                 button("Increment").action(move || {
-                    let next = count.get() + 1;
+                    let next = count.snapshot() + 1;
                     count.set(next);
                     label_for_action.set(format!("count: {next}"));
                 }),
@@ -211,6 +217,66 @@ fn screenshot_and_advance(client: &mut DuplexTransport, node: u64) {
         panic!("expected image content, got {:?}", frame.content);
     };
     assert_eq!(image.mime_type, "image/png");
+}
+
+/// water-rs/hydrolysis#324 repro: `screenshot` must return the current
+/// composite — the same image `advance(screenshot: true)` produces — not the
+/// frame from before the state change.
+#[test]
+fn mcp_screenshot_matches_advance_capture() {
+    let (mut client, server) = DuplexTransport::pair();
+    let info = ServerInfo {
+        name: "waterui-mcp-324".to_owned(),
+        version: Some("0.0.0".to_owned()),
+    };
+    let server_thread = std::thread::spawn(move || serve(server, mount, info));
+
+    initialize(&mut client);
+
+    let shot_png = |client: &mut DuplexTransport, tool: &str, args: serde_json::Value| {
+        let result = call_tool(client, tool, args);
+        let [Content::Image(image)] = result.content.as_slice() else {
+            panic!("expected image content, got {:?}", result.content);
+        };
+        image.data.clone()
+    };
+
+    let first = shot_png(&mut client, "screenshot", serde_json::json!({}));
+
+    let found = call_tool(
+        &mut client,
+        "find",
+        serde_json::json!({"label": "Increment"}),
+    );
+    let node = first_node_id(tool_text(&found));
+    let clicked = call_tool(
+        &mut client,
+        "act",
+        serde_json::json!({"node": node, "action": "click"}),
+    );
+    assert!(!clicked.is_error);
+    assert!(tool_text(&clicked).contains("count: 1"));
+
+    let stale = shot_png(&mut client, "screenshot", serde_json::json!({}));
+    let advanced = shot_png(
+        &mut client,
+        "advance",
+        serde_json::json!({"duration_ms": 16, "screenshot": true}),
+    );
+    assert_ne!(
+        first, stale,
+        "the capture after the state change must not equal the pre-change image"
+    );
+    assert_eq!(
+        stale, advanced,
+        "screenshot and advance(screenshot: true) must return the same image"
+    );
+
+    block_on(client.close()).expect("close transport");
+    server_thread
+        .join()
+        .expect("server thread panicked")
+        .expect("serve returned an error");
 }
 
 /// State filters (`checked`, `enabled`) and scope anchors (`within`,

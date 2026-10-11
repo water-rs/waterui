@@ -1,6 +1,6 @@
 [package]
 name = "waterui-inspector-app"
-version = "0.1.2"
+version = "0.5.2"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-chart.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-icons-lucide.workspace = true
@@ -23,7 +23,7 @@ async-channel.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-waterui-testing = { path = "../../../../testing" }
+waterui-testing.workspace = true
 hydrolysis-m3.workspace = true
 
 [lints]

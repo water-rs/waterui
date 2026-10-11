@@ -584,16 +584,28 @@ impl<'a> PlacedSubview<'a> {
     }
 
     /// Returns the explicit horizontal guide in container coordinates, if any.
+    ///
+    /// A child that is not a stack member (`SubView::is_empty`) exports no
+    /// guide: its declarations contribute to nothing, not even this lookup.
     #[must_use]
     pub fn explicit_horizontal(&self, alignment: HorizontalAlignment) -> Option<f32> {
+        if self.view.is_empty() {
+            return None;
+        }
         self.dimensions()
             .explicit_horizontal(alignment)
             .map(|value| self.frame.x() + value)
     }
 
     /// Returns the explicit vertical guide in container coordinates, if any.
+    ///
+    /// A child that is not a stack member (`SubView::is_empty`) exports no
+    /// guide: its declarations contribute to nothing, not even this lookup.
     #[must_use]
     pub fn explicit_vertical(&self, alignment: VerticalAlignment) -> Option<f32> {
+        if self.view.is_empty() {
+            return None;
+        }
         self.dimensions()
             .explicit_vertical(alignment)
             .map(|value| self.frame.y() + value)
@@ -710,6 +722,21 @@ pub trait SubView {
     ///
     /// Higher priority views are measured first and get space preference.
     fn priority(&self) -> i32;
+
+    /// Whether this child renders nothing — `WaterUI`'s empty view (`()`),
+    /// possibly under layout-transparent wrappers.
+    ///
+    /// This is a semantic question, not a size answer: a child that measured
+    /// zero — a `Color` or `Spacer` compressed to nothing — still renders and
+    /// still answers `false`. Only a child whose whole subtree draws nothing
+    /// answers `true`, and a stack treats such a child as a non-member: it
+    /// takes no slot and no spacing. A child whose answer changes over time
+    /// (a conditional flipping between `()` and content) is a membership
+    /// change, and every such flip must invalidate the layout the same way a
+    /// view swap does.
+    fn is_empty(&self) -> bool {
+        false
+    }
 }
 
 /// A [`SubView`] that remembers what each proposal measured.
@@ -793,11 +820,20 @@ impl SubView for MemoizedSubView<'_> {
     }
 
     fn stretch_axis(&self) -> StretchAxis {
+        // A non-member contributes nothing, including a stretch claim read
+        // before its empty body ran.
+        if self.inner.is_empty() {
+            return StretchAxis::None;
+        }
         self.inner.stretch_axis()
     }
 
     fn priority(&self) -> i32 {
         self.inner.priority()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 }
 
@@ -981,6 +1017,10 @@ fn measure_layout_memoized(
     let mut vertical_keys = layout.explicit_vertical_alignments();
 
     for child in &placed_subviews {
+        if child.view.is_empty() {
+            // A non-member exports no guides, not even the keys it declares.
+            continue;
+        }
         let child_dimensions = child.dimensions();
         for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
             if !horizontal_keys.contains(&alignment) {
@@ -1469,7 +1509,7 @@ macro_rules! impl_layout_signal_constant {
                 type Output = Self;
                 type Guard = ();
 
-                fn get(&self) -> Self::Output {
+                fn snapshot(&self) -> Self::Output {
                     *self
                 }
 

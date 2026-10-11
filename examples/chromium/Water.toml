@@ -1,7 +1,6 @@
 waterui_path = "../.."
 
 [package]
-type = "playground"
 name = "Chromium and CDP Example"
 bundle_identifier = "dev.waterui.examples.chromium"
 

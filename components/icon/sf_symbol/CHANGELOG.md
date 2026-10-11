@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/waterui-icons-sf-symbol-v0.1.2...waterui-icons-sf-symbol-v0.5.0) - 2026-09-20
+
+### Other
+
+- move the water CLI to water-rs/cli
+- [**breaking**] replace waterui-str with the extracted suiteki crate
+
 ## [0.1.2](https://github.com/water-rs/waterui/compare/waterui-icons-sf-symbol-v0.1.1...waterui-icons-sf-symbol-v0.1.2) - 2026-09-11
 
 ### Other

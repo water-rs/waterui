@@ -6,10 +6,11 @@ use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 use std::time::Duration;
 
-use nami::Binding;
+use nami::{Binding, Signal};
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
 
@@ -278,6 +279,11 @@ fn start_auto_refresh(interval: Duration) {
         interval
     };
 
+    schedule_auto_refresh(interval);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn schedule_auto_refresh(interval: Duration) {
     let _handle = thread::Builder::new()
         .name("waterui-locale-regional-refresh".to_string())
         .spawn(move || {
@@ -287,6 +293,27 @@ fn start_auto_refresh(interval: Duration) {
             }
         })
         .expect("failed to spawn waterui-locale regional refresh thread");
+}
+
+#[cfg(target_arch = "wasm32")]
+fn schedule_auto_refresh(interval: Duration) {
+    use wasm_bindgen::{JsCast, closure::Closure};
+
+    let window = web_sys::window().expect("browser locale refresh requires a Window");
+    let callback = Closure::<dyn FnMut()>::new(|| {
+        let _ = refresh();
+    });
+    window
+        .add_event_listener_with_callback("languagechange", callback.as_ref().unchecked_ref())
+        .expect("failed to subscribe to browser locale changes");
+    window
+        .set_interval_with_callback_and_timeout_and_arguments_0(
+            callback.as_ref().unchecked_ref(),
+            i32::try_from(interval.as_millis())
+                .expect("browser locale refresh interval exceeds i32"),
+        )
+        .expect("failed to schedule browser locale refresh");
+    callback.forget();
 }
 
 fn refresh() -> RegionalContext {
@@ -447,7 +474,7 @@ fn extract_region(locale_tag: &str) -> Option<String> {
 impl Extractor for RegionalContext {
     fn extract(env: &Environment) -> Result<Self, waterui_core::Error> {
         if let Some(locale) = env.get::<Binding<Locale>>() {
-            return Ok(current_settings().with_locale(&locale.get()));
+            return Ok(current_settings().with_locale(&locale.snapshot()));
         }
 
         if let Some(context) = env.get::<Self>().cloned() {

@@ -32,6 +32,8 @@ use waterui_chromium::{
     CdpError, ChromiumConfiguration, ChromiumEvent, ChromiumPageHandle, ChromiumProfile,
     CustomChromiumController, PageMode, ScreenshotFormat,
 };
+#[cfg(feature = "chromium")]
+use waterui_core::SerialDispatch;
 #[cfg(feature = "webview")]
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
@@ -245,7 +247,7 @@ pub enum CefPageEvent {
 }
 
 #[cfg(feature = "chromium")]
-type PageWatcher = Box<dyn Fn(CefPageEvent)>;
+type PageWatcher = Rc<dyn Fn(CefPageEvent)>;
 
 struct PageState {
     mode: CefPageMode,
@@ -255,6 +257,10 @@ struct PageState {
     accelerated_paint_received: Cell<bool>,
     #[cfg(feature = "chromium")]
     watchers: RefCell<Vec<PageWatcher>>,
+    /// Events emitted while a watcher still runs; they are delivered after it
+    /// returns, in order, rather than re-entering it.
+    #[cfg(feature = "chromium")]
+    page_events: SerialDispatch<CefPageEvent>,
     #[cfg(feature = "webview")]
     webview_watchers: WatcherSet<BackendEvent>,
     #[cfg(feature = "webview")]
@@ -279,6 +285,8 @@ impl PageState {
             accelerated_paint_received: Cell::new(false),
             #[cfg(feature = "chromium")]
             watchers: RefCell::new(Vec::new()),
+            #[cfg(feature = "chromium")]
+            page_events: SerialDispatch::new(),
             #[cfg(feature = "webview")]
             webview_watchers: WatcherSet::new(),
             #[cfg(feature = "webview")]
@@ -296,9 +304,14 @@ impl PageState {
 
     #[cfg(feature = "chromium")]
     fn emit(&self, event: &CefPageEvent) {
-        for watcher in self.watchers.borrow().iter() {
-            watcher(event.clone());
-        }
+        self.page_events.deliver(event.clone(), |event| {
+            // Snapshot under a short borrow: a watcher that registers another
+            // watcher must not collide with a borrow held across the calls.
+            let watchers = self.watchers.borrow().clone();
+            for watcher in &watchers {
+                watcher(event.clone());
+            }
+        });
     }
 
     #[cfg(feature = "chromium")]
@@ -318,7 +331,7 @@ impl PageState {
             watcher(CefPageEvent::Closed);
             return;
         }
-        self.watchers.borrow_mut().push(Box::new(watcher));
+        self.watchers.borrow_mut().push(Rc::new(watcher));
     }
 
     #[cfg(feature = "chromium")]
@@ -667,7 +680,7 @@ fn new_request_handler(state: Rc<PageState>) -> RequestHandler {
                             to: destination.clone(),
                         });
                     }
-                    if !self.state.redirects_enabled.borrow().get() {
+                    if !self.state.redirects_enabled.borrow().snapshot() {
                         return 1;
                     }
                 }
@@ -855,7 +868,15 @@ impl CefPageHandle {
             Some(&WindowInfo {
                 windowless_rendering_enabled: 1,
                 shared_texture_enabled: 1,
-                external_begin_frame_enabled: 1,
+                // Externally issued begin frames exist only for headless and
+                // Linux/Windows displays: on macOS the display's begin-frame
+                // source is `ExternalBeginFrameSourceMojoMac`, whose issue call
+                // is a `NOTREACHED` no-op — the first send still latches
+                // `begin_frame_pending_`, so every later request silently
+                // early-returns and the compositor never gets kicked again.
+                // With the flag off, CEF paces frames itself on vsync and
+                // damage at `windowless_frame_rate`.
+                external_begin_frame_enabled: i32::from(cfg!(not(target_os = "macos"))),
                 ..Default::default()
             }),
             Some(&mut client),
@@ -909,11 +930,21 @@ impl CefPageHandle {
             "headless CEF pages cannot install a frame presenter"
         );
         self.state.frame_sink.replace(Some(Rc::new(sink)));
+        // A windowless browser starts hidden and `RenderWidgetHostViewOSR`
+        // builds its video consumer — the object that issues accelerated
+        // paints — only when the view is shown. Installing a presenter is the
+        // moment this page becomes displayable, so show it here, before the
+        // first resize/invalidation asks Chromium for a frame.
+        self.host.was_hidden(0);
         self.host.was_resized();
         self.host.invalidate(PaintElementType::VIEW);
     }
 
     /// Requests one compositor frame for this windowless browser.
+    ///
+    /// Only meaningful where external begin frames are a real mechanism —
+    /// macOS builds disable them and never call this.
+    #[cfg(not(target_os = "macos"))]
     pub fn request_frame(&self) {
         self.host.send_external_begin_frame();
     }
@@ -1029,6 +1060,51 @@ impl CefPageHandle {
     /// Panics when a single-unit UTF-16 character cannot be encoded or a
     /// native key code does not fit CEF's integer input ABI.
     pub fn key(&self, pressed: bool, key: CefKeyInput, modifiers: CefInputModifiers) {
+        let event = Self::key_event(key_event_type(pressed), key, modifiers);
+        self.host.send_key_event(Some(&event));
+        if pressed && event.character != 0 {
+            self.host.send_key_event(Some(&KeyEvent {
+                type_: KeyEventType::CHAR,
+                ..event
+            }));
+        }
+    }
+
+    /// Sends the `CHAR` event of a press separately from its `RAWKEYDOWN`.
+    ///
+    /// A backend that reports a press and the text it produced as two events
+    /// (the surface vocabulary's `Key` then `TextInput`, the web's `keydown`
+    /// then `beforeinput`) cannot bundle the character into the transition —
+    /// it is not known yet. This is the second half of the pair
+    /// [`key`](Self::key) sends in one call when the character is known at
+    /// press time.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `character` needs more than one UTF-16 code unit —
+    /// supplementary-plane text travels by
+    /// [`commit_text`](Self::commit_text) instead — or when a native key
+    /// code does not fit CEF's integer input ABI.
+    pub fn key_char(&self, key: CefKeyInput, character: char, modifiers: CefInputModifiers) {
+        assert!(
+            character.len_utf16() == 1,
+            "a CHAR event carries one UTF-16 code unit; commit longer text instead"
+        );
+        let event = Self::key_event(
+            KeyEventType::CHAR,
+            CefKeyInput {
+                character: Some(character),
+                ..key
+            },
+            modifiers,
+        );
+        self.host.send_key_event(Some(&event));
+    }
+
+    /// Builds the `KeyEvent` the transition and `CHAR` halves of a keystroke
+    /// share — both carry the press's keycodes so CEF correlates them with
+    /// the same physical key.
+    fn key_event(type_: KeyEventType, key: CefKeyInput, modifiers: CefInputModifiers) -> KeyEvent {
         let character = key
             .character
             .filter(|character| character.len_utf16() == 1)
@@ -1039,8 +1115,8 @@ impl CefPageHandle {
                     .copied()
                     .expect("one UTF-16 code unit must exist")
             });
-        let event = KeyEvent {
-            type_: key_event_type(pressed),
+        KeyEvent {
+            type_,
             modifiers: modifiers.bits(),
             windows_key_code: windows_key_code(key.keyval),
             native_key_code: i32::try_from(key.native_keycode)
@@ -1049,13 +1125,6 @@ impl CefPageHandle {
             character,
             unmodified_character: character,
             ..Default::default()
-        };
-        self.host.send_key_event(Some(&event));
-        if pressed && character != 0 {
-            self.host.send_key_event(Some(&KeyEvent {
-                type_: KeyEventType::CHAR,
-                ..event
-            }));
         }
     }
 

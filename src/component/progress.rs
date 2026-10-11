@@ -282,18 +282,24 @@ mod tests {
 
     #[test]
     fn progress_value_label_formats_fraction_as_percent() {
-        assert_eq!(progress_value_label(&Computed::constant(0.42)).get(), "42%");
         assert_eq!(
-            progress_value_label(&Computed::constant(0.755)).get(),
+            progress_value_label(&Computed::constant(0.42)).snapshot(),
+            "42%"
+        );
+        assert_eq!(
+            progress_value_label(&Computed::constant(0.755)).snapshot(),
             "76%"
         );
     }
 
     #[test]
     fn progress_value_label_clamps_to_valid_progress_range() {
-        assert_eq!(progress_value_label(&Computed::constant(-0.25)).get(), "0%");
         assert_eq!(
-            progress_value_label(&Computed::constant(1.25)).get(),
+            progress_value_label(&Computed::constant(-0.25)).snapshot(),
+            "0%"
+        );
+        assert_eq!(
+            progress_value_label(&Computed::constant(1.25)).snapshot(),
             "100%"
         );
     }

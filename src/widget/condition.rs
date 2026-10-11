@@ -303,23 +303,29 @@ trait EvalChain: 'static {
     fn build_branch(&self, index: usize) -> AnyView;
 }
 
+/// The condition's value when it is a plain `bool` rather than a signal.
+///
+/// The check has to look at the condition itself: converting it through
+/// `IntoSignal` first wraps every value — a plain `bool` included — in a
+/// `Map`, which is never a `bool` any more, so a downcast on the signal
+/// reports every chain as dynamic and every static `when` builds a
+/// `Dynamic` host populated on the next idle instead of its content.
+fn static_bool<C: 'static>(condition: &C) -> Option<bool> {
+    let any: &dyn Any = condition;
+    any.downcast_ref::<bool>().copied()
+}
+
 impl<C, T> EvalChain for When<C, T>
 where
     C: IntoComputed<bool> + Clone,
     T: ViewBuilder,
 {
     fn all_static(&self) -> bool {
-        let signal = self.condition.clone().into_signal();
-        let any: &dyn Any = &signal;
-        any.downcast_ref::<bool>().is_some()
+        static_bool(&self.condition).is_some()
     }
 
     fn eval_static(&self) -> Option<AnyView> {
-        let signal = self.condition.clone().into_signal();
-        let any: &dyn Any = &signal;
-        if let Some(&cond) = any.downcast_ref::<bool>()
-            && cond
-        {
+        if static_bool(&self.condition) == Some(true) {
             return Some(self.then.build().anyview());
         }
         None
@@ -343,12 +349,7 @@ where
     T: ViewBuilder,
 {
     fn all_static(&self) -> bool {
-        if !self.prev.all_static() {
-            return false;
-        }
-        let signal = self.condition.clone().into_signal();
-        let any: &dyn Any = &signal;
-        any.downcast_ref::<bool>().is_some()
+        self.prev.all_static() && static_bool(&self.condition).is_some()
     }
 
     fn eval_static(&self) -> Option<AnyView> {
@@ -357,11 +358,7 @@ where
             return Some(view);
         }
         // Check this branch
-        let signal = self.condition.clone().into_signal();
-        let any: &dyn Any = &signal;
-        if let Some(&cond) = any.downcast_ref::<bool>()
-            && cond
-        {
+        if static_bool(&self.condition) == Some(true) {
             return Some(self.then.build().anyview());
         }
         None
@@ -441,5 +438,36 @@ where
             index.map_or_else(|| otherwise.build().anyview(), |i| chain.build_branch(i))
         })
         .anyview()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::{Binding, binding};
+
+    use super::{EvalChain as _, when};
+
+    // A plain `bool` condition is the static path: the branch is resolved at
+    // build time instead of through a `Dynamic` host.
+    #[test]
+    fn plain_bool_conditions_are_static() {
+        let chain = when(true, || "shown");
+        assert!(chain.all_static());
+        assert!(chain.eval_static().is_some());
+
+        let chain = when(false, || "hidden").or(true, || "shown");
+        assert!(chain.all_static());
+        assert!(chain.eval_static().is_some());
+
+        let chain = when(false, || "hidden");
+        assert!(chain.all_static());
+        assert!(chain.eval_static().is_none());
+    }
+
+    #[test]
+    fn signal_conditions_are_dynamic() {
+        let flag: Binding<bool> = binding(true);
+        assert!(!when(flag.clone(), || "shown").all_static());
+        assert!(!when(true, || "shown").or(flag, || "also").all_static());
     }
 }

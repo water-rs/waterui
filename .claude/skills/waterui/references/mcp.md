@@ -10,7 +10,7 @@
 - Development loop
 
 `water mcp` serves the project app headless over MCP. The client connects through the
-generated `.mcp.json` (or registers `water mcp` by hand), and gets ten tools. Everything
+generated `.mcp.json` (or registers `water mcp` by hand), and gets eleven tools. Everything
 the agent sees is the real accessibility tree — the same nodes `#[waterui::test]` drives.
 
 ## Tool surface
@@ -22,6 +22,7 @@ the agent sees is the real accessibility tree — the same nodes `#[waterui::tes
 | `act` | semantic action on a node → settled tree |
 | `pointer` | coordinate/element input → settled tree |
 | `key` | named/character key + modifiers → settled tree |
+| `drop_files` | OS file drop at a point/node → settled tree |
 | `type_text` | text into the focused input → settled tree |
 | `wait` | `fulfilled`/`timed out`/… + tree |
 | `screenshot` | PNG of the current frame (pumps one frame) |
@@ -80,6 +81,12 @@ logical pixels. `scroll` deltas are pixels unless `unit: "line"`.
 
 `key` takes a character or W3C name (`Enter`, `Tab`, `Escape`, arrows, `F1`–`F12`) plus
 `modifiers` (`shift`, `ctrl`, `alt`, `meta`). `type_text` types into the focused input.
+
+`drop_files` delivers an OS file drop: absolute `paths` plus a point (`x`, `y`, or a
+`node` anchor like `pointer`). The drop destination under the point sees the same
+`FileHovered` → `FileDropped` input a platform drag emits and receives one `Files`
+payload. A hover without the drop has no tool — `waterui-testing` callers use
+`queue_hover_files_at`/`queue_cancel_files_hover` instead.
 
 ## Debugging animations
 
