@@ -8,6 +8,7 @@
 //! property names the identity.
 
 use std::any::Any;
+use std::cell::Cell;
 use std::fmt;
 use std::rc::Rc;
 
@@ -97,9 +98,50 @@ struct Retained {
 pub struct QuickJsRuntime {
     /// Owns the underlying `Runtime` — `Context` keeps it alive.
     context: Context,
+    /// The `Context::with` frames this runtime has open on this thread.
+    /// `Context::with` panics on a nested borrow, but JavaScript re-entry
+    /// is real: a `__waterui_host` function invoked mid-call lets Rust
+    /// call back into the runtime while the outer frame still holds the
+    /// lock. Because the runtime is `!Send` and `context` is private, a
+    /// nonzero depth proves that lock is held by this thread for the
+    /// rest of the frame — the precondition [`Ctx::from_raw`] documents.
+    depth: Cell<u32>,
+}
+
+/// Steps the entry depth back on return and on unwind alike.
+struct DepthGuard<'a>(&'a Cell<u32>);
+
+impl Drop for DepthGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
 }
 
 impl QuickJsRuntime {
+    /// Runs `f` on a live [`Ctx`].
+    ///
+    /// The outermost entry locks the runtime through `Context::with`. A
+    /// nested entry — a host function calling `eval`, `call`, `retain` or
+    /// `register` while JavaScript is mid-flight — cannot take a second
+    /// `RefCell` borrow, but it does not need one: the depth proves the
+    /// lock is already held by this thread, so [`Ctx::from_raw`]'s
+    /// documented precondition is met and the fresh `Ctx` can safely go
+    /// to `f`. It cannot outlive the call: `f` is the only place it goes.
+    fn with_ctx<R>(&self, f: impl FnOnce(Ctx) -> Result<R, JsError>) -> Result<R, JsError> {
+        if self.depth.get() != 0 {
+            // SAFETY: `depth != 0` means a `Context::with` closure below
+            // holds the runtime lock on this thread for the whole of this
+            // call — exactly what `Ctx::from_raw` requires.
+            let ctx = unsafe { Ctx::from_raw(self.context.as_raw()) };
+            return f(ctx);
+        }
+        self.context.with(|ctx| {
+            self.depth.set(self.depth.get() + 1);
+            let _depth = DepthGuard(&self.depth);
+            f(ctx)
+        })
+    }
+
     /// The `__waterui_host` namespace object, created empty at construction.
     fn host_namespace<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, JsError> {
         ctx.globals()
@@ -449,11 +491,14 @@ impl JsRuntime for QuickJsRuntime {
             .map_err(|_| JsError::new("Error", "the context rejected its bridge userdata"))?;
             Ok(())
         })?;
-        Ok(Self { context })
+        Ok(Self {
+            context,
+            depth: Cell::new(0),
+        })
     }
 
     fn eval(&self, source: &str, name: &str) -> Result<JsValue, JsError> {
-        self.context.with(|ctx| {
+        self.with_ctx(|ctx| {
             // Classic scripts are sloppy — matching JavaScriptCore; a bundle
             // opts in with its own `"use strict"` directive.
             let mut options = EvalOptions::default();
@@ -467,7 +512,7 @@ impl JsRuntime for QuickJsRuntime {
     }
 
     fn call(&self, function: &JsFunction, args: &[JsValue]) -> Result<JsValue, JsError> {
-        self.context.with(|ctx| {
+        self.with_ctx(|ctx| {
             let value = restore(&ctx, function.handle())?;
             let function = value.into_function().ok_or_else(|| {
                 JsError::conversion("a JsFunction no longer refers to a function")
@@ -492,7 +537,7 @@ impl JsRuntime for QuickJsRuntime {
     ) -> Result<(), JsError> {
         let host: HostFunction = Rc::new(function);
         let context = self.context.clone();
-        self.context.with(|ctx| {
+        self.with_ctx(|ctx| {
             let function = make_host_function(&ctx, host, context)?;
             Self::host_namespace(&ctx)?
                 .set(name, function)
@@ -501,7 +546,7 @@ impl JsRuntime for QuickJsRuntime {
     }
 
     fn retain(&self, value: &JsValue) -> Result<JsObject, JsError> {
-        self.context.with(|ctx| match value {
+        self.with_ctx(|ctx| match value {
             JsValue::Object(_) | JsValue::ObjectRef(_) | JsValue::Function(_) => {
                 let value = Self::to_js(&ctx, value, 0)?;
                 Ok(JsObject::from_handle(retain_value(
@@ -520,7 +565,11 @@ impl JsRuntime for QuickJsRuntime {
 #[cfg(test)]
 impl waterui_ts_engine::conformance::CollectGarbage for QuickJsRuntime {
     fn collect_garbage(&self) {
-        self.context.with(|ctx| ctx.run_gc());
+        self.with_ctx(|ctx| {
+            ctx.run_gc();
+            Ok(())
+        })
+        .expect("garbage collection cannot fail");
     }
 }
 
