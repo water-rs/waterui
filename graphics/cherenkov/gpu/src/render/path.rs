@@ -221,7 +221,10 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
 #[expect(clippy::cast_sign_loss)]
-#[expect(clippy::too_many_lines, reason = "one emission walk: small-cell fast path, strip loop")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one emission walk: small-cell fast path, strip loop"
+)]
 pub fn emit(
     coverage: &Coverage,
     arena: &mut Vec<u8>,
@@ -240,6 +243,11 @@ pub fn emit(
         let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
             return Err(RenderError::AtlasFull);
         };
+        // Reserve the coverage's area on an emission's first cell so the
+        // arena never regrows mid-emit; empty emissions stay allocation-free.
+        if rasters.is_empty() {
+            arena.reserve(coverage.data.len());
+        }
         let start = arena.len();
         for row in 0..h {
             arena.extend(
@@ -786,8 +794,7 @@ mod tests {
             }
         }
         // Gap of `PARTIAL_GAP_MAX + 1`: two separate cells.
-        let (emitted, _) =
-            emit(&cov(&[(0, 3), (4 + g, 7 + g)], &[], 40, 4), &mut arena).unwrap();
+        let (emitted, _) = emit(&cov(&[(0, 3), (4 + g, 7 + g)], &[], 40, 4), &mut arena).unwrap();
         assert_eq!(emitted.cells.len(), 2);
         // A gap bounded by a full run (wider than `FULL_RUN_MIN`) is not
         // filled: the partial run ends before it and the full run spans.
