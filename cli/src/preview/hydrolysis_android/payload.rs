@@ -15,6 +15,7 @@
 //! when the compiled artifact changes; the asset bundle is staged
 //! incrementally against its own stamp. Anything else there is removed.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,10 @@ pub(super) const PAYLOAD_DIR: &str = "payload";
 /// stripped libraries were made from. It lives outside the payload, so it
 /// is never pushed.
 const STRIP_RECORD_FILE: &str = "strip-source.json";
+
+/// The subdirectory of the preview cache holding one [`InstallRecord`]
+/// per device — `devices/<device key>.json` beside [`PAYLOAD_DIR`].
+const DEVICES_DIR: &str = "devices";
 
 /// The version of the payload's shape its content hashes do not cover:
 /// the parts' layout inside the device run directory and the contract the
@@ -120,6 +125,50 @@ impl HeldStamps {
     }
 }
 
+/// The Mac-side record of the payload stamps one device's run directory
+/// held when this project's last install there finished — the prediction
+/// the overlapped push is built on. It lives in the preview cache as
+/// `devices/<device key>.json` beside [`PAYLOAD_DIR`], is rewritten to
+/// the state each completed install leaves, and is only ever a
+/// prediction: the stamps the run preparation reads off the device stay
+/// the authority.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct InstallRecord {
+    /// The stamp each [`PayloadPart`] held, keyed by [`PayloadPart::dir`];
+    /// a part without an entry is one the device held no stamp for.
+    pub(super) held: BTreeMap<String, String>,
+}
+
+impl InstallRecord {
+    /// The record of the state an install leaves: every part `installed`
+    /// holds its payload stamp, every other part the stamp `held`
+    /// reported.
+    pub(super) fn after_install(
+        held: &HeldStamps,
+        installed: &[PayloadPart],
+        payload: &DevicePayload,
+    ) -> Self {
+        Self {
+            held: PayloadPart::ALL
+                .into_iter()
+                .filter_map(|part| {
+                    let stamp = if installed.contains(&part) {
+                        Some(payload.stamp(part))
+                    } else {
+                        held.get(part)
+                    }?;
+                    Some((part.dir().to_string(), stamp.to_string()))
+                })
+                .collect(),
+        }
+    }
+
+    /// The device's stamps as the record predicts them.
+    pub(super) fn held_stamps(&self) -> HeldStamps {
+        HeldStamps(PayloadPart::ALL.map(|part| self.held.get(part.dir()).cloned()))
+    }
+}
+
 /// One staged part: its content hash and the bytes its files hold.
 #[derive(Debug)]
 struct StagedPart {
@@ -127,10 +176,12 @@ struct StagedPart {
     size: u64,
 }
 
-/// A staged preview payload: its local directory, the libraries in
-/// `System.load` order, and each part's content hash and size.
+/// A staged preview payload: its preview cache root, its local directory
+/// laid out as it lands on the device, the libraries in `System.load`
+/// order, and each part's content hash and size.
 #[derive(Debug)]
 pub(super) struct DevicePayload {
+    cache_root: PathBuf,
     dir: PathBuf,
     libraries: Vec<String>,
     parts: [StagedPart; 2],
@@ -194,33 +245,48 @@ impl DevicePayload {
                 assets::write_library_resources(&manifest, &resources_dir).await
             },
         )?;
-        Self::from_staged(dir, libraries, bundle_stamp).await
+        Self::from_staged(root, libraries, bundle_stamp).await
     }
 
-    /// The payload in `dir`: the libraries `libraries` in its
+    /// The payload inside `cache_root`, the preview cache holding
+    /// [`PAYLOAD_DIR`]: the libraries `libraries` in its
     /// [`PayloadPart::Libraries`] directory and the asset bundle in its
     /// [`PayloadPart::Resources`] directory, whose staging answered
     /// `bundle_stamp`, hashed.
     ///
-    /// The bundle's stamp already identifies its contents, so only the
-    /// libraries are read: the resources' hash is that stamp's.
+    /// The libraries are made read-only where they are staged: `adb push`
+    /// propagates the source file's mode and the install copies with
+    /// `cp -Rp`, so the linker's read-only `System.load` requirement is
+    /// met on this side of the push and the device never runs a `chmod`
+    /// pass. The bundle's stamp already identifies its contents, so only
+    /// the libraries are read: the resources' hash is that stamp's.
     ///
     /// # Errors
-    /// Returns an error when a part cannot be walked or a library cannot be
-    /// read.
+    /// Returns an error when a part cannot be walked or a library cannot
+    /// be read or marked read-only.
     pub(super) async fn from_staged(
-        dir: PathBuf,
+        cache_root: PathBuf,
         libraries: Vec<String>,
         bundle_stamp: String,
     ) -> Result<Self> {
         smol::unblock(move || {
+            let dir = cache_root.join(PAYLOAD_DIR);
             let lib_dir = dir.join(PayloadPart::Libraries.dir());
             let mut hasher = Sha256::new();
             hasher.update(PAYLOAD_FORMAT_VERSION.to_le_bytes());
             for name in &libraries {
+                let path = lib_dir.join(name);
+                let mut permissions = std::fs::metadata(&path)
+                    .wrap_err_with(|| format!("failed to stat {}", path.display()))?
+                    .permissions();
+                if !permissions.readonly() {
+                    permissions.set_readonly(true);
+                    std::fs::set_permissions(&path, permissions)
+                        .wrap_err_with(|| format!("failed to make {} read-only", path.display()))?;
+                }
                 hasher.update(name.as_bytes());
                 hasher.update([0]);
-                hash_file_into(&mut hasher, &lib_dir.join(name))?;
+                hash_file_into(&mut hasher, &path)?;
             }
             let libraries_part = StagedPart {
                 stamp: hex::encode(hasher.finalize()),
@@ -235,6 +301,7 @@ impl DevicePayload {
                 size: tree_size(&dir.join(PayloadPart::Resources.dir()))?,
             };
             Ok(Self {
+                cache_root,
                 dir,
                 libraries,
                 parts: [libraries_part, resources_part],
@@ -246,6 +313,17 @@ impl DevicePayload {
     /// The local payload directory, laid out as it lands on the device.
     pub(super) fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The [`InstallRecord`] file for `device_key` —
+    /// `devices/<device key>.json` inside the preview cache, beside
+    /// [`PAYLOAD_DIR`]. The key is sanitized the same way the device lock
+    /// names it.
+    pub(super) fn install_record_path(&self, device_key: &str) -> PathBuf {
+        self.cache_root.join(DEVICES_DIR).join(format!(
+            "{}.json",
+            crate::project_model::water_dir::sanitize_os_str(device_key.as_ref())
+        ))
     }
 
     /// `part`'s content hash.
@@ -299,13 +377,21 @@ fn tree_size(dir: &Path) -> io::Result<u64> {
 }
 
 /// Remove every entry of `root` its layout does not name — everything but
-/// `payload` and [`STRIP_RECORD_FILE`] — and every entry of `payload` that
-/// is not a [`PayloadPart`] directory.
+/// `payload`, [`STRIP_RECORD_FILE`] and [`DEVICES_DIR`] — and every entry
+/// of `payload` that is not a [`PayloadPart`] directory.
 async fn prune_to_layout(root: &Path, payload: &Path) -> Result<()> {
     let payload_name = payload
         .file_name()
         .ok_or_else(|| eyre::eyre!("{} names no directory", payload.display()))?;
-    remove_unlisted(root, &[payload_name, OsStr::new(STRIP_RECORD_FILE)]).await?;
+    remove_unlisted(
+        root,
+        &[
+            payload_name,
+            OsStr::new(STRIP_RECORD_FILE),
+            OsStr::new(DEVICES_DIR),
+        ],
+    )
+    .await?;
     remove_unlisted(
         payload,
         &PayloadPart::ALL.map(|part| OsStr::new(part.dir())),
@@ -532,4 +618,47 @@ async fn read_strip_record(path: &Path) -> Result<Option<StripRecord>> {
             );
         })
         .ok())
+}
+
+/// The [`InstallRecord`] `path` holds, `None` when there is none or it
+/// does not parse — an unreadable record predicts nothing, so the run
+/// takes the serial path and rewrites it.
+///
+/// # Errors
+/// Returns an error when the record cannot be read (other than its
+/// absence).
+pub(super) async fn read_install_record(path: &Path) -> Result<Option<InstallRecord>> {
+    let bytes = match fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).wrap_err_with(|| format!("failed to read {}", path.display()));
+        }
+    };
+    Ok(serde_json::from_slice(&bytes)
+        .inspect_err(|error| {
+            tracing::debug!(
+                record = %path.display(),
+                %error,
+                "the install record does not parse; taking the serial push path"
+            );
+        })
+        .ok())
+}
+
+/// Write `record` as the [`InstallRecord`] at `path`.
+///
+/// # Errors
+/// Returns an error when the record cannot be serialized or written.
+pub(super) async fn write_install_record(path: &Path, record: &InstallRecord) -> Result<()> {
+    let bytes =
+        serde_json::to_vec_pretty(record).wrap_err("failed to serialize the install record")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .wrap_err_with(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(path, &bytes)
+        .await
+        .wrap_err_with(|| format!("failed to write {}", path.display()))
 }

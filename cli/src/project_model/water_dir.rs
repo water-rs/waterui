@@ -1164,7 +1164,7 @@ fn normalize_prefix_component(prefix: PrefixComponent<'_>) -> String {
     }
 }
 
-fn sanitize_os_str(value: &OsStr) -> String {
+pub(crate) fn sanitize_os_str(value: &OsStr) -> String {
     let sanitized = value
         .to_string_lossy()
         .chars()
