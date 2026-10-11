@@ -34,7 +34,16 @@
 //! renders under, with the [`RuntimeHandle`] every `tsx!` mount finds and the
 //! bundle's translation catalog installed, plus [`Launched::booted`], the call
 //! the application makes once its first frame has rendered.
+//!
+//! # The hosts that have no loader
+//!
+//! A host that mounts a view outside an application — a `waterui-testing`
+//! session, the `water preview` support app — ships no baseline and no
+//! requirement, so it takes the bundle the `water` CLI names in
+//! [`BUNDLE_VARIABLE`] instead. [`configured`] is that path, and it is the
+//! only one that reads the process environment.
 
+pub mod configured;
 pub mod verify;
 
 use waterui_core::Environment;
@@ -46,6 +55,7 @@ use crate::host::HostTable;
 use crate::mount::RuntimeHandle;
 use crate::runtime::TsRuntime;
 
+pub use configured::{BUNDLE_VARIABLE, BundleError, configured_runtime};
 pub use verify::Rejection;
 
 /// One module the binary mounts, with the props contract it was compiled

@@ -39,6 +39,11 @@
 //! signed manifest and the bundle it names, verifies both, and caches them
 //! for the next launch. `OTA.md` beside this crate spells the contract out.
 //!
+//! A host that mounts a view outside an application — a `waterui-testing`
+//! session, the `water preview` support app — has no bundle loader of its
+//! own: it installs the runtime [`configured_runtime`] loads from the bundle
+//! the `water` CLI names in [`BUNDLE_VARIABLE`].
+//!
 //! [`Binding<T>`]: nami::Binding
 //! [`Computed<T>`]: nami::Computed
 
@@ -82,7 +87,10 @@ pub use waterui_ts_engine as engine;
 pub use waterui_ts_schema as schema;
 
 pub use bridge::{Bridge, MountScope, ReactiveSource, ScopeOwner, WeakBridge};
-pub use bundle::{Baseline, LaunchError, Launched, Loader, Rejection, RequiredModule, Requirement};
+pub use bundle::{
+    BUNDLE_VARIABLE, Baseline, BundleError, LaunchError, Launched, Loader, Rejection,
+    RequiredModule, Requirement, configured_runtime,
+};
 pub use convert::{FromJs, IntoJs, expected, support};
 pub use environment::{HostLocale, Theme, locale, theme};
 pub use error::{TsError, kind_of};

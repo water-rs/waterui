@@ -121,10 +121,19 @@ pub enum TsError {
     },
 
     /// A mount was attempted with no runtime in the environment.
+    ///
+    /// The message covers every host at once: an application installs a
+    /// runtime through its bundle loader, and a test or preview host through
+    /// the bundle [`BUNDLE_VARIABLE`](crate::BUNDLE_VARIABLE) names — so a
+    /// `#[waterui::test]` run under bare `cargo nextest`, where nothing sets
+    /// the variable, reads here which command does.
     #[error(
         "no TypeScript runtime is installed in the environment, so module \"{id}\" cannot be \
-         mounted: the application's bundle loader installs one at launch with \
-         RuntimeHandle::install"
+         mounted: an application's bundle loader installs one at launch with \
+         RuntimeHandle::install, and a test or preview host loads the bundle named by \
+         {variable}, which `water test` and `water preview` set — under bare `cargo nextest` \
+         nothing sets it, so run the tests through `water test`",
+        variable = crate::BUNDLE_VARIABLE
     )]
     NoRuntimeInstalled {
         /// The module that was being mounted.
