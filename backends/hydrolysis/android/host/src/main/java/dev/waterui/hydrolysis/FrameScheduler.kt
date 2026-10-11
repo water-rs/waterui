@@ -18,8 +18,9 @@ import android.view.Choreographer
  * `cause=external`, anything else names the post that scheduled it.
  *
  * Refresh-rate demand is separate: while the scheduler is running continuous
- * frames the session asks the surface for its highest refresh; when the pump
- * goes idle the demand releases.
+ * frames or a touch is held, the session asks the surface for its display's
+ * peak refresh; the demand releases only once both have ended, so a touch
+ * lifting mid-animation (a fling) keeps the rate the animation needs.
  *
  * The session owns the scheduler and [stop]s it when it is destroyed; a
  * stopped scheduler is inert for the rest of its life.
@@ -31,6 +32,9 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
     private var posted = false
     private var deadlinePosted = false
     private var pumping = false
+
+    /** A touch is held on the host view. */
+    private var touching = false
 
     /** [stop] ran: the session is destroyed and nothing posts again. */
     private var stopped = false
@@ -56,9 +60,10 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         choreographer.postFrameCallback(this)
     }
 
-    /** The host reports active interaction (touch held, animation running). */
+    /** The host reports a touch going down (`true`) or ending (`false`). */
     fun setInteractionActive(active: Boolean) {
-        setHighRefresh(active)
+        touching = active
+        publishHighRefresh()
     }
 
     /**
@@ -77,9 +82,10 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         }
     }
 
-    private fun setHighRefresh(active: Boolean) {
+    /** Sends the combined demand; the native side ignores a repeat. */
+    private fun publishHighRefresh() {
         session.withNativePtr(NativeBridge::nativeSetHighRefresh.name) { ptr ->
-            NativeBridge.nativeSetHighRefresh(ptr, if (active) -1f else 0f)
+            NativeBridge.nativeSetHighRefresh(ptr, touching || pumping)
         }
     }
 
@@ -130,9 +136,10 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         val nowPumping = wantsNext || posted
         if (nowPumping != pumping) {
             pumping = nowPumping
-            // Continuous pumping asks for high refresh; an idle pump releases
-            // the request so the panel can drop to its base rate.
-            setHighRefresh(pumping)
+            // Continuous pumping asks for high refresh; an idle pump with no
+            // touch held releases the request so the panel can drop to its
+            // base rate.
+            publishHighRefresh()
         }
     }
 

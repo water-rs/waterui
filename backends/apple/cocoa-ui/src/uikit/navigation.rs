@@ -208,19 +208,7 @@ impl NavContentController {
         item.setHidesBackButton(page.hides_back);
         if let Some(on_back) = &page.on_back {
             let on_back = on_back.clone();
-            // SAFETY: `UIAction::actionWithHandler:` retains the block, which
-            // owns the `Rc` for the action's life.
-            let action = unsafe {
-                objc2_ui_kit::UIAction::actionWithHandler(
-                    block2::RcBlock::into_raw(RcBlock::new(
-                        move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| {
-                            on_back();
-                        },
-                    )),
-                    mtm,
-                )
-            };
-            item.setBackAction(Some(&action));
+            item.setBackAction(Some(&handler_action(mtm, move || on_back())));
         }
         if page.bottom.is_empty() {
             self.setToolbarItems(None);
@@ -614,33 +602,7 @@ pub fn bar_item(
     }
     let image = symbol
         .and_then(|symbol| objc2_ui_kit::UIImage::systemImageNamed(&NSString::from_str(symbol)));
-    // SAFETY: `initWithImage:style:target:action:` is a `UIBarButtonItem`
-    // designated initializer; nil target/action are valid.
-    let item = unsafe {
-        UIBarButtonItem::initWithImage_style_target_action(
-            mtm.alloc(),
-            image.as_deref(),
-            UIBarButtonItemStyle::Plain,
-            None,
-            None,
-        )
-    };
-    if let Some(action) = action {
-        // SAFETY: `UIAction::actionWithHandler:` retains the block, which
-        // owns the `Rc` for the item's life.
-        let ui_action = unsafe {
-            objc2_ui_kit::UIAction::actionWithHandler(
-                block2::RcBlock::into_raw(RcBlock::new(
-                    move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| {
-                        action();
-                    },
-                )),
-                mtm,
-            )
-        };
-        item.setPrimaryAction(Some(&ui_action));
-    }
-    item
+    image_bar_item(mtm, image.as_deref(), action)
 }
 
 /// A standalone `UINavigationBar` — the in-content bar
@@ -728,19 +690,7 @@ impl NavBar {
         item.setHidesBackButton(page.hides_back);
         if let Some(on_back) = &page.on_back {
             let on_back = on_back.clone();
-            // SAFETY: `UIAction::actionWithHandler:` retains the block, which
-            // owns the `Rc` for the action's life.
-            let action = unsafe {
-                objc2_ui_kit::UIAction::actionWithHandler(
-                    block2::RcBlock::into_raw(RcBlock::new(
-                        move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| {
-                            on_back();
-                        },
-                    )),
-                    self.mtm(),
-                )
-            };
-            item.setBackAction(Some(&action));
+            item.setBackAction(Some(&handler_action(self.mtm(), move || on_back())));
         }
     }
 }
@@ -818,21 +768,20 @@ pub fn image_bar_item(
         )
     };
     if let Some(action) = action {
-        // SAFETY: `UIAction::actionWithHandler:` retains the block, which
-        // owns the `Rc` for the item's life.
-        let ui_action = unsafe {
-            objc2_ui_kit::UIAction::actionWithHandler(
-                block2::RcBlock::into_raw(RcBlock::new(
-                    move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| {
-                        action();
-                    },
-                )),
-                mtm,
-            )
-        };
-        item.setPrimaryAction(Some(&ui_action));
+        item.setPrimaryAction(Some(&handler_action(mtm, move || action())));
     }
     item
+}
+
+/// A `UIAction` that runs `handler`.
+fn handler_action(
+    mtm: MainThreadMarker,
+    handler: impl Fn() + 'static,
+) -> Retained<objc2_ui_kit::UIAction> {
+    let block = RcBlock::new(move |_: core::ptr::NonNull<objc2_ui_kit::UIAction>| handler());
+    // SAFETY: `actionWithHandler:` copies the block, and the copy owns
+    // `handler` for the action's life; `block` is released on return.
+    unsafe { objc2_ui_kit::UIAction::actionWithHandler(RcBlock::as_ptr(&block), mtm) }
 }
 
 /// The navigation stack's model: the pages and the current pop state.

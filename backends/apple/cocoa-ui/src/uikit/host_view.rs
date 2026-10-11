@@ -503,8 +503,11 @@ impl HostView {
     /// The handler decides whether the change matters to it. Replaces any
     /// handler set before.
     pub fn set_backing_changed_handler(&self, handler: impl Fn(&Self) + 'static) {
-        let registration =
-            register_trait_change(self, UITraitDisplayScale::class().as_ref(), handler);
+        let registration = register_trait_change::<UIView, _>(
+            self,
+            UITraitDisplayScale::class().as_ref(),
+            handler,
+        );
         self.ivars().backing_changed.replace(Some(registration));
     }
 

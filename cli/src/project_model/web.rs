@@ -1402,10 +1402,10 @@ mod tests {
 
     #[test]
     fn pm_run_build_does_not_inherit_stdio() {
-        // `water mcp` runs `build_frontend` on the JSON-RPC stream with
-        // standard output disabled: a bundler's output is captured and
-        // reported on failure, never inherited onto the protocol stream.
-        crate::utils::set_std_output(false);
+        // `water mcp` runs `build_frontend` on the JSON-RPC stream: the
+        // declared host's output policy is off, so a bundler's output is
+        // captured and reported on failure, never inherited onto the
+        // protocol stream.
         let machine = crate::toolchain::testing::TestMachine::new();
         machine.install("bun");
         machine.respond("bun_run_build", "the bundler's complaint");

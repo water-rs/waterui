@@ -643,6 +643,30 @@ async fn exclusive_lock_file(
     .await
 }
 
+/// The lock serializing connect-or-start of the per-user sccache server
+/// across `water` processes.
+///
+/// `crate::toolchain::sccache` holds it across the client run and says why.
+/// `~/.water/locks/` keeps the lock beside the socket's Water home; like
+/// `.build-lease` the file is never deleted — it is the thing being locked —
+/// so `water clean` dropping the build cache cannot unlink it under a
+/// running startup.
+///
+/// # Errors
+/// Returns an error if the Water home cannot be resolved, the lock
+/// directory or the lock file cannot be created, or the lock cannot be
+/// taken.
+pub async fn sccache_server_lock(host: &crate::toolchain::Host) -> eyre::Result<std::fs::File> {
+    let water_home = water_home_dir(host)?;
+    exclusive_lock_file(
+        locks_dir_in(&water_home).join("sccache-server.lock"),
+        || {
+            info!("Waiting for another sccache server startup to finish");
+        },
+    )
+    .await
+}
+
 /// The lock serializing `water preview --platform android` runs of one
 /// project.
 ///
@@ -839,6 +863,7 @@ pub async fn ensure_project_build_cache(
     let project_root = canonicalize_project_root(project_root)?;
     let water_home = water_home_dir(host)?;
     let (config, cache_root) = resolved_build_cache_root_in(&water_home).await?;
+
     ensure_project_build_cache_in(&project_root, &cache_root, &config).await
 }
 
@@ -981,6 +1006,60 @@ pub(crate) async fn write_global_config_in(
     fs::write(&config_path, contents)
         .await
         .wrap_err_with(|| format!("Failed to write Water config {}", config_path.display()))
+}
+
+/// The `last_used_device` slot a `(backend, platform)` pair remembers its
+/// device under — `None` for a pair with no device dimension, where a
+/// device choice could never be made.
+#[must_use]
+pub const fn device_memory_key(
+    backend: crate::platform::TargetBackend,
+    platform: crate::platform::TargetPlatform,
+) -> Option<&'static str> {
+    match (backend, platform) {
+        (
+            crate::platform::TargetBackend::Apple,
+            crate::platform::TargetPlatform::IOS | crate::platform::TargetPlatform::IOSSimulator,
+        ) => Some("apple/ios"),
+        (crate::platform::TargetBackend::Hydrolysis, crate::platform::TargetPlatform::Android) => {
+            Some("hydrolysis/android")
+        }
+        _ => None,
+    }
+}
+
+/// The device `last_used_device` records under `key`, if any. A config
+/// read failure is a warning, not a failure of the selection the memory
+/// serves.
+pub async fn last_used_device(host: &crate::toolchain::Host, key: &str) -> Option<String> {
+    match ensure_global_config(host).await {
+        Ok(config) => config.last_used_device.get(key).cloned(),
+        Err(error) => {
+            tracing::warn!("could not read the Water config for device memory: {error:#}");
+            None
+        }
+    }
+}
+
+/// Record `id` as the last-used device under `key`. Best-effort: a config
+/// write failure must not break the selection the memory serves.
+pub async fn record_last_used_device(host: &crate::toolchain::Host, key: &str, id: &str) {
+    match ensure_global_config(host).await {
+        Ok(mut config) => {
+            if config.last_used_device.get(key).map(String::as_str) == Some(id) {
+                return;
+            }
+            config
+                .last_used_device
+                .insert(key.to_owned(), id.to_owned());
+            if let Err(error) = write_global_config(host, &config).await {
+                tracing::warn!("could not persist the last-used device: {error:#}");
+            }
+        }
+        Err(error) => {
+            tracing::warn!("could not read the Water config for device memory: {error:#}");
+        }
+    }
 }
 
 async fn ensure_project_build_cache_in(
@@ -1621,17 +1700,17 @@ mod tests {
     fn project_build_cache_dir_uses_absolute_project_path_components() {
         let cache_root = Path::new("/tmp/water-cache-root");
         let project_root = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\lexo\demo")
+            PathBuf::from(r"C:\Users\tester\demo")
         } else {
-            PathBuf::from("/Users/lexo/demo")
+            PathBuf::from("/Users/tester/demo")
         };
 
         let cache_dir = project_build_cache_dir_in(&project_root, cache_root);
 
         let expected = if cfg!(windows) {
-            cache_root.join("drive-C/Users/lexo/demo/managed_backends")
+            cache_root.join("drive-C/Users/tester/demo/managed_backends")
         } else {
-            cache_root.join("Users/lexo/demo/managed_backends")
+            cache_root.join("Users/tester/demo/managed_backends")
         };
         assert_eq!(cache_dir, expected);
     }

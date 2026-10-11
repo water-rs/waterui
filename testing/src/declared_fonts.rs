@@ -7,7 +7,25 @@ use std::time::UNIX_EPOCH;
 
 use hydrolysis::DeclaredFonts;
 use serde::{Deserialize, Serialize};
-use waterui_assets_planner::{FontSource, GraphScope, dependency_font_declarations};
+use waterui_assets_planner::{FontPlatform, FontSource, GraphScope, dependency_font_declarations};
+
+/// The platform a test binary renders on: the host it runs on, whose build
+/// a declaration's `platforms` scope must include for its font to load.
+#[cfg(target_os = "macos")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Macos;
+/// See the macOS definition.
+#[cfg(target_os = "linux")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Linux;
+/// See the macOS definition.
+#[cfg(target_os = "windows")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Windows;
+/// See the macOS definition. `target_os = "ios"` covers devices and
+/// simulators alike.
+#[cfg(target_os = "ios")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Ios;
+/// See the macOS definition.
+#[cfg(target_os = "android")]
+const HOST_FONT_PLATFORM: FontPlatform = FontPlatform::Android;
 
 /// Suffix appended to the test executable's file name to name its cache.
 const CACHE_SUFFIX: &str = ".waterui-declared-fonts.json";
@@ -179,6 +197,7 @@ fn resolve_declared_fonts(manifest_dir: &Path) -> Resolved {
     let fonts = dependency_font_declarations(&metadata, GraphScope::Test)
         .unwrap_or_else(|error| panic!("{error}"))
         .into_iter()
+        .filter(|declaration| declaration.bundled_on(HOST_FONT_PLATFORM))
         .filter_map(|declaration| match declaration.source {
             FontSource::Local {
                 crate_root,

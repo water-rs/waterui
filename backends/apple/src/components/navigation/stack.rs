@@ -502,8 +502,21 @@ mod platform {
         }
 
         /// A user pop — gesture or the bar's back button — pops the last
-        /// `count` states and tells the model.
+        /// `count` kit pages and tells the model. `count` is every
+        /// controller `UIKit` dropped; the stack can also carry pages
+        /// pushed outside the model — an app's own `pushViewController`
+        /// — which always sit above the kit pages, so only the kit
+        /// pages now missing from `UIKit`'s stack pop.
         fn native_pop(&self, count: usize) {
+            let count = self
+                .pages
+                .borrow()
+                .len()
+                .saturating_sub(self.nav.get().expect("built").viewControllers().count())
+                .min(count);
+            if count == 0 {
+                return;
+            }
             let env = self.env().clone();
             let popped: Vec<Rc<Entry>> = {
                 let pages = self.pages.borrow();

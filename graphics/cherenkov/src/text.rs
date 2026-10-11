@@ -559,7 +559,14 @@ mod tests {
         .expect("lowers");
         let fills = fills(&split);
         assert_eq!(fills.len(), 2, "a brush change splits the underline");
-        assert_eq!(fills[0].0.x1, fills[1].0.x0, "the halves abut");
+        // parley starts each run at the f32 sum of the previous run's
+        // offset and advance, the same sum that ends the first stripe, and
+        // both widen to f64 exactly.
+        assert_eq!(
+            fills[0].0.x1.to_bits(),
+            fills[1].0.x0.to_bits(),
+            "the halves abut"
+        );
     }
 
     #[test]
@@ -660,8 +667,12 @@ mod tests {
                     assert_eq!(paint, expected);
                     for (glyph, source) in run.glyphs.iter().zip(source.glyphs.iter()) {
                         assert_eq!(glyph.id, source.id);
-                        assert_eq!(glyph.x, source.x + 12.5);
-                        assert_eq!(glyph.y, source.y + 40.25);
+                        // `place_run` adds the origin in f64 and rounds once to
+                        // f32. A layout offset of a few hundred pixels plus 12.5
+                        // or 40.25 is exact in f64, so that one rounding is the
+                        // correctly rounded f32 sum computed here.
+                        assert_eq!(glyph.x.to_bits(), (source.x + 12.5).to_bits());
+                        assert_eq!(glyph.y.to_bits(), (source.y + 40.25).to_bits());
                     }
                 }
                 (

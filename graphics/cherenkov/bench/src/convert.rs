@@ -1005,10 +1005,19 @@ mod front {
         Ok(scale)
     }
 
+    /// A scene blend space as the engine's.
+    pub const fn engine_blend_space(space: cherenkov_scene::BlendSpace) -> cherenkov::BlendSpace {
+        match space {
+            cherenkov_scene::BlendSpace::Linear => cherenkov::BlendSpace::Linear,
+            cherenkov_scene::BlendSpace::SrgbEncoded => cherenkov::BlendSpace::SrgbEncoded,
+        }
+    }
+
     /// A scene backdrop group's capture spec at the engine boundary: the
-    /// scale exactly as [`capture_scale`], plus its pyramid level count and
-    /// union smoothing distance — both narrowed only when the `f32` holds
-    /// the scene's `f64` exactly.
+    /// scale exactly as [`capture_scale`], plus its pyramid level count,
+    /// member blend space and union smoothing distance — the level count
+    /// and distance narrowed only when the `f32` holds the scene's `f64`
+    /// exactly.
     ///
     /// # Errors
     /// `BenchError::Engine` when the scale or union distance is not exactly
@@ -1025,7 +1034,8 @@ mod front {
         let scale = capture_scale(group)?;
         let levels = cherenkov::CaptureLevels::new(group.levels)
             .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
-        let mut spec = cherenkov::BackdropSpec::new(scale, levels);
+        let mut spec = cherenkov::BackdropSpec::new(scale, levels)
+            .blend_space(engine_blend_space(group.blend_space));
         if let Some(k) = group.union {
             let narrowed = k as f32;
             if f64::from(narrowed).to_bits() != k.to_bits() {
@@ -1468,10 +1478,7 @@ mod front {
             group: cherenkov::Group::new()
                 .opacity(group.opacity as f32)
                 .blend(engine_blend(group.blend))
-                .blend_space(match group.blend_space {
-                    cherenkov_scene::BlendSpace::Linear => cherenkov::BlendSpace::Linear,
-                    cherenkov_scene::BlendSpace::SrgbEncoded => cherenkov::BlendSpace::SrgbEncoded,
-                }),
+                .blend_space(engine_blend_space(group.blend_space)),
             ops,
         })
     }
@@ -1555,6 +1562,94 @@ mod front {
                 }),
         })
     }
+
+    /// A built engine layer a scene `Layer::id` can name as a backdrop
+    /// group's anchor: the GPU and CPU adapters' `ContentLayer`.
+    pub trait AnchorLayer<T: cherenkov::Backdrop> {
+        /// The engine layer handle (`None`-backed layers resolve to the
+        /// surface root, as each adapter's `ContentLayer::handle` does).
+        fn handle<'a>(&'a self, surface: &'a cherenkov::Surface<T>) -> &'a cherenkov::Layer;
+        /// The scene `Layer::id` this layer was built under, if any.
+        fn scene_id(&self) -> Option<u32>;
+    }
+
+    /// Builds the scene's engine backdrop groups. A group's `anchor`
+    /// names the `Layer::id` of a layer in `content_layers`, so the
+    /// groups exist only once every layer is built.
+    ///
+    /// # Errors
+    /// [`BenchError::Engine`] when an anchor names no built layer.
+    pub fn build_backdrop_groups<T, L>(
+        surface: &cherenkov::Surface<T>,
+        groups: &[cherenkov_scene::BackdropGroup],
+        content_layers: &[L],
+        engine: &'static str,
+        make: impl Fn(
+            &cherenkov::Surface<T>,
+            &cherenkov_scene::BackdropGroup,
+            Option<&cherenkov::Layer>,
+        ) -> Result<cherenkov::BackdropGroup, BenchError>,
+    ) -> Result<HashMap<u32, cherenkov::BackdropGroup>, BenchError>
+    where
+        T: cherenkov::Backdrop,
+        L: AnchorLayer<T>,
+    {
+        let anchors: HashMap<u32, usize> = content_layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, cl)| cl.scene_id().map(|id| (id, i)))
+            .collect();
+        let mut backdrop_groups = HashMap::new();
+        for group in groups {
+            let anchor = group
+                .anchor
+                .map(|id| {
+                    anchors
+                        .get(&id.get())
+                        .map(|&i| content_layers[i].handle(surface))
+                        .ok_or_else(|| {
+                            BenchError::Engine(format!(
+                                "{engine}: backdrop group {} anchors at an unbuilt layer {}",
+                                group.id, id
+                            ))
+                        })
+                })
+                .transpose()?;
+            backdrop_groups.insert(group.id, make(surface, group, anchor)?);
+        }
+        Ok(backdrop_groups)
+    }
+
+    /// A backdrop member deferred to `apply_backdrop_members`: the
+    /// layer's `ContentLayer` index, its group's id, its sample effect
+    /// and outer band.
+    pub type PendingMember = (
+        usize,
+        u32,
+        Option<cherenkov::BackdropEffect>,
+        cherenkov::BackdropOuter,
+    );
+
+    /// Points each pending member layer's backdrop at its group.
+    pub fn apply_backdrop_members<T, L>(
+        surface: &cherenkov::Surface<T>,
+        pending: Vec<PendingMember>,
+        content_layers: &[L],
+        backdrop_groups: &HashMap<u32, cherenkov::BackdropGroup>,
+    ) where
+        T: cherenkov::Backdrop,
+        L: AnchorLayer<T>,
+    {
+        surface.update(|tx| {
+            for (index, gid, effect, outer) in pending {
+                let edit = &mut tx[content_layers[index].handle(surface)];
+                let group = &backdrop_groups[&gid];
+                let sample =
+                    effect.map_or_else(|| group.sample(), |effect| group.sample_with(effect));
+                edit.backdrop(sample.outer(outer));
+            }
+        });
+    }
 }
 
 #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
@@ -1610,6 +1705,7 @@ mod tests {
             filters: Vec::new(),
             scale,
             levels: 1,
+            anchor: None,
             union: None,
         };
         let quarter = capture_scale(&group(0.25)).expect("0.25 is exact in f32");

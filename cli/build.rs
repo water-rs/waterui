@@ -55,6 +55,10 @@ fn main() {
         "cargo:rustc-env=WATERUI_FRAMEWORK_REPOSITORY={}",
         framework_repository(&manifest)
     );
+    println!(
+        "cargo:rustc-env=WATERUI_CLI_DIST_TARGETS={}",
+        dist_targets(&manifest).join(" ")
+    );
 
     let cli_commit =
         git(&cli_manifest_dir, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
@@ -123,6 +127,26 @@ fn framework_repository(manifest: &Value) -> String {
     }
     assert!(seen, "Cargo.toml declares no waterui-* dependency");
     "https://github.com/water-rs/waterui".to_string()
+}
+
+/// The host triples `dist` ships the CLI for — `[package.metadata.dist]
+/// targets`, the list `dist` itself builds from.
+fn dist_targets(manifest: &Value) -> Vec<&str> {
+    let targets = manifest["package"]["metadata"]["dist"]["targets"]
+        .as_array()
+        .expect("Cargo.toml [package.metadata.dist] must declare `targets`");
+    assert!(
+        !targets.is_empty(),
+        "Cargo.toml [package.metadata.dist] targets must not be empty"
+    );
+    targets
+        .iter()
+        .map(|target| {
+            target.as_str().unwrap_or_else(|| {
+                panic!("Cargo.toml [package.metadata.dist] target {target} is not a string")
+            })
+        })
+        .collect()
 }
 
 fn manifest_scaffold_string(scaffold_metadata: &Value, key: &str) -> String {

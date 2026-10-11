@@ -71,12 +71,24 @@ use waterui_core::id::TaggedView;
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
 
+/// Plays an impact haptic. `Haptic::impact` is async; the event that
+/// triggers it does not wait for it.
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
-    if let Err(error) = Haptic::impact(intensity) {
-        tracing::debug!(%error, "failed to trigger impact haptic");
-    }
+    spawn_local(async move {
+        if let Err(error) = Haptic::impact(intensity).await {
+            tracing::debug!(%error, "failed to trigger impact haptic");
+        }
+    })
+    .detach();
 }
+
+/// The inset a bare [`ViewExt::padding`] applies.
+///
+/// It is named because two places need the same number: the modifier, and the
+/// TypeScript catalog's `padding={true}`, which is the same spelling from the
+/// other side of the seam. A second literal would let the two drift.
+pub const DEFAULT_PADDING: f32 = 14.0;
 
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
@@ -652,7 +664,7 @@ pub trait ViewExt: View + Sized {
     /// text!("Hello").padding();
     /// ```
     fn padding(self) -> Padding {
-        Padding::new(EdgeInsets::all(14.0), self)
+        Padding::new(EdgeInsets::all(DEFAULT_PADDING), self)
     }
 
     /// Marks this view as secure.
@@ -1174,6 +1186,40 @@ pub trait ViewExt: View + Sized {
         overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
     ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay> {
         Metadata::new(self, overlay)
+    }
+
+    /// Presents `dialog` window-modal while its `is_presented` binding is
+    /// `true`.
+    ///
+    /// The dialog renders full-window wherever it is attached — the content
+    /// beneath is inert to pointer, keyboard and accessibility while it is up.
+    /// Choosing an action runs that action's handler and writes
+    /// `is_presented = false`; Escape, the Android back gesture and the scrim
+    /// tap run the `Cancel` action's handler the same way, and do nothing when
+    /// no `Cancel` action was declared. One dialog presents per window at a
+    /// time; a second one waits in presentation order.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::dialog::{Dialog, DialogAction};
+    /// use waterui::prelude::*;
+    ///
+    /// let confirm = binding(false);
+    /// button("Discard")
+    ///     .action({
+    ///         let confirm = confirm.clone();
+    ///         move || confirm.set(true)
+    ///     })
+    ///     .dialog(
+    ///         Dialog::new(&confirm, "Discard changes?")
+    ///             .action(DialogAction::destructive("Discard", || {}))
+    ///             .action(DialogAction::cancel("Keep", || {})),
+    ///     );
+    /// ```
+    #[cfg(feature = "dialog")]
+    fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog> {
+        Metadata::new(self, dialog)
     }
 
     /// Sets the minimum row height of every list inside this view, in points.

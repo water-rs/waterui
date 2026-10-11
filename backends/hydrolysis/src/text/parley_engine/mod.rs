@@ -149,6 +149,27 @@ impl ParleyEngine {
 impl TextEngine for ParleyEngine {
     type Layout = ParleyLayout;
 
+    /// The shaping scratch's context is dropped, so the next shape copies
+    /// the engine's context afresh: the collection is shared, so the copy
+    /// reads the new faces, and no fallback it cached for the old set
+    /// survives. The ink caches hold measurements of layouts shaped against
+    /// the old set.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    fn fonts_changed(&self) {
+        self.scratch
+            .lock()
+            .expect("text shaping scratch mutex must not be poisoned")
+            .take();
+        self.ink_extents
+            .lock()
+            .expect("layout ink extent cache mutex must not be poisoned")
+            .clear();
+        self.ink_bounds
+            .lock()
+            .expect("glyph ink bounds cache mutex must not be poisoned")
+            .clear();
+    }
+
     fn empty_layout(&self) -> Self::Layout {
         ParleyLayout(Arc::new(ParleyLayoutData {
             layout: parley::Layout::new(),

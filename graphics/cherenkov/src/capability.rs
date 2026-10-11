@@ -295,8 +295,9 @@ pub trait Planes: Backend {}
 /// [`RenderError::Unplaceable`](crate::RenderError::Unplaceable), never
 /// falls back to composition.
 pub trait HostedLayers: Planes + GpuInstalls {
-    /// The platform object the host hands over: a `CALayer` on Apple, a
-    /// `SurfaceControl` on Android.
+    /// The platform object the host hands over: an `NSView` on macOS, a
+    /// `CALayer` on iOS, a `SurfaceControl` on Android, an `HtmlElement` on
+    /// the web.
     type Object: Clone + crate::RenderTransfer + 'static;
     /// Binds `object` as the content of `layer` on `surface`, its own
     /// coordinate space mapped onto the layer's content space with

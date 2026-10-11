@@ -63,6 +63,7 @@ struct SurfaceState {
     filters: Vec<u64>,
     /// Backdrop groups referenced by the last frame, by group id.
     groups: Vec<u64>,
+    anchor_scratch: lower::AnchorScratch,
     /// The largest live pixel-buffer bytes in any band that ran a
     /// backdrop capture last frame (window, isolation stack and capture
     /// buffers). 0 when no capture ran.
@@ -241,6 +242,7 @@ impl Renderer for RasterRenderer {
                 layers: FxHashMap::default(),
                 filters: Vec::new(),
                 groups: Vec::new(),
+                anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
@@ -539,6 +541,7 @@ impl Renderer for RasterRenderer {
         let mut categories = account::Categories::default();
         for surface in self.surfaces.values() {
             categories.output += surface.output_bytes();
+            categories.retained += surface.anchor_scratch.heap_bytes();
             categories.retained += surface
                 .layers
                 .values()
@@ -817,7 +820,7 @@ impl RasterRenderer {
             };
             let mut caches = std::mem::take(&mut surf.layers);
             let mut lowering = Lowering::new(
-                items,
+                (items, &mut surf.anchor_scratch),
                 size,
                 Some(&mut self.filters),
                 frame,

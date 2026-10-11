@@ -123,7 +123,8 @@ impl Installation for MsvcBuildToolsInstallation {
             return Err(FailToInstallMsvcBuildTools::UnsupportedPlatform);
         }
         let bytes = download_remote_bytes(VS_BUILD_TOOLS_URL).await?;
-        let staging = smol::unblock(tempfile::tempdir).await?;
+        let temp_root = host.temp_dir();
+        let staging = smol::unblock(move || tempfile::tempdir_in(temp_root)).await?;
         let bootstrapper = staging.path().join("vs_BuildTools.exe");
         write_bytes_atomically(&bootstrapper, &bytes).await?;
         let output = host

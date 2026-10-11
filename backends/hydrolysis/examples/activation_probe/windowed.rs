@@ -132,6 +132,6 @@ pub fn main() {
     run(
         App::new_with_windows([host], Environment::new())
             .on_last_window_closed(LastWindowPolicy::StayResident),
-        hydrolysis_m3::Material3::defaults(),
+        hydrolysis::testing::TestStyle::new(),
     );
 }

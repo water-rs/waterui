@@ -2,12 +2,14 @@
 
 /// The shared union member cap — the same definition the oracle's
 /// renderer reads, pulled in without depending on the engine crate.
-#[path = "../../src/union_cap.rs"]
+#[path = "../../record/src/union_cap.rs"]
 mod union_cap;
 
 use cherenkov_oracle::color::{linear_srgb_to_linear_p3, to_working};
 use cherenkov_oracle::{Renderer, metrics};
-use cherenkov_scene::{Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape};
+use cherenkov_scene::{
+    BackdropGroup, BlendMode, Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape,
+};
 use kurbo::Rect;
 
 const W: u32 = 16;
@@ -33,9 +35,10 @@ fn self_comparison_is_perfect() {
     let scene = b.build();
     let img = render(&scene, &tmp());
     let (m, _heat) = metrics::compare(&img, &img);
-    assert_eq!(m.flip_mean, 0.0);
-    assert_eq!(m.flip_max, 0.0);
-    assert_eq!(m.max_local_error, 0.0);
+    // An image compared with itself has a zero difference everywhere.
+    assert_eq!(m.flip_mean.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(m.flip_max.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(m.max_local_error.to_bits(), 0.0_f64.to_bits());
 }
 
 #[expect(
@@ -53,13 +56,18 @@ fn solid_rect_fills_pixel_centres() {
     let img = render(&scene, &tmp());
     // Pixel (8,8): fully covered by opaque red.
     let [r, g, bl, a] = img.pixels[8 * W as usize + 8];
-    assert_eq!(a, 1.0);
+    // The pixel is fully covered: coverage is exactly one.
+    assert_eq!(a.to_bits(), 1.0_f32.to_bits());
     let want = to_working(&Color::srgb(1.0, 0.0, 0.0));
     assert!((r - want[0] as f32).abs() < 1e-5);
     assert!((g - want[1] as f32).abs() < 1e-5);
     assert!((bl - want[2] as f32).abs() < 1e-5);
     // Pixel (0,0): default clear colour (opaque black), untouched.
-    assert_eq!(img.pixels[0], [0.0, 0.0, 0.0, 1.0]);
+    // Untouched pixels keep the clear colour exactly.
+    assert_eq!(
+        img.pixels[0].map(f32::to_bits),
+        [0.0, 0.0, 0.0, 1.0].map(f32::to_bits)
+    );
 }
 
 /// Clipping is geometric — the exact area of shape∩clip per pixel — not a
@@ -92,8 +100,9 @@ fn clip_is_geometric_intersection() {
     // The intersection is the sliver [9.25, 9.75): no pixel is fully
     // covered. Column 8 is inside the clip but outside the shape; column 10
     // is inside the shape but outside the clip.
-    assert_eq!(img.pixels[8][3], 0.0);
-    assert_eq!(img.pixels[10][3], 0.0);
+    // Outside the intersection the coverage is exactly zero.
+    assert_eq!(img.pixels[8][3].to_bits(), 0.0_f32.to_bits());
+    assert_eq!(img.pixels[10][3].to_bits(), 0.0_f32.to_bits());
 }
 
 /// A member clipped by an ellipse never writes outside the clip: the
@@ -132,9 +141,10 @@ fn ellipse_clip_writes_nothing_outside_the_tip() {
     // The tip is at x = 24: every pixel left of it is outside the clip.
     for y in 64..80usize {
         for x in 0..24usize {
+            // Outside the clip the coverage is exactly zero.
             assert_eq!(
-                img.pixels[y * W + x][3],
-                0.0,
+                img.pixels[y * W + x][3].to_bits(),
+                0.0_f32.to_bits(),
                 "pixel ({x},{y}) written outside the ellipse clip"
             );
         }
@@ -210,7 +220,8 @@ fn metrics_detect_error() {
     assert_eq!(heat.len(), (W * H * 3) as usize);
     img.pixels[8 * W as usize + 8] = [1.0, 1.0, 1.0, 1.0];
     let (m2, _) = metrics::compare(&img, &perturbed);
-    assert_eq!(m2.flip_mean, 0.0);
+    // Restoring the pixel makes the images identical again: a zero difference.
+    assert_eq!(m2.flip_mean.to_bits(), 0.0_f64.to_bits());
 }
 
 /// The metric pipeline runs in Display P3 primaries: two linear-P3 colours
@@ -614,18 +625,20 @@ fn bilinear_clamps_at_edges() {
     // row 0's centre, so the sample is texel (0,0) exactly).
     for u in [-0.25, 0.0, 0.2, 0.49] {
         let px = sample_image(&img, u, 0.5, Sampling::Bilinear);
+        // Both weights toward the neighbours are zero here, so the sample is the texel.
         assert_eq!(
-            px,
-            [1.0, 0.0, 0.0, 1.0],
+            px.map(f64::to_bits),
+            [1.0, 0.0, 0.0, 1.0].map(f64::to_bits),
             "left edge u={u}: got {px:?}, want pure edge texel"
         );
     }
     // Top edge: v in [0, 0.5) must sample row 0 only.
     for v in [-0.25, 0.0, 0.49] {
         let px = sample_image(&img, 1.5, v, Sampling::Bilinear);
+        // Both weights toward the neighbours are zero here, so the sample is the texel.
         assert_eq!(
-            px,
-            [0.0, 1.0, 0.0, 1.0],
+            px.map(f64::to_bits),
+            [0.0, 1.0, 0.0, 1.0].map(f64::to_bits),
             "top edge v={v}: got {px:?}, want pure edge texel"
         );
     }
@@ -779,7 +792,12 @@ fn destructive_layer_blend_is_bounded_by_the_clip() {
 fn refraction_on_a_path_clip_is_the_named_error() {
     use cherenkov_scene::{BackdropEffectSpec, BackdropFilter};
     let mut b = Scene::builder(W, H);
-    b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 2.0 }], 1.0, 1);
+    b.backdrop_group(BackdropGroup::new(
+        1,
+        vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
+        1.0,
+        1,
+    ));
     b.root().layer(|m| {
         let mut path = kurbo::BezPath::new();
         path.move_to((2.0, 2.0));
@@ -864,7 +882,10 @@ fn ownership(members: &[(f64, [f64; 2])], member: usize) -> f64 {
 /// counterpart.
 fn union_circles(circles: &[(f64, f64, f64)], opacities: &[f32]) -> cherenkov_oracle::F32Image {
     let mut b = Scene::builder(48, 40).clear(Color::srgb(0.0, 0.0, 0.0).with_alpha(0.0));
-    b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+    b.backdrop_group(BackdropGroup {
+        union: Some(20.0),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
     b.root().fill(
         Shape::Rect(Rect::new(0.0, 0.0, 48.0, 40.0)),
         Paint::Solid(Color::srgb(1.0, 0.0, 0.0).with_alpha(0.5)),
@@ -998,7 +1019,7 @@ fn the_three_weights_sum_to_one_near_a_triple_point() {
 #[test]
 fn a_mixed_group_without_a_union_draws_the_band() {
     let mut b = Scene::builder(48, 32);
-    b.backdrop_group(1, vec![], 1.0, 1);
+    b.backdrop_group(BackdropGroup::new(1, vec![], 1.0, 1));
     b.root().fill(
         Shape::Rect(Rect::new(0.0, 0.0, 48.0, 32.0)),
         Paint::Solid(Color::srgb(1.0, 0.0, 0.0)),
@@ -1034,9 +1055,10 @@ fn a_mixed_group_without_a_union_draws_the_band() {
         px(40, 16)
     );
     for col in [44usize, 46] {
+        // The plain member's clip excludes the band: the background red, untouched.
         assert_eq!(
-            px(col, 16),
-            red,
+            px(col, 16).map(f32::to_bits),
+            red.map(f32::to_bits),
             "plain member inflated at ({col}, 16): {:?}",
             px(col, 16)
         );
@@ -1054,7 +1076,10 @@ fn a_degenerate_union_member_is_unsupported() {
         Shape::Ellipse(kurbo::Ellipse::new((16.0, 16.0), (0.0, 4.0), 0.0)),
     ] {
         let mut b = Scene::builder(48, 32);
-        b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+        b.backdrop_group(BackdropGroup {
+            union: Some(20.0),
+            ..BackdropGroup::new(1, vec![], 1.0, 1)
+        });
         b.root().layer(|m| {
             m.clip(Shape::Rect(Rect::new(4.0, 8.0, 20.0, 24.0)));
             m.backdrop(1);
@@ -1079,7 +1104,10 @@ fn a_degenerate_union_member_is_unsupported() {
 #[test]
 fn union_members_past_the_cap_are_unsupported() {
     let mut b = Scene::builder(48, 32);
-    b.backdrop_union_group(1, vec![], 1.0, 1, 20.0);
+    b.backdrop_group(BackdropGroup {
+        union: Some(20.0),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
     for _ in 0..=union_cap::UNION_MAX_MEMBERS {
         b.root().layer(|m| {
             m.clip(Shape::Rect(Rect::new(4.0, 8.0, 20.0, 24.0)));
@@ -1094,5 +1122,329 @@ fn union_members_past_the_cap_are_unsupported() {
             "unexpected error {e}"
         ),
         Ok(_) => panic!("union members past UNION_MAX_MEMBERS must fail"),
+    }
+}
+
+/// A member under a filtered descendant of the anchor fails with the
+/// named error — the anchor rule admits no descendant exemption.
+#[test]
+fn a_member_under_a_filtered_descendant_is_unsupported() {
+    use cherenkov_scene::LayerFilter;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+    });
+    b.root().layer(|m| {
+        m.filter(LayerFilter::GaussianBlur { sigma: 1.0 });
+        m.layer(|inner| {
+            inner.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member under a filtered descendant must fail"),
+    }
+}
+
+/// A member under a projective descendant of the anchor fails with the
+/// named error — the projective subtree is another canvas.
+#[test]
+fn a_member_under_a_projective_descendant_is_unsupported() {
+    use cherenkov_scene::{LayerFilter, Projection};
+    let _ = LayerFilter::GaussianBlur { sigma: 0.0 };
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+    });
+    b.root().layer(|m| {
+        m.projection(Projection {
+            matrix: Projection::perspective(100.0),
+            ..Projection::default()
+        });
+        m.layer(|inner| {
+            inner.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-member"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member under a projective descendant must fail"),
+    }
+}
+
+/// An anchor's filtered child is its own canvas: a member inside it is
+/// the anchor's descendant but outside its canvas.
+#[test]
+fn a_member_inside_the_anchors_filtered_child_is_unsupported() {
+    use cherenkov_scene::LayerFilter;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.layer(|f| {
+            f.filter(LayerFilter::GaussianBlur { sigma: 1.0 });
+            f.layer(|inner| {
+                inner.backdrop(1);
+            });
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member inside the anchor's filtered child must fail"),
+    }
+}
+
+/// An anchor's projective child is its own canvas: a clipped member
+/// inside it is rejected.
+#[test]
+fn a_member_inside_the_anchors_projective_child_is_unsupported() {
+    use cherenkov_scene::Projection;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.layer(|p| {
+            p.clip(Shape::Rect(Rect::new(0.0, 0.0, f64::from(W), f64::from(H))));
+            p.projection(Projection {
+                matrix: Projection::perspective(100.0),
+                ..Projection::default()
+            });
+            p.layer(|inner| {
+                inner.clip(Shape::Rect(Rect::new(8.0, 8.0, 24.0, 24.0)));
+                inner.backdrop(1);
+            });
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member inside the anchor's projective child must fail"),
+    }
+}
+
+/// A filtered anchor's children paint in the filter's canvas, not the
+/// anchor's — an isolating anchor rejects its own member children.
+#[test]
+fn an_isolating_anchor_rejects_its_member_children() {
+    use cherenkov_scene::LayerFilter;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.filter(LayerFilter::GaussianBlur { sigma: 1.0 });
+        a.layer(|inner| {
+            inner.clip(Shape::Rect(Rect::new(8.0, 8.0, 24.0, 24.0)));
+            inner.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    let result = Renderer::new(W as usize, H as usize).render(&scene, &tmp());
+    match result {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member child of an isolating anchor must fail"),
+    }
+}
+
+/// An anchor at the scene's root has nothing beneath it: the oracle
+/// names `backdrop-anchor-at-root`, the same error the engines report.
+#[test]
+fn an_anchor_at_the_root_is_unsupported() {
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().id(std::num::NonZeroU32::MIN);
+    b.root().layer(|m| {
+        m.backdrop(1);
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-anchor-at-root"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("an anchor at the root must fail"),
+    }
+}
+
+/// An anchor on a projective layer is a flattening boundary: the
+/// oracle names `backdrop-anchor-projective` even though `Scene::validate`
+/// was never run.
+#[test]
+fn an_anchor_at_a_projective_layer_is_unsupported() {
+    use cherenkov_scene::Projection;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.projection(Projection {
+            matrix: Projection::perspective(100.0),
+            ..Projection::default()
+        });
+    });
+    b.root().layer(|m| {
+        m.backdrop(1);
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-anchor-projective"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("an anchor on a projective layer must fail"),
+    }
+}
+
+#[test]
+fn a_member_inside_a_projective_anchor_is_unsupported() {
+    use cherenkov_scene::Projection;
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.projection(Projection {
+            matrix: Projection::perspective(100.0),
+            ..Projection::default()
+        });
+        a.layer(|m| {
+            m.id(std::num::NonZeroU32::new(2).expect("nonzero id"));
+            m.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-anchor-projective"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member inside a projective anchor must fail"),
+    }
+}
+
+/// An anchor naming a layer id nothing carries has no paint position:
+/// `backdrop-unknown-anchor`, the same error the engines report.
+#[test]
+fn an_anchor_at_an_unknown_layer_is_unsupported() {
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|m| {
+        m.backdrop(1);
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("backdrop-unknown-anchor"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("an anchor at an unknown layer must fail"),
+    }
+}
+
+/// A blended anchor's children paint in the blend's own canvas, not the
+/// anchor's — a blended isolating anchor rejects its member children,
+/// exactly like a filtered one.
+#[test]
+fn a_blended_isolating_anchor_rejects_its_member_children() {
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.blend(BlendMode::Screen);
+        a.layer(|inner| {
+            inner.backdrop(1);
+        });
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member child of a blended anchor must fail"),
+    }
+}
+
+/// A blended descendant of the anchor is its own canvas too: a member
+/// inside it is the anchor's descendant but outside its canvas.
+#[test]
+fn a_member_inside_the_anchors_blended_child_is_unsupported() {
+    let mut b = Scene::builder(W, H);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(std::num::NonZeroU32::MIN),
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.root().layer(|a| {
+        a.id(std::num::NonZeroU32::MIN);
+        a.layer(|d| {
+            d.blend(BlendMode::Screen);
+            d.layer(|inner| {
+                inner.backdrop(1);
+            });
+        });
+    });
+    let scene = b.build();
+    match Renderer::new(W as usize, H as usize).render(&scene, &tmp()) {
+        Err(e) => assert!(
+            e.to_string()
+                .contains("backdrop-member-outside-anchor-canvas"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("a member inside a blended descendant must fail"),
     }
 }

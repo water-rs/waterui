@@ -126,7 +126,8 @@ pub trait TextEngine: Send + Sync + 'static {
     /// A layout carrying no text: zero lines.
     fn empty_layout(&self) -> Self::Layout;
 
-    /// Shape `input` at `max_width`; never called with empty input.
+    /// Shape `input` at `max_width`. An empty input lays out one empty line
+    /// in its default style — the line a caret in an empty field occupies.
     fn shape(&self, input: &ResolvedTextLayoutInput, max_width: Option<f32>) -> Self::Layout;
 
     /// At most `max_lines`, the last ending in an ellipsis when the text
@@ -156,6 +157,11 @@ pub trait TextEngine: Send + Sync + 'static {
         scene: &mut Recording,
         counters: &mut FrameWorkCounters,
     );
+
+    /// The collection the engine shapes with gained faces: drops every
+    /// result the engine keeps that was made against the old set.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    fn fonts_changed(&self);
 }
 
 /// How a named font family the collection cannot resolve is treated.

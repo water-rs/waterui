@@ -16,5 +16,6 @@ dev = ["waterui/dynamic_linking"]
 [dependencies]
 waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core.workspace = true
+web-time.workspace = true
 [package.metadata.cargo-machete]
 ignored = ["waterui-core"]

@@ -196,6 +196,13 @@ impl NativeView for ListConfig {
 }
 
 /// A component that displays items in a list format.
+///
+/// A row whose content is under [`.disabled(true)`](crate::ViewExt::disabled)
+/// is inert to selection the way a disabled `Button` cannot be pressed:
+/// pointer, keyboard and accessibility input all leave the selection
+/// unchanged, and the row's accessibility node reports disabled without
+/// offering the click action. The row's content still renders with its label
+/// and disabled state intact.
 #[derive(Debug)]
 pub struct List<V: Views<View = ListItem> = AnyViews<ListItem>> {
     contents: V,
@@ -284,6 +291,9 @@ where
 
     /// Single selection keyed by row identity. The framework and backends
     /// write it on pointer, keyboard and accessibility input.
+    ///
+    /// A row whose content is under `.disabled(true)` cannot be selected:
+    /// input routes around it and the binding stays unchanged.
     #[must_use]
     pub fn selection(self, selection: &Binding<Option<V::Id>>) -> ListBuilder<V> {
         ListBuilder {
@@ -298,6 +308,9 @@ where
     }
 
     /// Multiple selection keyed by row identity.
+    ///
+    /// A row whose content is under `.disabled(true)` cannot be selected:
+    /// input routes around it and the binding stays unchanged.
     #[must_use]
     pub fn multi_selection(self, selection: &Binding<BTreeSet<V::Id>>) -> ListBuilder<V> {
         ListBuilder {
@@ -892,6 +905,12 @@ impl ListSection {
 }
 
 /// An item in a list that can be configured with various behaviors.
+///
+/// There is no per-item selectable flag: selection follows the content's
+/// own disabled state. Wrap the row's content in
+/// [`.disabled(true)`](crate::ViewExt::disabled) to make the row inert to
+/// selection — the way a disabled `Button` cannot be pressed — while its
+/// label and disabled accessibility state still report.
 pub struct ListItem {
     /// The view content to display for this item.
     pub content: AnyView,

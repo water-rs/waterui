@@ -266,6 +266,20 @@ impl TestMachine {
     }
 }
 
+/// The real toolchain with the Water home redirected to `home`: a project
+/// test that needs real `cargo`/`rustc` runs on the declared host and writes
+/// nothing under `~/.water`.
+pub fn real_toolchain_host(home: impl AsRef<Path>) -> Host {
+    let real = Host::current();
+    let vars = real
+        .envs()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case("PATH"))
+        .map(|(key, value)| (key.to_os_string(), value.to_os_string()));
+    Host::new(real.path_entries(), vars)
+        .with_home(home.as_ref())
+        .with_cwd(home.as_ref().to_path_buf())
+}
+
 /// The per-process copy of the dispatcher that fake tools link to.
 ///
 /// A hard link is a real directory entry for the dispatcher's inode, so a

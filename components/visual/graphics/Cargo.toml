@@ -82,6 +82,14 @@ event-listener = { version = "5", optional = true }
 # artifacts require (`shaderloom::required_features`).
 shaderloom = { workspace = true, optional = true, features = ["runtime"] }
 
+# `GpuContent` is `Send` because natively a frame's content renders on the
+# render thread. wasm32 without atomics has one thread, and there wgpu marks
+# its WebGPU handles `!Send` unless this feature is on; it has no effect on a
+# target with atomics. With it, content that keeps its device resources, as
+# every pipeline-owning `GpuContent` does, builds for the web.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["fragile-send-sync-non-atomic-wasm"] }
+
 [dev-dependencies]
 # Tests record against `cherenkov::testing::Null` engines.
 cherenkov = { workspace = true, features = ["testing"] }

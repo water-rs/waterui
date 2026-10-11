@@ -228,8 +228,9 @@ impl RenderNode {
                 }
             }
             Self::Opacity(node) => {
-                let alpha = renderer.resolve_animated_scalar_with_discriminator(
+                let alpha = renderer.resolve_owned_scalar(
                     &node.value.value,
+                    &node.core.cell,
                     OPACITY_ANIMATION_KEY,
                 );
                 let program = renderer.program().program_mut();
@@ -245,12 +246,14 @@ impl RenderNode {
             }
             Self::Scale(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
-                let scale_x = renderer.resolve_animated_scalar_with_discriminator(
+                let scale_x = renderer.resolve_owned_scalar(
                     &node.value.x,
+                    &node.core.cell,
                     SCALE_X_ANIMATION_KEY,
                 );
-                let scale_y = renderer.resolve_animated_scalar_with_discriminator(
+                let scale_y = renderer.resolve_owned_scalar(
                     &node.value.y,
+                    &node.core.cell,
                     SCALE_Y_ANIMATION_KEY,
                 );
                 let transform = kurbo::Affine::translate((center.x, center.y))
@@ -261,8 +264,9 @@ impl RenderNode {
             }
             Self::Rotation(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
-                let radians = f64::from(renderer.resolve_animated_scalar_with_discriminator(
+                let radians = f64::from(renderer.resolve_owned_scalar(
                     &node.value.angle,
+                    &node.core.cell,
                     ROTATION_ANIMATION_KEY,
                 ))
                 .to_radians();
@@ -273,12 +277,14 @@ impl RenderNode {
                     .flush(renderer, ctx.child(transform, ctx.bounds), env, transform);
             }
             Self::Offset(node) => {
-                let offset_x = renderer.resolve_animated_scalar_with_discriminator(
+                let offset_x = renderer.resolve_owned_scalar(
                     &node.value.x,
+                    &node.core.cell,
                     OFFSET_X_ANIMATION_KEY,
                 );
-                let offset_y = renderer.resolve_animated_scalar_with_discriminator(
+                let offset_y = renderer.resolve_owned_scalar(
                     &node.value.y,
+                    &node.core.cell,
                     OFFSET_Y_ANIMATION_KEY,
                 );
                 let transform =
@@ -373,8 +379,17 @@ impl RenderNode {
                         let scope = renderer
                             .material_group_scopes
                             .last()
-                            .map(Rc::as_ptr)
-                            .map(|cell| cell as usize);
+                            .map(|cell| mount::backdrop::scope_id(cell));
+                        // Scope membership must never depend on where a flush
+                        // starts: a member with a `.material_group()` cell on
+                        // its ancestry that reads an empty stack is a partial
+                        // descent that did not replay the enclosing scopes
+                        // (#2268) — a bug, not a solo group.
+                        assert!(
+                            scope.is_some()
+                                || node.core.cell.enclosing_material_group_scopes().is_empty(),
+                            "hydrolysis renderer: a material member under a `.material_group()` scope re-recorded with an empty scope stack — the partial descent did not establish the enclosing scopes"
+                        );
                         let program = renderer.program().program_mut();
                         program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds));
                         program.material = Some(mount::MaterialRequest {
@@ -388,9 +403,13 @@ impl RenderNode {
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
                     WrapperEffect::MaterialGroup => {
-                        // The node's cell is the group scope: push it
-                        // while the child flushes, then pop, so the
-                        // members inside join its shared backdrop group.
+                        // The scope's anchor is an item at its position:
+                        // the pass-through wrapper mounts a plain, empty
+                        // layer there that the members inside capture
+                        // beneath (water-rs/waterui#2097). The node's
+                        // cell is the group scope: hold it while the
+                        // child flushes so the members join its groups.
+                        renderer.program().push_anchor(Rc::clone(&node.core.cell));
                         renderer
                             .material_group_scopes
                             .push(Rc::clone(&node.core.cell));
@@ -413,6 +432,11 @@ impl RenderNode {
                                 node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                             },
                         );
+                    }
+                    WrapperEffect::Dialog(value) => {
+                        HydrolysisRenderer::apply_dialog(renderer, child_env, value, |r| {
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                        });
                     }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
@@ -645,6 +669,15 @@ impl RenderNode {
                 // unwind the paint stack for the child flush and re-open the
                 // scopes for what flushes after.
                 renderer.program().program_mut().filter = Some(Rc::clone(&node.runtime));
+                // Members of the innermost `.material_group()` scope that
+                // mount inside this node's filtered canvas anchor on it:
+                // an anchor item at the start of the filtered program for
+                // that scope, so its `(scope, canvas)` groups capture the
+                // canvas at the anchor's paint position
+                // (water-rs/waterui#2097).
+                if let Some(cell) = renderer.material_group_scopes.last().cloned() {
+                    renderer.program().push_anchor(cell);
+                }
                 node.child
                     .flush(renderer, ctx, &node.env, kurbo::Affine::IDENTITY);
             }
@@ -919,6 +952,29 @@ impl RenderNode {
                         node.child.emit_accessibility(renderer, child_env);
                         if let Some(hook) = effect.appear.take() {
                             hook.call();
+                        }
+                    }
+                    WrapperEffect::Dialog(effect) => {
+                        // The walk reports to the same dialog stack the
+                        // rendered flush does. The dialog on screen emits its
+                        // modal layer in place of the child; publication then
+                        // keeps that layer's modal node alone under the
+                        // window, so everything beneath is inert.
+                        let presented = renderer.read_signal(effect.dialog.is_presented());
+                        let focus = renderer.hit_test.keyboard_focus.clone();
+                        if renderer.popup_menu.dialog_stack.report(
+                            &effect.marker,
+                            &effect.dialog,
+                            presented,
+                            focus,
+                        ) {
+                            let env = dialog_modal_environment(child_env, &effect.dialog);
+                            effect
+                                .content
+                                .borrow_mut()
+                                .emit_accessibility(renderer, &env);
+                        } else {
+                            node.child.emit_accessibility(renderer, child_env);
                         }
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),

@@ -42,20 +42,25 @@ fn write(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write file");
 }
 
-/// This machine with a fresh `CARGO_HOME` under `root`, so every `cargo`
-/// the fixture spawns — directly or inside the CLI, which spawns through
-/// the same host — is hermetic with respect to the machine's global Cargo
-/// configuration. A `target.<triple|cfg>.rustflags` table in
-/// `$CARGO_HOME/config.toml` — e.g. a linker selection like
-/// `-C link-arg=-fuse-ld=mold` — outranks the fixture's own
-/// `[build] rustflags` (Cargo's rustflags sources are mutually exclusive
-/// and `target.*` wins), silently discarding the flags the fixture relies
-/// on. The toolchain still resolves through rustup's `RUSTUP_HOME`, which
-/// `CARGO_HOME` does not affect.
+/// This machine with a fresh `CARGO_HOME` and home directory under
+/// `root`, so every `cargo` the fixture spawns — directly or inside the
+/// CLI, which spawns through the same host — is hermetic with respect to
+/// the machine's global Cargo configuration, and a project's build cache
+/// lands under the scratch root rather than `~/.water`. A
+/// `target.<triple|cfg>.rustflags` table in `$CARGO_HOME/config.toml` —
+/// e.g. a linker selection like `-C link-arg=-fuse-ld=mold` — outranks
+/// the fixture's own `[build] rustflags` (Cargo's rustflags sources are
+/// mutually exclusive and `target.*` wins), silently discarding the flags
+/// the fixture relies on. The toolchain still resolves through rustup's
+/// `RUSTUP_HOME`, which neither `CARGO_HOME` nor the home affects.
 fn hermetic_host(root: &Path) -> Host {
-    let home = root.join("cargo-home");
-    std::fs::create_dir_all(&home).expect("create hermetic CARGO_HOME");
-    Host::current().with_env("CARGO_HOME", home)
+    let cargo_home = root.join("cargo-home");
+    std::fs::create_dir_all(&cargo_home).expect("create hermetic CARGO_HOME");
+    let home = root.join("water-home");
+    std::fs::create_dir_all(&home).expect("create hermetic home");
+    Host::current()
+        .with_home(home)
+        .with_env("CARGO_HOME", cargo_home)
 }
 
 /// Run a fixture command to success or fail the test with its output.

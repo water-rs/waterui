@@ -48,6 +48,22 @@ pub enum SceneError {
     /// A layer has a `backdrop_effect` without a `backdrop` group.
     #[error("layer has a backdrop effect but no backdrop group")]
     BackdropEffectWithoutGroup,
+    /// A backdrop group anchors at a `Layer::id` no layer in the scene
+    /// carries.
+    #[error("backdrop group {0} anchors at an unknown layer id")]
+    UnknownBackdropAnchor(u32),
+    /// Two layers carry the `Layer::id` a backdrop anchor could name.
+    #[error("backdrop anchor layer id {0} is declared twice")]
+    DuplicateBackdropAnchor(u32),
+    /// A backdrop group anchors at the scene root: the anchor's
+    /// compositing canvas is the surface and its order precedes every
+    /// member, but the root's own capture never exists to sample.
+    #[error("backdrop group {0} anchors at the scene root")]
+    BackdropAnchorAtRoot(u32),
+    /// A backdrop group anchors at a projective layer: the layer is a
+    /// flattening boundary, so the anchor's canvas is not the member's.
+    #[error("backdrop group {0} anchors at a projective layer")]
+    BackdropAnchorProjective(u32),
     /// A layer has a `backdrop_outer` without a `backdrop` group.
     #[error("layer has a backdrop outer extent but no backdrop group")]
     BackdropOuterWithoutGroup,

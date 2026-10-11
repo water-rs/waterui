@@ -297,6 +297,12 @@ pub struct ProducerWake {
     redraw: Option<RedrawHandle>,
 }
 
+impl std::fmt::Debug for ProducerWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProducerWake").finish_non_exhaustive()
+    }
+}
+
 impl ProducerWake {
     /// Posts the producer key and wakes the host for a frame.
     pub(crate) fn request_redraw(&self) {
@@ -325,6 +331,8 @@ pub struct PresentationHosts {
     pub(crate) context_menu: NodeCore,
     /// `.anchored_overlay` presentations' host.
     pub(crate) anchored: NodeCore,
+    /// The `.dialog` modal layer's host.
+    pub(crate) dialog: NodeCore,
 }
 
 impl PresentationHosts {
@@ -333,7 +341,12 @@ impl PresentationHosts {
     /// `PAINT|COMMIT` like [`RenderNode::unmount`] leaves the window's own
     /// tree.
     pub(crate) fn unmount(&self) {
-        for host in [&self.text_overlay, &self.context_menu, &self.anchored] {
+        for host in [
+            &self.text_overlay,
+            &self.context_menu,
+            &self.anchored,
+            &self.dialog,
+        ] {
             host.cell.unmount_subtree();
         }
     }
@@ -384,6 +397,15 @@ pub struct SemanticCore {
     /// mount, so a menu's Close Window row reads it when the row is built
     /// and needs no signal.
     window_closable: bool,
+    /// The window's declared logical frame — the semantic walk's only
+    /// geometry fact. The semantic runner writes it at mount and on every
+    /// move/resize, so emit paths that resolve a viewport-dependent
+    /// decision (a navigation split's collapsed-column mode) read what a
+    /// layout would have seen. Renderers no runner claimed keep
+    /// `Rect::ZERO` — below every compact threshold, the "smallest window"
+    /// presentation.
+    #[cfg(feature = "accessibility")]
+    window_frame: kurbo::Rect,
     render_depth: usize,
     /// The retained nodes whose subtrees are currently flushing, innermost
     /// last — the ancestry chain input registration reads to tell a gesture
@@ -395,6 +417,9 @@ pub struct SemanticCore {
     /// Frame triggers shared with reactive closures; see [`FrameSignals`].
     signals: FrameSignals,
     animation_controller: AnimationController,
+    /// Reserves the address of every owner keying a live renderer-local
+    /// slot in `animation_controller`; begins and retires with it.
+    animation_owner_pins: AnimationOwnerPins,
     frame_instant: Instant,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
@@ -469,9 +494,9 @@ pub struct SemanticCore {
     /// Identity-less guards from reads no node owns — fresh each flush,
     /// dropped at the next flush's start.
     outside_frame_retains: Vec<Retain>,
-    /// Mirror of `FrameSignals::rebuild_in_progress` for watch closures: marks
-    /// the rebuild subsumes must not re-arm a frame — the generation gate the
-    /// dirty-collection/dynamic flags already enforce on the flag side.
+    /// Mirror of `FrameSignals::rebuild_in_progress` for watch closures: a
+    /// change a rebuild already covers must not re-arm a frame — the gate the
+    /// rebuild generation applies on the signals side.
     rebuild_active: Rc<Cell<bool>>,
     /// A whole-tree emit pass is in progress — the rendered flush, the
     /// semantic emit walk, or a build-time capture: every a11y-emitting
@@ -564,7 +589,8 @@ pub struct HydrolysisRenderer {
     /// the stable mounts under it and the resource registrations its content
     /// names. Entries whose device was reported lost are pruned at the next
     /// presented frame.
-    cherenkov_window: Option<crate::renderer::render::CherenkovWindow>,
+    cherenkov_window:
+        Option<crate::renderer::render::CherenkovWindow<crate::engine::TextureCherenkovSurface>>,
     /// The engine work the last commit did, with the live mounted counts.
     last_mount_stats: mount::MountStats,
     /// The tests' [`MirrorTarget`](tests::mirror::MirrorTarget) mount.
@@ -602,6 +628,12 @@ pub struct HydrolysisRenderer {
     /// stack empty, so overlay content never joins a scope the window
     /// tree opened.
     pub(crate) material_group_scopes: Vec<Rc<NodeCell>>,
+    /// The widget theme's material terms (water-rs/waterui#1788), filled
+    /// once here — the renderer calls `register_backdrop_shaders` before
+    /// any chrome draws and keeps the registry. Every engine the window
+    /// attaches registers its shaders from this; a class a chrome member
+    /// names resolves its capture terms here at install.
+    material_registry: Rc<cherenkov_record::MaterialRegistry>,
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -641,6 +673,22 @@ impl SemanticCore {
     /// The `closable` the runner's window was declared with.
     pub(crate) const fn window_closable(&self) -> bool {
         self.window_closable
+    }
+
+    /// Assigns the window's declared logical frame — the semantic runner
+    /// writes it at mount and on every move/resize, so emit paths that
+    /// resolve a viewport-dependent decision (a navigation split's
+    /// collapsed-column mode) read what a layout would have seen.
+    #[cfg(feature = "accessibility")]
+    pub(crate) const fn set_window_frame(&mut self, frame: kurbo::Rect) {
+        self.window_frame = frame;
+    }
+
+    /// The window's declared logical frame — `Rect::ZERO` until a runner's
+    /// window declares one.
+    #[cfg(feature = "accessibility")]
+    pub(crate) const fn window_frame(&self) -> kurbo::Rect {
+        self.window_frame
     }
 
     /// Enters an `OnKeyPress` scope for the subtree now flushing; targets
@@ -706,6 +754,7 @@ impl SemanticCore {
             text_overlay: host(),
             context_menu: host(),
             anchored: host(),
+            dialog: host(),
         };
         Self {
             state: HydroState::new(text),
@@ -717,6 +766,8 @@ impl SemanticCore {
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
             window_closable: true,
+            #[cfg(feature = "accessibility")]
+            window_frame: kurbo::Rect::ZERO,
             render_depth: 0,
             owner_stack: Vec::new(),
             root_core,
@@ -724,6 +775,7 @@ impl SemanticCore {
             materialized_platform_views: Vec::new(),
             signals,
             animation_controller: AnimationController::default(),
+            animation_owner_pins: AnimationOwnerPins::default(),
             frame_instant,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
@@ -766,6 +818,19 @@ impl SemanticCore {
         &self.root
     }
 
+    /// The session's fonts gained faces after text was shaped — a web
+    /// page's faces arriving after its first frame. Every shaping result made
+    /// against the old set is dropped, the font revision every text
+    /// measurement reads advances — so each cached layout that measured text
+    /// is laid out again — and the window relayouts and repaints.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    pub(crate) fn fonts_changed(&self) {
+        self.state.text.fonts_changed();
+        self.state.font_revision.with_mut(|revision| *revision += 1);
+        self.root.mark_layout();
+        self.root.mark(Dirty::PAINT);
+    }
+
     /// Whether any node in the window carries a mark — the pump's
     /// frame-work trigger.
     pub(crate) fn root_is_dirty(&self) -> bool {
@@ -788,10 +853,10 @@ impl SemanticCore {
         core
     }
 
-    /// Whether a structural rebuild is capturing right now — the gate
-    /// [`FrameSignals::mark_collection_dirty`] applies to the dirty flag: a
-    /// `views.watch` fire while a rebuild covers the whole tree must not mark
-    /// its owner's cell either.
+    /// Whether a structural rebuild is capturing right now — the gate a
+    /// `views.watch` or `Dynamic` delivery applies to its cell mark: a change
+    /// fired while a rebuild covers the whole tree must not mark the cell
+    /// whose subtree the build is still writing.
     pub(crate) fn rebuild_active_flag(&self) -> Rc<Cell<bool>> {
         Rc::clone(&self.rebuild_active)
     }
@@ -814,12 +879,31 @@ impl SemanticCore {
     /// The whole-tree drivers (`flush_window_tree`, the semantic emit walk)
     /// bracket their emit regions with this pair; a standalone re-record
     /// outside a pass is what the unit rule's mark exists for.
-    pub(crate) fn begin_emit_pass(&self) {
+    ///
+    /// A pass is also the dialog stack's frame: every `.dialog` node reports
+    /// inside it, so the stack opens here and closes in
+    /// [`Self::finish_emit_pass`].
+    pub(crate) fn begin_emit_pass(&mut self) {
         self.emit_pass_active.set(true);
+        self.popup_menu.dialog_stack.begin_pass();
+        self.popup_menu.front_dialog = None;
     }
 
-    /// Closes the pass [`Self::begin_emit_pass`] opened.
-    pub(crate) fn finish_emit_pass(&self) {
+    /// Closes the pass [`Self::begin_emit_pass`] opened. A dialog that came
+    /// on screen takes keyboard focus; once the last one closes, focus
+    /// returns to where it was before the first one came up.
+    pub(crate) fn finish_emit_pass(&mut self) {
+        match self.popup_menu.dialog_stack.finish_pass() {
+            DialogFocus::Keep => {}
+            DialogFocus::Enter => {
+                self.move_keyboard_focus(false);
+            }
+            DialogFocus::Return(focus) => {
+                if focus.is_some() {
+                    self.set_keyboard_focus(focus, true);
+                }
+            }
+        }
         self.emit_pass_active.set(false);
     }
 
@@ -828,6 +912,23 @@ impl SemanticCore {
     /// `request_refresh`.
     pub(crate) fn has_patch_request(&self) -> bool {
         self.signals.has_patch_request()
+    }
+
+    /// Installs the window's host wake on the frame signals — the runner
+    /// calls it once at mount from `RuntimeWindow::new` with the closure
+    /// [`crate::platform::PlatformWindow::frame_wake`] supplies. See
+    /// [`FrameSignals::install_host_wake`].
+    pub(crate) fn install_host_wake(&self, wake: Rc<dyn Fn()>) {
+        self.signals.install_host_wake(wake);
+    }
+
+    /// Whether a frame request is still pending on the signals — what a
+    /// host that suppresses its wake inside the frame transaction (the
+    /// Android pump's `wants_next_frame`) counts into the transaction's
+    /// continuation, so a request raised mid-transaction is never lost.
+    #[allow(dead_code)] // read by the Android host and tests; see reports_ui_idle
+    pub(crate) fn has_pending_frame_request(&self) -> bool {
+        self.signals.has_pending_request()
     }
 
     /// Reports whether the root cell carries a `STRUCTURE` mark — the
@@ -1736,14 +1837,16 @@ impl HydrolysisRenderer {
     }
 
     /// The window's fixed host frames in paint order: the content root,
-    /// then the context menu, anchored overlay and text overlay hosts.
-    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell>; 4] {
+    /// then the context menu, anchored overlay and text overlay hosts, and
+    /// finally the `.dialog` modal layer so nothing else stacks above it.
+    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell>; 5] {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
             Rc::clone(&hosts.context_menu.cell),
             Rc::clone(&hosts.anchored.cell),
             Rc::clone(&hosts.text_overlay.cell),
+            Rc::clone(&hosts.dialog.cell),
         ]
     }
 
@@ -1814,6 +1917,8 @@ impl HydrolysisRenderer {
         text: SessionTextEngine,
     ) -> Self {
         let frame_instant = Instant::now();
+        let mut material_registry = cherenkov_record::MaterialRegistry::default();
+        theme.register_backdrop_shaders(&mut material_registry);
         Self {
             core: SemanticCore::new(frame_instant, text),
             theme,
@@ -1836,6 +1941,7 @@ impl HydrolysisRenderer {
             last_layout_signature: None,
             window_backdrop: None,
             material_group_scopes: Vec::new(),
+            material_registry: Rc::new(material_registry),
         }
     }
 

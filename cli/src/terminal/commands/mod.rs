@@ -1,20 +1,16 @@
 //! CLI command implementations.
 
-use std::{ffi::OsStr, marker::PhantomData, path::PathBuf};
+use std::path::PathBuf;
 
-use clap::{
-    Arg, Command, Error, ValueEnum,
-    builder::{EnumValueParser, PossibleValue, TypedValueParser},
-    error::ErrorKind,
-};
+use clap::ValueEnum;
 use dialoguer::{Confirm, theme::ColorfulTheme};
 
 use crate::shell::Shell;
 use crate::{note, success, warn};
 use waterui_cli::{
+    android::device::{AndroidDecision, AndroidTarget},
     apple::backend::AppleBackend,
     backend::reinit_backend,
-    esp32::backend::Esp32Backend,
     gtk4::backend::Gtk4Backend,
     hydrolysis::backend::HydrolysisBackend,
     platform::TargetBackend as LibTargetBackend,
@@ -27,8 +23,7 @@ use waterui_cli::{
 /// Target backend (how the app is built and rendered).
 ///
 /// Shared by every command that takes `--backend`; commands accepting a
-/// narrower or wider set (`water package` has no ESP32 firmware backend,
-/// `water clean` adds `all`) define their own.
+/// narrower or wider set (`water clean` adds `all`) define their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TargetBackend {
     /// Apple backend (UIKit/AppKit).
@@ -40,50 +35,19 @@ pub enum TargetBackend {
     /// `WinUI` backend (Windows only, experimental).
     #[value(name = "winui")]
     WinUi,
-    /// Dew backend (ESP32 firmware).
-    Dew,
-}
-
-#[derive(Clone)]
-pub struct RemovedAndroidBackendParser<T>(PhantomData<T>);
-
-impl<T> RemovedAndroidBackendParser<T> {
-    pub(super) const fn new() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<T> TypedValueParser for RemovedAndroidBackendParser<T>
-where
-    T: ValueEnum + Clone + Send + Sync + 'static,
-{
-    type Value = T;
-
-    fn parse_ref(
-        &self,
-        command: &Command,
-        arg: Option<&Arg>,
-        value: &OsStr,
-    ) -> Result<Self::Value, Error> {
-        if value == OsStr::new("android") {
-            return Err(Error::raw(
-                ErrorKind::ValueValidation,
-                "`--backend android` was removed with the Kotlin runtime; use `--backend hydrolysis`.",
-            ));
-        }
-        EnumValueParser::<T>::new().parse_ref(command, arg, value)
-    }
-
-    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
-        Some(Box::new(
-            T::value_variants()
-                .iter()
-                .filter_map(ValueEnum::to_possible_value),
-        ))
-    }
 }
 
 impl TargetBackend {
+    /// Convert a resolved library backend to its terminal representation.
+    pub const fn from_lib(backend: LibTargetBackend) -> Self {
+        match backend {
+            LibTargetBackend::Apple => Self::Apple,
+            LibTargetBackend::Gtk4 => Self::Gtk4,
+            LibTargetBackend::Hydrolysis => Self::Hydrolysis,
+            LibTargetBackend::WinUi => Self::WinUi,
+        }
+    }
+
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     pub const fn is_experimental(self) -> bool {
@@ -97,7 +61,6 @@ impl TargetBackend {
             Self::Gtk4 => "GTK4",
             Self::Hydrolysis => "Hydrolysis",
             Self::WinUi => "WinUI",
-            Self::Dew => "ESP32",
         }
     }
 
@@ -108,38 +71,7 @@ impl TargetBackend {
             Self::Gtk4 => LibTargetBackend::Gtk4,
             Self::Hydrolysis => LibTargetBackend::Hydrolysis,
             Self::WinUi => LibTargetBackend::WinUi,
-            Self::Dew => LibTargetBackend::Dew,
         }
-    }
-}
-
-#[cfg(test)]
-mod backend_parser_tests {
-    use super::{RemovedAndroidBackendParser, TargetBackend};
-    use clap::{Arg, Command, builder::TypedValueParser};
-
-    #[test]
-    fn removed_android_backend_error_names_hydrolysis_and_keeps_supported_choices() {
-        let parser = RemovedAndroidBackendParser::<TargetBackend>::new();
-        let error = Command::new("water")
-            .arg(
-                Arg::new("backend")
-                    .long("backend")
-                    .value_parser(parser.clone()),
-            )
-            .try_get_matches_from(["water", "--backend", "android"])
-            .expect_err("the removed backend must be rejected")
-            .to_string();
-        assert!(error.contains("removed with the Kotlin runtime"), "{error}");
-        assert!(error.contains("hydrolysis"), "{error}");
-
-        let choices: Vec<_> = parser
-            .possible_values()
-            .expect("ValueEnum choices are available")
-            .map(|value| value.get_name().to_owned())
-            .collect();
-        assert!(choices.contains(&"hydrolysis".to_owned()));
-        assert!(!choices.contains(&"android".to_owned()));
     }
 }
 
@@ -201,9 +133,6 @@ async fn ensure_generated_backend(
         TargetBackend::Gtk4 => Gtk4Backend::requires_regeneration(&project).await?,
         TargetBackend::Hydrolysis => HydrolysisBackend::requires_regeneration(&project).await?,
         TargetBackend::WinUi => WinUiBackend::requires_regeneration(&project).await?,
-        TargetBackend::Dew => {
-            project.esp32_config().is_none() || Esp32Backend::requires_regeneration(&project)?
-        }
     };
     if !needs_generation {
         return Ok(project);
@@ -224,9 +153,6 @@ async fn ensure_generated_backend(
         }
         TargetBackend::WinUi => {
             reinit_backend::<WinUiBackend>(&project).await?;
-        }
-        TargetBackend::Dew => {
-            reinit_backend::<Esp32Backend>(&project).await?;
         }
     }
     if let Some(pb) = spinner {
@@ -292,6 +218,85 @@ pub mod preview;
 pub mod run;
 pub mod update;
 pub mod web;
+
+/// Ask which device to use among `candidates`, `(label, id)` pairs in the
+/// order a picker shows them. Non-interactive runs cannot pick, so they
+/// fail with the candidate list.
+pub fn prompt_for_device(
+    shell: &Shell,
+    prompt: &str,
+    candidates: &[(&str, &str)],
+    spinner: Option<&indicatif::ProgressBar>,
+) -> eyre::Result<usize> {
+    if !shell.is_terminal() {
+        return Err(waterui_cli::device::ambiguous_device_error(
+            candidates.iter().copied(),
+        ));
+    }
+    let labels: Vec<&str> = candidates.iter().map(|(label, _)| *label).collect();
+    let pick = || {
+        dialoguer::Select::with_theme(&ColorfulTheme::default())
+            .with_prompt(prompt)
+            .items(&labels)
+            .default(0)
+            .interact()
+    };
+    // The scan spinner would redraw over the prompt; hide it while the user
+    // answers.
+    Ok(spinner.map_or_else(pick, |pb| pb.suspend(pick))?)
+}
+
+/// Resolve the Android target a command runs on through the shared library
+/// selection ([`AndroidTarget::select`]): `--device` names it, the
+/// remembered last-used device wins while it is still present, an
+/// interactive terminal picks among the rest, and a non-interactive one
+/// fails naming every candidate.
+///
+/// `memory_key` is the `last_used_device` slot the choice is recorded
+/// under — see [`waterui_cli::water_dir::device_memory_key`]; `None` for a
+/// selection that keeps no memory.
+pub async fn select_android_target(
+    shell: &Shell,
+    host: &Host,
+    memory_key: Option<&str>,
+    device_id: Option<&str>,
+    spinner: Option<&indicatif::ProgressBar>,
+) -> eyre::Result<AndroidTarget> {
+    let remembered = match memory_key {
+        Some(key) => waterui_cli::water_dir::last_used_device(host, key).await,
+        None => None,
+    };
+    let selection = AndroidTarget::select(host, device_id, remembered.as_deref()).await?;
+    if let Some(stale) = &selection.stale {
+        warn!(shell, "Last-used device \"{stale}\" is not available");
+    }
+    let (target, picked) = match selection.decision {
+        AndroidDecision::Resolved(target) => (target, false),
+        AndroidDecision::Ambiguous(candidates) => {
+            let options: Vec<(&str, &str)> = candidates
+                .iter()
+                .map(|candidate| (candidate.label(), candidate.id()))
+                .collect();
+            let index = prompt_for_device(shell, "Select an Android device", &options, spinner)?;
+            (
+                candidates
+                    .into_iter()
+                    .nth(index)
+                    .expect("the picker answers a listed index")
+                    .into_target(),
+                true,
+            )
+        }
+    };
+    // An explicit name, a pick, and a resolution that repaired stale memory
+    // are the choices worth remembering.
+    if let Some(key) = memory_key
+        && (picked || selection.stale.is_some() || device_id.is_some())
+    {
+        waterui_cli::water_dir::record_last_used_device(host, key, target.id()).await;
+    }
+    Ok(target)
+}
 
 /// Parse a viewport size from a `WIDTHxHEIGHT` string into whole pixels.
 fn parse_viewport(s: &str) -> eyre::Result<(u32, u32)> {

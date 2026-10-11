@@ -18,6 +18,16 @@ use crate::{
     templates::{self, TemplateContext},
 };
 
+/// Every triple the generated launcher crate's manifest serves — the
+/// desktop triples of its native table, the Android ABIs and `wasm32`.
+fn hydrolysis_targets() -> Vec<target_lexicon::Triple> {
+    crate::platform::native_target_triples()
+        .into_iter()
+        .chain(crate::android::platform::android_target_triples())
+        .chain(crate::platform::wasm_target_triples())
+        .collect()
+}
+
 /// Configuration for the hydrolysis backend in a `WaterUI` project.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HydrolysisBackend {
@@ -59,7 +69,7 @@ impl HydrolysisBackend {
     /// Returns an error when backend `Cargo.toml` exists but cannot be parsed.
     pub async fn requires_regeneration(project: &Project) -> eyre::Result<bool> {
         let backend_dir = project.backend_path::<Self>();
-        let ctx = Self::template_context(project, &project.resolved_framework().await?).await?;
+        let ctx = Self::template_context(project, project.resolved_framework().await?).await?;
         let outputs = templates::hydrolysis::rendered_outputs(
             &ctx,
             &project.hydrolysis_backend_crate_name(),
@@ -93,6 +103,52 @@ impl HydrolysisBackend {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
+        let remedy = "the dependency graph answers differently per target, so that section \
+                      needs a per-target split inside its own OS — a narrower `cfg` \
+                      separates the disagreeing targets";
+        let section = |table: &'static str| crate::project::GraphSection {
+            manifest: "the generated Hydrolysis launcher manifest",
+            table,
+            remedy,
+        };
+        // The native table's serving set spans three OSes whose graphs
+        // legitimately differ — `waterui-browser-wpe` enters on Linux —
+        // so each OS's answers resolve from its own serving set while the
+        // engine-independent profile set resolves once for them all. The
+        // `cfg(target_os = "android")` table is a fourth section of the
+        // same manifest; its serving set is ABI triples rather than a
+        // `NativeOs`, so it resolves beside the OS sections instead of
+        // through `native_browser_answers`.
+        let targets = hydrolysis_targets();
+        let android_targets = crate::android::platform::android_target_triples();
+        let web_section = crate::project::GraphSection {
+            manifest: "the generated Hydrolysis launcher manifest",
+            table: "cfg(target_arch = \"wasm32\")",
+            remedy: "the wasm32 table serves every wasm32 target alike; a graph that \
+                     enables video or the WebView on one of them must enable it on all",
+        };
+        let ((project_packages, macos, linux, windows, web), android) =
+            futures_util::future::try_join(
+                futures_util::future::try_join5(
+                    project.project_packages(framework, &targets),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::MacOs,
+                        section(crate::platform::NativeOs::MacOs.cfg()),
+                    ),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::Linux,
+                        section(crate::platform::NativeOs::Linux.cfg()),
+                    ),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::Windows,
+                        section(crate::platform::NativeOs::Windows.cfg()),
+                    ),
+                    project.web_answers(web_section),
+                ),
+                project
+                    .browser_answers_for(&android_targets, section("cfg(target_os = \"android\")")),
+            )
+            .await?;
         Ok(TemplateContext::for_project_manifest(
             project.host(),
             manifest,
@@ -103,10 +159,11 @@ impl HydrolysisBackend {
         )
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
-        .with_project_packages(project.project_packages(framework).await?)
-        .with_webview_enabled(project.uses_standard_webview().await?)
-        .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
-        .with_browser_engine(project.linked_browser_engine().await?))
+        .with_project_packages(project_packages)
+        .with_browser(crate::templates::BrowserTemplateContext::desktop(
+            macos, linux, windows, android,
+        ))
+        .with_web(web))
     }
 }
 
@@ -132,6 +189,7 @@ impl Backend for HydrolysisBackend {
         // changes when the painter or project does, which re-scaffolds
         // directly rather than through `reinit_backend`.
         "android",
+        "android-embedded",
         "android-host",
     ];
 
@@ -145,7 +203,7 @@ impl Backend for HydrolysisBackend {
             .resolved_framework()
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
-        let ctx = Self::template_context(project, &framework)
+        let ctx = Self::template_context(project, framework)
             .await
             .map_err(crate::backend::FailToInitBackend::Config)?;
 
@@ -174,10 +232,17 @@ impl Backend for HydrolysisBackend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         if platform == TargetPlatform::Android {
-            return crate::hydrolysis::android::build(project, AndroidAbi::Arm64V8a, options).await;
+            let kotlin = crate::android::platform::require_kotlin(project.host()).await?;
+            return crate::hydrolysis::android::build(
+                project,
+                AndroidAbi::Arm64V8a,
+                options,
+                &kotlin,
+            )
+            .await;
         }
         project
-            .browser_runtime_plan(platform, TargetBackend::Hydrolysis)
+            .browser_runtime_plan(platform, TargetBackend::Hydrolysis, &platform.triple())
             .await?;
         build_hydrolysis(project, platform, options).await
     }

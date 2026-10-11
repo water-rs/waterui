@@ -18,11 +18,13 @@ use eyre::{Context, OptionExt};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use smol::fs;
+use target_lexicon::Triple;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use waterui_assets_planner::{
-    BundleManifest, FontDeclaration, FontSource, GraphScope, dependency_font_declarations,
+    BundleManifest, FontDeclaration, FontPlatform, FontSource, GraphScope,
+    dependency_font_declarations, font_platform_scope,
 };
 use zenwave::{Client as _, Method};
 
@@ -53,6 +55,19 @@ struct RegistryFont {
     name: String,
     /// Where the face, or an archive containing it, is fetched from.
     url: String,
+    /// The SHA-256 of what `url` serves; a download that does not match is
+    /// refused.
+    sha256: String,
+}
+
+/// Where a remote font is fetched from, and the digest a download from there
+/// must match when the source pins one.
+#[derive(Debug, Clone, Copy)]
+struct FontOrigin<'a> {
+    url: &'a str,
+    /// Pinned by every built-in registry entry; a crate's `remote_path`
+    /// declaration carries none.
+    sha256: Option<&'a str>,
 }
 
 /// The built-in font registry.
@@ -90,11 +105,14 @@ impl FontRegistry {
     }
 
     /// Where `name` is fetched from, if the registry offers it.
-    fn url(&self, name: &str) -> Option<&str> {
+    fn origin(&self, name: &str) -> Option<FontOrigin<'_>> {
         self.fonts
             .iter()
             .find(|font| font.name == name)
-            .map(|font| font.url.as_str())
+            .map(|font| FontOrigin {
+                url: &font.url,
+                sha256: Some(&font.sha256),
+            })
     }
 }
 const HYDROLYSIS_DEFAULT_FONT_FAMILY: &str = "Roboto";
@@ -309,13 +327,30 @@ fn manifest_font_declarations(
             &font.name,
         )
         .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
+        let platforms =
+            font_platform_scope(font.platforms.clone(), &manifest.package.name, &font.name)
+                .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
         declarations.push(FontDeclaration {
             name: font.name.clone(),
             source,
             crate_name: manifest.package.name.clone(),
+            platforms,
         });
     }
     Ok(declarations)
+}
+
+/// Validate the project's own declarations without resolving a Cargo graph.
+pub async fn validate_manifest_fonts(
+    host: &crate::toolchain::Host,
+    manifest: &crate::project::Manifest,
+    root: &Path,
+) -> eyre::Result<()> {
+    let declarations = manifest_font_declarations(manifest, root)?;
+    if !declarations.is_empty() {
+        resolve_fonts(host, declarations).await?;
+    }
+    Ok(())
 }
 
 /// Scans the project manifest and the built crate's dependencies for font
@@ -324,12 +359,23 @@ fn manifest_font_declarations(
 /// `[[assets.font]]` tables in `Water.toml` declare the app's own fonts and
 /// rank ahead of dependency declarations between equal sources; the
 /// dependency half comes from [`scan_crate_font_declarations`].
+///
+/// Only the declarations a build for one of `platforms` bundles are kept: a
+/// declaration scoped to other platforms is left out. A build whose staged
+/// fonts serve several platforms at once — an `XCFramework` for iOS and
+/// macOS — names them all.
 pub async fn scan_fonts(
     project: &Project,
     build_manifest: &Path,
+    platforms: &[FontPlatform],
 ) -> eyre::Result<Vec<FontDeclaration>> {
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())?;
     declarations.extend(scan_crate_font_declarations(project, build_manifest).await?);
+    declarations.retain(|declaration| {
+        platforms
+            .iter()
+            .any(|platform| declaration.bundled_on(*platform))
+    });
     Ok(declarations)
 }
 
@@ -347,10 +393,8 @@ pub async fn scan_fonts(
 /// # Errors
 ///
 /// Returns an error naming the path when `build_manifest` does not exist —
-/// every caller resolves a manifest it scaffolded; the one probe that can
-/// run before that (the Android permission audit on a first init) checks for
-/// it itself — and when the certified lock or the seed cannot be read or
-/// written.
+/// every caller resolves a manifest it scaffolded first — and when the
+/// certified lock or the seed cannot be read or written.
 pub async fn seed_managed_crate_lock(
     project: &Project,
     build_manifest: &Path,
@@ -384,26 +428,21 @@ pub async fn seed_managed_crate_lock(
     Ok(true)
 }
 
-/// `cargo metadata` on a manifest, on the blocking pool. `features` mirrors
-/// the feature selection the build invokes with — optional dependencies (and
-/// the metadata they declare) only enter the resolved graph under it; an
-/// empty slice resolves the manifest's default feature set.
+/// `cargo metadata` on a manifest, run on `host`. `features` mirrors the
+/// feature selection the build invokes with — optional dependencies (and the
+/// metadata they declare) only enter the resolved graph under it; an empty
+/// slice resolves the manifest's default feature set.
 pub async fn crate_metadata(
+    host: &crate::toolchain::Host,
     build_manifest: &Path,
     features: &[String],
 ) -> eyre::Result<cargo_metadata::Metadata> {
-    let manifest_path = build_manifest.to_path_buf();
-    let features = features.to_vec();
-    smol::unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command.manifest_path(&manifest_path);
-        if !features.is_empty() {
-            command.features(cargo_metadata::CargoOpt::SomeFeatures(features));
-        }
-        command.exec()
-    })
-    .await
-    .map_err(Into::into)
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(build_manifest);
+    if !features.is_empty() {
+        command.features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
+    }
+    host.cargo_metadata(&command).await.map_err(Into::into)
 }
 
 /// The features cargo resolved on each package of `metadata`'s graph — what
@@ -477,7 +516,9 @@ async fn scan_crate_font_declarations(
 
     let managed = seed_managed_crate_lock(project, build_manifest).await?;
 
-    let metadata = crate_metadata(build_manifest, &[]).await.wrap_err_with(|| {
+    let metadata = crate_metadata(project.host(), build_manifest, &[])
+        .await
+        .wrap_err_with(|| {
         let mut message = format!(
             "Failed to run cargo metadata on {}",
             build_manifest.display()
@@ -532,6 +573,28 @@ pub struct AndroidClasspath {
     pub maven: BTreeSet<String>,
 }
 
+/// Which Gradle configuration a module's classpath dependencies land on.
+///
+/// `implementation` hides them from consumers — correct for an application
+/// module. `api` exports them through the published POM — required for the
+/// embedded AAR, whose host app resolves the classes at run time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AndroidDependencyScope {
+    /// `implementation(...)`: app module and hydrolysis app.
+    Implementation,
+    /// `api(...)`: the embedded `waterui` module consumers depend on.
+    Api,
+}
+
+impl AndroidDependencyScope {
+    const fn gradle_keyword(self) -> &'static str {
+        match self {
+            Self::Implementation => "implementation",
+            Self::Api => "api",
+        }
+    }
+}
+
 /// Scans `build_manifest`'s dependency graph for
 /// `[package.metadata.waterui.android]` declarations via `cargo metadata` —
 /// the same channel the font and permission scans read.
@@ -545,7 +608,7 @@ pub async fn scan_android_declarations(
     features: &[String],
 ) -> eyre::Result<AndroidDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
-    let metadata = crate_metadata(build_manifest, features)
+    let metadata = crate_metadata(project.host(), build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -669,7 +732,7 @@ pub async fn scan_apple_declarations(
     features: &[String],
 ) -> eyre::Result<AppleDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
-    let metadata = crate_metadata(build_manifest, features)
+    let metadata = crate_metadata(project.host(), build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -755,11 +818,11 @@ const ANDROID_KEEPS_END: &str = "# --- end waterui android classpath keeps ---";
 /// module's Kotlin compile picks up — and the Maven coordinates the helpers
 /// compile and run against, emitted into the module's managed dependencies
 /// block as `implementation(...)` for application modules or `api(...)` for
-/// the Hydrolysis preview library so its host resolves them.
+/// the embedded AAR so the published POM propagates them to consumers.
 ///
 /// Declared Gradle plugins are pinned in the project's `settings.gradle.kts`
 /// and applied in the module's `plugins {}` block for application modules;
-/// the preview module is a library, so its host application must apply them
+/// the embedded AAR is a library, so its host application must apply them
 /// and the stage names each one.
 ///
 /// Both destinations are managed: whatever an earlier stage left is removed
@@ -776,30 +839,58 @@ pub async fn stage_android_declarations(
     project: &Project,
     build_manifest: &Path,
     module_dir: &Path,
+    scope: AndroidDependencyScope,
     features: &[String],
 ) -> eyre::Result<()> {
     let declarations = scan_android_declarations(project, build_manifest, features).await?;
-    stage_classpath_files(&declarations.classpath, module_dir).await?;
+    stage_classpath_files(&declarations.classpath, module_dir, scope).await?;
     android_manifest::write_manifest_components(module_dir, &declarations.manifest).await?;
     app_values::stage_android_app_values(
         module_dir,
         project.root(),
         &declarations.app_values,
         &project.manifest().app_values,
+        scope,
     )
     .await?;
-    let project_dir = module_dir
-        .parent()
-        .ok_or_eyre("the Gradle module has no parent project directory")?;
-    gradle_plugins::write_gradle_plugins(project_dir, module_dir, &declarations.gradle_plugins)
-        .await
+    match scope {
+        AndroidDependencyScope::Implementation => {
+            let project_dir = module_dir
+                .parent()
+                .ok_or_eyre("the Gradle module has no parent project directory")?;
+            gradle_plugins::write_gradle_plugins(
+                project_dir,
+                module_dir,
+                &declarations.gradle_plugins,
+            )
+            .await
+        }
+        AndroidDependencyScope::Api => {
+            warn_host_applies_gradle_plugins(&declarations.gradle_plugins);
+            Ok(())
+        }
+    }
 }
+
+/// A Gradle plugin acts on the application module — `google-services`
+/// matches its configuration against the application id — so the embedded
+/// AAR, a library, cannot apply one for its host. The host application
+/// module must apply each plugin the graph declares itself.
+fn warn_host_applies_gradle_plugins(plugins: &GradlePlugins) {
+    for (crate_name, id, version) in plugins.iter() {
+        warn!(
+            "{crate_name} needs Gradle plugin `{id}` version `{version}`; the embedded library cannot apply it, so the host application module must declare `id(\"{id}\") version \"{version}\"`"
+        );
+    }
+}
+
 
 /// The classpath half of [`stage_android_declarations`], split from the cargo-metadata
 /// scan so the staging itself is exercised without a project.
 async fn stage_classpath_files(
     classpath: &AndroidClasspath,
     module_dir: &Path,
+    scope: AndroidDependencyScope,
 ) -> eyre::Result<()> {
     let mut keep_packages = BTreeSet::new();
 
@@ -864,7 +955,7 @@ async fn stage_classpath_files(
         fs::remove_dir_all(&libs_dir).await?;
     }
 
-    write_android_dependencies(module_dir, &classpath.maven).await?;
+    write_android_dependencies(module_dir, &classpath.maven, scope).await?;
     write_android_keeps(module_dir, &keep_packages).await?;
     Ok(())
 }
@@ -934,6 +1025,7 @@ fn splice_managed_block(
 async fn write_android_dependencies(
     module_dir: &Path,
     maven: &BTreeSet<String>,
+    scope: AndroidDependencyScope,
 ) -> eyre::Result<()> {
     let build_file = module_dir.join("build.gradle.kts");
     let existing = fs::read_to_string(&build_file)
@@ -953,7 +1045,7 @@ async fn write_android_dependencies(
     body.push('\n');
     for coordinate in maven {
         body.push_str("        ");
-        body.push_str("implementation");
+        body.push_str(scope.gradle_keyword());
         body.push_str("(\"");
         body.push_str(coordinate);
         body.push_str("\")\n");
@@ -1110,7 +1202,7 @@ async fn satisfy_font(
         },
         FontSource::Remote { url } => cached_font(host, name, url, cache_dir).await,
         FontSource::BuiltIn => {
-            let Some(url) = registry.url(name) else {
+            let Some(FontOrigin { url, .. }) = registry.origin(name) else {
                 // Declared by name alone and the registry has no such
                 // family: nothing can satisfy it, so this fails here rather
                 // than at the first glyph the shaper draws in some other
@@ -1424,13 +1516,12 @@ async fn seed_font_cache_scoped(
 /// are the generated crates': the theme crate's
 /// `[package.metadata.waterui.assets.font]` entries are reachable only
 /// through the backend manifest that depends on it. Apple builds scan the
-/// Apple companion, which `Project::open` scaffolds when the Apple backend is
-/// managed; if it is still absent it is scaffolded here. Each of
+/// Apple companion, which the build itself renders — so if it is still
+/// absent it is scaffolded here. Each of
 /// the GTK4, Hydrolysis and `WinUI` crates is re-scaffolded with the
 /// current templates when missing or stale, exactly as the build and preview
 /// paths regenerate it. Scaffolding writes template files — nothing
-/// compiles. The ESP32 harness never takes part: no build scans it for
-/// fonts — `dew`'s fonts come from `[esp32] fonts` as plain files.
+/// compiles.
 ///
 /// The scanned set is the crates for the backends this host can run —
 /// Hydrolysis anywhere, GTK4 on Linux, `WinUI` on Windows — since the CLI
@@ -1445,12 +1536,15 @@ async fn ensure_font_scan_manifests(
 ) -> eyre::Result<Vec<PathBuf>> {
     let mut manifests = vec![project.root().join("Cargo.toml")];
 
-    // Apple builds scan the Apple companion; Hydrolysis builds scan its
-    // backend manifest below.
+    // Apple builds scan the Apple companion; no other backend's build does,
+    // and a scoped fetch includes it only for that one.
     let apple_scanned =
         scope.is_none_or(|backend| backend == crate::platform::TargetBackend::Apple);
     if apple_scanned {
         let manifest = project.apple_crate_path().join("Cargo.toml");
+        // The companion on disk is re-rendered for the scan — the manifest
+        // a build produces, so the font declarations the scan sees are the
+        // ones the build's resolve carries.
         project.scaffold_apple_companion().await.map_err(|error| {
             eyre::eyre!("could not scaffold the Apple companion crate: {error}")
         })?;
@@ -1595,10 +1689,10 @@ async fn fetch_fonts(
                 },
             },
             FontSource::Remote { .. } | FontSource::BuiltIn => {
-                match declaration_url(&decl, &registry) {
-                    Some(url) => {
+                match declaration_origin(&decl, &registry) {
+                    Some(origin) => {
                         if let Some(path) =
-                            cached_font_entry(host, &decl.name, url, cache_dir).await?
+                            cached_font_entry(host, &decl.name, origin.url, cache_dir).await?
                         {
                             FetchOutcome::Satisfied {
                                 name: decl.name.clone(),
@@ -1606,7 +1700,8 @@ async fn fetch_fonts(
                             }
                         } else {
                             let path =
-                                fetch_remote_font(host, &decl.name, url, cache_dir, fetch).await?;
+                                fetch_remote_font(host, &decl.name, origin, cache_dir, fetch)
+                                    .await?;
                             FetchOutcome::Fetched {
                                 name: decl.name.clone(),
                                 path,
@@ -1629,10 +1724,13 @@ async fn fetch_fonts(
 /// The URL a declaration is fetched from, when it has one: `Remote`
 /// declarations carry their own; `BuiltIn` ones resolve through the
 /// registry; `Local` ones have none.
-fn declaration_url<'a>(decl: &'a FontDeclaration, registry: &'a FontRegistry) -> Option<&'a str> {
+fn declaration_origin<'a>(
+    decl: &'a FontDeclaration,
+    registry: &'a FontRegistry,
+) -> Option<FontOrigin<'a>> {
     match &decl.source {
-        FontSource::Remote { url } => Some(url.as_str()),
-        FontSource::BuiltIn => registry.url(&decl.name),
+        FontSource::Remote { url } => Some(FontOrigin { url, sha256: None }),
+        FontSource::BuiltIn => registry.origin(&decl.name),
         FontSource::Local { .. } => None,
     }
 }
@@ -1642,14 +1740,16 @@ fn declaration_url<'a>(decl: &'a FontDeclaration, registry: &'a FontRegistry) ->
 /// `url` lands at `{sha256(url)}.ttf` — or `.zip` for an archive — the same
 /// name the build probes, via a `.partial` sibling so an interrupted
 /// transfer never reads as a cached font. An archive is extracted the way
-/// the build's first resolution extracts it.
+/// the build's first resolution extracts it. A download that does not match
+/// the digest the origin pins is deleted and refused.
 async fn fetch_remote_font(
     host: &crate::toolchain::Host,
     name: &str,
-    url: &str,
+    origin: FontOrigin<'_>,
     cache_dir: &Path,
     fetch: FontFetch,
 ) -> eyre::Result<PathBuf> {
+    let url = origin.url;
     waterui_assets_core::ensure_http_allowed(url)
         .map_err(|error| eyre::eyre!("font '{name}' cannot be fetched from {url}: {error}"))?;
     fs::create_dir_all(cache_dir).await?;
@@ -1664,6 +1764,16 @@ async fn fetch_remote_font(
     if fs::metadata(&partial).await?.len() == 0 {
         let _ = fs::remove_file(&partial).await;
         eyre::bail!("font '{name}' fetched from {url} is empty");
+    }
+    if let Some(expected) = origin.sha256 {
+        let actual = crate::utils::file_sha256(&partial).await?;
+        if actual != expected {
+            let _ = fs::remove_file(&partial).await;
+            eyre::bail!(
+                "font '{name}' fetched from {url} has SHA-256 {actual}, but the registry pins \
+                 {expected}; the download was refused"
+            );
+        }
     }
     fs::rename(&partial, &cache_file).await.wrap_err_with(|| {
         format!(
@@ -1916,7 +2026,6 @@ pub use unified::{build_manifest as plan_library_resources, write_library_resour
 /// The directory name the staged asset bundle carries inside an Android
 /// `src/main/assets/` root.
 pub use unified::ASSET_ROOT_DIR as ANDROID_ASSET_BUNDLE_DIR;
-pub use unified::StagedAndroidAssets;
 
 /// Stage project assets for Apple packaging (Asset Catalog + raw resources).
 ///
@@ -1950,13 +2059,13 @@ pub async fn stage_project_assets_for_android(
 /// `symbols` is the target build's app library — see
 /// [`stage_project_assets_for_apple`].
 ///
-/// Returns the manifest and where the bundle was staged.
+/// Returns the manifest and the staged `waterui_assets` directory.
 pub async fn stage_project_assets_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
-) -> eyre::Result<(BundleManifest, StagedAndroidAssets)> {
+) -> eyre::Result<(BundleManifest, PathBuf)> {
     unified::stage_for_android_library(project, module_dir, symbols, dev_server).await
 }
 
@@ -2046,7 +2155,12 @@ pub async fn stage_hydrolysis_web_fonts(
 ) -> eyre::Result<()> {
     let mut resolved_fonts = resolve_fonts(
         project.host(),
-        scan_fonts(project, &backend_path.join("Cargo.toml")).await?,
+        scan_fonts(
+            project,
+            &backend_path.join("Cargo.toml"),
+            &[FontPlatform::Web],
+        )
+        .await?,
     )
     .await?;
     resolved_fonts.sort_by(|left, right| left.name.cmp(&right.name));
@@ -2107,8 +2221,10 @@ pub async fn write_font_manifest(
     Ok(())
 }
 
-/// Returns whether `feature` is enabled on `package` in the resolved
-/// dependency graph of `build_manifest`.
+/// Returns whether `feature` is enabled on `package` in the dependency graph
+/// of `build_manifest` resolved for `target` — `cargo metadata
+/// --filter-platform <target>`, cached per manifest and triple by the
+/// project.
 ///
 /// `build_manifest` is the `Cargo.toml` of the crate the build actually
 /// compiles — the generated Apple companion or Hydrolysis launcher, the generated
@@ -2124,40 +2240,26 @@ pub async fn write_font_manifest(
 ///
 /// # Errors
 ///
-/// Returns an error when `cargo metadata` cannot be read.
+/// Returns an error when `cargo metadata` cannot resolve the manifest.
 pub async fn package_feature_enabled(
+    project: &Project,
     build_manifest: &Path,
     package: &str,
     feature: &str,
+    target: &Triple,
 ) -> eyre::Result<bool> {
-    let metadata = crate_metadata(build_manifest, &[])
+    let enabled = project
+        .generated_manifest_features(build_manifest, target)
         .await
         .wrap_err_with(|| {
             format!(
                 "Failed to run cargo metadata on {}",
                 build_manifest.display()
             )
-        })?;
-
-    let Some(resolve) = metadata.resolve.as_ref() else {
-        return Ok(false);
-    };
-    let enabled = metadata
-        .packages
-        .iter()
-        .filter(|candidate| candidate.name.as_str() == package)
-        .any(|candidate| {
-            resolve
-                .nodes
-                .iter()
-                .filter(|node| node.id == candidate.id)
-                .any(|node| {
-                    node.features
-                        .iter()
-                        .any(|enabled| enabled.as_str() == feature)
-                })
-        });
-    debug!("resolved feature {package}/{feature}: {enabled}");
+        })?
+        .get(package)
+        .is_some_and(|features| features.contains(feature));
+    debug!("resolved feature {package}/{feature} for {target}: {enabled}");
     Ok(enabled)
 }
 
@@ -2210,7 +2312,7 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
         package: "waterui-map",
         feature: None,
     },
-    // The `Video`/`Media` playback FFI surface and the `waterkit_audio`
+    // The `Video`/`Media` playback surface and the `waterkit_audio`
     // keep-alive behind it. `waterui-video` is an optional dependency of the
     // facade (`media`/`video` features), so linking it *is* the opt-in — an app
     // that never plays media stops rooting the codec/streaming graph through
@@ -2220,7 +2322,7 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
         package: "waterui-video",
         feature: None,
     },
-    // The `WebView` FFI surface (bridge script, JS replies, cookie jar).
+    // The `WebView` surface (bridge script, JS replies, cookie jar).
     // `waterui-webview` is optional on the facade and the browser-cef crate
     // reaches it through its own `webview` feature, so a plain `links` check
     // covers both entry points.
@@ -2242,7 +2344,11 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
 /// components whose symbols the dylib does export.
 ///
 /// `build_manifest` is the manifest of the crate being built — the resolved
-/// graph the feature check reads.
+/// graph the feature check reads — and `target` the triple that build
+/// resolves it for: the feature branch runs `cargo metadata
+/// --filter-platform` through the project's host, cached per manifest and
+/// target, and the link branch reads the application's own `cargo tree
+/// --target` evaluation.
 ///
 /// # Errors
 ///
@@ -2251,6 +2357,7 @@ pub async fn capability_enabled(
     project: &Project,
     build_manifest: &Path,
     capability: &str,
+    target: &Triple,
 ) -> eyre::Result<bool> {
     let capability = OPTIONAL_CAPABILITIES
         .iter()
@@ -2259,9 +2366,14 @@ pub async fn capability_enabled(
     match capability.feature {
         Some(feature) => {
             seed_managed_crate_lock(project, build_manifest).await?;
-            package_feature_enabled(build_manifest, capability.package, feature).await
+            package_feature_enabled(project, build_manifest, capability.package, feature, target)
+                .await
         }
-        None => project.links_runtime_package(capability.package).await,
+        None => {
+            project
+                .links_runtime_package(target, capability.package)
+                .await
+        }
     }
 }
 
@@ -2279,7 +2391,9 @@ pub async fn capability_enabled(
 /// choice has to reach its build; reading it back out keeps one declaration in
 /// the app's manifest.
 ///
-/// `build_manifest` is the manifest of the Apple companion being built.
+/// `build_manifest` is the manifest of the crate being built — the Apple
+/// companion for an Apple build — and `target` the triple that build
+/// resolves its graph for.
 ///
 /// # Errors
 ///
@@ -2287,10 +2401,11 @@ pub async fn capability_enabled(
 pub async fn capability_features(
     project: &Project,
     build_manifest: &Path,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let mut features = Vec::new();
     for capability in OPTIONAL_CAPABILITIES {
-        if capability_enabled(project, build_manifest, capability.name).await? {
+        if capability_enabled(project, build_manifest, capability.name, target).await? {
             features.push(capability.name.to_string());
         }
     }
@@ -2324,6 +2439,18 @@ mod tests {
         })
     }
 
+    /// A `FontFetch` stub that writes bytes no registry digest matches.
+    fn place_unpinned_bytes<'a>(
+        _url: &'a str,
+        dest: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<()>> + Send + 'a>> {
+        let dest = dest.to_path_buf();
+        Box::pin(async move {
+            std::fs::write(dest, b"not-the-pinned-font")?;
+            Ok(())
+        })
+    }
+
     /// A `FontFetch` stub whose download always fails.
     fn fail_download<'a>(
         _url: &'a str,
@@ -2350,6 +2477,28 @@ mod tests {
         assert_eq!(declarations[0].name, "Inter");
         assert_eq!(declarations[0].crate_name, "Demo");
         assert!(matches!(declarations[0].source, FontSource::BuiltIn));
+    }
+
+    #[test]
+    fn water_toml_font_platforms_scope_the_builds_that_bundle_it() {
+        let manifest =
+            manifest_with_fonts("[[assets.font]]\nname = \"Inter\"\nplatforms = [\"web\"]");
+        let declarations =
+            manifest_font_declarations(&manifest, Path::new("/project")).expect("declarations");
+        assert!(declarations[0].bundled_on(FontPlatform::Web));
+        assert!(!declarations[0].bundled_on(FontPlatform::Ios));
+    }
+
+    #[test]
+    fn water_toml_font_with_an_unknown_platform_does_not_parse() {
+        let mut document = "[[assets.font]]\nname = \"Inter\"\nplatforms = [\"browser\"]"
+            .parse::<toml_edit::DocumentMut>()
+            .expect("the font fixture parses as TOML");
+        document["package"]["name"] = toml_edit::value("Demo");
+        document["package"]["bundle_identifier"] = toml_edit::value("dev.example.demo");
+        let error = toml::from_str::<crate::project::Manifest>(&document.to_string())
+            .expect_err("an unknown platform must not parse");
+        assert!(error.to_string().contains("browser"), "{error}");
     }
 
     #[test]
@@ -2439,6 +2588,7 @@ mod tests {
                     url: url.to_string(),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             place_font,
@@ -2485,6 +2635,7 @@ mod tests {
                     url: url.to_string(),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             must_not_download,
@@ -2512,6 +2663,7 @@ mod tests {
                     url: "https://example.com/inter.ttf".to_string(),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             fail_download,
@@ -2526,6 +2678,36 @@ mod tests {
         assert!(message.contains("connection refused"), "{message}");
     }
 
+    /// A registry font whose download does not match the digest the registry
+    /// pins is refused, and nothing is left where the build looks.
+    #[test]
+    fn a_registry_download_with_the_wrong_digest_is_refused() {
+        let cache_dir = tempdir().expect("temp cache dir");
+
+        let error = smol::block_on(fetch_fonts(
+            &crate::toolchain::Host::current(),
+            vec![FontDeclaration {
+                name: "Noto Color Emoji".to_string(),
+                source: FontSource::BuiltIn,
+                crate_name: "some-app".to_string(),
+                platforms: None,
+            }],
+            cache_dir.path(),
+            place_unpinned_bytes,
+        ))
+        .expect_err("a digest mismatch must be an error");
+        let message = format!("{error:#}");
+        assert!(message.contains("Noto Color Emoji"), "{message}");
+        assert!(message.contains("SHA-256"), "{message}");
+        assert_eq!(
+            std::fs::read_dir(cache_dir.path())
+                .expect("read the cache dir")
+                .count(),
+            0,
+            "a refused download leaves nothing in the cache"
+        );
+    }
+
     /// A font declared by a name the registry does not know is reported
     /// exactly as the build reports it — fetching cannot fix it.
     #[test]
@@ -2538,6 +2720,7 @@ mod tests {
                 name: "No Such Family".to_string(),
                 source: FontSource::BuiltIn,
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             must_not_download,
@@ -2570,6 +2753,7 @@ mod tests {
                     relative_path: PathBuf::from("assets/fonts/Roboto-Variable.ttf"),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
             cache_dir.path(),
             must_not_download,
@@ -2589,9 +2773,13 @@ mod tests {
     fn test_font_registry_has_entries() {
         let registry = FontRegistry::builtin().expect("registry parses");
         assert!(!registry.fonts.is_empty());
-        assert!(registry.url("Inter").is_some());
-        assert!(registry.url("Roboto").is_some());
-        assert!(registry.url("Noto Sans CJK SC").is_some());
+        assert!(registry.origin("Inter").is_some());
+        assert!(registry.origin("Roboto").is_some());
+        assert!(registry.origin("Noto Sans CJK SC").is_some());
+        assert!(registry.origin("Noto Color Emoji").is_some());
+        // Every entry pins the digest of what its URL serves.
+        assert!(registry.fonts.iter().all(|font| font.sha256.len() == 64
+            && font.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())));
         // Icon pack fonts should NOT be in the built-in registry
         assert!(
             !registry
@@ -2612,11 +2800,11 @@ mod tests {
     #[test]
     fn font_registry_offers_a_math_face() {
         let registry = FontRegistry::builtin().expect("registry parses");
-        let url = registry
-            .url("STIX Two Math")
+        let origin = registry
+            .origin("STIX Two Math")
             .expect("registry must offer an OpenType MATH font");
         assert!(
-            is_zip_url(url),
+            is_zip_url(origin.url),
             "the math font must resolve through the archive path so the single \
              matching face is extracted rather than the whole distribution"
         );
@@ -2727,6 +2915,7 @@ mod tests {
                     relative_path: PathBuf::from("assets/fonts/Roboto-Variable.ttf"),
                 },
                 crate_name: "some-theme".to_string(),
+                platforms: None,
             }],
         ))
         .expect_err("a missing crate-local font must be an error");
@@ -2850,10 +3039,11 @@ mod tests {
 ///
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn scan_required_permissions(
+    host: &crate::toolchain::Host,
     build_manifest: &Path,
     features: &[String],
 ) -> eyre::Result<Vec<RequiredPermission>> {
-    let metadata = crate_metadata(build_manifest, features)
+    let metadata = crate_metadata(host, build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -3071,8 +3261,12 @@ mod permission_audit_tests {
             "[dependencies]\ntheme = { path = \"../theme\" }\n",
         );
 
-        let required = smol::block_on(scan_required_permissions(&launcher_manifest, &[]))
-            .expect("scan the launcher's graph");
+        let required = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &launcher_manifest,
+            &[],
+        ))
+        .expect("scan the launcher's graph");
         assert!(
             required
                 .iter()
@@ -3082,8 +3276,12 @@ mod permission_audit_tests {
             "the launcher graph must report the permission `theme` declares"
         );
 
-        let app = smol::block_on(scan_required_permissions(&app_manifest, &[]))
-            .expect("scan the app's graph");
+        let app = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &app_manifest,
+            &[],
+        ))
+        .expect("scan the app's graph");
         assert!(
             app.is_empty(),
             "the app graph does not carry `theme` and must stay silent"
@@ -3109,6 +3307,7 @@ mod permission_audit_tests {
 
         let enabled_features = vec![String::from("map")];
         let enabled = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
             &launcher_manifest,
             &enabled_features,
         ))
@@ -3121,8 +3320,12 @@ mod permission_audit_tests {
             "the selected launcher feature must include its gated requirement"
         );
 
-        let disabled = smol::block_on(scan_required_permissions(&launcher_manifest, &[]))
-            .expect("scan without the launcher's optional feature");
+        let disabled = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &launcher_manifest,
+            &[],
+        ))
+        .expect("scan without the launcher's optional feature");
         assert!(
             disabled.is_empty(),
             "the disabled launcher feature must not include the gated requirement"
@@ -3134,30 +3337,60 @@ mod permission_audit_tests {
     /// absent from the app's.
     #[test]
     fn a_feature_enabled_in_the_built_crates_graph_is_seen() {
-        let project = tempdir().expect("temp project");
+        let directory = tempdir().expect("temp project");
         write_crate(
-            &project.path().join("theme"),
+            &directory.path().join("theme"),
             "theme",
             "[features]\nextra = []\n",
         );
-        let app_manifest = write_crate(&project.path().join("app"), "app", "");
+        let app_manifest = write_crate(&directory.path().join("app"), "app", "");
         let launcher_manifest = write_crate(
-            &project.path().join("hydrolysis"),
+            &directory.path().join("hydrolysis"),
             "app-hydrolysis-launcher",
             "[dependencies]\ntheme = { path = \"../theme\", features = [\"extra\"] }\n",
         );
 
+        // `package_feature_enabled` resolves through the project's
+        // per-triple cache, so the fixture needs a project of its own.
+        std::fs::write(
+            directory.path().join("Water.toml"),
+            "[package]\nname = \"fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
+        )
+        .expect("Water.toml");
+        std::fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("Cargo.toml");
+        std::fs::create_dir_all(directory.path().join("src")).expect("src dir");
+        std::fs::write(directory.path().join("src/lib.rs"), "").expect("src lib");
+        let project = smol::block_on(crate::project::Project::open(
+            &crate::toolchain::testing::real_toolchain_host(directory.path()),
+            directory.path(),
+            crate::project::ManagedBackends::NONE,
+        ))
+        .expect("fixture project opens");
+        let target = crate::platform::TargetPlatform::MacOS.triple();
+
         assert!(
             smol::block_on(package_feature_enabled(
+                &project,
                 &launcher_manifest,
                 "theme",
-                "extra"
+                "extra",
+                &target,
             ))
             .expect("scan the launcher graph")
         );
         assert!(
-            !smol::block_on(package_feature_enabled(&app_manifest, "theme", "extra"))
-                .expect("scan the app's graph")
+            !smol::block_on(package_feature_enabled(
+                &project,
+                &app_manifest,
+                "theme",
+                "extra",
+                &target,
+            ))
+            .expect("scan the app's graph")
         );
     }
 
@@ -3297,8 +3530,12 @@ mod permission_audit_tests {
         );
 
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata)
         };
         let block = |declarations: AndroidDeclarations| {
@@ -3384,27 +3621,24 @@ mod permission_audit_tests {
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata)
         };
 
         let gated = collect(&gated).expect("collect the gated graph");
-        let gated_plugins = gated
-            .gradle_plugins
-            .render_settings_block()
-            .expect("render the gated plugin block");
-        assert!(!gated_plugins.contains("com.google.gms.google-services"));
+        assert_eq!(gated.gradle_plugins.iter().count(), 0);
         let enabled = collect(&enabled).expect("collect the enabled graph");
-        let enabled_plugins = enabled
+        let plugins: Vec<String> = enabled
             .gradle_plugins
-            .render_settings_block()
-            .expect("render the enabled plugin block");
-        assert!(
-            enabled_plugins.contains("com.google.gms.google-services"),
-            "{enabled_plugins}"
-        );
-        assert!(enabled_plugins.contains("4.4.2"), "{enabled_plugins}");
+            .iter()
+            .map(|(crate_name, id, version)| format!("{crate_name} {id} {version}"))
+            .collect();
+        assert_eq!(plugins, ["push com.google.gms.google-services 4.4.2"]);
 
         write_crate(
             &project.path().join("other"),
@@ -3426,6 +3660,20 @@ mod permission_audit_tests {
             .to_string();
         assert!(message.contains("`push`"), "{message}");
         assert!(message.contains("`other-push`"), "{message}");
+    }
+
+    /// The iOS development entitlements `declarations` merge into an empty
+    /// table.
+    fn signed_entitlements(declarations: &AppleDeclarations) -> plist::Dictionary {
+        let mut entitlements = plist::Dictionary::new();
+        declarations
+            .merge_into_entitlements(
+                &mut entitlements,
+                crate::platform::TargetPlatform::IOS,
+                SigningEnvironment::Development,
+            )
+            .expect("merge entitlements");
+        entitlements
     }
 
     /// Apple declarations are collected across the resolved graph: a
@@ -3457,25 +3705,14 @@ mod permission_audit_tests {
             "app-enabled",
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
+        let host = crate::toolchain::Host::current();
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(&host, manifest, &[]))
+                .expect("resolve the fixture graph");
             collect_apple_declarations(&metadata)
         };
-        let signed = |declarations: &AppleDeclarations| {
-            let mut entitlements = plist::Dictionary::new();
-            declarations
-                .merge_into_entitlements(
-                    &mut entitlements,
-                    crate::platform::TargetPlatform::IOS,
-                    SigningEnvironment::Development,
-                )
-                .expect("merge entitlements");
-            entitlements
-        };
-
         let gated = collect(&gated).expect("collect the gated graph");
-        assert!(signed(&gated).is_empty());
+        assert!(signed_entitlements(&gated).is_empty());
         let mut plist = plist::Dictionary::new();
         gated
             .merge_into_info_plist(&mut plist)
@@ -3483,7 +3720,7 @@ mod permission_audit_tests {
         assert!(plist.is_empty());
 
         let enabled = collect(&enabled).expect("collect the enabled graph");
-        let entitlements = signed(&enabled);
+        let entitlements = signed_entitlements(&enabled);
         assert_eq!(
             entitlements.get("aps-environment"),
             Some(&plist::Value::String("development".to_owned()))
@@ -3520,8 +3757,14 @@ mod permission_audit_tests {
             .to_string();
         assert!(message.contains("`push`"), "{message}");
         assert!(message.contains("`other-push`"), "{message}");
+    }
 
-        // A feature table naming a cargo feature the crate does not declare.
+    /// A `feature.<name>` metadata table naming a cargo feature the crate
+    /// does not declare is a typo the collection must surface, naming both
+    /// the crate and the feature.
+    #[test]
+    fn a_feature_table_for_an_undeclared_feature_fails_naming_both() {
+        let project = tempdir().expect("temp project");
         write_crate(
             &project.path().join("typo"),
             "typo",
@@ -3533,7 +3776,13 @@ mod permission_audit_tests {
             "app-mistyped",
             "[dependencies]\ntypo = { path = \"../typo\" }\n",
         );
-        let message = collect(&mistyped)
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &mistyped,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
+        let message = collect_apple_declarations(&metadata)
             .expect_err("a feature table the crate does not declare must fail")
             .to_string();
         assert!(message.contains("typo"), "{message}");
@@ -3567,8 +3816,12 @@ mod permission_audit_tests {
             "[dependencies]\npush = { path = \"../push\", features = [\"remote\"] }\n",
         );
         let collect = |manifest: &Path| {
-            let metadata =
-                smol::block_on(crate_metadata(manifest, &[])).expect("resolve the fixture graph");
+            let metadata = smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                manifest,
+                &[],
+            ))
+            .expect("resolve the fixture graph");
             collect_android_declarations(&metadata).expect("collect the graph")
         };
         let push = ["push".to_owned()];
@@ -3611,8 +3864,12 @@ mod permission_audit_tests {
             "app",
             "[dependencies]\ntypo = { path = \"../typo\" }\n",
         );
-        let metadata =
-            smol::block_on(crate_metadata(&app, &[])).expect("resolve the fixture graph");
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &app,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
         let message = collect_apple_declarations(&metadata)
             .expect_err("an unknown key must fail")
             .to_string();
@@ -3630,8 +3887,12 @@ mod permission_audit_tests {
             "typo",
             "[[package.metadata.waterui.android.providers]]\nname = \"a.B\"\n",
         );
-        let metadata =
-            smol::block_on(crate_metadata(&manifest, &[])).expect("resolve the fixture graph");
+        let metadata = smol::block_on(crate_metadata(
+            &crate::toolchain::Host::current(),
+            &manifest,
+            &[],
+        ))
+        .expect("resolve the fixture graph");
         let error = collect_android_declarations(&metadata).expect_err("unknown key must fail");
         assert!(error.to_string().contains("providers"), "{error}");
     }
@@ -3672,6 +3933,7 @@ mod permission_audit_tests {
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
             },
             &module_dir,
+            AndroidDependencyScope::Implementation,
         ))
         .expect("stage classpath");
 
@@ -3694,10 +3956,10 @@ mod permission_audit_tests {
         );
     }
 
-    /// Classpath dependencies are available to the generated Android app
-    /// module through `implementation`.
+    /// The embedded AAR module exports its classpath dependencies as `api`
+    /// so consumers resolve them through the published POM.
     #[test]
-    fn android_classpath_stages_maven_dependencies_as_implementation() {
+    fn embedded_scope_stages_maven_dependencies_as_api() {
         let root = tempdir().expect("temp root");
         let module_dir = module_dir_with_deps_block(root.path());
 
@@ -3707,13 +3969,14 @@ mod permission_audit_tests {
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
             },
             &module_dir,
+            AndroidDependencyScope::Api,
         ))
         .expect("stage classpath");
 
         let build =
             std::fs::read_to_string(module_dir.join("build.gradle.kts")).expect("build script");
         assert!(
-            build.contains("implementation(\"androidx.health.connect:connect-client:1.1.0\")"),
+            build.contains("api(\"androidx.health.connect:connect-client:1.1.0\")"),
             "{build}"
         );
     }
@@ -3736,11 +3999,13 @@ mod permission_audit_tests {
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
             },
             &module_dir,
+            AndroidDependencyScope::Implementation,
         ))
         .expect("stage classpath");
         smol::block_on(stage_classpath_files(
             &AndroidClasspath::default(),
             &module_dir,
+            AndroidDependencyScope::Implementation,
         ))
         .expect("restage empty");
 
@@ -3774,6 +4039,7 @@ mod permission_audit_tests {
                 maven: BTreeSet::new(),
             },
             &module_dir,
+            AndroidDependencyScope::Implementation,
         ))
         .expect_err("a package-less Kotlin source must fail the stage");
         assert!(error.to_string().contains("package"), "{error}");
@@ -3795,6 +4061,7 @@ mod permission_audit_tests {
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
             },
             &module_dir,
+            AndroidDependencyScope::Implementation,
         ))
         .expect_err("a build script without the managed block must fail");
         assert!(error.to_string().contains("managed"), "{error}");
@@ -3819,6 +4086,7 @@ mod permission_audit_tests {
                 maven: BTreeSet::new(),
             },
             &module_dir,
+            AndroidDependencyScope::Implementation,
         ))
         .expect_err("duplicated keep markers must fail");
         assert!(error.to_string().contains("more than one"), "{error}");
@@ -3834,6 +4102,7 @@ mod permission_audit_tests {
                 maven: BTreeSet::new(),
             },
             &module_dir,
+            AndroidDependencyScope::Implementation,
         ))
         .expect_err("a begin marker without its end must fail");
         assert!(error.to_string().contains("malformed"), "{error}");

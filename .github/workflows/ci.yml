@@ -34,9 +34,13 @@ on:
     # edited covers retargeting the pull request between dev and main.
     types: [opened, reopened, synchronize, edited]
 
+# A pull request cancels its superseded run. A `main` push queues instead:
+# its lint job is the cache writer for that ref, and a writer cancelled
+# mid-sweep or mid-save leaves no archive for the runs after it (#2338).
+# The group still drops a queued run that a newer push supersedes.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -71,7 +75,10 @@ jobs:
   # Which checks this change can reach. `code` is any changed file that is
   # not prose or repository metadata, so a docs-only change runs the typo
   # check and nothing else; `deps` is what the audit, license and
-  # unused-dependency checks read. A workflow change runs the whole gate, because a
+  # unused-dependency checks read; `android` is the CLI's Android paths and
+  # the Hydrolysis Android host, the only changes that can break the
+  # create/build/package cycle the `android-package` job runs. A workflow
+  # change runs the whole gate, because a
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
@@ -93,6 +100,7 @@ jobs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -109,6 +117,16 @@ jobs:
               - "deny.toml"
             scripts:
               - ".github/scripts/**"
+              - "Cargo.toml"
+            android:
+              - "cli/src/android/**"
+              - "cli/src/hydrolysis/android.rs"
+              - "cli/src/templates/*android*/**"
+              - "cli/src/toolchain/**"
+              - "cli/src/toolchain_checks.rs"
+              - "cli/Cargo.toml"
+              - "backends/hydrolysis/android/**"
+              # `[package.metadata.waterui]`'s Android keys drive the scaffold.
               - "Cargo.toml"
             workflows:
               - ".github/workflows/**"
@@ -134,12 +152,20 @@ jobs:
   # move the toolchain floor — a `rust-version`, dependency-section or
   # Cargo.lock change — because a source edit cannot raise it and the
   # signal repeats in the nightly sweep instead.
+  #
+  # A pull request is measured against its base branch, not the event's
+  # `pull_request.base.sha`: the checkout is the test merge commit of the
+  # head into the base branch's current tip, while the event's base sha can
+  # sit commits behind it, and the diff from there pulled every
+  # intervening merge — other pull requests' lockfile changes included —
+  # into this pull request's scope (#2338). The merge-base of the base
+  # branch and the merge commit is the tip the head was merged into.
   scope:
     name: Affected scope
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/affected.yml
     with:
-      base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
 
   typos:
     name: Typos
@@ -282,6 +308,70 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/msrv
 
+  # Packaging is the only signal that drives the CLI's Android path end to
+  # end on a clean machine (#2290): `water create` scaffolds against this
+  # checkout, `water build` compiles the workspace for
+  # `aarch64-linux-android`, and `water package` builds the Hydrolysis
+  # Gradle host into an APK — a defect in that path passes every other leg
+  # and only surfaces on a device. The gate pays for it only when the CLI's
+  # Android paths or the Hydrolysis Android host change; the nightly
+  # `cli-e2e` legs run the same cycle unconditionally.
+  android-package:
+    name: Android package
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      # Its own cache story: the job builds the workspace for
+      # `aarch64-linux-android` and compiles the CLI for the host, so
+      # sharing the lint jobs' keys would only evict their tarballs.
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-linux-android
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The scaffold declares its JDK toolchain in
+      # `[package.metadata.waterui-scaffold] android-jdk-version`; Gradle
+      # picks it up through JAVA_HOME.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: ./.github/actions/setup-android-ndk
+      # `sdkmanager` is the tool doctor's own remedy text names.
+      - uses: ./.github/actions/install-android-platform
+      # The CLI links libudev (serialport) on the host.
+      - uses: ./.github/actions/setup-linux-deps
+      # The binary under test needs no release optimisation: the ci-check
+      # profile skips the release profile's fat LTO and single codegen unit.
+      - name: Install the CLI under test
+        run: cargo install --locked --profile ci-check --path cli --root /tmp/water-cli
+      - name: Create, build and package a Hydrolysis Android app
+        run: |
+          set -euo pipefail
+          export PATH="/tmp/water-cli/bin:$PATH"
+          mkdir -p e2e-logs
+          water create e2eapp --waterui-path "$GITHUB_WORKSPACE" 2>&1 | tee e2e-logs/create.log
+          cd e2eapp
+          # Inside a project doctor scopes the Android group in, so `--fix`
+          # provisions what the toolchain check wants (the Android SDK and
+          # NDK, the Rust targets) exactly as on a developer machine.
+          water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix.log
+          if grep -q 'Failed to install' ../e2e-logs/doctor-fix.log; then
+            echo "::error::doctor --fix reported failed installs"
+            exit 1
+          fi
+          water build --platform android --yes 2>&1 | tee ../e2e-logs/build.log
+          water package --platform android --arch arm64 --debug --yes 2>&1 | tee ../e2e-logs/package-debug.log
+          water package --platform android --arch arm64 --release --unsigned --yes 2>&1 | tee ../e2e-logs/package-release.log
+          grep -q 'Packaged at' ../e2e-logs/package-debug.log
+          grep -q 'Packaged at' ../e2e-logs/package-release.log
+
   test:
     name: Test
     needs: [changes, scope]
@@ -297,8 +387,8 @@ jobs:
       affected: ${{ needs.scope.outputs.packages }}
       package-args: ${{ needs.scope.outputs.package-args }}
       comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
-      test-assets: ${{ needs.scope.outputs.test-assets == 'true' }}
       scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
+      apple-legs: ${{ needs.scope.outputs.apple-legs }}
 
   # The one required check for the Test workflow. A pull request that changes
   # no code skips the `test` call above, and a skipped reusable-workflow call

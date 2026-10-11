@@ -217,7 +217,10 @@ pub fn resolve_placement_monitor(
         .focused_window
         .and_then(NativeWindow::current_monitor)
         .and_then(|current| monitor_index(&specs, &current));
+    #[cfg(hydrolysis_desktop_queries)]
     let pointer = pointer_position(context, &specs);
+    #[cfg(not(hydrolysis_desktop_queries))]
+    let pointer = None;
     // The pointer answer's coordinate space differs per platform: macOS
     // `NSEvent.mouseLocation` is in Cocoa logical points, while X11
     // `QueryPointer` and Win32 `GetCursorPos` answer physical pixels.
@@ -266,6 +269,7 @@ const fn event_loop_is_wayland(_event_loop: &ActiveEventLoop) -> bool {
 /// Wayland has no global pointer query: the "pointer monitor" is the monitor
 /// of the runner's window that last had pointer focus — its frame centre is
 /// returned so containment lands on it.
+#[cfg(hydrolysis_desktop_queries)]
 fn pointer_position(context: &PlacementContext<'_>, specs: &[MonitorSpec]) -> Option<(f64, f64)> {
     #[cfg(target_os = "macos")]
     {
@@ -292,21 +296,19 @@ fn pointer_position(context: &PlacementContext<'_>, specs: &[MonitorSpec]) -> Op
                 })
         })
     }
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "windows",
-        hydrolysis_wayland_platform
-    )))]
-    {
-        let _ = (context, specs);
-        None
-    }
 }
 
 /// Assembles the public [`Monitor`] for a resolved spec: the logical frame,
 /// the platform's work area as `visible_frame`, the scale factor, and the
 /// platform's display name.
 fn assemble_monitor(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Monitor {
+    #[cfg(hydrolysis_desktop_queries)]
+    let visible_frame = platform_visible_frame(event_loop, spec);
+    #[cfg(not(hydrolysis_desktop_queries))]
+    let visible_frame: Option<FrameSpec> = {
+        let _ = event_loop;
+        None
+    };
     let (x, y, width, height) = spec.logical_frame();
     let frame = Rect::new(
         Point::new(
@@ -320,21 +322,18 @@ fn assemble_monitor(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Monitor
     );
     Monitor {
         frame,
-        visible_frame: platform_visible_frame(event_loop, spec).map_or(
-            frame,
-            |(vx, vy, vw, vh)| {
-                Rect::new(
-                    Point::new(
-                        crate::num_cast::f64_as_f32(vx),
-                        crate::num_cast::f64_as_f32(vy),
-                    ),
-                    Size::new(
-                        crate::num_cast::f64_as_f32(vw),
-                        crate::num_cast::f64_as_f32(vh),
-                    ),
-                )
-            },
-        ),
+        visible_frame: visible_frame.map_or(frame, |(vx, vy, vw, vh)| {
+            Rect::new(
+                Point::new(
+                    crate::num_cast::f64_as_f32(vx),
+                    crate::num_cast::f64_as_f32(vy),
+                ),
+                Size::new(
+                    crate::num_cast::f64_as_f32(vw),
+                    crate::num_cast::f64_as_f32(vh),
+                ),
+            )
+        }),
         scale_factor: spec.handle.scale_factor(),
         name: spec.handle.name().map(Str::from),
     }
@@ -342,6 +341,7 @@ fn assemble_monitor(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Monitor
 
 /// The monitor's work area in logical points, or `None` where the platform
 /// reports none (then `visible_frame` equals `frame`).
+#[cfg(hydrolysis_desktop_queries)]
 fn platform_visible_frame(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Option<FrameSpec> {
     #[cfg(target_os = "macos")]
     {
@@ -357,15 +357,6 @@ fn platform_visible_frame(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> O
     {
         // `_NET_WORKAREA` is X11-only; Wayland has no work-area protocol.
         x11_visible_frame(event_loop, spec)
-    }
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "windows",
-        hydrolysis_wayland_platform
-    )))]
-    {
-        let _ = (event_loop, spec);
-        None
     }
 }
 
@@ -783,6 +774,7 @@ fn macos_order_front(native_window: &NativeWindow) {
 ///   plain `NSWindow` is noted in the delivery.
 /// * Windows `Never`: `WS_EX_NOACTIVATE` on the HWND, so clicks do not
 ///   activate the window.
+#[cfg(hydrolysis_desktop_queries)]
 pub fn apply_activation(
     event_loop: &ActiveEventLoop,
     native_window: &NativeWindow,
@@ -801,12 +793,6 @@ pub fn apply_activation(
             if activation == Activation::Never {
                 apply_x11_input_hint(event_loop, native_window);
             }
-            #[cfg(not(any(
-                target_os = "macos",
-                target_os = "windows",
-                hydrolysis_wayland_platform
-            )))]
-            let _ = (event_loop, native_window, activation);
         }
     }
 }

@@ -163,6 +163,12 @@ impl RenderNode {
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on); the cloneable config drives the control + accessibility, and its
     /// `toggle` binding is read through `resolve_toggle_progress` which watches it.
+    ///
+    /// The node's stretch is the resolved payload's own axis: a switch with a
+    /// visible label claims the full row (`label … switch`), while a checkbox
+    /// or a hidden label is content-sized. A stretched hidden-label toggle
+    /// would report a frame the label's dead zone inflates past the control,
+    /// and taps inside it would hit nothing (water-rs/waterui#2241).
     pub(super) fn build_toggle(
         config: ToggleConfig,
         env: &Environment,
@@ -209,6 +215,12 @@ impl RenderNode {
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on); the cloneable config drives the buttons + accessibility, and its
     /// value/step signals are read through `read_signal` so a change schedules a frame.
+    ///
+    /// The node's stretch is the resolved payload's own axis: a stepper with a
+    /// visible label claims the full row (`label … buttons`), while a hidden
+    /// label is content-sized — a stretched hidden-label stepper would report
+    /// a frame inflated past the buttons that accepts no input
+    /// (water-rs/waterui#2364).
     pub(super) fn build_stepper(
         config: StepperConfig,
         env: &Environment,

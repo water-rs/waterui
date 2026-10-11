@@ -303,6 +303,19 @@ impl Registry {
         ))
     }
 
+    /// The layer ids that backdrop groups registered on `surface` anchor
+    /// at — the layers a group's capture is taken beneath.
+    pub(super) fn backdrop_anchors(
+        &self,
+        surface: SurfaceId,
+    ) -> impl Iterator<Item = cherenkov::LayerId> + '_ {
+        self.backdrops.iter().filter_map(move |(&(s, _), group)| {
+            (s == surface.raw())
+                .then(|| group.spec.anchor_layer())
+                .flatten()
+        })
+    }
+
     /// The frame's chain state for backdrop group `id` on `surface`, plus
     /// its unresolved [`Footprint`] bound over the frame's animation
     /// magnitudes.

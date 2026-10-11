@@ -73,7 +73,12 @@ async fn stage_apple_preview_resources(project: &Project, symbols: &ArtifactSymb
 
     let mut resolved_fonts = {
         let font_manifest = project.apple_crate_path().join("Cargo.toml");
-        let font_declarations = assets::scan_fonts(project, &font_manifest).await?;
+        let font_declarations = assets::scan_fonts(
+            project,
+            &font_manifest,
+            &[waterui_assets_planner::FontPlatform::Macos],
+        )
+        .await?;
         assets::resolve_fonts(project.host(), font_declarations).await?
     };
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
@@ -134,12 +139,17 @@ pub async fn render_preview_with_apple(
     project.scaffold_apple_preview_companion().await?;
     write_apple_preview_target(&project, &request.source).await?;
 
-    let browser_runtime = project
-        .browser_runtime_plan(TargetPlatform::MacOS, TargetBackend::Apple)
-        .await?;
-    let features =
-        apple_build_features(&project, browser_runtime, RustLinkage::SharedRuntime).await?;
     let triple = TargetPlatform::MacOS.triple();
+    let browser_runtime = project
+        .browser_runtime_plan(TargetPlatform::MacOS, TargetBackend::Apple, &triple)
+        .await?;
+    let features = apple_build_features(
+        &project,
+        browser_runtime,
+        RustLinkage::SharedRuntime,
+        &triple,
+    )
+    .await?;
     let target_dir = project.water_target_dir(RustLinkage::SharedRuntime).await?;
     let mut rust_build =
         RustBuild::for_project(&project, project.apple_preview_crate_path(), triple.clone())
@@ -170,7 +180,7 @@ pub async fn render_preview_with_apple(
     dynamic_runtime::retarget_module(request.host, executable, &staged_runtime).await?;
     dynamic_runtime::prepare_host_runtime(request.host, &staged_runtime).await?;
 
-    let symbols = built.app_symbols()?;
+    let symbols = built.app_symbols().await?;
     stage_apple_preview_resources(&project, &symbols).await?;
     run_preview_binary(
         &project,

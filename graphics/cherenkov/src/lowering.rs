@@ -9,6 +9,7 @@ use kurbo::Affine;
 use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, ShapeData};
 
 pub mod projective;
+pub mod rounded_box;
 pub mod shadow;
 
 /// `shape`'s outline flattened to `tolerance` where it is curved, with its
@@ -21,7 +22,11 @@ pub fn shape_outline(shape: &ShapeData, tolerance: f64) -> Option<(kurbo::BezPat
         ShapeData::RoundedRect(r) => Some((r.to_path(tolerance), FillRule::NonZero)),
         ShapeData::Continuous(c) => Some((c.to_path(tolerance), FillRule::NonZero)),
         ShapeData::Circle(c) => Some((c.to_path(tolerance), FillRule::NonZero)),
-        ShapeData::Ellipse(e) => Some((e.to_path(tolerance), FillRule::NonZero)),
+        ShapeData::Ellipse(e) => {
+            let mut path = e.to_path(tolerance);
+            path.close_path();
+            Some((path, FillRule::NonZero))
+        }
         ShapeData::Line(_) => None,
         ShapeData::Path { elements, rule } => {
             Some((kurbo::BezPath::from_vec(elements.to_vec()), *rule))

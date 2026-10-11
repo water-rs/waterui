@@ -132,7 +132,7 @@ pub async fn package_gtk4(
     copy_assets_and_fonts(
         project,
         &backend_path,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;
@@ -147,7 +147,11 @@ pub async fn package_gtk4(
     // The binary name is the GTK4 crate name (project-gtk4)
     let final_binary_path = &built.artifact;
     let runtime_plan = project
-        .browser_runtime_plan(TargetPlatform::Linux, crate::platform::TargetBackend::Gtk4)
+        .browser_runtime_plan(
+            TargetPlatform::Linux,
+            crate::platform::TargetBackend::Gtk4,
+            &TargetPlatform::Linux.triple(),
+        )
         .await?;
 
     // The shipped binary and everything `$ORIGIN` resolves beside it stage
@@ -231,7 +235,12 @@ async fn copy_assets_and_fonts(
     assets::stage_hicolor_icons(project, &resources_dir.join("icons")).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations = assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[waterui_assets_planner::FontPlatform::Linux],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

@@ -104,12 +104,12 @@ alignment of trailing comments, re-wraps long argument lists, expands one-line s
 bodies, and inlines short `let _ = { … };` wrappers. **That normalization is a sanctioned
 deviation** — it changes layout, never tokens.
 
-The accounting for the current skill text, over 878 snippet lines in 136 blocks:
+The accounting for the current skill text, over 885 snippet lines in 137 blocks:
 
 | Class | Lines |
 |---|---|
-| byte-identical to the skill | 511 |
-| identical after whitespace normalization (rustfmt) | 251 |
+| byte-identical to the skill | 513 |
+| identical after whitespace normalization (rustfmt) | 256 |
 | restructured: listing splits, ellipsis fills, rustfmt re-wraps | 116 |
 
 When reviewing a change here, compare *tokens*, not columns.
@@ -123,6 +123,7 @@ Some snippets resolve real paths, so the crate carries the files they name:
   parses these at compile time, so a malformed table is a build failure.
 - `src/guide.md` — for `include_markdown!("guide.md")`.
 - `src/starfield.wgsl` — copied from `examples/starfield`, for `shader!("starfield.wgsl")`.
+- `src/crt.wgsl` — a real shader effect, for `ShaderEffect::new(include_str!("crt.wgsl"))`.
 
 ## Dependencies
 

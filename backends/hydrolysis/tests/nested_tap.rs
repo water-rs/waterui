@@ -7,20 +7,25 @@
 //! slot inside a message row did nothing while the semantic runtime dispatched
 //! the same tap correctly.
 //!
-//! Exercises both runtimes — the headless semantic walk (`mount`) and the
-//! rendered flush (`mount_offscreen`) with real pointer input.
+//! Both dispatch paths are the backend's machinery — the semantic walk's
+//! retained action and the rendered runtime's hit test — so the tests stay
+//! here under water-rs/waterui#1673, mounted through `SemanticRuntime` and
+//! `HeadlessRuntime` under `TestStyle`.
+
+mod support;
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use hydrolysis_m3::Material3;
+use accesskit::Role;
+use support::{mount_rendered, mount_semantic, node_id_with_role, nodes};
 use waterui::accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui::component::list::{List, ListItem};
 use waterui::component::{hstack, spacer, text};
 use waterui::id::SelfId;
 use waterui::reactive::collection::List as ReactiveList;
 use waterui::{Binding, Signal as _, ViewExt};
-use waterui_testing::{Role, ui};
+use waterui_core::Environment;
 
 const ROW_COUNT: i32 = 3;
 
@@ -62,18 +67,22 @@ fn nested_tap_fires_on_semantic_mount_without_selecting() {
     let binding = selection.clone();
     let reactions = Rc::new(Cell::new(0));
     let reactions_for_view = Rc::clone(&reactions);
-    let mut app = ui().mount(move || {
-        let reactions = Rc::clone(&reactions_for_view);
-        List::for_each(row_items(), move |item| {
-            message_row(item.into_inner(), Rc::clone(&reactions))
-        })
-        .selection(&binding)
-    });
+    let mut app = mount_semantic(
+        Environment::new(),
+        move || {
+            let reactions = Rc::clone(&reactions_for_view);
+            List::for_each(row_items(), move |item| {
+                message_row(item.into_inner(), Rc::clone(&reactions))
+            })
+            .selection(&binding)
+        },
+        360,
+        240,
+    );
+    app.settle();
 
-    app.query()
-        .role(Role::BUTTON)
-        .label(reaction_label(2))
-        .tap();
+    let pill = node_id_with_role(app.tree(), Role::Button, &reaction_label(2));
+    app.click(pill);
     assert_eq!(reactions.get(), 2, "the nested on_tap must fire");
     assert_eq!(
         selection.snapshot(),
@@ -81,10 +90,16 @@ fn nested_tap_fires_on_semantic_mount_without_selecting() {
         "a tap on the nested target must not select the row"
     );
 
-    app.query()
-        .role(Role::LIST_ITEM)
-        .label_contains(row_label(2))
-        .tap();
+    let row = nodes(app.tree())
+        .find(|(_, node)| {
+            node.role() == Role::ListItem
+                && node
+                    .label()
+                    .is_some_and(|label| label.contains(&row_label(2)))
+        })
+        .map(|(id, _)| id)
+        .expect("row 2 emits a list-item node");
+    app.click(row);
     assert_eq!(
         selection.snapshot(),
         Some(2),
@@ -101,21 +116,22 @@ fn nested_tap_fires_on_offscreen_mount_without_selecting() {
     let binding = selection.clone();
     let reactions = Rc::new(Cell::new(0));
     let reactions_for_view = Rc::clone(&reactions);
-    let mut app = ui()
-        .theme(Material3::defaults())
-        .viewport(360, 240)
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || {
             let reactions = Rc::clone(&reactions_for_view);
             List::for_each(row_items(), move |item| {
                 message_row(item.into_inner(), Rc::clone(&reactions))
             })
             .selection(&binding)
-        });
+        },
+        360,
+        240,
+    );
+    app.settle();
 
-    app.query()
-        .role(Role::BUTTON)
-        .label(reaction_label(2))
-        .tap_at(0.5, 0.5);
+    let pill = node_id_with_role(app.tree(), Role::Button, &reaction_label(2));
+    app.tap_node(pill, 0.5, 0.5);
     assert_eq!(reactions.get(), 2, "the nested on_tap must fire");
     assert_eq!(
         selection.snapshot(),
@@ -123,10 +139,8 @@ fn nested_tap_fires_on_offscreen_mount_without_selecting() {
         "a tap on the nested target must not select the row"
     );
 
-    app.query()
-        .role(Role::LABEL)
-        .label(row_label(2))
-        .tap_at(0.5, 0.5);
+    let label = node_id_with_role(app.tree(), Role::Label, &row_label(2));
+    app.tap_node(label, 0.5, 0.5);
     assert_eq!(
         selection.snapshot(),
         Some(2),
@@ -157,15 +171,22 @@ fn centered_nested_tap_claims_press_on_semantic_mount() {
     let binding = selection.clone();
     let reactions = Rc::new(Cell::new(0));
     let reactions_for_view = Rc::clone(&reactions);
-    let mut app = ui().mount(move || {
-        let reactions = Rc::clone(&reactions_for_view);
-        List::for_each(row_items(), move |item| {
-            centered_thumb_row(item.into_inner(), Rc::clone(&reactions))
-        })
-        .selection(&binding)
-    });
+    let mut app = mount_semantic(
+        Environment::new(),
+        move || {
+            let reactions = Rc::clone(&reactions_for_view);
+            List::for_each(row_items(), move |item| {
+                centered_thumb_row(item.into_inner(), Rc::clone(&reactions))
+            })
+            .selection(&binding)
+        },
+        360,
+        240,
+    );
+    app.settle();
 
-    app.query().role(Role::BUTTON).label(thumb_label(2)).tap();
+    let thumb = node_id_with_role(app.tree(), Role::Button, &thumb_label(2));
+    app.click(thumb);
     assert_eq!(reactions.get(), 2, "the nested on_tap must fire");
     assert_eq!(
         selection.snapshot(),
@@ -183,21 +204,22 @@ fn centered_nested_tap_claims_press_on_offscreen_mount() {
     let binding = selection.clone();
     let reactions = Rc::new(Cell::new(0));
     let reactions_for_view = Rc::clone(&reactions);
-    let mut app = ui()
-        .theme(Material3::defaults())
-        .viewport(360, 240)
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || {
             let reactions = Rc::clone(&reactions_for_view);
             List::for_each(row_items(), move |item| {
                 centered_thumb_row(item.into_inner(), Rc::clone(&reactions))
             })
             .selection(&binding)
-        });
+        },
+        360,
+        240,
+    );
+    app.settle();
 
-    app.query()
-        .role(Role::BUTTON)
-        .label(thumb_label(2))
-        .tap_at(0.5, 0.5);
+    let thumb = node_id_with_role(app.tree(), Role::Button, &thumb_label(2));
+    app.tap_node(thumb, 0.5, 0.5);
     assert_eq!(reactions.get(), 2, "the nested on_tap must fire");
     assert_eq!(
         selection.snapshot(),
@@ -205,8 +227,12 @@ fn centered_nested_tap_claims_press_on_offscreen_mount() {
         "a tap on the nested target must not select the row"
     );
 
-    let rows = app.query().role(Role::LIST_ITEM).all();
-    rows[1].tap_at(&mut app, 0.03, 0.5);
+    let row = nodes(app.tree())
+        .filter(|(_, node)| node.role() == Role::ListItem)
+        .map(|(id, _)| id)
+        .nth(1)
+        .expect("row 2 emits a list-item node");
+    app.tap_node(row, 0.03, 0.5);
     assert_eq!(
         selection.snapshot(),
         Some(2),
@@ -232,15 +258,27 @@ fn row_level_on_tap_coexists_with_press_on_semantic_mount() {
     let binding = selection.clone();
     let taps = Rc::new(Cell::new(0));
     let taps_for_view = Rc::clone(&taps);
-    let mut app = ui().mount(move || {
-        let taps = Rc::clone(&taps_for_view);
-        List::for_each(row_items(), move |item| {
-            tapped_row(item.into_inner(), Rc::clone(&taps))
-        })
-        .selection(&binding)
-    });
+    let mut app = mount_semantic(
+        Environment::new(),
+        move || {
+            let taps = Rc::clone(&taps_for_view);
+            List::for_each(row_items(), move |item| {
+                tapped_row(item.into_inner(), Rc::clone(&taps))
+            })
+            .selection(&binding)
+        },
+        360,
+        240,
+    );
+    app.settle();
 
-    app.query().role(Role::LIST_ITEM).label(row_label(2)).tap();
+    let row = nodes(app.tree())
+        .find(|(_, node)| {
+            node.role() == Role::ListItem && node.label() == Some(row_label(2).as_str())
+        })
+        .map(|(id, _)| id)
+        .expect("row 2 emits a list-item node");
+    app.click(row);
     assert_eq!(
         selection.snapshot(),
         Some(2),
@@ -254,21 +292,27 @@ fn row_level_on_tap_coexists_with_press_on_offscreen_mount() {
     let binding = selection.clone();
     let taps = Rc::new(Cell::new(0));
     let taps_for_view = Rc::clone(&taps);
-    let mut app = ui()
-        .theme(Material3::defaults())
-        .viewport(360, 240)
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        Environment::new(),
+        move || {
             let taps = Rc::clone(&taps_for_view);
             List::for_each(row_items(), move |item| {
                 tapped_row(item.into_inner(), Rc::clone(&taps))
             })
             .selection(&binding)
-        });
+        },
+        360,
+        240,
+    );
+    app.settle();
 
-    app.query()
-        .role(Role::LIST_ITEM)
-        .label(row_label(2))
-        .tap_at(0.5, 0.5);
+    let row = nodes(app.tree())
+        .find(|(_, node)| {
+            node.role() == Role::ListItem && node.label() == Some(row_label(2).as_str())
+        })
+        .map(|(id, _)| id)
+        .expect("row 2 emits a list-item node");
+    app.tap_node(row, 0.5, 0.5);
     assert_eq!(
         selection.snapshot(),
         Some(2),

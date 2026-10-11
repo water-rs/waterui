@@ -252,7 +252,7 @@ impl RenderNode {
     /// Build a persistent morph-shape node: retain the resolved morph payload and
     /// re-fill its interpolated path every flush. The morph progress is resolved
     /// through the animation controller each frame — an explicit `progress` signal
-    /// is watched via `read_signal`/`resolve_animated_scalar_with_discriminator`, and
+    /// is watched via `read_signal`/`resolve_owned_scalar`, and
     /// a time-based animation drives continuous frames via `sample_morph_progress` —
     /// so the morph stays live. Stretches to fill the proposal (`StretchAxis::Both`).
     pub(super) fn build_morph_shape(
@@ -265,17 +265,60 @@ impl RenderNode {
         Self::build_widget(renderer, shape, stretch, env)
     }
 
-    /// A `WebView` reaching the backend without a `Hook<WebView>` engine has
-    /// nothing to draw it — a missing realization, not a drawable stand-in.
-    /// The macOS bridge is no different: `hydrolysis_macos_system_webview`'s
-    /// record has no native-view layer to present the `WKWebView` through,
-    /// so it panics at build like every other engine-less path.
+    /// Build the `WebView` leaf. Where a hosted system bridge exists it
+    /// mounts through the hosted-content leaf (`WKWebView` on macOS, an
+    /// `<iframe>` on the web); on Android the `HydrolysisWebView` wrapper the
+    /// controller opened mounts as a platform-view *instance* placement,
+    /// keyed by the id Kotlin registered it under — the page's handle rides
+    /// in the node as the instance owner so the native peer lives exactly as
+    /// long as the leaf that embeds it. Where no engine is bridged at all a
+    /// `WebView` that still reaches the backend has nothing to draw it — a
+    /// missing realization, not a drawable stand-in.
     pub(super) fn build_webview(
-        _webview: WebView,
-        _env: &Environment,
-        _renderer: &mut SemanticCore,
+        webview: &WebView,
+        env: &Environment,
+        renderer: &SemanticCore,
     ) -> Self {
-        unsupported_webview()
+        #[cfg(hydrolysis_system_webview)]
+        {
+            Self::build_hosted(
+                crate::widgets::platform::webview::hosted(webview),
+                env,
+                renderer,
+            )
+        }
+        #[cfg(hydrolysis_android_system_webview)]
+        {
+            use crate::widgets::platform::platform_view::PlatformViewRenderState;
+            use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
+
+            let handle = webview.handle();
+            let instance = handle
+                .downcast_ref::<AndroidSystemWebViewHandle>()
+                .map_or_else(
+                    || {
+                        panic!(
+                            "hydrolysis android: a WebView handle that is not \
+                             AndroidSystemWebViewHandle reached the backend; the \
+                             Android system bridge only draws views `WebView::open` \
+                             made through its controller — another engine must \
+                             install its `Hook<WebView>` realization"
+                        )
+                    },
+                    AndroidSystemWebViewHandle::instance,
+                );
+            let stretch = waterui_core::NativeView::stretch_axis(webview);
+            let owner: Rc<dyn core::any::Any> = Rc::new(handle.clone());
+            let state = Rc::new(RefCell::new(PlatformViewRenderState::from_instance(
+                instance, owner, env,
+            )));
+            Self::build_widget(renderer, state, stretch, env)
+        }
+        #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
+        {
+            let _ = (webview, env, renderer);
+            unsupported_webview()
+        }
     }
 
     /// Build a persistent spacer node: a no-op render with zero intrinsic; it

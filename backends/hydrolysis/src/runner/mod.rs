@@ -58,6 +58,11 @@ pub mod android_methods;
 /// Linux host for the fd tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, target_os = "linux")))]
 pub mod android_executor;
+/// The insets-region metrics the Android session's `set_metrics`
+/// change-detects on — compiled on Android for the session and on host
+/// for its tests; dead elsewhere.
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+pub mod android_metrics;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the
@@ -86,8 +91,10 @@ mod web_accessibility;
 mod web_runner;
 // Bare wasm compiles the module for its profile types (the semantic runtime
 // uses them everywhere) but has no window pump to call the rest.
+// `pub` within the private `runner` module: the platform surfaces name
+// `GpuSurfaceFrame` from outside `runner`.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-mod window;
+pub mod window;
 #[cfg(hydrolysis_winit)]
 mod winit_runner;
 #[cfg(hydrolysis_wayland_platform)]
@@ -152,7 +159,7 @@ use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::readback::readback_texture_rgba8;
+use crate::readback::readback_surface_texture_rgba8;
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
     SemanticCore,
@@ -163,8 +170,8 @@ use crate::time::Instant;
 
 /// Subscribes every reactive input of a window declaration once, for the
 /// window's whole lifetime: `title`, `frame`, `state`, `style`,
-/// `background`, `level`, `attention`, and `resize_increments`, `min_size`
-/// and `max_size` when present.
+/// `background`, `level`, `attention`, `icon`, and `resize_increments`,
+/// `min_size` and `max_size` when present.
 ///
 /// Each subscription requests a refresh through
 /// [`SemanticCore::refresh_watch`] — the same `FrameSignals::request_refresh`
@@ -192,6 +199,7 @@ fn subscribe_window_declaration_signals(window: &Window, core: &SemanticCore) ->
         core.refresh_watch(&window.background),
         core.refresh_watch(&window.level),
         core.refresh_watch(&window.attention),
+        core.refresh_watch(&window.icon),
     ];
     for signal in [
         &window.resize_increments,
@@ -257,14 +265,18 @@ fn offscreen_scale_factor() -> f64 {
 /// The self-drawn realizations of semantic components — the GPU video player,
 /// the vector map — are not among them: which realization draws a component is
 /// the application's choice, installed by `waterui::app::App` from the
-/// `video-gpu` / `map-gpu` features, so this renderer never names a component
-/// crate.
+/// `video-gpu` / `map-gpu` features. What this renderer installs are the
+/// platform's own primitives it bridges: the system web view on macOS and the
+/// `<video>` element on the web.
 fn install_native_component_hooks(env: &mut Environment) {
     crate::localization::install(env);
     // The only web engine this backend knows about is the platform's own: a
     // browser engine an application links installs its realization itself.
-    #[cfg(hydrolysis_macos_system_webview)]
+    #[cfg(hydrolysis_system_webview)]
     crate::widgets::platform::webview::install_controller(env);
+    // The page's own `<video>` element is the web's native player.
+    #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
+    crate::widgets::platform::video::install(env);
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
@@ -393,6 +405,9 @@ pub fn run(app: App, style: impl crate::Style) {
 /// # Panics
 /// Propagates panics from `web_runner::run`.
 pub fn run(app: App, style: impl crate::Style) {
+    // The page has no stderr, so the default hook's report goes nowhere;
+    // this one sends the message and location to `console.error`.
+    console_error_panic_hook::set_once();
     init_global_executor();
     web_runner::run(app, style);
 }

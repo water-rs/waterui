@@ -2,9 +2,9 @@
 
 pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
-    DestinationPrimaries, DisplayProbe, OutputAlpha, OutputColor, OutputRequest, OutputSelection,
-    Presenter, SelectionReason, TextureOutput, TransferEncoding, select_output,
-    surface_output_alpha,
+    ColorRange, ColorRangeInterval, ColorSpaceRequest, DestinationPrimaries, DisplayProbe,
+    OutputAlpha, OutputColor, OutputRequest, OutputSelection, Presenter, SelectionReason,
+    TextureOutput, TransferEncoding, select_output, surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;
@@ -456,7 +456,7 @@ impl FrameColor {
         reference_white: 203.0,
         hlg_peak: 0.0,
     };
-    /// BT.2020 full-range video with PQ transfer on BT.2020 primaries.
+    /// BT.2020 studio-range video with PQ transfer on BT.2020 primaries.
     pub const BT2020_PQ: Self = Self {
         matrix: YuvMatrix::Bt2020,
         range: YuvRange::Video,
@@ -1064,10 +1064,13 @@ pub mod android {
     }
 }
 
-/// Apple interop: system layers hosted on the engine's planes.
+/// Apple interop: system objects hosted on the engine's planes.
 #[cfg(target_vendor = "apple")]
 pub mod apple {
+    #[cfg(not(target_os = "macos"))]
     pub use crate::render::planes::apple::HostedLayer;
+    #[cfg(target_os = "macos")]
+    pub use crate::render::planes::apple::HostedView;
 }
 
 /// Apple interop: importing Metal resources onto the shared device.
@@ -1162,6 +1165,8 @@ pub mod metal {
 /// same thread, and nothing is boxed behind an unsafe `Send`.
 #[cfg(target_arch = "wasm32")]
 pub mod web {
+    pub use crate::render::planes::web::{DomTarget, HostedElement};
+
     use super::{InvalidFrame, wgpu};
     use wasm_bindgen::JsCast;
     use wgpu::webgpu;

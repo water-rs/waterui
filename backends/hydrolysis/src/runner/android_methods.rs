@@ -21,12 +21,13 @@ pub enum HostMethodId {
     EditingState,
     CursorAnchorInfo,
     BackAvailable,
+    PlatformViewFocus,
 }
 
 impl HostMethodId {
     /// Every id, in table order — the per-variant `dead_code` exemption for
     /// non-Android test builds and the test's order check both read it.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::RequestRedraw,
         Self::SoftInput,
         Self::AccessibilityTreeChanged,
@@ -36,6 +37,7 @@ impl HostMethodId {
         Self::EditingState,
         Self::CursorAnchorInfo,
         Self::BackAvailable,
+        Self::PlatformViewFocus,
     ];
 }
 
@@ -85,6 +87,10 @@ pub const HOST_METHODS: &[HostMethod] = &[
         name: "onNativeBackAvailable",
         signature: "(Z)V",
     },
+    HostMethod {
+        name: "onNativePlatformViewFocus",
+        signature: "()Z",
+    },
 ];
 
 const _: () = assert!(
@@ -122,8 +128,10 @@ mod tests {
         }
     }
 
-    /// Every `fun name(params)` directly preceded by `@CalledFromNative`,
-    /// as `name → (params)V`.
+    /// Every `fun name(params): Return?` directly preceded by
+    /// `@CalledFromNative`, as `name → (params)Return` — an undeclared
+    /// return is `Unit`, the `V` every `onNative*` callback already
+    /// spells.
     fn annotated_methods(source: &str) -> BTreeMap<String, String> {
         let mut methods = BTreeMap::new();
         let mut annotated = false;
@@ -141,11 +149,11 @@ mod tests {
                 continue;
             };
             let name = rest.split('(').next().unwrap().to_owned();
-            let (params, _) = rest
+            let (params, tail) = rest
                 .split_once('(')
                 .and_then(|(_, tail)| tail.split_once(')'))
                 .unwrap_or_else(|| panic!("unparseable @CalledFromNative method line: {rest}"));
-            let signature = params
+            let params_sig = params
                 .split(',')
                 .filter(|param| !param.trim().is_empty())
                 .map(|param| {
@@ -157,9 +165,14 @@ mod tests {
                 .fold("(".to_owned(), |mut acc, ty| {
                     acc.push_str(ty);
                     acc
-                })
-                + ")V";
-            methods.insert(name, signature);
+                });
+            let return_sig = tail.split_once(':').map_or("V", |(_, ty)| {
+                // The type ends where an expression body (`= ...`) or
+                // block (`{`) starts.
+                let ty = ty.split(['=', '{']).next().expect("a split's first piece");
+                kotlin_type_to_jni(ty.trim(), &name)
+            });
+            methods.insert(name, format!("{params_sig}){return_sig}"));
         }
         methods
     }

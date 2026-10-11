@@ -14,6 +14,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
+mod animation_slots;
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
@@ -51,6 +52,7 @@ mod list_table_scroll_frames;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
 mod material;
+mod material_chrome;
 mod material_group;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
@@ -126,7 +128,10 @@ use waterui_backend_core::widget::{
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
-use waterui_graphics::draw::{Draw, Paint, Recorder, Shadow, WorkingColor};
+use waterui_graphics::draw::{
+    BackdropShaderSource, CaptureClass, Draw, MaterialCapture, MaterialEffect, MaterialRegistry,
+    MaterialShader, Paint, Recorder, Shadow, SharedLive, WorkingColor,
+};
 
 fn test_renderer() -> HydrolysisRenderer {
     test_renderer_with_theme(MinimalTestTheme::default())
@@ -289,6 +294,66 @@ pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::Layer
     members.0
 }
 
+pub fn mounted_anchor_parent_children(
+    runtime: &crate::HeadlessRuntime,
+    scope: std::num::NonZeroU64,
+    canvas: Option<cherenkov::LayerId>,
+    child: cherenkov::LayerId,
+) -> Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)> {
+    struct Parent {
+        scope: std::num::NonZeroU64,
+        canvas: Option<cherenkov::LayerId>,
+        child: cherenkov::LayerId,
+        children: Option<(cherenkov::LayerId, Vec<cherenkov::LayerId>, bool)>,
+    }
+    impl mount::layers::LayerVisitor for Parent {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if self.children.is_none()
+                && let Some(children) =
+                    layers.committed_anchor_parent_children(self.scope, self.canvas, self.child)
+            {
+                self.children = Some(children);
+            }
+        }
+    }
+    let window = window_mount(runtime);
+    if window.window_children().contains(&child) {
+        return Some((window.window().id(), window.window_children(), true));
+    }
+    let mut visitor = Parent {
+        scope,
+        canvas,
+        child,
+        children: None,
+    };
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut visitor);
+    visitor.children
+}
+
+pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
+    struct Inner(Vec<cherenkov::LayerId>);
+    impl mount::layers::LayerVisitor for Inner {
+        fn node(
+            &mut self,
+            layers: &mount::layers::NodeLayers,
+            _world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if let Some(inner) = layers.inner_id() {
+                self.0.push(inner);
+            }
+        }
+    }
+    let mut visitor = Inner(Vec::new());
+    mount::layers::visit(&runtime.renderer().mount_roots(), &mut visitor);
+    visitor.0
+}
+
 /// The window's mount — the test renders one window.
 pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov_gpu::Gpu> {
     &runtime
@@ -302,7 +367,7 @@ pub fn window_mount(runtime: &crate::HeadlessRuntime) -> &mount::Mount<cherenkov
 /// The window's backdrop-group table — the test renders one window.
 pub fn mounts(
     runtime: &crate::HeadlessRuntime,
-) -> &mount::backdrop::BackdropGroups<cherenkov::BackdropGroup> {
+) -> &mount::backdrop::MaterialBackdropGroups<cherenkov::BackdropGroup> {
     window_mount(runtime).groups()
 }
 
@@ -410,8 +475,9 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
 fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
     let mut renderer = test_renderer();
+    let owner = Rc::new(());
 
-    let resolved = renderer.resolve_animated_scalar_with_discriminator(&signal, usize::MAX);
+    let resolved = renderer.resolve_owned_scalar(&signal, &owner, usize::MAX);
 
     assert_eq!(resolved, 0.25);
     assert!(signal.subscribed.get());
@@ -421,7 +487,7 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 fn toggle_progress_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(false, nami::watcher::Context::from(false));
     let mut renderer = test_renderer();
-    let owner = RetainedIdentity::for_rc(&Rc::new(()));
+    let owner = Rc::new(());
 
     let (progress, selected) =
         renderer.resolve_toggle_progress(&signal, &owner, Animation::linear(Duration::ZERO));
@@ -440,7 +506,7 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
 
     capture_root_window(
         &mut renderer,
-        toggle("Enable Feature", &enabled),
+        toggle("Enable Feature", &enabled).switch(),
         &env,
         bounds,
     );
@@ -579,7 +645,10 @@ fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
 
     capture_root_window(
         &mut renderer,
-        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
         &env,
         bounds,
     );
@@ -596,7 +665,10 @@ fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
     renderer.set_frame_instant(started + Duration::from_millis(50));
     capture_root_window(
         &mut renderer,
-        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
         &env,
         bounds,
     );
@@ -611,7 +683,10 @@ fn toggles_sharing_a_mapping_call_site_draw_their_own_thumb_progress() {
     renderer.set_frame_instant(started + Duration::from_millis(200));
     capture_root_window(
         &mut renderer,
-        vstack((toggle("A", &bit(&s, 1)), toggle("B", &bit(&s, 2)))),
+        vstack((
+            toggle("A", &bit(&s, 1)).switch(),
+            toggle("B", &bit(&s, 2)).switch(),
+        )),
         &env,
         bounds,
     );
@@ -1649,7 +1724,7 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
 /// controller permits it — but on a build bridging no engine there is nothing
 /// to draw it with, and the backend fails rather than occupying a layout slot
 /// with no page behind it.
-#[cfg(not(hydrolysis_macos_system_webview))]
+#[cfg(not(hydrolysis_system_webview))]
 #[test]
 #[should_panic(expected = "no web engine is bridged")]
 fn a_webview_with_no_engine_to_draw_it_panics() {
@@ -1707,8 +1782,10 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
         fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
             self.watchers.insert(f)
         }
-        fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> {
-            ready(Vec::new())
+        fn get_cookies(
+            &self,
+        ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> {
+            ready(Ok(Vec::new()))
         }
         #[expect(
             clippy::future_not_send,
@@ -2538,6 +2615,10 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 
 /// A recorded `draw_toggle_switch` call: `(bounds, progress, selected)`.
 type ToggleSwitchDraw = (Rect, f32, bool);
+/// A recorded `draw_progress_linear_track` call: `(bounds, active_end)`.
+type ProgressTrackDraw = (Rect, Option<f64>);
+/// A recorded `draw_radio_indicator` call: `(center, state)`.
+type RadioIndicatorDraw = (Point, RadioIndicatorState);
 
 #[derive(Default)]
 pub struct MinimalTestTheme {
@@ -2570,8 +2651,60 @@ pub struct MinimalTestTheme {
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every `draw_interaction_state_layer` call, as `(state, resolved radii)`.
     state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
+    /// The backdrop-material plan a chrome test installs
+    /// (water-rs/waterui#1788): the registry entries and the materials the
+    /// state-layer draw replays.
+    chrome: ChromePlan,
     /// Every `draw_toggle_switch` call.
     toggle_switch_draws: Rc<RefCell<Vec<ToggleSwitchDraw>>>,
+    /// Every `draw_progress_linear_track` call.
+    progress_linear_track_draws: Rc<RefCell<Vec<ProgressTrackDraw>>>,
+    /// Every `draw_radio_indicator` call.
+    radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
+    /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
+    /// defaults `input_field_metrics` carries below.
+    input_metrics: Option<InputFieldMetrics>,
+}
+
+impl MinimalTestTheme {
+    /// Reports `metrics` from `input_field_metrics` instead of the fixture
+    /// defaults.
+    #[must_use]
+    pub fn with_input_metrics(mut self, metrics: InputFieldMetrics) -> Self {
+        self.input_metrics = Some(metrics);
+        self
+    }
+}
+
+/// One `backdrop_material` a chrome test's theme replays per
+/// `draw_interaction_state_layer` call (water-rs/waterui#1788).
+#[derive(Clone)]
+pub struct ChromeDraw {
+    /// The member's live clip shape — a signal for the signal-rebind test.
+    pub shape: SharedLive<kurbo::RoundedRect>,
+    /// The shader key the material names.
+    pub shader: MaterialShader,
+    /// The capture class the material names.
+    pub capture: CaptureClass,
+    /// The member's live effect — its uniforms.
+    pub effect: SharedLive<MaterialEffect>,
+}
+
+/// The backdrop-material terms a chrome test's theme declares: the
+/// registry `register_backdrop_shaders` fills and the materials the
+/// state-layer draw replays per call.
+#[derive(Clone, Default)]
+pub struct ChromePlan {
+    /// `(key, source)` pairs the registry registers.
+    pub shaders: Vec<(MaterialShader, BackdropShaderSource)>,
+    /// `(key, capture)` pairs the registry registers.
+    pub captures: Vec<(CaptureClass, MaterialCapture)>,
+    /// The materials `draw_interaction_state_layer` records per call.
+    pub draws: Vec<ChromeDraw>,
+    /// When set, `draw_interaction_state_layer` records the materials
+    /// this resolves from the live `WidgetInteractionState` instead —
+    /// how a theme whose uniforms depend on the press is written.
+    pub stateful_draws: Option<Rc<dyn Fn(WidgetInteractionState) -> Vec<ChromeDraw>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2649,15 +2782,39 @@ impl WidgetTheme for MinimalTestTheme {
     ) {
     }
 
+    /// Fills `registry` with the test's shader sources and capture
+    /// classes — the renderer calls this once at `with_engine`.
+    fn register_backdrop_shaders(&self, registry: &mut MaterialRegistry) {
+        for (key, source) in &self.chrome.shaders {
+            registry.register_shader(*key, source.clone());
+        }
+        for (key, capture) in &self.chrome.captures {
+            registry.register_capture_class(*key, *capture);
+        }
+    }
+
     fn draw_interaction_state_layer(
         &self,
-        _draw: &mut Recorder,
+        draw: &mut Recorder,
         _bounds: Rect,
         radii: RoundedRectRadii,
         _color: WorkingColor,
         state: WidgetInteractionState,
     ) {
         self.state_layer_draws.borrow_mut().push((state, radii));
+        let draws = self
+            .chrome
+            .stateful_draws
+            .as_ref()
+            .map_or_else(|| self.chrome.draws.clone(), |resolve| resolve(state));
+        for chrome in &draws {
+            draw.backdrop_material(
+                chrome.shape.clone(),
+                chrome.shader,
+                chrome.capture,
+                chrome.effect.clone(),
+            );
+        }
     }
 
     fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
@@ -2716,13 +2873,13 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_stepper_increment_icon(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
     fn input_field_metrics(&self) -> InputFieldMetrics {
-        InputFieldMetrics {
+        self.input_metrics.unwrap_or(InputFieldMetrics {
             label_height: 14.0,
             min_width: 100.0,
             min_height: 32.0,
             horizontal_inset: 8.0,
             vertical_inset: 6.0,
-        }
+        })
     }
 
     fn input_placeholder_color(&self) -> waterui_graphics::color::Color {
@@ -2834,10 +2991,13 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_radio_indicator(
         &self,
         _draw: &mut Recorder,
-        _center: Point,
+        center: Point,
         _radius: f64,
-        _state: RadioIndicatorState,
+        state: RadioIndicatorState,
     ) {
+        self.radio_indicator_draws
+            .borrow_mut()
+            .push((center, state));
     }
 
     fn slider_metrics(&self, size: ControlSize) -> SliderMetrics {
@@ -2923,9 +3083,12 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_progress_linear_track(
         &self,
         _draw: &mut Recorder,
-        _bounds: Rect,
-        _active_end: Option<f64>,
+        bounds: Rect,
+        active_end: Option<f64>,
     ) {
+        self.progress_linear_track_draws
+            .borrow_mut()
+            .push((bounds, active_end));
     }
     fn draw_progress_linear_fill(&self, _draw: &mut Recorder, _bounds: Rect) {}
     fn draw_progress_linear_indeterminate(

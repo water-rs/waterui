@@ -18,7 +18,6 @@ use target_lexicon::{Environment, OperatingSystem, Triple};
 use tracing::{info, warn};
 
 use crate::project::Project;
-use crate::utils::std_output_enabled;
 
 /// Get the dynamic library extension for a target triple.
 #[must_use]
@@ -240,13 +239,16 @@ impl BuiltTarget {
     /// and `waterui_preview_*` exports enumerate here. A build with no project
     /// attached — a fixture or a support crate — reads empty.
     ///
+    /// The read and the parse run on a blocking thread: the library is the
+    /// whole compiled crate.
+    ///
     /// # Errors
     /// Returns an error when the reported artifact cannot be read or parsed.
-    pub fn app_symbols(&self) -> eyre::Result<crate::artifact_symbols::ArtifactSymbols> {
-        self.app_library.as_ref().map_or_else(
-            || Ok(crate::artifact_symbols::ArtifactSymbols::empty()),
-            |library| crate::artifact_symbols::ArtifactSymbols::read(library),
-        )
+    pub async fn app_symbols(&self) -> eyre::Result<crate::artifact_symbols::ArtifactSymbols> {
+        let Some(library) = self.app_library.clone() else {
+            return Ok(crate::artifact_symbols::ArtifactSymbols::empty());
+        };
+        smol::unblock(move || crate::artifact_symbols::ArtifactSymbols::read(&library)).await
     }
 }
 
@@ -269,7 +271,7 @@ pub struct SharedExecutable {
 
 impl SharedExecutable {
     /// An `executable` report carrying no artifact lock — the bundled
-    /// executable and ESP32 firmware paths platform packaging hands out
+    /// executable paths platform packaging hands out
     /// itself, which no same-named build can re-uplift under it.
     #[must_use]
     pub const fn unlocked(path: PathBuf) -> Self {
@@ -1437,6 +1439,7 @@ fn classify_compile_line(line: &str) -> CompileEvent {
 pub(crate) async fn command_output_with_progress(
     command: &mut Command,
     progress: Option<BuildProgress>,
+    std_output: bool,
 ) -> io::Result<std::process::Output> {
     let mut child = command
         .kill_on_drop(true)
@@ -1449,7 +1452,7 @@ pub(crate) async fn command_output_with_progress(
 
     // Raw chunk echo reproduces `Stdio::inherit` for a build carrying no
     // progress sink; a sink renders the parsed events itself.
-    let echo = progress.is_none() && std_output_enabled();
+    let echo = progress.is_none() && std_output;
     // The drains run as their own tasks: inlined into this future their read
     // buffers alone would push it past clippy's `large_futures` threshold.
     let stdout_task = smol::spawn(drain_pipe(stdout_pipe));
@@ -2218,13 +2221,17 @@ Automatic meson installation failed: {install_err}\n\n{}",
     /// `self.triple` names an Apple platform — the triple is the compilation
     /// target whether the build crosses or the host is the Apple target
     /// itself.
-    fn apply_default_envs(&self, cmd: &mut Command) {
+    async fn apply_default_envs(&self, cmd: &mut Command) -> eyre::Result<()> {
         with_managed_tools_path(&self.host, cmd);
-        if let Some((key, value)) =
-            crate::apple::platform::apple_deployment_target_env(&self.triple)
+        if let Some(project) = &self.project
+            && let Some((key, value)) = crate::apple::platform::apple_deployment_target_env(
+                project.resolved_framework().await?,
+                &self.triple,
+            )?
         {
             cmd.env(key, value);
         }
+        Ok(())
     }
 
     async fn cargo_build_output(
@@ -2276,7 +2283,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
         if let Some(target_dir) = &self.target_dir {
             cmd = cmd.arg("--target-dir").arg(target_dir);
         }
-        self.apply_default_envs(cmd);
+        self.apply_default_envs(cmd).await.map_err(|error| {
+            RustBuildError::FailToBuildRustLibrary(std::io::Error::other(error.to_string()))
+        })?;
         // Apply extra environment variables (caller-provided values override defaults).
         for (key, value) in &self.envs {
             cmd.env(key, value);
@@ -2330,14 +2339,14 @@ Automatic meson installation failed: {install_err}\n\n{}",
         // terminal renders them — through the progress sink or the raw
         // passthrough echo — restore cargo's coloring unless the caller
         // configured it explicitly.
-        if std_output_enabled()
+        if self.host.std_output()
             && self.host.env("CARGO_TERM_COLOR").is_none()
             && !self.envs.iter().any(|(key, _)| key == "CARGO_TERM_COLOR")
         {
             cmd.env("CARGO_TERM_COLOR", "always");
         }
 
-        command_output_with_progress(cmd, self.progress.clone())
+        command_output_with_progress(cmd, self.progress.clone(), self.host.std_output())
             .await
             .map_err(RustBuildError::FailToExecuteCargoBuild)
     }
@@ -2433,20 +2442,14 @@ Automatic meson installation failed: {install_err}\n\n{}",
             return Ok(target_dir.clone());
         }
 
-        let build_path = self.path.clone();
-        let metadata = unblock(move || {
-            cargo_metadata::MetadataCommand::new()
-                .no_deps()
-                .current_dir(build_path)
-                .exec()
-                .map_err(|e| {
-                    RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    ))
-                })
-        })
-        .await?;
+        let mut command = cargo_metadata::MetadataCommand::new();
+        command.no_deps().current_dir(&self.path);
+        let metadata = self.host.cargo_metadata(&command).await.map_err(|e| {
+            RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e,
+            ))
+        })?;
         Ok(metadata.target_directory.as_std_path().to_path_buf())
     }
 
@@ -5392,7 +5395,7 @@ mod tests {
             let temporary = tempdir().expect("tempdir");
             let root = temporary.path().join("release-app");
             let project = crate::project::Project::create(
-                &crate::toolchain::Host::current(),
+                &crate::toolchain::testing::real_toolchain_host(temporary.path()),
                 &root,
                 crate::project::CreateOptions {
                     name: "Release App".to_string(),

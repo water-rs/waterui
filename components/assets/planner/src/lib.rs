@@ -20,7 +20,8 @@ mod launch;
 pub use color::{HexColor, InvalidHexColor};
 #[cfg(feature = "font-declarations")]
 pub use font_declarations::{
-    FontDeclaration, FontDeclarationError, FontSource, GraphScope, dependency_font_declarations,
+    FontDeclaration, FontDeclarationError, FontPlatform, FontSource, GraphScope,
+    dependency_font_declarations, font_platform_scope,
 };
 pub use launch::{ColorScheme, LaunchConfig, LaunchPlan};
 

@@ -3,8 +3,10 @@ package dev.waterui.hydrolysis
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.findViewTreeLifecycleOwner
 
 /**
  * The mounted WaterUI app: the native session pointer plus the stable object
@@ -13,19 +15,28 @@ import androidx.lifecycle.LifecycleOwner
  * The session object — not the view — is what JNI hands to the native side, so
  * a configuration change that recreates the [HydrolysisHostView] keeps the
  * same live native session; the new view binds to it through [bind]. The
- * activity that owns the session retains it across recreation and calls
- * [destroy] exactly once, when the process-side lifecycle truly ends; the
- * native teardown follows the host view's detach.
+ * owning ViewModel retains it across recreation and calls [destroy] when
+ * its store is cleared; native teardown follows the host view's detach.
  */
-class HydrolysisSession internal constructor(context: Context) {
+class HydrolysisSession internal constructor(
+    context: Context,
+    private val onCloseRequested: () -> Unit,
+) {
     /**
      * The opaque native pointer, owned on the UI thread only. It is never
      * read directly: every Kotlin→native call takes it through
      * [withNativePtr], which refuses it once [destroy] has handed it to the
      * native side.
      */
+    // A `ViewModel` retains the session, never an `Activity`: the native
+    // side resolves the `Application` out of the context, so only the
+    // application context crosses JNI.
     private val livePtr: Long =
-        NativeBridge.nativeCreateSession(this, context, NativeBridge.uiThreadServices)
+        NativeBridge.nativeCreateSession(
+            this,
+            context.applicationContext,
+            NativeBridge.uiThreadServices,
+        )
 
     /** [destroy] ran; a second call is a named error. */
     private var destroyRequested = false
@@ -100,34 +111,92 @@ class HydrolysisSession internal constructor(context: Context) {
     internal var hostView: HydrolysisHostView? = null
         private set
 
+    /**
+     * The context of the bound host view — the JNI-side contract the
+     * platform-view instance modules create their views with (the `webview`
+     * module wraps it in an `android.content.MutableContextWrapper`).
+     * `null` while unbound.
+     */
+    val boundContext: Context?
+        get() = hostView?.context
+
+    /**
+     * The platform-view *instances* this session owns: native views the Rust
+     * side constructed over JNI — the system `WebView` — and registers here
+     * so a placement naming `{"instance": id}` can mount them. The JNI-side
+     * contract: `HydrolysisWebView.create` calls
+     * [registerPlatformViewInstance] and `release()` calls
+     * [unregisterPlatformViewInstance].
+     */
+    private val platformViewInstances = HashMap<Long, View>()
+
+    /**
+     * Registers `view` as the platform-view instance `id`. Public because the
+     * registering code lives in another Gradle module.
+     */
+    fun registerPlatformViewInstance(id: Long, view: View) {
+        check(platformViewInstances.putIfAbsent(id, view) == null) {
+            "hydrolysis: a platform-view instance is already registered under id $id"
+        }
+        // A placement naming this instance may already be waiting.
+        hostView?.platformViewRegistry?.notifyChanged()
+    }
+
+    /**
+     * Drops instance `id` from the registry; any slot currently holding it
+     * goes with it.
+     */
+    fun unregisterPlatformViewInstance(id: Long) {
+        platformViewInstances.remove(id)
+        hostView?.platformViewRegistry?.onInstanceUnregistered(id)
+    }
+
+    /** The instance a placement resolves, or none. Registry-side. */
+    internal fun platformViewInstance(id: Long): View? = platformViewInstances[id]
+
     internal fun bind(view: HydrolysisHostView) {
+        check(!destroyRequested) { "hydrolysis: bind reached a closing HydrolysisSession" }
         check(hostView == null || hostView === view) {
             "a HydrolysisSession is bound to exactly one host view at a time"
         }
         hostView = view
+        // The new binding owns the Activity the instances draw on: each
+        // `HostRebindAware` retargets its own context wrapper and re-observes
+        // what the old binding's context owned (the WebView's Lifecycle).
+        for (instance in platformViewInstances.values) {
+            (instance as? HostRebindAware)?.onHostRebound(view.context)
+        }
         // A session can bind after `onStart` already fired — a late mount
         // or a config-change rebind — and no later `setVisible` would ever
-        // recover a false parked state. The lifecycle's current state is
-        // the truth; `onStart`/`onStop` keep updating it from here.
+        // recover a false parked state. The mounted lifecycle's current
+        // state is the truth; `onStart`/`onStop` keep updating it.
         setVisible(
-            (view.context as? LifecycleOwner)?.lifecycle?.currentState
-                ?.isAtLeast(Lifecycle.State.STARTED) == true
+            (view.findViewTreeLifecycleOwner() ?: view.context as? LifecycleOwner)?.lifecycle?.currentState
+                ?.isAtLeast(Lifecycle.State.STARTED) == true,
         )
     }
 
     internal fun unbind(view: HydrolysisHostView) {
         if (hostView !== view) return
+        // The registry dies with the view; the instances outlive it on a
+        // retained session, so they must be free of the old slots before
+        // the next binding mounts them.
+        view.platformViewRegistry.detachInstances()
         hostView = null
+        // A detached view is invisible, so park the pump before a pending
+        // teardown runs below.
+        if (!destroyed) setVisible(false)
         if (destroyRequested) requestTearDown()
     }
 
     /**
-     * The owning Activity's started state (`onStart`/`onStop`). A stopped
+     * The owning lifecycle's started state (`onStart`/`onStop`). A stopped
      * session parks the frame pump — no frames, no Choreographer wakes —
      * until the next start; a start with a live surface renders exactly
      * the one current frame.
      */
     internal fun setVisible(visible: Boolean) {
+        if (destroyRequested) return
         withNativePtr(NativeBridge::nativeSetVisible.name) { ptr ->
             NativeBridge.nativeSetVisible(ptr, visible)
         }
@@ -145,8 +214,9 @@ class HydrolysisSession internal constructor(context: Context) {
      * as soon as no native call is on the stack. Either way no host call
      * follows it.
      */
-    fun destroy() {
+    internal fun destroy() {
         check(!destroyRequested) { "hydrolysis: HydrolysisSession.destroy() called twice" }
+        setVisible(false)
         destroyRequested = true
         if (hostView?.isAttachedToWindow != true) requestTearDown()
     }
@@ -232,6 +302,15 @@ class HydrolysisSession internal constructor(context: Context) {
     }
 
     /**
+     * The one focus query the frame makes: whether a mounted platform-view
+     * child holds UI focus. A pull, never a push — the focus listener would
+     * re-enter the session synchronously from `requestFocus`/`removeView`.
+     */
+    @CalledFromNative
+    fun onNativePlatformViewFocus(): Boolean =
+        hostView?.platformViewRegistry?.focusInside() == true
+
+    /**
      * A fatal, unrecoverable failure on the native side (GPU device loss, an
      * explicit GPU error). The host raises it as an exception on the UI
      * thread — a crash with a named cause is the honest surface for a session
@@ -251,7 +330,7 @@ class HydrolysisSession internal constructor(context: Context) {
      */
     @CalledFromNative
     fun onNativeCloseRequested() {
-        mainHandler.post { hostView?.closeRequested() }
+        mainHandler.post { onCloseRequested() }
     }
 
     /** Native pushes the authoritative editing state for the IME mirror. */

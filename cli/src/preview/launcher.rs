@@ -37,7 +37,6 @@ use crate::project::{ManagedBackends, Project};
 use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
 use crate::runtime_fingerprint::{compute_runtime_fingerprint, runtime_package_identity};
 use crate::support_app;
-use waterui_preview_protocol::registry::preview_instance_registry_dir;
 
 const PREVIEW_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const PREVIEW_METADATA_FILE: &str = ".waterui-preview-signature";
@@ -264,6 +263,9 @@ async fn configure_preview_module_build(
     )
     .await
     .wrap_err("Failed to open the preview support project")?;
+    // The capability feature probe below resolves the support project's own
+    // generated FFI manifest — render it before anything reads it.
+    support_project.scaffold_apple_companion().await?;
     let support_target_dir = support_project
         .water_target_dir(RustLinkage::SharedRuntime)
         .await?;
@@ -275,14 +277,22 @@ async fn configure_preview_module_build(
         ))
         .with_target_dir(support_target_dir);
     let browser_runtime = support_project
-        .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
+        .browser_runtime_plan(
+            target,
+            crate::platform::TargetBackend::Apple,
+            &target.triple(),
+        )
         .await?;
     // The deployment-target env the module once carried explicitly now
     // comes from the triple inside `cargo_build_output`, so a module and
     // the support app it loads into cannot drift on it.
     Ok(rust_build.with_features(
-        crate::apple::platform::apple_dependency_features(&support_project, browser_runtime)
-            .await?,
+        crate::apple::platform::apple_dependency_features(
+            &support_project,
+            browser_runtime,
+            &target.triple(),
+        )
+        .await?,
     ))
 }
 
@@ -475,16 +485,9 @@ fn preview_run_options(host: &crate::toolchain::Host) -> RunOptions {
     run_options.set_log_level(LogLevel::Info);
     // Point the support app's registry at the cache directory the CLI
     // watches.
-    let preview_cache_root = waterui_preview_protocol::registry::preview_cache_root_dir();
-    let water_cache_dir = preview_cache_root.parent().unwrap_or_else(|| {
-        panic!(
-            "preview cache root must have a parent directory: {}",
-            preview_cache_root.display()
-        )
-    });
     run_options.insert_env_var(
         "WATER_CACHE_DIR".to_string(),
-        water_cache_dir.display().to_string(),
+        crate::preview::water_cache_dir(host).display().to_string(),
     );
     for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
         run_options.insert_env_var(key.to_string(), value.to_string());
@@ -747,6 +750,21 @@ const fn preview_target_platform(platform: PreviewPlatform) -> TargetPlatform {
     }
 }
 
+/// Every triple the preview support app and its module workspace can build
+/// for — one per [`PreviewPlatform`], the serving set of the support
+/// manifest's shared `[profile]` overrides and the workspace root that
+/// carries them.
+fn preview_targets() -> Vec<target_lexicon::Triple> {
+    [
+        PreviewPlatform::Macos,
+        PreviewPlatform::IosSimulator,
+        PreviewPlatform::Ios,
+    ]
+    .iter()
+    .map(|platform| preview_target_platform(*platform).triple())
+    .collect()
+}
+
 async fn open_preview_support_project(
     host: &crate::toolchain::Host,
     requirements: &PreviewRequirements,
@@ -865,7 +883,7 @@ async fn build_preview_session_from_launch(
     {
         ConnectionWaitResult::Ready(client) => {
             return Ok(PreviewSession {
-                client,
+                client: *client,
                 platform,
                 dylib_path: None,
                 running: Some(running),
@@ -925,7 +943,7 @@ Try running with WATERUI_CRASH_DEBUG=1 for more details.",
 /// Result of waiting for preview-app readiness.
 enum ConnectionWaitResult {
     /// Preview app accepted a connection and completed the protocol handshake.
-    Ready(PreviewAppClient),
+    Ready(Box<PreviewAppClient>),
     /// App crashed.
     Crashed(Crash),
     /// App exited without crash.
@@ -1029,12 +1047,12 @@ async fn wait_for_registered_preview_ready(
     )
     .await
     {
-        PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+        PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
         PreviewProbe::Rejected(reason) => rejection = Some(reason),
         PreviewProbe::Silent => {}
     }
 
-    let registry_dir = preview_instance_registry_dir();
+    let registry_dir = crate::preview::preview_instance_registry_dir(host);
     if let Err(error) = smol::fs::create_dir_all(&registry_dir).await {
         error!(path = %registry_dir.display(), "Failed to create preview registry dir: {error}");
         return ConnectionWaitResult::Timeout(rejection);
@@ -1069,7 +1087,7 @@ async fn wait_for_registered_preview_ready(
         )
         .await
         {
-            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
             PreviewProbe::Rejected(reason) => rejection = Some(reason),
             PreviewProbe::Silent => {}
         }
@@ -1143,7 +1161,7 @@ async fn wait_for_polled_preview_ready(
 
     loop {
         match probe_polled_preview(host, tcp_config, expectation, start).await {
-            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(*client),
+            PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
             PreviewProbe::Rejected(reason) => rejection = Some(reason),
             PreviewProbe::Silent => {}
         }
@@ -1277,7 +1295,7 @@ async fn preview_connection_result_from_device_event(
                             "Connected to preview app after {}ms",
                             start.elapsed().as_millis()
                         );
-                        return Some(ConnectionWaitResult::Ready(*client));
+                        return Some(ConnectionWaitResult::Ready(client));
                     }
                     // The app this launch just started announced its own port
                     // and is the wrong build: its protocol is fixed at build
@@ -1440,7 +1458,11 @@ async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -
             &workspace_root,
             patches,
             Some(project.root()),
-            Some(&project.project_packages(&framework).await?),
+            Some(
+                &project
+                    .project_packages(framework, &preview_targets())
+                    .await?,
+            ),
         )
         .await?;
     }
@@ -1535,7 +1557,7 @@ async fn scaffold_preview_app(
     )
     .with_project_packages(requirements.project_packages.clone());
 
-    crate::templates::preview::scaffold(project.root(), &ctx)
+    crate::templates::preview::scaffold(host, project.root(), &ctx)
         .await
         .wrap_err("Failed to scaffold embedded preview app template")?;
 
@@ -1559,15 +1581,11 @@ async fn scaffold_preview_app(
     // versions and adding only the entries the support manifest's own
     // packages need — `generate-lockfile` would re-resolve every crate at
     // its newest and drift the support app off the project's lock.
-    let support_manifest = project.root().join("Cargo.toml");
-    smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .manifest_path(&support_manifest)
-            .exec()
-            .map(|_| ())
-    })
-    .await
-    .wrap_err("Failed to refresh the preview support app's Cargo.lock")?;
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(project.root().join("Cargo.toml"));
+    host.cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to refresh the preview support app's Cargo.lock")?;
 
     info!("Preview app scaffolded at {}", path.display());
     Ok(())
@@ -1768,21 +1786,21 @@ async fn resolve_preview_metadata(
         .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
-    let project_packages = project.project_packages(&framework).await?;
+    let project_packages = project
+        .project_packages(framework, &preview_targets())
+        .await?;
     let metadata_start = Instant::now();
-    let metadata_manifest_path = manifest_path.clone();
     let abi_feature = PreviewLinkMode::for_platform(platform)
         .abi_feature
         .to_string();
-    let metadata = smol::unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .manifest_path(metadata_manifest_path)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(vec![abi_feature]));
-        command.exec()
-    })
-    .await
-    .wrap_err("Failed to resolve user project Cargo metadata with its dev feature")?;
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command
+        .manifest_path(&manifest_path)
+        .features(cargo_metadata::CargoOpt::SomeFeatures(vec![abi_feature]));
+    let metadata = host
+        .cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to resolve user project Cargo metadata with its dev feature")?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = metadata_start.elapsed().as_millis(),
@@ -1790,7 +1808,8 @@ async fn resolve_preview_metadata(
     );
     Ok(ResolvedPreviewMetadata {
         metadata,
-        framework,
+        // The metadata outlives the project opened above, so it owns a copy.
+        framework: framework.clone(),
         app_crate_name,
         app_path,
         project_packages,

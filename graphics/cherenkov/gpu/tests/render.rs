@@ -63,7 +63,11 @@ fn a_red_rect_renders_and_reads_back() -> Result<(), Box<dyn std::error::Error>>
         (r - 1.0).abs() < 1e-2 && g.abs() < 1e-2 && b.abs() < 1e-2 && (a - 1.0).abs() < 1e-2,
         "center pixel: {r} {g} {b} {a}"
     );
-    assert_eq!(px(2, 2), [0.0; 4], "corner pixel must be the clear colour");
+    assert_eq!(
+        px(2, 2).map(f32::to_bits),
+        [0.0_f32; 4].map(f32::to_bits),
+        "corner pixel must be the clear colour"
+    );
     Ok(())
 }
 }
@@ -495,8 +499,8 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
     let readback = wait!(surface.readback())?;
     let px = |x: u32, y: u32| readback.pixels[(y * readback.width + x) as usize];
     assert_eq!(
-        px(32, 32),
-        [1.0, 0.0, 0.0, 1.0],
+        px(32, 32).map(f32::to_bits),
+        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits),
         "solid fill centre must be exactly opaque red"
     );
     let [r, g, b, a] = px(100, 30);
@@ -509,8 +513,8 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
         "gradient under clip at (100,30): {r} {g} {b} {a}, t {t}"
     );
     assert_eq!(
-        px(125, 80),
-        [0.0; 4],
+        px(125, 80).map(f32::to_bits),
+        [0.0_f32; 4].map(f32::to_bits),
         "inside the fill rect but outside the clip: nothing"
     );
     Ok(())

@@ -8,6 +8,7 @@
 //! commit lowers it.
 
 use std::cell::RefCell;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 
 use rustc_hash::FxHashSet;
@@ -28,15 +29,21 @@ pub struct ScopeKey {
 /// What a run sits directly beneath.
 #[derive(Clone)]
 pub enum ItemKey {
+    /// A `.material_group()` scope's anchor item — its cell identity.
+    Anchor(Rc<NodeCell>),
     Node(Rc<NodeCell>),
     Scope(ScopeKey),
+    /// A `ChromeMaterial` member layer, identified by its material
+    /// ordinal in the node's record (water-rs/waterui#1788).
+    Chrome(u32),
 }
 
 impl PartialEq for ItemKey {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
+            (Self::Anchor(a), Self::Anchor(b)) | (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
             (Self::Scope(a), Self::Scope(b)) => a == b,
+            (Self::Chrome(a), Self::Chrome(b)) => a == b,
             _ => false,
         }
     }
@@ -60,10 +67,38 @@ pub struct ScopeProps {
     pub alpha: f32,
 }
 
+/// A `ChromeMaterial` render layer (water-rs/waterui#1788): one backdrop
+/// material split out of a [`Content::record_layered`]
+/// (`cherenkov_record::Content::record_layered`) recording — the member's
+/// layer, drawn between the scene segment below it and the one above.
+#[derive(Debug, Clone)]
+pub struct ChromeMaterial {
+    /// The material's ordinal in the node's record: its mount key under
+    /// the node — a re-recorded chrome rebinds onto the member and the
+    /// group its ordinal already mounts.
+    pub ordinal: u32,
+    /// The material: clip shape, backdrop shader, capture class, effect
+    /// and material scope, all live.
+    pub material: cherenkov_record::BackdropMaterial,
+    /// The member's transform in its parent layer's space —
+    /// `draw_context`'s `ctx.local`.
+    pub transform: kurbo::Affine,
+    /// Whether the member's ancestry presented this frame: a member
+    /// under a fully transparent ancestry holds no membership.
+    pub visible: bool,
+}
+
 /// One entry of a layer's ordered content.
 pub enum Item {
+    /// A `.material_group()` scope's anchor: a plain, empty layer the
+    /// scope's members capture beneath, painted at this position in the
+    /// canvas the item's program mounts in (water-rs/waterui#2097).
+    /// Carrying the scope's cell pins its address against reuse while
+    /// the registration keyed by it stands.
+    Anchor(Rc<NodeCell>),
     Run(Recording),
     Node(Rc<NodeCell>),
+    Chrome(ChromeMaterial),
     Scope {
         key: ScopeKey,
         props: ScopeProps,
@@ -76,8 +111,10 @@ pub enum Item {
 impl Item {
     pub(crate) fn key(&self) -> Option<ItemKey> {
         match self {
+            Self::Anchor(cell) => Some(ItemKey::Anchor(Rc::clone(cell))),
             Self::Run(_) => None,
             Self::Node(cell) => Some(ItemKey::Node(Rc::clone(cell))),
+            Self::Chrome(chrome) => Some(ItemKey::Chrome(chrome.ordinal)),
             Self::Scope { key, .. } => Some(ItemKey::Scope(*key)),
         }
     }
@@ -93,6 +130,11 @@ pub struct InnerProgram {
 
 /// A producer-backed node's content, installed by the target at commit.
 pub enum ProducerContent {
+    #[cfg(hydrolysis_hosted)]
+    Hosted {
+        runtime: Rc<crate::hosted::HostedRuntime>,
+        bounds: kurbo::Rect,
+    },
     Scene(SceneContentSource),
     Gpu {
         runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
@@ -123,7 +165,7 @@ pub struct SceneContentSource {
 pub struct MaterialRequest {
     /// The nearest enclosing `.material_group()` node's identity — the
     /// address of its cell — or `None` for a group of the member's own.
-    pub scope: Option<usize>,
+    pub scope: Option<NonZeroU64>,
     /// The member's within-window level — part of its backdrop-group key.
     pub level: crate::renderer::material::WithinWindowLevel,
     /// The member's resolved colour scheme at flush: a subtree may
@@ -181,6 +223,9 @@ pub struct ProgramBuilder {
     /// scroll content placement, carrying the content offset).
     inner_anchor: Option<Rc<Placement>>,
     keys: FxHashSet<ScopeKey>,
+    /// How many `ChromeMaterial` items the record pushed: the next
+    /// material's ordinal.
+    chromes: u32,
 }
 
 impl ProgramBuilder {
@@ -192,6 +237,7 @@ impl ProgramBuilder {
             inner_open: false,
             inner_anchor: None,
             keys: FxHashSet::default(),
+            chromes: 0,
         }
     }
 
@@ -230,9 +276,34 @@ impl ProgramBuilder {
         }
     }
 
+    /// Appends a `.material_group()` scope's anchor item — the empty
+    /// layer the scope's members capture beneath (water-rs/waterui#2097).
+    pub(crate) fn push_anchor(&mut self, cell: Rc<NodeCell>) {
+        self.items_mut().push(Item::Anchor(cell));
+    }
+
     /// Appends a child node's frame.
     pub(crate) fn push_node(&mut self, cell: Rc<NodeCell>) {
         self.items_mut().push(Item::Node(cell));
+    }
+
+    /// Appends a `ChromeMaterial` member: a backdrop material split out
+    /// of the node's layered recording, drawn as a render layer between
+    /// the scene segments recorded around it.
+    pub(crate) fn push_chrome(
+        &mut self,
+        material: cherenkov_record::BackdropMaterial,
+        transform: kurbo::Affine,
+        visible: bool,
+    ) {
+        let ordinal = self.chromes;
+        self.chromes += 1;
+        self.items_mut().push(Item::Chrome(ChromeMaterial {
+            ordinal,
+            material,
+            transform,
+            visible,
+        }));
     }
 
     /// Opens a named scope. A key repeated within one record panics.

@@ -14,6 +14,8 @@ use tracing::info;
 use crate::browser_runtime;
 #[cfg(target_os = "macos")]
 use crate::macos_bundle::{package_cef_helper_app, remove_cef_helper_apps};
+use target_lexicon::Triple;
+
 use crate::{
     apple::app_bundle,
     apple::backend::AppleBackend,
@@ -221,11 +223,13 @@ pub async fn stage_packaged_host_library(
 pub(crate) async fn apple_dependency_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let build_manifest = project.apple_crate_path().join("Cargo.toml");
     let mut features = Vec::new();
-    features
-        .extend(crate::project_model::assets::capability_features(project, &build_manifest).await?);
+    features.extend(
+        crate::project_model::assets::capability_features(project, &build_manifest, target).await?,
+    );
     if browser_runtime.chromium {
         features.push("chromium".to_string());
     }
@@ -239,8 +243,9 @@ pub(crate) async fn apple_build_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
     linkage: RustLinkage,
+    target: &Triple,
 ) -> eyre::Result<Vec<String>> {
-    let mut features = apple_dependency_features(project, browser_runtime).await?;
+    let mut features = apple_dependency_features(project, browser_runtime, target).await?;
     if linkage == RustLinkage::SharedRuntime {
         features.push("dev".to_string());
         // The inspector is devtooling: development sessions get it through the
@@ -256,6 +261,20 @@ pub(crate) async fn apple_build_features(
         }
     }
     Ok(features)
+}
+
+/// The triple an Apple build produces — the explicitly requested target,
+/// or the platform's own. The backend build's `WebView` validation and
+/// the library build it drives share this one derivation so the two can
+/// never resolve different targets.
+pub(crate) fn apple_build_triple(
+    platform: TargetPlatform,
+    options: &crate::build::BuildOptions,
+) -> Triple {
+    options
+        .target_triple()
+        .cloned()
+        .unwrap_or_else(|| platform.triple())
 }
 
 /// Build Rust library for an Apple platform.
@@ -282,10 +301,7 @@ pub(crate) async fn build_rust_lib_with_links(
     platform: TargetPlatform,
     options: BuildOptions,
 ) -> eyre::Result<(BuiltTarget, Vec<crate::build::NativeLink>)> {
-    let triple = options
-        .target_triple()
-        .cloned()
-        .unwrap_or_else(|| platform.triple());
+    let triple = apple_build_triple(platform, &options);
     validate_architecture(triple.architecture)?;
     // A packaged app stamps the identifier as `CFBundleIdentifier`; reject an
     // Apple-invalid one before the Rust build pays for it. An embedded build
@@ -302,13 +318,22 @@ pub(crate) async fn build_rust_lib_with_links(
     } else {
         options
     };
+
+    // The ffi companion is the crate this builds — render it for the graph
+    // its `cfg` tables serve before anything reads its manifest.
+    project.scaffold_apple_companion().await?;
+
     // Resolve fonts BEFORE cargo build - this ensures icons.json is present
     // for crates like fontawesome7 that need it during build.rs
-    let font_declarations =
-        crate::assets::scan_fonts(project, &project.apple_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = crate::assets::scan_fonts(
+        project,
+        &project.apple_crate_path().join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
     let browser_runtime_plan = project
-        .browser_runtime_plan(platform, TargetBackend::Apple)
+        .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
 
     let target = triple.to_string();
@@ -316,7 +341,7 @@ pub(crate) async fn build_rust_lib_with_links(
     let host_library = AppleHostLibrary::for_linkage(options.linkage());
     let mut build = RustBuild::for_project(project, project.apple_crate_path(), triple.clone())
         .with_features(
-            apple_build_features(project, browser_runtime_plan, options.linkage()).await?,
+            apple_build_features(project, browser_runtime_plan, options.linkage(), &triple).await?,
         )
         .with_envs(options.cargo_envs().iter().cloned());
     if let Some(sccache_path) = options.sccache_path() {
@@ -481,6 +506,7 @@ pub(crate) async fn build_rust_lib_with_links(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
         "media",
+        &triple,
     )
     .await?
     {
@@ -514,7 +540,7 @@ pub(crate) async fn build_rust_lib_with_links(
     // on the manifest's own predicate or Cargo reports `no bin target`. Its
     // `BuiltTarget` rides on this build's result so packaging reads the
     // helper's own artifact, never a name reconstructed in a directory.
-    if project.declares_cef_helper().await? {
+    if project.declares_cef_helper(&triple).await? {
         let helper = build
             .clone()
             .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@executable_path/../Frameworks")
@@ -614,23 +640,16 @@ async fn localize_archive_symbols(
     Ok(())
 }
 
-/// The deployment targets the Apple backend supports, as `SEMVER` strings.
-///
-/// These were `*_DEPLOYMENT_TARGET` build settings in the generated Xcode
-/// project; entry-owning packaging has no project file, so they are declared
-/// here next to the backend that owns them — the same values the framework
-/// tree's root `Package.swift` publishes.
-const fn apple_deployment_target_for(platform: TargetPlatform) -> Option<&'static str> {
+/// The framework metadata key for each Apple platform family.
+const fn apple_deployment_platform(platform: TargetPlatform) -> Option<&'static str> {
     match platform {
-        TargetPlatform::MacOS
-        | TargetPlatform::IOS
-        | TargetPlatform::IOSSimulator
-        | TargetPlatform::MacCatalyst
-        | TargetPlatform::TvOS
-        | TargetPlatform::TvOSSimulator
-        | TargetPlatform::WatchOS
-        | TargetPlatform::WatchOSSimulator => Some("26.0"),
-        TargetPlatform::VisionOS | TargetPlatform::VisionOSSimulator => Some("2.5"),
+        TargetPlatform::MacOS => Some("macos"),
+        TargetPlatform::IOS | TargetPlatform::IOSSimulator | TargetPlatform::MacCatalyst => {
+            Some("ios")
+        }
+        TargetPlatform::TvOS | TargetPlatform::TvOSSimulator => Some("tvos"),
+        TargetPlatform::WatchOS | TargetPlatform::WatchOSSimulator => Some("watchos"),
+        TargetPlatform::VisionOS | TargetPlatform::VisionOSSimulator => Some("visionos"),
         _ => None,
     }
 }
@@ -641,15 +660,19 @@ const fn apple_deployment_target_for(platform: TargetPlatform) -> Option<&'stati
 ///
 /// Returns an error when the platform has no Apple deployment target.
 pub async fn apple_deployment_target(
-    _project: &Project,
+    project: &Project,
     platform: TargetPlatform,
 ) -> eyre::Result<(&'static str, String)> {
     let environment = platform.deployment_target_setting().ok_or_else(|| {
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
-    let target = apple_deployment_target_for(platform).ok_or_else(|| {
+    let key = apple_deployment_platform(platform).ok_or_else(|| {
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
+    let target = project
+        .resolved_framework()
+        .await?
+        .apple_deployment_target(key)?;
     Ok((environment, target.to_string()))
 }
 
@@ -663,9 +686,10 @@ pub async fn apple_deployment_target(
 /// Mac Catalyst keys on the iOS variable: the build scripts a macabi
 /// compilation runs read `IPHONEOS_DEPLOYMENT_TARGET`, and no consumer in
 /// the graph reads `MACOSX_DEPLOYMENT_TARGET` for it.
-pub(crate) fn apple_deployment_target_env(
+pub(crate) fn apple_deployment_target_env<'a>(
+    framework: &'a crate::framework::ResolvedFramework,
     triple: &target_lexicon::Triple,
-) -> Option<(&'static str, &'static str)> {
+) -> eyre::Result<Option<(&'static str, &'a str)>> {
     use target_lexicon::{Environment, OperatingSystem};
     let platform = match triple.operating_system {
         OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
@@ -676,12 +700,16 @@ pub(crate) fn apple_deployment_target_env(
         OperatingSystem::TvOS(_) => TargetPlatform::TvOS,
         OperatingSystem::WatchOS(_) => TargetPlatform::WatchOS,
         OperatingSystem::VisionOS(_) | OperatingSystem::XROS(_) => TargetPlatform::VisionOS,
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some((
-        platform.deployment_target_setting()?,
-        apple_deployment_target_for(platform)?,
-    ))
+    Ok(Some((
+        platform
+            .deployment_target_setting()
+            .expect("Apple platform"),
+        framework.apple_deployment_target(
+            apple_deployment_platform(platform).expect("Apple platform"),
+        )?,
+    )))
 }
 
 // ============================================================================
@@ -696,42 +724,24 @@ pub(crate) fn apple_deployment_target_env(
 /// # Errors
 /// Returns an error when the backend source cannot be located.
 pub(crate) async fn apple_backend_source_root(project: &Project) -> eyre::Result<PathBuf> {
-    let manifest_path_arg: OsString = project.apple_crate_path().join("Cargo.toml").into();
-    let output = project
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(project.apple_crate_path().join("Cargo.toml"));
+    let metadata = project
         .host()
-        .run(
-            "cargo",
-            [
-                OsString::from("metadata"),
-                OsString::from("--format-version"),
-                OsString::from("1"),
-                OsString::from("--manifest-path"),
-                manifest_path_arg,
-            ],
-        )
+        .cargo_metadata(&command)
         .await
         .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
-    let metadata: serde_json::Value =
-        serde_json::from_str(&output).wrap_err("cargo metadata returned unparseable JSON")?;
-    let manifest_path = metadata
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|packages| {
-            packages.iter().find_map(|package| {
-                (package.get("name").and_then(serde_json::Value::as_str) == Some("waterui-apple"))
-                    .then(|| {
-                    package
-                        .get("manifest_path")
-                        .and_then(serde_json::Value::as_str)
-                })?
-            })
-        })
+    let package = metadata
+        .packages
+        .iter()
+        .find(|package| package.name.as_str() == "waterui-apple")
         .ok_or_else(|| {
             eyre::eyre!("the companion crate does not depend on a `waterui-apple` package")
         })?;
-    PathBuf::from(manifest_path)
+    package
+        .manifest_path
         .parent()
-        .map(Path::to_path_buf)
+        .map(|directory| directory.as_std_path().to_path_buf())
         .ok_or_else(|| eyre::eyre!("`waterui-apple` manifest path has no parent"))
 }
 
@@ -795,8 +805,12 @@ pub async fn package_apple(
         .bundle_identifier()
         .apple_bundle_identifier()
         .map_err(|error| eyre::eyre!("{error}"))?;
+    let triple = platform.triple();
+    // The ffi companion's manifest feeds the declaration scan below —
+    // render it before it is read.
+    project.scaffold_apple_companion().await?;
     let browser_runtime_plan = project
-        .browser_runtime_plan(platform, TargetBackend::Apple)
+        .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
     // Crate-declared entitlements and `Info.plist` keys, collected from the
     // graph the companion compiles with — a conflict fails before any
@@ -804,7 +818,7 @@ pub async fn package_apple(
     let mut apple_declarations = crate::assets::scan_apple_declarations(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        &apple_dependency_features(project, browser_runtime_plan).await?,
+        &apple_dependency_features(project, browser_runtime_plan, &triple).await?,
     )
     .await?;
     apple_declarations.supply_app_values(&project.manifest().app_values)?;
@@ -816,7 +830,6 @@ pub async fn package_apple(
     } else {
         "Release"
     };
-    let triple = platform.triple();
     let sdk_name = platform
         .sdk_name()
         .ok_or_else(|| eyre::eyre!("Platform {platform:?} is not an Apple platform"))?;
@@ -828,8 +841,9 @@ pub async fn package_apple(
     let staging_dir = project_path.join("DerivedData/AssetStaging");
     copy_assets_and_fonts(
         project,
+        platform,
         &staging_dir,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
         options.uses_dev_server(),
     )
     .await?;
@@ -944,7 +958,7 @@ pub async fn package_apple(
         // Helper bundles wrap the helper `[[bin]]`, which the manifest
         // declares only when the application links the CEF engine crate —
         // chromium alone stages the runtime but builds no helper.
-        if project.declares_cef_helper().await? {
+        if project.declares_cef_helper(&triple).await? {
             let main_binary = layout.executable_file(&product_name);
             let helper_binary = built
                 .cef_helper
@@ -981,6 +995,7 @@ pub async fn package_apple(
 /// `waterui_meta_bundle_*` statics declare the asset mounts.
 async fn copy_assets_and_fonts(
     project: &Project,
+    platform: TargetPlatform,
     dest_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
@@ -990,8 +1005,12 @@ async fn copy_assets_and_fonts(
         assets::stage_project_assets_for_apple(project, dest_dir, symbols, dev_server).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations =
-        assets::scan_fonts(project, &project.apple_crate_path().join("Cargo.toml")).await?;
+    let font_declarations = assets::scan_fonts(
+        project,
+        &project.apple_crate_path().join("Cargo.toml"),
+        &[platform.font_platform()?],
+    )
+    .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 

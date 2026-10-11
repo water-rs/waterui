@@ -93,6 +93,16 @@ const fn inspector_target_platform(platform: InspectorPlatform) -> TargetPlatfor
     }
 }
 
+/// Every triple the inspector support app can build for — the serving set
+/// of its manifest's `[profile]` overrides.
+fn inspector_targets() -> Vec<target_lexicon::Triple> {
+    [InspectorPlatform::Macos, InspectorPlatform::IosSimulator]
+        .iter()
+        .map(|platform| inspector_target_platform(*platform).triple())
+        .chain(crate::android::platform::android_target_triples())
+        .collect()
+}
+
 async fn open_inspector_project(
     host: &crate::toolchain::Host,
     inspector_app_path: &Path,
@@ -118,12 +128,16 @@ async fn open_inspector_project(
 
 /// Launch (or relaunch) an inspector support app.
 ///
+/// `android` is the device the caller's selection resolved — required for
+/// [`InspectorPlatform::Android`], ignored elsewhere.
+///
 /// # Errors
 /// Returns an error if the support project cannot be prepared or the inspector app fails to launch.
 pub async fn launch_inspector_session(
     host: &crate::toolchain::Host,
     project_path: &Path,
     platform: InspectorPlatform,
+    android: Option<AndroidTarget>,
     options: InspectorLaunchOptions,
     progress: Option<BuildProgress>,
 ) -> Result<InspectorSession> {
@@ -181,9 +195,12 @@ pub async fn launch_inspector_session(
                 .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
         }
         InspectorPlatform::Android => {
-            let target = AndroidTarget::first_available(host).await?;
+            let target = android.ok_or_else(|| {
+                eyre::eyre!("Internal error: Android inspector launch has no resolved device")
+            })?;
             target.launch(host).await?;
             info!("Building and running inspector app on Android...");
+            let kotlin = crate::android::platform::require_kotlin(host).await?;
             crate::hydrolysis::android::run_on_device(
                 &project,
                 crate::hydrolysis::android::resolve_painter(&project, None),
@@ -191,6 +208,7 @@ pub async fn launch_inspector_session(
                 run_options,
                 BuildOptions::development(BuildProfile::Debug),
                 progress.clone(),
+                &kotlin,
             )
             .await
             .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
@@ -249,7 +267,9 @@ async fn scaffold_inspector_app(
     manifest.save(project.root()).await?;
 
     let framework = project.resolved_framework().await?;
-    let project_packages = project.project_packages(&framework).await?;
+    let project_packages = project
+        .project_packages(framework, &inspector_targets())
+        .await?;
     // `inspector_signature` fingerprints the set derived from the display
     // name before the project exists; the manifest must carry that same set,
     // or the stored signature would describe a manifest that was not written.
@@ -269,7 +289,7 @@ async fn scaffold_inspector_app(
             .expect("inspector support bundle identifier must be valid"),
         },
         waterui_path,
-        &framework,
+        framework,
         false,
         None,
         project.local_sources(),
@@ -346,14 +366,12 @@ async fn resolve_inspector_requirements(
     host: &crate::toolchain::Host,
     project_path: &Path,
 ) -> Result<InspectorRequirements> {
-    let current_dir = project_path.to_path_buf();
-    let metadata = smol::unblock(move || {
-        cargo_metadata::MetadataCommand::new()
-            .current_dir(current_dir)
-            .exec()
-    })
-    .await
-    .wrap_err("Failed to resolve user project Cargo metadata for inspector compatibility")?;
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.current_dir(project_path);
+    let metadata = host
+        .cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to resolve user project Cargo metadata for inspector compatibility")?;
 
     let waterui = select_unique_package(&metadata, "waterui")?;
     let waterui_core = select_unique_package(&metadata, "waterui-core")?;

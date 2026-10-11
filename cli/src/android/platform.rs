@@ -1,7 +1,8 @@
 //! Android platform build and package utilities.
 //!
-//! This module provides utility functions for building and packaging Android apps.
-//! These functions are used by `AndroidBackend` to implement the `Backend` trait.
+//! The shared Android machinery every Android build runs through: the NDK and
+//! JDK/Kotlin toolchain resolution, the ABI model, and the Gradle wrapper
+//! invocation the Hydrolysis app and embedded library builds drive.
 
 use std::path::{Path, PathBuf};
 
@@ -14,8 +15,9 @@ use target_lexicon::{
 use std::str::FromStr;
 
 use crate::{
-    android::toolchain::{AndroidNdk, AndroidSdk, Java, Kotlin, java_proxy_properties_from_env},
-    platform::TargetPlatform,
+    android::toolchain::{
+        AndroidNdk, AndroidSdk, Java, Kotlin, KotlinToolchain, java_proxy_properties_from_env,
+    },
     toolchain::Host,
 };
 
@@ -314,8 +316,40 @@ impl AndroidAbi {
         }
     }
 
+    /// The Rust target triple this ABI builds for — the one mapping every
+    /// ABI-to-triple question reads; [`AndroidAbi::from_triple`] is its
+    /// inverse.
+    #[must_use]
+    pub const fn triple(self) -> Triple {
+        let (architecture, environment) = match self {
+            Self::Arm64V8a => (
+                Architecture::Aarch64(Aarch64Architecture::Aarch64),
+                Environment::Android,
+            ),
+            Self::X86_64 => (Architecture::X86_64, Environment::Android),
+            // rustc's armv7 Android target carries the `androideabi`
+            // environment (`armv7-linux-androideabi`); `android` alone names
+            // no target.
+            Self::ArmeabiV7a => (
+                Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
+                Environment::Androideabi,
+            ),
+            Self::X86 => (
+                Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
+                Environment::Android,
+            ),
+        };
+        Triple {
+            architecture,
+            vendor: Vendor::Unknown,
+            operating_system: OperatingSystem::Linux,
+            environment,
+            binary_format: BinaryFormat::Elf,
+        }
+    }
+
     /// The ABI a Rust target triple names — the inverse of
-    /// [`AndroidPlatform::triple`], so call sites holding a triple never keep
+    /// [`AndroidAbi::triple`], so call sites holding a triple never keep
     /// a second copy of the architecture mapping.
     #[must_use]
     pub const fn from_triple(triple: &Triple) -> Option<Self> {
@@ -408,6 +442,13 @@ pub const ALL_ABIS: &[AndroidAbi] = &[
     AndroidAbi::X86,
 ];
 
+/// The Rust triples the four ABIs produce — the target set a generated
+/// manifest's `cfg(target_os = "android")` table serves, resolved one
+/// `cargo tree --target` evaluation per ABI.
+pub(crate) fn android_target_triples() -> Vec<Triple> {
+    ALL_ABIS.iter().map(|abi| abi.triple()).collect()
+}
+
 impl AndroidPlatform {
     /// Returns all supported Android platforms (all architectures).
     #[must_use]
@@ -418,31 +459,7 @@ impl AndroidPlatform {
     /// Get the target triple for this Android platform.
     #[must_use]
     pub const fn triple(&self) -> Triple {
-        let (architecture, environment) = match self.abi {
-            AndroidAbi::Arm64V8a => (
-                Architecture::Aarch64(Aarch64Architecture::Aarch64),
-                Environment::Android,
-            ),
-            AndroidAbi::X86_64 => (Architecture::X86_64, Environment::Android),
-            // rustc's armv7 Android target carries the `androideabi`
-            // environment (`armv7-linux-androideabi`); `android` alone names
-            // no target.
-            AndroidAbi::ArmeabiV7a => (
-                Architecture::Arm(target_lexicon::ArmArchitecture::Armv7),
-                Environment::Androideabi,
-            ),
-            AndroidAbi::X86 => (
-                Architecture::X86_32(target_lexicon::X86_32Architecture::I686),
-                Environment::Android,
-            ),
-        };
-        Triple {
-            architecture,
-            vendor: Vendor::Unknown,
-            operating_system: OperatingSystem::Linux,
-            environment,
-            binary_format: BinaryFormat::Elf,
-        }
+        self.abi.triple()
     }
 
     /// List available Android Virtual Devices (emulators) on `host`.
@@ -471,6 +488,7 @@ pub(crate) async fn resolve_android_build_context(
     abi: AndroidAbi,
     triple: &Triple,
     api_level: u32,
+    kotlin: &KotlinToolchain,
 ) -> eyre::Result<AndroidBuildContext> {
     let ndk_path = AndroidNdk::detect_path(host).ok_or_else(|| {
         eyre::eyre!("Android NDK not found. Please install it via Android Studio.")
@@ -494,7 +512,7 @@ pub(crate) async fn resolve_android_build_context(
     let target_underscore = triple.to_string().replace('-', "_");
     let target_upper = target_underscore.to_uppercase();
     let (java_home, java_bin_dir) = resolve_java_home(host).await?;
-    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = resolve_kotlin_home(host).await?;
+    let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = kotlin_context_paths(kotlin)?;
     let (sdk_path, android_jar) = resolve_android_sdk_paths(host).await?;
     let wrapper_toolchain =
         create_android_toolchain_wrapper(host, &ndk_path, abi, api_level).await?;
@@ -529,12 +547,22 @@ async fn resolve_java_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf)> {
     Ok((java_home, java_bin_dir))
 }
 
-async fn resolve_kotlin_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
-    let kotlin_compiler = Kotlin::detect_path(host).await.ok_or_else(|| {
+/// Resolve the Kotlin toolchain on `host` for an Android build entry that
+/// runs no toolchain check of its own to take it from (the `Backend` impls,
+/// the inspector launcher).
+///
+/// # Errors
+/// Fails with the missing-compiler error `kotlinc` consumers report.
+pub(crate) async fn require_kotlin(host: &Host) -> eyre::Result<KotlinToolchain> {
+    Kotlin::resolve(host).await.ok_or_else(|| {
         eyre::eyre!(
             "Kotlin compiler (kotlinc) not found. Install Android Studio or set `KOTLIN_HOME`, then re-run `water doctor`."
         )
-    })?;
+    })
+}
+
+fn kotlin_context_paths(kotlin: &KotlinToolchain) -> eyre::Result<(PathBuf, PathBuf, PathBuf)> {
+    let kotlin_compiler = kotlin.compiler().to_path_buf();
     let kotlin_bin_dir = kotlin_compiler.parent().map(PathBuf::from).ok_or_else(|| {
         eyre::eyre!(
             "Failed to determine Kotlin bin directory from `{}`.",
@@ -739,16 +767,6 @@ fn elf_needs_libcxx(data: &[u8]) -> Option<bool> {
 
     scan::<object::elf::FileHeader64<object::Endianness>>(data)
         .or_else(|| scan::<object::elf::FileHeader32<object::Endianness>>(data))
-}
-
-// ============================================================================
-// Platform Support Check
-// ============================================================================
-
-/// Check if a platform is supported by the Android backend.
-#[must_use]
-pub const fn is_android_platform(platform: TargetPlatform) -> bool {
-    matches!(platform, TargetPlatform::Android)
 }
 
 #[cfg(test)]

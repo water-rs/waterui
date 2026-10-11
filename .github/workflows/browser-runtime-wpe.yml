@@ -17,14 +17,100 @@ on:
   workflow_dispatch:
   push:
     tags: ["browser-wpe-runtime/v*"]
+    branches: [dev]
+    # A dev push exists to pre-build the WebKit prefix into the GHCR store
+    # (see the `webkit` job), so the next release tag finds it there. A dev
+    # push that touches none of the prefix digest's inputs cannot change the
+    # digest, so it neither needs nor produces a new prefix.
+    paths:
+      - components/platform/browser-wpe/runtime/source.toml
+      - components/platform/browser-wpe/runtime/build-webkit.sh
+      - .github/actions/setup-linux-deps/action.yml
+      - .github/actions/refresh-apt-index/refresh.sh
+      - .github/actions/wpe-webkit-prefix/**
+      - .github/workflows/browser-runtime-wpe.yml
 
 concurrency:
   group: browser-runtime-wpe-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # The persistent work directory build-runtime.sh builds inside; the GHCR
+  # store holds its install prefix, nothing else.
+  WPE_WORK_DIRECTORY: wpe-runtime
+
+# WPE WebKit is a multi-hour from-source compile, so its install prefix lives
+# in GHCR as the public OCI artifact `ghcr.io/<owner>/wpe-webkit-prefix:<digest>`
+# (`.github/actions/wpe-webkit-prefix` defines the digest and the layout).
+# The prefix is the only stored output: the ~20 GB build tree is never
+# reused, and nothing downstream of the install reads it.
 jobs:
+  # The only job that writes the store, and only on `dev` and release tags,
+  # so a topic branch can never plant a prefix that a release then ships. A
+  # dev push pre-builds the prefix so the next tag hits; a tag whose prefix
+  # is missing builds it here before the runtime job reads it. A hit stops
+  # after the lookup.
+  webkit:
+    name: WPE WebKit prefix ${{ matrix.architecture }}
+    if: github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/browser-wpe-runtime/v')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+    # &compiler-env and &wpe-matrix are anchored here and aliased in the
+    # runtime job below so the two jobs can never drift: every leg builds
+    # the same WebKit under the same toolchain, and so addresses the same
+    # stored prefix.
+    env: &compiler-env
+      CC: gcc-12
+      CXX: g++-12
+    strategy:
+      fail-fast: false
+      matrix:
+        include: &wpe-matrix
+          - architecture: x86_64
+            runner: ubuntu-22.04
+          - architecture: aarch64
+            runner: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/wpe-webkit-prefix
+        id: prefix
+        with:
+          runner: ${{ matrix.runner }}
+          work-directory: ${{ env.WPE_WORK_DIRECTORY }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # gcc-12 is the only shared package the WebKit build needs; the rest of
+      # its dependency list is installed by build-webkit.sh itself.
+      - uses: ./.github/actions/setup-linux-deps
+        if: steps.prefix.outputs.hit != 'true'
+        with:
+          gcc-version: "12"
+
+      - name: Build WPE WebKit
+        if: steps.prefix.outputs.hit != 'true'
+        run: components/platform/browser-wpe/runtime/build-webkit.sh "${{ env.WPE_WORK_DIRECTORY }}"
+
+      - uses: ./.github/actions/wpe-webkit-prefix/push
+        if: steps.prefix.outputs.hit != 'true'
+        with:
+          reference: ${{ steps.prefix.outputs.reference }}
+          work-directory: ${{ env.WPE_WORK_DIRECTORY }}
+
   runtime:
     name: Build WPE runtime ${{ matrix.architecture }}
+    # On a tag this waits for the `webkit` job, which leaves the prefix in
+    # the store. On dispatch that job is skipped and this job only reads the
+    # store: a miss compiles WebKit inside build-runtime.sh and keeps it to
+    # this run. Dev pushes stop at the `webkit` job; the full pipeline stays
+    # on dispatch and release tags.
+    needs: webkit
+    if: >-
+      !cancelled() && !failure()
+      && (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag')
     # 22.04 is the declared artifact floor: `source.toml` sets
     # `maximum_glibc = "2.35"` and `build-runtime.sh` refuses to package
     # against a newer glibc, so the runner image cannot move. The image ships
@@ -34,30 +120,35 @@ jobs:
     # PPA is needed.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
-    env:
-      CC: gcc-12
-      CXX: g++-12
+    permissions:
+      contents: read
+      packages: read
+    env: *compiler-env
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - architecture: x86_64
-            runner: ubuntu-22.04
-          - architecture: aarch64
-            runner: ubuntu-22.04-arm
+        include: *wpe-matrix
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/wpe-webkit-prefix
+        id: prefix
+        with:
+          runner: ${{ matrix.runner }}
+          work-directory: ${{ env.WPE_WORK_DIRECTORY }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: ./.github/actions/setup-linux-deps
         with:
           gcc-version: "12"
 
-      # Compiles WebKit and the bridge, then packages the runtime zip with
-      # its .artifact.json metadata. The runtime smoke does not run here: it
-      # needs a dma-buf-capable GPU no hosted runner has, so it stays a manual
-      # check via run-smoke.py (#1794).
+      # Builds the bridge against a staging copy of the prefix and packages
+      # the runtime zip with its .artifact.json metadata. build-runtime.sh
+      # runs build-webkit.sh first, which installs the host dependencies the
+      # packaging vendors from and, on a store hit, skips the compile through
+      # the completion marker inside the restored prefix.
       - name: Build self-contained WPE runtime
-        run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
+        run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts "${{ env.WPE_WORK_DIRECTORY }}"
 
       - name: Upload WPE runtime
         uses: actions/upload-artifact@v4

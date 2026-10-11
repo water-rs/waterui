@@ -16,7 +16,7 @@ pub(crate) mod toolchain;
 
 pub use self::toolchain::{
     AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
-    AndroidSdkPlatforms, Java, Kotlin,
+    AndroidSdkPlatforms, Java, Kotlin, KotlinToolchain,
 };
 
 /// The `<uses-permission>` entries the project manifest enables, for the

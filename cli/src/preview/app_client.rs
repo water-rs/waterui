@@ -19,7 +19,7 @@ use super::protocol::{
     PreviewRuntimePlatform, PreviewTcpConfig, Size,
 };
 
-use waterui_preview_protocol::registry::{PreviewAppInstance, preview_instance_registry_dir};
+use waterui_preview_protocol::registry::PreviewAppInstance;
 use waterui_preview_protocol::transport::{read_frame, write_frame};
 
 /// TCP client for the preview support app.
@@ -164,7 +164,9 @@ impl PreviewAppClient {
         expected_platform: PreviewRuntimePlatform,
         expected_protocol_commit: &str,
     ) -> Result<PreviewProbe> {
-        let instances = smol::unblock(load_live_registered_instances).await?;
+        let registry_dir = crate::preview::preview_instance_registry_dir(host);
+        let instances =
+            smol::unblock(move || load_live_registered_instances(&registry_dir)).await?;
         tracing::info!(
             instance_count = instances.len(),
             "Preview loaded registered app instances"
@@ -561,14 +563,15 @@ fn protocol_is_compatible(
         && protocol.build_commit == expected_protocol_commit
 }
 
-fn load_live_registered_instances() -> io::Result<Vec<(PreviewAppInstance, std::path::PathBuf)>> {
-    let dir = preview_instance_registry_dir();
-    fs::create_dir_all(&dir)?;
+fn load_live_registered_instances(
+    dir: &std::path::Path,
+) -> io::Result<Vec<(PreviewAppInstance, std::path::PathBuf)>> {
+    fs::create_dir_all(dir)?;
 
     let mut candidates = Vec::new();
     let mut stale_paths = Vec::new();
 
-    for entry in fs::read_dir(&dir)? {
+    for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
