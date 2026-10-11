@@ -548,10 +548,9 @@ fn a_material_in_an_anchored_overlay_does_not_join_the_outer_group() {
                 vstack((
                     member(Material::Regular),
                     button("host").action(|| {}).anchored_overlay(
-                        AnchoredOverlay::new(
-                            &open,
-                            AnyView::new(().size(60.0, 20.0).background(Material::Regular)),
-                        )
+                        AnchoredOverlay::new(&open, move || {
+                            AnyView::new(().size(60.0, 20.0).background(Material::Regular))
+                        })
                         .edge(AnchorEdge::Bottom),
                     ),
                 ))

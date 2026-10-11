@@ -1260,13 +1260,12 @@ fn an_anchored_overlay_fill_stays_at_its_own_frame(
             vstack((
                 spacer().size(390.0, 200.0),
                 text("anchor").body().anchored_overlay(
-                    AnchoredOverlay::new(
-                        &open,
+                    AnchoredOverlay::new(&open, move || {
                         text("tip")
                             .caption()
                             .padding_with(6.0)
-                            .background(Color::new(Srgb::new(0.2, 0.7, 0.9))),
-                    )
+                            .background(Color::new(Srgb::new(0.2, 0.7, 0.9)))
+                    })
                     .edge(AnchorEdge::Bottom),
                 ),
                 spacer(),

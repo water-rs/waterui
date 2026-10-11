@@ -2176,6 +2176,18 @@ typedef struct EdgeSet EdgeSet;
 typedef struct ProposalSize ProposalSize;
 
 /**
+ * Specifies which safe-area regions a view ignores.
+ *
+ * The safe area has two regions on each edge: *container* — the system bars,
+ * display cutouts, the home indicator and window chrome — and *keyboard* —
+ * the software keyboard and other input-method surfaces. A region set always
+ * names at least one region; [`ALL`](Self::ALL), [`CONTAINER`](Self::CONTAINER)
+ * and [`KEYBOARD`](Self::KEYBOARD) are its only values, and
+ * [`on`](Self::on) pairs one with the edges it is ignored on.
+ */
+typedef struct SafeAreaRegions SafeAreaRegions;
+
+/**
  * A sampled set of visual properties, independent of layout.
  *
  * Translation is in logical pixels, rotation in radians, and blur in logical
@@ -2206,6 +2218,11 @@ typedef struct Vec2 Vec2;
  *Opaque FFI handle owning a `RetainedCallback<BoxedAction<()>>`.
  */
 typedef struct WuiAction WuiAction;
+
+/**
+ *Opaque FFI handle owning a `AnyViewBuilder`.
+ */
+typedef struct WuiAnchoredOverlayContent WuiAnchoredOverlayContent;
 
 /**
  *Opaque FFI handle owning a `waterui::AnyView`.
@@ -4165,9 +4182,10 @@ typedef struct WuiAnchorPlacement {
  */
 typedef struct WuiAnchoredOverlay {
   /**
-   * The view presented next to the anchor.
+   * Builds a fresh view for each presentation; materialize it with
+   * `waterui_anchored_overlay_build_content`.
    */
-  struct WuiAnyView *content;
+  struct WuiAnchoredOverlayContent *content_builder;
   /**
    * Whether the overlay is presented; the backend writes `false` when it
    * dismisses the overlay itself.
@@ -8402,6 +8420,14 @@ typedef struct WuiApp {
 
 
 
+
+
+
+
+
+
+
+
 /**
  * # Safety
  * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
@@ -9111,6 +9137,12 @@ struct WuiWatcher_AnchorEdge *waterui_new_watcher_anchor_edge(void *data,
                                                               void (*drop)(void*));
 
 /**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_anchored_overlay_content(struct WuiAnchoredOverlayContent *value);
+
+/**
  * Returns the type ID as a 128-bit value for O(1) comparison.
  * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
@@ -9124,6 +9156,22 @@ struct WuiTypeId waterui_metadata_anchored_overlay_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataAnchoredOverlay waterui_force_as_metadata_anchored_overlay(struct WuiAnyView *view);
+
+/**
+ * Builds a fresh overlay-content view from `builder`.
+ *
+ * The returned view is owned by the caller. `builder` is only borrowed: it
+ * stays alive inside the `WuiAnchoredOverlay` until the anchor's owner drops
+ * it, and every presentation calls this so each one gets an independent
+ * view instance.
+ *
+ * # Safety
+ *
+ * `builder` must be a valid `WuiAnchoredOverlayContent` pointer obtained
+ * from a `WuiAnchoredOverlay`'s `content_builder` field, alive for this
+ * call.
+ */
+struct WuiAnyView *waterui_anchored_overlay_build_content(const struct WuiAnchoredOverlayContent *builder);
 
 /**
  * Computes an anchored overlay's frame in window space.
@@ -11072,13 +11120,18 @@ struct WuiWatcher_Option_UserAttention *waterui_new_watcher_user_attention(void 
                                                                            void (*drop)(void*));
 
 /**
- * Resolves a window's reactive background to the colour the native backend
- * paints behind the window's content, consuming `background`.
+ * Resolves a window's reactive background to the colour the Kotlin Android
+ * runtime paints behind the window's content, consuming `background`.
  *
  * The returned signal follows both a change of the background — including a
  * switch between opaque and a translucent colour — and a change of the colour
  * it resolves to. A colour whose opacity is below one asks for a translucent
  * window.
+ *
+ * The Kotlin Android runtime realizes no material, so a
+ * [`WindowBackground::Material`] resolves to the theme's background colour,
+ * drawing the window opaque; Hydrolysis is the Android backend that realizes
+ * a material window background (water-rs/waterui#1899).
  *
  * # Safety
  *

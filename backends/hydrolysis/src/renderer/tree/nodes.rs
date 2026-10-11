@@ -971,7 +971,11 @@ impl WrapperEffect {
 /// slot is `Rc`-shared because the post-flush render pass — not this node —
 /// measures and flushes it, and the node keeps it built across closes.
 pub struct AnchoredOverlayEffect {
-    /// The overlay content, lazily built on first open.
+    /// Builds a fresh view for each presentation: a presentation started
+    /// while an older exit is still animating gets its own instance.
+    pub(crate) builder: waterui_core::handler::AnyViewBuilder,
+    /// The presented overlay's retained subtree, lazily built on first open
+    /// and rebuilt from `builder` on each new presentation.
     pub(crate) content: Rc<RefCell<Option<RetainedSubview>>>,
     /// The presentation binding: read every flush (subscribing the frame to
     /// it), written `false` by outside-interaction dismissal and by the

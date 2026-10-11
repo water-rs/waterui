@@ -411,7 +411,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 let AnchoredOverlay {
-                    content: overlay_content,
+                    content: overlay_builder,
                     is_presented,
                     placed_edge,
                     placement,
@@ -419,7 +419,8 @@ impl RenderNode {
                 } = value;
                 return Self::build_wrapper(
                     WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
-                        content: Rc::new(RefCell::new(Some(RetainedSubview::new(overlay_content)))),
+                        builder: overlay_builder,
+                        content: Rc::new(RefCell::new(None)),
                         is_presented,
                         placed_edge,
                         placement,
