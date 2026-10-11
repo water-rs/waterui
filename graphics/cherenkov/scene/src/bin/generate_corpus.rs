@@ -1594,6 +1594,24 @@ fn text_page_body(l: &mut LayerBuilder, shaped: &[Vec<GlyphRun>]) {
     }
 }
 
+/// Fractional translation changes raster-cache keys in the gated frames.
+fn winding_pan(l: &mut LayerBuilder, draw: impl FnOnce(&mut LayerBuilder)) {
+    l.layer(|pan| {
+        pan.transform(Affine::IDENTITY);
+        pan.motion(Motion::Transform {
+            from: Affine::translate((-31.7, -23.3)),
+            animation: MotionAnimation::Curve {
+                duration_ms: 4000,
+                x1: 0.25,
+                y1: 0.25,
+                x2: 0.75,
+                y2: 0.75,
+            },
+        });
+        draw(pan);
+    });
+}
+
 /// The map-like page: ~2,000 stroked and filled paths — short segments,
 /// closed polygons and curved outlines distributed over the viewport.
 #[expect(
@@ -5251,6 +5269,72 @@ fn run() -> Result<(), SceneError> {
     {
         perf.scene("map", pw, ph, srgb(0.93, 0.95, 0.90), |l| {
             map_body(l, f64::from(pw), f64::from(ph));
+        });
+    }
+
+    // A street layer batches short roads and their junctions into one
+    // stroke. Every centerline and its width-3 outline stay inside the
+    // canvas throughout the fractional pan, with room for antialiasing.
+    {
+        let mut rng = Rng(7);
+        let mut roads = BezPath::new();
+        for row in 0..40 {
+            for col in 0..40 {
+                let start = Point::new(64.0 + f64::from(col) * 22.0, 48.0 + f64::from(row) * 17.0);
+                let bend = 1.0 + rng.f64() * 2.0;
+                roads.move_to(start);
+                for k in 1..=40 {
+                    let t = f64::from(k) / 40.0;
+                    roads.line_to((
+                        start.x + t * 22.0,
+                        start.y + bend * libm::sin(t * std::f64::consts::TAU),
+                    ));
+                }
+                if col % 5 == 0 && row < 39 {
+                    roads.move_to(start);
+                    for k in 1..=40 {
+                        let t = f64::from(k) / 40.0;
+                        roads.line_to((
+                            start.x + bend * libm::sin(t * std::f64::consts::TAU),
+                            start.y + t * 17.0,
+                        ));
+                    }
+                }
+            }
+        }
+        perf.scene("road-network", 1024, 768, srgb(0.93, 0.95, 0.90), |l| {
+            winding_pan(l, |pan| {
+                pan.stroke(
+                    Shape::Path { path: roads },
+                    StrokeStyle {
+                        width: 3.0,
+                        ..StrokeStyle::default()
+                    },
+                    solid(srgb(0.35, 0.38, 0.40)),
+                );
+            });
+        });
+    }
+
+    // Abutting rows with staggered x positions exercise equal-slope join
+    // lookup. All 16,000 footprints belong to one path, not separate draws.
+    {
+        let mut bricks = BezPath::new();
+        for row in 0..20 {
+            for col in 0..800 {
+                let x = 40.0 + f64::from(col) * 1.2 + f64::from(row % 2) * 0.6;
+                let y = 120.0 + f64::from(row) * 24.0;
+                bricks.move_to((x, y));
+                bricks.line_to((x + 1.0, y));
+                bricks.line_to((x + 1.0, y + 24.0));
+                bricks.line_to((x, y + 24.0));
+                bricks.close_path();
+            }
+        }
+        perf.scene("brick-grid", 1024, 768, srgb(0.93, 0.95, 0.90), |l| {
+            winding_pan(l, |pan| {
+                pan.fill(Shape::Path { path: bricks }, solid(srgb(0.35, 0.38, 0.40)));
+            });
         });
     }
 
