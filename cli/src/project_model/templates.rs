@@ -2205,7 +2205,9 @@ mod tests {
                 r"C:\Users\tester\.water\build_cache\drive-C\Users\tester\demo\managed_backends\apple",
             )
         } else {
-            PathBuf::from("/Users/tester/.water/build_cache/Users/tester/demo/managed_backends/apple")
+            PathBuf::from(
+                "/Users/tester/.water/build_cache/Users/tester/demo/managed_backends/apple",
+            )
         };
 
         let waterui_root = tempdir().expect("waterui root");
