@@ -1,15 +1,14 @@
 //! Coverage for water-rs/waterui#1874: a `TextField` declaring
 //! `.content_type(..)` carries it through the merged accessibility publish —
 //! the map beside the tree, not a node property — so
-//! `NodeSnapshot::content_type` reads it on the semantic walk (`mount`) and
-//! the rendered flush (`mount_offscreen`) alike, and `content_type`
-//! selectors match on it. A field that declares none reads `None`.
+//! `NodeSnapshot::content_type` reads it on the semantic walk, and
+//! `content_type` selectors match on it. A field that declares none reads
+//! `None`.
 
-use hydrolysis_m3::Material3;
 use waterui::component::text_field::{ContentType, KeyboardType};
 use waterui::component::vstack;
 use waterui::{Binding, Str, View};
-use waterui_testing::{ContentType as SnapshotContentType, Role, ui};
+use waterui_testing::{ContentType as SnapshotContentType, Role, UiBuilder};
 
 /// A declared one-time-code field beside an undeclared one.
 fn autofill_view() -> impl View {
@@ -23,9 +22,9 @@ fn autofill_view() -> impl View {
     ))
 }
 
-#[test]
-fn text_field_content_type_reaches_the_snapshot_on_semantic_mount() {
-    let mut app = ui().mount(autofill_view);
+#[waterui::test(viewport = (320, 240))]
+fn text_field_content_type_reaches_the_snapshot(ui: UiBuilder) {
+    let mut app = ui.mount(autofill_view);
     app.settle();
 
     let field = app
@@ -51,26 +50,4 @@ fn text_field_content_type_reaches_the_snapshot_on_semantic_mount() {
         None,
         "a field without a declaration must report no content type"
     );
-}
-
-#[test]
-fn text_field_content_type_reaches_the_snapshot_on_offscreen_mount() {
-    let mut app = ui()
-        .theme(Material3::defaults())
-        .mount_offscreen(autofill_view);
-    app.settle();
-
-    let field = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Verification code")
-        .single();
-    assert_eq!(
-        field.node().content_type(),
-        Some(SnapshotContentType::OneTimeCode),
-        "the declared content type must reach the snapshot"
-    );
-    app.query()
-        .content_type(SnapshotContentType::OneTimeCode)
-        .assert_exists();
 }

@@ -26,8 +26,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use waterui_testing::TestArtifacts;
-
 use waterui::Binding;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
@@ -49,12 +47,12 @@ const WINDOW_HEIGHT: u32 = 120;
 /// window's light theme background.
 const FILL: wgpu::Color = wgpu::Color::BLACK;
 
-/// Where this module's visual evidence is written: `waterui-testing`'s
-/// canonical `<root>/hydrolysis/direct_to_target/<stage>.png` layout, with the
+/// Where this module's visual evidence is written: the canonical
+/// `<root>/hydrolysis/direct_to_target/<stage>.png` layout, with the
 /// root from `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it and the platform temp
 /// directory otherwise.
 fn image_dir() -> std::path::PathBuf {
-    TestArtifacts::new("hydrolysis").case_dir("direct_to_target")
+    crate::testing::artifact_case_dir("hydrolysis", "direct_to_target")
 }
 
 /// What a probe recorded about its own lifetime: how often it was set up, how

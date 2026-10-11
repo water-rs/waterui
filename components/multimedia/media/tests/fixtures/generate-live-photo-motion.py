@@ -4,13 +4,12 @@
 # dependencies = ["av==19.0.1", "imageio-ffmpeg==0.6.0"]
 # ///
 """Generate a live photo's motion clip — 96x64, 9 frames at 12fps, AV1 in
-MP4 — at the output path given on the command line. Hydrolysis's
-`tests/media.rs` and waterui-media's `tests/e2e_semantics.rs` each read
-the clip from their own `tests/fixtures/live-photo-motion.mp4`, which the
-nextest setup scripts in `.config/nextest.toml` produce through this one
-generator.
+MP4 — at the output path given on the command line. waterui-media's
+live-photo suites read the clip from `tests/fixtures/live-photo-motion.mp4`,
+which the nextest setup script in `.config/nextest.toml` produces through
+this generator.
 
-    uv run backends/hydrolysis/tests/fixtures/generate-live-photo-motion.py <output.mp4>
+    uv run components/multimedia/media/tests/fixtures/generate-live-photo-motion.py <output.mp4>
 
 Encoding runs through a pinned, hash-verified static `ffmpeg`
 (`imageio-ffmpeg`'s bundled binary — libaom-av1 inside, no system ffmpeg

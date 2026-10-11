@@ -1,11 +1,10 @@
-//! Renderer presentation tests for the `waterui-testing` harness surface:
-//! snapshot capture, styled mounts, `mount_app`, the perf entry points, and
-//! pointer/hover/drag/magnify routing on the rendered runtime.
+//! The `waterui-testing` harness surface itself: snapshot capture, styled
+//! mounts, `mount_app`, the perf entry points, and pointer/hover/drag/magnify
+//! routing on the rendered runtime.
 //!
-//! Received from water-rs/waterui under water-rs/waterui#1130 (class 2 —
-//! renderer presentation); every case names its origin file and asserts what
-//! it asserted there, mounted under `Material3::defaults()` on the rendered
-//! runtime.
+//! Returned from `backends/hydrolysis/tests/harness.rs` under
+//! water-rs/waterui#1673: the suite belongs to the crate that owns the
+//! harness.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,8 +25,8 @@ use waterui_canvas::Canvas;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
-use waterui_testing::{PerfConfig, Role, TestHost, ui};
 
+use crate::{PerfConfig, Role, TestHost, ui};
 /// Installs the custom foreground token the origin tests layered over the
 /// theme package: the harness no longer takes a theme-installer closure, so
 /// the override is a view-scoped plugin — applied after the style's tokens,
@@ -537,7 +536,7 @@ use waterui::graphics::{GpuContent, GpuContentView};
 /// in first", the property the async-setup regression exercised.
 #[derive(Debug)]
 struct DeferredClearRenderer {
-    color: waterui_graphics::wgpu::Color,
+    color: wgpu::Color,
     ready: Arc<AtomicBool>,
 }
 
@@ -550,21 +549,21 @@ impl GpuContent for DeferredClearRenderer {
         if !self.ready.load(Ordering::Relaxed) {
             return;
         }
-        let mut encoder = frame.device.create_command_encoder(
-            &waterui_graphics::wgpu::CommandEncoderDescriptor {
+        let mut encoder = frame
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hydrolysis_deferred_gpu_surface_encoder"),
-            },
-        );
+            });
         {
-            let _pass = encoder.begin_render_pass(&waterui_graphics::wgpu::RenderPassDescriptor {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_deferred_gpu_surface_pass"),
-                color_attachments: &[Some(waterui_graphics::wgpu::RenderPassColorAttachment {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: frame.view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: waterui_graphics::wgpu::Operations {
-                        load: waterui_graphics::wgpu::LoadOp::Clear(self.color),
-                        store: waterui_graphics::wgpu::StoreOp::Store,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.color),
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -594,7 +593,7 @@ fn headless_capture_waits_for_gpu_setup() {
             // Black is gamut-neutral: it survives the engine's linear-P3
             // presentation unchanged, where a saturated primary would
             // shift under the P3 → sRGB gamut map.
-            color: waterui_graphics::wgpu::Color {
+            color: wgpu::Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,

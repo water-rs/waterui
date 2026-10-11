@@ -4554,7 +4554,6 @@ version = "0.3.1"
 dependencies = [
  "accesskit",
  "accesskit_winit",
- "aither-mcp",
  "android_logger",
  "approx",
  "async-task",
@@ -4570,9 +4569,8 @@ dependencies = [
  "ctrlc",
  "executor-core",
  "futures",
- "futures-lite",
  "getrandom 0.4.3",
- "hydrolysis-m3",
+ "hydrolysis",
  "icu_properties",
  "icu_provider",
  "image",
@@ -4618,23 +4616,18 @@ dependencies = [
  "waterui-assets",
  "waterui-backend-core",
  "waterui-canvas",
- "waterui-chart",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
  "waterui-icon",
- "waterui-icons-lucide",
  "waterui-image",
  "waterui-inspector-protocol",
  "waterui-layout",
  "waterui-locale",
  "waterui-map",
- "waterui-mcp",
- "waterui-media",
  "waterui-navigation",
  "waterui-shape",
- "waterui-testing",
  "waterui-text",
  "waterui-url",
  "waterui-video",
@@ -13414,6 +13407,7 @@ dependencies = [
  "waterui",
  "waterui-core",
  "waterui-graphics",
+ "waterui-testing",
 ]
 
 [[package]]
@@ -13456,6 +13450,7 @@ dependencies = [
  "syn 3.0.6",
  "toml 1.1.6+spec-1.1.0",
  "trybuild",
+ "unicode-ident",
  "waterui",
  "waterui-testing",
 ]
@@ -13693,6 +13688,7 @@ name = "waterui-testing"
 version = "0.5.1"
 dependencies = [
  "accesskit",
+ "approx",
  "async-io",
  "bitflags 2.13.2",
  "cargo_metadata",
@@ -13741,13 +13737,18 @@ dependencies = [
 name = "waterui-ts"
 version = "0.1.0"
 dependencies = [
+ "hydrolysis-m3",
  "nami",
+ "object",
+ "rustc-demangle",
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
+ "waterui",
  "waterui-core",
  "waterui-graphics",
  "waterui-locale",
+ "waterui-testing",
  "waterui-ts-engine",
  "waterui-ts-engine-jsc",
  "waterui-ts-engine-quickjs",

@@ -11,14 +11,12 @@ use waterui::ViewExt as _;
 use waterui_controls::button::button;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size};
 use waterui_core::{AnyView, SignalExt as _};
-use waterui_testing::TestArtifacts;
-
-/// Where this module's visual evidence is written: `waterui-testing`'s
-/// canonical `<root>/hydrolysis/<case>/<stage>.png` layout, with the root from
+/// Where this module's visual evidence is written: the canonical
+/// `<root>/hydrolysis/<case>/<stage>.png` layout, with the root from
 /// `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it (uploaded with every run) and
 /// the platform temp directory otherwise.
 fn export_path(case: &str, stage: &str) -> std::path::PathBuf {
-    let path = TestArtifacts::new("hydrolysis").snapshot_path(case, stage);
+    let path = crate::testing::artifact_snapshot_path("hydrolysis", case, stage);
     std::fs::create_dir_all(path.parent().expect("a snapshot path has a case directory"))
         .expect("the export directory must be creatable");
     path

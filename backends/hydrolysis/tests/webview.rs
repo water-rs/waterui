@@ -1,21 +1,26 @@
-//! Renderer presentation tests for `WebView`: the realized surface's bounds
-//! and single accessibility node on the rendered runtime.
+//! Rendered-flush twin of `waterui-webview`'s realization coverage: an
+//! installed `Hook<WebView>` realization draws the component, and its
+//! published accessibility node covers the surface's own bounds on the
+//! rendered runtime. The semantic legs — realization dispatch, role, the
+//! navigation binding — live in the component crate's `e2e_semantics.rs`.
 //!
 //! Received from water-rs/waterui under water-rs/waterui#1130 (class 2 —
 //! renderer presentation); the case names its origin file and asserts what it
-//! asserted there, mounted under `Material3::defaults()` on the rendered
-//! runtime.
+//! asserted there.
+
+mod support;
 
 use std::cell::{Cell, RefCell};
 use std::future::{Future, ready};
 use std::rc::Rc;
 
+use accesskit::Role as AccessibilityRole_;
+use support::mount_rendered;
 use waterui::ViewExt as _;
 use waterui::shape::{Rectangle, ShapeExt as _};
 use waterui::{Color, Environment, Str};
 use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Metadata, Retain, Signal};
-use waterui_testing::{Role, Styled, UiBuilder};
 use waterui_webview::{
     BackendEvent, Cookie, CustomWebViewController, OriginPolicy, ScriptInjectionTime,
     ScriptMessageHandler, Url, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController,
@@ -175,12 +180,8 @@ fn realization(env: &Environment, webview: WebView) -> AnyView {
 /// the engine path: the node a screen reader gets when nothing in the host
 /// tree can see into the page, and the role the realization gives it in place
 /// of the `Image` a graphics leaf would default to.
-///
-/// Origin: waterui `components/platform/webview/tests/e2e_semantics.rs`.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (420, 420))]
-fn an_installed_realization_draws_the_webview_and_keeps_its_node(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn an_installed_realization_draws_the_webview_and_keeps_its_node() {
     let drawn = Rc::new(Cell::new(false));
     let mut env = Environment::new();
     env.insert(WebViewController::new(TestController::new()));
@@ -194,33 +195,44 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node(
         }
     });
 
-    let mut app = ui.environment(env).mount_offscreen(|| {
-        WebView::open(DOCS_URL)
-            .a11y_label("Docs WebView")
-            .size(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)
-    });
+    let mut app = mount_rendered(
+        env,
+        move || {
+            WebView::open(DOCS_URL)
+                .a11y_label("Docs WebView")
+                .size(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)
+        },
+        420,
+        420,
+    );
+    app.settle();
 
     assert!(
         drawn.get(),
         "the installed realization draws the web view, not the backend's own path"
     );
 
-    let nodes = app.query().label("Docs WebView").all();
+    let labelled: Vec<_> = support::nodes(app.tree())
+        .filter(|(_, node)| node.label() == Some("Docs WebView"))
+        .collect();
     assert_eq!(
-        nodes.len(),
+        labelled.len(),
         1,
-        "the realization publishes exactly one accessibility node, found: {nodes:?}"
+        "the realization publishes exactly one accessibility node, found: {labelled:?}"
     );
-    let webview = app.query().label("Docs WebView").single();
+    let (id, webview) = labelled[0];
+    let _ = id;
     assert_eq!(
-        webview.node().role(),
-        Role::GROUP,
+        webview.role(),
+        AccessibilityRole_::Group,
         "page content is opaque, so the surface itself reads as a container"
     );
-    let bounds = webview.bounds();
+    let bounds = webview
+        .bounds()
+        .expect("the published node must carry bounds on the rendered runtime");
     assert!(
-        (bounds.width() - WEBVIEW_WIDTH).abs() < 0.5
-            && (bounds.height() - WEBVIEW_HEIGHT).abs() < 0.5,
+        (bounds.width() - f64::from(WEBVIEW_WIDTH)).abs() < 0.5
+            && (bounds.height() - f64::from(WEBVIEW_HEIGHT)).abs() < 0.5,
         "the published node covers the web view's own bounds, got {}x{}",
         bounds.width(),
         bounds.height(),

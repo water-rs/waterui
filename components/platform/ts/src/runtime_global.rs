@@ -1,11 +1,12 @@
 //! `globalThis.__waterui_runtime`: what a bundle hands the bridge.
 //!
 //! A bundle is a classic script, so nothing it declares is reachable from
-//! Rust. Its entry therefore ends with `installRuntimeGlobal(modules)`, which
-//! publishes the reactive helpers, the host installer, `mount` and the module
-//! table on one global object. [`RuntimeGlobal::read`] picks that object apart
-//! right after `eval` and refuses a bundle that is missing an entry, naming
-//! it.
+//! Rust. Its entry therefore ends with
+//! `installRuntimeGlobal(modules, contracts)`, which publishes the reactive
+//! helpers, the host installer, `mount`, the module table and the props
+//! contract each module was built against on one global object.
+//! [`RuntimeGlobal::read`] picks that object apart right after `eval` and
+//! refuses a bundle that is missing an entry, naming it.
 //!
 //! Each entry is read through the exact expression spelled next to it, so the
 //! only JavaScript this module contains is a fixed list of property reads.
@@ -88,6 +89,10 @@ const MODULES: Entry = Entry {
     name: "modules",
     source: "globalThis.__waterui_runtime.modules",
 };
+const CONTRACTS: Entry = Entry {
+    name: "contracts",
+    source: "globalThis.__waterui_runtime.contracts",
+};
 
 /// The runtime a loaded bundle published, resolved to callable handles.
 ///
@@ -110,6 +115,7 @@ pub struct RuntimeGlobal {
     create_memo: JsFunction,
     make_callback: JsFunction,
     modules: BTreeMap<Str, JsFunction>,
+    contracts: BTreeMap<Str, u64>,
 }
 
 impl RuntimeGlobal {
@@ -142,6 +148,7 @@ impl RuntimeGlobal {
             create_memo: function(engine, &CREATE_MEMO)?,
             make_callback: function(engine, &MAKE_CALLBACK)?,
             modules: modules(engine)?,
+            contracts: contracts(engine)?,
         })
     }
 
@@ -232,16 +239,53 @@ impl RuntimeGlobal {
     ///
     /// [`TsError::UnknownModule`] when the bundle carries no such module —
     /// which a verified bundle cannot, because its manifest is checked against
-    /// the modules the binary mounts.
+    /// the modules the binary mounts. The error names the ids the bundle does
+    /// carry, because the usual cause is a bundle from another build and the
+    /// list is what says so.
     pub fn module(&self, id: &str) -> Result<&JsFunction, TsError> {
         self.modules.get(id).ok_or_else(|| TsError::UnknownModule {
             id: Str::from(id.to_owned()),
+            available: self.available(),
         })
     }
 
     /// Every module id the bundle carries, in sorted order.
     pub fn module_ids(&self) -> impl Iterator<Item = &Str> {
         self.modules.keys()
+    }
+
+    /// The props contract hash the bundle declares for module `id`.
+    ///
+    /// # Errors
+    ///
+    /// [`TsError::MissingContract`] when the bundle declares none. Mounting a
+    /// module whose contract the bundle does not state is refused rather than
+    /// taken on trust: the check exists because a bundle and a binary can come
+    /// from different builds, and a missing hash is exactly that case.
+    pub fn contract(&self, id: &str) -> Result<u64, TsError> {
+        self.contracts
+            .get(id)
+            .copied()
+            .ok_or_else(|| TsError::MissingContract {
+                id: Str::from(id.to_owned()),
+            })
+    }
+
+    /// The module ids the bundle carries, as one line for an error message.
+    fn available(&self) -> Str {
+        if self.modules.is_empty() {
+            return Str::from("no modules at all");
+        }
+        let mut listed = String::new();
+        for id in self.modules.keys() {
+            if !listed.is_empty() {
+                listed.push_str(", ");
+            }
+            listed.push('"');
+            listed.push_str(id);
+            listed.push('"');
+        }
+        Str::from(listed)
     }
 }
 
@@ -254,6 +298,39 @@ fn function<R: JsRuntime>(engine: &R, entry: &Entry) -> Result<JsFunction, TsErr
             found: kind_of(&other),
         }),
     }
+}
+
+/// Reads the contract table: an object of module id to the hexadecimal props
+/// contract hash the module was built against.
+///
+/// The hash crosses as text, not as a number: it is 64 bits, and a JavaScript
+/// number holds only 53 of them exactly, so a numeric entry would compare
+/// equal to a contract it is not.
+fn contracts<R: JsRuntime>(engine: &R) -> Result<BTreeMap<Str, u64>, TsError> {
+    let value = engine.eval(CONTRACTS.source, SOURCE_NAME)?;
+    let JsValue::Object(entries) = value else {
+        return Err(TsError::ContractTable {
+            found: kind_of(&value),
+        });
+    };
+    entries
+        .into_iter()
+        .map(|(id, value)| {
+            let JsValue::String(text) = value else {
+                return Err(TsError::ContractHash {
+                    id: Str::from(id),
+                    found: Str::from(kind_of(&value)),
+                });
+            };
+            let hash = u64::from_str_radix(text.strip_prefix("0x").unwrap_or(&text), 16).map_err(
+                |_| TsError::ContractHash {
+                    id: Str::from(id.clone()),
+                    found: Str::from(text),
+                },
+            )?;
+            Ok((Str::from(id), hash))
+        })
+        .collect()
 }
 
 /// Reads the module table: an object of module id to module function.
