@@ -3046,9 +3046,6 @@ mod tests {
         assert_eq!(dev_features, ["waterui/dynamic_linking", "waterui/gpu"]);
         assert!(cargo_toml.contains("package = \"preview_test_app\""));
         assert!(cargo_toml.contains("features = [\"dev\"]"));
-
-        let lib_rs = std::fs::read_to_string(tempdir.path().join("src/lib.rs"))
-            .expect("preview lib.rs should be written");
     }
 
     #[test]

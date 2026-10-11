@@ -3923,9 +3923,10 @@ impl ResolvedWebViewBackend {
                         | TargetPlatform::VisionOS
                         | TargetPlatform::VisionOSSimulator,
                     TargetBackend::Apple
-                ) | (TargetPlatform::Android, TargetBackend::Hydrolysis)
-                    | (TargetPlatform::Linux, TargetBackend::Gtk4)
-                    | (TargetPlatform::Web, TargetBackend::Hydrolysis)
+                ) | (
+                    TargetPlatform::Android | TargetPlatform::Web,
+                    TargetBackend::Hydrolysis
+                ) | (TargetPlatform::Linux, TargetBackend::Gtk4)
             ),
             Self::Wpe => {
                 matches!(platform, TargetPlatform::Linux)
