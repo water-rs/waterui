@@ -6,6 +6,7 @@
 
 use std::ops::Range;
 
+use super::super::composition::Materialization;
 use super::super::instance::PAINT_TEXTURE;
 use super::super::lower::{DrawRange, Frame, ImageSource, PipelineKind, Source, Target};
 
@@ -21,7 +22,17 @@ pub struct LogicalImage {
     pub format: wgpu::TextureFormat,
     pub producer: Option<usize>,
     pub last_consumer: usize,
-    pub materialized: bool,
+    pub storage: Storage,
+}
+
+/// Where a logical image's pixels live for the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Storage {
+    /// The image never reaches device memory: it lives in a tile epoch's
+    /// attachment slot and is read back through attachment fetch.
+    OnChip,
+    /// The image is written to a device-memory texture, for this reason.
+    Materialized(Materialization),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,7 +137,7 @@ impl ExecutionPlan {
                     },
                     producer: Some(index),
                     last_consumer: index,
-                    materialized: true,
+                    storage: Storage::Materialized(initial(pass.target)),
                 });
                 if let Some(p) = previous {
                     current[p].1 = id;
@@ -158,7 +169,7 @@ impl ExecutionPlan {
                             format: wgpu::TextureFormat::Rgba16Float,
                             producer: None,
                             last_consumer: index,
-                            materialized: true,
+                            storage: Storage::Materialized(Materialization::Persistent),
                         });
                         current.push((target, id));
                         id
@@ -187,7 +198,7 @@ impl ExecutionPlan {
             let image = &mut self.images[self.targets[index].0];
             image.region = pass.region;
             image.space = pass.space;
-            image.materialized = true;
+            image.storage = Storage::Materialized(initial(pass.target));
         }
         self.segments.clear();
         self.partition(frame, slots);
@@ -199,48 +210,141 @@ impl ExecutionPlan {
         plan.native.resize(frame.passes.len(), None);
         let mut index = 0;
         while index < frame.passes.len() {
-            if slots >= 2
-                && let Some(epoch) = plan.epoch(frame, index, slots)
-            {
-                for op in &epoch.ops {
-                    let id = plan.targets[op.pass];
-                    if id != epoch.output {
-                        plan.images[id.0].materialized = false;
-                    }
-                }
-                index = epoch.passes.end;
-                plan.native[epoch.passes.clone()].fill(Some(plan.segments.len()));
-                plan.segments.push(Segment::NativeEpoch(epoch));
+            let attempt = if slots >= 2 {
+                plan.epoch(frame, index, slots)
             } else {
-                if let Some(Segment::Portable(range)) = plan.segments.last_mut() {
-                    range.end = index + 1;
-                } else {
-                    plan.segments.push(Segment::Portable(index..index + 1));
+                Err(Materialization::SlotLimit)
+            };
+            match attempt {
+                Ok(epoch) => {
+                    for op in &epoch.ops {
+                        let id = plan.targets[op.pass];
+                        if id != epoch.output {
+                            plan.images[id.0].storage = Storage::OnChip;
+                        }
+                    }
+                    // An output the epoch itself produces is stored by this
+                    // epoch and never visited as an interval of its own.
+                    let output = &mut plan.images[epoch.output.0];
+                    if output.producer.is_some_and(|p| epoch.passes.contains(&p)) {
+                        output.storage =
+                            Storage::Materialized(if matches!(output.target, Target::Scratch(_)) {
+                                // Its consumers lie past the epoch's end.
+                                Materialization::External
+                            } else {
+                                Materialization::Persistent
+                            });
+                    }
+                    index = epoch.passes.end;
+                    plan.native[epoch.passes.clone()].fill(Some(plan.segments.len()));
+                    plan.segments.push(Segment::NativeEpoch(epoch));
                 }
-                index += 1;
+                Err(reason) => {
+                    // The reason belongs to the attempt that opens the image;
+                    // a pass continuing an earlier interval never revises it.
+                    let image = &mut plan.images[plan.targets[index].0];
+                    if image.producer == Some(index) {
+                        image.storage = Storage::Materialized(reason);
+                    }
+                    if let Some(Segment::Portable(range)) = plan.segments.last_mut() {
+                        range.end = index + 1;
+                    } else {
+                        plan.segments.push(Segment::Portable(index..index + 1));
+                    }
+                    index += 1;
+                }
             }
         }
     }
 
-    fn epoch(&self, frame: &Frame, start: usize, limit: u8) -> Option<TileEpoch> {
+    /// The interval an epoch rooted at `start` would cover: the image that
+    /// pass produces, read until its last consumer, which stores the
+    /// epoch's result. `Err` names why that interval does not exist.
+    fn interval(&self, start: usize) -> Result<usize, Materialization> {
         let first = &self.images[self.targets[start].0];
-        if !matches!(first.target, Target::Scratch(_)) || first.producer != Some(start) {
-            return None;
+        if !matches!(first.target, Target::Scratch(_)) {
+            return Err(Materialization::Persistent);
+        }
+        if first.producer != Some(start) {
+            return Err(Materialization::NoInterval);
         }
         let end = first.last_consumer;
         if end == start {
-            return None;
+            return Err(Materialization::NoInterval);
         }
         let output = self.targets[end];
         let destination = &self.images[output.0];
         if output == self.targets[start]
             || !matches!(destination.target, Target::Part(_) | Target::Scratch(_))
-            || destination.format != wgpu::TextureFormat::Rgba16Float
         {
-            return None;
+            return Err(Materialization::OutputNotEligible);
         }
-        // A filtered result, custom effect, retained image, external operation
-        // or snapshot with overlapping consumers cannot cross a tile epoch.
+        if destination.format != wgpu::TextureFormat::Rgba16Float {
+            return Err(Materialization::Format);
+        }
+        Ok(end)
+    }
+
+    /// Whether pass `index` may run inside an epoch storing into
+    /// `destination`, independently of the slots it would need: a
+    /// filtered result, custom effect, retained image, external
+    /// operation or snapshot with overlapping consumers cannot cross a
+    /// tile epoch.
+    fn admits(
+        &self,
+        frame: &Frame,
+        index: usize,
+        destination: &LogicalImage,
+    ) -> Result<(), Materialization> {
+        let pass = &frame.passes[index];
+        let image = &self.images[self.targets[index].0];
+        if materialization_boundary(frame, index) {
+            return Err(Materialization::UnsupportedOp);
+        }
+        if pass.capture.is_some() {
+            return Err(Materialization::External);
+        }
+        if image.format != wgpu::TextureFormat::Rgba16Float {
+            return Err(Materialization::Format);
+        }
+        if image.space != pass.space {
+            return Err(Materialization::BlendSpace);
+        }
+        if !contains(destination.region, image.region) {
+            return Err(Materialization::Region);
+        }
+        if pass.ranges.iter().any(|range| {
+            !matches!(
+                range.pipeline,
+                PipelineKind::SrcOver | PipelineKind::Replace
+            ) || matches!(
+                range.image,
+                Some(ImageSource::Content(_) | ImageSource::Shader(_))
+            )
+        }) {
+            return Err(Materialization::UnsupportedOp);
+        }
+        // A single canonical composite quad cannot observe its own earlier
+        // fragments. Only that proof permits replacing a frozen snapshot
+        // with the live destination; all other snapshots materialize.
+        if pass.backdrop_copy.is_some()
+            && (pass.ranges.len() != 1
+                || pass.ranges[0].instances.len() != 1
+                || self.reads[index][0]
+                    .as_ref()
+                    .is_none_or(|read| read.kind != ReadKind::CorrespondingPixel))
+        {
+            return Err(Materialization::FrozenSnapshot);
+        }
+        Ok(())
+    }
+
+    /// The epoch rooted at `start`, or why the image that pass produces is
+    /// materialized instead.
+    fn epoch(&self, frame: &Frame, start: usize, limit: u8) -> Result<TileEpoch, Materialization> {
+        let end = self.interval(start)?;
+        let output = self.targets[end];
+        let destination = &self.images[output.0];
         let mut assigned = vec![(output, 0u8)];
         let mut slots = 1;
         let mut ops = Vec::new();
@@ -248,71 +352,61 @@ impl ExecutionPlan {
             let pass = &frame.passes[index];
             let id = self.targets[index];
             let image = &self.images[id.0];
-            if materialization_boundary(frame, index)
-                || pass.capture.is_some()
-                || image.format != wgpu::TextureFormat::Rgba16Float
-                || image.space != pass.space
-                || !contains(destination.region, image.region)
-                || pass.ranges.iter().any(|range| {
-                    !matches!(
-                        range.pipeline,
-                        PipelineKind::SrcOver | PipelineKind::Replace
-                    ) || matches!(
-                        range.image,
-                        Some(ImageSource::Content(_) | ImageSource::Shader(_))
-                    )
-                })
-            {
-                return None;
-            }
-            // A single canonical composite quad cannot observe its own earlier
-            // fragments. Only that proof permits replacing a frozen snapshot
-            // with the live destination; all other snapshots materialize.
-            if pass.backdrop_copy.is_some()
-                && (pass.ranges.len() != 1
-                    || pass.ranges[0].instances.len() != 1
-                    || self.reads[index][0].as_ref()?.kind != ReadKind::CorrespondingPixel)
-            {
-                return None;
-            }
+            self.admits(frame, index, destination)?;
             let begin = image.producer == Some(index);
             let target = if let Some((_, slot)) = assigned.iter().find(|(i, _)| *i == id) {
                 *slot
             } else {
-                if !begin
-                    || image.last_consumer > end
-                    || !matches!(image.target, Target::Scratch(_))
-                    || pass.clear != Some([0.0; 4])
-                {
-                    return None;
+                if !begin {
+                    // Produced before this epoch opened: the interval that
+                    // owns the image decides its storage, not this one.
+                    return Err(Materialization::External);
                 }
-                let slot = (1..limit).find(|slot| {
-                    assigned
-                        .iter()
-                        .all(|(i, s)| s != slot || self.images[i.0].last_consumer < index)
-                })?;
+                if !matches!(image.target, Target::Scratch(_)) {
+                    return Err(Materialization::OutputNotEligible);
+                }
+                if image.last_consumer > end {
+                    return Err(Materialization::External);
+                }
+                if pass.clear != Some([0.0; 4]) {
+                    return Err(Materialization::UnsupportedOp);
+                }
+                let slot = (1..limit)
+                    .find(|slot| {
+                        assigned
+                            .iter()
+                            .all(|(i, s)| s != slot || self.images[i.0].last_consumer < index)
+                    })
+                    .ok_or(Materialization::SlotLimit)?;
                 slots = slots.max(slot + 1);
                 assigned.push((id, slot));
                 slot
             };
-            let sources = self.reads[index]
-                .iter()
-                .zip(&pass.ranges)
-                .map(|(read, range)| match read {
-                    None => Some(None),
-                    Some(read) if read.kind == ReadKind::CorrespondingPixel => {
-                        let (_, slot) = assigned.iter().find(|(i, _)| *i == read.image)?;
-                        let source = &self.images[read.image.0];
-                        if !corresponds(frame, range, source.region) {
-                            return None;
+            let mut sources = Vec::with_capacity(pass.ranges.len());
+            for (read, range) in self.reads[index].iter().zip(&pass.ranges) {
+                let slot = match read {
+                    None => None,
+                    Some(read) => match read.kind {
+                        ReadKind::CorrespondingPixel => {
+                            // Attachment fetch and texture fetch must identify
+                            // the same pixel, the source's virtual extent
+                            // included; a source outside the epoch has no slot.
+                            let (_, slot) = assigned
+                                .iter()
+                                .find(|(i, _)| *i == read.image)
+                                .ok_or(Materialization::External)?;
+                            if !corresponds(frame, range, self.images[read.image.0].region) {
+                                return Err(Materialization::NeighborhoodRead);
+                            }
+                            Some(*slot)
                         }
-                        // Attachment fetch and texture fetch must identify the
-                        // same pixel, including the source's virtual extent.
-                        Some(Some(*slot))
-                    }
-                    Some(_) => None,
-                })
-                .collect::<Option<Vec<_>>>()?;
+                        ReadKind::Neighborhood => return Err(Materialization::NeighborhoodRead),
+                        ReadKind::FrozenSnapshot => return Err(Materialization::FrozenSnapshot),
+                        ReadKind::Opaque => return Err(Materialization::UnsupportedOp),
+                    },
+                };
+                sources.push(slot);
+            }
             ops.push(TileOp {
                 pass: index,
                 target,
@@ -321,7 +415,7 @@ impl ExecutionPlan {
                 backdrop: pass.backdrop_copy.map(|_| ReadKind::FrozenSnapshot),
             });
         }
-        Some(TileEpoch {
+        Ok(TileEpoch {
             passes: start..end + 1,
             output,
             region: destination.region,
@@ -330,8 +424,22 @@ impl ExecutionPlan {
         })
     }
 
-    pub fn materialized_pass(&self, pass: usize) -> bool {
-        self.images[self.targets[pass].0].materialized
+    /// Why the image `pass` writes reaches device memory; `None` when an
+    /// epoch keeps it on chip. The pass needs a backed scratch attachment
+    /// exactly when this is `Some`.
+    pub fn materialization(&self, pass: usize) -> Option<Materialization> {
+        match self.images[self.targets[pass].0].storage {
+            Storage::OnChip => None,
+            Storage::Materialized(reason) => Some(reason),
+        }
+    }
+
+    /// The frame's tile epochs, in pass order.
+    pub fn epochs(&self) -> impl Iterator<Item = &TileEpoch> {
+        self.segments.iter().filter_map(|segment| match segment {
+            Segment::Portable(_) => None,
+            Segment::NativeEpoch(epoch) => Some(epoch),
+        })
     }
 
     pub fn epoch_at(&self, pass: usize) -> Option<&TileEpoch> {
@@ -365,6 +473,17 @@ pub fn read_kind(frame: &Frame, range: &DrawRange) -> ReadKind {
         ReadKind::CorrespondingPixel
     } else {
         ReadKind::Neighborhood
+    }
+}
+
+/// The storage reason an image carries before the partition decides it:
+/// a non-scratch target is persistent by construction, and a scratch has
+/// no proven interval until an epoch attempt names one.
+const fn initial(target: Target) -> Materialization {
+    if matches!(target, Target::Scratch(_)) {
+        Materialization::NoInterval
+    } else {
+        Materialization::Persistent
     }
 }
 
