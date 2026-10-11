@@ -3611,6 +3611,9 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "filtrate-derive"
@@ -4566,6 +4569,7 @@ dependencies = [
  "ctrlc",
  "executor-core",
  "futures",
+ "getrandom 0.4.3",
  "hydrolysis",
  "icu_properties",
  "icu_provider",

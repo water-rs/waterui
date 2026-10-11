@@ -30,7 +30,7 @@ mod accessibility;
 mod gpu;
 mod host;
 mod ime;
-mod jni;
+pub(crate) mod jni;
 mod platform_views;
 mod preview;
 

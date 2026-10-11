@@ -8,7 +8,7 @@
 //! This module owns the single script and the single envelope. A backend supplies
 //! only a transport: deliver [`SCRIPT`] at document start, hand
 //! [`Request::parse`] whatever `__wateruiSend` produced, and complete the call
-//! with [`Reply::resolve_script`] or [`Reply::to_json`].
+//! with [`Reply::resolve_script`], [`Reply::to_json`] or [`Reply::message`].
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -136,6 +136,10 @@ enum ReplyPayload<'a> {
 
 #[derive(Serialize)]
 struct ReplyEnvelope<'a> {
+    /// The request id, for a channel that does not correlate the reply with
+    /// its request itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<u64>,
     ok: bool,
     payload: ReplyPayload<'a>,
 }
@@ -168,17 +172,36 @@ impl Reply {
     ///
     /// A backend whose engine offers a reply channel bound to the sending
     /// document returns this value through it — `WebKit`'s
-    /// `WKScriptMessageHandlerWithReply` and WPE's script-message reply — so
-    /// the engine itself drops a reply whose document has gone. A backend
-    /// without such a channel evaluates [`Self::resolve_script`] in the
-    /// calling context instead.
+    /// `WKScriptMessageHandlerWithReply`, WPE's script-message reply token,
+    /// and Android's `JavaScriptReplyProxy`, which answers on the requesting
+    /// message's own proxy — so the engine itself drops a reply whose
+    /// document has gone. A backend without such a channel evaluates
+    /// [`Self::resolve_script`] in the calling context instead.
     ///
     /// # Panics
     /// Panics if the reply envelope cannot be serialized.
     #[must_use]
     pub fn to_json(&self) -> String {
+        self.envelope(None)
+    }
+
+    /// Serializes the reply envelope with the request `id` it answers:
+    /// `{"id":…,"ok":…,"payload":…}`.
+    ///
+    /// For a channel bound to the sending document that does not correlate
+    /// replies with requests itself — Android's `JavaScriptReplyProxy` — so
+    /// the page's transport hands the three fields to `__wateruiResolve`.
+    ///
+    /// # Panics
+    /// Panics if the reply envelope cannot be serialized.
+    #[must_use]
+    pub fn message(&self, id: u64) -> String {
+        self.envelope(Some(id))
+    }
+
+    fn envelope(&self, id: Option<u64>) -> String {
         let (ok, payload) = self.serialized_payload();
-        serde_json::to_string(&ReplyEnvelope { ok, payload })
+        serde_json::to_string(&ReplyEnvelope { id, ok, payload })
             .expect("WaterUI bridge reply must serialize")
     }
 
@@ -287,6 +310,21 @@ mod tests {
             )
             .unwrap(),
             serde_json::json!({"ok": false, "payload": {"message": "failure \"message\""}})
+        );
+    }
+
+    /// The message form carries the request id beside the envelope `to_json`
+    /// renders, as one JSON object the page parses rather than runs.
+    #[test]
+    fn a_reply_message_carries_its_request_id() {
+        assert_eq!(
+            Reply::Json(br#"{"text":"Hi Lexo"}"#.to_vec()).message(3),
+            r#"{"id":3,"ok":true,"payload":{"json":{"text":"Hi Lexo"}}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&Reply::failure(r#"he said "}""#).message(5))
+                .unwrap(),
+            serde_json::json!({"id": 5, "ok": false, "payload": {"message": "he said \"}\""}})
         );
     }
 }

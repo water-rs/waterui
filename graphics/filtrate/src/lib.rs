@@ -102,7 +102,7 @@ pub use filtrate_core::{
     Chain, ColorFilter, ColorStage, CpuFilter, CpuFilterError, CpuImage, CpuKernel, Filter,
     FilterExt, FilterLink, FilterParam, Footprint, ImageVisitor, Interpolator, LinkVisitor,
     OperatingSpace, ParamArray, ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter,
-    SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind,
+    SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind, space,
 };
 
 #[cfg(feature = "gpu")]

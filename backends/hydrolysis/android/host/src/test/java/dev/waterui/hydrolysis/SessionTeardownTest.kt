@@ -13,6 +13,7 @@ import java.util.concurrent.Executor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -177,6 +178,62 @@ class SessionTeardownTest {
 
         assertTrue(childReachedSession)
         assertTrue(ShadowNativeBridge.destroyed)
+    }
+
+    /**
+     * #2278 with a platform view: the window goes away while a mounted
+     * instance holds focus. Unbinding frees the instance from its slot,
+     * that removal clears child focus and requests a frame — on the live
+     * session, before the deferred teardown — and the teardown must stop
+     * the scheduler so the frame never reaches the freed session. The
+     * registry keeps the host view after the unbind, so a request through
+     * it later still has to post nothing.
+     */
+    @Test
+    fun aFocusedPlatformViewReleasedByTheDeferredTeardownReachesNoFrame() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = { activity.finish() })
+        val host = RecordingHostView(activity, session)
+        activity.setContentView(host)
+        val looper = shadowOf(Looper.getMainLooper())
+        looper.idle()
+
+        val instance =
+            View(activity).apply {
+                isFocusable = true
+                isFocusableInTouchMode = true
+            }
+        ShadowNativeBridge.platformViewFrames =
+            """[{"id":1,"instance":7,"x":0,"y":0,"width":10,"height":10,"order":0}]"""
+        session.registerPlatformViewInstance(7, instance)
+        assertTrue(instance.isAttachedToWindow)
+        assertTrue(instance.requestFocus())
+        assertTrue(host.platformViewRegistry.focusInside())
+        looper.idleFor(FRAME_WINDOW)
+        val framesBefore = ShadowNativeBridge.frames
+        val requestsBefore = host.frameRequests
+
+        var requestsAtTeardown = -1
+        ShadowNativeBridge.onDestroy = {
+            requestsAtTeardown = host.frameRequests
+            // The instance is out of its slot before the session goes.
+            assertNull(instance.parent)
+        }
+        // `onDestroy`: the view is still on its window, so the teardown waits.
+        session.destroy()
+        assertFalse(ShadowNativeBridge.destroyed)
+        // The window goes: no `removeView` unfocuses the tree first, so the
+        // instance still holds focus when the unbind removes it.
+        activity.windowManager.removeViewImmediate(activity.window.decorView)
+
+        assertTrue(ShadowNativeBridge.destroyed)
+        assertTrue(
+            "the slot removal requests a frame before the teardown",
+            requestsAtTeardown > requestsBefore,
+        )
+        host.requestFrame()
+        looper.idleFor(FRAME_WINDOW)
+        assertEquals(framesBefore, ShadowNativeBridge.frames)
     }
 
     @Test
@@ -367,6 +424,18 @@ class SessionTeardownTest {
     }
 }
 
+/** A host view that counts its frame requests and still schedules them. */
+class RecordingHostView(context: Context, session: HydrolysisSession) :
+    HydrolysisHostView(context, session) {
+    var frameRequests = 0
+        private set
+
+    override fun requestFrame() {
+        frameRequests += 1
+        super.requestFrame()
+    }
+}
+
 /** The standalone host over the shadowed library, recording its sessions. */
 class RecordingHydrolysisActivity : HydrolysisActivity() {
     val sessions = mutableListOf<HydrolysisSession>()
@@ -425,6 +494,8 @@ class ShadowNativeBridge {
         /** Runs inside `nativeOnFrame`; its result is the frame's outcome. */
         var onFrame: () -> Long = { 0L }
 
+        /** What `nativePlatformViewFrames` publishes; none by default. */
+        var platformViewFrames: String? = null
         /** The accessibility tree JSON `nativeAccessibilityTree` serves. */
         var treeJson: String? = null
 
@@ -437,6 +508,7 @@ class ShadowNativeBridge {
             backEvents.clear()
             onDestroy = {}
             onFrame = { 0L }
+            platformViewFrames = null
             treeJson = null
         }
 
@@ -508,6 +580,13 @@ class ShadowNativeBridge {
         ) {
             assertLive(sessionPtr)
             backEvents += phase
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativePlatformViewFrames(sessionPtr: Long): String? {
+            assertLive(sessionPtr)
+            return platformViewFrames
         }
 
         @JvmStatic

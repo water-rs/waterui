@@ -47,8 +47,14 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// takes its handle so every session shares it; 12 = `nativeSetHighRefresh`
 /// takes a typed `active` flag in place of the `-1f` sentinel float the
 /// runner decoded as a release, and `nativeSurfaceAttached` carries the
-/// display's peak refresh rate that flag asks for.
-pub const JNI_SCHEMA: jint = 12;
+/// display's peak refresh rate that flag asks for; 13 = a platform-view
+/// placement names either a factory `kind` or a registered `instance`, and
+/// the `HydrolysisWebView` natives join the edge; 14 =
+/// `nativePlatformViewFocus` reported whether a mounted platform-view child
+/// held UI focus; 15 = the report reads through the frame instead —
+/// `onNativePlatformViewFocus` / `platform_view_focus_inside` replaces the
+/// pushed native, which left with it.
+pub const JNI_SCHEMA: jint = 15;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -168,7 +174,7 @@ fn services(ptr: jlong) -> &'static UiThreadServices {
 
 /// Runs `f` on the session, mapping `JniError` → `IllegalStateException` and a
 /// panic → `IllegalStateException` (with the panic payload in the message).
-pub(super) fn guard<F>(env: &mut JNIEnv, f: F)
+pub fn guard<F>(env: &mut JNIEnv, f: F)
 where
     F: FnOnce(&mut JNIEnv) -> Result<(), JniError>,
 {
@@ -193,7 +199,7 @@ where
 
 /// `guard` for calls returning a value — the error path throws and returns
 /// `default`.
-pub(super) fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
+pub fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
 where
     F: FnOnce(&mut JNIEnv) -> Result<T, JniError>,
 {
@@ -207,7 +213,7 @@ where
 
 /// `guard` for calls returning a value the caller converts first — throws
 /// and returns `default` on failure.
-fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
+pub fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
 where
     F: FnOnce(&mut JNIEnv) -> Result<Option<String>, JniError>,
 {
