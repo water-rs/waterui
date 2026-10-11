@@ -118,8 +118,8 @@ mod tree;
 mod tests;
 
 pub use catalog::{
-    Catalog, CatalogSchema, ChildrenSlot, Component, ComponentSchema, Modifier, ModifierSchema,
-    attributes_of, catalog_encoded_len, decode_catalog, encode_catalog,
+    Catalog, CatalogSchema, ChildrenSlot, Component, ComponentSchema, MODIFIER_ORDER_SENTENCE,
+    Modifier, ModifierSchema, attributes_of, catalog_encoded_len, decode_catalog, encode_catalog,
 };
 pub use decode::{DecodeError, decode};
 pub use encode::{HASH_BASIS, contract_hash, encode, encoded_len, hash_extend, payload};
