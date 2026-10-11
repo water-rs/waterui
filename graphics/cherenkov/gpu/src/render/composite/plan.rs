@@ -103,11 +103,21 @@ pub struct TileOp {
     pub target: u8,
     pub sources: Vec<Option<u8>>,
     pub begin: bool,
+    /// Where a `begin` whose slot still holds a dead image has to clear:
+    /// every region this epoch writes that image over, and every region
+    /// it reads the image from, so the slot reads transparent everywhere
+    /// the image's own clear would have. Only `begin` consults it.
+    pub clear_region: [u32; 4],
     pub backdrop: Option<ReadKind>,
 }
 
 /// Slot zero is the persistent output. Other slots have no device-memory
 /// backing and are cleared at each logical image's original begin point.
+///
+/// One epoch is one native pass. [`ExecutionPlan::partition`] coalesces
+/// adjacent intervals that store into the same logical image into a
+/// single epoch, so an epoch's ops can cover several intervals and the
+/// output stays in tile memory across all of them.
 #[derive(Clone, Debug)]
 pub struct TileEpoch {
     pub passes: Range<usize>,
@@ -299,9 +309,40 @@ impl ExecutionPlan {
                                 Materialization::Persistent
                             });
                     }
-                    index = epoch.passes.end;
-                    plan.native[epoch.passes.clone()].fill(Some(plan.segments.len()));
-                    plan.segments.push(Segment::NativeEpoch(epoch));
+                    // Adjacent intervals that store into the same logical
+                    // image are one native pass: nothing between them
+                    // touches that image — a gap would have opened a
+                    // portable segment, and a clear would have started a
+                    // new image — so its pixels need never leave the
+                    // executor's slot zero between them. The interval's own
+                    // slots are free again at its end (an image living past
+                    // it is `External`), which is what lets the next one
+                    // reuse them under the same attachment binding.
+                    let coalesce = match plan.segments.last() {
+                        Some(Segment::NativeEpoch(last)) => {
+                            let stores_the_same_image = last.output == epoch.output;
+                            let adjacent = last.passes.end == epoch.passes.start;
+                            stores_the_same_image && adjacent
+                        }
+                        _ => false,
+                    };
+                    let passes = epoch.passes.clone();
+                    index = passes.end;
+                    if coalesce {
+                        let Some(Segment::NativeEpoch(last)) = plan.segments.last_mut() else {
+                            unreachable!("the segment just matched a native epoch")
+                        };
+                        debug_assert_eq!(
+                            last.region, epoch.region,
+                            "one logical image has one region"
+                        );
+                        last.passes.end = epoch.passes.end;
+                        last.slots = last.slots.max(epoch.slots);
+                        last.ops.extend(epoch.ops);
+                    } else {
+                        plan.segments.push(Segment::NativeEpoch(epoch));
+                    }
+                    plan.native[passes].fill(Some(plan.segments.len() - 1));
                 }
                 Err(reason) => {
                     // The reason belongs to the attempt that opens the image;
@@ -418,6 +459,20 @@ impl ExecutionPlan {
         let mut assigned = vec![(output, 0u8)];
         let mut slots = 1;
         let mut ops = Vec::new();
+        // Where each image this interval writes has to read transparent: a
+        // slot it reuses still holds the previous occupant's pixels, which
+        // a draw covers only inside its own region. Every region the
+        // interval writes the image over counts, and so does the image's
+        // own region, which `corresponds` proves bounds every read of it.
+        let mut cleared: Vec<(LogicalImageId, [u32; 4])> = Vec::new();
+        for index in start..=end {
+            let id = self.targets[index];
+            let region = frame.passes[index].region;
+            match cleared.iter_mut().find(|(i, _)| *i == id) {
+                Some((_, grown)) => *grown = cover(*grown, region),
+                None => cleared.push((id, cover(self.images[id.0].region, region))),
+            }
+        }
         for index in start..=end {
             let pass = &frame.passes[index];
             let id = self.targets[index];
@@ -482,6 +537,11 @@ impl ExecutionPlan {
                 target,
                 sources,
                 begin,
+                clear_region: cleared
+                    .iter()
+                    .find(|(i, _)| *i == id)
+                    .expect("every written image was covered")
+                    .1,
                 backdrop: pass.backdrop_copy.map(|_| ReadKind::FrozenSnapshot),
             });
         }
@@ -577,6 +637,18 @@ pub fn materialization_boundary(frame: &Frame, index: usize) -> bool {
     frame.filters.iter().any(|(i, _)| *i == index)
         || frame.shadows.iter().any(|(i, _)| *i == index)
         || frame.mips.iter().any(|(i, _)| *i == index)
+}
+
+/// The smallest region containing both.
+fn cover(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let x = a[0].min(b[0]);
+    let y = a[1].min(b[1]);
+    [
+        x,
+        y,
+        (a[0] + a[2]).max(b[0] + b[2]) - x,
+        (a[1] + a[3]).max(b[1] + b[3]) - y,
+    ]
 }
 
 const fn contains(outer: [u32; 4], inner: [u32; 4]) -> bool {
