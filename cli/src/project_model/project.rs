@@ -767,7 +767,7 @@ impl Project {
     ///
     /// One directory serves every backend, platform, and feature set of a
     /// linkage: switching backends only rebuilds the units the two graphs do
-    /// not share — measured on an example app, over 80% of the Apple FFI graph
+    /// not share — measured on an example app, over 80% of the Apple graph
     /// resolves identically to the Hydrolysis graph and is reused as-is.
     /// Builds must therefore agree on everything Cargo hashes into every unit —
     /// pass an explicit `--target` and keep final-artifact link flags out of
@@ -1664,7 +1664,7 @@ impl Project {
     }
 
     /// The names of every crate the CLI generates for this project: the
-    /// backend, FFI, preview and launcher crates. Each is tagged with this
+    /// backend, companion, preview and launcher crates. Each is tagged with this
     /// project's root (see [`generated_crate_name`]) unless `[crates]`
     /// overrides it, so their units in the shared Cargo target directory are
     /// this project's alone.
@@ -2139,13 +2139,13 @@ impl CreateOptions {
 
 impl Project {
     /// The `TemplateContext` the generated crates this project builds for
-    /// Apple targets share — the FFI companion and the Apple preview
+    /// Apple targets share — the Apple companion and the Apple preview
     /// package read one context so their generated dependency tables cannot
     /// drift.
     ///
     /// The render is a function of the project, not of the invocation: on
     /// macOS the Apple pieces — the `waterui-apple` pin included — render
-    /// into every FFI companion render, whatever the invocation selected,
+    /// into every Apple companion render, whatever the invocation selected,
     /// because that is the only host an Apple build can run from. A host
     /// that cannot produce an Apple build must not resolve the Apple
     /// backend crate. The graph-derived answers resolve from the triples
@@ -2173,7 +2173,7 @@ impl Project {
             self.linked_browser_engine_for(
                 &crate::platform::NativeOs::MacOs.serving_triples(),
                 GraphSection {
-                    manifest: "the generated FFI companion manifest",
+                    manifest: "the generated Apple companion manifest",
                     table: crate::platform::NativeOs::MacOs.cfg(),
                     remedy: "that section needs a per-target split inside its own OS — a \
                              narrower cfg separates the disagreeing targets",
@@ -2227,7 +2227,7 @@ impl Project {
             .map_err(crate::backend::FailToInitBackend::Io)
     }
 
-    /// Scaffold the managed native FFI companion crate.
+    /// Scaffold the managed native Apple companion crate.
     ///
     /// The crate is a pure function of the project: every path that builds,
     /// packages, previews or font-scans it renders it the same way, so the
@@ -2260,7 +2260,7 @@ impl Project {
     /// Scaffold the managed Apple in-process preview package `water preview
     /// --platform macos` builds and execs.
     ///
-    /// The package sits next to the FFI companion in the managed build
+    /// The package sits next to the Apple companion in the managed build
     /// cache and shares its dependency tables through
     /// `templates::apple_preview`, so its binary resolves the same
     /// `waterui` and `libwaterui_dylib` `water run` produces. Its lock is
@@ -2861,7 +2861,7 @@ impl Project {
 
         if !skip_backend_init && matches!(open_mode, OpenMode::Full | OpenMode::Build) {
             // Rendering target-derived scaffolds is not part of opening a
-            // project: the ffi companion is rendered by the path that builds
+            // project: the Apple companion is rendered by the path that builds
             // it (`scaffold_apple_companion`), so `water clean`, `water fetch`
             // and backend inits never resolve a dependency graph here.
 
@@ -4087,8 +4087,8 @@ mod removed_ffi_override_tests {
 
     #[test]
     fn ffi_override_error_points_to_apple() {
-        let error = toml::from_str::<AppCrates>("ffi = \"waterui-ffi\"")
-            .expect_err("the removed FFI override must fail");
+        let error = toml::from_str::<AppCrates>("ffi = \"example-companion\"")
+            .expect_err("the removed `ffi` override must fail");
         assert!(
             error
                 .to_string()
@@ -4593,7 +4593,7 @@ mod webview_backend_tests {
     }
 
     /// The `map` capability — the Apple `MapKit` bridge's `-DWATERUI_MAP`, and
-    /// the FFI's `map` feature — is read off the application's own graph, the
+    /// the companion's `map` feature — is read off the application's own graph, the
     /// same way the browser engine is. `waterui-map` is a component crate an
     /// application depends on directly; no facade feature announces it any
     /// more, so linking it is what the capability has to see. The examples
@@ -5419,24 +5419,9 @@ mod scaffold_tests {
         }
     }
 
-    /// The `waterui-ffi` feature table every vendored stub carries.
-    const FFI_FEATURES: &[&str] = &[
-        "android-jni",
-        "c-api",
-        "chromium",
-        "dev",
-        "gpu",
-        "inspector",
-        "map",
-        "media",
-        "video",
-        "webview",
-        "webview-cef",
-    ];
-
     /// Stage the canonical framework checkout the `apple_backend` arm of
     /// [`create_project`] names in `Water.toml`: the `waterui` facade as root
-    /// package, `waterui-ffi` at `ffi`, `waterui-apple` at `backends/apple`.
+    /// package and `waterui-apple` at `backends/apple`.
     fn stage_waterui_checkout(root: &Path, vendor_dir: &Path) {
         let mut waterui_manifest = toml_edit::DocumentMut::new();
         waterui_manifest["package"]["name"] = toml_edit::value("waterui");
@@ -5446,16 +5431,11 @@ mod scaffold_tests {
             waterui_manifest["features"][feature] = toml_edit::value(toml_edit::Array::new());
         }
         waterui_manifest["workspace"]["members"] =
-            toml_edit::value(toml_edit::Array::from_iter(["ffi", "backends/apple"]));
+            toml_edit::value(toml_edit::Array::from_iter(["backends/apple"]));
         std::fs::create_dir_all(vendor_dir.join("src")).expect("waterui stub dir");
         std::fs::write(vendor_dir.join("Cargo.toml"), waterui_manifest.to_string())
             .expect("waterui checkout manifest");
         std::fs::write(vendor_dir.join("src/lib.rs"), "").expect("waterui lib");
-        crate::framework::test_fixtures::write_vendor_stub(
-            &vendor_dir.join("ffi"),
-            "waterui-ffi",
-            FFI_FEATURES,
-        );
         crate::framework::test_fixtures::write_vendor_stub(
             &vendor_dir.join("backends/apple"),
             "waterui-apple",
@@ -5472,13 +5452,13 @@ mod scaffold_tests {
     }
 
     /// A remote-channel project whose framework pins resolve without a
-    /// network: `waterui` and `waterui-ffi` ride `[patch.crates-io]` onto
-    /// vendor stubs (the only source `[patch]` can redirect offline), and
-    /// `waterui-apple` rides the canonical `backends/apple` slot of the
-    /// vendored checkout `waterui_path` names — a path dependency — so the
-    /// ffi companion's feature-table probe resolves entirely locally.
-    /// `apple_backend` stages that checkout and names it in `Water.toml` for
-    /// the opens that select the Apple backend.
+    /// network: `waterui` rides `[patch.crates-io]` onto a vendor stub (the
+    /// only source `[patch]` can redirect offline), and `waterui-apple`
+    /// rides the canonical `backends/apple` slot of the vendored checkout
+    /// `waterui_path` names — a path dependency — so the Apple companion's
+    /// feature-table probe resolves entirely locally. `apple_backend` stages
+    /// that checkout and names it in `Water.toml` for the opens that select
+    /// the Apple backend.
     fn create_project(
         host: &crate::toolchain::Host,
         root: &Path,
@@ -5511,27 +5491,16 @@ mod scaffold_tests {
                 "waterui",
                 &["dynamic_linking", "media"],
             );
-            crate::framework::test_fixtures::write_vendor_stub(
-                &vendor_dir.join("waterui-ffi"),
-                "waterui-ffi",
-                FFI_FEATURES,
-            );
         }
         let manifest_path = root.join("Cargo.toml");
         let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
             .expect("project Cargo.toml exists")
             .parse()
             .expect("project Cargo.toml parses");
-        let patch_targets: [(String, PathBuf); 2] = if apple_backend {
-            [
-                ("waterui".to_string(), vendor_dir.to_path_buf()),
-                ("waterui-ffi".to_string(), vendor_dir.join("ffi")),
-            ]
+        let patch_targets: [(String, PathBuf); 1] = if apple_backend {
+            [("waterui".to_string(), vendor_dir.to_path_buf())]
         } else {
-            [
-                ("waterui".to_string(), vendor_dir.join("waterui")),
-                ("waterui-ffi".to_string(), vendor_dir.join("waterui-ffi")),
-            ]
+            [("waterui".to_string(), vendor_dir.join("waterui"))]
         };
         for (name, dir) in patch_targets {
             document["patch"]["crates-io"][name]["path"] =
@@ -5598,14 +5567,14 @@ mod scaffold_tests {
         }
     }
 
-    /// An ffi companion a previous render left behind — a manifest naming a
+    /// An Apple companion a previous render left behind — a manifest naming a
     /// `waterui-apple` path dependency that no longer resolves plus the
     /// entry-owning bin file — is not touched by `Project::open`: rendering
     /// target-derived scaffolds is no open's job. The build path's render
     /// replaces it wholesale before anything reads the manifest, and the
     /// open itself must not fail on the stale manifest.
     #[test]
-    fn open_leaves_a_stale_ffi_companion_for_the_builds_render() {
+    fn open_leaves_a_stale_apple_companion_for_the_builds_render() {
         use crate::platform::TargetPlatform;
 
         let machine = crate::toolchain::testing::TestMachine::new();
@@ -5614,9 +5583,8 @@ mod scaffold_tests {
         create_project(&real_toolchain_host(&machine), &root, dir.path(), false);
 
         // A `waterui_path` checkout carrying the pieces the render
-        // resolves: `waterui` at the root, `waterui-ffi` at `ffi` under
-        // `[workspace.dependencies]`, and the `backends/apple` member slot
-        // `waterui-apple` resolves through.
+        // resolves: `waterui` at the root and the `backends/apple` member
+        // slot `waterui-apple` resolves through.
         let waterui_root = dir.path().join("waterui");
         let mut waterui_manifest = toml_edit::DocumentMut::new();
         waterui_manifest["package"]["name"] = toml_edit::value("waterui");
@@ -5626,9 +5594,7 @@ mod scaffold_tests {
             waterui_manifest["features"][feature] = toml_edit::value(toml_edit::Array::new());
         }
         waterui_manifest["workspace"]["members"] =
-            toml_edit::value(toml_edit::Array::from_iter(["ffi", "backends/apple"]));
-        waterui_manifest["workspace"]["dependencies"]["waterui-ffi"]["path"] =
-            toml_edit::value("ffi");
+            toml_edit::value(toml_edit::Array::from_iter(["backends/apple"]));
         std::fs::create_dir_all(waterui_root.join("src")).expect("waterui root dir");
         std::fs::write(
             waterui_root.join("Cargo.toml"),
@@ -5636,11 +5602,6 @@ mod scaffold_tests {
         )
         .expect("waterui root manifest");
         std::fs::write(waterui_root.join("src/lib.rs"), "").expect("waterui lib");
-        crate::framework::test_fixtures::write_vendor_stub(
-            &waterui_root.join("ffi"),
-            "waterui-ffi",
-            &[],
-        );
         crate::framework::test_fixtures::write_vendor_stub(
             &waterui_root.join("backends/apple"),
             "waterui-apple",
@@ -5662,28 +5623,28 @@ mod scaffold_tests {
         // and this CLI's commit in its metadata and wipes any cache
         // directory whose metadata does not match, so only a companion
         // left inside a shaped cache survives to the open.
-        let ffi_dir = smol::block_on(crate::water_dir::ensure_project_build_cache(
+        let companion_dir = smol::block_on(crate::water_dir::ensure_project_build_cache(
             &real_toolchain_host(&machine),
             &root,
         ))
         .expect("build cache dir")
-        .join("ffi");
+        .join("apple-companion");
 
         // The stale companion: a manifest carrying a `waterui-apple` path
         // dependency that no longer resolves plus the entry file, so a
         // `cargo metadata` on it would fail.
-        std::fs::create_dir_all(ffi_dir.join("src/bin")).expect("stale ffi dir");
-        let mut stale_ffi = toml_edit::DocumentMut::new();
-        stale_ffi["package"]["name"] = toml_edit::value("water-example-ffi");
-        stale_ffi["package"]["version"] = toml_edit::value("0.1.0");
-        stale_ffi["package"]["edition"] = toml_edit::value("2021");
-        stale_ffi["dependencies"]["waterui-apple"]["path"] =
+        std::fs::create_dir_all(companion_dir.join("src/bin")).expect("stale companion dir");
+        let mut stale = toml_edit::DocumentMut::new();
+        stale["package"]["name"] = toml_edit::value("water-example-apple");
+        stale["package"]["version"] = toml_edit::value("0.1.0");
+        stale["package"]["edition"] = toml_edit::value("2021");
+        stale["dependencies"]["waterui-apple"]["path"] =
             toml_edit::value(missing_apple.to_string_lossy().as_ref());
-        let stale_manifest = stale_ffi.to_string();
-        std::fs::write(ffi_dir.join("Cargo.toml"), &stale_manifest)
-            .expect("seed the stale ffi manifest");
-        std::fs::write(ffi_dir.join("src/lib.rs"), "").expect("seed the stale ffi lib");
-        std::fs::write(ffi_dir.join("src/bin/waterui-apple-main.rs"), "")
+        let stale_manifest = stale.to_string();
+        std::fs::write(companion_dir.join("Cargo.toml"), &stale_manifest)
+            .expect("seed the stale companion manifest");
+        std::fs::write(companion_dir.join("src/lib.rs"), "").expect("seed the stale companion lib");
+        std::fs::write(companion_dir.join("src/bin/waterui-apple-main.rs"), "")
             .expect("seed the stale apple entry file");
 
         let project = smol::block_on(Project::open(
@@ -5706,7 +5667,7 @@ mod scaffold_tests {
             .expect("the build path's render rewrites the stale companion");
 
         let rendered = std::fs::read_to_string(project.apple_crate_path().join("Cargo.toml"))
-            .expect("the re-rendered ffi manifest");
+            .expect("the re-rendered companion manifest");
         let manifest = rendered
             .parse::<toml::Table>()
             .expect("the re-rendered manifest parses");
@@ -5752,7 +5713,7 @@ mod scaffold_tests {
             .expect("a scaffold off macOS must succeed");
 
         let rendered = std::fs::read_to_string(project.apple_crate_path().join("Cargo.toml"))
-            .expect("the rendered ffi manifest");
+            .expect("the rendered companion manifest");
         assert!(!rendered.contains("waterui-apple"), "{rendered}");
         assert!(
             !project
@@ -6089,7 +6050,7 @@ mod local_patch_tests {
     }
 
     #[test]
-    fn a_failing_ffi_scaffold_fails_create_and_leaves_nothing_behind() {
+    fn a_failing_companion_scaffold_fails_create_and_leaves_nothing_behind() {
         let machine = TestMachine::new();
         machine.install("cargo");
         machine.install("git");
@@ -6112,7 +6073,7 @@ mod local_patch_tests {
             cache.display()
         );
 
-        let error = smol::block_on(draft.finish()).expect_err("the FFI scaffold must fail");
+        let error = smol::block_on(draft.finish()).expect_err("the companion scaffold must fail");
         assert!(
             matches!(error, FailToCreateProject::ScaffoldGeneratedCrates(_)),
             "{error}"
@@ -6123,7 +6084,7 @@ mod local_patch_tests {
             "{message}"
         );
         assert!(
-            message.contains("could not scaffold the Apple/Android FFI companion crate"),
+            message.contains("could not scaffold the Apple companion crate"),
             "{message}"
         );
         assert!(

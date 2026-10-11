@@ -41,9 +41,9 @@ pub use crate::android::platform::ALL_ABIS;
 
 /// The routing rule for embedded Android builds: Hydrolysis only.
 ///
-/// The Kotlin Android backend has no `com.android.library` output, so
-/// selecting it is a configuration error, raised here and in
-/// `AndroidBackend::init` before either path scaffolds a project.
+/// Hydrolysis is the one backend with a `com.android.library` output, so
+/// any other selection is a configuration error, raised here before the
+/// build scaffolds anything.
 pub const EMBEDDED_REQUIRES_HYDROLYSIS: &str =
     "embedded Android libraries are built by Hydrolysis: pass `--backend hydrolysis`";
 

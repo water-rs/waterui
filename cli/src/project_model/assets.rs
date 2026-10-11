@@ -884,7 +884,6 @@ fn warn_host_applies_gradle_plugins(plugins: &GradlePlugins) {
     }
 }
 
-
 /// The classpath half of [`stage_android_declarations`], split from the cargo-metadata
 /// scan so the staging itself is exercised without a project.
 async fn stage_classpath_files(

@@ -92,7 +92,8 @@ pub mod embedded {
     pub static APPLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple");
     pub static ANDROID_SHARED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/android_shared");
-    pub static APPLE_COMPANION: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple_companion");
+    pub static APPLE_COMPANION: Dir<'_> =
+        include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple_companion");
     pub static GTK4: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/gtk4");
     pub static HYDROLYSIS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis");
     pub static HYDROLYSIS_ANDROID: Dir<'_> =
@@ -104,7 +105,8 @@ pub mod embedded {
     pub static HYDROLYSIS_ANDROID_EMBEDDED: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/hydrolysis_android_embedded");
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
-    pub static APPLE_PREVIEW_MODULE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple_preview_module");
+    pub static APPLE_PREVIEW_MODULE: Dir<'_> =
+        include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple_preview_module");
     pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
     pub static TUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/tui");
     pub static WINUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/winui");
@@ -505,7 +507,7 @@ pub struct TemplateContext {
     pub author: String,
     /// Whether the Apple pieces render — the `waterui-apple` pin and the
     /// entry-owning bin. This is a host fact, not a backend selection:
-    /// every FFI render on a macOS host carries them whatever backend the
+    /// every companion render on a macOS host carries them whatever backend the
     /// invocation selected, because macOS is the only host an Apple build
     /// can run from; a host that cannot produce an Apple build must not
     /// resolve the backend crate.
@@ -1285,7 +1287,7 @@ impl TemplateContext {
         })
     }
 
-    /// The `waterui-apple` dependency the generated FFI crate declares —
+    /// The `waterui-apple` dependency the generated companion crate declares —
     /// the `apple-backend-path` member of the selected framework.
     fn waterui_apple_dependency(&self) -> io::Result<GeneratedDependencyDetail> {
         self.member_dependency(APPLE_BACKEND)
@@ -1635,11 +1637,10 @@ mod tests {
     }
 
     /// A fake local framework checkout the generated crate's feature forwards
-    /// read their destinations from: `ffi/Cargo.toml` declaring
-    /// `ffi_features`, and a Rust Apple backend at `backends/apple` — the
-    /// `Package.swift` marker makes `waterui_path` consume it as the local
-    /// backend — declaring the backend forward destinations `map`, `media`
-    /// and `webview`.
+    /// read their destinations from: a Rust Apple backend at `backends/apple`
+    /// declaring `apple_features` — the `Package.swift` marker makes
+    /// `waterui_path` consume it as the local backend — and the `waterui`
+    /// facade at the root.
     /// A minimal crate manifest: package header plus a `[features]` table.
     fn fixture_manifest(name: &str, version: &str, features: &[&str]) -> String {
         use std::fmt::Write as _;
@@ -1666,7 +1667,7 @@ mod tests {
         std::fs::write(dir.join("src/lib.rs"), "").expect("fixture lib");
     }
 
-    fn write_fake_framework_checkout(root: &Path, ffi_features: &[&str]) {
+    fn write_fake_framework_checkout(root: &Path, apple_features: &[&str]) {
         fn manifest(name: &str, features: &[&str]) -> String {
             fixture_manifest(name, "0.0.0", features)
         }
@@ -1681,24 +1682,18 @@ mod tests {
         std::fs::write(
             root.join("Cargo.toml"),
             format!(
-                "{}\n[workspace]\nmembers = [\"ffi\", \"backends/apple\", \"backends/cef\"]\n\n[workspace.dependencies]\nwaterui-browser-cef = {{ path = \"backends/cef\" }}\n",
+                "{}\n[workspace]\nmembers = [\"backends/apple\", \"backends/cef\"]\n\n[workspace.dependencies]\nwaterui-browser-cef = {{ path = \"backends/cef\" }}\n",
                 manifest("waterui", &["gpu", "video"])
             ),
         )
         .expect("write waterui manifest");
-        std::fs::create_dir_all(root.join("ffi")).expect("ffi manifest dir");
-        std::fs::write(
-            root.join("ffi/Cargo.toml"),
-            manifest("waterui-ffi", ffi_features),
-        )
-        .expect("write waterui-ffi manifest");
         let apple = root.join("backends/apple");
         std::fs::create_dir_all(&apple).expect("apple backend dir");
         std::fs::write(apple.join("Package.swift"), "// swift-tools-version:6.0\n")
             .expect("Package.swift marker");
         std::fs::write(
             apple.join("Cargo.toml"),
-            manifest("waterui-apple", &["map", "media", "webview"]),
+            manifest("waterui-apple", apple_features),
         )
         .expect("write waterui-apple manifest");
         write_fixture_crate(
@@ -1802,7 +1797,10 @@ mod tests {
         // script — `catalog!` then embeds the application's translations.
         for (namespace, embedded_dir) in [
             (TemplateNamespace::Hydrolysis, &embedded::HYDROLYSIS),
-            (TemplateNamespace::AppleCompanion, &embedded::APPLE_COMPANION),
+            (
+                TemplateNamespace::AppleCompanion,
+                &embedded::APPLE_COMPANION,
+            ),
             (TemplateNamespace::Gtk4, &embedded::GTK4),
             (TemplateNamespace::Tui, &embedded::TUI),
         ] {
@@ -3051,46 +3049,43 @@ mod tests {
 
         let lib_rs = std::fs::read_to_string(tempdir.path().join("src/lib.rs"))
             .expect("preview lib.rs should be written");
-        assert!(!lib_rs.contains("waterui_ffi::export!()"));
     }
 
     #[test]
-    fn ffi_scaffold_resolves_waterui_ffi_from_the_build_cache_path() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
+    fn apple_companion_scaffold_resolves_the_framework_from_the_build_cache_path() {
+        let tempdir = tempdir().expect("temporary Apple companion scaffold dir");
         let project_root = tempdir.path().join("app");
-        let ffi_dir = tempdir
+        let companion_dir = tempdir
             .path()
             .join("cache")
             .join("managed_backends")
-            .join("ffi");
-        write_fake_framework_checkout(
-            &tempdir.path().join("waterui"),
-            super::FORWARDED_FEATURES,
-        );
+            .join("apple-companion");
+        write_fake_framework_checkout(&tempdir.path().join("waterui"), super::FORWARDED_FEATURES);
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root.clone()),
         );
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("Apple companion scaffold should succeed");
 
-        let cargo_toml = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written");
-        let expected_ffi_path = pathdiff::diff_paths(project_root.join("../waterui/ffi"), &ffi_dir)
-            .expect("expected waterui ffi dependency diff path");
-        let expected_ffi_path = normalize_path_for_config(&expected_ffi_path);
+        let cargo_toml = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written");
+        let expected_facade_path =
+            pathdiff::diff_paths(project_root.join("../waterui"), &companion_dir)
+                .expect("expected waterui facade dependency diff path");
+        let expected_facade_path = normalize_path_for_config(&expected_facade_path);
 
-        assert!(cargo_toml.contains(&format!("path = \"{expected_ffi_path}\"")));
+        assert!(cargo_toml.contains(&format!("path = \"{expected_facade_path}\"")));
         assert!(cargo_toml.contains("dev = [\"waterui_test/dev\"]"));
         // This crate roots the workspace preview modules join, so a module and the
         // runtime it is loaded into share one Cargo resolution. With none on disk
@@ -3098,52 +3093,40 @@ mod tests {
         // a literal path and rejects when it matches nothing.
         assert!(
             cargo_toml.contains("[workspace]"),
-            "generated FFI crate must root the preview module workspace"
+            "the generated companion must root the preview module workspace"
         );
         assert!(
             !cargo_toml.contains(crate::templates::PREVIEW_MODULES_DIR),
-            "an FFI crate with no preview module on disk must declare no members"
+            "a companion with no preview module on disk must declare no members"
         );
         let manifest = cargo_toml
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
-        assert_eq!(
-            manifest["target"]["cfg(not(target_vendor = \"apple\"))"]["dependencies"]["waterui-ffi"]["default-features"].as_bool(),
-            Some(false)
-        );
-        // The map capability reaches the Rust backend as well as the FFI
-        // surface: the `map` feature also enables `waterui-apple/map`, so the
-        // `MKMapView` leaf compiles only for apps whose graph holds
-        // `waterui-map`.
+            .expect("companion Cargo.toml should parse");
+        // The map capability reaches the Rust backend: the `map` feature
+        // enables `waterui-apple/map`, so the `MKMapView` leaf compiles only
+        // for apps whose graph holds `waterui-map`.
         let map_forwards = manifest["features"]["map"]
             .as_array()
             .expect("map feature is declared")
             .iter()
             .map(|feature| feature.as_str().expect("feature name"))
             .collect::<Vec<_>>();
-        assert_eq!(map_forwards, ["waterui-ffi/map", "waterui-apple/map"]);
-        assert!(manifest["dependencies"].get("waterui-ffi").is_none());
+        assert_eq!(map_forwards, ["waterui-apple/map"]);
         assert!(manifest["dependencies"].get("waterui-apple").is_none());
         assert!(
             manifest["target"]["cfg(target_vendor = \"apple\")"]["dependencies"]
                 .get("waterui-apple")
                 .is_some()
         );
-        assert!(
-            manifest["target"]["cfg(target_vendor = \"apple\")"]["dependencies"]
-                .get("waterui-ffi")
-                .is_none()
-        );
-        let lib = std::fs::read_to_string(ffi_dir.join("src/lib.rs")).unwrap();
-        assert!(lib.contains("#[cfg(not(target_vendor = \"apple\"))]\nwaterui_ffi::export!();"));
+        let lib = std::fs::read_to_string(companion_dir.join("src/lib.rs")).unwrap();
         assert!(
             lib.contains("#[cfg(target_vendor = \"apple\")]\nwaterui_apple::export_app!(app);")
         );
-        syn::parse_file(&lib).expect("mixed-target native companion parses");
+        syn::parse_file(&lib).expect("the Apple companion parses");
         assert_eq!(manifest["package"]["autobins"].as_bool(), Some(false));
         let bins = manifest["bin"]
             .as_array()
-            .expect("the FFI crate declares its entry-owning Apple binary");
+            .expect("the companion declares its entry-owning Apple binary");
         assert_eq!(bins.len(), 1);
         assert_eq!(
             bins[0]["name"].as_str(),
@@ -3153,26 +3136,30 @@ mod tests {
             bins[0]["path"].as_str(),
             Some("src/bin/waterui-apple-main.rs")
         );
-        let main_bin = std::fs::read_to_string(ffi_dir.join("src/bin/waterui-apple-main.rs"))
+        let main_bin = std::fs::read_to_string(companion_dir.join("src/bin/waterui-apple-main.rs"))
             .expect("apple main source should be written");
         assert!(!main_bin.contains("waterui_cef_prepare_macos_application"));
     }
 
-    /// A generated FFI manifest filters each forward by the feature table of
-    /// the package its destination resolves to — a `waterui-ffi` without
-    /// `inspector` drops the `waterui-ffi/inspector` entry only, and a
-    /// feature no destination declares is not emitted at all.
+    /// A generated manifest filters each forward by the feature table of
+    /// the package its destination resolves to — a `waterui-apple` without
+    /// `inspector` drops that entry, and a feature no destination declares
+    /// is not emitted at all.
     #[test]
     fn forwarded_features_follow_each_destination_package() {
         let mut manifest = cargo_toml::Manifest::<()>::default();
+        manifest.dependencies.insert(
+            "waterui".to_string(),
+            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
+        );
         manifest.dependencies.insert(
             "waterui-apple".to_string(),
             cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
         );
         let mut tables = super::FeatureTables::new();
         tables.insert(
-            "waterui-ffi".to_string(),
-            ["c-api", "media"].into_iter().map(str::to_string).collect(),
+            "waterui".to_string(),
+            ["gpu", "media"].into_iter().map(str::to_string).collect(),
         );
         tables.insert(
             "waterui-apple".to_string(),
@@ -3182,21 +3169,28 @@ mod tests {
                 .collect(),
         );
 
-        // `media` reaches both destinations.
+        // `media` reaches both the facade and the Apple backend.
         assert_eq!(
             super::feature_forwards("media", &manifest, &tables),
             vec![
-                "waterui-ffi/media".to_string(),
+                "waterui/media".to_string(),
                 "waterui-apple/media".to_string()
             ]
         );
-        // `map` is declared only by the Apple package: capability filtering
-        // drops the `waterui-ffi` entry but must not discard the Apple side.
+        // `map` is declared only by the Apple package; the facade carries no
+        // `map` feature at all, so only the backend entry is emitted.
         assert_eq!(
             super::feature_forwards("map", &manifest, &tables),
             vec!["waterui-apple/map".to_string()]
         );
-        // No destination declares `inspector` or `chromium`.
+        // `gpu` is a facade capability with no backend destination.
+        assert_eq!(
+            super::feature_forwards("gpu", &manifest, &tables),
+            vec!["waterui/gpu".to_string()]
+        );
+        // No destination declares `inspector` or `chromium` — `chromium`
+        // routes to `waterui-browser-cef`, which this manifest never
+        // declares.
         assert_eq!(
             super::feature_forwards("inspector", &manifest, &tables),
             Vec::<String>::new()
@@ -3206,62 +3200,53 @@ mod tests {
             Vec::<String>::new()
         );
 
-        // A companion manifest declares `waterui-ffi`: when the resolved
-        // package lacks the feature, the feature is not emitted — it must
-        // not fall back to the `waterui` facade, which routes only
-        // manifests that declare no `waterui-ffi` dependency at all.
-        let mut companion = cargo_toml::Manifest::<()>::default();
-        companion.dependencies.insert(
-            "waterui-ffi".to_string(),
+        // A destination the manifest declares but whose resolved package
+        // lacks the feature emits nothing: the forward names the feature
+        // verbatim, so an older package would fail the whole resolution.
+        let mut older = cargo_toml::Manifest::<()>::default();
+        older.dependencies.insert(
+            "waterui-apple".to_string(),
             cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
         );
-        companion.dependencies.insert(
-            "waterui".to_string(),
-            cargo_toml::Dependency::Simple(super::cargo_version_req("0.0.0")),
-        );
-        let mut companion_tables = super::FeatureTables::new();
-        companion_tables.insert(
-            "waterui-ffi".to_string(),
-            std::iter::once("c-api").map(str::to_string).collect(),
-        );
-        companion_tables.insert(
-            "waterui".to_string(),
-            std::iter::once("media").map(str::to_string).collect(),
+        let mut older_tables = super::FeatureTables::new();
+        older_tables.insert(
+            "waterui-apple".to_string(),
+            std::collections::BTreeSet::new(),
         );
         assert_eq!(
-            super::feature_forwards("media", &companion, &companion_tables),
+            super::feature_forwards("media", &older, &older_tables),
             Vec::<String>::new()
         );
     }
 
     /// A local checkout answers the forward filter itself: the scaffolded
-    /// manifest forwards only what the checkout's `ffi/Cargo.toml` declares —
-    /// the shape an older framework resolves to, where an unconditional
-    /// `inspector` forward failed the whole resolution.
+    /// manifest forwards only what the checkout's `backends/apple/Cargo.toml`
+    /// declares — the shape an older framework resolves to, where an
+    /// unconditional `inspector` forward failed the whole resolution.
     #[test]
-    fn ffi_scaffold_forwards_only_the_features_waterui_ffi_declares() {
+    fn apple_companion_forwards_only_the_features_waterui_apple_declares() {
         let tempdir = tempdir().expect("temporary scaffold dir");
         let waterui = tempdir.path().join("waterui");
-        write_fake_framework_checkout(&waterui, &["c-api", "media"]);
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+        write_fake_framework_checkout(&waterui, &["media"]);
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
         let ctx = ctx(
             Some(waterui),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(tempdir.path().join("app")),
         );
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("Apple companion scaffold should succeed");
 
-        let manifest: toml::Table = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest: toml::Table = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let features = manifest["features"].as_table().expect("features table");
         assert_eq!(
             features["media"]
@@ -3270,11 +3255,15 @@ mod tests {
                 .iter()
                 .map(|forward| forward.as_str())
                 .collect::<Vec<_>>(),
-            [Some("waterui-ffi/media"), Some("waterui-apple/media")]
+            [Some("waterui-apple/media")]
+        );
+        assert!(
+            !features.contains_key("map"),
+            "a waterui-apple without `map` gets no `map` forward"
         );
         assert!(
             !features.contains_key("inspector"),
-            "a waterui-ffi without `inspector` gets no `inspector` forward"
+            "a waterui-apple without `inspector` gets no `inspector` forward"
         );
     }
 
@@ -3300,21 +3289,21 @@ mod tests {
     }
 
     /// The channel path answers through real `cargo metadata`: a
-    /// `waterui-ffi` pinned at a git revision — the dev/nightly channel
+    /// `waterui-apple` pinned at a git revision — the dev/nightly channel
     /// shape — resolves through a local `file://` checkout, so the learned
     /// table is the exact resolved package's, matched on the package's own
-    /// name while the resolved edge spells it `waterui_ffi`. Two distinct
+    /// name while the resolved edge spells it `waterui_apple`. Two distinct
     /// resolved revisions yield their own tables, and an unresolvable probe
     /// fails instead of forwarding the unfiltered set.
     #[test]
     fn resolved_forward_tables_reads_the_resolved_package_from_cargo_metadata() {
         let tempdir = tempdir().expect("temporary probe fixture dir");
 
-        // A committed `waterui-ffi` checkout returns the revision a channel
+        // A committed `waterui-apple` checkout returns the revision a channel
         // manifest pins on.
-        let write_ffi = |dir_name: &str, version: &str, features: &[&str]| {
+        let write_backend = |dir_name: &str, version: &str, features: &[&str]| {
             let dir = tempdir.path().join(dir_name);
-            write_fixture_crate(&dir, "waterui-ffi", features);
+            write_fixture_crate(&dir, "waterui-apple", features);
             // The pinned revision must carry the declared version.
             let manifest_path = dir.join("Cargo.toml");
             let manifest = std::fs::read_to_string(&manifest_path)
@@ -3335,7 +3324,7 @@ mod tests {
                 ..Default::default()
             };
             manifest.dependencies.insert(
-                "waterui-ffi".to_string(),
+                "waterui-apple".to_string(),
                 cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
                     git: Some(git_url.to_string()),
                     rev: Some(rev.to_string()),
@@ -3353,19 +3342,19 @@ mod tests {
         let host = crate::toolchain::Host::current()
             .with_env("CARGO_HOME", tempdir.path().join("cargo-home"));
         for (dir_name, version, features) in [
-            ("ffi-0.5.2", "0.5.2", vec!["c-api", "media"]),
-            ("ffi-0.6.0", "0.6.0", vec!["c-api", "media", "inspector"]),
+            ("apple-0.5.2", "0.5.2", vec!["map", "media"]),
+            ("apple-0.6.0", "0.6.0", vec!["map", "media", "inspector"]),
         ] {
-            let (git_url, rev) = write_ffi(dir_name, version, &features);
+            let (git_url, rev) = write_backend(dir_name, version, &features);
             let manifest = manifest_for(&git_url, &rev);
             let tables = smol::block_on(super::resolved_forward_tables(
                 &host,
                 &manifest,
                 tempdir.path(),
-                &["waterui-ffi"],
+                &["waterui-apple"],
             ))
             .expect("the probe resolves the pinned fixture");
-            let table = &tables["waterui-ffi"];
+            let table = &tables["waterui-apple"];
             for feature in &features {
                 assert!(table.contains(*feature), "{version} must declare {feature}");
             }
@@ -3378,7 +3367,7 @@ mod tests {
 
         // Failure direction: the probe cannot resolve → the error propagates
         // with its context instead of the unfiltered set going out.
-        let missing = tempdir.path().join("ffi-missing");
+        let missing = tempdir.path().join("apple-missing");
         let manifest = manifest_for(
             &format!("file://{}", missing.display()),
             "0000000000000000000000000000000000000000",
@@ -3387,7 +3376,7 @@ mod tests {
             &host,
             &manifest,
             tempdir.path(),
-            &["waterui-ffi"],
+            &["waterui-apple"],
         ))
         .expect_err("an unresolvable probe must fail, not fall back");
         assert!(
@@ -3398,8 +3387,11 @@ mod tests {
 
     /// A fake checkout patching `waterui-core` to its own `core/`, and a
     /// project beside it at `app/` with the given `Cargo.toml`, returning the
-    /// FFI companion's context and directory.
-    fn patched_project_ffi(directory: &Path, project_manifest: &str) -> (TemplateContext, PathBuf) {
+    /// Apple companion's context and directory.
+    fn patched_project_companion(
+        directory: &Path,
+        project_manifest: &str,
+    ) -> (TemplateContext, PathBuf) {
         let checkout = directory.join("waterui");
         write_fake_framework_checkout(&checkout, super::FORWARDED_FEATURES);
         let root_manifest = checkout.join("Cargo.toml");
@@ -3409,20 +3401,20 @@ mod tests {
         let app = directory.join("app");
         std::fs::create_dir_all(&app).expect("project dir");
         std::fs::write(app.join("Cargo.toml"), project_manifest).expect("project manifest");
-        let ffi_dir = directory.join("managed_backends/ffi");
-        let ctx = ctx(Some(checkout), Some(ffi_dir.clone()), Some(app));
-        (ctx, ffi_dir)
+        let companion_dir = directory.join("managed_backends/apple-companion");
+        let ctx = ctx(Some(checkout), Some(companion_dir.clone()), Some(app));
+        (ctx, companion_dir)
     }
 
-    /// The FFI companion roots its own workspace, so the project's `[patch]`
+    /// The Apple companion roots its own workspace, so the project's `[patch]`
     /// entries reach it only by being copied: every source key, `path`
     /// entries made absolute, merged with the checkout's, and an entry the
     /// project spells differently from the checkout but resolving to the same
     /// directory kept once (#1997).
     #[test]
-    fn ffi_scaffold_merges_the_projects_patches_with_the_frameworks() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
-        let (ctx, ffi_dir) = patched_project_ffi(
+    fn apple_companion_scaffold_merges_the_projects_patches_with_the_frameworks() {
+        let tempdir = tempdir().expect("temporary companion scaffold dir");
+        let (ctx, companion_dir) = patched_project_companion(
             tempdir.path(),
             "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
              [patch.crates-io]\n\
@@ -3434,16 +3426,16 @@ mod tests {
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the Apple companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let patch = &manifest["patch"];
         let app = tempdir.path().join("app");
         assert_eq!(
@@ -3462,7 +3454,7 @@ mod tests {
             "the entry both name is the framework's"
         );
         assert!(
-            patch["crates-io"].get("waterui-ffi").is_some(),
+            patch["crates-io"].get("waterui-apple").is_some(),
             "the checkout's member entries stay"
         );
     }
@@ -3471,9 +3463,9 @@ mod tests {
     /// source, overrides the framework's entry, as the project's own build
     /// does: Cargo takes `[patch]` from the root manifest.
     #[test]
-    fn ffi_scaffold_takes_the_projects_entry_over_the_frameworks() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
-        let (ctx, ffi_dir) = patched_project_ffi(
+    fn apple_companion_scaffold_takes_the_projects_entry_over_the_frameworks() {
+        let tempdir = tempdir().expect("temporary companion scaffold dir");
+        let (ctx, companion_dir) = patched_project_companion(
             tempdir.path(),
             "[package]\nname = \"waterui_test\"\nversion = \"0.1.0\"\n\n\
              [patch.crates-io]\nwaterui-core = { path = \"../elsewhere/core\" }\n",
@@ -3481,16 +3473,16 @@ mod tests {
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the Apple companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         assert_eq!(
             manifest["patch"]["crates-io"]["waterui-core"]["path"].as_str(),
             Some(
@@ -3534,16 +3526,13 @@ mod tests {
     }
 
     #[test]
-    fn ffi_scaffold_declares_minimal_cef_helper_for_chromium() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
-        write_fake_framework_checkout(
-            &tempdir.path().join("waterui"),
-            super::FORWARDED_FEATURES,
-        );
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+    fn apple_companion_declares_minimal_cef_helper_for_chromium() {
+        let tempdir = tempdir().expect("temporary companion scaffold dir");
+        write_fake_framework_checkout(&tempdir.path().join("waterui"), super::FORWARDED_FEATURES);
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
         let ctx = ctx(
             Some(tempdir.path().join("waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
         .with_browser(BrowserTemplateContext::apple_managed(Some(
@@ -3552,40 +3541,40 @@ mod tests {
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "chromium-ffi",
+            "chromium-apple",
         ))
-        .expect("Chromium ffi scaffold should succeed");
+        .expect("the Chromium companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let bins = manifest["bin"]
             .as_array()
-            .expect("CEF FFI companion should declare binaries");
+            .expect("the CEF companion should declare binaries");
         assert_eq!(bins.len(), 2);
         assert_eq!(
             bins[0]["name"].as_str(),
             Some(crate::apple::platform::APPLE_ENTRY_BINARY_NAME)
         );
-        assert_eq!(bins[1]["name"].as_str(), Some("chromium-ffi-cef-helper"));
+        assert_eq!(bins[1]["name"].as_str(), Some("chromium-apple-cef-helper"));
         assert_eq!(
             bins[1]["path"].as_str(),
             Some("src/bin/waterui-cef-helper.rs")
         );
 
-        let helper = std::fs::read_to_string(ffi_dir.join("src/bin/waterui-cef-helper.rs"))
+        let helper = std::fs::read_to_string(companion_dir.join("src/bin/waterui-cef-helper.rs"))
             .expect("CEF helper source should be written");
         assert!(helper.contains("waterui_browser_cef::run_packaged_subprocess"));
-        assert!(!helper.contains("waterui_ffi"));
+
         assert!(helper.contains("#[cfg(target_os = \"macos\")]"));
         assert!(helper.contains(
             "compile_error!(\"The Apple CEF subprocess helper requires a macOS target\")"
         ));
 
-        let main_bin = std::fs::read_to_string(ffi_dir.join("src/bin/waterui-apple-main.rs"))
+        let main_bin = std::fs::read_to_string(companion_dir.join("src/bin/waterui-apple-main.rs"))
             .expect("apple main source should be written");
         assert!(main_bin.contains("waterui_browser_cef::initialize_macos_application"));
         assert!(main_bin.contains("waterui_browser_cef::initialize_sandbox_early"));
@@ -3604,7 +3593,6 @@ mod tests {
                 .any(|feature| feature.as_str() == Some("cef-runtime")),
             "the CEF dependency must enable the cef-runtime feature: {features:?}"
         );
-        assert!(!main_bin.contains("waterui_ffi"));
     }
 
     #[test]
@@ -3661,51 +3649,51 @@ mod tests {
         assert!(!without_cef.contains("waterui_browser_cef::initialize_macos_application"));
     }
 
+    /// The companion is rendered on hosts that cannot build for Apple — the
+    /// font scan reads its manifest everywhere — so a render without the
+    /// Apple pieces names no `waterui-apple` edge and no entry binary.
     #[test]
-    fn ffi_scaffold_without_apple_pieces_emits_no_apple_dependency() {
-        let tempdir = tempdir().expect("temporary ffi scaffold dir");
-        write_fake_framework_checkout(
-            &tempdir.path().join("waterui"),
-            super::FORWARDED_FEATURES,
-        );
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
+    fn apple_companion_without_apple_pieces_emits_no_apple_dependency() {
+        let tempdir = tempdir().expect("temporary companion scaffold dir");
+        write_fake_framework_checkout(&tempdir.path().join("waterui"), super::FORWARDED_FEATURES);
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
         let ctx = ctx(
             Some(tempdir.path().join("waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(tempdir.path().to_path_buf()),
         )
         .with_apple_pieces(false);
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "android-ffi",
+            "app-apple",
         ))
-        .expect("Android-only ffi scaffold should succeed");
+        .expect("a companion render without the Apple pieces should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         assert!(
             manifest["dependencies"].get("waterui-apple").is_none(),
-            "an Android-only ffi companion must not depend on waterui-apple"
+            "a companion without the Apple pieces must not depend on waterui-apple"
         );
         assert!(
             manifest
                 .get("bin")
                 .and_then(toml::Value::as_array)
                 .is_none_or(Vec::is_empty),
-            "an Android-only ffi companion declares no entry-owning binary"
+            "a companion without the Apple pieces declares no entry-owning binary"
         );
 
-        let lib = std::fs::read_to_string(ffi_dir.join("src/lib.rs"))
-            .expect("ffi lib.rs should be written");
+        let lib = std::fs::read_to_string(companion_dir.join("src/lib.rs"))
+            .expect("companion lib.rs should be written");
         // Parse the generated Rust and inspect its items structurally:
         // comments name these macros legitimately, so a text search cannot
         // tell an invocation from prose.
-        let file = syn::parse_file(&lib).expect("the generated ffi lib.rs must parse");
+        let file = syn::parse_file(&lib).expect("the generated companion lib.rs must parse");
         let invoked = |wanted: &[&str]| {
             file.items.iter().any(|item| {
                 matches!(item, syn::Item::Macro(item_macro)
@@ -3720,12 +3708,13 @@ mod tests {
             })
         };
         assert!(
-            !invoked(&["waterui_apple", "export_app"]),
-            "an Android-only ffi companion must not invoke waterui_apple::export_app!"
+            invoked(&["waterui_apple", "export_app"]),
+            "the companion always carries the waterui_apple::export_app! invocation"
         );
         assert!(
-            invoked(&["waterui_ffi", "export"]),
-            "the companion always emits the waterui_ffi::export!() invocation"
+            lib.contains("#[cfg(target_vendor = \"apple\")]\nwaterui_apple::export_app!(app);"),
+            "the export is gated on the Apple target, so a non-Apple build of \
+             the same source names no waterui-apple symbol:\n{lib}"
         );
         let app_shim = file.items.iter().any(|item| {
             let syn::Item::Fn(item_fn) = item else {
@@ -3750,20 +3739,20 @@ mod tests {
         });
         assert!(
             app_shim,
-            "the app(env) -> App shim every backend's export!() expansion calls must exist"
+            "the app(env) -> App shim the export_app!() expansion calls must exist"
         );
     }
 
     #[test]
-    fn ffi_lockfile_seed_follows_the_project_lockfile() {
-        let tempdir = tempdir().expect("temporary ffi seed dir");
+    fn companion_lockfile_seed_follows_the_project_lockfile() {
+        let tempdir = tempdir().expect("temporary companion seed dir");
         let project_lock = tempdir.path().join("Cargo.lock");
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
-        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
-        let managed_lock = ffi_dir.join("Cargo.lock");
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
+        std::fs::create_dir_all(&companion_dir).expect("companion dir");
+        let managed_lock = companion_dir.join("Cargo.lock");
         let seed = || {
             smol::block_on(crate::templates::seed_lockfile(
-                &ffi_dir,
+                &companion_dir,
                 &project_lock,
                 None,
             ))
@@ -3786,8 +3775,8 @@ mod tests {
         let managed =
             || packages(&std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock"));
         let pins_v1 = lock("pins", "1.0.0");
-        let pins_v1_with_ffi =
-            format!("{pins_v1}\n[[package]]\nname = \"ffi-entries\"\nversion = \"0.1.0\"\n");
+        let pins_v1_with_companion =
+            format!("{pins_v1}\n[[package]]\nname = \"companion-entries\"\nversion = \"0.1.0\"\n");
         let pins_v2 = lock("pins", "2.0.0");
 
         // No project lockfile: nothing to pin, the managed crate resolves on its own.
@@ -3799,12 +3788,13 @@ mod tests {
         assert_eq!(managed(), packages(&pins_v1));
 
         // Cargo rewrote the managed lockfile (pruned the project's unused entries,
-        // added the FFI crate's own); unchanged seed inputs leave that alone.
-        std::fs::write(&managed_lock, &pins_v1_with_ffi).expect("managed lock");
+        // added the companion crate's own); unchanged seed inputs leave that
+        // alone.
+        std::fs::write(&managed_lock, &pins_v1_with_companion).expect("managed lock");
         seed();
         assert_eq!(
             std::fs::read_to_string(&managed_lock).expect("managed Cargo.lock"),
-            pins_v1_with_ffi
+            pins_v1_with_companion
         );
 
         // The project re-resolved: the managed crate follows it — the new
@@ -3816,7 +3806,7 @@ mod tests {
         assert_eq!(
             managed(),
             std::collections::BTreeSet::from([
-                ("ffi-entries".to_owned(), "0.1.0".to_owned()),
+                ("companion-entries".to_owned(), "0.1.0".to_owned()),
                 ("pins".to_owned(), "1.0.0".to_owned()),
                 ("pins".to_owned(), "2.0.0".to_owned()),
             ]),
@@ -3836,14 +3826,14 @@ mod tests {
     /// (#2073).
     #[test]
     fn an_unchanged_seed_input_writes_nothing_over_the_pruned_lock() {
-        let tempdir = tempdir().expect("temporary ffi seed dir");
+        let tempdir = tempdir().expect("temporary companion seed dir");
         let project_lock = tempdir.path().join("Cargo.lock");
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
-        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
-        let managed_lock = ffi_dir.join("Cargo.lock");
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
+        std::fs::create_dir_all(&companion_dir).expect("companion dir");
+        let managed_lock = companion_dir.join("Cargo.lock");
         let seed = || {
             smol::block_on(crate::templates::seed_lockfile(
-                &ffi_dir,
+                &companion_dir,
                 &project_lock,
                 None,
             ))
@@ -3867,7 +3857,7 @@ mod tests {
         // entries pruned and the managed crate's own package added — a lock
         // no seed-merge equality could recognise.
         let pruned = format!(
-            "version = 4\n\n{}\n[[package]]\nname = \"ffi-entries\"\nversion = \"0.1.0\"\n",
+            "version = 4\n\n{}\n[[package]]\nname = \"companion-entries\"\nversion = \"0.1.0\"\n",
             lock("pins", "1.0.0")
         );
         std::fs::write(&managed_lock, &pruned).expect("pruned managed lock");
@@ -3903,14 +3893,14 @@ mod tests {
     /// over a lock that no longer carries them.
     #[test]
     fn a_failed_post_seed_step_leaves_the_next_seed_to_rerun() {
-        let tempdir = tempdir().expect("temporary ffi seed dir");
+        let tempdir = tempdir().expect("temporary companion seed dir");
         let project_lock = tempdir.path().join("Cargo.lock");
-        let ffi_dir = tempdir.path().join("managed_backends/ffi");
-        std::fs::create_dir_all(&ffi_dir).expect("ffi dir");
-        let managed_lock = ffi_dir.join("Cargo.lock");
+        let companion_dir = tempdir.path().join("managed_backends/apple-companion");
+        std::fs::create_dir_all(&companion_dir).expect("companion dir");
+        let managed_lock = companion_dir.join("Cargo.lock");
         let seed = || {
             smol::block_on(crate::templates::seed_lockfile(
-                &ffi_dir,
+                &companion_dir,
                 &project_lock,
                 None,
             ))
@@ -3924,7 +3914,7 @@ mod tests {
         seed();
         let found_lock = std::fs::read(&managed_lock).expect("managed Cargo.lock");
         let found_stamp =
-            std::fs::read(ffi_dir.join(crate::templates::LOCKFILE_SEED)).expect("seed stamp");
+            std::fs::read(companion_dir.join(crate::templates::LOCKFILE_SEED)).expect("seed stamp");
 
         // The project re-pinned, the seed ran — and the post-seed
         // resolution failed, so the error path restores the pair the run
@@ -3932,7 +3922,7 @@ mod tests {
         std::fs::write(&project_lock, lock("2.0.0")).expect("project lock");
         seed();
         smol::block_on(crate::templates::restore_seeded_lockfile(
-            &ffi_dir,
+            &companion_dir,
             Some(&found_lock),
             Some(&found_stamp),
         ))
@@ -3962,7 +3952,7 @@ mod tests {
     /// workspace carrying that one member.
     #[test]
     fn apple_preview_module_scaffold_emits_dylib_only_wrapper() {
-        let tempdir = tempdir().expect("temporary preview ffi scaffold dir");
+        let tempdir = tempdir().expect("temporary preview module scaffold dir");
         let project_root = tempdir.path().join("app");
         let apple_preview_module_dir = tempdir
             .path()
@@ -3977,12 +3967,6 @@ mod tests {
         )
         .expect("fixture workspace manifest");
         write_fixture_crate(&workspace_root.join("preview"), "waterui-preview", &[]);
-        // The forward filter reads the `waterui-ffi` table off the checkout.
-        write_fixture_crate(
-            &workspace_root.join("ffi"),
-            "waterui-ffi",
-            &["c-api", "android-jni"],
-        );
         let ctx = ctx(
             Some(workspace_root),
             Some(apple_preview_module_dir.clone()),
@@ -3993,41 +3977,28 @@ mod tests {
             &crate::toolchain::Host::current(),
             &apple_preview_module_dir,
             &ctx,
-            "app-preview-ffi",
+            "app-preview-module",
         ))
-        .expect("preview ffi scaffold should succeed");
+        .expect("preview module scaffold should succeed");
 
         let cargo_toml = std::fs::read_to_string(apple_preview_module_dir.join("Cargo.toml"))
-            .expect("preview ffi Cargo.toml should be written");
+            .expect("preview module Cargo.toml should be written");
         let manifest = cargo_toml
             .parse::<toml::Table>()
-            .expect("preview ffi Cargo.toml should parse");
+            .expect("preview module Cargo.toml should parse");
         let abi_features = manifest["features"][apple_preview_module::APPLE_ABI_FEATURE]
             .as_array()
             .expect("platform preview ABI feature should be an array")
             .iter()
             .map(|feature| feature.as_str().expect("feature should be a string"))
             .collect::<Vec<_>>();
-        assert_eq!(
-            abi_features,
-            [
-                "dep:waterui-ffi",
-                "waterui-ffi/c-api",
-                "dep:waterui-preview"
-            ]
+        assert_eq!(abi_features, ["dep:waterui-preview"]);
+        // The module is loaded by the Apple support app alone, so it names
+        // one dependency set for every target it is ever built for.
+        assert!(
+            !manifest.contains_key("target"),
+            "the preview module declares no target-specific dependency table"
         );
-        assert_eq!(
-            manifest["target"]["cfg(not(target_vendor = \"apple\"))"]["dependencies"]["waterui-ffi"]["optional"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            manifest["target"]["cfg(not(target_vendor = \"apple\"))"]["dependencies"]["waterui-ffi"]["default-features"].as_bool(),
-            Some(false)
-        );
-        assert!(manifest["dependencies"].get("waterui-ffi").is_none());
-        let targets = manifest["target"].as_table().unwrap();
-        assert_eq!(targets.len(), 1);
-        assert!(targets.contains_key("cfg(not(target_vendor = \"apple\"))"));
         // The module is a member of the support runtime's workspace, never a
         // workspace of its own: one Cargo resolution is what makes the module and
         // the runtime it is loaded into agree on the `-C metadata` hash that ends
@@ -4071,36 +4042,36 @@ mod tests {
     }
 
     #[test]
-    fn generated_ffi_manifest_emits_only_linked_crate_types() {
+    fn generated_companion_manifest_emits_only_linked_crate_types() {
         let temp = tempfile::tempdir().expect("temp dir");
         write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FEATURES);
         let project_root = temp.path().join("project");
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
-        let ffi_dir = temp
+        let companion_dir = temp
             .path()
             .join("cache")
             .join("managed_backends")
-            .join("ffi");
+            .join("apple-companion");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root),
         );
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let crate_types = manifest["lib"]["crate-type"]
             .as_array()
             .expect("crate-type should be an array")
@@ -4135,27 +4106,27 @@ mod tests {
     fn generated_native_build_script_has_no_swift_link_contract() {
         let temp = tempfile::tempdir().expect("temp dir");
         write_fake_framework_checkout(&temp.path().join("waterui"), super::FORWARDED_FEATURES);
-        let ffi_dir = temp.path().join("managed_backends").join("ffi");
+        let companion_dir = temp.path().join("managed_backends").join("apple-companion");
         let project_root = temp.path().join("project");
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root),
         );
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the companion scaffold should succeed");
 
-        let build_script = std::fs::read_to_string(ffi_dir.join("build.rs"))
-            .expect("ffi build.rs should be written");
+        let build_script = std::fs::read_to_string(companion_dir.join("build.rs"))
+            .expect("companion build.rs should be written");
         assert!(!build_script.contains("waterui_swift_"));
         assert!(!build_script.contains("rustc-link-arg-cdylib"));
     }
@@ -4168,29 +4139,29 @@ mod tests {
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
-        let ffi_dir = temp
+        let companion_dir = temp
             .path()
             .join("cache")
             .join("managed_backends")
-            .join("ffi");
+            .join("apple-companion");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root),
         );
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let dev = &manifest["profile"]["dev"];
 
         // Generated crates declare `[workspace]`, so they inherit no profile and have
@@ -4208,29 +4179,29 @@ mod tests {
         // The relative `waterui_path` resolves through the project root, so
         // it must exist for `project/../waterui` to land on the checkout.
         std::fs::create_dir_all(&project_root).expect("project root dir");
-        let ffi_dir = temp
+        let companion_dir = temp
             .path()
             .join("cache")
             .join("managed_backends")
-            .join("ffi");
+            .join("apple-companion");
         let ctx = ctx(
             Some(PathBuf::from("../waterui")),
-            Some(ffi_dir.clone()),
+            Some(companion_dir.clone()),
             Some(project_root),
         );
 
         smol::block_on(crate::templates::apple_companion::scaffold(
             &crate::toolchain::Host::current(),
-            &ffi_dir,
+            &companion_dir,
             &ctx,
-            "app-ffi",
+            "app-apple",
         ))
-        .expect("ffi scaffold should succeed");
+        .expect("the companion scaffold should succeed");
 
-        let manifest = std::fs::read_to_string(ffi_dir.join("Cargo.toml"))
-            .expect("ffi Cargo.toml should be written")
+        let manifest = std::fs::read_to_string(companion_dir.join("Cargo.toml"))
+            .expect("companion Cargo.toml should be written")
             .parse::<toml::Table>()
-            .expect("ffi Cargo.toml should parse");
+            .expect("companion Cargo.toml should parse");
         let release = &manifest["profile"]["release"];
 
         // Generated crates are their own workspace roots, so a plain
@@ -4738,7 +4709,7 @@ async fn write_support_cargo_toml(
 enum NativeBackendDependencySource<'a> {
     /// The checkout root itself — the `waterui` facade crate.
     WateruiRoot,
-    /// A member directory inside the checkout (`core`, `ffi`, …).
+    /// A member directory inside the checkout (`core`, `backends/apple`, …).
     WorkspaceSubdir(&'a str),
     /// The source the checkout's own manifest resolves the crate to: its
     /// `[patch.crates-io]` override when the declared `[workspace.dependencies]`
@@ -7579,7 +7550,13 @@ pub mod apple_companion {
         package_name: &str,
     ) -> io::Result<()> {
         generate_cargo_toml(host, base_dir, ctx, package_name).await?;
-        scaffold_dir(TemplateNamespace::AppleCompanion, &embedded::APPLE_COMPANION, base_dir, ctx).await?;
+        scaffold_dir(
+            TemplateNamespace::AppleCompanion,
+            &embedded::APPLE_COMPANION,
+            base_dir,
+            ctx,
+        )
+        .await?;
         // A previous render carrying the Apple pieces leaves the entry
         // binary behind; a render without them must not ship a file naming
         // an undeclared dependency.
@@ -7816,7 +7793,7 @@ pub mod apple_preview {
     }
 }
 
-/// The preview modules that live under a generated FFI crate, as member paths.
+/// The preview modules that live under the generated companion crate, as member paths.
 ///
 /// # Errors
 ///
@@ -7843,10 +7820,11 @@ async fn preview_module_members(companion_crate_dir: &Path) -> io::Result<Vec<St
     Ok(members)
 }
 
-/// Directory, relative to the generated FFI crate, that holds preview modules.
+/// Directory, relative to the generated companion crate, that holds preview modules.
 ///
-/// The FFI crate roots the workspace these modules join; see the workspace
-/// declaration in `ffi::generate_cargo_toml` for why they must share one.
+/// The companion crate roots the workspace these modules join; see the
+/// workspace declaration in `apple_companion::generate_cargo_toml` for why
+/// they must share one.
 pub const PREVIEW_MODULES_DIR: &str = "modules";
 
 /// Root-level templates (Cargo.toml, lib.rs, .gitignore).
@@ -8468,7 +8446,7 @@ pub mod inspector {
             dependency_path(&inspector_app_path),
         );
 
-        // The FFI scaffold generated alongside this app declares
+        // The companion scaffold generated alongside this app declares
         // `dev = ["<app>/dev"]`, so an app without a `dev` feature cannot be
         // resolved at all: cargo fails the whole metadata query before anything
         // is built. Every generated project carries this feature; the support
@@ -8511,11 +8489,12 @@ pub mod inspector {
         }
 
         /// The support crate is a plain Rust library: the generated backend
-        /// crate is what each platform links, so it carries neither the
-        /// widget-FFI dependency nor its export — under Hydrolysis on Android
-        /// that export would collide with the launcher's `JNI_OnLoad`.
+        /// crate is what each platform links, so the support crate declares
+        /// no backend dependency of its own and exports no entry point —
+        /// under Hydrolysis on Android such an export would collide with the
+        /// launcher's `JNI_OnLoad`.
         #[test]
-        fn the_support_crate_carries_no_widget_ffi() {
+        fn the_support_crate_declares_no_backend_dependency() {
             smol::block_on(async {
                 let temporary = tempfile::tempdir().expect("tempdir");
                 let checkout = temporary.path().join("waterui");
@@ -8558,22 +8537,22 @@ pub mod inspector {
                         .is_some(),
                     "{cargo_toml}"
                 );
-                assert!(!cargo_toml.contains("waterui-ffi"), "{cargo_toml}");
+                assert!(!cargo_toml.contains("waterui-apple"), "{cargo_toml}");
                 assert!(manifest.get("target").is_none(), "{cargo_toml}");
 
                 let lib = std::fs::read_to_string(app.join("src/lib.rs")).expect("lib.rs");
                 assert!(lib.contains("waterui_inspector_app::app(env)"), "{lib}");
-                assert!(!lib.contains("waterui_ffi"), "{lib}");
+                assert!(!lib.contains("export_app!"), "{lib}");
             });
         }
 
-        /// The FFI scaffold generated beside this app declares
+        /// The companion scaffold generated beside this app declares
         /// `dev = ["<app>/dev"]`. An app without that feature cannot be
         /// resolved at all — cargo fails the metadata query and `water
         /// inspector` dies before building anything, which is exactly what it
         /// did until this was noticed.
         #[test]
-        fn the_generated_app_declares_the_feature_its_ffi_scaffold_requires() {
+        fn the_generated_app_declares_the_feature_its_companion_scaffold_requires() {
             let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("src/project_model/templates.rs");
             let source = std::fs::read_to_string(generated).expect("the module is readable");

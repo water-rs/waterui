@@ -293,9 +293,8 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         args.backend.map(TargetBackend::lib_backend),
     )?);
     validate_backend_args(args, backend)?;
-    // Hydrolysis on Android opens no managed backend — the old widget-FFI
-    // backend is not its runtime; the Hydrolysis launcher crate
-    // `ensure_generated_backend` produces is.
+    // Hydrolysis on Android opens no managed backend crate: its runtime is
+    // the Hydrolysis launcher crate `ensure_generated_backend` produces.
     let managed_backends =
         if (args.platform, backend) == (TargetPlatform::Android, TargetBackend::Hydrolysis) {
             ManagedBackends::NONE
@@ -509,8 +508,8 @@ fn validate_arch_args(
     {
         waterui_cli::apple::platform::validate_architecture(arch.architecture())?;
     }
-    // Hydrolysis on Android takes --arch like the Android backend; on its
-    // desktop platforms the triple is the host's.
+    // Hydrolysis takes --arch on Android, where the build cross-compiles
+    // per ABI; on its desktop platforms the triple is the host's.
     let arch_free_backend = matches!(backend, TargetBackend::Gtk4 | TargetBackend::WinUi)
         || (backend == TargetBackend::Hydrolysis && platform != TargetPlatform::Android);
     if arch_free_backend && arch.is_some() {

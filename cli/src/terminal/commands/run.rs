@@ -301,8 +301,8 @@ impl From<CliLogLevel> for LogLevel {
 /// `--platform ios` covers both the physical device and the simulator; the
 /// device that decides between them is selected only after the project is
 /// open, and both build with the same Apple project. Hydrolysis on Android
-/// opens nothing — the old widget-FFI backend is not its runtime; the
-/// managed launcher crate `ensure_generated_backend` produces is.
+/// opens nothing: its runtime is the managed launcher crate
+/// `ensure_generated_backend` produces.
 const fn managed_backends(platform: TargetPlatform, backend: TargetBackend) -> ManagedBackends {
     if matches!(platform, TargetPlatform::Android) && matches!(backend, TargetBackend::Hydrolysis) {
         return ManagedBackends::NONE;
@@ -805,8 +805,8 @@ async fn build_and_run(
     // the Rust build: a release run without a valid `[signing.android]`
     // fails here instead of after compiling. The plan binds to this project
     // and these options; the Gradle step re-proves the binding rather than
-    // resolving again. `[signing.android]` is an Android platform contract —
-    // both Android backends prepare it.
+    // resolving again. `[signing.android]` is an Android platform contract,
+    // prepared here for every Android run.
     let package_options =
         package_options(&config, shell.build_progress()).with_device_udid(device_udid);
     let prepared_signing = (build_plan.lib_platform == LibTargetPlatform::Android)

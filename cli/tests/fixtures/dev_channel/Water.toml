@@ -11,8 +11,6 @@ minimum-cli-version = "0.4.4"
 rust-version = "1.95.0"
 
 [framework.metadata]
-android-backend-revision = "d3cad6430809d6a10341ee35d10e902f17b106d6"
-android-backend-url = "https://github.com/water-rs/android-backend.git"
 android-gradle-version = "9.7.1"
 android-min-api-level = 31
 apple-backend-path = "backends/apple"
@@ -27,8 +25,6 @@ scaffold-packages = [
 ]
 
 [framework.scaffold]
-android-backend-revision = "d3cad6430809d6a10341ee35d10e902f17b106d6"
-android-backend-url = "https://github.com/water-rs/android-backend.git"
 apple-backend-path = "backends/apple"
 hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 hydrolysis-m3-version = "0.3.1"
@@ -307,14 +303,6 @@ git = "https://github.com/water-rs/waterui"
 rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
 
 [framework.patches.crates-io.waterui-dylib]
-git = "https://github.com/water-rs/waterui"
-rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
-
-[framework.patches.crates-io.waterui-ffi]
-git = "https://github.com/water-rs/waterui"
-rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
-
-[framework.patches.crates-io.waterui-ffi-generator]
 git = "https://github.com/water-rs/waterui"
 rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
 

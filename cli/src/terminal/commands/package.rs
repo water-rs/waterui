@@ -259,9 +259,8 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         args.backend
             .map(|backend| backend.cli_backend().lib_backend()),
     )?);
-    // Hydrolysis on Android opens no managed backend — the old widget-FFI
-    // backend is not its runtime; the Hydrolysis launcher crate
-    // `ensure_generated_backend` produces is.
+    // Hydrolysis on Android opens no managed backend crate: its runtime is
+    // the Hydrolysis launcher crate `ensure_generated_backend` produces.
     let managed_backends =
         if (args.platform, backend) == (TargetPlatform::Android, TargetBackend::Hydrolysis) {
             ManagedBackends::NONE
@@ -303,8 +302,8 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
     // nothing installs or accepts. The plan is bound to this project and to
     // the final package options, and the Gradle step re-proves that binding
     // instead of re-probing the manifest and the environment. `[signing.
-    // android]` is an Android platform contract, so both Android backends
-    // resolve it here.
+    // android]` is an Android platform contract, resolved here for every
+    // Android package.
     let package_options = PackageOptions::packaging(
         if args.distribution {
             PackageAudience::Distribution
@@ -884,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_arch_for_non_android_backend() {
+    fn rejects_arch_for_a_non_android_target() {
         let err = validate_arch_args(
             TargetPlatform::Macos,
             TargetBackend::Apple,

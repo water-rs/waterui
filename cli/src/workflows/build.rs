@@ -4378,7 +4378,7 @@ mod tests {
     #[test]
     fn reported_artifact_selects_the_static_archive_from_declared_types() {
         let temporary = tempdir().expect("tempdir");
-        let crate_dir = temporary.path().join("demo-ffi-deadbeef");
+        let crate_dir = temporary.path().join("demo-apple-deadbeef");
         std::fs::create_dir_all(&crate_dir).expect("crate dir");
         std::fs::write(crate_dir.join("Cargo.toml"), "[package]\n").expect("manifest");
         let manifest =
@@ -4394,7 +4394,7 @@ mod tests {
 
         let stdout = serde_json::json!({
             "reason": "compiler-artifact",
-            "package_id": "path+file:///x#demo-ffi@0.1.0",
+            "package_id": "path+file:///x#demo-apple@0.1.0",
             "manifest_path": manifest,
             "target": {
                 "kind": ["lib"],

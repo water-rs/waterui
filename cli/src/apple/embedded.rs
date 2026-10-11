@@ -117,7 +117,7 @@ pub async fn build_xcframework(
     options: &BuildOptions,
     architecture: Option<Architecture>,
 ) -> Result<EmbeddedArtifact> {
-    // The package's dependency table is read from the generated FFI
+    // The package's dependency table is read from the generated Apple
     // manifest below — it must render before anything resolves it.
     project.scaffold_apple_companion().await?;
     let selected = slices(architecture)?;

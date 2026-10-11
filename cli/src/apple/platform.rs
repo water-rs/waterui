@@ -31,7 +31,7 @@ use crate::{
     utils::copy_file,
 };
 
-/// The generated FFI crate's application binary — the `[[bin]]` target
+/// The generated Apple companion's application binary — the `[[bin]]` target
 /// `src/bin/waterui-apple-main.rs` declares.
 ///
 /// Entry-owning Apple packaging installs it as the bundle executable; the
@@ -319,7 +319,7 @@ pub(crate) async fn build_rust_lib_with_links(
         options
     };
 
-    // The ffi companion is the crate this builds — render it for the graph
+    // The Apple companion is the crate this builds — render it for the graph
     // its `cfg` tables serve before anything reads its manifest.
     project.scaffold_apple_companion().await?;
 
@@ -501,7 +501,7 @@ pub(crate) async fn build_rust_lib_with_links(
     // VideoToolbox serves the media codec chain (`waterkit-codec`'s hardware
     // decode); an app without the media capability never loads it, so it
     // joins the link line only when the resolved graph says so — the same
-    // predicate that selects the `media` FFI surface.
+    // predicate that selects the `media` capability surface.
     if crate::project_model::assets::capability_enabled(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
@@ -806,7 +806,7 @@ pub async fn package_apple(
         .apple_bundle_identifier()
         .map_err(|error| eyre::eyre!("{error}"))?;
     let triple = platform.triple();
-    // The ffi companion's manifest feeds the declaration scan below —
+    // The Apple companion's manifest feeds the declaration scan below —
     // render it before it is read.
     project.scaffold_apple_companion().await?;
     let browser_runtime_plan = project

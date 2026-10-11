@@ -1232,8 +1232,8 @@ mod tests {
     /// The stable resolution `fixture_project` records, pinned to a fixture
     /// mirror of the framework repository under `dir`: `write_local_checkout`'s
     /// manifest and lock plus the member crates a generated manifest resolves
-    /// (`waterui` at the root, `waterui-ffi` at `ffi`, `waterui-apple` at
-    /// `backends/apple`, `hydrolysis` at `backends/hydrolysis` — every
+    /// (`waterui` at the root, `waterui-apple` at `backends/apple`,
+    /// `hydrolysis` at `backends/hydrolysis` — every
     /// directory `[workspace] members` names). The mirror's own commit is the
     /// release revision, so `git`-pinned member dependencies like
     /// `waterui-apple` — a precise source `[patch]` cannot redirect — fetch
@@ -1247,23 +1247,6 @@ mod tests {
         write_local_checkout(&waterui_root);
         std::fs::create_dir_all(waterui_root.join("src")).expect("waterui src");
         std::fs::write(waterui_root.join("src/lib.rs"), "").expect("waterui lib");
-        write_vendor_stub(
-            &waterui_root.join("ffi"),
-            "waterui-ffi",
-            &[
-                "android-jni",
-                "c-api",
-                "chromium",
-                "dev",
-                "gpu",
-                "inspector",
-                "map",
-                "media",
-                "video",
-                "webview",
-                "webview-cef",
-            ],
-        );
         write_vendor_stub(
             &waterui_root.join("backends/apple"),
             "waterui-apple",
@@ -1352,7 +1335,7 @@ mod tests {
             .await
             .expect("offline metadata resolves the patched project");
 
-        // The ffi companion's feature probe and the Gradle staging resolve
+        // The Apple companion's feature probe and the Gradle staging resolve
         // the framework mirror's `git` pins through the project's host, so
         // point cargo at a per-test `CARGO_HOME`: a fetch into the real
         // one is exactly the machine leak this seam exists to prevent.
