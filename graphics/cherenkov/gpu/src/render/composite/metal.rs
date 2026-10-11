@@ -10,6 +10,17 @@ use crate::render::composition as report;
 use crate::render::lower::{PipelineKind, ShaderVariant, Target};
 use crate::render::{Bind1Key, ScratchTarget, SurfaceState, create_target, make_bind1};
 
+/// Attachment slots this executor binds at once, slot zero — the
+/// epoch's stored output — included.
+///
+/// `attachment.metal` declares the closed set this names:
+/// `TILE_OUTPUT(D)` for every `D` below `SLOTS`, giving each target its
+/// simple, shadow, clear and self-sourced fragment, plus
+/// `TILE_COMPOSITE(D,S)` for every other pair. Every target and source
+/// slot the planner can assign within [`crate::render::composite::plan::Limits::slots`]
+/// therefore has an entry point.
+pub const SLOTS: u8 = 4;
+
 #[derive(Default)]
 pub struct Attachments {
     textures: FxHashMap<(u32, u32), AttachmentSet>,
@@ -117,8 +128,12 @@ impl Executor {
                         workgroup_size: (0, 0, 0),
                     })
                     .collect();
-            for target in 0..4 {
-                for source in ["simple", "shadow", "clear", "0", "1", "2", "3"] {
+            for target in 0..SLOTS {
+                let sources = ["simple", "shadow", "clear"]
+                    .map(String::from)
+                    .into_iter()
+                    .chain((0..SLOTS).map(|source| source.to_string()));
+                for source in sources {
                     entries.push(wgpu::PassthroughShaderEntryPoint {
                         name: Cow::Owned(format!("tile_{target}_{source}")),
                         workgroup_size: (0, 0, 0),
@@ -328,7 +343,7 @@ pub fn encode(
         occlusion_query_set: None,
         multiview_mask: None,
     });
-    let mut used = [false; 4];
+    let mut used = [false; SLOTS as usize];
     for op in &epoch.ops {
         tracing::trace!(pass = op.pass, target = op.target, backdrop = ?op.backdrop, "tile operation");
         let canonical = &surf.frame.passes[op.pass];
