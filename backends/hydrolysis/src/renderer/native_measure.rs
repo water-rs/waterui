@@ -77,10 +77,7 @@ impl HydroNativeView for Native<MapConfig> {
 /// `webview-system` feature mounts the platform `WebView` as a
 /// platform-view instance, so reaching this is a non-system engine's
 /// handle slipping past the leaf's downcast.
-#[cfg(not(any(
-    hydrolysis_system_webview,
-    hydrolysis_android_system_webview
-)))]
+#[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
 pub fn unsupported_webview() -> ! {
     panic!(
         "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \

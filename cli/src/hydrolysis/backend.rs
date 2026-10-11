@@ -127,26 +127,28 @@ impl HydrolysisBackend {
             remedy: "the wasm32 table serves every wasm32 target alike; a graph that \
                      enables video or the WebView on one of them must enable it on all",
         };
-        let ((project_packages, macos, linux, windows, web), android) = futures_util::future::try_join(
-            futures_util::future::try_join5(
-                project.project_packages(framework, &targets),
-                project.native_browser_answers(
-                    crate::platform::NativeOs::MacOs,
-                    section(crate::platform::NativeOs::MacOs.cfg()),
+        let ((project_packages, macos, linux, windows, web), android) =
+            futures_util::future::try_join(
+                futures_util::future::try_join5(
+                    project.project_packages(framework, &targets),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::MacOs,
+                        section(crate::platform::NativeOs::MacOs.cfg()),
+                    ),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::Linux,
+                        section(crate::platform::NativeOs::Linux.cfg()),
+                    ),
+                    project.native_browser_answers(
+                        crate::platform::NativeOs::Windows,
+                        section(crate::platform::NativeOs::Windows.cfg()),
+                    ),
+                    project.web_answers(web_section),
                 ),
-                project.native_browser_answers(
-                    crate::platform::NativeOs::Linux,
-                    section(crate::platform::NativeOs::Linux.cfg()),
-                ),
-                project.native_browser_answers(
-                    crate::platform::NativeOs::Windows,
-                    section(crate::platform::NativeOs::Windows.cfg()),
-                ),
-                project.web_answers(web_section),
-            ),
-            project.browser_answers_for(&android_targets, section("cfg(target_os = \"android\")")),
-        )
-        .await?;
+                project
+                    .browser_answers_for(&android_targets, section("cfg(target_os = \"android\")")),
+            )
+            .await?;
         Ok(TemplateContext::for_project_manifest(
             project.host(),
             manifest,
