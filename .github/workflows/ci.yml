@@ -57,8 +57,11 @@ env:
   # fast runs write that cache; the full nightly lint is a restore-only reader.
   # Daily test profiles no longer save their multi-GB target archives, which
   # previously occupied the budget while every dev push cold-compiled clippy.
-  # The other jobs share Cargo sources under per-OS cargo-home keys, with one
-  # writer per OS. No test or platform coverage is removed by this allocation.
+  # The other jobs share Cargo sources under per-OS `cargo-sources-<OS>`
+  # archives (only ~/.cargo/registry + ~/.cargo/git, lockfile-keyed), each
+  # with one writer per OS: the fast lint job on Linux, the Apple gate's
+  # rust job on macOS, and the main test job on Windows. No test or platform
+  # coverage is removed by this allocation.
   # The former full set of target archives measured ~27 GB against the cap.
   # Incremental artifacts are per-machine rebuild state, useless to a fresh
   # runner, so they stay disabled rather than bloating the restored cache.
@@ -69,7 +72,10 @@ jobs:
   # not prose or repository metadata, so a docs-only change runs the typo
   # check and nothing else; `ffi` is the C ABI and the root manifest whose
   # metadata names its Android floor; `deps` is what the audit, license and
-  # unused-dependency checks read. A workflow change runs the whole gate, because a
+  # unused-dependency checks read; `android` is the CLI's Android paths and
+  # the Hydrolysis Android host, the only changes that can break the
+  # create/build/package cycle the `android-package` job runs. A workflow
+  # change runs the whole gate, because a
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
@@ -92,6 +98,7 @@ jobs:
       ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -112,6 +119,16 @@ jobs:
             scripts:
               - ".github/scripts/**"
               - "Cargo.toml"
+            android:
+              - "cli/src/android/**"
+              - "cli/src/hydrolysis/android.rs"
+              - "cli/src/templates/*android*/**"
+              - "cli/src/toolchain/**"
+              - "cli/src/toolchain_checks.rs"
+              - "cli/Cargo.toml"
+              - "backends/hydrolysis/android/**"
+              # `[package.metadata.waterui]`'s Android keys drive the scaffold.
+              - "Cargo.toml"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
@@ -126,6 +143,22 @@ jobs:
               - "!docs/**"
               - "!LICENSE*"
               - "!.github/ISSUE_TEMPLATE/**"
+
+  # The affected-only scope (#1428): the determinator compares the base
+  # and head package graphs and marks every crate the diff can reach —
+  # anything under a package's directory belongs to it, an outside-package
+  # path the rules do not name selects the whole workspace, and prose
+  # selects nothing (see `.github/tools/affected/rules.toml`). The `test`
+  # call below lints exactly that set; `msrv` runs only when the diff can
+  # move the toolchain floor — a `rust-version`, dependency-section or
+  # Cargo.lock change — because a source edit cannot raise it and the
+  # signal repeats in the nightly sweep instead.
+  scope:
+    name: Affected scope
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/affected.yml
+    with:
+      base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
   typos:
     name: Typos
@@ -179,10 +212,11 @@ jobs:
       # the larger graph.
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # Only the license check below needs a native dependency (nasm, for a
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
@@ -241,73 +275,31 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           targets: x86_64-pc-windows-msvc
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - name: Compile the DX12 backend against the committed lockfile
         run: cargo check --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
 
-  # `rust-version` is a promise that the whole workspace compiles on that
-  # toolchain, and nothing else in this gate keeps it true: every other leg
-  # installs `stable` or a newer pin. `clippy::incompatible_msrv` only knows
-  # std API stabilization versions — language features, syntax, and a
-  # dependency that raised its own MSRV in a patch release are invisible to
-  # it. Only compiling on the declared toolchain catches those, which is what
-  # this leg does.
+  # The shared steps live in `.github/actions/msrv` so the nightly can run
+  # the identical check: here it is gated on the diff touching a toolchain
+  # boundary, there it sweeps the whole workspace nightly — the signal
+  # moves, it does not disappear.
   msrv:
     name: MSRV
-    needs: changes
-    # Any non-prose file can introduce a construct the declared toolchain
-    # cannot compile; a dependency bump reaches the same check through the
-    # committed lockfile.
-    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.deps == 'true'
+    needs: [changes, scope]
+    if: needs.scope.outputs.msrv == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # An ordinary job, not a workflow_call: `MSRV` is a required status
+    # check, and a reusable workflow would report `MSRV / MSRV` — the
+    # required context never fires. The shared steps live in the
+    # `.github/actions/msrv` composite.
     steps:
       - uses: actions/checkout@v4
-      # `stable` here only resolves the manifest and installs tools; the
-      # compile below runs on the declared toolchain.
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache: "false"
-      # The version comes from the manifest, not a literal in this file —
-      # two sources of truth drift apart, which is the defect this leg exists
-      # to close. `cargo msrv verify` reads `rust-version` out of the
-      # manifest again on its own before compiling, so both ends agree on
-      # what is being verified.
-      - name: Install and pin the declared toolchain
-        run: |
-          set -euo pipefail
-          msrv="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui") | .rust_version')"
-          if ! [[ "$msrv" =~ ^[0-9]+\.[0-9]+ ]]; then
-            echo "::error file=Cargo.toml::the waterui package must declare a major.minor rust-version (got '$msrv')"
-            exit 1
-          fi
-          rustup toolchain install "$msrv" --profile minimal
-          # rust-toolchain.toml sets channel = "stable", and the file wins
-          # over `rustup default` — which is all dtolnay/rust-toolchain sets,
-          # so pinning through it would compile on stable and verify nothing.
-          # The environment variable is the override that beats the file.
-          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
-      # Proof, not assumption: the log records the compiler this leg actually
-      # uses, and it must equal the declared version.
-      - name: Show the pinned toolchain
-        run: |
-          rustc --version
-          cargo --version
-      - uses: ./.github/actions/setup-linux-deps
-      - uses: ./.github/actions/install-tool
-        with:
-          tool: cargo-msrv@0.19.3
-          path: ~/.cargo/bin/cargo-msrv*
-      - name: Verify the workspace builds on the declared MSRV
-        run: |
-          set -o pipefail
-          if ! cargo msrv verify -- cargo check --locked --profile ci-check --workspace --exclude '*-example'; then
-            echo "::error::the workspace does not compile on the declared rust-version — either avoid the newer feature, or raise rust-version in [workspace.package] in Cargo.toml in the same pull request"
-            exit 1
-          fi
+      - uses: ./.github/actions/msrv
 
   android-ffi:
     name: Android FFI
@@ -329,78 +321,104 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # `--all-targets` reaches the crate's dev-dependency graph, part of which
       # is built for the host: without this the Linux-only `cros-libva` build
       # script fails on the missing `libva-dev`, long before anything Android
       # is compiled.
       - uses: ./.github/actions/setup-linux-deps
-      - uses: nttld/setup-ndk@v1
-        id: ndk
-        with:
-          # The version the CLI's toolchain check installs and `water build`
-          # uses; keeping CI on it means CI compiles against the same sysroot a
-          # developer's Android build does.
-          ndk-version: r29
-          # Downloaded fresh every run, on purpose. The repository cache sits at
-          # the 10 GiB eviction limit, so a 708 MiB NDK entry is evicted and
-          # re-created continuously, and a restore that races an eviction hands
-          # the probe below a tree with the clang wrappers but no clang (#284).
-          # A miss costs ~79 s against ~53 s for a hit, on a 9-12 minute job.
-          local-cache: false
-      # The Android API floor lives in the root manifest's
-      # `[package.metadata.waterui]` table — the channel `cargo metadata`
-      # reads without scraping source, and the same table every published
-      # `framework.json` carries verbatim.
-      - name: Read the framework's Android API floor
-        run: |
-          set -euo pipefail
-          api="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui") | .metadata.waterui["android-min-api-level"] | numbers')"
-          if ! [[ "$api" =~ ^[0-9]+$ ]]; then
-            echo "::error file=Cargo.toml::package.metadata.waterui.android-min-api-level must be an integer API level (got '$api')"
-            exit 1
-          fi
-          echo "WATERUI_ANDROID_MIN_API_LEVEL=$api" >> "$GITHUB_ENV"
-      # `ring` compiles C for the target, so the NDK's clang wrapper is
-      # required even though clippy itself never links. The wrapper is named
-      # after the API level the framework declares.
-      - name: Point cargo at the NDK toolchain
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
-        run: |
-          set -euo pipefail
-          api="$WATERUI_ANDROID_MIN_API_LEVEL"
-          bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          # The wrapper is a shell script that execs `clang` beside it, so a
-          # half-restored NDK fails inside a `cc` build script six minutes
-          # later with nothing but "exit status 127". Prove the toolchain runs
-          # here instead, where the evidence is still on screen.
-          if ! "$bin/aarch64-linux-android$api-clang" --version; then
-            echo "::error::the NDK toolchain at $bin cannot compile for API $api"
-            find "$bin" -maxdepth 1 | head -60
-            exit 1
-          fi
-          {
-            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-            echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT"
-            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android$api-clang"
-            echo "CC_aarch64_linux_android=$bin/aarch64-linux-android$api-clang"
-            echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android$api-clang++"
-            echo "AR_aarch64_linux_android=$bin/llvm-ar"
-          } >> "$GITHUB_ENV"
+      # The version the action installs is the one the CLI's toolchain check
+      # installs and `water build` uses; keeping CI on it means CI compiles
+      # against the same sysroot a developer's Android build does.
+      - uses: ./.github/actions/setup-android-ndk
       - name: Clippy (aarch64-linux-android)
         run: cargo clippy --profile ci-check -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
 
+  # Packaging is the only signal that drives the CLI's Android path end to
+  # end on a clean machine (#2290): `water create` scaffolds against this
+  # checkout, `water build` compiles the workspace for
+  # `aarch64-linux-android`, and `water package` builds the Hydrolysis
+  # Gradle host into an APK — a defect in that path passes every other leg
+  # and only surfaces on a device. The gate pays for it only when the CLI's
+  # Android paths or the Hydrolysis Android host change; the nightly
+  # `cli-e2e` legs run the same cycle unconditionally.
+  android-package:
+    name: Android package
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      # Its own cache story, like android-ffi: the job builds the workspace
+      # for `aarch64-linux-android` and compiles the CLI for the host, so
+      # sharing the lint jobs' keys would only evict their tarballs.
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-linux-android
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The scaffold declares its JDK toolchain in
+      # `[package.metadata.waterui-scaffold] android-jdk-version`; Gradle
+      # picks it up through JAVA_HOME.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: ./.github/actions/setup-android-ndk
+      # `sdkmanager` is the tool doctor's own remedy text names.
+      - uses: ./.github/actions/install-android-platform
+      # The CLI links libudev (serialport) on the host.
+      - uses: ./.github/actions/setup-linux-deps
+      # The binary under test needs no release optimisation: the ci-check
+      # profile skips the release profile's fat LTO and single codegen unit.
+      - name: Install the CLI under test
+        run: cargo install --locked --profile ci-check --path cli --root /tmp/water-cli
+      - name: Create, build and package a Hydrolysis Android app
+        run: |
+          set -euo pipefail
+          export PATH="/tmp/water-cli/bin:$PATH"
+          mkdir -p e2e-logs
+          water create e2eapp --waterui-path "$GITHUB_WORKSPACE" 2>&1 | tee e2e-logs/create.log
+          cd e2eapp
+          # Inside a project doctor scopes the Android group in, so `--fix`
+          # provisions what the toolchain check wants (the managed Kotlin,
+          # the Rust targets) exactly as on a developer machine.
+          water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix.log
+          if grep -q 'Failed to install' ../e2e-logs/doctor-fix.log; then
+            echo "::error::doctor --fix reported failed installs"
+            exit 1
+          fi
+          water build --platform android --backend hydrolysis --yes 2>&1 | tee ../e2e-logs/build.log
+          water package --platform android --backend hydrolysis --arch arm64 --debug --yes 2>&1 | tee ../e2e-logs/package-debug.log
+          water package --platform android --backend hydrolysis --arch arm64 --release --unsigned --yes 2>&1 | tee ../e2e-logs/package-release.log
+          grep -q 'Packaged at' ../e2e-logs/package-debug.log
+          grep -q 'Packaged at' ../e2e-logs/package-release.log
+
   test:
     name: Test
-    needs: changes
+    needs: [changes, scope]
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
+    # The lint job's cache-retirement step needs actions:write on its own
+    # families; nothing else in the called workflow gains a broader token.
+    permissions:
+      contents: read
+      actions: write
     with:
       full: false
+      affected: ${{ needs.scope.outputs.packages }}
+      package-args: ${{ needs.scope.outputs.package-args }}
+      comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
+      scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
+      apple-legs: ${{ needs.scope.outputs.apple-legs }}
 
   # The one required check for the Test workflow. A pull request that changes
   # no code skips the `test` call above, and a skipped reusable-workflow call
@@ -410,7 +428,7 @@ jobs:
   # on anything else, including a failed `changes` job.
   test-result:
     name: Test result
-    needs: [changes, test, windows-dx12]
+    needs: [changes, scope, test, windows-dx12]
     if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -418,6 +436,7 @@ jobs:
       - name: Require Test to have passed or been skipped by the path filter
         env:
           CHANGES: ${{ needs.changes.result }}
+          SCOPE: ${{ needs.scope.result }}
           TEST: ${{ needs.test.result }}
           DX12: ${{ needs.windows-dx12.result }}
         run: |
@@ -425,6 +444,15 @@ jobs:
             echo "::error::Changes finished as $CHANGES, so the Test selection is unknown"
             exit 1
           fi
+          # `scope` feeding `test` means a scope failure skips Test, and the
+          # cases below cannot tell that skip from a prose-only one.
+          case "$SCOPE" in
+            success | skipped) ;;
+            *)
+              echo "::error::Affected scope finished as $SCOPE"
+              exit 1
+              ;;
+          esac
           case "$TEST" in
             success | skipped) ;;
             *)
@@ -534,3 +562,4 @@ jobs:
           fi
 
           echo "nightly line healthy: ${tag} certifies ${certified}, and the latest nightly run is certified"
+

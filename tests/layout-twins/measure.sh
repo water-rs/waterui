@@ -10,8 +10,6 @@
 #   measure.sh macos                   # macOS, current machine
 #
 # Environment:
-#   BACKEND_PATH — apple-backend checkout to build/link against. Default:
-#                  <repo>/../apple-backend or ~/repos/apple-backend.
 #   SIDES — space-separated subset of "swiftui waterui" to run (default both).
 set -euo pipefail
 
@@ -193,21 +191,11 @@ waterui_run() {
   done
 }
 
-# Ensure the harness' apple-backend path dependency resolves.
-BACKEND="${BACKEND_PATH:-}"
-if [[ -z "${BACKEND}" ]]; then
-  for cand in "${REPO_ROOT}/../apple-backend" "${HOME}/repos/apple-backend"; do
-    if [[ -d "${cand}/Sources/WaterUI" ]]; then BACKEND="${cand}"; break; fi
-  done
-fi
-[[ -n "${BACKEND}" && -d "${BACKEND}/Sources/WaterUI" ]] \
-  || { echo "apple-backend checkout not found; set BACKEND_PATH" >&2; exit 1; }
-# Harness Package.swift resolves ../../../../apple-backend.
-[[ -e "${REPO_ROOT}/../apple-backend" ]] \
-  || ln -sfn "${BACKEND}" "${REPO_ROOT}/../apple-backend"
-# A project picks up a local backend only via <waterui_path>/backends/apple.
-[[ -e "${REPO_ROOT}/backends/apple" ]] \
-  || ln -sfn "${BACKEND}" "${REPO_ROOT}/backends/apple"
+# The backend is in-tree: the harness package depends on the root manifest
+# and `water package` resolves backends/apple through the twin's
+# waterui_path. Nothing to provision.
+[[ -d "${REPO_ROOT}/backends/apple/Sources/WaterUI" ]] \
+  || { echo "in-tree Apple backend missing: ${REPO_ROOT}/backends/apple" >&2; exit 1; }
 
 if [[ "${MODE}" == "ios-sim" ]]; then
   UDID="${2:?usage: measure.sh ios-sim <udid>}"

@@ -189,6 +189,7 @@ pub mod gated {
             DragOptions {
                 steps: 12,
                 frame_per_step: true,
+                pointer: waterui_testing::PointerKind::Mouse,
             },
         );
 

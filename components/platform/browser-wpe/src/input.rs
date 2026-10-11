@@ -128,8 +128,10 @@ impl WpeSurfaceInput {
             } => self.page.scroll(
                 position.x,
                 position.y,
-                *delta_x,
-                *delta_y,
+                // WPE scroll deltas are positive scrolling up/left (WebKit negates them into DOM
+                // WheelEvent); SurfaceInputEvent uses the W3C sign.
+                -*delta_x,
+                -*delta_y,
                 // "Precise" is WPE's word for pixel deltas: a discrete wheel
                 // notch is a step, and WebKit multiplies it by its own line
                 // height.

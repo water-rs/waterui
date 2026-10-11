@@ -192,9 +192,9 @@ jobs:
             --tag "$tag" --revision "$GITHUB_SHA"
       # `water create gate` certifies the release the way users meet it: with
       # the newest published `waterui-cli` on crates.io satisfying this tree's
-      # `minimum-cli-version`. The CLI lives in water-rs/cli and releases on
-      # its own cadence — a `waterui-cli` version identical to this
-      # workspace's no longer exists to install.
+      # `minimum-cli-version`. The CLI is in-tree at `cli/` and releases on
+      # its own cadence under `cli/v*` tags — a `waterui-cli` version
+      # identical to this workspace's no longer exists to install.
       - name: Install the published CLI and scaffold a project
         run: |
           set -euo pipefail

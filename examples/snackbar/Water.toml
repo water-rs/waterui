@@ -2,4 +2,4 @@ waterui_path = "../.."
 
 [package]
 name = "Snackbar Example"
-bundle_identifier = "com.waterui.snackbar_example"
+bundle_identifier = "com.waterui.snackbarexample"

@@ -20,6 +20,7 @@ thiserror.workspace = true
 futures-lite = "2.6"
 hex = "0.4"
 dirs.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

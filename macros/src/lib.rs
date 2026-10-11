@@ -940,12 +940,10 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     // at compile time using CARGO_PKG_NAME
     let expanded = quote! {
         #(#fn_attrs)*
-        // `dev` is the scaffold's development-linkage feature (the generated
-        // backend enables `<app>/dev` on `water run`/`preview`/`build`); a
-        // crate without it has no preview host, so without the export the
-        // function is dead code there.
-        #[allow(unexpected_cfgs)]
-        #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+        // The preview export is gated on `debug_assertions` (the gate the
+        // `waterui_meta_*` records use); a release build has no preview host,
+        // so without the export the function is dead code there.
+        #[cfg_attr(not(debug_assertions), allow(dead_code))]
         #fn_vis #fn_sig #fn_block
 
         // Generate C export symbol for preview
@@ -1715,13 +1713,17 @@ pub fn derive_ts_type(input: TokenStream) -> TokenStream {
 ///
 /// Emits everything [`macro@TsType`] does, plus the contract's encoded form,
 /// its hash, and a `#[cfg(debug_assertions)] #[used] static` named
-/// `waterui_meta_tsprops_<Type>` holding the encoding. That static is how the
-/// contract reaches the `water` CLI: `#[used]` keeps it in the object file and
-/// the rlib, so the CLI reads it out of a dev-profile host build's symbol
-/// table instead of parsing source. The encoding happens entirely during const
-/// evaluation, and the debug gate keeps the bytes out of shipped binaries.
+/// `waterui_meta_tsprops_<Type>` parked in the `.wmeta` (`__DATA,__wmeta` on
+/// Apple targets) section and holding a self-describing record — the name,
+/// NUL, the encoding, NUL. That record is how the contract reaches the
+/// `water` CLI: `#[used]` keeps it in the object file, the rlib, and the
+/// linked image, and a linked image need not keep a symbol table to name a
+/// static — a linked PE keeps none — so the CLI walks the section's records
+/// out of a dev-profile host build instead of parsing source. The encoding
+/// happens entirely during const evaluation, and the debug gate keeps the
+/// bytes out of shipped binaries.
 ///
-/// The symbol name carries the type name alone, so one binary may hold only
+/// The record name carries the type name alone, so one binary may hold only
 /// one props type of a given name.
 ///
 /// When the TypeScript runtime is reachable the derive also emits `IntoJs`,

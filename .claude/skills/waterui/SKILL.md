@@ -6,7 +6,8 @@ description: Build cross-platform native apps with the WaterUI Rust framework. U
 # Building apps with WaterUI
 
 WaterUI is a Rust UI framework that renders to real native widgets (UIKit/AppKit,
-Android View, GTK4) or to its own GPU renderer, from one view tree. It is
+GTK4) or to its own GPU renderer — Hydrolysis, which is also the Android
+backend — from one view tree. It is
 **fine-grained reactive**: a value change updates exactly the widget that reads it,
 without rebuilding the surrounding tree.
 
@@ -306,7 +307,9 @@ text!("Blur: {blur:.1}")                        // format specs work
 text("0x1F60").monospaced()                     // the platform's fixed-pitch face, same size
 ```
 
-Import the macro and write bare `text!` — never `waterui::text!`. On a `Text`, `.size(..)`
+Import the macro and write bare `text!` — never `waterui::text!`. The same goes for every
+name, inside macro bodies too: bring it into scope with `use` and write `ForEach`, not
+`::waterui_core::views::ForEach`. On a `Text`, `.size(..)`
 is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced()` is a
 design, not a family: it keeps the slot and size and each backend picks its own monospaced
 face, so never spell a font name for code.
@@ -366,6 +369,7 @@ clearer than a long `when` chain.
 .a11y_label(..) / .a11y_value(..) / .a11y_id("settings.wifi") / .a11y_role(..)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
 .cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating()
+.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))   // regions × edges
 ```
 
 Visual modifiers take signals — pass bindings straight in; the filter row works on *any*
@@ -443,7 +447,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Collections | `List` `ListItem` `ForEach` `SignalCollection` `ScrollController` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` |
+| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `Chart` (12 kinds) `Map` |
 | Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuContentView` `ExternalFrameView` icon sets |
@@ -464,6 +468,11 @@ the real accessibility tree with taps and assertions — it is simultaneously an
 interaction test and an accessibility check, which is why a component that cannot be
 tested this way is a bug rather than a gap. Details in
 [references/testing.md](references/testing.md).
+
+Backend selection uses `[platforms.<platform>] backend = "..."` in `Water.toml`;
+`--backend` may confirm, but not contradict, that declaration. Without either,
+the platform default applies. See [platforms and backends](references/project.md#platforms-and-backends),
+including the Hydrolysis requirement for Linux previews.
 
 ## Driving the app from an agent
 

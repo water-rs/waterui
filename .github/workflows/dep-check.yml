@@ -25,8 +25,10 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+      # Reads the shared `cargo-sources` archive owned by the `lint` job in
+      # test.yml; this job saves nothing, so it cannot evict other caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
 
       - name: Install cargo-edit
         uses: ./.github/actions/install-tool

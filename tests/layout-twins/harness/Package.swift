@@ -1,7 +1,7 @@
 // swift-tools-version: 6.3
 // Frame-recording harness for the WaterUI side of the layout twins.
-// Depends on a local checkout of water-rs/apple-backend; measure.sh creates
-// <repo-root>/../apple-backend as a symlink and this path resolves it.
+// Depends on the framework's own root manifest: the Apple host target is
+// `backends/apple/Sources/WaterUI` in the same repository.
 import PackageDescription
 
 let package = Package(
@@ -11,12 +11,12 @@ let package = Package(
     .macOS(.v26),
   ],
   dependencies: [
-    .package(name: "waterui-swift", path: "../../../../apple-backend")
+    .package(name: "waterui-apple-host", path: "../../..")
   ],
   targets: [
     .testTarget(
       name: "TwinsTests",
-      dependencies: [.product(name: "WaterUI", package: "waterui-swift")]
+      dependencies: [.product(name: "WaterUI", package: "waterui-apple-host")]
     )
   ]
 )

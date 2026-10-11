@@ -11,8 +11,8 @@
 use std::num::NonZeroUsize;
 
 use waterui::app::App;
-use waterui::layout::row as grid_row;
 use waterui::layout::HorizontalAlignment;
+use waterui::layout::row as grid_row;
 use waterui::prelude::*;
 
 const ORANGE: &str = "#E67E22";
@@ -219,8 +219,7 @@ fn a3a() -> impl View {
         // AspectRatio 2 fit — rigid child
         hstack((
             r("twins.a3.aspect.l", 20.0, 10.0),
-            aspect_ratio(r("twins.a3.aspect.i", 20.0, 10.0), 2.0)
-                .a11y_label("twins.a3.aspect.w"),
+            aspect_ratio(r("twins.a3.aspect.i", 20.0, 10.0), 2.0).a11y_label("twins.a3.aspect.w"),
             r("twins.a3.aspect.r", 20.0, 10.0),
         ))
         .spacing(10.0)
@@ -230,8 +229,7 @@ fn a3a() -> impl View {
         // AspectRatio 2 fit — empty child
         hstack((
             r("twins.a3.aspectx.l", 20.0, 10.0),
-            aspect_ratio(e("twins.a3.aspectx.i"), 2.0)
-                .a11y_label("twins.a3.aspectx.w"),
+            aspect_ratio(e("twins.a3.aspectx.i"), 2.0).a11y_label("twins.a3.aspectx.w"),
             r("twins.a3.aspectx.r", 20.0, 10.0),
         ))
         .spacing(10.0)
@@ -248,8 +246,7 @@ fn a3b() -> impl View {
         // ZStack member
         hstack((
             r("twins.a3.zstack.l", 20.0, 10.0),
-            zstack((r("twins.a3.zstack.i", 20.0, 10.0),))
-                .a11y_label("twins.a3.zstack.w"),
+            zstack((r("twins.a3.zstack.i", 20.0, 10.0),)).a11y_label("twins.a3.zstack.w"),
             r("twins.a3.zstack.r", 20.0, 10.0),
         ))
         .spacing(10.0)
@@ -259,8 +256,7 @@ fn a3b() -> impl View {
         // ZStack member — empty child
         hstack((
             r("twins.a3.zstackx.l", 20.0, 10.0),
-            zstack((e("twins.a3.zstackx.i"),))
-                .a11y_label("twins.a3.zstackx.w"),
+            zstack((e("twins.a3.zstackx.i"),)).a11y_label("twins.a3.zstackx.w"),
             r("twins.a3.zstackx.r", 20.0, 10.0),
         ))
         .spacing(10.0)
@@ -319,9 +315,7 @@ fn a3b() -> impl View {
         hstack((
             r("twins.a3.guide.l", 20.0, 10.0),
             r("twins.a3.guide.i", 20.0, 10.0)
-                .horizontal_alignment_guide(HorizontalAlignment::Leading, |_d| {
-                    -5.0
-                })
+                .horizontal_alignment_guide(HorizontalAlignment::Leading, |_d| -5.0)
                 .a11y_label("twins.a3.guide.w"),
             r("twins.a3.guide.r", 20.0, 10.0),
         ))
@@ -333,9 +327,7 @@ fn a3b() -> impl View {
         hstack((
             r("twins.a3.guidex.l", 20.0, 10.0),
             e("twins.a3.guidex.i")
-                .horizontal_alignment_guide(HorizontalAlignment::Leading, |_d| {
-                    -5.0
-                })
+                .horizontal_alignment_guide(HorizontalAlignment::Leading, |_d| -5.0)
                 .a11y_label("twins.a3.guidex.w"),
             r("twins.a3.guidex.r", 20.0, 10.0),
         ))
@@ -346,8 +338,7 @@ fn a3b() -> impl View {
         // grid-cell member
         hstack((
             r("twins.a3.grid.l", 20.0, 10.0),
-            grid(1, [grid_row((r("twins.a3.grid.i", 20.0, 10.0),))])
-                .a11y_label("twins.a3.grid.w"),
+            grid(1, [grid_row((r("twins.a3.grid.i", 20.0, 10.0),))]).a11y_label("twins.a3.grid.w"),
             r("twins.a3.grid.r", 20.0, 10.0),
         ))
         .spacing(10.0)
@@ -357,8 +348,7 @@ fn a3b() -> impl View {
         // grid-cell member — empty child
         hstack((
             r("twins.a3.gridx.l", 20.0, 10.0),
-            grid(1, [grid_row((e("twins.a3.gridx.i"),))])
-                .a11y_label("twins.a3.gridx.w"),
+            grid(1, [grid_row((e("twins.a3.gridx.i"),))]).a11y_label("twins.a3.gridx.w"),
             r("twins.a3.gridx.r", 20.0, 10.0),
         ))
         .spacing(10.0)
@@ -417,8 +407,7 @@ fn a11() -> impl View {
             .anyview(),
         // inner vertical scroll under an unspecified-width proposal
         scroll_horizontal(
-            scroll(r("twins.a11.inf.content", 60.0, 300.0))
-                .a11y_label("twins.a11.inf.scroll"),
+            scroll(r("twins.a11.inf.content", 60.0, 300.0)).a11y_label("twins.a11.inf.scroll"),
         )
         .size(100.0, 80.0)
         .a11y_label("twins.a11.inf")
@@ -438,8 +427,7 @@ fn a12_root(case: String) -> impl View {
             .ignore_safe_area(EdgeSet::ALL)
             .anyview(),
         "a12.bar" => zstack((
-            scroll(r("twins.a12.content", 60.0, 300.0))
-                .a11y_label("twins.a12.scroll"),
+            scroll(r("twins.a12.content", 60.0, 300.0)).a11y_label("twins.a12.scroll"),
             vstack((
                 Color::srgb_hex(RED)
                     .height(44.0)
@@ -487,10 +475,13 @@ fn a13() -> impl View {
 fn d() -> impl View {
     vstack((
         // D1: grid columns at placement — 20-wide vs 80-wide in a 200×50 host
-        grid(2, [grid_row((
-            r("twins.d1.a", 20.0, 10.0),
-            r("twins.d1.b", 80.0, 10.0),
-        ))])
+        grid(
+            2,
+            [grid_row((
+                r("twins.d1.a", 20.0, 10.0),
+                r("twins.d1.b", 80.0, 10.0),
+            ))],
+        )
         .size(200.0, 50.0)
         .a11y_label("twins.d1")
         .anyview(),

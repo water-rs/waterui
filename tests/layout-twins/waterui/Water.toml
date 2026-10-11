@@ -2,4 +2,4 @@ waterui_path = "../../.."
 
 [package]
 name = "Layout Twins"
-bundle_identifier = "dev.waterui.layout_twins"
+bundle_identifier = "dev.waterui.layouttwins"

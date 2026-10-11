@@ -2,8 +2,8 @@
 //! motion state.
 //!
 //! [`AnimationController`] owns the per-frame registry of animation slots,
-//! keyed by [`AnimationKey`] (signal identity, optionally mixed with a
-//! per-instance discriminator, or a renderer-local identity). Slots are
+//! keyed by [`AnimationKey`] (a renderer-chosen owner identity, optionally
+//! mixed with a per-instance discriminator). Slots are
 //! rebound on every structural rebuild and survive across frames so
 //! in-flight animations keep their progress; unbound slots are dropped when
 //! the rebuild finishes. The controller covers three slot kinds: animated
@@ -17,7 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::widget::{RadioIndicatorState, RadioSelectionMotion};
-use nami::SignalIdentity;
 use nami::watcher::Context;
 use waterui_core::animation::{Animation, AnimationTrack};
 
@@ -57,11 +56,10 @@ pub struct AnimationController {
 
 /// Stable identity of one animation slot across structural rebuilds.
 ///
-/// Built either from the [`SignalIdentity`] of the reactive value driving
-/// the animation (optionally mixed with a per-instance discriminator so
-/// several widgets sharing a signal get distinct slots) or from a
-/// renderer-local identity for animations the renderer owns itself. Keys of
-/// different scopes (scalar, radio indicator, repeating) never collide.
+/// Built from a renderer-chosen owner identity (such as a view's pinned
+/// allocation), optionally mixed with a per-instance discriminator so
+/// several slots owned by one view get distinct keys. Keys of different
+/// scopes (scalar, radio indicator, repeating) never collide.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct AnimationKey {
     scope: AnimationKeyScope,
@@ -70,7 +68,6 @@ pub struct AnimationKey {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum AnimationKeyScope {
-    Scalar,
     RendererLocalScalar,
     RadioIndicator,
     Repeating,
@@ -125,39 +122,15 @@ struct RepeatingPhaseSlot {
 }
 
 impl AnimationKey {
-    /// Returns the scalar-slot key for the signal whose value the animation
-    /// follows.
-    #[must_use]
-    pub const fn scalar(identity: SignalIdentity) -> Self {
-        Self {
-            scope: AnimationKeyScope::Scalar,
-            identity: identity.raw() as u64,
-        }
-    }
-
-    /// Returns a scalar-slot key mixing the signal identity with a
-    /// per-instance discriminator, so multiple widgets driven by the same
-    /// signal (e.g. each option of a picker) get distinct slots.
-    #[must_use]
-    pub const fn scalar_with_discriminator(identity: SignalIdentity, discriminator: usize) -> Self {
-        Self {
-            scope: AnimationKeyScope::Scalar,
-            identity: mix_identity(identity.raw(), discriminator),
-        }
-    }
-
     /// Returns the radio-indicator-slot key for one selectable option,
-    /// mixing the selection signal's identity with the option's
+    /// mixing the owning view's renderer-chosen identity with the option's
     /// discriminator. Only valid with
     /// [`bind_radio_indicator`](AnimationController::bind_radio_indicator).
     #[must_use]
-    pub const fn radio_indicator_with_discriminator(
-        identity: SignalIdentity,
-        discriminator: usize,
-    ) -> Self {
+    pub const fn radio_indicator(owner: usize, option: usize) -> Self {
         Self {
             scope: AnimationKeyScope::RadioIndicator,
-            identity: mix_identity(identity.raw(), discriminator),
+            identity: mix_identity(owner, option),
         }
     }
 
@@ -185,14 +158,6 @@ impl AnimationKey {
         }
     }
 
-    /// Returns whether this key was built with
-    /// [`renderer_local_scalar`](Self::renderer_local_scalar) rather than
-    /// from a signal identity.
-    #[must_use]
-    pub const fn is_renderer_local_scalar(self) -> bool {
-        matches!(self.scope, AnimationKeyScope::RendererLocalScalar)
-    }
-
     /// Returns a repeating-phase-slot key for a renderer-owned free-running
     /// timeline (e.g. an indeterminate progress indicator). Only valid with
     /// [`bind_repeating_phase`](AnimationController::bind_repeating_phase) /
@@ -207,10 +172,7 @@ impl AnimationKey {
 
     #[cfg(test)]
     const fn test_scalar(identity: usize) -> Self {
-        Self {
-            scope: AnimationKeyScope::Scalar,
-            identity: identity as u64,
-        }
+        Self::renderer_local_scalar(identity)
     }
 
     #[cfg(test)]
@@ -270,10 +232,7 @@ impl AnimationController {
         now: Instant,
     ) -> AnimatedScalarHandle {
         assert!(
-            matches!(
-                key.scope,
-                AnimationKeyScope::Scalar | AnimationKeyScope::RendererLocalScalar
-            ),
+            key.scope == AnimationKeyScope::RendererLocalScalar,
             "animation scalar key used with mismatched scope"
         );
         self.active_slots.insert(key);
@@ -310,10 +269,7 @@ impl AnimationController {
         now: Instant,
     ) -> AnimatedScalarHandle {
         assert!(
-            matches!(
-                key.scope,
-                AnimationKeyScope::Scalar | AnimationKeyScope::RendererLocalScalar
-            ),
+            key.scope == AnimationKeyScope::RendererLocalScalar,
             "animation scalar target key used with mismatched scope"
         );
         self.active_slots.insert(key);
@@ -537,7 +493,7 @@ impl AnimationController {
     /// Whether `key`'s slot is still animating at `now`, across every scope.
     fn key_is_active(&self, key: AnimationKey, now: Instant) -> bool {
         match key.scope {
-            AnimationKeyScope::Scalar | AnimationKeyScope::RendererLocalScalar => self
+            AnimationKeyScope::RendererLocalScalar => self
                 .slots
                 .get(&key)
                 .is_some_and(|slot| slot.state.borrow().is_active()),
@@ -1005,5 +961,13 @@ mod tests {
 
         assert_eq!(mid_state.inner_scale, 1.0);
         assert!(mid_state.inner_opacity > 0.0 && mid_state.inner_opacity < 1.0);
+    }
+
+    #[test]
+    fn radio_indicator_keys_are_scoped_by_owner_and_option() {
+        let key = AnimationKey::radio_indicator(7, 0);
+        assert_ne!(key, AnimationKey::radio_indicator(7, 1));
+        assert_ne!(key, AnimationKey::radio_indicator(8, 0));
+        assert_ne!(key, scalar_key(7));
     }
 }

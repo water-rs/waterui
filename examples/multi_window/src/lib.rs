@@ -170,7 +170,7 @@ fn create_frosted_window(state: Binding<WindowState>) -> Window {
     Window::new("Frosted Glass", state, move || {
         window_content(
             "Frosted Glass Window",
-            "This window uses a Regular material blur for a frosted glass effect.\n\nFeatures:\n• Titled style\n• Material blur background\n• See-through with blur effect",
+            "This window's background is the Regular material, blended within the window.\n\nFeatures:\n• Titled style\n• Within-window material background\n• Frosted over the window's own background",
         )
     })
     .style(WindowStyle::Titled)
@@ -194,7 +194,7 @@ fn create_ultra_thin_window(state: Binding<WindowState>) -> Window {
     Window::new("Ultra-Thin Material", state, move || {
         window_content(
             "Ultra-Thin Material Window",
-            "This window uses an UltraThin material for a subtle frosted effect.\n\nFeatures:\n• Borderless style\n• Ultra-thin blur\n• Most transparent material",
+            "This window's background is the UltraThin material, blended behind the window.\n\nFeatures:\n• Borderless style\n• The desktop shows through the window\n• Most transparent material",
         )
     })
     .style(WindowStyle::Borderless)

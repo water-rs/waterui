@@ -1,5 +1,5 @@
 use waterui_graphics::Gradient;
-use waterui_graphics::cherenkov::Paint;
+use waterui_graphics::draw::Paint;
 
 use crate::{IntoFFI, WuiArray, color::WuiWorkingColor};
 
@@ -51,8 +51,13 @@ pub struct WuiGradient {
     /// End point (linear) y-coordinate.
     pub end_y: f32,
     /// Start radius (radial) or start angle in radians (angular).
+    ///
+    /// A radial radius is a fraction of the shorter side of the view's
+    /// bounds and draws a circle: on a `w`x`h` box it spans `r * min(w, h)`
+    /// points, so `0.5` reaches the nearer edge.
     pub start_value: f32,
-    /// End radius (radial) or end angle in radians (angular).
+    /// End radius (radial) or end angle in radians (angular), in the same
+    /// units as [`start_value`](Self::start_value).
     pub end_value: f32,
 }
 
@@ -62,7 +67,7 @@ impl IntoFFI for Gradient {
 
     fn into_ffi(self) -> Self::FFI {
         let f = |v: f64| v as f32;
-        let stops = |stops: &[waterui_graphics::cherenkov::ColorStop]| {
+        let stops = |stops: &[waterui_graphics::draw::ColorStop]| {
             WuiArray::new(
                 stops
                     .iter()

@@ -40,8 +40,15 @@ pub fn demo() -> impl View {
 ```bash
 water preview demo --output preview.png
 water preview demo --backend hydrolysis --theme material3 --frame 390x844
+water preview demo --platform android --device <serial-or-avd>
 water preview --expr 'vstack((text("Hi").title(), button("Go").action(|| {})))'
 ```
+
+CLI and MCP previews honor `[platforms.<platform>] backend = "..."` in `Water.toml`.
+An explicit backend that contradicts the declaration fails before building.
+Linux previews need a `hydrolysis` declaration or, when undeclared, `--backend hydrolysis`;
+the platform default `gtk4` has no preview renderer. See
+[platforms and backends](project.md#platforms-and-backends).
 
 `--expr` compiles the expression into generated preview code with `waterui::prelude::*`
 in scope, so it is a real compile, not a string interpreter. The preview pipeline links
@@ -111,6 +118,12 @@ components whose bodies read them.
 The macro expands to a plain `#[test]`, so do not also write `#[test]`, and the
 function must take exactly one parameter and return `()`. A styled manual mount names
 the style in its parameter type: `ui: UiBuilder<Styled<hydrolysis_m3::Material3>>`.
+
+Use the mounting form whenever the test needs only a view function. Take the
+manual-mount form when the test must own the bindings the view closes over. Check
+layout on a rendered session, through the elements' `bounds()` and how they relate
+to each other. Never attach accessibility metadata to a decorative fill only so that a
+test can find it.
 
 ## Querying the accessibility tree
 
