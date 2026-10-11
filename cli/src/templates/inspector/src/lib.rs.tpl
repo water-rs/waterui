@@ -17,5 +17,3 @@ pub fn main() -> impl View {
 pub fn app(env: Environment) -> App {
     waterui_inspector_app::app(env)
 }
-
-waterui_ffi::export!();

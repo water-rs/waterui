@@ -296,7 +296,7 @@ mod tests {
             probe.on_poll_sample(&sample(50_000));
         }
 
-        assert!(receiver.is_empty());
+        assert_eq!(receiver.len(), 0);
     }
 
     /// A clock the test advances by hand.

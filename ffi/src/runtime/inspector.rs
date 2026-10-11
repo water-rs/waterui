@@ -20,21 +20,27 @@ use crate::WuiEnv;
 ///
 /// `env` must be a valid environment handle that stays alive for this call.
 #[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "inspector"), allow(clippy::missing_const_for_fn))]
 pub unsafe extern "C" fn waterui_inspector_open(env: *const WuiEnv) {
-    // SAFETY: the caller contract requires `env` to be a valid handle that stays
-    // alive for this call; it is only borrowed.
-    let env = unsafe { crate::borrow_ffi(env) };
-    let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
-        // Silence here is the worst answer: the gesture is only offered when
-        // `waterui_inspector_is_available` said yes, so reaching this means the
-        // two disagree about which environment they were asked about.
-        tracing::warn!(
-            target: "waterui::inspector",
-            "Asked to open the inspector in an environment that has no endpoint"
-        );
-        return;
-    };
-    inspector.open();
+    #[cfg(feature = "inspector")]
+    {
+        // SAFETY: the caller contract requires `env` to be a valid handle that stays
+        // alive for this call; it is only borrowed.
+        let env = unsafe { crate::borrow_ffi(env) };
+        let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+            // Silence here is the worst answer: the gesture is only offered when
+            // `waterui_inspector_is_available` said yes, so reaching this means the
+            // two disagree about which environment they were asked about.
+            tracing::warn!(
+                target: "waterui::inspector",
+                "Asked to open the inspector in an environment that has no endpoint"
+            );
+            return;
+        };
+        inspector.open();
+    }
+    #[cfg(not(feature = "inspector"))]
+    let _ = env;
 }
 
 /// Reveals one node in the inspector, opening one if none is attached.
@@ -47,19 +53,25 @@ pub unsafe extern "C" fn waterui_inspector_open(env: *const WuiEnv) {
 ///
 /// `env` must be a valid environment handle that stays alive for this call.
 #[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "inspector"), allow(clippy::missing_const_for_fn))]
 pub unsafe extern "C" fn waterui_inspector_inspect_node(env: *const WuiEnv, node: u64) {
-    // SAFETY: as above.
-    let env = unsafe { crate::borrow_ffi(env) };
-    let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
-        // As above: an ignored request to inspect looks like a broken gesture.
-        tracing::warn!(
-            target: "waterui::inspector",
-            node,
-            "Asked to inspect a node in an environment that has no endpoint"
-        );
-        return;
-    };
-    inspector.inspect_node(waterui::inspector::protocol::NodeId(node));
+    #[cfg(feature = "inspector")]
+    {
+        // SAFETY: as above.
+        let env = unsafe { crate::borrow_ffi(env) };
+        let Some(inspector) = env.get::<waterui::inspector::InspectorRuntime>() else {
+            // As above: an ignored request to inspect looks like a broken gesture.
+            tracing::warn!(
+                target: "waterui::inspector",
+                node,
+                "Asked to inspect a node in an environment that has no endpoint"
+            );
+            return;
+        };
+        inspector.inspect_node(waterui::inspector::protocol::NodeId(node));
+    }
+    #[cfg(not(feature = "inspector"))]
+    let _ = (env, node);
 }
 
 /// Whether this build offers inspection at all.
@@ -71,10 +83,19 @@ pub unsafe extern "C" fn waterui_inspector_inspect_node(env: *const WuiEnv, node
 ///
 /// `env` must be a valid environment handle that stays alive for this call.
 #[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "inspector"), allow(clippy::missing_const_for_fn))]
 pub unsafe extern "C" fn waterui_inspector_is_available(env: *const WuiEnv) -> bool {
-    // SAFETY: as above.
-    let env = unsafe { crate::borrow_ffi(env) };
-    env.get::<waterui::inspector::InspectorRuntime>().is_some()
+    #[cfg(feature = "inspector")]
+    {
+        // SAFETY: as above.
+        let env = unsafe { crate::borrow_ffi(env) };
+        env.get::<waterui::inspector::InspectorRuntime>().is_some()
+    }
+    #[cfg(not(feature = "inspector"))]
+    {
+        let _ = env;
+        false
+    }
 }
 
 /// One node of a backend's accessibility tree, as it crosses the boundary.
@@ -122,12 +143,21 @@ pub struct WuiInspectorNode {
 ///
 /// `env` must be a valid environment handle that stays alive for this call.
 #[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "inspector"), allow(clippy::missing_const_for_fn))]
 pub unsafe extern "C" fn waterui_inspector_wants_tree(env: *const WuiEnv) -> bool {
-    // SAFETY: the caller contract requires `env` to be a valid handle that stays
-    // alive for this call; it is only borrowed.
-    let env = unsafe { crate::borrow_ffi(env) };
-    env.get::<waterui::inspector::TreeRecorder>()
-        .is_some_and(waterui::inspector::TreeRecorder::is_active)
+    #[cfg(feature = "inspector")]
+    {
+        // SAFETY: the caller contract requires `env` to be a valid handle that stays
+        // alive for this call; it is only borrowed.
+        let env = unsafe { crate::borrow_ffi(env) };
+        env.get::<waterui::inspector::TreeRecorder>()
+            .is_some_and(waterui::inspector::TreeRecorder::is_active)
+    }
+    #[cfg(not(feature = "inspector"))]
+    {
+        let _ = env;
+        false
+    }
 }
 
 /// Publishes a backend's accessibility tree to the inspector.
@@ -141,6 +171,7 @@ pub unsafe extern "C" fn waterui_inspector_wants_tree(env: *const WuiEnv) -> boo
 /// initialised nodes, whose strings and children arrays stay valid for the
 /// duration of the call.
 #[unsafe(no_mangle)]
+#[cfg_attr(not(feature = "inspector"), allow(clippy::missing_const_for_fn))]
 pub unsafe extern "C" fn waterui_inspector_publish_tree(
     env: *const WuiEnv,
     root: u64,
@@ -149,62 +180,67 @@ pub unsafe extern "C" fn waterui_inspector_publish_tree(
     nodes: *const WuiInspectorNode,
     len: usize,
 ) {
-    use waterui::inspector::protocol::{Bounds, NodeId, NodeState, TreeNode};
+    #[cfg(not(feature = "inspector"))]
+    let _ = (env, root, has_focus, focus, nodes, len);
+    #[cfg(feature = "inspector")]
+    {
+        use waterui::inspector::protocol::{Bounds, NodeId, NodeState, TreeNode};
 
-    // SAFETY: as above.
-    let env = unsafe { crate::borrow_ffi(env) };
-    let Some(recorder) = env.get::<waterui::inspector::TreeRecorder>() else {
-        return;
-    };
-    if !recorder.is_active() {
-        return;
+        // SAFETY: as above.
+        let env = unsafe { crate::borrow_ffi(env) };
+        let Some(recorder) = env.get::<waterui::inspector::TreeRecorder>() else {
+            return;
+        };
+        if !recorder.is_active() {
+            return;
+        }
+        if nodes.is_null() {
+            return;
+        }
+
+        // SAFETY: the caller contract makes this `len` initialised nodes.
+        let raw = unsafe { core::slice::from_raw_parts(nodes, len) };
+        let projected = raw
+            .iter()
+            .map(|node| {
+                // SAFETY: the caller keeps every string alive for this call.
+                let text = |value: &crate::WuiStr| unsafe { value.as_str() }.to_string();
+                let optional = |value: &crate::WuiStr| {
+                    let text = text(value);
+                    (!text.is_empty()).then_some(text)
+                };
+                let children = if node.children.is_null() || node.children_len == 0 {
+                    Vec::new()
+                } else {
+                    // SAFETY: as above, for the children array.
+                    unsafe { core::slice::from_raw_parts(node.children, node.children_len) }
+                        .iter()
+                        .map(|id| NodeId(*id))
+                        .collect()
+                };
+                TreeNode {
+                    id: NodeId(node.id),
+                    role: text(&node.role),
+                    label: optional(&node.label),
+                    value: optional(&node.value),
+                    bounds: node.has_bounds.then(|| Bounds {
+                        x: node.bounds[0],
+                        y: node.bounds[1],
+                        width: node.bounds[2],
+                        height: node.bounds[3],
+                    }),
+                    state: NodeState {
+                        enabled: node.enabled,
+                        selected: node.selected,
+                        checked: node.has_checked.then_some(node.checked),
+                        expanded: None,
+                        hidden: node.hidden,
+                    },
+                    children,
+                }
+            })
+            .collect();
+
+        recorder.record_snapshot(NodeId(root), has_focus.then_some(NodeId(focus)), projected);
     }
-    if nodes.is_null() {
-        return;
-    }
-
-    // SAFETY: the caller contract makes this `len` initialised nodes.
-    let raw = unsafe { core::slice::from_raw_parts(nodes, len) };
-    let projected = raw
-        .iter()
-        .map(|node| {
-            // SAFETY: the caller keeps every string alive for this call.
-            let text = |value: &crate::WuiStr| unsafe { value.as_str() }.to_string();
-            let optional = |value: &crate::WuiStr| {
-                let text = text(value);
-                (!text.is_empty()).then_some(text)
-            };
-            let children = if node.children.is_null() || node.children_len == 0 {
-                Vec::new()
-            } else {
-                // SAFETY: as above, for the children array.
-                unsafe { core::slice::from_raw_parts(node.children, node.children_len) }
-                    .iter()
-                    .map(|id| NodeId(*id))
-                    .collect()
-            };
-            TreeNode {
-                id: NodeId(node.id),
-                role: text(&node.role),
-                label: optional(&node.label),
-                value: optional(&node.value),
-                bounds: node.has_bounds.then(|| Bounds {
-                    x: node.bounds[0],
-                    y: node.bounds[1],
-                    width: node.bounds[2],
-                    height: node.bounds[3],
-                }),
-                state: NodeState {
-                    enabled: node.enabled,
-                    selected: node.selected,
-                    checked: node.has_checked.then_some(node.checked),
-                    expanded: None,
-                    hidden: node.hidden,
-                },
-                children,
-            }
-        })
-        .collect();
-
-    recorder.record_snapshot(NodeId(root), has_focus.then_some(NodeId(focus)), projected);
 }

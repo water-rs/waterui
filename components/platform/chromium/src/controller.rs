@@ -2,7 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use waterui_core::{impl_debug, impl_extractor};
+use waterui_core::impl_debug;
+use waterui_macros::state;
 
 use crate::{
     AnyChromiumPageHandle, ChromiumConfiguration, ChromiumPage, ChromiumPageHandle, ChromiumView,
@@ -46,14 +47,15 @@ impl<T: CustomChromiumController> ChromiumControllerImpl for T {
     }
 }
 
-/// Environment-injected Chromium runtime controller.
+/// State-injected Chromium runtime controller, published by the runtime's
+/// install and by `.state(&controller)` for adjacent controls.
+#[state]
 #[derive(Clone)]
 pub struct ChromiumController {
     controller: Rc<dyn ChromiumControllerImpl>,
 }
 
 impl_debug!(ChromiumController);
-impl_extractor!(ChromiumController);
 
 impl ChromiumController {
     /// Creates a controller from a concrete CEF engine.

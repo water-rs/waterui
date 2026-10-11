@@ -5,9 +5,12 @@ use std::time::Duration;
 use eyre::{Result, bail, eyre};
 use tracing::info;
 
-#[allow(clippy::redundant_pub_crate)]
-pub(crate) fn support_app_path(name: &str) -> Result<PathBuf> {
-    Ok(crate::water_dir::water_home_dir()?.join(name))
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the module is crate-private; the explicit pub(crate) declares the intended crate-wide reach"
+)]
+pub(crate) fn support_app_path(host: &crate::toolchain::Host, name: &str) -> Result<PathBuf> {
+    Ok(crate::water_dir::water_home_dir(host)?.join(name))
 }
 
 /// Discards a support application generated against a different `WaterUI`.
@@ -24,8 +27,12 @@ pub(crate) fn support_app_path(name: &str) -> Result<PathBuf> {
 /// manifests that pin the checkout actually live. Discarding one without the
 /// other leaves exactly the file the next build reads, so both go together —
 /// including when only the cached half is left behind.
-#[allow(clippy::redundant_pub_crate)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the module is crate-private; the explicit pub(crate) declares the intended crate-wide reach"
+)]
 pub(crate) async fn discard_support_app_for_other_runtime(
+    host: &crate::toolchain::Host,
     path: &Path,
     waterui_path: Option<&Path>,
 ) -> Result<()> {
@@ -62,7 +69,7 @@ pub(crate) async fn discard_support_app_for_other_runtime(
         return Ok(());
     }
 
-    let cache = crate::water_dir::build_cache_container_for(path).await?;
+    let cache = crate::water_dir::build_cache_container_for(host, path).await?;
     if !path.exists() && !cache.exists() {
         return Ok(());
     }
@@ -85,7 +92,10 @@ pub(crate) async fn discard_support_app_for_other_runtime(
     Ok(())
 }
 
-#[allow(clippy::redundant_pub_crate)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the module is crate-private; the explicit pub(crate) declares the intended crate-wide reach"
+)]
 pub(crate) async fn ensure_support_app<F, Fut>(
     path: &Path,
     metadata_file: &str,

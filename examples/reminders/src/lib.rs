@@ -1,12 +1,22 @@
+use mdi::bell_alert;
+use mdi::calendar_clock;
+use mdi::calendar_today;
+use mdi::check;
+use mdi::circle_outline;
+use mdi::flag;
+use mdi::format_list_bulleted;
+use mdi::inbox;
+use mdi::plus;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::background::Material;
 use waterui::component::list::{List, ListItem};
-use waterui::prelude::theme_color::{Foreground, MutedForeground};
+use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::shape::{Circle, RoundedRectangle};
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
+use waterui_icons_material_icon::Svg;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SidebarDestination {
@@ -30,14 +40,14 @@ impl SidebarDestination {
         }
     }
 
-    fn icon(self) -> waterui_icons_material_icon::Svg {
+    fn icon(self) -> Svg {
         match self {
-            Self::Today => mdi::calendar_today(),
-            Self::Scheduled => mdi::calendar_clock(),
-            Self::All => mdi::inbox(),
-            Self::Flagged => mdi::flag(),
-            Self::Urgent => mdi::r#bell_alert(),
-            Self::Completed => mdi::r#check(),
+            Self::Today => calendar_today(),
+            Self::Scheduled => calendar_clock(),
+            Self::All => inbox(),
+            Self::Flagged => flag(),
+            Self::Urgent => r#bell_alert(),
+            Self::Completed => r#check(),
         }
     }
 
@@ -268,17 +278,17 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
         .spacing(8.0),
         text("My Lists")
             .caption()
-            .foreground(MutedForeground)
-            .padding_with(EdgeInsets::new(12.0, 4.0, 4.0, 4.0)),
+            .muted()
+            .padding_with([12.0, 4.0, 4.0, 4.0]),
         vstack(user_lists().map(|(name, count, color)| user_list_row(name, count, color)))
             .spacing(2.0)
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
         // Pin content to the top of the column, as the official app does.
         spacer(),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(6.0)
-    .padding_with(EdgeInsets::all(12.0))
+    .padding_with(12.0)
     .width(300.0)
     .background(Material::Thick)
 }
@@ -290,7 +300,7 @@ fn destination_tile(
     selection: Binding<Option<SidebarDestination>>,
     query: Computed<Option<String>>,
 ) -> impl View {
-    let is_selected = selection.clone().map(move |current| current == Some(dest));
+    let is_selected = selection.clone().equal_to(Some(dest));
     let count = query.map(move |query| {
         if let Some(query) = query.as_deref() {
             let (today_rows, upcoming_rows) = reminders_for(dest);
@@ -313,32 +323,37 @@ fn destination_tile(
         spacer(),
         text(dest.title()).body().bold().foreground(Srgb::WHITE),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(4.0)
-    .padding_with(EdgeInsets::all(10.0))
+    .padding_with(10.0)
     .min_height(56.0)
     .background(signal_color(bg))
     // ~10pt on the tile's shorter side, matching the official app's tiles.
     .clip(RoundedRectangle::new(0.15))
-    .on_tap(move || selection.set(Some(dest)))
+    .on_tap(
+        move |State(selection): State<Binding<Option<SidebarDestination>>>| {
+            selection.set(Some(dest));
+        },
+    )
+    .state(&selection)
 }
 
 /// A "My Lists" row: colored circular badge, name, trailing count.
 fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     hstack((
-        mdi::r#format_list_bulleted()
+        r#format_list_bulleted()
             .tint(Srgb::WHITE)
             .size(14.0, 14.0)
-            .padding_with(EdgeInsets::all(6.0))
+            .padding_with(6.0)
             .background(color)
             .clip(Circle),
         text(name).body().foreground(Foreground),
         spacer(),
-        text!("{count}").caption().foreground(MutedForeground),
+        text!("{count}").caption().muted(),
     ))
-    .alignment(VerticalAlignment::Center)
+    .centered()
     .spacing(10.0)
-    .padding_with(EdgeInsets::symmetric(4.0, 8.0))
+    .padding_with((4.0, 8.0))
 }
 
 fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView {
@@ -355,7 +370,7 @@ fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView
     .searchable(&search, "Search reminders")
     .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::new(
         NavigationToolbarPlacement::PrimaryAction,
-        button(label("").icon(mdi::plus()))
+        button(label("").icon(plus()))
             .style(ButtonStyle::Borderless)
             .action(|| {}),
     )]))
@@ -366,7 +381,7 @@ fn placeholder_view() -> impl View {
         text("Select a list").title().foreground(Foreground),
         text("Choose one of your reminder collections from the sidebar.")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
     ))
     .spacing(10.0)
     .background(Material::Regular)
@@ -380,8 +395,8 @@ fn content_header(dest: SidebarDestination) -> impl View {
         .bold()
         .foreground(dest.color())
         .max_width(f32::INFINITY)
-        .alignment(Alignment::Leading)
-        .padding_with(EdgeInsets::new(14.0, 18.0, 12.0, 18.0))
+        .leading()
+        .padding_with([14.0, 12.0, 18.0, 18.0])
 }
 
 fn reminder_visible(search: Binding<Str>, row: ReminderRow) -> Computed<bool> {
@@ -408,6 +423,9 @@ fn section_visible(search: Binding<Str>, rows: &'static [ReminderRow]) -> Comput
         .computed()
 }
 
+// `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
+// never change, so reading the field in the row builder cannot go stale.
+#[allow(unknown_lints, collection_item_snapshot)]
 fn reminder_section(
     title: &'static str,
     rows: &'static [ReminderRow],
@@ -418,31 +436,29 @@ fn reminder_section(
         text(title)
             .caption()
             .bold()
-            .foreground(MutedForeground)
+            .muted()
             .max_width(f32::INFINITY)
-            .alignment(Alignment::Leading)
-            .padding_with(EdgeInsets::new(8.0, 18.0, 0.0, 18.0)),
+            .leading()
+            .padding_with([8.0, 0.0, 18.0, 18.0]),
         List::for_each(rows, move |row| {
             let visible = reminder_visible(search.clone(), row.clone());
             ListItem::new(
                 hstack((
-                    mdi::circle_outline()
-                        .size(16.0, 16.0)
-                        .foreground(MutedForeground),
+                    circle_outline().size(16.0, 16.0).muted(),
                     vstack((
                         text(row.title).body().foreground(Foreground),
                         row.subtitle
-                            .map(|subtitle| text(subtitle).caption().foreground(MutedForeground)),
+                            .map(|subtitle| text(subtitle).caption().muted()),
                     ))
                     .spacing(2.0)
-                    .alignment(HorizontalAlignment::Leading),
+                    .leading(),
                     spacer(),
                     when(row.flagged, || {
-                        mdi::flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
+                        flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
                     })
                     .otherwise(|| spacer().width(12.0)),
                 ))
-                .padding_with(EdgeInsets::symmetric(10.0, 18.0))
+                .padding_with((10.0, 18.0))
                 .visible(visible),
             )
         }),

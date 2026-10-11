@@ -4,7 +4,7 @@ Signatures verified against the WaterUI source and compiled. Everything here is 
 from `use waterui::prelude::*;` unless an explicit import is shown.
 
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `media`, `inspector`,
-and `snackbar`. `webview`, `flow-markdown`, and `navigation-restoration` are opt-in — a
+and `snackbar`. `webview`, `video`, `flow-markdown`, and `navigation-restoration` are opt-in — a
 missing module here is usually a missing feature in `Cargo.toml`, not a wrong path:
 
 ```toml
@@ -80,14 +80,22 @@ Common modifiers on stacks:
 
 ```rust
 .spacing(8.0)
-.alignment(HorizontalAlignment::Leading)   // VerticalAlignment on hstack
-.padding()  /  .padding_with(16.0)  /  .padding_with(EdgeInsets::symmetric(10.0, 16.0))
+.leading()   // or .alignment(Leading); hstack aligns vertically: .top() / .centered() / .bottom()
+.padding()  /  .padding_with(16.0)  /  .padding_with((10.0, 16.0))
 ```
 
-`.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number, an `EdgeInsets`, or
-a signal of one. Argument orders are traps worth memorizing —
-`EdgeInsets::new(top, bottom, leading, trailing)` (not CSS order) and
-`EdgeInsets::symmetric(vertical, horizontal)`.
+`.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number (every edge), a
+`(vertical, horizontal)` pair, a `[top, bottom, leading, trailing]` array, an `EdgeInsets`,
+or a signal of one. `.padding_horizontal(x)` / `.padding_vertical(x)` pad one axis. Do not
+spell `EdgeInsets::all(x)` / `symmetric(v, h)` / `new(..)` at a padding call — the number,
+pair and array are those constructors. The orders are traps worth memorizing —
+`[top, bottom, leading, trailing]` (not CSS order) and `(vertical, horizontal)`.
+
+Alignment is a token or a method, never the qualified constant: `vstack(..).leading()` or
+`.alignment(Leading)`, `hstack(..).top()`, `zstack(..).top_leading()`. The tokens
+(`Leading`, `Trailing`, `Center`, `Top`, `Bottom`, `FirstBaseline`, `LastBaseline`, and the
+corners `TopLeading` …) convert only into the axis they are legal for, so
+`vstack(..).alignment(Top)` does not compile.
 
 Children are a tuple for a fixed set. For a runtime-length static set, collect — the
 iterator item must be a single concrete type, so heterogeneous helpers return `AnyView`:
@@ -121,7 +129,12 @@ that overflows its intrinsic size.
 
 Safe areas: content is inset from notches and home indicators by default; a full-bleed
 layer opts out with `.ignore_safe_area(EdgeSet::ALL)` (per-edge: `EdgeSet` has
-`top`/`leading`/`bottom`/`trailing` fields and `ALL`/`NONE` consts).
+`top`/`leading`/`bottom`/`trailing` fields and `ALL`/`NONE` consts). The safe area has
+two regions per edge — `container` (bars, cutouts, window chrome) and `keyboard` (the
+software keyboard) — and `.ignore_safe_area` takes an `Into<IgnoreSafeArea>`:
+`SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM)` lays a view under the keyboard but above
+the container inset, `SafeAreaRegions::CONTAINER` / `ALL` name the other combinations,
+and a bare `EdgeSet` ignores every region.
 
 Grid — note the import and the `row` name collision with the list row builder:
 
@@ -162,6 +175,37 @@ is simpler — sizing follows the base:
 overlay(player, buffering_indicator).height(360.0)
 ```
 
+## Anchored overlays (popovers, tooltips)
+
+`.anchored_overlay(...)` presents content next to the view it modifies — above all other
+content in the window — while its `Binding<bool>` is true. The backend places it against
+the anchor's declared edge, flips to the opposite edge when the preferred side has no
+room, and clamps it inside the window; a tap outside writes `false` back to the binding:
+
+```rust
+use waterui::metadata::anchored_overlay::{
+    AnchoredOverlay, AnchorEdge, EdgeAlignment, Clamp, Dismissal,
+};
+
+let open = binding(false);
+button("Options")
+    .action({ let open = open.clone(); move || open.toggle() })
+    .anchored_overlay(
+        AnchoredOverlay::new(&open, popover_body())   // AnyView content, measured at ideal size
+            .edge(AnchorEdge::Top)                     // Top / Bottom / Leading / Trailing
+            .alignment(EdgeAlignment::Center)          // Start / Center / End along the edge
+            .gap(4.0)                                  // points away from the anchor
+            .flip(true)                                // flip to the opposite edge on overflow
+            .clamp(Clamp::Window { margin: 2.0 })      // stay inside the window
+            .dismissal(Dismissal::OutsideInteraction), // or Manual — only the binding closes it
+    )
+```
+
+Leading/trailing follow the layout direction; `Start`/`End` are leading/trailing along
+the top and bottom edges and top/bottom along the leading and trailing edges. Unlike
+`.context_menu`, the overlay takes arbitrary `impl View` content — this is the popover
+primitive (the M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
+
 ## Scrolling
 
 ```rust
@@ -172,15 +216,21 @@ scroll_both(content)
 
 Programmatic scrolling goes through a `ScrollController`, which is explicit and
 repeatable. `List` addresses item indices; `ScrollView` addresses content coordinates.
+A request carries an optional animation: `scroll_to` jumps, `animate_to` moves
+along the animation's curve. An `animate_to` on a `List` further than 100 rows
+away jumps to within 100 rows of the target first and animates only the final
+stretch — it never flies the viewport through the rows between.
 
 ```rust
 let rows = ScrollController::<usize>::new(0);
 let list = List::for_each(records, row_view).scroll_controller(&rows);
-rows.scroll_to(50_000);                       // does not materialize rows 0..50_000
+rows.scroll_to(50_000);                          // jump — does not materialize rows 0..50_000
+rows.animate_to(50_000, Animation::default());   // glide with the platform's smooth scroll
 
 let offset = ScrollController::<Point>::new(Point::zero());
 let view = scroll(content).scroll_controller(&offset);
 offset.scroll_to(Point::new(0.0, 2_400.0));
+offset.animate_to(Point::new(0.0, 2_400.0), Animation::ease_in_out(Duration::from_millis(400)));
 ```
 
 ## Controls
@@ -214,10 +264,18 @@ button(text!("{edit_label}"))               // a text! satisfies IntoLabel: reac
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox
 slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>; range is RangeInclusive<f64>
+slider("Volume", &level).size(ControlSize::Large)      // ExtraSmall..=ExtraLarge; sliders default ExtraSmall
+    .value_indicator(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
 stepper("Quantity", &count)                 // &Binding<i32>
 stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32>; step takes a signal
 field("Email", &address)                    // &Binding<Str>
+field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
+// .content_type declares what the field means, for autofill — it is what
+// makes Apple offer the received SMS code; pair it with .keyboard(..)
+TextField::new("Verification code", &code)
+    .keyboard(KeyboardType::Number)
+    .content_type(ContentType::OneTimeCode)
 progress(fraction)                          // impl IntoComputed<f64>
 progress(fraction).label("Downloading")     // its label is a modifier — the one exception
 loading()                                   // indeterminate progress
@@ -228,6 +286,11 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 type parameter. `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. Switch and checkbox map to different
 accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to tests.
+`ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
+checkbox on macOS — so a test that must pass on every host queries a default toggle
+with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
+width it is offered (label leading, switch trailing); a checkbox and a toggle with a
+hidden label are content-sized.
 
 `Label` composes text with an icon; `Label::new` makes a whole composed row read as one
 accessibility node:
@@ -265,8 +328,21 @@ Menu::new("Choose an Option", (
 That `"Option A".action(..)` is `CommandExt`, blanket-implemented for every
 `impl IntoLabel`: the receiver is the *label* and the result is a `Command` — not a
 button. `Command` has its own builder chain: `.state(&value)`, `.disabled(signal)`,
-`.selected(signal)`, `.shortcut(Shortcut)`. A `Button` also converts into `MenuItem` and
+`.selected(signal)`, `.shortcut(Shortcut)` — the key is a char or a W3C `NamedKey`:
+`Shortcut::new('s').command()`, `Shortcut::new(NamedKey::Delete)`. A `Button` also
+converts into `MenuItem` and
 `Command`, so one definition can serve a toolbar, a menu, and a keyboard shortcut.
+
+Two items stand for platform commands instead of carrying an action: `MenuItem::Quit`
+and `MenuItem::CloseWindow`. Declare them in `App::menu_bar` (or any menu) and each
+renders with the platform's own label and chord — ⌘Q and the close chord on macOS —
+acting through the termination machine or the window's own close path. A platform that
+cannot quit or close a window omits them, so a portable menu declares them
+unconditionally. The close chord is decided once for the whole application from its
+declared menu bar, and every Close Window item carries it. ⌘W is not reserved — an
+application may bind it on its own commands (a tabbed app's Close Tab): the chord is
+then ⇧⌘W when no declared command binds ⇧⌘W, and no chord at all when the application
+binds both.
 
 `.context_menu(items)` attaches a long-press / right-click menu to ANY view and takes the
 same `MenuView` content. Attach `.state(..)` to each command, not to the menu:
@@ -306,6 +382,20 @@ Both carry the full font API:
 `.size(..)` is the *font* size, is reactive (`impl IntoSignal<f64>`), and **shadows** the
 two-argument frame `.size(w, h)` — to give a text a frame, use `.width(..)`/`.height(..)`
 or size its container.
+
+A `font::Font` built from a slot carries the same overrides, and every one of them —
+`.family(..)`, `.size(..)`, `.weight(..)`, `.design(..)`, `.line_height(..)`,
+`.letter_spacing(..)` — takes a plain value or a signal of one. A family that follows a
+setting is a signal, never a `watch(..)`:
+
+```rust
+let family: Binding<Option<Str>> = Binding::container(None); // e.g. a user setting
+text("~/src").font(font::Font::from(font::Body).family(family.clone()))
+```
+
+`.family(..)` takes a name (`"Menlo"`, a `Str`, a `String`), a signal of one, or a signal
+of `Option<Str>` whose `None` (`font::FontFamily::Inherited`) keeps the family the slot
+resolves to. Changing the signal re-resolves the font in place; the text is not rebuilt.
 
 Richer text:
 
@@ -363,12 +453,13 @@ Lazy::hstack(ForEach::new(records.clone(), row))
 
 List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), State(s): State<AppState>| { let _ = s.rows.remove(i); })
-    .on_move(|ListMove(m), State(s): State<AppState>| { /* m.from(), m.to() */ })
+    .on_delete(|ListDelete(i), s: AppState| { let _ = s.rows.remove(i); })
+    .on_move(|ListMove(m), s: AppState| { /* m.from(), m.to() */ })
     .scroll_controller(&controller)
 ```
 
 `ListDelete(index)` destructures to a `usize`; `ListMove(m)` exposes `.from()`/`.to()`.
+`AppState` is an owned `#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
 modifiers, `VStack`/`HStack` have `for_each` too, and `collection_transition` animates
@@ -399,10 +490,20 @@ List::content((
 ))
 ```
 
-`ListItem` modifiers: `.deletable(signal)`, `.selected(signal)`, `.section(section)`.
+`ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
+list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
+`.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
+`List::content` rows `V::Id` is `SelfId<usize>`, for `List::for_each` it is
+`Identifiable::Id`. At most one mode per list: a later call replaces an earlier one.
 `List::for_each` requires `C::Item: Identifiable`; `List::content` takes the structural
 tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
+
+A row whose content sits under `.disabled(true)` is inert to selection the way a
+disabled `Button` cannot be pressed: pointer, keyboard and accessibility input leave
+the selection unchanged, and the row's accessibility node reports disabled without
+offering the click action. There is no per-item selectable flag — selection follows
+the row content's own disabled state.
 
 When the row set is *derived* — filtered or sorted from other state — do not fall back to
 `watch`: wrap the derived signal in `SignalCollection` (see
@@ -479,13 +580,14 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 
 ## Overlays: snackbars, cards, suspense, full screen
 
-Every `Window` installs a `SnackbarManager`; reach it from any handler.
+Every `Window` installs a `SnackbarManager` through `.state()`; it is a `#[state]`-marked
+framework type, so handlers take it bare.
 
 ```rust
 use core::time::Duration;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 
-button("Save").action(|State(m): State<SnackbarManager>| {
+button("Save").action(|m: SnackbarManager| {
     m.show(
         Snackbar::new("Item moved to trash")
             .icon(mdi::delete())
@@ -530,3 +632,34 @@ build it with `Label::new(semantic_text, || content)`, which does this for you.
 `.a11y_id` is the escape hatch for views that are hard to label meaningfully; the same
 identifier is what `waterui-testing` queries with `.identifier(..)`. Prefer a real label
 where one exists — the label serves users, the id only serves tests.
+
+## Dialogs (alerts, confirmations)
+
+`.dialog(...)` presents a window-modal alert while its `Binding<bool>` is true — the
+platform's native alert on Apple (`NSAlert` sheet on AppKit, `UIAlertController` on
+UIKit), and elsewhere the self-drawn card on a modal layer that dims the window with
+the `Scrim` theme colour and leaves the wrapped content inert for pointer, keyboard
+and the accessibility tree. Actions declare their role — `Default`, `Cancel`,
+`Destructive` — and the platform does the ordering: the primary (first `Default`)
+action sits rightmost and answers Return, `Cancel` is visually separated on
+iOS, and declaration order holds within each role. Tapping an action runs its handler
+then writes `false` to the binding; writing `false` yourself dismisses without a
+handler. Escape, Android back and the scrim tap are the *cancel path*: they run the
+`Cancel` action's handler, and are no-ops when no `Cancel` exists. At most one
+`Cancel` action is allowed — a second panics; no actions at all gains a single
+acknowledgement in the platform's wording. One dialog presents per window at a time; a
+second one presented meanwhile waits until the first closes.
+
+```rust
+use waterui::dialog::{Dialog, DialogAction};
+
+let presented = binding(false);
+button("Delete")
+    .action({ let presented = presented.clone(); move || presented.set(true) })
+    .dialog(
+        Dialog::new(&presented, "Delete photo?")        // title takes impl IntoText
+            .message("This cannot be undone.")          // optional, also IntoText
+            .action(DialogAction::cancel("Cancel", || {}))
+            .action(DialogAction::destructive("Delete", |_: Environment| trash_photo())),
+    )
+```

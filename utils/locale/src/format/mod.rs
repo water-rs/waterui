@@ -82,10 +82,17 @@ impl<T: Display> LocalizedDisplay for T {
 /// WaterUI's `text!` macro.
 #[cfg(feature = "number")]
 #[doc(hidden)]
-#[derive(Debug)]
 pub struct LocalizedArgument<'a, T> {
     value: &'a T,
     locale: &'a Locale,
+}
+
+/// `{:?}` interpolations render the wrapped value, not this adapter.
+#[cfg(feature = "number")]
+impl<T: fmt::Debug> fmt::Debug for LocalizedArgument<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.value, f)
+    }
 }
 
 #[cfg(feature = "number")]
@@ -138,7 +145,22 @@ impl<T: LocalizedDisplay> Display for LocalizedArgument<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("\u{2068}")?;
         if let Some(number) = numeric_argument(self.value, self.locale, f.precision()) {
-            f.write_str(&number::format_number_text(self.locale, &number))?;
+            let formatted = number::format_number_text(self.locale, &number);
+            if f.width().is_none() && !f.sign_plus() && !f.sign_aware_zero_pad() {
+                // No width, sign or zero-padding flags: emit the localized
+                // digits verbatim so a locale-specific minus sign survives.
+                f.write_str(&formatted)?;
+            } else {
+                // `pad_integral` re-emits the sign and applies width, fill,
+                // alignment and sign-aware zero padding exactly as `core::fmt`
+                // does for numbers. `pad` cannot be used here: it interprets
+                // `precision` as a maximum string length and would truncate
+                // the already-rounded text.
+                let digits = formatted
+                    .strip_prefix(|minus| matches!(minus, '-' | '\u{2212}'))
+                    .unwrap_or(formatted.as_str());
+                f.pad_integral(!number.starts_with('-'), "", digits)?;
+            }
         } else {
             self.value.fmt(self.locale, f)?;
         }
@@ -210,6 +232,64 @@ mod tests {
         assert_eq!(
             LocalizedArgument::new(&borrowed, &locales::AR).to_string(),
             "\u{2068}مرحبا\u{2069}"
+        );
+    }
+
+    #[test]
+    fn localized_argument_applies_width_and_zero_fill_to_integers() {
+        assert_eq!(
+            format!("{:06}", LocalizedArgument::new(&0_u32, &locales::EN)),
+            "\u{2068}000000\u{2069}"
+        );
+        assert_eq!(
+            format!("{:06}", LocalizedArgument::new(&-42_i32, &locales::EN)),
+            "\u{2068}-00042\u{2069}"
+        );
+        assert_eq!(
+            format!("{:>8}", LocalizedArgument::new(&1234_i64, &locales::EN)),
+            "\u{2068}   1,234\u{2069}"
+        );
+    }
+
+    #[test]
+    fn localized_argument_applies_width_to_string_arguments() {
+        let value = "hi";
+        assert_eq!(
+            format!("{:>8}", LocalizedArgument::new(&value, &locales::EN)),
+            "\u{2068}      hi\u{2069}"
+        );
+    }
+
+    #[test]
+    fn localized_argument_applies_precision_and_width_to_floats() {
+        let value = 1234.567_f64;
+        assert_eq!(
+            format!("{:.2}", LocalizedArgument::new(&value, &locales::EN)),
+            "\u{2068}1,234.57\u{2069}"
+        );
+        assert_eq!(
+            format!(
+                "{:>10.2}",
+                LocalizedArgument::new(&1234.5_f64, &locales::EN)
+            ),
+            "\u{2068}  1,234.50\u{2069}"
+        );
+    }
+
+    #[test]
+    fn localized_argument_debug_forwards_to_the_wrapped_value() {
+        #[derive(Debug)]
+        enum Fruit {
+            Apple,
+        }
+
+        assert_eq!(
+            format!("{:?}", LocalizedArgument::new(&Fruit::Apple, &locales::EN)),
+            "Apple"
+        );
+        assert_eq!(
+            format!("{:#?}", LocalizedArgument::new(&Fruit::Apple, &locales::EN)),
+            "Apple"
         );
     }
 }

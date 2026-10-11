@@ -1,25 +1,44 @@
 [package]
 name = "waterui-cli"
-version = "0.2.1"
+version = "0.4.4"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-homepage = "https://waterui.dev"
 description = "Cross-platform tooling for WaterUI applications"
-keywords.workspace = true
-categories.workspace = true
+keywords = ["ui", "framework", "rust", "gui", "water"]
+categories = ["gui"]
 
-# The only scaffold fact the CLI itself owns: the Kotlin toolchain the managed
-# Android toolchain installs. Every framework-owned scaffold fact — extracted
+# The only scaffold facts the CLI itself owns: the Kotlin toolchain the managed
+# Android toolchain installs, and the JDK major version the generated Android
+# app's `compileOptions` pins. Every framework-owned scaffold fact — extracted
 # crate requirements and backend coordinates — lives in the root manifest's
 # `[package.metadata.waterui]` and reaches a scaffolded project through the
 # published `framework.json`; `build.rs` fails the build if another key lands
 # in this table.
 [package.metadata.waterui-scaffold]
 android-kotlin-version = "2.3.21"
+android-jdk-version = "21"
+
+# The host triples dist builds and ships the CLI for (Rust target-triple
+# syntax). The musl target is what makes Alpine installable: dist offers a
+# `*-linux-musl` archive to `*-linux-musl-dynamic` hosts natively and keeps
+# it as the fallback for `*-linux-gnu` hosts whose glibc is below
+# `min-glibc-version`. The list lives here rather than in
+# dist-workspace.toml because `build.rs` embeds it: the Linux and Windows
+# tables of every generated manifest serve exactly these hosts, and a
+# packaged build still carries its own manifest.
+[package.metadata.dist]
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+]
 
 [[bin]]
 name = "water"
@@ -29,7 +48,11 @@ path = "src/terminal/main.rs"
 # Windows `canonicalize` returns extended-length paths that no other tool
 # reports; `dunce` gives the plain one and is `canonicalize` elsewhere.
 dunce = "1.0"
-cargo_metadata = "0.23.1"
+cargo_metadata.workspace = true
+# Cargo configuration load and resolution — the same hierarchical merge,
+# environment and `target.<triple>`/`target.<cfg>` precedence Cargo applies,
+# resolving the rustflags a build's flag set joins.
+cargo-config2 = "0.1.45"
 # Icon and asset pipeline: reads a project's source icon (PNG/JPEG/WebP) and
 # writes PNG plus the Windows ICO container. `default-formats` additionally
 # pulls `image`'s AVIF *encoder* (ravif -> rav1e), which nothing here calls.
@@ -40,49 +63,62 @@ color-eyre = { version = "0.6.5", features = ["issue-url"] }
 include_dir = "0.7.4"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await", "io"] }
 futures-lite = "2.6"
-async-channel.workspace = true
+async-channel = "2.5"
 async-lock = "3.4"
-reflink = "0.1.3"
-serde = { workspace = true, features = ["derive"] }
+reflink-copy = "0.1.30"
+# Stamps a staged copy's mtime by path rather than through a file handle:
+# on Windows `SetFileTime` needs `FILE_WRITE_ATTRIBUTES`, which `File::open`
+# does not request — and the copy may keep its read-only source's mode.
+filetime = "0.2"
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 serde_json = "1.0"
-schemars.workspace = true
+schemars = { version = "1.2", features = ["derive"] }
 smol = "2.0.2"
 target-lexicon = "0.13.5"
 thiserror = "2.0.20"
-jiff.workspace = true
+jiff = { version = "0.2", features = ["serde"] }
 toml = "1.1.5"
-plist = "1.10"
-tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 semver = "1.0"
 # Reads DT_NEEDED out of staged Android native libraries so packaging only
 # ships libc++_shared.so when a library actually links it.
-object = "0.37"
-serialport = { version = "4", optional = true }
+object = { version = "0.37", features = ["wasm"] }
 which = "8.0.6"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"], optional = true }
 
 # Terminal UI dependencies
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 # Only `Confirm`, `Input` and `MultiSelect` are used; the default `editor`
 # (tempfile) and `password` (zeroize) prompts are not.
 dialoguer = { version = "0.12", default-features = false }
 indicatif = "0.18"
+console = "0.16"              # ANSI escape stripping for captured cargo output
 anstream = "1.0"              # Auto-detected ANSI output stream
 anstyle = "1"                 # ANSI styling without manual escape codes
 ctrlc = { version = "3.5", features = ["termination"] }
 whoami = "2.1"
 heck = "0.5"                  # Case conversion (kebab-case, snake_case, etc.)
+# `cargo`'s package-name grammar is defined over Unicode XID characters
+# (`xid_start`/`xid_continue`); this is the check it ships.
+unicode-ident = "1"
+# Quoting for the `am start` words that cross the `adb shell` boundary — the
+# device's `/system/bin/sh` re-parses them.
+shlex = "2"
 
 # Asset/font downloading dependencies
-dirs = "7"                    # Platform-specific directories (cache, config, etc.)
 hex = "0.4"                   # Hex encoding for hashes
 sha2 = "0.11"                 # SHA256 hashing
-sysinfo.workspace = true      # Preview support-process discovery
+sysinfo = { version = "0.39", default-features = false, features = ["system"] } # Preview support-process discovery
 # ZIP archive extraction. Every archive the CLI reads or writes — Android SDK
 # packages, browser runtimes, asset catalogs — is stored or deflated, so the
 # bzip2/lzma/zstd/xz/ppmd/AES codecs `default` also pulls are never reached.
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
+# Gzipped-tar extraction for managed tools whose upstream releases ship
+# `.tar.gz` (sccache on Linux and macOS).
+flate2 = "1"
+tar = "0.4"
 roxmltree = "0.21"            # Android SDK repository XML parsing
 fs_extra = "1.3"
 askama = "0.16"
@@ -90,35 +126,46 @@ resvg = { version = "0.48.1", optional = true }
 ttf-parser = "0.25"
 ignore = "0.4"
 remove_dir_all = "1.0"
-waterui-assets-core.workspace = true
-waterui-assets-planner.workspace = true
+# The `waterui-*` dependencies resolve by path inside the workspace: the CLI
+# tracks APIs no crates.io release carries yet, and the workspace's own
+# `version` fields are what `cargo publish` keeps — a release therefore
+# cannot ship until versions carrying those APIs publish.
+waterui-assets-core = { workspace = true, features = ["remote"] }
+waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true
-aither-core.workspace = true
-aither-mcp = { workspace = true, features = ["server"] }
+aither-core = "0.4"
+aither-mcp = { version = "0.4", default-features = false, features = ["server"] }
 # Decodes the base64 image payloads a `tools/call` response carries back from
 # the MCP child (screenshots).
 base64 = "0.23"
 tempfile = "3.27"
 walkdir = "2.5"
+# File identity (device + inode) checks for the shared-target lease, so a
+# lock granted on an inode a remover already deleted cannot pass for live.
+same-file = "1"
 pathdiff = "0.2"
+# `Info.plist` assembly/serialization for Apple app bundles. `app_bundle`
+# compiles on every host — its actool/codesign arms bail at run time off
+# macOS — so the plist code paths must compile everywhere too.
+plist = "1.10"
 url = "2.5"
 fs4 = "1.1.0"
-fontcull-klippa = { version = "0.1.2", optional = true }
-fontcull-write-fonts = { version = "0.44.3", optional = true }
 toml_edit = { version = "=0.25.13", features = ["serde"] }
-diffy = { version = "=0.5.0", default-features = false }
 cargo-lock = { version = "=10.1.0", default-features = false }
 rustc-demangle = "0.1"
+# `water update`: reads the install receipt the dist shell/powershell
+# installers write and re-runs the newest release's own installer.
+axoupdater = "0.10.2"
+# axoupdater's async API is reqwest-based and needs a tokio reactor the
+# smol-based CLI does not run; self-update calls drive it on a scratch
+# current-thread runtime. `net`/`time` are what reqwest needs the reactor to
+# actually drive.
+tokio = { version = "1.48", default-features = false, features = ["rt", "net", "time"] }
 
 [features]
-default = ["esp32", "svg-icons", "preview"]
-# ESP32 board serial-port detection and `[backends.esp32] font_ranges`
-# subsetting. Without it, `water devices` lists no serial ports, board
-# auto-detection is skipped (QEMU and `--device <port>` still work), and
-# font subsetting is unsupported.
-esp32 = ["dep:serialport", "dep:fontcull-klippa", "dep:fontcull-write-fonts"]
+default = ["svg-icons", "preview"]
 # SVG app-icon sources rasterized through usvg/resvg. Without it only raster
 # icon sources are accepted and the bundled default icon is a PNG.
 svg-icons = ["dep:resvg"]
@@ -127,19 +174,58 @@ svg-icons = ["dep:resvg"]
 preview = ["dep:notify"]
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-zenwave = { workspace = true, features = ["native-tls"] }
+zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "native-tls"] }
 core-graphics = "0.25"
 core-foundation = "0.10"
+# `confstr(_CS_DARWIN_USER_TEMP_DIR)`: the per-user temp directory `std` falls
+# back to when `TMPDIR` is unset, which `Host::temp_dir` reproduces without
+# reading the process environment.
+libc = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+# Process-group signalling for the `water run` web dev server (SIGTERM/SIGKILL
+# to the bundler tree the package manager re-execs).
+nix = { version = "0.31", features = ["process", "signal", "user"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nix = { version = "0.31", features = ["signal"] }
 # `.icns` encoding for hand-assembled app bundles. Only the macOS packaging path
 # builds one, and that path is itself `#[cfg(target_os = "macos")]`, so the
 # dependency does not belong in a Linux or Windows build of the CLI.
-icns = "0.4"
+# `pngio` covers the PNG-encoded family members this CLI writes; the `jp2io`
+# default would pull a whole JPEG 2000 decoder (hayro-jpeg2000) for entries we
+# never read or emit.
+icns = { version = "0.4", default-features = false, features = ["pngio"] }
+# Device provisioning pairs a provisioning profile with the development
+# certificate it names: `security find-certificate` PEMs are parsed for the
+# subject organizational unit (the team ID) and the profile's
+# `DeveloperCertificates` are matched against `find-identity` SHA-1s.
+x509-parser = "0.18"
+sha1 = "0.10"
+# A `.mobileprovision` is a CMS SignedData envelope around a plist; decoding
+# it in-process keeps the device-signing path off `security cms -D` output
+# parsing.
+cms = "0.2.3"
+der = "0.7"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+rcgen = "=0.14.8"
+tracing-oslog = "0.3"
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.31", features = ["fs", "process", "signal"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
+zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "rustls"] }
 
 [build-dependencies]
 toml = "1.1.5"
@@ -148,6 +234,7 @@ toml = "1.1.5"
 workspace = true
 
 [dev-dependencies]
-fontcull-skrifa = "0.39.2"
+syn = { version = "2", features = ["full"] }
+
 [package.metadata.cargo-machete]
-ignored = ["roxmltree", "waterui-inspector-protocol"]
+ignored = ["roxmltree"]

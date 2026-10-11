@@ -28,10 +28,11 @@ use waterui_controls::{ButtonStyle, IntoLabel, button};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
-    Retain, Str, View, env::use_env, extract::Extractor, extract::Use, flatten_signal,
-    handler::ViewBuilder, impl_extractor, layout::StretchAxis, metadata::MetadataKey, raw_view,
+    Retain, SerialDispatch, Str, View, env::use_env, extract::ExtractionState, extract::Extractor,
+    extract::State, flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
+    metadata::MetadataKey, raw_view,
 };
-use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::color::{Color, WorkingColor};
 use waterui_icon::SystemIcon;
 use waterui_text::IntoText;
 use waterui_text::Text;
@@ -136,7 +137,7 @@ impl NavigationDestinationState {
         if let Some(handler) = &mut self.pop_attempted {
             handler(env);
         }
-        self.pop_enabled.get()
+        self.pop_enabled.snapshot()
     }
 
     /// Reports that the destination became active.
@@ -222,6 +223,9 @@ struct NavigationControllerState {
     pending_transaction_id: Cell<Option<NavigationTransactionId>>,
     path_pop_handler: RefCell<Option<PathPopHandler>>,
     native_applied_pops: Cell<usize>,
+    /// Transactions issued while the receiver's `apply` is still running; they
+    /// are delivered after it returns, in order, rather than re-entering it.
+    outbox: SerialDispatch<NavigationTransaction>,
 }
 
 /// A receiver that handles navigation actions.
@@ -255,6 +259,7 @@ impl NavigationController {
                 path_depth: Cell::new(0),
                 next_transaction_id: Cell::new(1),
                 pending_transaction_id: Cell::new(None),
+                outbox: SerialDispatch::new(),
                 path_pop_handler: RefCell::new(None),
                 native_applied_pops: Cell::new(0),
             }),
@@ -341,16 +346,21 @@ impl NavigationController {
             id.checked_add(1)
                 .expect("navigation transaction identifier overflowed"),
         );
-        self.state.pending_transaction_id.set(Some(id));
-        self.state
-            .receiver
-            .borrow_mut()
-            .apply(NavigationTransaction {
+        // A mutation issued while `apply` is still running only enqueues; the
+        // delivery in flight drains it once `apply` returns, so the receiver is
+        // never called re-entrantly.
+        self.state.outbox.deliver(
+            NavigationTransaction {
                 id,
                 retained_prefix,
                 removed,
                 inserted,
-            });
+            },
+            |transaction| {
+                self.state.pending_transaction_id.set(Some(transaction.id));
+                self.state.receiver.borrow_mut().apply(transaction);
+            },
+        );
     }
 
     /// Records successful completion of the current backend transaction.
@@ -598,9 +608,16 @@ impl<T: 'static + Clone + PartialEq> Navigator<T> {
     }
 }
 
-impl<T: 'static + Clone + PartialEq> Extractor for Navigator<T> {
+// Written out rather than `#[state]`: the impl is conditional —
+// `Navigator<T>: Clone` holds only when `T: Clone` — while `#[state]` copies
+// the type's own generics verbatim and would emit an unconditional impl.
+impl<T: Clone + 'static> Extractor for Navigator<T> {
     fn extract(env: &Environment) -> Result<Self, Error> {
-        <Use<Self> as Extractor>::extract(env).map(|value| value.0)
+        <State<Self> as Extractor>::extract(env).map(|state| state.0)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        <State<Self> as Extractor>::extract_from_action(env, state).map(|value| value.0)
     }
 }
 
@@ -640,12 +657,6 @@ impl Navigator<ErasedNavigationRoute> {
     /// Atomically replaces a heterogeneous path.
     pub fn replace(&self, replacement: impl FnOnce(&mut NavigationPathReplacement)) {
         self.0.replace(replacement);
-    }
-}
-
-impl Extractor for Navigator<ErasedNavigationRoute> {
-    fn extract(env: &Environment) -> Result<Self, Error> {
-        <Use<Self> as Extractor>::extract(env).map(|value| value.0)
     }
 }
 
@@ -888,13 +899,13 @@ pub enum BarColor {
     /// An author-specified color that has not been resolved yet.
     Unresolved(Computed<Color>),
     /// A color resolved against the effective environment.
-    Resolved(Computed<ResolvedColor>),
+    Resolved(Computed<WorkingColor>),
 }
 
 impl BarColor {
     /// Returns the resolved color, or `None` while still unresolved.
     #[must_use]
-    pub const fn resolved(&self) -> Option<&Computed<ResolvedColor>> {
+    pub const fn resolved(&self) -> Option<&Computed<WorkingColor>> {
         match self {
             Self::Unresolved(_) => None,
             Self::Resolved(color) => Some(color),
@@ -909,7 +920,7 @@ impl BarColor {
     /// [`NavigationView::resolve_native_fields`].
     #[doc(hidden)]
     #[must_use]
-    pub const fn expect_resolved(&self) -> &Computed<ResolvedColor> {
+    pub const fn expect_resolved(&self) -> &Computed<WorkingColor> {
         self.resolved().expect(
             "NavigationView bar color reached a native backend before it was resolved against an environment",
         )
@@ -1181,15 +1192,21 @@ fn subscribe_navigation_path<R: Clone + 'static>(
     build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
 ) -> impl nami::watcher::WatcherGuard {
     let current_path = Rc::new(RefCell::new(Vec::new()));
+    // A path write issued while a reconcile still runs lands here
+    // re-entrantly; queue it and let the dispatch in flight drain it once the
+    // current reconcile returns, keeping snapshots in order.
+    let pending = SerialDispatch::new();
     let receiver = receiver.clone();
     path.watch(move |next_path| {
-        reconcile_navigation_path(
-            &receiver,
-            &mut current_path.borrow_mut(),
-            next_path,
-            &same,
-            &build,
-        );
+        pending.deliver(next_path, |next_path| {
+            reconcile_navigation_path(
+                &receiver,
+                &mut current_path.borrow_mut(),
+                next_path,
+                &same,
+                &build,
+            );
+        });
     })
 }
 
@@ -1206,7 +1223,7 @@ fn path_stack_body<R: Clone + 'static>(
     let navigator = Navigator(path.clone());
     NavigationStack::new_deferred(use_env(
         move |(receiver, mut local_env): (NavigationController, Environment)| {
-            local_env.insert(navigator.clone());
+            local_env.insert(State(navigator.clone()));
             receiver.retain_environment(local_env.clone());
             receiver.install_path_pop_handler({
                 let path = path.clone();
@@ -1240,6 +1257,12 @@ where
             },
         )
     }
+
+    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
+    /// which fills both axes.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
 }
 
 impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestinations> {
@@ -1256,6 +1279,12 @@ impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, Heterogeneo
                 AnyViewBuilder::new(move || destinations.build(&route))
             },
         )
+    }
+
+    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
+    /// which fills both axes.
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
     }
 }
 
@@ -1298,13 +1327,13 @@ where
         let value = self.value;
         // Plain for the same reason as `NavigationLink` above: the link is a
         // button in behaviour, not in chrome.
-        let link = if let Some(navigator) = env.get::<Navigator<T>>().cloned() {
+        let link = if let Ok(navigator) = Navigator::<T>::extract(env) {
             AnyView::new(
                 button(self.label)
                     .style(ButtonStyle::Plain)
                     .action(move || navigator.push(value.clone())),
             )
-        } else if let Some(navigator) = env.get::<Navigator<ErasedNavigationRoute>>().cloned() {
+        } else if let Ok(navigator) = Navigator::<ErasedNavigationRoute>::extract(env) {
             AnyView::new(
                 button(self.label)
                     .style(ButtonStyle::Plain)
@@ -1517,7 +1546,11 @@ mod tests {
         NavigationTransaction, NavigationView, Navigator, shared_prefix_len,
         subscribe_navigation_path,
     };
-    use waterui_core::{Environment, Metadata, handler::AnyViewBuilder};
+    use waterui_core::{
+        Environment, Metadata,
+        extract::{Extractor, State},
+        handler::AnyViewBuilder,
+    };
 
     #[expect(
         clippy::trivially_copy_pass_by_ref,
@@ -1636,6 +1669,111 @@ mod tests {
         );
     }
 
+    /// A receiver that writes the watched path while `apply` is still running.
+    struct PathWritingNavigationController {
+        path: Rc<RefCell<Option<NavigationPath<u8>>>>,
+        inside: Cell<bool>,
+        applies: Cell<usize>,
+        applied: Rc<RefCell<alloc::vec::Vec<(usize, usize, usize)>>>,
+    }
+
+    impl CustomNavigationController for PathWritingNavigationController {
+        fn apply(&mut self, transaction: NavigationTransaction) {
+            assert!(
+                !self.inside.replace(true),
+                "the receiver must not run re-entrantly"
+            );
+            self.applied.borrow_mut().push((
+                transaction.retained_prefix,
+                transaction.removed,
+                transaction.inserted.len(),
+            ));
+            self.applies.set(self.applies.get() + 1);
+            // The write must happen on a post-registration delivery: the
+            // collection watcher fires its initial snapshot before it is
+            // registered, so a write during the first apply can never notify.
+            if self.applies.get() == 2 {
+                self.path
+                    .borrow()
+                    .as_ref()
+                    .expect("the test installs the path")
+                    .replace([9_u8, 8]);
+            }
+            self.inside.set(false);
+        }
+    }
+
+    /// A path mutation issued while the backend receiver is applying a
+    /// transaction must reconcile after `apply` returns, not re-enter it.
+    #[test]
+    fn a_path_write_during_apply_is_reconciled_after_apply_returns() {
+        let path = NavigationPath::from(vec![0_u8]);
+        let path_slot = Rc::new(RefCell::new(None));
+        let applied = Rc::new(RefCell::new(alloc::vec::Vec::new()));
+        let controller = NavigationController::new(PathWritingNavigationController {
+            path: Rc::clone(&path_slot),
+            inside: Cell::new(false),
+            applies: Cell::new(0),
+            applied: Rc::clone(&applied),
+        });
+        *path_slot.borrow_mut() = Some(path.clone());
+
+        let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
+        path.push(1);
+
+        assert_eq!(
+            &*applied.borrow(),
+            &[(0, 0, 1), (1, 0, 1), (0, 2, 2)],
+            "the nested replace reconciles against the state left by the in-flight apply"
+        );
+        assert_eq!(path.snapshot(), vec![9, 8]);
+    }
+
+    /// A receiver that commits another mutation while `apply` is still running.
+    struct CommittingNavigationController {
+        controller: Rc<RefCell<Option<NavigationController>>>,
+        inside: Cell<bool>,
+        fired: Cell<bool>,
+        ids: Rc<RefCell<alloc::vec::Vec<u64>>>,
+    }
+
+    impl CustomNavigationController for CommittingNavigationController {
+        fn apply(&mut self, transaction: NavigationTransaction) {
+            assert!(
+                !self.inside.replace(true),
+                "the receiver must not run re-entrantly"
+            );
+            self.ids.borrow_mut().push(transaction.id);
+            if !self.fired.replace(true) {
+                self.controller
+                    .borrow()
+                    .as_ref()
+                    .expect("the test installs the controller")
+                    .push_builder(AnyViewBuilder::new(|| NavigationView::new("Nested", ())));
+            }
+            self.inside.set(false);
+        }
+    }
+
+    /// A commit issued while the backend receiver is applying a transaction
+    /// must be delivered after `apply` returns, in order, not re-entrantly.
+    #[test]
+    fn a_commit_during_apply_is_delivered_after_apply_returns() {
+        let slot = Rc::new(RefCell::new(None));
+        let ids = Rc::new(RefCell::new(alloc::vec::Vec::new()));
+        let controller = NavigationController::new(CommittingNavigationController {
+            controller: Rc::clone(&slot),
+            inside: Cell::new(false),
+            fired: Cell::new(false),
+            ids: Rc::clone(&ids),
+        });
+        *slot.borrow_mut() = Some(controller.clone());
+
+        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Outer", ())));
+
+        assert_eq!(&*ids.borrow(), &[1, 2]);
+    }
+
     /// A native interactive pop is reported after the platform already removed
     /// the page, so the explicit path must absorb it without sending a second
     /// removal back to the backend.
@@ -1709,7 +1847,7 @@ mod tests {
         let mut base_env = Environment::new();
         base_env.insert(BaseMarker);
         let mut retained_env = base_env.clone();
-        retained_env.insert(Navigator(NavigationPath::<TestRoute>::new()));
+        retained_env.insert(State(Navigator(NavigationPath::<TestRoute>::new())));
         controller.retain_environment(retained_env);
 
         controller.push_builder(AnyViewBuilder::new(|| {
@@ -1729,6 +1867,6 @@ mod tests {
             .expect("pushed content should carry retained navigation environment");
 
         assert!(metadata.value.get::<BaseMarker>().is_some());
-        assert!(metadata.value.get::<Navigator<TestRoute>>().is_some());
+        assert!(Navigator::<TestRoute>::extract(&metadata.value).is_ok());
     }
 }

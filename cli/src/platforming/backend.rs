@@ -1,77 +1,45 @@
 //! Backend configuration and initialization for `WaterUI` projects.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     android::backend::AndroidBackend,
     apple::backend::AppleBackend,
-    build::BuildOptions,
+    build::{BuildOptions, BuiltTarget},
     device::Artifact,
-    esp32::backend::Esp32Backend,
-    gtk4::backend::Gtk4Backend,
-    hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
 };
 
-/// Configuration for all backends in a `WaterUI` project.
+/// The runtime backends a [`Project`] manages.
 ///
-/// `[backend]` in `Water.toml`
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+/// Project-owned state filled when [`Project::open`] generates the selected
+/// backends in the managed build cache — never persisted in `Water.toml`.
+/// Persisted backend-facing configuration lives in the manifest's typed
+/// tables (the `[hydrolysis]` painter selection).
+#[derive(Debug, Clone, Default)]
 pub struct Backends {
-    /// Base path for all backends, relative to project root.
-    /// Empty string means project root for app manifests.
-    /// Playground projects do not persist managed backend paths in `Water.toml`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    path: String,
     android: Option<AndroidBackend>,
     apple: Option<AppleBackend>,
-    gtk4: Option<Gtk4Backend>,
-    hydrolysis: Option<HydrolysisBackend>,
-    esp32: Option<Esp32Backend>,
+}
+
+/// The `[hydrolysis]` table: selections the project author declares for
+/// the Hydrolysis backend.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct HydrolysisConfig {
+    /// The Android painter the generated app mounts on the shared Hydrolysis
+    /// host. Absent means the GPU painter; an explicit painter the pinned
+    /// host cannot serve is an error at scaffold time, never a substitute.
+    pub painter: Option<crate::hydrolysis::android::HydrolysisAndroidPainter>,
 }
 
 impl Backends {
     /// Check if no backends are configured.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.android.is_none()
-            && self.apple.is_none()
-            && self.gtk4.is_none()
-            && self.hydrolysis.is_none()
-            && self.esp32.is_none()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_esp32_for_tests(&mut self, backend: Esp32Backend) {
-        self.esp32 = Some(backend);
-    }
-
-    /// Whether any backend-project scaffolding is configured.
-    ///
-    /// `[backends.esp32]` is deliberately excluded: it carries device
-    /// configuration — chip, panel geometry, bundled fonts — that only the
-    /// app author can know, while the other entries describe backend
-    /// projects that playground mode delegates to the CLI.
-    #[must_use]
-    pub const fn configures_backend_projects(&self) -> bool {
-        self.android.is_some()
-            || self.apple.is_some()
-            || self.gtk4.is_some()
-            || self.hydrolysis.is_some()
-    }
-
-    /// Get the base path for backends, relative to project root.
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        Path::new(&self.path)
-    }
-
-    /// Set the base path for backends.
-    pub fn set_path(&mut self, path: impl Into<String>) {
-        self.path = path.into();
+        self.android.is_none() && self.apple.is_none()
     }
 
     /// Get the Android backend configuration, if any.
@@ -105,54 +73,6 @@ impl Backends {
     pub fn clear_android(&mut self) {
         self.android = None;
     }
-
-    /// Get the GTK4 backend configuration, if any.
-    #[must_use]
-    pub const fn gtk4(&self) -> Option<&Gtk4Backend> {
-        self.gtk4.as_ref()
-    }
-
-    /// Set the GTK4 backend configuration.
-    pub fn set_gtk4(&mut self, backend: Gtk4Backend) {
-        self.gtk4 = Some(backend);
-    }
-
-    /// Remove GTK4 backend configuration.
-    pub fn clear_gtk4(&mut self) {
-        self.gtk4 = None;
-    }
-
-    /// Get the hydrolysis backend configuration, if any.
-    #[must_use]
-    pub const fn hydrolysis(&self) -> Option<&HydrolysisBackend> {
-        self.hydrolysis.as_ref()
-    }
-
-    /// Set the hydrolysis backend configuration.
-    pub fn set_hydrolysis(&mut self, backend: HydrolysisBackend) {
-        self.hydrolysis = Some(backend);
-    }
-
-    /// Remove hydrolysis backend configuration.
-    pub fn clear_hydrolysis(&mut self) {
-        self.hydrolysis = None;
-    }
-
-    /// Get the ESP32 backend configuration, if any.
-    #[must_use]
-    pub const fn esp32(&self) -> Option<&Esp32Backend> {
-        self.esp32.as_ref()
-    }
-
-    /// Set the ESP32 backend configuration.
-    pub fn set_esp32(&mut self, backend: Esp32Backend) {
-        self.esp32 = Some(backend);
-    }
-
-    /// Remove ESP32 backend configuration.
-    pub fn clear_esp32(&mut self) {
-        self.esp32 = None;
-    }
 }
 
 /// Error type for failing to initialize a backend.
@@ -162,9 +82,9 @@ pub enum FailToInitBackend {
     #[error("Failed to write template files: {0}")]
     Io(#[from] std::io::Error),
     /// Invalid backend configuration prevented scaffolding (e.g. an
-    /// unsupported chip in `[backends.esp32]`).
-    #[error("Invalid backend configuration: {0}")]
-    Config(#[source] eyre::Error),
+    /// unsupported painter in `[hydrolysis]`).
+    #[error("Invalid backend configuration: {0:#}")]
+    Config(eyre::Error),
 }
 
 /// Trait for backends in a `WaterUI` project.
@@ -204,13 +124,13 @@ pub trait Backend: Sized + Send + Sync {
 
     /// Build the Rust library for the target platform.
     ///
-    /// Returns the target directory path where the built library is located.
+    /// Returns the Cargo-reported target and artifacts from the build.
     fn build(
         &self,
         project: &Project,
         platform: TargetPlatform,
         options: BuildOptions,
-    ) -> impl Future<Output = eyre::Result<PathBuf>> + Send;
+    ) -> impl Future<Output = eyre::Result<BuiltTarget>> + Send;
 
     /// Package the project for the target platform.
     ///
@@ -220,6 +140,7 @@ pub trait Backend: Sized + Send + Sync {
         project: &Project,
         platform: TargetPlatform,
         options: PackageOptions,
+        built: &BuiltTarget,
     ) -> impl Future<Output = eyre::Result<Artifact>> + Send;
 
     /// Clean build artifacts for the platform.
@@ -268,24 +189,4 @@ pub async fn reinit_backend<B: Backend>(project: &Project) -> Result<B, FailToIn
 
     // Re-scaffold templates (cache dirs untouched)
     B::init(project).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `[backends.esp32]` is device configuration, not backend-project
-    /// scaffolding, so it alone must not trip the playground restriction.
-    #[test]
-    fn esp32_device_config_is_not_backend_project_configuration() {
-        let mut backends = Backends::default();
-        assert!(!backends.configures_backend_projects());
-
-        backends.set_esp32_for_tests(Esp32Backend::new());
-        assert!(!backends.configures_backend_projects());
-        assert!(!backends.is_empty());
-
-        backends.set_gtk4(Gtk4Backend::default());
-        assert!(backends.configures_backend_projects());
-    }
 }

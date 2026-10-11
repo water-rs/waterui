@@ -1,6 +1,6 @@
 [package]
 name = "waterui-browser-wpe"
-version = "0.1.2"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -38,22 +38,15 @@ xkeysym = { version = "0.2.1", optional = true }
 base64 = "0.23"
 executor-core = { workspace = true, features = ["async-executor"] }
 pollster.workspace = true
-tiny_http = "0.12"
-# The shared real-engine assertions; `real-engine` already selects `webview`.
-waterui-webview = { workspace = true, features = ["conformance"] }
+tracing-subscriber.workspace = true
 
 [[example]]
 name = "runtime_smoke"
 required-features = ["runtime-smoke"]
 
-[[test]]
-name = "real_engine"
-required-features = ["real-engine"]
-
 [features]
 default = ["webview"]
-real-engine = ["webview"]
-runtime-smoke = ["webview"]
+runtime-smoke = ["webview", "waterui-webview/conformance"]
 webview = [
     "dep:cookie",
     "dep:futures",

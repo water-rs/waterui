@@ -2,4 +2,5 @@
 
 fn main() {
 {% include "partials/build_script_i18n.rs.tpl" %}
+
 }

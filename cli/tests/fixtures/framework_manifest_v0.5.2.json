@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "channel": "stable",
+  "repository": "water-rs/waterui",
+  "revision": "e45dc729e34fc41399ec67c98ea76eb577c83cd3",
+  "tag": "v0.5.2",
+  "run_id": 35692466229,
+  "run_attempt": 1,
+  "lockfiles": {
+    "Cargo.lock": "412b7f20c961b29250c84c80484e2ee37f6eed2bdc4689b670a6f87c2e8a04b7"
+  },
+  "scaffold": {
+    "hydrolysis-version": "0.3.1",
+    "hydrolysis-m3-version": "0.3.1",
+    "waterui-gtk-version": "0.2.1",
+    "apple-backend-url": "https://github.com/water-rs/apple-backend.git",
+    "apple-backend-version": "0.3.0",
+    "android-backend-url": "https://github.com/water-rs/android-backend.git",
+    "android-backend-revision": "b8477febe8f7d8025ee5a5e0dbcfe229d57c49b8"
+  },
+  "experimental-packages": {
+    "waterui-dew": {
+      "version": "0.3.0",
+      "git": "https://github.com/water-rs/dew",
+      "rev": "96713f93d4ee8cf7125a4905a5d5b5677997b37a"
+    },
+    "waterui-winui": {
+      "version": "0.1.0",
+      "git": "https://github.com/water-rs/waterui-winui",
+      "rev": "3601e745aa51a070a71df1aa98bb7faa6b3895a9"
+    }
+  },
+  "metadata": {
+    "minimum-cli-version": "0.3.2",
+    "android-min-api-level": 26,
+    "apple-backend-url": "https://github.com/water-rs/apple-backend.git",
+    "apple-backend-version": "0.3.0",
+    "android-backend-url": "https://github.com/water-rs/android-backend.git",
+    "android-backend-revision": "b8477febe8f7d8025ee5a5e0dbcfe229d57c49b8",
+    "scaffold-packages": [
+      "hydrolysis",
+      "hydrolysis-m3",
+      "waterui-dew",
+      "waterui-gtk",
+      "waterui-winui"
+    ]
+  }
+}

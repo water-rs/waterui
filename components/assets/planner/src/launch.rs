@@ -105,7 +105,7 @@ impl LaunchPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan_bundle;
+    use crate::plan_mount;
     use std::fs;
     use tempfile::tempdir;
 
@@ -115,17 +115,18 @@ mod tests {
 
     fn manifest_with(files: &[&str]) -> BundleManifest {
         let temp = tempdir().unwrap();
-        fs::write(
-            temp.path().join("Water.toml"),
-            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.waterui.demo'\n",
-        )
-        .unwrap();
-        fs::create_dir_all(temp.path().join("assets")).unwrap();
+        let assets_root = temp.path().join("assets");
+        fs::create_dir_all(&assets_root).unwrap();
         for file in files {
-            fs::write(temp.path().join("assets").join(file), b"png").unwrap();
+            fs::write(assets_root.join(file), b"png").unwrap();
         }
         // The tempdir is gone after this, which is fine: the plan only carries paths.
-        plan_bundle(temp.path(), "assets").unwrap()
+        BundleManifest {
+            crate_root: temp.path().to_path_buf(),
+            assets_root: assets_root.clone(),
+            mounts: Vec::new(),
+            assets: plan_mount(&assets_root, "").unwrap(),
+        }
     }
 
     #[test]

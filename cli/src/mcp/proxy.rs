@@ -3,7 +3,7 @@
 //! requests to it over the child's own MCP stdio link.
 //!
 //! The proxy is the [`ToolDispatch`] the fronting `McpServer` registers its
-//! nine tools against. It answers `initialize`/`tools/list` through the
+//! tools against. It answers `initialize`/`tools/list` through the
 //! static protocol crate immediately — while the child is still building —
 //! and parks `tools/call` on a readiness cell until the child is up.
 
@@ -29,21 +29,18 @@ use smol::Task;
 use smol::process::Child;
 use tracing::{debug, error, info};
 use waterui_mcp_protocol::{
-    ActArgs, AdvanceArgs, FindArgs, KeyArgs, PointerArgs, RestartArgs, ScreenshotArgs,
-    SnapshotArgs, ToolDispatch, TypeTextArgs, WaitArgs,
+    ActArgs, AdvanceArgs, DropFilesArgs, FindArgs, KeyArgs, PointerArgs, RestartArgs,
+    ScreenshotArgs, SnapshotArgs, ToolDispatch, TypeTextArgs, WaitArgs,
 };
 use waterui_preview_protocol::hydrolysis::{MCP_RUN_CONFIG_ENV, McpRunConfig};
 
-use crate::build::{BuildOptions, RustLinkage};
-use crate::hydrolysis::backend::HydrolysisBackend;
+use crate::build::{BuildOptions, BuildProfile};
+use crate::hydrolysis::backend::{self, HydrolysisBackend};
 use crate::hydrolysis::platform::{
-    build_hydrolysis_with_envs_and_features, built_hydrolysis_binary_path,
-    stage_hydrolysis_shared_runtime,
+    build_hydrolysis_with_envs_and_features, stage_hydrolysis_shared_runtime,
 };
 use crate::mcp::{host_platform, write_run_config};
-use crate::preview::hydrolysis::{
-    HydrolysisPreviewTheme, ensure_hydrolysis_backend_ready, stage_hydrolysis_resources,
-};
+use crate::preview::hydrolysis::{HydrolysisPreviewTheme, stage_hydrolysis_resources};
 
 /// The Cargo feature that builds the generated backend as an MCP child.
 const HYDROLYSIS_MCP_FEATURE: &str = "waterui-mcp-mode";
@@ -51,6 +48,7 @@ const HYDROLYSIS_MCP_FEATURE: &str = "waterui-mcp-mode";
 /// Everything one build of the child needs, cloned into the build task.
 #[derive(Debug, Clone)]
 struct ChildConfig {
+    host: crate::toolchain::Host,
     /// `WaterUI` project directory.
     project_path: PathBuf,
     /// Viewport width in logical pixels.
@@ -103,6 +101,7 @@ impl ChildProxy {
     /// [`Self::rebuild`] runs.
     #[must_use]
     pub fn new(
+        host: crate::toolchain::Host,
         project_path: PathBuf,
         width: u32,
         height: u32,
@@ -111,6 +110,7 @@ impl ChildProxy {
     ) -> Self {
         Self {
             config: ChildConfig {
+                host,
                 project_path,
                 width,
                 height,
@@ -239,6 +239,10 @@ impl ToolDispatch for ChildProxy {
         self.forward_call("key", args)
     }
 
+    fn drop_files(&self, args: DropFilesArgs) -> impl Future<Output = ToolResult> + Send {
+        self.forward_call("drop_files", args)
+    }
+
     fn type_text(&self, args: TypeTextArgs) -> impl Future<Output = ToolResult> + Send {
         self.forward_call("type_text", args)
     }
@@ -294,14 +298,13 @@ async fn build_and_drive(
 /// config, and performs the MCP handshake.
 async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)> {
     let platform = host_platform();
-    let project = ensure_hydrolysis_backend_ready(&config.project_path).await?;
-    stage_hydrolysis_resources(&project, HydrolysisPreviewTheme::Material3).await?;
+    let project = backend::open_ready(&config.host, &config.project_path).await?;
 
-    let mut build_options = BuildOptions::development(false);
+    let mut build_options = BuildOptions::development(BuildProfile::Debug);
     if let Some(sccache_path) = &config.sccache_path {
         build_options = build_options.with_sccache(sccache_path.clone());
     }
-    build_hydrolysis_with_envs_and_features(
+    let built = build_hydrolysis_with_envs_and_features(
         &project,
         platform,
         build_options,
@@ -309,11 +312,15 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
         &[HYDROLYSIS_MCP_FEATURE],
     )
     .await?;
-
-    let binary_path =
-        built_hydrolysis_binary_path(&project, platform, "debug", RustLinkage::SharedRuntime)
-            .await?;
-    stage_hydrolysis_shared_runtime(&binary_path, platform).await?;
+    stage_hydrolysis_resources(
+        &project,
+        platform,
+        HydrolysisPreviewTheme::Material3,
+        &built.app_symbols().await?,
+    )
+    .await?;
+    stage_hydrolysis_shared_runtime(&project, &built, platform).await?;
+    let binary_path = built.executable()?;
 
     let run_config = McpRunConfig {
         width: config.width,
@@ -325,7 +332,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
 
     // stdout is the MCP link — never inherit it; stderr flows straight to the
     // parent's stderr so app logs and build diagnostics stay visible.
-    let mut command = smol::process::Command::new(&binary_path);
+    let mut command = project.host().command(binary_path);
     command
         .kill_on_drop(true)
         .current_dir(&backend_path)
@@ -553,6 +560,7 @@ mod tests {
     fn rebuild_resolves_waiters_on_the_previous_readiness_cell() {
         smol::block_on(async {
             let proxy = ChildProxy::new(
+                crate::toolchain::Host::current(),
                 PathBuf::from("/definitely/not/a/project"),
                 390,
                 844,

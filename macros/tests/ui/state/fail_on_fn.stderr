@@ -1,0 +1,5 @@
+error: #[state] applies to a struct or enum
+ --> tests/ui/state/fail_on_fn.rs:7:1
+  |
+7 | fn not_a_state_type() {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^

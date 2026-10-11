@@ -33,6 +33,13 @@ pub struct Args {
 }
 
 impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Args {
     /// Parses `--viewport` into the integer dimensions the run config takes.
     fn viewport(&self) -> Result<(u32, u32)> {
         super::parse_viewport(&self.viewport)
@@ -67,6 +74,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     );
 
     serve_mcp(McpSessionRequest {
+        host: waterui_cli::toolchain::Host::current(),
         project_path,
         width,
         height,

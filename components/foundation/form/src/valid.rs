@@ -124,6 +124,12 @@ where
             })),
         ))
     }
+
+    /// Resolves to a `vstack` over `[view, error-label]`; the label is
+    /// content-sized text, so the stack's axis is the validated view's own.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        self.view.stretch_axis()
+    }
 }
 
 /// An error indicating that a value is out of a specified range.
@@ -344,7 +350,7 @@ impl_required_for_text!(&str, Str, String);
 /// Lifts a validator over plain text onto styled text.
 ///
 /// Text inputs are backed by [`StyledStr`], but validators are naturally written
-/// against plain text (`Required`, [`Regex`], …). `Plain` bridges the two so a
+/// against plain text (`Required`, [`Regex`](regex::Regex), …). `Plain` bridges the two so a
 /// single plain-text validator works on a styled field, instead of every
 /// validator needing a second styled implementation:
 ///

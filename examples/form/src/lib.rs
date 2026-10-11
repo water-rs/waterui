@@ -187,7 +187,7 @@ fn sample_card() -> impl View {
         Divider,
         hstack((text("Status:").bold(), text("Active"))),
     ))
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
 }
 
 /// Self-contained entry: owns its own form bindings so it embeds anywhere

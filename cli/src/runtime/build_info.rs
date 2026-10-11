@@ -3,6 +3,11 @@
 /// Exact Android Kotlin compiler version required by the embedded Android backend/runtime.
 pub const ANDROID_KOTLIN_VERSION: &str = env!("WATERUI_CLI_ANDROID_KOTLIN_VERSION");
 
+/// JDK major version the Android scaffold's `compileOptions` pins
+/// (`JavaVersion.VERSION_*`); `water doctor` checks the installed JDK against
+/// this same value.
+pub const ANDROID_JDK_VERSION: &str = env!("WATERUI_CLI_ANDROID_JDK_VERSION");
+
 /// Git repository reference embedded into the CLI binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendReference {

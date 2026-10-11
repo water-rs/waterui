@@ -1,0 +1,28 @@
+[package]
+name = "waterui-ts-engine-jsc"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../../../README.md"
+repository.workspace = true
+description = "JavaScriptCore implementation of the WaterUI JavaScript runtime contract"
+keywords = ["typescript", "javascript", "javascriptcore", "waterui", "gui"]
+categories = ["gui"]
+
+[dependencies]
+waterui-ts-engine.workspace = true
+
+# The system JavaScriptCore exists on every Apple platform except watchOS. On
+# other targets this crate compiles to an empty library.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-javascript-core.workspace = true
+block2.workspace = true
+
+[dev-dependencies]
+waterui-ts-engine = { workspace = true, features = ["conformance"] }
+
+[lints]
+workspace = true

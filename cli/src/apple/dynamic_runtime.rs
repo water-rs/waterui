@@ -1,23 +1,41 @@
 //! Shared `WaterUI` runtime linkage for dynamically loaded Apple modules.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use eyre::{Context as _, Result, bail};
 
-use crate::utils::run_command_os;
-
-pub const FILE_NAME: &str = "libwaterui_dylib.dylib";
 pub const INSTALL_NAME: &str = "@rpath/libwaterui_dylib.dylib";
 
-pub fn build_path(lib_dir: &Path) -> PathBuf {
-    lib_dir.join("deps").join(FILE_NAME)
+/// The `-l` link name `staged_name` implies — the recorded runtime file
+/// name `libwaterui_dylib-<metadata>.dylib` maps to `waterui_dylib-<metadata>`.
+///
+/// Linking the canonical `libwaterui_dylib.dylib` would record the
+/// canonical install name next to rustc's hashed dependency edge whenever
+/// the module resolves a runtime symbol through it, and `retarget_module`'s
+/// rename would leave a duplicate `LC_LOAD_DYLIB` that aborts in dyld
+/// (water-rs/waterui#1949). Binding the hashed file records the same
+/// `@rpath/libwaterui_dylib-<metadata>.dylib` entry the edge carries — one
+/// reference the retarget step redirects to [`INSTALL_NAME`].
+///
+/// `staged_name` comes from [`crate::workflows`]' `RustDynamicLibraries` —
+/// the name the artifact's own dynamic section recorded this build — so
+/// stale artifacts left beside it cannot influence the flag. A name that
+/// is not a hashed runtime file keeps the canonical `waterui_dylib`.
+pub fn runtime_link_name(staged_name: &str) -> String {
+    let stem = staged_name.strip_prefix("lib").unwrap_or(staged_name);
+    let stem = stem.strip_suffix(".dylib").unwrap_or(stem);
+    if stem.starts_with("waterui_dylib-") {
+        stem.to_string()
+    } else {
+        "waterui_dylib".to_string()
+    }
 }
 
-pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
+pub async fn prepare_host_runtime(host: &crate::toolchain::Host, path: &Path) -> Result<()> {
     require_runtime(path)?;
-    if install_name(path).await? != INSTALL_NAME {
-        run_command_os(
+    if install_name(host, path).await? != INSTALL_NAME {
+        host.run(
             "install_name_tool",
             [
                 OsStr::new("-id"),
@@ -28,7 +46,7 @@ pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
         .await
         .wrap_err("Failed to assign the shared WaterUI runtime install name")?;
     }
-    if install_name(path).await? != INSTALL_NAME {
+    if install_name(host, path).await? != INSTALL_NAME {
         bail!(
             "Shared WaterUI runtime {} did not retain install name {}",
             path.display(),
@@ -38,40 +56,44 @@ pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Give a freshly built dynamic library an `@rpath` install name.
-///
-/// Cargo stamps a `cdylib` with a bare file name, so an executable linking it records
-/// that bare name and the loader looks for it in the system search paths rather than in
-/// the application bundle. Rewriting the install name to `@rpath/<name>` makes it resolve
-/// through the bundle's Frameworks directory, the same way the shared runtime does.
-///
-/// # Errors
-/// Returns an error if the library is missing or `install_name_tool` fails.
-pub async fn set_rpath_install_name(path: &Path, file_name: &str) -> Result<()> {
-    require_runtime(path)?;
-    let desired = format!("@rpath/{file_name}");
-    if install_name(path).await? == desired {
-        return Ok(());
+/// Give a module the canonical `@rpath/<file>` install name a bundled
+/// executable binds when it links the file by path. Idempotent.
+pub async fn canonicalize_install_name(host: &crate::toolchain::Host, path: &Path) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| eyre::eyre!("Module {} has no file name", path.display()))?;
+    let wanted = format!("@rpath/{}", file_name.to_string_lossy());
+    if install_name(host, path).await? != wanted {
+        host.run(
+            "install_name_tool",
+            [
+                OsStr::new("-id"),
+                OsStr::new(wanted.as_str()),
+                path.as_os_str(),
+            ],
+        )
+        .await
+        .wrap_err("Failed to assign the module install name")?;
     }
-    run_command_os(
-        "install_name_tool",
-        [
-            OsStr::new("-id"),
-            OsStr::new(desired.as_str()),
-            path.as_os_str(),
-        ],
-    )
-    .await
-    .wrap_err_with(|| format!("Failed to set install name for {}", path.display()))?;
+    if install_name(host, path).await? != wanted {
+        bail!(
+            "Module {} did not retain install name {}",
+            path.display(),
+            wanted
+        );
+    }
     Ok(())
 }
 
-pub async fn retarget_module(module_path: &Path, build_lib_dir: &Path) -> Result<()> {
-    let runtime_path = build_path(build_lib_dir);
-    require_runtime(&runtime_path)?;
-    let current_install_name = install_name(&runtime_path).await?;
+pub async fn retarget_module(
+    host: &crate::toolchain::Host,
+    module_path: &Path,
+    runtime_path: &Path,
+) -> Result<()> {
+    require_runtime(runtime_path)?;
+    let current_install_name = install_name(host, runtime_path).await?;
     if current_install_name != INSTALL_NAME {
-        run_command_os(
+        host.run(
             "install_name_tool",
             [
                 OsStr::new("-change"),
@@ -84,13 +106,18 @@ pub async fn retarget_module(module_path: &Path, build_lib_dir: &Path) -> Result
         .wrap_err("Failed to redirect preview module to the host WaterUI runtime")?;
     }
 
-    let output = run_command_os("otool", [OsStr::new("-L"), module_path.as_os_str()])
+    let output = host
+        .run("otool", [OsStr::new("-L"), module_path.as_os_str()])
         .await
         .wrap_err("Failed to inspect preview module linkage")?;
-    if !linked_libraries(&output).any(|library| library == INSTALL_NAME) {
+    let references = linked_libraries(&output)
+        .filter(|library| *library == INSTALL_NAME)
+        .count();
+    if references != 1 {
         bail!(
-            "Preview module {} is not linked to the shared host runtime {}",
+            "Preview module {} records {} references to the shared host runtime {} — expected exactly one",
             module_path.display(),
+            references,
             INSTALL_NAME
         );
     }
@@ -104,8 +131,9 @@ fn require_runtime(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn install_name(path: &Path) -> Result<String> {
-    let output = run_command_os("otool", [OsStr::new("-D"), path.as_os_str()])
+async fn install_name(host: &crate::toolchain::Host, path: &Path) -> Result<String> {
+    let output = host
+        .run("otool", [OsStr::new("-D"), path.as_os_str()])
         .await
         .wrap_err_with(|| format!("Failed to inspect dynamic library {}", path.display()))?;
     output
@@ -126,7 +154,7 @@ fn linked_libraries(output: &str) -> impl Iterator<Item = &str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{INSTALL_NAME, linked_libraries};
+    use super::{INSTALL_NAME, linked_libraries, runtime_link_name};
 
     #[test]
     fn parses_macho_linked_libraries() {
@@ -137,5 +165,27 @@ mod tests {
         );
 
         assert_eq!(linked_libraries(output).next(), Some(INSTALL_NAME));
+    }
+
+    #[test]
+    fn link_name_follows_the_hashed_artifact_name() {
+        assert_eq!(
+            runtime_link_name("libwaterui_dylib-74e47922123ae009.dylib"),
+            "waterui_dylib-74e47922123ae009"
+        );
+    }
+
+    #[test]
+    fn link_name_stays_canonical_for_the_unhashed_artifact() {
+        assert_eq!(runtime_link_name("libwaterui_dylib.dylib"), "waterui_dylib");
+    }
+
+    #[test]
+    fn link_name_stays_canonical_for_unrelated_artifacts() {
+        assert_eq!(
+            runtime_link_name("libstd-3f21d70fba8f3088.dylib"),
+            "waterui_dylib"
+        );
+        assert_eq!(runtime_link_name("libc++.1.dylib"), "waterui_dylib");
     }
 }

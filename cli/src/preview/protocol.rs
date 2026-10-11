@@ -13,8 +13,6 @@ pub enum PreviewPlatform {
     IosSimulator,
     /// macOS.
     Macos,
-    /// Android device or emulator.
-    Android,
 }
 
 impl std::str::FromStr for PreviewPlatform {
@@ -25,7 +23,6 @@ impl std::str::FromStr for PreviewPlatform {
             "ios" => Ok(Self::Ios),
             "ios-simulator" | "iossimulator" => Ok(Self::IosSimulator),
             "macos" => Ok(Self::Macos),
-            "android" => Ok(Self::Android),
             _ => Err(format!("Unknown platform: {s}")),
         }
     }

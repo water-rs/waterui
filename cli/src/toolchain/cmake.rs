@@ -7,6 +7,7 @@ use crate::{
     toolchain::linux::{
         LinuxPackageManagerError, has_supported_package_manager, install_named_packages,
     },
+    toolchain::managed_tool::{self, ManagedTool, ManagedToolError},
     toolchain::winget::{WingetInstallError, ensure_package_installed},
     toolchain::{Host, Installation, Toolchain, ToolchainError},
     utils::CommandError,
@@ -19,10 +20,33 @@ pub struct Cmake {}
 impl Cmake {
     /// Get the path to the `cmake` executable.
     ///
+    /// `PATH` first, then the managed install under `~/.water/tools`.
+    ///
     /// # Errors
-    /// - If `CMake` is not found in the system PATH.
+    /// - If `CMake` is not found in the system PATH or the managed tools.
     pub async fn path(&self, host: &Host) -> Result<PathBuf, which::Error> {
-        host.which("cmake").await
+        match host.which("cmake").await {
+            Ok(path) => Ok(path),
+            Err(error) => managed_tool::cmake()
+                .and_then(|tool| tool.binary_path(host))
+                .ok_or(error),
+        }
+    }
+}
+
+/// What a missing `cmake` on Windows resolves to: `winget` when present,
+/// otherwise a pinned release archive unpacked under `~/.water/tools` — no
+/// package manager required.
+async fn missing_cmake_on_windows(host: &Host) -> ToolchainError<CmakeInstallation> {
+    if host.which("winget").await.is_ok() {
+        ToolchainError::fixable(CmakeInstallation::Winget)
+    } else if let Some(tool) = managed_tool::cmake() {
+        ToolchainError::fixable(CmakeInstallation::Managed(tool))
+    } else {
+        ToolchainError::unfixable(
+            "CMake is missing and this host has no usable installer",
+            "Download CMake from https://cmake.org/download/ and put `cmake` on PATH, then re-run `water doctor`.",
+        )
     }
 }
 
@@ -32,29 +56,22 @@ impl Toolchain for Cmake {
     async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
         // Check if CMake is installed
         // TODO: Also detect android-cmake toolchain files if needed
-        if host.which("cmake").await.is_ok() {
+        if self.path(host).await.is_ok() {
             Ok(())
         } else if cfg!(target_os = "windows") {
-            if host.which("winget").await.is_ok() {
-                Err(ToolchainError::fixable(CmakeInstallation))
-            } else {
-                Err(ToolchainError::unfixable(
-                    "CMake not found and winget is unavailable",
-                    "Install Microsoft App Installer to provide winget, or install CMake manually and ensure `cmake` is available in PATH.",
-                ))
-            }
+            Err(missing_cmake_on_windows(host).await)
         } else if cfg!(target_os = "macos") {
             if host.which("brew").await.is_ok() {
-                Err(ToolchainError::fixable(CmakeInstallation))
+                Err(ToolchainError::fixable(CmakeInstallation::Brew))
             } else {
                 Err(ToolchainError::unfixable(
                     "CMake not found and Homebrew is unavailable",
-                    "Install Homebrew to enable automatic fixes, or install CMake manually and ensure `cmake` is available in PATH.",
+                    "Install CMake from https://cmake.org/download/ (or Homebrew) and ensure `cmake` is available in PATH.",
                 ))
             }
         } else if cfg!(target_os = "linux") {
             if has_supported_package_manager(host).await {
-                Err(ToolchainError::fixable(CmakeInstallation))
+                Err(ToolchainError::fixable(CmakeInstallation::PackageManager))
             } else {
                 Err(ToolchainError::unfixable(
                     "CMake is missing and no supported package manager was found",
@@ -70,9 +87,19 @@ impl Toolchain for Cmake {
     }
 }
 
-/// Installation for `CMake`
+/// Installation for `CMake` — the strategy `check` selected for this host.
 #[derive(Debug, Clone)]
-pub struct CmakeInstallation;
+pub enum CmakeInstallation {
+    /// `brew install cmake`.
+    Brew,
+    /// `winget install Kitware.CMake`.
+    Winget,
+    /// The host's Linux package manager.
+    PackageManager,
+    /// A pinned, checksum-verified release archive unpacked under
+    /// `~/.water/tools` — no package manager required.
+    Managed(ManagedTool),
+}
 
 /// Errors that can occur during `CMake` installation
 #[derive(Debug, thiserror::Error)]
@@ -101,36 +128,34 @@ pub enum FailToInstallCmake {
     )]
     UnsupportedPackageManager,
 
-    /// Unsupported platform error
-    #[error(
-        "Automatic installation of CMake is not supported on this platform. Please install CMake manually."
-    )]
-    UnsupportedPlatform,
+    /// The managed archive install failed.
+    #[error(transparent)]
+    Managed(#[from] ManagedToolError),
 }
 
 impl Installation for CmakeInstallation {
     type Error = FailToInstallCmake;
 
     async fn install(&self, host: &Host) -> Result<(), Self::Error> {
-        if cfg!(target_os = "macos") {
-            let brew = Brew::default();
-
-            brew.check(host)
+        match self {
+            Self::Brew => {
+                let brew = Brew::default();
+                brew.check(host)
+                    .await
+                    .map_err(|_| FailToInstallCmake::BrewNotFound)?;
+                brew.install(host, "cmake").await?;
+                Ok(())
+            }
+            Self::Winget => ensure_package_installed(host, "Kitware.CMake")
                 .await
-                .map_err(|_| FailToInstallCmake::BrewNotFound)?;
-            brew.install(host, "cmake").await?;
-
-            Ok(())
-        } else if cfg!(target_os = "windows") {
-            ensure_package_installed(host, "Kitware.CMake")
+                .map_err(map_winget_error_for_cmake),
+            Self::PackageManager => install_named_packages(host, &["cmake"])
                 .await
-                .map_err(map_winget_error_for_cmake)
-        } else if cfg!(target_os = "linux") {
-            install_named_packages(host, &["cmake"])
-                .await
-                .map_err(map_linux_error_for_cmake)
-        } else {
-            Err(FailToInstallCmake::UnsupportedPlatform)
+                .map_err(map_linux_error_for_cmake),
+            Self::Managed(tool) => {
+                tool.install(host).await?;
+                Ok(())
+            }
         }
     }
 }
@@ -160,7 +185,7 @@ fn map_winget_error_for_cmake(error: WingetInstallError) -> FailToInstallCmake {
 
 #[cfg(test)]
 mod host_tests {
-    use super::{Cmake, CmakeInstallation};
+    use super::{Cmake, CmakeInstallation, missing_cmake_on_windows};
     use crate::toolchain::testing::TestMachine;
     use crate::toolchain::{Installation, Toolchain, ToolchainError};
 
@@ -180,10 +205,20 @@ mod host_tests {
     fn missing_without_installer_is_unfixable() {
         let machine = TestMachine::new();
         let result = check(&machine);
-        assert!(
-            matches!(result, Err(ToolchainError::Unfixable(_))),
-            "missing cmake without a package manager must be unfixable: {result:?}"
-        );
+        // Windows hosts have the managed-archive fallback, so a bare Windows
+        // machine is fixable even without winget; elsewhere no package
+        // manager means manual.
+        if cfg!(target_os = "windows") && crate::toolchain::managed_tool::cmake().is_some() {
+            assert!(
+                matches!(result, Err(ToolchainError::Fixable(_))),
+                "missing cmake on Windows without winget falls back to the managed archive: {result:?}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(ToolchainError::Unfixable(_))),
+                "missing cmake without a package manager must be unfixable: {result:?}"
+            );
+        }
     }
 
     #[test]
@@ -203,13 +238,40 @@ mod host_tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
-    fn install_runs_brew() {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn install_runs_the_package_manager() {
         let machine = TestMachine::new();
+        #[cfg(target_os = "macos")]
         machine.install("brew");
+        #[cfg(target_os = "linux")]
+        machine.install("apt-get");
         let host = machine.host(Vec::<(String, String)>::new());
-        smol::block_on(CmakeInstallation.install(&host))
-            .expect("brew install cmake must succeed on a host that provides brew");
+        let installation = if cfg!(target_os = "macos") {
+            CmakeInstallation::Brew
+        } else {
+            CmakeInstallation::PackageManager
+        };
+        smol::block_on(installation.install(&host))
+            .expect("installing cmake through the host's package manager must succeed");
+    }
+
+    /// The fake `winget` accepts `install` but never reports the package
+    /// afterwards, so the post-install verification must fail fast instead of
+    /// reporting success.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn install_fails_when_winget_leaves_the_package_missing() {
+        let machine = TestMachine::new();
+        machine.install("winget");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(CmakeInstallation::Winget.install(&host));
+        assert!(
+            matches!(
+                result,
+                Err(super::FailToInstallCmake::WingetInstallFailed(_))
+            ),
+            "a package still missing after winget install must be an error: {result:?}"
+        );
     }
 
     #[test]
@@ -217,10 +279,71 @@ mod host_tests {
     fn install_unsupported_platform() {
         let machine = TestMachine::new();
         let host = machine.host(Vec::<(String, String)>::new());
-        let result = smol::block_on(CmakeInstallation.install(&host));
+        let result = smol::block_on(CmakeInstallation::PackageManager.install(&host));
         assert!(
-            matches!(result, Err(super::FailToInstallCmake::UnsupportedPlatform)),
+            matches!(
+                result,
+                Err(super::FailToInstallCmake::UnsupportedPackageManager)
+            ),
             "install on unsupported platforms must fail fast: {result:?}"
+        );
+    }
+
+    /// A Windows host without `winget` gets the managed archive — fixable,
+    /// never a pointer at another prerequisite installer.
+    #[test]
+    fn windows_host_without_winget_is_fixable_managed() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(missing_cmake_on_windows(&host));
+        match crate::toolchain::managed_tool::cmake() {
+            Some(_) => assert!(
+                matches!(
+                    result,
+                    ToolchainError::Fixable(CmakeInstallation::Managed(_))
+                ),
+                "no winget must fall back to the managed archive: {result:?}"
+            ),
+            None => assert!(
+                matches!(result, ToolchainError::Unfixable(_)),
+                "no managed build for this architecture must be unfixable: {result:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn windows_host_with_winget_prefers_winget() {
+        let machine = TestMachine::new();
+        machine.install("winget");
+        let host = machine.host(Vec::<(String, String)>::new());
+        let result = smol::block_on(missing_cmake_on_windows(&host));
+        assert!(
+            matches!(result, ToolchainError::Fixable(CmakeInstallation::Winget)),
+            "winget stays preferred when present: {result:?}"
+        );
+    }
+
+    /// A cmake unpacked under `~/.water/tools` satisfies the check even
+    /// though nothing named `cmake` is on `PATH`.
+    #[test]
+    fn ok_when_cmake_is_managed() {
+        let machine = TestMachine::new();
+        let Some(tool) = crate::toolchain::managed_tool::cmake() else {
+            return; // this architecture has no managed build
+        };
+        let host = machine.host(Vec::<(String, String)>::new());
+        let install_dir = tool.install_dir(&host).unwrap();
+        machine.file(
+            install_dir
+                .join(&tool.binary)
+                .strip_prefix(machine.root())
+                .unwrap(),
+            "",
+        );
+        let result = smol::block_on(Cmake::default().check(&host));
+        assert!(
+            result.is_ok(),
+            "a managed cmake must satisfy the check: {result:?}"
         );
     }
 }

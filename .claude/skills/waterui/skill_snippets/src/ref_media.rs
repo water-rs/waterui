@@ -1,6 +1,7 @@
 //! Snippets from `.claude/skills/waterui/references/media.md`, in file order.
 //! Transcription conventions are documented in the crate README.
 
+use waterui::media::media_picker::Selected;
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ pub fn media_block_02() {
     let entered = Binding::container(Str::from("https://waterui.dev/logo.png"));
     let (photo_slot, _view) = Dynamic::new();
 
-    let Some(parsed) = Url::parse(entered.get().as_str()) else {
+    let Some(parsed) = Url::parse(entered.snapshot().as_str()) else {
         return;
     }; // parse returns Option
     photo_slot.set(Photo::new(parsed));
@@ -67,7 +68,7 @@ pub fn media_block_03() {
 }
 
 /// The handler-side half of block 3, which needs a `Selected` value in hand.
-pub fn media_block_03_handler(selected: waterui::media::media_picker::Selected) {
+pub fn media_block_03_handler(selected: Selected) {
     // In a handler: Selected::load() is synchronous and consumes the selection.
     let media = selected.load(); // Media::Image(Url) | Video(Url) | LivePhoto(source)
 
@@ -78,11 +79,9 @@ pub fn media_block_03_handler(selected: waterui::media::media_picker::Selected) 
 // media.md § "## Media" — rust block 4/13
 // ---------------------------------------------------------------------------
 pub fn media_block_04() -> impl View {
-    use waterui::video::{self, MediaItem, PlaybackSession, Playlist, VideoPlayer};
+    use waterui::video::{self, MediaItem, PlaybackSession, Playlist, Url, VideoPlayer};
 
-    let first_item = MediaItem::from(
-        waterui::video::Url::parse("https://waterui.dev/a.mp4").expect("valid url"),
-    );
+    let first_item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
     let more_items: Vec<MediaItem> = Vec::new();
 
     let playlist = Playlist::new(first_item, more_items); // deliberately non-empty
@@ -107,11 +106,9 @@ pub fn media_block_04() -> impl View {
 // and commands. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_controller_prose() {
-    use waterui::video::{MediaItem, MediaItemId, PlaybackSession, Playlist};
+    use waterui::video::{MediaItem, MediaItemId, PlaybackSession, Playlist, Url};
 
-    let item = MediaItem::from(
-        waterui::video::Url::parse("https://waterui.dev/a.mp4").expect("valid url"),
-    );
+    let item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
     let id: MediaItemId = item.id;
     let session = PlaybackSession::new(Playlist::new(item, Vec::new()));
     let controller = session.controller();
@@ -177,7 +174,7 @@ pub fn media_block_06() -> impl View {
             button("Go")
                 .action(|proxy: WebViewProxy, State(addr): State<Binding<Str>>| {
                     // parse_user_input tolerates human input (missing scheme); returns Option.
-                    if let Some(url) = Url::parse_user_input(addr.get().as_str()) {
+                    if let Some(url) = Url::parse_user_input(addr.snapshot().as_str()) {
                         proxy.go_to(url);
                     }
                 })
@@ -263,7 +260,7 @@ pub fn media_block_08() {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Graphics and codes" — rust block 9/13
+// media.md § "## Graphics and codes" — rust block 9/14
 //
 // `src/starfield.wgsl` is copied from `examples/starfield` so the path the
 // macro resolves is real.
@@ -274,9 +271,30 @@ pub fn media_block_09() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Graphics and codes" — rust block 10/13
+// media.md § "## Graphics and codes" — rust block 10/14
+//
+// `src/crt.wgsl` is a real shader effect, so `include_str!` resolves and
+// `ShaderEffect::new` validates the module. `?` puts the function's return
+// type on the hook: `ShaderEffectError` is the error `new` returns.
 // ---------------------------------------------------------------------------
-pub fn media_block_10() -> impl View {
+pub fn media_block_10() -> Result<impl View, waterui::graphics::ShaderEffectError> {
+    let terminal = || text("terminal");
+    let strength = Binding::f32(0.35);
+    let focused = Binding::bool(true);
+
+    use waterui::graphics::ShaderEffect;
+
+    let crt = ShaderEffect::new(include_str!("crt.wgsl"))?; // invalid WGSL is an Err, never a blank view
+    Ok(terminal()
+        .effect(crt.clone()) // a clone shares the validated module; constant params carry
+        .param(strength.clone()) // a signal — the shader reads it as effect_param(0u)
+        .animated(focused.clone())) // a bool signal — a frame after every frame while true
+}
+
+// ---------------------------------------------------------------------------
+// media.md § "## Graphics and codes" — rust block 11/14
+// ---------------------------------------------------------------------------
+pub fn media_block_11() -> impl View {
     use waterui::color::Srgb;
     use waterui_particle::ParticleSystem;
 
@@ -293,9 +311,9 @@ pub fn media_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" — rust block 11/13
+// media.md § "## Data: charts and maps" — rust block 12/14
 // ---------------------------------------------------------------------------
-pub fn media_block_11() -> impl View {
+pub fn media_block_12() -> impl View {
     use waterui::color::Srgb;
     use waterui::reactive::binding;
 
@@ -315,15 +333,15 @@ pub fn media_block_11() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" — rust block 12/13
+// media.md § "## Data: charts and maps" — rust block 13/14
 // ---------------------------------------------------------------------------
-pub fn media_block_12() -> impl View {
+pub fn media_block_13() -> impl View {
     use waterui::reactive::binding;
 
-    use waterui_map::{Annotation, Coordinate, Map, MapStyle, Region};
+    use waterui_map::{Annotation, Coordinate, Location, Map, MapStyle, Region};
 
     let pins = Binding::container(Vec::<Annotation>::new());
-    let loc = Binding::container(None::<waterui_map::Location>);
+    let loc = Binding::container(None::<Location>);
 
     let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
     let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05)); // deltas are degree
@@ -340,9 +358,11 @@ pub fn media_block_12() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" — rust block 13/13
+// media.md § "## Data: charts and maps" — rust block 14/14
 // ---------------------------------------------------------------------------
-pub fn media_block_13(mut env: Environment) {
+// media.md writes `waterui_url::Url` qualified to show which crate owns it.
+#[allow(unknown_lints, qualified_waterui_path)]
+pub fn media_block_14(mut env: Environment) {
     use waterui_map_gpu::MapGpuOptions;
     env.insert(MapGpuOptions::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",

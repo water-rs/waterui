@@ -416,8 +416,8 @@ impl<'a> Page<'a> {
         self.wait_for(what, || (self.loads() > loads).then_some(()));
         self.wait_for("the history signals to catch up with the browser", || {
             let handle = self.webview.handle();
-            (self.webview.can_go_back().get() == handle.can_go_back()
-                && self.webview.can_go_forward().get() == handle.can_go_forward())
+            (self.webview.can_go_back().snapshot() == handle.can_go_back()
+                && self.webview.can_go_forward().snapshot() == handle.can_go_forward())
             .then_some(())
         });
     }
@@ -474,23 +474,23 @@ fn navigation_reaches_each_url_and_history_moves_both_ways(engine: &Engine) {
     // where WPE and the Apple backends start with an empty history. Pinning it
     // here means the day it changes is the day this line fails.
     assert!(
-        page.webview.can_go_back().get(),
+        page.webview.can_go_back().snapshot(),
         "CEF has stopped committing the blank document it creates a browser on"
     );
 
     let second = page.open_page("/second");
     assert_eq!(text(&second, "page"), "second");
     assert_eq!(page.location(), engine.url("/second").as_str());
-    assert!(page.webview.can_go_back().get());
-    assert!(!page.webview.can_go_forward().get());
+    assert!(page.webview.can_go_back().snapshot());
+    assert!(!page.webview.can_go_forward().snapshot());
 
     page.navigate("the engine to go back", || page.webview.go_back());
     assert_eq!(page.location(), engine.url("/first").as_str());
-    assert!(page.webview.can_go_forward().get());
+    assert!(page.webview.can_go_forward().snapshot());
 
     page.navigate("the engine to go forward", || page.webview.go_forward());
     assert_eq!(page.location(), engine.url("/second").as_str());
-    assert!(!page.webview.can_go_forward().get());
+    assert!(!page.webview.can_go_forward().snapshot());
 }
 
 /// The reply a handler returns has to arrive as the value it returned.
@@ -639,6 +639,39 @@ fn the_asset_origin_serves_bundled_content(engine: &Engine) {
     );
 }
 
+/// Mirrored state and bridge replies reach only the documents the admission
+/// policy admits — the shared case every engine's real-engine suite runs.
+///
+/// The case serves its own pages from its own threads and drives two views
+/// through the engine's controller; `block_on` keeps CEF pumped and the local
+/// executor ticking while it walks the navigations.
+fn mirrored_state_reaches_only_admitted_documents(engine: &Engine) {
+    engine.block_on(
+        "the mirrored-state admission conformance case",
+        waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
+            &engine.controller,
+        ),
+    );
+}
+
+/// `include_web!`'s serving layer — a `DirectoryServer` over the site written
+/// to disk the way a staged bundle carries it — serves the same conformance
+/// site through the engine's native interception.
+fn the_directory_server_serves_the_staged_bundle(engine: &Engine) {
+    let directory = tempfile::tempdir().expect("staged bundle tempdir");
+    waterui_webview::conformance::write_bundled_site(directory.path());
+    // The strict default policy is what `include_web!` ships — including
+    // `'wasm-unsafe-eval'`, so the conformance site's WASM module compiles.
+    let server = waterui_webview::DirectoryServer::new(directory.path()).into_server();
+    engine.block_on("the DirectoryServer bundled-site case", async move {
+        waterui_webview::conformance::asset_origin_serves_bundled_content_with(
+            &engine.controller,
+            server,
+        )
+        .await;
+    });
+}
+
 /// A headless Chromium page serves the same bundled site through CDP `Fetch`
 /// interception, under `https://waterui.localhost`.
 ///
@@ -732,7 +765,7 @@ async fn cdp_eval(cdp: &waterui_chromium::CdpSession, source: &str) -> Value {
 /// Every check, in the order they run.
 type Check = (&'static str, fn(&Engine));
 
-const CHECKS: [Check; 7] = [
+const CHECKS: [Check; 9] = [
     (
         "navigation_reaches_each_url_and_history_moves_both_ways",
         navigation_reaches_each_url_and_history_moves_both_ways,
@@ -756,6 +789,14 @@ const CHECKS: [Check; 7] = [
     (
         "the_asset_origin_serves_bundled_content",
         the_asset_origin_serves_bundled_content,
+    ),
+    (
+        "mirrored_state_reaches_only_admitted_documents",
+        mirrored_state_reaches_only_admitted_documents,
+    ),
+    (
+        "the_directory_server_serves_the_staged_bundle",
+        the_directory_server_serves_the_staged_bundle,
     ),
     (
         "the_chromium_cdp_asset_origin_serves_bundled_content",

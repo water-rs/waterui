@@ -3,7 +3,7 @@
 use core::fmt;
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
-use nami::{Computed, SignalExt as _, collection::List};
+use nami::{Computed, Signal, SignalExt as _, collection::List};
 use waterui_core::{Binding, binding};
 
 use crate::{
@@ -188,13 +188,13 @@ impl ControllerState {
     }
 
     fn current_index(&self) -> usize {
-        self.bindings.current_item_index.get()
+        self.bindings.current_item_index.snapshot()
     }
 
     fn traversal_indices(&self) -> Vec<usize> {
         let items = self.snapshot();
         let mut indices = (0..items.len()).collect::<Vec<_>>();
-        if self.bindings.shuffle.get() {
+        if self.bindings.shuffle.snapshot() {
             indices.sort_by_key(|index| items[*index].id.into_bytes());
         }
         indices
@@ -210,7 +210,7 @@ impl ControllerState {
     fn update_navigation(&self) {
         let len = self.playlist.len();
         let index = self.traversal_position();
-        let wraps = self.bindings.repeat.get() == RepeatMode::All && len > 1;
+        let wraps = self.bindings.repeat.snapshot() == RepeatMode::All && len > 1;
         self.bindings.has_previous.set(index > 0 || wraps);
         self.bindings.has_next.set(index + 1 < len || wraps);
     }
@@ -238,7 +238,7 @@ impl ControllerState {
         self.bindings.seek_target_seconds.set(0.0);
         self.bindings
             .seek_generation
-            .set(self.bindings.seek_generation.get().wrapping_add(1));
+            .set(self.bindings.seek_generation.snapshot().wrapping_add(1));
         self.bindings.phase.set(PlaybackPhase::Preparing);
         self.update_navigation();
         Ok(())
@@ -256,9 +256,12 @@ impl fmt::Debug for PlayerController {
         let state = self.state.borrow();
         formatter
             .debug_struct("PlayerController")
-            .field("current_item_id", &state.bindings.current_item_id.get())
+            .field(
+                "current_item_id",
+                &state.bindings.current_item_id.snapshot(),
+            )
             .field("current_item_index", &state.current_index())
-            .field("phase", &state.bindings.phase.get())
+            .field("phase", &state.bindings.phase.snapshot())
             .finish_non_exhaustive()
     }
 }
@@ -269,7 +272,7 @@ impl PlayerController {
         let state = self.state.borrow();
         state.bindings.desired_playing.set(true);
         if matches!(
-            state.bindings.phase.get(),
+            state.bindings.phase.snapshot(),
             PlaybackPhase::Ready | PlaybackPhase::Paused | PlaybackPhase::Ended
         ) {
             state.bindings.phase.set(PlaybackPhase::Playing);
@@ -288,10 +291,13 @@ impl PlayerController {
         let state = self.state.borrow();
         state.bindings.desired_playing.set(false);
         state.bindings.phase.set(PlaybackPhase::Paused);
-        state
-            .bindings
-            .step_forward_generation
-            .set(state.bindings.step_forward_generation.get().wrapping_add(1));
+        state.bindings.step_forward_generation.set(
+            state
+                .bindings
+                .step_forward_generation
+                .snapshot()
+                .wrapping_add(1),
+        );
     }
 
     /// Pauses playback and requests presentation of the previous retained frame.
@@ -299,13 +305,10 @@ impl PlayerController {
         let state = self.state.borrow();
         state.bindings.desired_playing.set(false);
         state.bindings.phase.set(PlaybackPhase::Paused);
-        state.bindings.step_backward_generation.set(
-            state
-                .bindings
-                .step_backward_generation
-                .get()
-                .wrapping_add(1),
-        );
+        state
+            .bindings
+            .step_backward_generation
+            .with_mut(|generation| *generation = generation.wrapping_add(1));
     }
 
     /// Pauses and seeks to the beginning of the current item.
@@ -315,14 +318,14 @@ impl PlayerController {
         let start = state
             .bindings
             .live_window
-            .get()
+            .snapshot()
             .map_or(Duration::ZERO, LiveWindow::seekable_start);
         state.bindings.position_seconds.set(start.as_secs_f64());
         state.bindings.seek_target_seconds.set(start.as_secs_f64());
         state
             .bindings
             .seek_generation
-            .set(state.bindings.seek_generation.get().wrapping_add(1));
+            .with_mut(|generation| *generation = generation.wrapping_add(1));
         state.bindings.phase.set(PlaybackPhase::Idle);
     }
 
@@ -335,7 +338,7 @@ impl PlayerController {
     /// [`PlaybackError::LiveSeekOutOfRange`] outside the current DVR window.
     pub fn seek(&self, position: Duration) -> Result<(), PlaybackError> {
         let state = self.state.borrow();
-        if let Some(window) = state.bindings.live_window.get() {
+        if let Some(window) = state.bindings.live_window.snapshot() {
             if !window.contains(position) {
                 return Err(PlaybackError::LiveSeekOutOfRange {
                     requested: position,
@@ -344,7 +347,7 @@ impl PlayerController {
                 });
             }
         } else {
-            let duration = duration_from_seconds(state.bindings.duration_seconds.get())
+            let duration = duration_from_seconds(state.bindings.duration_seconds.snapshot())
                 .ok_or(PlaybackError::DurationUnavailable)?;
             if position > duration {
                 return Err(PlaybackError::SeekOutOfRange {
@@ -360,7 +363,7 @@ impl PlayerController {
         state
             .bindings
             .seek_generation
-            .set(state.bindings.seek_generation.get().wrapping_add(1));
+            .with_mut(|generation| *generation = generation.wrapping_add(1));
         Ok(())
     }
 
@@ -376,7 +379,7 @@ impl PlayerController {
             .borrow()
             .bindings
             .live_window
-            .get()
+            .snapshot()
             .ok_or(PlaybackError::LiveWindowUnavailable)?
             .target_position();
         self.seek(target)
@@ -395,14 +398,14 @@ impl PlayerController {
         assert!(seconds.is_finite(), "relative seek seconds must be finite");
         let requested = {
             let state = self.state.borrow();
-            let position = state.bindings.position_seconds.get();
-            if let Some(window) = state.bindings.live_window.get() {
+            let position = state.bindings.position_seconds.snapshot();
+            if let Some(window) = state.bindings.live_window.snapshot() {
                 (position + seconds).clamp(
                     window.seekable_start().as_secs_f64(),
                     window.seekable_end().as_secs_f64(),
                 )
             } else {
-                let duration = duration_from_seconds(state.bindings.duration_seconds.get())
+                let duration = duration_from_seconds(state.bindings.duration_seconds.snapshot())
                     .ok_or(PlaybackError::DurationUnavailable)?;
                 (position + seconds).clamp(0.0, duration.as_secs_f64())
             }
@@ -437,7 +440,7 @@ impl PlayerController {
         let position = state.traversal_position();
         let next = if position + 1 < len {
             traversal[position + 1]
-        } else if state.bindings.repeat.get() == RepeatMode::All && len > 1 {
+        } else if state.bindings.repeat.snapshot() == RepeatMode::All && len > 1 {
             traversal[0]
         } else {
             return Err(PlaybackError::NavigationUnavailable { direction: "next" });
@@ -457,7 +460,7 @@ impl PlayerController {
         let position = state.traversal_position();
         let previous = if position > 0 {
             traversal[position - 1]
-        } else if state.bindings.repeat.get() == RepeatMode::All && len > 1 {
+        } else if state.bindings.repeat.snapshot() == RepeatMode::All && len > 1 {
             traversal[len - 1]
         } else {
             return Err(PlaybackError::NavigationUnavailable {
@@ -517,7 +520,7 @@ impl PlayerController {
             .iter()
             .position(|item| item.id == id)
             .ok_or(PlaybackError::ItemNotFound(id))?;
-        let current_id = state.bindings.current_item_id.get();
+        let current_id = state.bindings.current_item_id.snapshot();
         let removed = state.playlist.items.remove(removed_index);
         let remaining = state.snapshot();
         let selected = remaining
@@ -553,7 +556,7 @@ impl PlayerController {
             .ok_or(PlaybackError::ItemNotFound(id))?;
         let item = items.remove(source);
         items.insert(destination, item);
-        let current_id = state.bindings.current_item_id.get();
+        let current_id = state.bindings.current_item_id.snapshot();
         let _ = state.playlist.items.replace(items.clone());
         let current = items
             .iter()
@@ -790,7 +793,6 @@ mod tests {
     use super::*;
     use crate::AudioTrackInfo;
     use crate::url::Url;
-    use nami::Signal as _;
 
     fn item(path: &str, id: u8) -> MediaItem {
         MediaItem::from(Url::from_file_path_str(path.to_owned()))
@@ -805,14 +807,24 @@ mod tests {
 
         controller.next().expect("next item must be available");
         assert_eq!(
-            controller.state.borrow().bindings.current_item_id.get(),
+            controller
+                .state
+                .borrow()
+                .bindings
+                .current_item_id
+                .snapshot(),
             MediaItemId::from_bytes([2; 16])
         );
         controller
             .previous()
             .expect("previous item must be available");
         assert_eq!(
-            controller.state.borrow().bindings.current_item_id.get(),
+            controller
+                .state
+                .borrow()
+                .bindings
+                .current_item_id
+                .snapshot(),
             MediaItemId::from_bytes([1; 16])
         );
     }
@@ -830,7 +842,12 @@ mod tests {
 
         assert_eq!(removed.id, first.id);
         assert_eq!(
-            controller.state.borrow().bindings.current_item_id.get(),
+            controller
+                .state
+                .borrow()
+                .bindings
+                .current_item_id
+                .snapshot(),
             second.id
         );
     }
@@ -854,10 +871,10 @@ mod tests {
         controller.stop();
 
         let bindings = &controller.state.borrow().bindings;
-        assert!(!bindings.desired_playing.get());
-        assert!(bindings.seek_target_seconds.get().abs() <= f64::EPSILON);
-        assert_eq!(bindings.phase.get(), PlaybackPhase::Idle);
-        assert_eq!(bindings.seek_generation.get(), 1);
+        assert!(!bindings.desired_playing.snapshot());
+        assert!(bindings.seek_target_seconds.snapshot().abs() <= f64::EPSILON);
+        assert_eq!(bindings.phase.snapshot(), PlaybackPhase::Idle);
+        assert_eq!(bindings.seek_generation.snapshot(), 1);
     }
 
     #[test]
@@ -879,8 +896,8 @@ mod tests {
             .expect("repeated seek must succeed");
 
         let bindings = &controller.state.borrow().bindings;
-        assert!((bindings.seek_target_seconds.get() - 15.0).abs() <= f64::EPSILON);
-        assert_eq!(bindings.seek_generation.get(), 2);
+        assert!((bindings.seek_target_seconds.snapshot() - 15.0).abs() <= f64::EPSILON);
+        assert_eq!(bindings.seek_generation.snapshot(), 2);
     }
 
     #[test]
@@ -893,10 +910,10 @@ mod tests {
         controller.step_backward();
 
         let bindings = &controller.state.borrow().bindings;
-        assert!(!bindings.desired_playing.get());
-        assert_eq!(bindings.phase.get(), PlaybackPhase::Paused);
-        assert_eq!(bindings.step_forward_generation.get(), 2);
-        assert_eq!(bindings.step_backward_generation.get(), 1);
+        assert!(!bindings.desired_playing.snapshot());
+        assert_eq!(bindings.phase.snapshot(), PlaybackPhase::Paused);
+        assert_eq!(bindings.step_forward_generation.snapshot(), 2);
+        assert_eq!(bindings.step_backward_generation.snapshot(), 1);
     }
 
     #[test]
@@ -921,8 +938,8 @@ mod tests {
             .expect("published live target must be seekable");
 
         let bindings = &controller.state.borrow().bindings;
-        assert!((bindings.seek_target_seconds.get() - 86.0).abs() <= f64::EPSILON);
-        assert_eq!(bindings.seek_generation.get(), 1);
+        assert!((bindings.seek_target_seconds.snapshot() - 86.0).abs() <= f64::EPSILON);
+        assert_eq!(bindings.seek_generation.snapshot(), 1);
         assert_eq!(
             controller.seek(Duration::from_secs(20)),
             Err(PlaybackError::LiveSeekOutOfRange {
@@ -950,15 +967,15 @@ mod tests {
 
         let bindings = &controller.state.borrow().bindings;
         assert_eq!(
-            bindings.audio_track_selection.get(),
+            bindings.audio_track_selection.snapshot(),
             AudioTrackSelection::Track(1)
         );
         assert_eq!(
-            bindings.video_track_selection.get(),
+            bindings.video_track_selection.snapshot(),
             VideoTrackSelection::Track(2)
         );
         assert_eq!(
-            bindings.subtitle_selection.get(),
+            bindings.subtitle_selection.snapshot(),
             SubtitleSelection::Track(3)
         );
     }
@@ -980,7 +997,7 @@ mod tests {
             .track_catalog
             .set(catalog);
 
-        let published = controller.track_catalog().get();
+        let published = controller.track_catalog().snapshot();
         assert_eq!(published.audio().len(), 1);
         assert_eq!(published.audio()[0].label(), "English");
         assert_eq!(published.audio()[0].language(), Some("en"));
@@ -1003,8 +1020,8 @@ mod tests {
             .expect("the shuffled predecessor must exist");
 
         let state = controller.state.borrow();
-        assert_eq!(state.bindings.current_item_id.get(), third.id);
-        assert_eq!(state.bindings.current_item_index.get(), 2);
+        assert_eq!(state.bindings.current_item_id.snapshot(), third.id);
+        assert_eq!(state.bindings.current_item_index.snapshot(), 2);
         assert_eq!(state.snapshot(), vec![first, second, third]);
     }
 }

@@ -2,19 +2,20 @@ use crate::components::text::WuiHorizontalAlignment;
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use core::ffi::c_void;
 use core::fmt;
-use nami::{Signal, SignalExt};
+use nami::{Binding, Signal, SignalExt};
 use waterui_layout::{
-    HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions,
+    HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, Spacer, StretchAxis,
+    SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
     measure_layout,
-    scroll::Axis,
+    padding::EdgeInsets,
+    scroll::{Axis, ScrollViewParts},
     stack::LazyStackAxis,
     with_memoized_children,
 };
 
-use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
-use crate::{WuiTypeId, views::WuiAnyViews};
+use crate::views::WuiAnyViews;
+use crate::{IntoFFI, IntoNullableFFI, IntoRust, WuiAnyView, array::WuiArray};
 
 opaque!(WuiLayout, Box<dyn Layout>, layout);
 
@@ -34,11 +35,28 @@ impl fmt::Debug for WuiFixedContainer {
     }
 }
 
-/// Returns the type ID for Spacer views as a 128-bit value.
-/// `Spacer` is a raw view that stretches to fill available space.
-#[unsafe(no_mangle)]
-pub extern "C" fn waterui_spacer_id() -> WuiTypeId {
-    WuiTypeId::of::<waterui::component::spacer::Spacer>()
+/// C ABI mirror of [`Spacer`], a flexible space that expands to fill
+/// available space on the enclosing stack's main axis.
+///
+/// `min_length` is the floor the stack keeps under compression: per
+/// `docs/layout-spec.md` §5/§6, a hosted spacer answers its minimum length on
+/// the stack's main axis and zero on the cross axis, whatever the proposal.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiSpacer {
+    /// The length this spacer never shrinks below on the stack's main axis.
+    pub min_length: f32,
+}
+
+ffi_view!(Spacer, WuiSpacer, spacer, all(), any());
+
+impl IntoFFI for Spacer {
+    type FFI = WuiSpacer;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSpacer {
+            min_length: self.min_length(),
+        }
+    }
 }
 
 ffi_view!(FixedContainer, WuiFixedContainer, fixed_container);
@@ -103,13 +121,13 @@ fn lazy_stack_descriptor(layout: &dyn Layout) -> Option<LazyStackDescriptor> {
     waterui_layout::stack::lazy_stack_axis(layout).map(|axis| match axis {
         LazyStackAxis::Vertical { spacing, alignment } => LazyStackDescriptor {
             axis: WuiLazyStackAxis::Vertical,
-            spacing: spacing.get(),
+            spacing: spacing.snapshot(),
             horizontal_alignment: alignment.into_ffi(),
             vertical_alignment: VerticalAlignment::Center.into_ffi(),
         },
         LazyStackAxis::Horizontal { spacing, alignment } => LazyStackDescriptor {
             axis: WuiLazyStackAxis::Horizontal,
-            spacing: spacing.get(),
+            spacing: spacing.snapshot(),
             horizontal_alignment: HorizontalAlignment::Center.into_ffi(),
             vertical_alignment: alignment.into_ffi(),
         },
@@ -221,15 +239,15 @@ impl IntoRust for WuiProposalSize {
     type Rust = ProposalSize;
     unsafe fn into_rust(self) -> Self::Rust {
         ProposalSize {
-            width: if self.width.is_finite() {
+            width: if self.width.is_nan() {
+                None
+            } else {
                 Some(self.width)
-            } else {
-                None
             },
-            height: if self.height.is_finite() {
-                Some(self.height)
-            } else {
+            height: if self.height.is_nan() {
                 None
+            } else {
+                Some(self.height)
             },
         }
     }
@@ -338,6 +356,9 @@ pub struct WuiSubView {
     pub stretch_axis: WuiStretchAxis,
     /// Layout priority (higher = measured first, gets space preference)
     pub priority: i32,
+    /// Whether this child renders nothing — a semantic answer, not a measured
+    /// size. `true` excludes the child from stack membership (§4.4).
+    pub is_empty: bool,
 }
 
 impl Drop for WuiSubView {
@@ -364,6 +385,10 @@ impl SubView for WuiSubView {
 
     fn priority(&self) -> i32 {
         self.priority
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty
     }
 }
 
@@ -572,8 +597,10 @@ impl IntoRust for WuiViewDimensions {
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiRect {
-    origin: WuiPoint,
-    size: WuiSize,
+    /// The rectangle's origin.
+    pub origin: WuiPoint,
+    /// The rectangle's size.
+    pub size: WuiSize,
 }
 
 impl IntoRust for WuiRect {
@@ -599,6 +626,116 @@ impl IntoFFI for Rect {
 #[cfg(feature = "c-api")]
 crate::ffi_binding!(Rect, WuiRect, rect);
 crate::ffi_watcher!(Rect, WuiRect, rect);
+
+/// C ABI mirror of [`SubviewPlacement`]: a child's resolved frame together
+/// with the size proposal that was selected to measure and recursively place
+/// it.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiSubviewPlacement {
+    /// The child frame in the parent layout's coordinate space.
+    frame: WuiRect,
+    /// The proposal used to measure and recursively place the child; it is
+    /// not inferred from the frame.
+    proposal: WuiProposalSize,
+}
+
+impl IntoFFI for SubviewPlacement {
+    type FFI = WuiSubviewPlacement;
+    fn into_ffi(self) -> Self::FFI {
+        WuiSubviewPlacement {
+            frame: self.frame.into_ffi(),
+            proposal: self.proposal.into_ffi(),
+        }
+    }
+}
+
+/// C ABI mirror of [`EdgeInsets`]: the space between a rectangle's edges and
+/// its content, in points.
+///
+/// The value crosses the boundary as `*mut WuiEdgeInsets` — an owning handle
+/// the backend releases with `waterui_drop_edge_insets` when it is done with
+/// it. A null pointer defers to whatever insets the context supplies.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WuiEdgeInsets {
+    /// The top edge inset, in points.
+    pub top: f32,
+    /// The leading edge inset, in points (left in left-to-right text).
+    pub leading: f32,
+    /// The bottom edge inset, in points.
+    pub bottom: f32,
+    /// The trailing edge inset, in points (right in left-to-right text).
+    pub trailing: f32,
+}
+
+impl IntoNullableFFI for EdgeInsets {
+    type FFI = *mut WuiEdgeInsets;
+
+    fn into_ffi(self) -> Self::FFI {
+        Box::into_raw(Box::new(WuiEdgeInsets {
+            top: self.top(),
+            leading: self.leading(),
+            bottom: self.bottom(),
+            trailing: self.trailing(),
+        }))
+    }
+
+    fn null() -> Self::FFI {
+        core::ptr::null_mut()
+    }
+}
+
+impl IntoRust for *mut WuiEdgeInsets {
+    type Rust = EdgeInsets;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `self` an owning pointer produced
+        // by the matching `into_ffi`, so reclaiming the box is the inverse.
+        let insets = unsafe { Box::from_raw(self) };
+        EdgeInsets::new(insets.top, insets.bottom, insets.leading, insets.trailing)
+    }
+}
+
+/// Drops a `WuiEdgeInsets` handle produced by the Rust side.
+///
+/// # Safety
+///
+/// `value` must be a valid, owning `*mut WuiEdgeInsets` produced by the
+/// matching `into_ffi` conversion and not previously dropped.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_edge_insets(value: *mut WuiEdgeInsets) {
+    // SAFETY: the caller contract above makes `value` a pointer from the
+    // matching FFI conversion that has not been dropped, so reclaiming it
+    // once and letting it fall out of scope frees it exactly once.
+    unsafe {
+        let _ = IntoRust::into_rust(value);
+    }
+}
+
+/// JNI: Drops the edge-insets pointer, freeing its memory.
+///
+/// # Safety
+///
+/// `ptr` must be a valid, owning `*mut WuiEdgeInsets` produced by the
+/// matching `into_ffi` conversion and not previously dropped.
+#[cfg(feature = "android-jni")]
+#[unsafe(no_mangle)]
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropEdgeInsets<'local>(
+    _env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+    ptr: crate::jni::jlong,
+) {
+    use crate::jni::convert::jlong_to_ptr_mut;
+    // SAFETY: the caller contract above makes `ptr` a handle from the
+    // matching FFI conversion that has not been dropped, so reclaiming it
+    // once and letting it fall out of scope frees it exactly once.
+    unsafe {
+        let ptr: *mut WuiEdgeInsets = jlong_to_ptr_mut(ptr);
+        let _ = IntoRust::into_rust(ptr);
+    }
+}
 
 // ============================================================================
 // Layout API Functions
@@ -635,9 +772,12 @@ pub unsafe extern "C" fn waterui_layout_measure(
     dimensions.into_ffi()
 }
 
-/// Places child views within the specified bounds.
+/// Places child views within the specified bounds under the given proposal.
 ///
-/// Returns an array of Rect values representing the position and size of each child.
+/// Returns an array of [`WuiSubviewPlacement`] values — each child's frame
+/// paired with the proposal that was selected to measure it. The `proposal`
+/// argument is the selected measurement input, the same one passed to
+/// [`waterui_layout_measure`]; it is not derived from `bounds`.
 ///
 /// # Safety
 ///
@@ -646,28 +786,57 @@ pub unsafe extern "C" fn waterui_layout_measure(
 /// - The measure callbacks in each child must be safe to call.
 /// - The `children` array will be consumed and dropped after this call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_layout_place(
+pub unsafe extern "C" fn waterui_layout_place_subviews(
     layout: *mut WuiLayout,
     bounds: WuiRect,
+    proposal: WuiProposalSize,
     mut children: WuiArray<WuiSubView>,
-) -> WuiArray<WuiRect> {
+) -> WuiArray<WuiSubviewPlacement> {
     // SAFETY: the caller contract requires `layout` to be a valid handle whose boxed
     // `dyn Layout` stays alive for this call; it is only borrowed.
     let layout: &dyn Layout = unsafe { &*(*layout).0 };
     // SAFETY: the caller contract makes `bounds` an owning handle from the matching
     // FFI constructor; it is consumed here and not observed again.
     let bounds = unsafe { bounds.into_rust() };
+    // SAFETY: the caller contract makes `proposal` an owning handle from the
+    // matching FFI constructor; it is consumed here and not observed again.
+    let proposal = unsafe { proposal.into_rust() };
 
     // Get slice of WuiSubView and create trait object references
     let children_slice = children.as_mut_slice();
     let subview_refs: Vec<&dyn SubView> =
         children_slice.iter().map(|s| s as &dyn SubView).collect();
 
-    let rects = with_memoized_children(&subview_refs, |refs| layout.place(bounds, refs));
+    let placements =
+        with_memoized_children(&subview_refs, |refs| layout.place(bounds, proposal, refs));
 
     children.consume();
 
-    rects.into_ffi()
+    placements.into_ffi()
+}
+
+/// Queries a layout's live stretch behavior using its current child axes.
+///
+/// # Safety
+///
+/// `layout` must be a live layout handle on its owning thread. `children` must
+/// be a valid array and is consumed by this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_layout_stretch_axis(
+    layout: *const WuiLayout,
+    children: WuiArray<WuiStretchAxis>,
+) -> WuiStretchAxis {
+    // SAFETY: the caller keeps the layout handle alive for this shared borrow.
+    let layout = unsafe { crate::borrow_ffi(layout) };
+    let axes: Vec<StretchAxis> = children
+        .as_slice()
+        .iter()
+        .copied()
+        .map(Into::into)
+        .collect();
+    let result = layout.0.stretch_axis(&axes);
+    children.consume();
+    result.into()
 }
 
 /// Returns the lazy-stack axis the layout advertises, if any.
@@ -760,12 +929,49 @@ pub struct WuiScrollView {
     /// scroll request is issued, letting the backend detect a repeated
     /// request to the same target. Null if no controller is attached.
     pub scroll_generation: *mut crate::reactive::WuiComputed<i32>,
+    /// Binding the backend writes the horizontal content offset, in points,
+    /// into as the view scrolls — for `ScrollView::report_offset`. The
+    /// binding is written, never read; null if none is connected.
+    pub offset_x: *mut crate::reactive::WuiBinding<f32>,
+    /// Binding the backend writes the vertical content offset, in points,
+    /// into as the view scrolls — for `ScrollView::report_offset`. The
+    /// binding is written, never read; null if none is connected.
+    pub offset_y: *mut crate::reactive::WuiBinding<f32>,
 }
 
 impl IntoFFI for ScrollView {
     type FFI = WuiScrollView;
     fn into_ffi(self) -> Self::FFI {
-        let (axis, content, controller) = self.into_inner();
+        let ScrollViewParts {
+            axis,
+            content,
+            controller,
+            offset,
+            ..
+        } = self.into_inner();
+        let (offset_x, offset_y) = offset.map_or_else(
+            || (core::ptr::null_mut(), core::ptr::null_mut()),
+            |offset| {
+                (
+                    Binding::mapping(
+                        &offset,
+                        |point: Point| point.x,
+                        |binding, x| {
+                            binding.with_mut(|point| point.x = x);
+                        },
+                    )
+                    .into_ffi(),
+                    Binding::mapping(
+                        &offset,
+                        |point: Point| point.y,
+                        |binding, y| {
+                            binding.with_mut(|point| point.y = y);
+                        },
+                    )
+                    .into_ffi(),
+                )
+            },
+        );
         let (target_x, target_y, scroll_generation) = controller.map_or_else(
             || {
                 (
@@ -775,10 +981,19 @@ impl IntoFFI for ScrollView {
                 )
             },
             |controller| {
-                let target = controller.target();
+                // The FFI carries the request's target only: it drops the
+                // animation, so the external runtime jumps to the target.
+                let request = controller.request();
                 (
-                    target.clone().map(|point| point.x).computed().into_ffi(),
-                    target.map(|point| point.y).computed().into_ffi(),
+                    request
+                        .clone()
+                        .map(|request| request.target.x)
+                        .computed()
+                        .into_ffi(),
+                    request
+                        .map(|request| request.target.y)
+                        .computed()
+                        .into_ffi(),
                     controller.generation().into_ffi(),
                 )
             },
@@ -789,6 +1004,8 @@ impl IntoFFI for ScrollView {
             target_x,
             target_y,
             scroll_generation,
+            offset_x,
+            offset_y,
         }
     }
 }
@@ -798,9 +1015,91 @@ ffi_view!(ScrollView, WuiScrollView, scroll_view);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::cell::Cell;
+    use alloc::vec;
+    use core::cell::{Cell, RefCell};
     use nami::{Computed, SignalExt, binding};
+    use waterui_layout::frame::FrameLayout;
     use waterui_layout::stack::{HStackLayout, VStackLayout};
+
+    #[cfg(feature = "c-api")]
+    #[test]
+    fn layout_priority_metadata_preserves_values_and_content_ownership() {
+        use crate::{
+            waterui_force_as_metadata_layout_priority, waterui_metadata_layout_priority_id,
+            waterui_view_id,
+        };
+        use waterui_core::layout::LayoutPriority;
+        use waterui_core::{AnyView, Environment, Metadata, View};
+
+        struct DropProbe(Rc<Cell<usize>>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+
+        impl View for DropProbe {
+            fn body(self, _env: &Environment) -> impl View {}
+        }
+
+        for priority in [i32::MIN, -3, 0, 5, i32::MAX] {
+            let drops = Rc::new(Cell::new(0));
+            let view = AnyView::new(Metadata::new(
+                DropProbe(Rc::clone(&drops)),
+                LayoutPriority::new(priority),
+            ))
+            .into_ffi();
+            // SAFETY: `view` is the live owning handle created above.
+            let view_id = unsafe { waterui_view_id(view) };
+            assert_eq!(view_id, waterui_metadata_layout_priority_id());
+            // SAFETY: the handle contains Metadata<LayoutPriority> and is consumed once.
+            let metadata = unsafe { waterui_force_as_metadata_layout_priority(view) };
+            assert_eq!(metadata.value, priority);
+            assert_eq!(drops.get(), 0);
+            // SAFETY: extraction transferred the live content handle, consumed once here.
+            unsafe { drop(metadata.content.into_rust()) };
+            assert_eq!(drops.get(), 1);
+        }
+    }
+
+    #[cfg(feature = "c-api")]
+    #[test]
+    fn spacer_crosses_ffi_with_its_minimum_length() {
+        use crate::waterui_view_id;
+        use waterui_core::{AnyView, Native};
+
+        let view = AnyView::new(Native::new(Spacer::new(40.0))).into_ffi();
+        // SAFETY: `view` is the live owning handle created above.
+        let view_id = unsafe { waterui_view_id(view) };
+        assert_eq!(view_id, waterui_spacer_id());
+        // SAFETY: the handle contains a `Native<Spacer>` and is consumed once.
+        let spacer = unsafe { waterui_force_as_spacer(view) };
+        assert_eq!(spacer.min_length.to_bits(), 40.0_f32.to_bits());
+    }
+
+    #[test]
+    fn layout_stretch_queries_follow_current_children() {
+        let check = |layout: *mut WuiLayout, main, cross| {
+            for (axes, expected) in [
+                (vec![], WuiStretchAxis::None),
+                (vec![WuiStretchAxis::MainAxis], main),
+                (vec![WuiStretchAxis::CrossAxis], cross),
+                (vec![WuiStretchAxis::Both], WuiStretchAxis::Both),
+                (vec![], WuiStretchAxis::None),
+            ] {
+                // SAFETY: with_layout owns the live handle and this array is consumed once.
+                let actual = unsafe { waterui_layout_stretch_axis(layout, WuiArray::new(axes)) };
+                assert_eq!(actual, expected);
+            }
+        };
+        with_layout(HStackLayout::default(), |layout| {
+            check(layout, WuiStretchAxis::Horizontal, WuiStretchAxis::Vertical);
+        });
+        with_layout(VStackLayout::default(), |layout| {
+            check(layout, WuiStretchAxis::Vertical, WuiStretchAxis::Horizontal);
+        });
+    }
 
     fn with_layout(layout: impl Layout + 'static, f: impl FnOnce(*mut WuiLayout)) {
         let mut layout = WuiLayout(Box::new(layout));
@@ -808,10 +1107,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "spacing is copied verbatim across FFI from a Computed::constant with no intervening arithmetic, so exact equality is the correct assertion"
-    )]
     fn lazy_stack_queries_report_vstack_configuration() {
         with_layout(
             VStackLayout {
@@ -825,7 +1120,10 @@ mod tests {
                     waterui_layout_lazy_stack_axis(layout),
                     WuiLazyStackAxis::Vertical
                 );
-                assert_eq!(waterui_layout_lazy_stack_spacing(layout), 12.0);
+                assert_eq!(
+                    waterui_layout_lazy_stack_spacing(layout).to_bits(),
+                    12.0_f32.to_bits()
+                );
                 assert_eq!(
                     waterui_layout_lazy_stack_horizontal_alignment(layout),
                     WuiHorizontalAlignment::Trailing
@@ -835,10 +1133,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "spacing is copied verbatim across FFI from a Computed::constant with no intervening arithmetic, so exact equality is the correct assertion"
-    )]
     fn lazy_stack_queries_report_hstack_configuration() {
         with_layout(
             HStackLayout {
@@ -852,7 +1146,10 @@ mod tests {
                     waterui_layout_lazy_stack_axis(layout),
                     WuiLazyStackAxis::Horizontal
                 );
-                assert_eq!(waterui_layout_lazy_stack_spacing(layout), 7.0);
+                assert_eq!(
+                    waterui_layout_lazy_stack_spacing(layout).to_bits(),
+                    7.0_f32.to_bits()
+                );
                 assert_eq!(
                     waterui_layout_lazy_stack_vertical_alignment(layout),
                     WuiVerticalAlignment::Bottom
@@ -862,10 +1159,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "spacing is copied verbatim across FFI from a Computed::constant with no intervening arithmetic, so exact equality is the correct assertion"
-    )]
     fn layout_watcher_forwards_precise_signal_invalidation() {
         struct Target(Rc<Cell<usize>>);
 
@@ -899,11 +1192,263 @@ mod tests {
         assert_eq!(invalidations.get(), 1);
         assert_eq!(
             // SAFETY: `layout` is a live local for the duration of the call.
-            unsafe { waterui_layout_lazy_stack_spacing(&raw mut layout) },
-            12.0
+            unsafe { waterui_layout_lazy_stack_spacing(&raw mut layout) }.to_bits(),
+            12.0_f32.to_bits()
         );
 
         // SAFETY: `watcher` is the owning handle returned above, dropped once here.
         unsafe { waterui_layout_watcher_drop(watcher) };
+    }
+
+    fn proposal_cases() -> [Option<f32>; 4] {
+        [None, Some(0.0), Some(48.0), Some(f32::INFINITY)]
+    }
+
+    #[test]
+    fn proposal_round_trip_preserves_each_axis_probe() {
+        for width in proposal_cases() {
+            for height in proposal_cases() {
+                let proposal = ProposalSize::new(width, height);
+                // SAFETY: the decoded value is the FFI mirror produced by
+                // `into_ffi` from `proposal` itself, satisfying the `into_rust`
+                // contract.
+                let decoded = unsafe { proposal.into_ffi().into_rust() };
+                assert_eq!(decoded, proposal);
+            }
+        }
+    }
+
+    #[test]
+    fn proposal_decodes_nan_as_unspecified_without_losing_infinity() {
+        for bits in [f32::NAN.to_bits(), 0x7fc0_0001, 0xffc0_0042] {
+            // SAFETY: `WuiProposalSize` mirrors `ProposalSize` bit for bit on
+            // each axis, so decoding a value with arbitrary `f32` payloads is
+            // the contract `into_rust` defines.
+            let decoded = unsafe {
+                WuiProposalSize {
+                    width: f32::from_bits(bits),
+                    height: f32::INFINITY,
+                }
+                .into_rust()
+            };
+            assert_eq!(decoded, ProposalSize::new(None, Some(f32::INFINITY)));
+        }
+        // SAFETY: the decoded value is the FFI mirror produced by `into_ffi`
+        // from this pair, satisfying the `into_rust` contract.
+        let decoded = unsafe {
+            ProposalSize::new(Some(-0.0), Some(0.0))
+                .into_ffi()
+                .into_rust()
+        };
+        assert_eq!(decoded.width.unwrap().to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(decoded.height.unwrap().to_bits(), 0.0_f32.to_bits());
+    }
+
+    fn probe_extent(proposed: Option<f32>, minimum: f32, ideal: f32, maximum: f32) -> f32 {
+        proposed.map_or(ideal, |value| value.clamp(minimum, maximum))
+    }
+
+    #[derive(Debug)]
+    struct ProbeView;
+
+    impl SubView for ProbeView {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::new(
+                probe_extent(proposal.width, 8.0, 24.0, 96.0),
+                probe_extent(proposal.height, 12.0, 36.0, 144.0),
+            ))
+            .with_horizontal(HorizontalAlignment::Leading, 3.0)
+            .with_vertical(VerticalAlignment::FirstBaseline, 5.0)
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
+        }
+
+        fn priority(&self) -> i32 {
+            7
+        }
+    }
+
+    struct ProbeContext {
+        proposals: Rc<RefCell<Vec<ProposalSize>>>,
+        drops: Rc<Cell<usize>>,
+    }
+
+    unsafe extern "C" fn measure_probe(
+        context: *mut c_void,
+        proposal: WuiProposalSize,
+    ) -> WuiViewDimensions {
+        // SAFETY: the test registers this callback with a live `ProbeContext`
+        // created by `foreign_probe`, which outlives every measure call.
+        let context = unsafe { &*context.cast::<ProbeContext>() };
+        // Decode independently of `IntoRust`: the callback models a foreign
+        // backend, so it must not reuse the Rust-side decoder under test.
+        let decoded = ProposalSize::new(
+            (!proposal.width.is_nan()).then_some(proposal.width),
+            (!proposal.height.is_nan()).then_some(proposal.height),
+        );
+        context.proposals.borrow_mut().push(decoded);
+        ProbeView.measure(decoded).into_ffi()
+    }
+
+    unsafe extern "C" fn drop_probe(context: *mut c_void) {
+        // SAFETY: `context` is the boxed `ProbeContext` this callback was
+        // registered with, and the drop entry runs once.
+        let context = unsafe { Box::from_raw(context.cast::<ProbeContext>()) };
+        context.drops.set(context.drops.get() + 1);
+    }
+
+    fn foreign_probe(
+        proposals: Rc<RefCell<Vec<ProposalSize>>>,
+        drops: Rc<Cell<usize>>,
+    ) -> WuiSubView {
+        WuiSubView {
+            context: Box::into_raw(Box::new(ProbeContext { proposals, drops })).cast(),
+            vtable: WuiSubViewVTable {
+                measure: measure_probe,
+                drop: drop_probe,
+            },
+            stretch_axis: WuiStretchAxis::Both,
+            priority: 7,
+            is_empty: false,
+        }
+    }
+
+    const WIDTH_EXTENTS: [(Option<f32>, f32); 4] = [
+        (None, 24.0),
+        (Some(0.0), 8.0),
+        (Some(48.0), 48.0),
+        (Some(f32::INFINITY), 96.0),
+    ];
+    const HEIGHT_EXTENTS: [(Option<f32>, f32); 4] = [
+        (None, 36.0),
+        (Some(0.0), 12.0),
+        (Some(48.0), 48.0),
+        (Some(f32::INFINITY), 144.0),
+    ];
+
+    fn expected_extent(table: [(Option<f32>, f32); 4], probe: Option<f32>) -> f32 {
+        table
+            .into_iter()
+            .find_map(|(proposal, extent)| (proposal == probe).then_some(extent))
+            .expect("the tables cover every `proposal_cases` entry")
+    }
+
+    #[test]
+    fn layout_measure_preserves_probes_through_foreign_callbacks() {
+        for width in proposal_cases() {
+            for height in proposal_cases() {
+                let proposal = ProposalSize::new(width, height);
+                let expected_size = Size::new(
+                    expected_extent(WIDTH_EXTENTS, width),
+                    expected_extent(HEIGHT_EXTENTS, height),
+                );
+                let direct = measure_layout(&FrameLayout::default(), proposal, &[&ProbeView]);
+                let proposals = Rc::new(RefCell::new(Vec::new()));
+                let drops = Rc::new(Cell::new(0));
+                with_layout(
+                    FrameLayout::default(),
+                    // SAFETY: the harness hands the closure a pointer to the live
+                    // layout handle it just built; each `WuiArray` is an owning
+                    // handle the FFI call consumes once, and each returned FFI
+                    // value is decoded once and never observed again.
+                    |layout| unsafe {
+                        let measured = waterui_layout_measure(
+                            layout,
+                            proposal.into_ffi(),
+                            WuiArray::new(vec![foreign_probe(
+                                Rc::clone(&proposals),
+                                Rc::clone(&drops),
+                            )]),
+                        )
+                        .into_rust();
+                        assert_eq!(measured.size, expected_size);
+                        assert_eq!(measured.size, direct.size);
+                        assert_eq!(
+                            measured.explicit_horizontal(HorizontalAlignment::Leading),
+                            Some(3.0)
+                        );
+                        assert_eq!(
+                            measured.explicit_vertical(VerticalAlignment::FirstBaseline),
+                            Some(5.0)
+                        );
+                        assert_eq!(proposals.borrow().first(), Some(&proposal));
+                        assert_eq!(drops.get(), 1);
+
+                        let bounds = Rect::new(Point::new(13.0, -9.0), expected_size);
+                        // Layout-spec §2.3: placement re-negotiates against the
+                        // resolved bounds instead of replaying the measurement
+                        // probe — a default frame re-proposes the bounds on
+                        // both axes.
+                        let negotiated =
+                            ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+                        let placed = waterui_layout_place_subviews(
+                            layout,
+                            bounds.into_ffi(),
+                            proposal.into_ffi(),
+                            WuiArray::new(vec![foreign_probe(
+                                Rc::clone(&proposals),
+                                Rc::clone(&drops),
+                            )]),
+                        );
+                        let direct = FrameLayout::default().place(bounds, proposal, &[&ProbeView]);
+                        let rects: Vec<Rect> = placed
+                            .as_slice()
+                            .iter()
+                            .map(|placement| {
+                                let frame = &placement.frame;
+                                Rect::new(
+                                    Point::new(frame.origin.x, frame.origin.y),
+                                    Size::new(frame.size.width, frame.size.height),
+                                )
+                            })
+                            .collect();
+                        for (placement, direct_placement) in placed.as_slice().iter().zip(&direct) {
+                            // SAFETY: `placement.proposal` is the FFI mirror this
+                            // very call produced; decoding it here is the
+                            // `into_rust` contract.
+                            let returned = placement.proposal.clone().into_rust();
+                            assert_eq!(returned, direct_placement.proposal);
+                            assert_eq!(returned, negotiated);
+                        }
+                        placed.consume();
+                        assert_eq!(rects, vec![bounds]);
+                        // Placement re-measures the foreign child under the
+                        // negotiated proposal, so its layout pass receives the
+                        // real geometry rather than a stale probe.
+                        assert_eq!(proposals.borrow().last(), Some(&negotiated));
+                        let direct_rects: Vec<Rect> =
+                            direct.iter().map(|placement| placement.frame).collect();
+                        assert_eq!(rects, direct_rects);
+                        assert_eq!(drops.get(), 2);
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn foreign_subview_preserves_metadata_and_measurement() {
+        let proposals = Rc::new(RefCell::new(Vec::new()));
+        let drops = Rc::new(Cell::new(0));
+        {
+            let subview = foreign_probe(Rc::clone(&proposals), Rc::clone(&drops));
+            assert_eq!(subview.priority(), 7);
+            assert_eq!(subview.stretch_axis(), StretchAxis::Both);
+            let proposal = ProposalSize::new(Some(f32::INFINITY), None);
+            let measured = subview.measure(proposal);
+            assert_eq!(measured.size, Size::new(96.0, 36.0));
+            assert_eq!(
+                measured.explicit_horizontal(HorizontalAlignment::Leading),
+                Some(3.0)
+            );
+            assert_eq!(
+                measured.explicit_vertical(VerticalAlignment::FirstBaseline),
+                Some(5.0)
+            );
+            assert_eq!(proposals.borrow().first(), Some(&proposal));
+        }
+        assert_eq!(drops.get(), 1);
     }
 }

@@ -3,6 +3,7 @@ package {{ ctx.android_package_name() }}
 import android.app.Activity
 import android.app.Application
 import dev.waterui.android.runtime.WuiEnvironment
+import dev.waterui.android.runtime.WaterUiFontTable
 import dev.waterui.android.runtime.WaterUiRuntimeOwner
 import dev.waterui.android.runtime.bootstrapWaterUiRuntime
 import dev.waterui.android.runtime.releaseWaterUiRuntime
@@ -16,6 +17,15 @@ class WaterUiApplication : Application(), WaterUiRuntimeOwner {
     private var nextGeneration = 0L
     private var activeRuntime: ActiveRuntime? = null
     private var processEnvironment: WuiEnvironment? = null
+    private lateinit var waterUiFonts: WaterUiFontTable
+
+    override fun onCreate() {
+        super.onCreate()
+        // The declared-font table is owned here at the runtime owner's
+        // bootstrap; the environment template stamps it so every cloned
+        // environment reaches the renderer with it.
+        waterUiFonts = WaterUiFontTable(this)
+    }
 
     fun acquireRuntime(activity: Activity): AndroidRuntimeLease {
         activeRuntime?.let { previous ->
@@ -30,7 +40,7 @@ class WaterUiApplication : Application(), WaterUiRuntimeOwner {
         )
         activeRuntime = runtime
         if (processEnvironment == null) {
-            processEnvironment = WuiEnvironment.create()
+            processEnvironment = WuiEnvironment.create(waterUiFonts)
         }
         return AndroidRuntimeLease(this, runtime.generation)
     }

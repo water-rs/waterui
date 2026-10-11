@@ -1,10 +1,14 @@
 //! Apple platform support.
 
+/// `.app` bundle assembly without an Xcode project.
+pub mod app_bundle;
 /// Apple backend implementation.
 pub mod backend;
 /// Apple device detection and management.
 pub mod device;
 pub(crate) mod dynamic_runtime;
+/// XCFramework and Swift package assembly for native hosts.
+pub mod embedded;
 /// macOS local device gestures and screenshot.
 #[cfg(target_os = "macos")]
 pub mod local;
@@ -106,6 +110,10 @@ pub mod local {
     }
 }
 /// Apple platform configuration.
+pub mod physical;
 pub mod platform;
+/// Development provisioning profiles: validation and `xcodebuild` acquisition.
+#[cfg(target_os = "macos")]
+pub mod provisioning;
 /// Apple toolchain management.
 pub mod toolchain;

@@ -19,6 +19,25 @@ bugreport*.zip
 .wrangler/
 node_modules/
 
+# The generated preview-host and embedded-library composites the
+# `hydrolysis-android-host` CI job renders through the CLI (artifacts, not
+# source).
+backends/hydrolysis/android-preview-host/
+backends/hydrolysis/android-embedded-library/
+
+# Apple e2e / release-metrics scratch directories CI produces at the
+# workspace root (artifacts, not source).
+e2e-logs/
+e2e-shots/
+e2e-baselines/
+packaged-ios/
+packaged-macos/
+packaged-artifacts/
+release-metrics*/
+water-cli/
+cli-bin/
+native-reference/
+
 # Claude Code runtime artifacts (per-session, not source)
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
@@ -42,3 +61,17 @@ node_modules/
 # Icon set source data under `components/icon/*/data/` is deliberately
 # vendored and tracked so icon crates build offline and reproducibly.
 # Do not add an ignore rule for it.
+
+# Python bytecode from the release-script tests and the scene generators
+__pycache__/
+*.pyc
+
+# Generated Cherenkov scene tree: `graphics/cherenkov/scenes/tools/generate.py`
+# rebuilds all of it (fetch -> fonts -> test fonts -> corpus -> perf) from
+# pinned, hash-verified sources.
+graphics/cherenkov/out/
+graphics/cherenkov/scenes/corpus/
+graphics/cherenkov/scenes/perf/
+graphics/cherenkov/scenes/fonts/_full/
+graphics/cherenkov/scenes/fonts/*.ttf
+graphics/cherenkov/scenes/fonts/OFL.txt

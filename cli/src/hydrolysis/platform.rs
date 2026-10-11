@@ -12,25 +12,29 @@ use smol::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use target_lexicon::Triple;
+use target_lexicon::{OperatingSystem, Triple};
 use tracing::info;
 
 use crate::{
     assets, browser_runtime,
-    build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
+    build::{
+        ArtifactLockScope, BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage,
+        stage_dxc_runtime,
+    },
     device::Artifact,
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
     toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
-    utils::{command, run_command_os, which},
+    utils::command,
 };
 #[cfg(target_os = "macos")]
 use crate::{
     macos_bundle::{
-        MacOsUsageDescription, package_binary_as_app, package_cef_helper_app,
-        sign_macos_app as sign_app,
+        MacOsAppNames, MacOsSigning, MacOsUsageDescription, package_binary_as_app,
+        package_cef_helper_app, sign_macos_app as sign_app,
     },
+    platform::PackageAudience,
     project::BrowserRuntimePlan,
 };
 
@@ -43,27 +47,29 @@ const HYDROLYSIS_INIT_HINT: &str = "water run --platform windows --backend hydro
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 const HYDROLYSIS_INIT_HINT: &str = "initialize hydrolysis backend on macOS, Linux, or Windows";
 
-/// Cargo profile directory the hydrolysis backend's artifacts land in.
-async fn hydrolysis_profile_dir(
-    project: &Project,
-    platform: TargetPlatform,
-    profile: &str,
-    linkage: RustLinkage,
-) -> eyre::Result<PathBuf> {
-    Ok(project
-        .water_target_dir(linkage)
-        .await?
-        .join(platform.triple().to_string())
-        .join(profile))
+/// Loader search paths the platform's dynamic linker resolves the shared runtime through.
+///
+/// Both situations a backend binary runs in need an entry. `water preview` and an
+/// unpackaged `water run` execute the binary where Cargo left it, with the shared
+/// runtime staged beside it — that is `@executable_path` on macOS and `$ORIGIN` on
+/// Linux. Packaging then moves the runtime into `Contents/Frameworks`, which only
+/// the bundle-relative entry reaches. macOS carried the bundle path alone, so a
+/// binary run in place could not load the runtime at all (#140).
+const fn hydrolysis_loader_search_paths(platform: TargetPlatform) -> &'static [&'static str] {
+    match platform {
+        TargetPlatform::MacOS => &["@executable_path", "@executable_path/../Frameworks"],
+        TargetPlatform::Linux => &["$ORIGIN"],
+        _ => &[],
+    }
 }
 
-/// Loader search path the platform's dynamic linker resolves the shared runtime through.
-const fn hydrolysis_loader_search_path(platform: TargetPlatform) -> Option<&'static str> {
-    match platform {
-        TargetPlatform::MacOS => Some("@executable_path/../Frameworks"),
-        TargetPlatform::Linux => Some("$ORIGIN"),
-        _ => None,
-    }
+/// The CEF subprocess helper binary the generated hydrolysis crate declares.
+///
+/// `templates::hydrolysis` emits the helper `[[bin]]` under exactly this name
+/// — [`cef_helper_binary_name`] of the generated package — so the build and
+/// the packaging lookup must both resolve it through here.
+fn hydrolysis_cef_helper_name(backend_crate_name: &str) -> String {
+    crate::project_model::project_types::cef_helper_binary_name(backend_crate_name)
 }
 
 /// Build hydrolysis binary for the host platform.
@@ -74,8 +80,15 @@ pub async fn build_hydrolysis(
     project: &Project,
     platform: TargetPlatform,
     options: BuildOptions,
-) -> eyre::Result<PathBuf> {
-    build_hydrolysis_with_envs_and_features(project, platform, options, &[], &[]).await
+) -> eyre::Result<BuiltTarget> {
+    Box::pin(build_hydrolysis_with_envs_and_features(
+        project,
+        platform,
+        options,
+        &[],
+        &[],
+    ))
+    .await
 }
 
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables.
@@ -87,8 +100,15 @@ pub async fn build_hydrolysis_with_envs(
     platform: TargetPlatform,
     options: BuildOptions,
     extra_envs: &[(String, OsString)],
-) -> eyre::Result<PathBuf> {
-    build_hydrolysis_with_envs_and_features(project, platform, options, extra_envs, &[]).await
+) -> eyre::Result<BuiltTarget> {
+    Box::pin(build_hydrolysis_with_envs_and_features(
+        project,
+        platform,
+        options,
+        extra_envs,
+        &[],
+    ))
+    .await
 }
 
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables and features.
@@ -101,7 +121,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
     options: BuildOptions,
     extra_envs: &[(String, OsString)],
     extra_features: &[&str],
-) -> eyre::Result<PathBuf> {
+) -> eyre::Result<BuiltTarget> {
     if !is_hydrolysis_native_platform(platform) {
         bail!("Hydrolysis backend is only supported on macOS, Linux, and Windows");
     }
@@ -116,12 +136,44 @@ pub async fn build_hydrolysis_with_envs_and_features(
         );
     }
 
-    // Stage assets and the Windows icon resource before the backend is built.
-    // The generated `build.rs` expects `app-icon.ico` to exist when targeting Windows.
-    copy_assets_and_fonts(project, &backend_path).await?;
+    // The managed crate is its own workspace root, so its `Cargo.lock` is
+    // re-seeded from the application's lockfile before every resolution —
+    // the binary built here must resolve the same graph the application's
+    // own `cargo build` does (#178). `prepare_build` merges the same
+    // lockfile into the managed lock again for channel-resolved projects;
+    // this seed is the carrier when `waterui_path` pins a checkout instead —
+    // the path is the record there, so the framework resolves from the
+    // checkout, whose own `Cargo.lock` is the canonical pin.
+    let has_framework =
+        project.manifest().framework.is_some() || project.manifest().waterui_path.is_some();
+    let canonical = if has_framework {
+        project
+            .resolved_framework()
+            .await?
+            .canonical_lock(project.root())
+            .await?
+    } else {
+        None
+    };
+    crate::templates::seed_lockfile(
+        &backend_path,
+        &project.lockfile_path().await?,
+        canonical.as_ref(),
+    )
+    .await?;
+
+    // The generated `build.rs` embeds `app-icon.ico` into the executable when
+    // targeting Windows, so it has to exist before the backend compiles.
+    // Assets and fonts stage after the build instead: the mount metadata they
+    // need is read from the library artifact this build produces.
+    crate::templates::write_file_if_changed(
+        &backend_path.join("app-icon.ico"),
+        &assets::project_windows_ico(project)?,
+    )
+    .await?;
 
     let llvm_envs = WindowsArm64LlvmToolchain
-        .cargo_envs(&crate::toolchain::Host::current())
+        .cargo_envs(project.host())
         .await
         .map_err(|error| match error {
             ToolchainError::Fixable(_) => eyre::eyre!(
@@ -132,97 +184,116 @@ pub async fn build_hydrolysis_with_envs_and_features(
             }
         })?;
 
-    let mut build = RustBuild::new(&backend_path, platform.triple())
-        .with_project(project)
+    let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(extra_features.iter().copied())
         .with_linkage(
             options.linkage(),
             &format!("{}/dev", project.crate_name()),
-            hydrolysis_loader_search_path(platform),
+            hydrolysis_loader_search_paths(platform),
         )
         .with_envs(llvm_envs)
+        .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(extra_envs.iter().cloned());
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
-    build
-        .build_binary(
-            project.hydrolysis_backend_crate_name().as_str(),
-            options.is_release(),
+    if let Some(progress) = options.progress() {
+        build = build.with_progress(progress.clone());
+    }
+    let mut built_target = Box::pin(build.build_binary(
+        project.hydrolysis_backend_crate_name().as_str(),
+        options.is_release(),
+    ))
+    .await
+    .wrap_err("Failed to build hydrolysis backend with cargo")?;
+
+    // The generated manifest declares the CEF helper as a second `[[bin]]`
+    // when the application links the CEF engine crate; a `--bin <main>`
+    // build never emits it, so it needs its own build before packaging can
+    // bundle it. The gate is the manifest's own predicate — a
+    // `waterui-chromium` link alone declares no helper bin, and asking
+    // Cargo for it would fail with `no bin target`. Packaging resolves the
+    // helper through its own `BuiltTarget`, kept here on the application's
+    // — the marked `deps/` artifact path it reports is the only spelling
+    // that names this variant's helper.
+    if project.declares_cef_helper(&platform.triple()).await? {
+        // Packaging reads the helper's marked `deps/` artifact; nothing
+        // execs its shared `<profile>/<name>` uplift, so the artifact lock
+        // is released once the marked link exists rather than held while
+        // this `BuiltTarget` rides through packaging.
+        let helper = Box::pin(
+            build
+                .with_artifact_lock_scope(ArtifactLockScope::UntilMarked)
+                .build_binary(
+                    &hydrolysis_cef_helper_name(project.hydrolysis_backend_crate_name().as_str()),
+                    options.is_release(),
+                ),
         )
         .await
-        .wrap_err("Failed to build hydrolysis backend with cargo")?;
-
-    build
-        .lib_output_dir(options.is_release())
-        .await
-        .map_err(Into::into)
-}
-
-/// Resolve the built hydrolysis backend binary path for the given profile.
-///
-/// # Errors
-/// Returns an error if neither the canonical nor underscored backend binary can be found.
-pub async fn built_hydrolysis_binary_path(
-    project: &Project,
-    platform: TargetPlatform,
-    profile: &str,
-    linkage: RustLinkage,
-) -> eyre::Result<PathBuf> {
-    let target_dir = hydrolysis_profile_dir(project, platform, profile, linkage).await?;
-    let binary_name = project.hydrolysis_backend_crate_name();
-    let binary_path = if cfg!(windows) {
-        target_dir.join(format!("{binary_name}.exe"))
-    } else {
-        target_dir.join(binary_name.as_ref())
-    };
-    if binary_path.exists() {
-        return Ok(binary_path);
+        .wrap_err("Failed to build the hydrolysis CEF helper with cargo")?;
+        built_target.cef_helper = Some(Box::new(helper));
     }
 
-    let alt_binary_name = binary_name.replace('-', "_");
-    let underscored_path = if cfg!(windows) {
-        target_dir.join(format!("{alt_binary_name}.exe"))
-    } else {
-        target_dir.join(alt_binary_name)
-    };
-    if underscored_path.exists() {
-        return Ok(underscored_path);
-    }
+    copy_assets_and_fonts(
+        project,
+        platform,
+        &backend_path,
+        &built_target.app_symbols().await?,
+        options.uses_dev_server(),
+    )
+    .await?;
 
-    bail!(
-        "Built hydrolysis binary not found at {} or {}",
-        binary_path.display(),
-        underscored_path.display()
-    );
+    Ok(built_target)
 }
 
 /// Stage the shared `WaterUI` runtime and Rust standard library next to a raw
 /// Hydrolysis development binary.
 ///
 /// Packaged applications stage these libraries in their platform runtime
-/// directory. Preview and test binaries execute directly from Cargo's profile
-/// directory, whose `@loader_path`/`$ORIGIN` entry resolves this adjacent copy.
+/// directory. Preview and test binaries execute the `<profile>/<name>`
+/// uplift, whose `@executable_path`/`$ORIGIN` entry resolves this adjacent
+/// copy — the staging directory is the profile directory itself, never the
+/// `deps/` the marked artifact's path names: `deps/` holds Cargo's own
+/// unit outputs and pruning staged names there would delete sibling
+/// variants' artifacts and re-dirty them on the next build.
 ///
 /// # Errors
-/// Returns an error if the binary has no parent directory or the required shared
-/// libraries cannot be resolved and staged.
+/// Returns an error if the required shared libraries cannot be resolved and staged.
 pub(crate) async fn stage_hydrolysis_shared_runtime(
-    binary_path: &Path,
+    project: &Project,
+    built: &BuiltTarget,
     platform: TargetPlatform,
 ) -> eyre::Result<()> {
     if !is_hydrolysis_native_platform(platform) {
         bail!("Hydrolysis shared runtime can only be staged for macOS, Linux, and Windows");
     }
-    let runtime_dir = binary_path.parent().ok_or_else(|| {
-        eyre::eyre!(
-            "Hydrolysis binary path has no output directory: {}",
-            binary_path.display()
-        )
-    })?;
-    let libraries = RustDynamicLibraries::resolve(runtime_dir, &platform.triple()).await?;
-    synchronize_shared_runtime(runtime_dir, Some(&libraries), &platform.triple()).await
+    let libraries = RustDynamicLibraries::resolve(built, &platform.triple(), project).await?;
+    // The staged runtime lands beside the `<profile>/<name>` uplift the
+    // launch path executes — the profile directory itself, never `deps/`:
+    // `built.artifact` lives there and pruning staged names would delete
+    // Cargo's own unit outputs.
+    synchronize_shared_runtime(
+        project.host(),
+        &built.profile_dir,
+        Some(&libraries),
+        &platform.triple(),
+    )
+    .await
+}
+
+/// The packaged CEF helper's source: the helper build's own `BuiltTarget`
+/// artifact — the marked `deps/<helper>-<marker>` file this build produced —
+/// never a name reconstructed under the application binary's `deps/` parent.
+#[cfg(target_os = "macos")]
+fn cef_helper_binary(helper: Option<&BuiltTarget>) -> eyre::Result<&Path> {
+    helper
+        .map(|helper| helper.artifact.as_path())
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "the project declares a CEF helper but the build produced none; package the result of `build_hydrolysis`, which keeps the helper's own `BuiltTarget`"
+            )
+        })
 }
 
 /// Clean Cargo build artifacts for hydrolysis.
@@ -254,7 +325,7 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
             "--package".into(),
             project.hydrolysis_backend_crate_name().as_str().into(),
         ];
-        run_command_os("cargo", clean_args).await?;
+        project.host().run("cargo", clean_args).await?;
     }
     let dist_web = backend_path.join("dist/web");
     if dist_web.exists() {
@@ -274,15 +345,26 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 ///
 /// # Errors
 /// Returns an error if packaging prerequisites are missing, assets cannot be staged, or output artifacts cannot be produced.
+#[expect(
+    clippy::too_many_lines,
+    reason = "packaging is one linear sequence of staging steps per platform; the macOS bundle already has its own function"
+)]
 pub async fn package_hydrolysis(
     project: &Project,
     platform: TargetPlatform,
     options: PackageOptions,
+    built: Option<&BuiltTarget>,
 ) -> eyre::Result<Artifact> {
     if platform == TargetPlatform::Web {
         let site_root = package_hydrolysis_web_site(project, options.is_debug(), false).await?;
         return Ok(Artifact::new(project.bundle_identifier(), site_root));
     }
+
+    let built = built.ok_or_else(|| {
+        eyre::eyre!(
+            "Hydrolysis packaging for {platform:?} needs the build result of the native backend binary"
+        )
+    })?;
 
     if !is_hydrolysis_native_platform(platform) {
         bail!(
@@ -296,32 +378,26 @@ pub async fn package_hydrolysis(
         "release"
     };
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    copy_assets_and_fonts(project, &backend_path).await?;
+    copy_assets_and_fonts(
+        project,
+        platform,
+        &backend_path,
+        &built.app_symbols().await?,
+        options.uses_dev_server(),
+    )
+    .await?;
 
-    let linkage = if options.uses_shared_rust_runtime() {
-        RustLinkage::SharedRuntime
-    } else {
-        RustLinkage::Static
-    };
-    let final_binary_path =
-        built_hydrolysis_binary_path(project, platform, profile, linkage).await?;
-    let profile_directory = final_binary_path.parent().ok_or_else(|| {
-        eyre::eyre!(
-            "Hydrolysis binary path has no profile directory: {}",
-            final_binary_path.display()
-        )
-    })?;
+    let final_binary_path = &built.artifact;
+    let profile_directory = built.profile_dir.as_path();
     let runtime_plan = project
-        .browser_runtime_plan(platform, crate::platform::TargetBackend::Hydrolysis)
+        .browser_runtime_plan(
+            platform,
+            crate::platform::TargetBackend::Hydrolysis,
+            &platform.triple(),
+        )
         .await?;
     let shared_libraries = if options.uses_shared_rust_runtime() {
-        let lib_dir = final_binary_path.parent().ok_or_else(|| {
-            eyre::eyre!(
-                "Hydrolysis binary path has no output directory: {}",
-                final_binary_path.display()
-            )
-        })?;
-        Some(RustDynamicLibraries::resolve(lib_dir, &platform.triple()).await?)
+        Some(RustDynamicLibraries::resolve(built, &platform.triple(), project).await?)
     } else {
         None
     };
@@ -329,58 +405,126 @@ pub async fn package_hydrolysis(
     #[cfg(target_os = "macos")]
     {
         if platform == TargetPlatform::MacOS {
-            return package_hydrolysis_macos(
+            return package_hydrolysis_macos(HydrolysisMacosPackage {
                 project,
                 platform,
-                &backend_path,
-                &final_binary_path,
+                backend_path: &backend_path,
+                binary_path: final_binary_path,
                 profile_directory,
+                cef_helper: built.cef_helper.as_deref(),
                 runtime_plan,
-                shared_libraries.as_ref(),
-            )
+                shared_libraries: shared_libraries.as_ref(),
+                options: &options,
+            })
             .await;
         }
     }
 
-    let runtime_dir = final_binary_path.parent().ok_or_else(|| {
-        eyre::eyre!(
-            "Hydrolysis binary path has no output directory: {}",
-            final_binary_path.display()
-        )
-    })?;
-    synchronize_shared_runtime(runtime_dir, shared_libraries.as_ref(), &platform.triple()).await?;
-    browser_runtime::stage(runtime_plan, platform, profile_directory, runtime_dir).await?;
+    // The shipped binary and everything `$ORIGIN` resolves beside it stage
+    // into the project's own managed backend directory — the shared Cargo
+    // profile directory would collide two same-named projects on
+    // `<profile>/<product>`.
+    let runtime_dir = crate::platforming::packaging::dist_dir(
+        &backend_path,
+        crate::browser_runtime::platform_name(platform)?,
+        Some(profile),
+    );
+    fs::create_dir_all(&runtime_dir).await?;
+    synchronize_shared_runtime(
+        project.host(),
+        &runtime_dir,
+        shared_libraries.as_ref(),
+        &platform.triple(),
+    )
+    .await?;
+    browser_runtime::stage(
+        project.host(),
+        runtime_plan,
+        platform,
+        profile_directory,
+        &runtime_dir,
+    )
+    .await?;
+
+    // Ship the binary under the product name; the tagged Cargo artifact name
+    // is internal to the shared target directory.
+    let binary_name = project.hydrolysis_binary_name();
+    let shipped_name = if platform == TargetPlatform::Windows {
+        format!("{binary_name}.exe")
+    } else {
+        binary_name.to_string()
+    };
+    let packaged_binary = crate::platforming::packaging::stage_binary_as(
+        final_binary_path,
+        &runtime_dir,
+        &shipped_name,
+    )
+    .await?;
+
+    // The runner enumerates `resources/` relative to the launched
+    // executable — `exe_dir/resources` — never the managed manifest's own
+    // `resources/` the build staged into, so the staged tree ships beside
+    // the binary inside the dist directory (water-rs/hydrolysis#182).
+    crate::platforming::packaging::stage_backend_resources(&backend_path, &runtime_dir).await?;
 
     if platform == TargetPlatform::Linux {
-        let executable_name = final_binary_path
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .ok_or_else(|| eyre::eyre!("Hydrolysis binary has no valid executable name"))?;
         crate::platforming::linux_share::write_linux_share_material(
             project,
             &project.manifest().package.name,
-            executable_name,
-            &backend_path.join("dist/share"),
+            binary_name.as_str(),
+            &runtime_dir.join("share"),
         )
         .await?;
     }
 
-    Ok(Artifact::new(
-        project.bundle_identifier(),
-        final_binary_path,
-    ))
+    Ok(Artifact::new(project.bundle_identifier(), packaged_binary))
+}
+
+/// The inputs `package_hydrolysis_macos` assembles the `.app` from.
+#[cfg(target_os = "macos")]
+struct HydrolysisMacosPackage<'a> {
+    /// The project being packaged.
+    project: &'a Project,
+    /// The platform being packaged — always `TargetPlatform::MacOS`.
+    platform: TargetPlatform,
+    /// The managed backend directory the bundle's resources come from.
+    backend_path: &'a Path,
+    /// The built application binary.
+    binary_path: &'a Path,
+    /// The Cargo profile directory staged resources resolve against.
+    profile_directory: &'a Path,
+    /// The CEF helper binary's own build result — `Some` when the project
+    /// declared a helper `[[bin]]`; its `artifact` is the packaged helper's
+    /// source, never a name reconstructed under the profile directory.
+    cef_helper: Option<&'a BuiltTarget>,
+    /// The browser runtime the bundle embeds.
+    runtime_plan: BrowserRuntimePlan,
+    /// The shared Rust runtime dylibs, when the package embeds them.
+    shared_libraries: Option<&'a RustDynamicLibraries>,
+    /// The packaging options — the audience decides how the bundle is signed.
+    options: &'a PackageOptions,
 }
 
 #[cfg(target_os = "macos")]
 async fn package_hydrolysis_macos(
-    project: &Project,
-    platform: TargetPlatform,
-    backend_path: &Path,
-    binary_path: &Path,
-    profile_directory: &Path,
-    runtime_plan: BrowserRuntimePlan,
-    shared_libraries: Option<&RustDynamicLibraries>,
+    HydrolysisMacosPackage {
+        project,
+        platform,
+        backend_path,
+        binary_path,
+        profile_directory,
+        cef_helper,
+        runtime_plan,
+        shared_libraries,
+        options,
+    }: HydrolysisMacosPackage<'_>,
 ) -> eyre::Result<Artifact> {
+    // The identifier lands in the bundle's `Info.plist` and drives signing —
+    // reject an Apple-invalid one before any staging or SDK work.
+    let bundle_id = project
+        .bundle_identifier()
+        .apple_bundle_identifier()
+        .map_err(|error| eyre::eyre!("{error}"))?;
     let app_name = project
         .manifest()
         .package
@@ -393,7 +537,7 @@ async fn package_hydrolysis_macos(
     } else {
         app_name
     };
-    let dist_dir = backend_path.join("dist");
+    let dist_dir = crate::platforming::packaging::dist_dir(backend_path, "macos", None);
     fs::create_dir_all(&dist_dir).await?;
     let usage_descriptions = project
         .manifest()
@@ -412,8 +556,11 @@ async fn package_hydrolysis_macos(
     let icns = assets::project_macos_icns(project)?;
     let app_path = package_binary_as_app(
         binary_path,
-        project.bundle_identifier(),
-        &app_name,
+        &bundle_id,
+        MacOsAppNames {
+            app_name: &app_name,
+            executable_name: project.hydrolysis_binary_name().as_str(),
+        },
         &usage_descriptions,
         Some(&backend_path.join("resources")),
         &icns,
@@ -421,42 +568,59 @@ async fn package_hydrolysis_macos(
     )
     .await?;
     synchronize_shared_runtime(
+        project.host(),
         &app_path.join("Contents/Frameworks"),
         shared_libraries,
         &platform.triple(),
     )
     .await?;
-    browser_runtime::stage_macos_app(runtime_plan, profile_directory, &app_path.join("Contents"))
-        .await?;
-    if runtime_plan.requires_cef() {
-        let helper_binary = binary_path
-            .parent()
-            .expect("Hydrolysis application binary must have a profile directory")
-            .join("waterui-cef-helper");
-        let _helper_apps = package_cef_helper_app(
-            &app_path,
-            binary_path,
-            &helper_binary,
-            project.bundle_identifier(),
-        )
-        .await?;
-    }
-    sign_app(
-        &app_path,
-        project.bundle_identifier(),
-        !usage_descriptions.is_empty(),
+    browser_runtime::stage_macos_app(
+        project.host(),
+        runtime_plan,
+        profile_directory,
+        &app_path.join("Contents"),
     )
     .await?;
+    if project.declares_cef_helper(&platform.triple()).await? {
+        let helper_binary = cef_helper_binary(cef_helper)?;
+        // The helper apps are named after the shipped executable, so they
+        // derive from the packaged copy — not the tagged Cargo artifact.
+        let main_binary = app_path
+            .join("Contents/MacOS")
+            .join(project.hydrolysis_binary_name().as_str());
+        let _helper_apps =
+            package_cef_helper_app(&app_path, &main_binary, helper_binary, &bundle_id).await?;
+    }
+    let signing = match options.audience() {
+        PackageAudience::Development => MacOsSigning::Development {
+            requires_stable_identity: !usage_descriptions.is_empty(),
+        },
+        PackageAudience::Distribution => {
+            MacOsSigning::Distribution(crate::macos_bundle::DistributionSigning::from_manifest(
+                project.manifest().signing.macos.as_ref(),
+                None,
+            )?)
+        }
+    };
+    sign_app(project.host(), &app_path, &bundle_id, &signing).await?;
     Ok(Artifact::new(project.bundle_identifier(), app_path))
 }
 
 async fn synchronize_shared_runtime(
+    host: &crate::toolchain::Host,
     destination: &Path,
     libraries: Option<&RustDynamicLibraries>,
     triple: &Triple,
 ) -> eyre::Result<()> {
     if let Some(libraries) = libraries {
-        libraries.stage(destination).await
+        libraries.stage(destination).await?;
+        // A shared-runtime hydrolysis binary renders through wgpu, whose
+        // DirectX 12 backend `LoadLibrary`s `dxcompiler.dll` and `dxil.dll`
+        // by name at run time; the pair has to sit beside the executable.
+        if triple.operating_system == OperatingSystem::Windows {
+            stage_dxc_runtime(host, destination).await?;
+        }
+        Ok(())
     } else {
         RustDynamicLibraries::remove_staged(destination, triple).await
     }
@@ -481,23 +645,30 @@ const fn is_hydrolysis_native_platform(platform: TargetPlatform) -> bool {
     )
 }
 
-async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::Result<()> {
+/// Stage the project's assets and fonts under the backend's `resources`
+/// directory. Runs after the backend build: `symbols` is the app library
+/// artifact it produced, whose `waterui_meta_bundle_*` statics declare the
+/// asset mounts.
+async fn copy_assets_and_fonts(
+    project: &Project,
+    platform: TargetPlatform,
+    backend_path: &Path,
+    symbols: &crate::artifact_symbols::ArtifactSymbols,
+    dev_server: bool,
+) -> eyre::Result<()> {
     let resources_dir = backend_path.join("resources");
     fs::create_dir_all(&resources_dir).await?;
-    assets::stage_project_assets_for_gtk(project, &resources_dir).await?;
+    let manifest =
+        assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, dev_server).await?;
 
-    // The generated crate's build script embeds this into the executable's
-    // resources when targeting Windows.
-    fs::write(
-        backend_path.join("app-icon.ico"),
-        assets::project_windows_ico(project)?,
+    let font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[platform.font_platform()?],
     )
     .await?;
-
-    let mut font_declarations = assets::scan_fonts(project).await?;
-    font_declarations.extend(assets::hydrolysis_default_font_declarations());
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
-    resolved_fonts.extend(assets::scan_project_font_assets(project)?);
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
+    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
     if !resolved_fonts.is_empty() {
         let fonts_dest = resources_dir.join("fonts");
         assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
@@ -606,7 +777,8 @@ async fn package_hydrolysis_web_site(
     let lib_rs = backend_path.join("src/lib.rs");
     if !cargo_toml.exists() {
         bail!(
-            "Hydrolysis backend not found at {}. Run `water backend add hydrolysis` first.",
+            "The generated Hydrolysis backend is missing at {}; `water build`, `water run` \
+             and `water package` generate it.",
             backend_path.display(),
         );
     }
@@ -624,26 +796,28 @@ async fn package_hydrolysis_web_site(
     fs::create_dir_all(&site_root).await?;
 
     // The shell is written after the bundle so the page knows the wasm size.
-    build_hydrolysis_web_bundle(&backend_path, &site_root, debug).await?;
+    build_hydrolysis_web_bundle(project.host(), &backend_path, &site_root, debug).await?;
     super::web_launch::write_web_shell(project, &site_root).await?;
-    copy_web_assets_and_fonts(project, &site_root).await?;
+    copy_web_assets_and_fonts(project, &backend_path, &site_root).await?;
 
     Ok(site_root)
 }
 
 async fn build_hydrolysis_web_bundle(
+    host: &crate::toolchain::Host,
     backend_path: &Path,
     site_root: &Path,
     debug: bool,
 ) -> eyre::Result<()> {
-    let wasm_pack = which("wasm-pack")
+    let wasm_pack = host
+        .which("wasm-pack")
         .await
         .wrap_err("wasm-pack is required to build Hydrolysis web bundles")?;
     let pkg_dir = site_root.join("pkg");
     fs::create_dir_all(&pkg_dir).await?;
 
-    let mut wasm_pack_cmd = smol::process::Command::new(wasm_pack);
-    let wasm_pack_cmd = command(&mut wasm_pack_cmd);
+    let mut wasm_pack_cmd = host.command(wasm_pack);
+    let wasm_pack_cmd = command(&mut wasm_pack_cmd, host.std_output());
     wasm_pack_cmd
         .current_dir(backend_path)
         .arg("build")
@@ -678,9 +852,13 @@ async fn build_hydrolysis_web_bundle(
     Ok(())
 }
 
-async fn copy_web_assets_and_fonts(project: &Project, site_root: &Path) -> eyre::Result<()> {
+async fn copy_web_assets_and_fonts(
+    project: &Project,
+    backend_path: &Path,
+    site_root: &Path,
+) -> eyre::Result<()> {
     assets::stage_project_assets_for_web(project, site_root).await?;
-    assets::stage_hydrolysis_web_fonts(project, site_root).await?;
+    assets::stage_hydrolysis_web_fonts(project, backend_path, site_root).await?;
     Ok(())
 }
 
@@ -815,5 +993,232 @@ fn mime_type_for_path(path: &Path) -> &'static str {
         Some("ico") => "image/x-icon",
         Some("txt") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::{
+        framework::test_fixtures::stable_framework,
+        project::ResolvedWebViewBackend,
+        project_types::{BundleIdentifier, CrateName, declares_cef_helper},
+        templates::TemplateContext,
+    };
+
+    fn demo_context() -> TemplateContext {
+        TemplateContext::for_support_app(
+            &crate::toolchain::Host::current(),
+            crate::templates::SupportAppIdentity {
+                display_name: "Demo".to_string(),
+                crate_name: CrateName::try_from("demo").expect("crate name must be valid"),
+                bundle_identifier: BundleIdentifier::try_from("dev.waterui.demo")
+                    .expect("bundle id must be valid"),
+            },
+            None,
+            &stable_framework(),
+            false,
+            None,
+            &crate::templates::LocalBackendSources::default(),
+        )
+        .with_project_packages(std::collections::BTreeSet::from(["demo".to_string()]))
+    }
+
+    /// `ctx` with `answers` recorded for every desktop OS — the hydrolysis
+    /// manifest writes a `cfg` section per OS, so all three must answer
+    /// for a render to compute.
+    fn all_os_browser(
+        ctx: TemplateContext,
+        answers: crate::templates::BrowserAnswers,
+    ) -> TemplateContext {
+        ctx.with_browser(crate::templates::BrowserTemplateContext::desktop(
+            answers, answers, answers,
+        ))
+    }
+
+    fn rendered_bin_names(ctx: &TemplateContext, package_name: &str) -> Vec<String> {
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(ctx, package_name)
+            .expect("hydrolysis outputs should render")
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+            })
+            .expect("hydrolysis Cargo.toml output should exist");
+        cargo_toml
+            .parse::<toml::Table>()
+            .expect("hydrolysis Cargo.toml should parse")["bin"]
+            .as_array()
+            .expect("a hydrolysis manifest should declare binaries")
+            .iter()
+            .filter_map(|bin| bin["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// `package_hydrolysis_macos` locates the built helper under the name
+    /// [`super::hydrolysis_cef_helper_name`] returns; the generated manifest
+    /// declares the helper `[[bin]]` under `cef_helper_binary_name` of the
+    /// package. Pin the two together so a rename on either side fails here
+    /// instead of at packaging time on a user's machine.
+    #[test]
+    fn cef_helper_lookup_name_is_a_bin_the_manifest_declares() {
+        let ctx = all_os_browser(
+            demo_context(),
+            crate::templates::BrowserAnswers {
+                webview_enabled: true,
+                engine: Some(ResolvedWebViewBackend::Cef),
+            },
+        );
+        let package_name = "demo-hydrolysis-deadbeef";
+        let bin_names = rendered_bin_names(&ctx, package_name);
+        let helper_name = super::hydrolysis_cef_helper_name(package_name);
+        assert!(
+            bin_names.contains(&helper_name),
+            "the helper the packager looks up must be a declared bin: {bin_names:?}"
+        );
+        assert!(
+            bin_names.contains(&package_name.to_string()),
+            "the main binary must remain declared too: {bin_names:?}"
+        );
+    }
+
+    /// water-rs/hydrolysis#182: `native_resource_fonts` resolves
+    /// `<exe_dir>/resources/fonts` — the directory beside the executable the
+    /// CLI launches — and never beside the managed backend's `Cargo.toml`,
+    /// which is where the build stages `resources/`. A packaged app
+    /// therefore ships the staged tree inside `dist/<platform>/<profile>`,
+    /// or the launched binary finds no fonts at all.
+    #[test]
+    fn a_packaged_app_ships_staged_fonts_beside_the_launched_executable() {
+        smol::block_on(async {
+            use crate::{
+                platforming::platform::PackageOptions,
+                project::{ManagedBackends, Project},
+                project_model::project_types::{CrateName, generated_crate_name},
+            };
+            use tempfile::tempdir;
+
+            let temporary = tempdir().expect("tempdir");
+            let root = temporary.path().join("fixture");
+            std::fs::create_dir_all(root.join("src")).expect("crate src");
+            std::fs::write(
+                root.join("Water.toml"),
+                "[package]\nname = \"Fixture\"\n\
+                 bundle_identifier = \"dev.waterui.fixture\"\n\n\
+                 [[assets.font]]\nname = \"Fixture Sans\"\n\
+                 local_path = \"assets/fonts/FixtureSans.ttf\"\n",
+            )
+            .expect("Water.toml");
+            std::fs::write(
+                root.join("Cargo.toml"),
+                "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            )
+            .expect("Cargo.toml");
+            std::fs::write(root.join("src/lib.rs"), "").expect("lib.rs");
+
+            // A `resources/fonts` face the app bundles.
+            std::fs::create_dir_all(root.join("assets/fonts")).expect("assets dir");
+            std::fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/fonts/Roboto-Regular.ttf"),
+                root.join("assets/fonts/FixtureSans.ttf"),
+            )
+            .expect("fixture font");
+
+            let project = Project::open(
+                &crate::toolchain::testing::real_toolchain_host(temporary.path()),
+                &root,
+                ManagedBackends::NONE,
+            )
+            .await
+            .expect("fixture project opens");
+            // The managed backend crate the build compiles, kept dependency-
+            // free so its `cargo metadata` resolves without the network.
+            let backend_path =
+                project.backend_path::<crate::hydrolysis::backend::HydrolysisBackend>();
+            std::fs::create_dir_all(backend_path.join("src")).expect("backend src");
+            let backend_crate = generated_crate_name(
+                &CrateName::try_from("fixture").expect("crate name"),
+                "hydrolysis",
+                &root,
+            );
+            std::fs::write(
+                backend_path.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{backend_crate}\"\nversion = \"0.1.0\"\n\
+                     edition = \"2021\"\n\n\
+                     [[bin]]\nname = \"{backend_crate}\"\npath = \"src/main.rs\"\n"
+                ),
+            )
+            .expect("backend manifest");
+            std::fs::write(backend_path.join("src/main.rs"), "fn main() {}\n").expect("main.rs");
+
+            let built = crate::build::RustBuild::new(
+                project.host(),
+                &backend_path,
+                target_lexicon::Triple::host(),
+            )
+            .with_target_dir(temporary.path().join("target"))
+            .build_binary(backend_crate.as_str(), false)
+            .await
+            .expect("fixture backend builds");
+            let artifact = super::package_hydrolysis(
+                &project,
+                crate::platform::TargetPlatform::Linux,
+                PackageOptions::packaging(crate::platform::PackageAudience::Development, true),
+                Some(&built),
+            )
+            .await
+            .expect("packaging succeeds");
+
+            // The face ships at the path the runner searches relative to the
+            // launched executable: `<exe_dir>/resources/fonts`.
+            let executable = artifact.path().to_path_buf();
+            let searched = executable
+                .parent()
+                .expect("packaged executable has a directory")
+                .join("resources")
+                .join("fonts")
+                .join("FixtureSans.ttf");
+            assert!(
+                searched.is_file(),
+                "the packaged app ships the staged font beside the executable {}: {}",
+                executable.display(),
+                searched.display()
+            );
+        });
+    }
+
+    /// The build compiles the helper under
+    /// [`crate::project_types::declares_cef_helper`] — the manifest's own
+    /// predicate — not `BrowserRuntimePlan::requires_cef`, which is wider:
+    /// a `waterui-chromium` link without a CEF engine still requires the CEF
+    /// runtime but declares no helper `[[bin]]`, and gating the build on the
+    /// wider predicate fails with Cargo's `no bin target`.
+    #[test]
+    fn chromium_without_the_cef_engine_declares_no_helper_bin() {
+        let package_name = "demo-hydrolysis-deadbeef";
+
+        // Chromium linked, no engine crate: the runtime plan requires CEF
+        // but the manifest declares only the main binary.
+        let ctx = all_os_browser(demo_context(), crate::templates::BrowserAnswers::default());
+        assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
+
+        // Chromium plus a non-CEF engine is the same shape.
+        let ctx = all_os_browser(
+            demo_context(),
+            crate::templates::BrowserAnswers {
+                webview_enabled: false,
+                engine: Some(ResolvedWebViewBackend::Wpe),
+            },
+        );
+        assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
+
+        // The predicate the build and packaging gates consult agrees with
+        // both renders — and still says yes for the CEF engine.
+        assert!(declares_cef_helper(Some(ResolvedWebViewBackend::Cef)));
+        assert!(!declares_cef_helper(Some(ResolvedWebViewBackend::Wpe)));
+        assert!(!declares_cef_helper(None));
     }
 }

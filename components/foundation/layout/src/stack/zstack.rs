@@ -6,9 +6,12 @@ use waterui_core::{AnyView, View, id::Identifiable, view::TupleViews, views::For
 
 use crate::{
     Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    ViewDimensions,
+    SubviewPlacement, ViewDimensions,
     container::FixedContainer,
-    stack::{Alignment, HorizontalAlignment, VerticalAlignment},
+    stack::{
+        Alignment, HorizontalAlignment, VerticalAlignment,
+        distribute::{LineAnchor, container_line, cross_envelope, empty_placement, stack_members},
+    },
 };
 
 /// Cached measurement for a child during layout
@@ -22,40 +25,30 @@ impl ChildMeasurement {
     }
 }
 
+/// The horizontal envelope of the layers lined up on `alignment`.
 fn zstack_horizontal_metrics(
     measurements: &[ChildMeasurement],
     alignment: HorizontalAlignment,
 ) -> (f32, f32) {
-    let mut max_leading = 0.0_f32;
-    let mut max_trailing = 0.0_f32;
-    for measurement in measurements {
-        let size = measurement.size();
-        let guide = measurement
-            .dimensions
-            .horizontal(alignment)
-            .clamp(0.0, size.width);
-        max_leading = max_leading.max(guide);
-        max_trailing = max_trailing.max((size.width - guide).max(0.0));
-    }
-    (max_leading, max_trailing)
+    cross_envelope(measurements.iter().map(|measurement| {
+        (
+            measurement.size().width,
+            measurement.dimensions.horizontal(alignment),
+        )
+    }))
 }
 
+/// The vertical envelope of the layers lined up on `alignment`.
 fn zstack_vertical_metrics(
     measurements: &[ChildMeasurement],
     alignment: VerticalAlignment,
 ) -> (f32, f32) {
-    let mut max_above = 0.0_f32;
-    let mut max_below = 0.0_f32;
-    for measurement in measurements {
-        let size = measurement.size();
-        let guide = measurement
-            .dimensions
-            .vertical(alignment)
-            .clamp(0.0, size.height);
-        max_above = max_above.max(guide);
-        max_below = max_below.max((size.height - guide).max(0.0));
-    }
-    (max_above, max_below)
+    cross_envelope(measurements.iter().map(|measurement| {
+        (
+            measurement.size().height,
+            measurement.dimensions.vertical(alignment),
+        )
+    }))
 }
 
 /// Stacks an arbitrary number of children with a shared alignment.
@@ -72,114 +65,137 @@ pub struct ZStackLayout {
 }
 
 impl Layout for ZStackLayout {
-    /// `ZStack` is content-sized by default (it does not stretch automatically).
-    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
-        StretchAxis::None
+    /// A `ZStack` is content-sized only while every child is — a child that
+    /// stretches (a `Color`, a `GpuContentView`) makes the stack stretch on the
+    /// same axes, since `place` hands such children the full bounds.
+    ///
+    /// Axis-relative answers have no direction to resolve against here:
+    /// `MainAxis` children (`Spacer`) want whatever space the main axis
+    /// offers, and a zstack has none — a spacer claims nothing; `CrossAxis`
+    /// children (`Divider`) resolve to their default orientation — a
+    /// horizontal rule — and fill horizontally.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        crate::stack::axisless_stretch_union(children)
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
+        let members = stack_members(children);
+        if members.is_empty() {
             return Size::zero();
         }
 
-        // Measure each child with the parent's proposal
-        let measurements: Vec<ChildMeasurement> = children
+        // Measure each member with the parent's proposal
+        let measurements: Vec<ChildMeasurement> = members
             .iter()
             .map(|child| ChildMeasurement {
                 dimensions: child.measure(proposal),
             })
             .collect();
 
+        // The stack is the envelope of its layers, like every container: a
+        // layer wider than the offer widens the stack rather than being
+        // shrunk, and a layer that answers an unbounded extent makes the
+        // stack answer it too so the fill pass above resolves it.
         let (max_leading, max_trailing) =
             zstack_horizontal_metrics(&measurements, self.alignment.horizontal());
         let (max_above, max_below) =
             zstack_vertical_metrics(&measurements, self.alignment.vertical());
-        let max_width = max_leading + max_trailing;
-        let max_height = max_above + max_below;
-
-        // Respect parent constraints - don't exceed them
-        let final_width = proposal
-            .width
-            .map_or(max_width, |parent_width| max_width.min(parent_width));
-
-        let final_height = proposal
-            .height
-            .map_or(max_height, |parent_height| max_height.min(parent_height));
-
-        Size::new(final_width, final_height)
+        let width = if measurements.iter().any(|m| m.size().width.is_infinite()) {
+            f32::INFINITY
+        } else {
+            max_leading + max_trailing
+        };
+        let height = if measurements.iter().any(|m| m.size().height.is_infinite()) {
+            f32::INFINITY
+        } else {
+            max_above + max_below
+        };
+        Size::new(width, height)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        _proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
-        // Re-measure children with the bounds as proposal
-        let child_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-
-        let measurements: Vec<ChildMeasurement> = children
+        // Placement is a fresh negotiation against the bounds the stack was
+        // placed in: every layer is proposed the resolved extent, so what it
+        // lays out under is the space it actually has.
+        let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let members = stack_members(children);
+        let measurements: Vec<ChildMeasurement> = members
             .iter()
             .map(|child| ChildMeasurement {
-                dimensions: child.measure(child_proposal),
+                dimensions: child.measure(placement),
             })
             .collect();
 
         let horizontal = self.alignment.horizontal();
         let vertical = self.alignment.vertical();
-        let target_x = if horizontal == HorizontalAlignment::Leading {
-            0.0
-        } else if horizontal == HorizontalAlignment::Trailing {
-            bounds.width()
-        } else if horizontal == HorizontalAlignment::Center {
-            bounds.width() * 0.5
-        } else {
-            let (max_leading, _) = zstack_horizontal_metrics(&measurements, horizontal);
-            max_leading
-        };
-        let target_y = if vertical == VerticalAlignment::Top {
-            0.0
-        } else if vertical == VerticalAlignment::Bottom {
-            bounds.height()
-        } else if vertical == VerticalAlignment::Center {
-            bounds.height() * 0.5
-        } else {
-            let (max_above, _) = zstack_vertical_metrics(&measurements, vertical);
-            max_above
-        };
+        let (max_leading, max_trailing) = zstack_horizontal_metrics(&measurements, horizontal);
+        let (max_above, max_below) = zstack_vertical_metrics(&measurements, vertical);
+        let line_x = bounds.x()
+            + container_line(
+                bounds.width(),
+                LineAnchor::horizontal(horizontal),
+                max_leading,
+                max_trailing,
+            );
+        let line_y = bounds.y()
+            + container_line(
+                bounds.height(),
+                LineAnchor::vertical(vertical),
+                max_above,
+                max_below,
+            );
 
-        // Place each child according to alignment
-        let mut rects = Vec::with_capacity(children.len());
+        // One placement per child: members claim a layer each; a non-member
+        // is answered with a zero-size frame on the stack's line so the
+        // returned placements still line up one-for-one with `children`.
+        let mut placements = Vec::with_capacity(children.len());
+        let mut measurements = measurements.iter();
 
-        for measurement in &measurements {
-            // Handle infinite dimensions (axis-expanding views)
+        for child in children {
+            if child.is_empty() {
+                placements.push(empty_placement(Point::new(line_x, line_y), placement));
+                continue;
+            }
+
+            let measurement = measurements
+                .next()
+                .expect("stack members and measurements diverged");
+            // A layer that answers an unbounded extent fills the bounds; every
+            // other layer keeps its answer, overflowing the bounds when it is
+            // larger, and sits with its guide on the stack's line.
             let child_width = if measurement.dimensions.size.width.is_infinite() {
                 bounds.width()
             } else {
-                measurement.dimensions.size.width.min(bounds.width())
+                measurement.dimensions.size.width
             };
-
             let child_height = if measurement.dimensions.size.height.is_infinite() {
                 bounds.height()
             } else {
-                measurement.dimensions.size.height.min(bounds.height())
+                measurement.dimensions.size.height
             };
 
             let child_size = Size::new(child_width, child_height);
             let mut adjusted_dimensions = measurement.dimensions.clone();
             adjusted_dimensions.size = child_size;
-            let x = bounds.x() + target_x
-                - adjusted_dimensions
-                    .horizontal(horizontal)
-                    .clamp(0.0, child_size.width);
-            let y = bounds.y() + target_y
-                - adjusted_dimensions
-                    .vertical(vertical)
-                    .clamp(0.0, child_size.height);
+            let x = line_x - adjusted_dimensions.horizontal(horizontal);
+            let y = line_y - adjusted_dimensions.vertical(vertical);
 
-            rects.push(Rect::new(Point::new(x, y), child_size));
+            placements.push(SubviewPlacement::new(
+                Rect::new(Point::new(x, y), child_size),
+                placement,
+            ));
         }
 
-        rects
+        placements
     }
 
     fn explicit_horizontal(
@@ -255,12 +271,15 @@ pub struct ZStack<C> {
 }
 
 impl<C> ZStack<C> {
-    /// Sets the alignment for the `ZStack`.
+    /// Sets the alignment for the `ZStack`. An [`Alignment`] or one of the
+    /// tokens (`Leading`, `TopTrailing`, `Center`, …).
     #[must_use]
-    pub const fn alignment(mut self, alignment: Alignment) -> Self {
-        self.layout.alignment = alignment;
+    pub fn alignment(mut self, alignment: impl Into<Alignment>) -> Self {
+        self.layout.alignment = alignment.into();
         self
     }
+
+    crate::alignment::two_dimensional_alignment_methods!();
 }
 
 crate::stack::impl_stack_for_each!(ZStack, ZStackLayout);
@@ -303,17 +322,31 @@ where
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)
     }
+
+    /// Resolves to `FixedContainer` over the same layout and children;
+    /// reports what that container would — matching `FixedContainer`'s
+    /// `View::stretch_axis`.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&self.contents.0.stretch_axes())
+    }
 }
 
 impl<C, F, V> View for ZStack<ForEach<C, F, V>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable,
+    C::Item: Identifiable + Clone,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         LazyContainer::new(self.layout, self.contents)
+    }
+
+    /// Resolves to `LazyContainer`, which cannot enumerate children without
+    /// materializing them and answers its layout's axis over an empty child
+    /// set — matching `LazyContainer::stretch_axis`.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.layout.stretch_axis(&[])
     }
 }
 
@@ -363,8 +396,57 @@ mod tests {
         assert!((size.height - 60.0).abs() < f32::EPSILON);
     }
 
+    /// The leaf a backend hosts for a real `Spacer` view inside a zstack: the
+    /// view's own claim and priority band, plus the specified zero response a
+    /// spacer gives under a container that has no main axis.
+    struct ZStackSpacerLeaf;
+
+    impl SubView for ZStackSpacerLeaf {
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::zero())
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            crate::spacer::spacer().stretch_axis()
+        }
+        fn priority(&self) -> i32 {
+            crate::spacer::Spacer::DEFAULT_LAYOUT_PRIORITY
+        }
+    }
+
     #[test]
-    fn test_zstack_placement_center() {
+    fn zstack_spacer_does_not_expand_root() {
+        let layout = ZStackLayout {
+            alignment: Alignment::Center,
+        };
+
+        let rigid = MockSubView {
+            size: Size::new(20.0, 10.0),
+        };
+        let spacer = ZStackSpacerLeaf;
+        let children: Vec<&dyn SubView> = vec![&rigid, &spacer];
+        let proposal = ProposalSize::new(Some(100.0), Some(60.0));
+
+        // A spacer claims nothing in a zstack, so the union of the children's
+        // stretch is empty and a root ZStack stays content-sized.
+        let axes: Vec<StretchAxis> = children.iter().map(|child| child.stretch_axis()).collect();
+        assert_eq!(layout.stretch_axis(&axes), StretchAxis::None);
+
+        assert_eq!(
+            layout.size_that_fits(proposal, &children),
+            Size::new(20.0, 10.0)
+        );
+
+        // The root is placed at its own answer stretched only on declared
+        // axes; nothing was declared, so the bounds stay content-sized.
+        let placements = layout.place(Rect::from_size(Size::new(20.0, 10.0)), proposal, &children);
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::zero(), Size::new(20.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn test_zstack_placement_center_bounded_proposal() {
         let layout = ZStackLayout {
             alignment: Alignment::Center,
         };
@@ -379,14 +461,15 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         // Child 1: centered in 100x100
-        assert!((rects[0].x() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
-        assert!((rects[0].y() - 40.0).abs() < f32::EPSILON); // (100 - 20) / 2
+        assert!((placements[0].frame.x() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
+        assert!((placements[0].frame.y() - 40.0).abs() < f32::EPSILON); // (100 - 20) / 2
 
         // Child 2: centered in 100x100
-        assert!((rects[1].x() - 20.0).abs() < f32::EPSILON); // (100 - 60) / 2
-        assert!((rects[1].y() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
+        assert!((placements[1].frame.x() - 20.0).abs() < f32::EPSILON); // (100 - 60) / 2
+        assert!((placements[1].frame.y() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
     }
 }

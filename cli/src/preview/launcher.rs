@@ -3,6 +3,7 @@
 //! Handles launching the preview app on the target platform and
 //! establishing TCP connection.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -23,35 +24,63 @@ use super::protocol::DylibId;
 use super::protocol::PreviewPlatform;
 use super::protocol::PreviewRuntimePlatform;
 use super::protocol::PreviewTcpConfig;
+use crate::build::BuildProgress;
 
 use crate::apple::dynamic_runtime;
-use crate::build::{RustBuild, RustLinkage};
-use crate::device::{Device, DeviceEvent, Local, LogLevel, RunOptions, Running};
+use crate::build::{BuiltTarget, RustBuild, RustLinkage};
+use crate::device::{
+    Crash, Device, DeviceEvent, Local, LogLevel, RunOptions, Running, StopRequest,
+};
+use crate::framework::ResolvedFramework;
 use crate::platform::TargetPlatform;
-use crate::project::Project;
+use crate::project::{ManagedBackends, Project};
 use crate::runtime_compat::{PREVIEW_RUNTIME_ENV_VARS, runtime_profile_tag};
 use crate::runtime_fingerprint::{compute_runtime_fingerprint, runtime_package_identity};
 use crate::support_app;
-use waterui_preview_protocol::registry::preview_instance_registry_dir;
 
 const PREVIEW_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const PREVIEW_METADATA_FILE: &str = ".waterui-preview-signature";
+/// Bumped whenever `scaffold_preview_app` changes what it generates beyond the
+/// templated files (manifest edits, permissions), which the template fingerprint
+/// does not cover.
+const PREVIEW_SCAFFOLD_GENERATION: u32 = 1;
 const PREVIEW_DYLIB_METADATA_SUFFIX: &str = ".waterui-preview-dylib-signature";
 
 #[derive(Debug, Clone)]
 struct PreviewRequirements {
     waterui_path: Option<PathBuf>,
+    /// The framework selection the previewed project resolved — its patch
+    /// table is what the support app's manifest inherits; the support app's
+    /// own scaffold records no framework, so taking it from there would drop
+    /// every `[patch]` entry the runtime's graph needs (#197).
+    framework: ResolvedFramework,
+    /// The previewed project's `Water.lock` bytes, when it records a
+    /// channel-managed framework — the support project's lock gate reads the
+    /// same lock the app's graph was resolved against.
+    framework_lock: Option<Vec<u8>>,
     runtime_fingerprint: String,
+    /// The commit the support app's `waterui-preview-protocol` build reports
+    /// in its handshake — read from the framework revision the project
+    /// resolved, never from the revision this CLI binary was pinned at, so a
+    /// stale pair rejects at connect instead of dropping mid-session (#197).
+    expected_protocol_commit: String,
     runtime_features: Vec<String>,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
+    /// The previewed project's own packages — the app crate plus its path
+    /// dependencies outside the framework checkout — the `[profile.dev
+    /// .package.<name>]` overrides the support manifests write, so the
+    /// module's rebuild keeps the app unoptimized with line tables.
+    project_packages: BTreeSet<String>,
 }
 
 #[derive(Debug)]
 struct ResolvedPreviewMetadata {
     metadata: cargo_metadata::Metadata,
+    framework: ResolvedFramework,
     app_crate_name: crate::project_types::CrateName,
     app_path: PathBuf,
+    project_packages: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +88,10 @@ struct PreviewLinkMode {
     crate_type_override: Option<&'static str>,
     prefer_dynamic: bool,
     abi_feature: &'static str,
+    /// Invalidates the module cache when the link strategy for this mode
+    /// changes — a module built under an older scheme resolves its symbols
+    /// against a runtime the support app no longer ships.
+    signature_tag: &'static str,
 }
 
 impl PreviewLinkMode {
@@ -66,32 +99,23 @@ impl PreviewLinkMode {
         crate_type_override: None,
         prefer_dynamic: true,
         abi_feature: crate::templates::preview_ffi::APPLE_ABI_FEATURE,
+        signature_tag: "preview-dylib+shared-waterui-dylib+prefer-dynamic",
     };
     const PORTABLE_DYNAMIC: Self = Self {
         crate_type_override: Some("cdylib"),
         prefer_dynamic: true,
         abi_feature: crate::templates::preview_ffi::APPLE_ABI_FEATURE,
+        signature_tag: "preview-cdylib+shared-waterui-dylib+prefer-dynamic",
     };
-    const ANDROID_DYNAMIC: Self = Self {
-        crate_type_override: Some("cdylib"),
-        prefer_dynamic: true,
-        abi_feature: crate::templates::preview_ffi::ANDROID_ABI_FEATURE,
-    };
-
     const fn for_platform(platform: PreviewPlatform) -> Self {
         match platform {
             PreviewPlatform::Macos => Self::MACOS_DYNAMIC,
             PreviewPlatform::Ios | PreviewPlatform::IosSimulator => Self::PORTABLE_DYNAMIC,
-            PreviewPlatform::Android => Self::ANDROID_DYNAMIC,
         }
     }
 
     const fn signature_tag(self) -> &'static str {
-        if self.crate_type_override.is_some() {
-            "preview-cdylib+shared-waterui-dylib+prefer-dynamic"
-        } else {
-            "preview-dylib+shared-waterui-dylib+prefer-dynamic"
-        }
+        self.signature_tag
     }
 
     fn configure_build(self, build: RustBuild) -> RustBuild {
@@ -120,6 +144,8 @@ pub struct PreviewSession {
     sccache_path: Option<PathBuf>,
     /// Runtime fingerprint used for ABI-safe dylib invalidation.
     runtime_fingerprint: String,
+    /// Host the session's builds and app launches run under.
+    host: crate::toolchain::Host,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +168,7 @@ impl PreviewSession {
         // clippy's `large_futures` threshold (16 KiB). Pinning it on the heap
         // keeps that off the stack of whoever awaits a preview build.
         Box::pin(build_preview_dylib(
+            &self.host,
             project_path,
             self.platform,
             self.sccache_path.as_ref(),
@@ -183,8 +210,9 @@ impl PreviewSession {
     pub async fn shutdown(&mut self) -> Result<()> {
         if self.owns_app {
             let result = self.client.shutdown().await;
-            // Dropping `running` will terminate the app if still alive.
-            self.running.take();
+            if let Some(running) = self.running.take() {
+                Pin::into_inner(running).shutdown(StopRequest::Kill).await;
+            }
             self.owns_app = false;
             result?;
         }
@@ -223,45 +251,53 @@ impl PreviewSession {
 /// same `-C metadata` hash, so a module that disagrees with its host on either
 /// one links against symbols the host does not have.
 async fn configure_preview_module_build(
+    host: &crate::toolchain::Host,
     preview_crate_path: &Path,
-    platform: PreviewPlatform,
     target: TargetPlatform,
     link_mode: PreviewLinkMode,
 ) -> Result<RustBuild> {
-    let support_project = Project::open(&preview_support_path()?)
-        .await
-        .wrap_err("Failed to open the preview support project")?;
+    let support_project = Project::open(
+        host,
+        &preview_support_path(host)?,
+        ManagedBackends::for_platform(target),
+    )
+    .await
+    .wrap_err("Failed to open the preview support project")?;
+    // The capability feature probe below resolves the support project's own
+    // generated FFI manifest — render it before anything reads it.
+    support_project.scaffold_ffi_companion().await?;
     let support_target_dir = support_project
         .water_target_dir(RustLinkage::SharedRuntime)
         .await?;
     let rust_build = link_mode
-        .configure_build(
-            RustBuild::new(preview_crate_path, target.triple()).with_project(&support_project),
-        )
+        .configure_build(RustBuild::for_project(
+            &support_project,
+            preview_crate_path,
+            target.triple(),
+        ))
         .with_target_dir(support_target_dir);
-    if matches!(platform, PreviewPlatform::Android) {
-        Ok(rust_build.with_features(
-            crate::android::platform::android_ffi_dependency_features(&support_project).await?,
-        ))
-    } else {
-        let browser_runtime = support_project
-            .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
-            .await?;
-        let (key, value) =
-            crate::apple::platform::apple_deployment_target(&support_project, target)
-                .await
-                .wrap_err("Failed to resolve the preview support deployment target")?;
-        Ok(rust_build.with_env(key, value).with_features(
-            crate::apple::platform::apple_ffi_dependency_features(
-                &support_project,
-                browser_runtime,
-            )
-            .await?,
-        ))
-    }
+    let browser_runtime = support_project
+        .browser_runtime_plan(
+            target,
+            crate::platform::TargetBackend::Apple,
+            &target.triple(),
+        )
+        .await?;
+    // The deployment-target env the module once carried explicitly now
+    // comes from the triple inside `cargo_build_output`, so a module and
+    // the support app it loads into cannot drift on it.
+    Ok(rust_build.with_features(
+        crate::apple::platform::apple_dependency_features(
+            &support_project,
+            browser_runtime,
+            &target.triple(),
+        )
+        .await?,
+    ))
 }
 
 async fn build_preview_dylib(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     platform: PreviewPlatform,
     sccache_path: Option<&PathBuf>,
@@ -279,7 +315,7 @@ async fn build_preview_dylib(
     );
 
     let project_open_start = Instant::now();
-    let project = Project::open_for_preview_build(project_path).await?;
+    let project = Project::open_for_preview_build(host, project_path).await?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = project_open_start.elapsed().as_millis(),
@@ -293,26 +329,21 @@ async fn build_preview_dylib(
     // exist — the "Failed to execute cargo build: No such file or directory"
     // that hit every first preview after switching workspaces.
     let scaffold_start = Instant::now();
-    let preview_crate_path = scaffold_preview_module(&project).await?;
+    let preview_crate_path = scaffold_preview_module(&project, platform).await?;
     info!(
         path = %preview_crate_path.display(),
         elapsed_ms = scaffold_start.elapsed().as_millis(),
         "Preview module scaffold is up to date"
     );
     let preview_crate_name = project.preview_dylib_crate_name();
-    let target = match platform {
-        PreviewPlatform::Macos => TargetPlatform::MacOS,
-        PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
-        PreviewPlatform::Ios => TargetPlatform::IOS,
-        PreviewPlatform::Android => TargetPlatform::Android,
-    };
+    let target = preview_target_platform(platform);
     let target_triple = target.triple().to_string();
     let link_mode = PreviewLinkMode::for_platform(platform);
 
     ensure_project_dev_feature_for_preview(&project).await?;
 
-    let mut rust_build =
-        configure_preview_module_build(&preview_crate_path, platform, target, link_mode).await?;
+    let rust_build =
+        configure_preview_module_build(host, &preview_crate_path, target, link_mode).await?;
     let dylib_path_start = Instant::now();
     let expected_path = rust_build
         .dylib_path(preview_crate_name.as_str(), false)
@@ -336,28 +367,15 @@ async fn build_preview_dylib(
     let built_path = if dylib_is_up_to_date(&candidate_path, &dylib_signature).await? {
         candidate_path
     } else {
-        info!("Building dylib...");
-        if let Some(sccache) = sccache_path {
-            rust_build = rust_build.with_sccache(sccache.clone());
-        }
-        if link_mode.prefer_dynamic {
-            rust_build = rust_build.with_preferred_dynamic_linking();
-        }
-        let build_start = Instant::now();
-        let built_path = rust_build
-            .build_dylib(preview_crate_name.as_str(), false)
-            .await
-            .wrap_err("Failed to build dylib")?;
-        prepare_preview_module_linkage(&built_path, link_mode, platform).await?;
-        write_dylib_signature(&built_path, &dylib_signature).await?;
-        info!(
-            build_crate_path = %preview_crate_path.display(),
-            build_crate_name = %preview_crate_name,
-            path = %built_path.display(),
-            elapsed_ms = build_start.elapsed().as_millis(),
-            "Preview built dylib"
-        );
-        built_path
+        build_preview_module_dylib(
+            rust_build,
+            sccache_path,
+            link_mode,
+            &dylib_signature,
+            &preview_crate_path,
+            &preview_crate_name,
+        )
+        .await?
     };
 
     *dylib_path = Some(built_path.clone());
@@ -376,27 +394,50 @@ async fn build_preview_dylib(
     })
 }
 
-async fn prepare_preview_module_linkage(
-    built_path: &Path,
+async fn build_preview_module_dylib(
+    mut rust_build: RustBuild,
+    sccache_path: Option<&PathBuf>,
     link_mode: PreviewLinkMode,
-    platform: PreviewPlatform,
+    dylib_signature: &str,
+    preview_crate_path: &Path,
+    preview_crate_name: &str,
+) -> Result<PathBuf> {
+    info!("Building dylib...");
+    if let Some(sccache) = sccache_path {
+        rust_build = rust_build.with_sccache(sccache.clone());
+    }
+    if link_mode.prefer_dynamic {
+        rust_build = rust_build.with_preferred_dynamic_linking();
+    }
+    let build_start = Instant::now();
+    let built = rust_build
+        .build_dylib(false)
+        .await
+        .wrap_err("Failed to build dylib")?;
+    prepare_preview_module_linkage(rust_build.host(), &built, link_mode).await?;
+    write_dylib_signature(&built.artifact, dylib_signature).await?;
+    info!(
+        build_crate_path = %preview_crate_path.display(),
+        build_crate_name = %preview_crate_name,
+        path = %built.artifact.display(),
+        elapsed_ms = build_start.elapsed().as_millis(),
+        "Preview built dylib"
+    );
+    Ok(built.artifact)
+}
+
+async fn prepare_preview_module_linkage(
+    host: &crate::toolchain::Host,
+    built: &BuiltTarget,
+    link_mode: PreviewLinkMode,
 ) -> Result<()> {
     if !link_mode.prefer_dynamic {
         return Ok(());
     }
-    if platform == PreviewPlatform::Android {
-        return Ok(());
-    }
-    let build_lib_dir = built_path.parent().ok_or_else(|| {
-        eyre::eyre!(
-            "Preview dylib path has no output directory: {}",
-            built_path.display()
-        )
-    })?;
-    dynamic_runtime::retarget_module(built_path, build_lib_dir).await
+    dynamic_runtime::retarget_module(host, &built.artifact, built.shared_runtime()?).await
 }
 
-async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()> {
+pub async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()> {
     let manifest_path = project.root().join("Cargo.toml");
     let manifest = smol::unblock(move || CargoManifest::from_path(&manifest_path)).await?;
     let Some(dev_features) = manifest.features.get("dev") else {
@@ -438,25 +479,20 @@ fn dylib_build_signature(
     )
 }
 
-fn preview_run_options() -> RunOptions {
+fn preview_run_options(host: &crate::toolchain::Host) -> RunOptions {
     let mut run_options = RunOptions::new();
     run_options.set_replace_existing_macos_app_instances(false);
     run_options.set_log_level(LogLevel::Info);
-    let preview_cache_root = waterui_preview_protocol::registry::preview_cache_root_dir();
-    let water_cache_dir = preview_cache_root.parent().unwrap_or_else(|| {
-        panic!(
-            "preview cache root must have a parent directory: {}",
-            preview_cache_root.display()
-        )
-    });
+    // Point the support app's registry at the cache directory the CLI
+    // watches.
     run_options.insert_env_var(
         "WATER_CACHE_DIR".to_string(),
-        water_cache_dir.display().to_string(),
+        crate::preview::water_cache_dir(host).display().to_string(),
     );
     for (key, value) in PREVIEW_RUNTIME_ENV_VARS {
         run_options.insert_env_var(key.to_string(), value.to_string());
     }
-    if let Some(rust_log) = std::env::var_os("RUST_LOG") {
+    if let Some(rust_log) = host.env("RUST_LOG") {
         run_options.insert_env_var(
             "RUST_LOG".to_string(),
             rust_log.to_string_lossy().into_owned(),
@@ -467,7 +503,7 @@ fn preview_run_options() -> RunOptions {
 
 async fn write_dylib_signature(path: &Path, signature: &str) -> Result<()> {
     let signature_path = dylib_signature_path(path);
-    smol::fs::write(signature_path, signature.as_bytes()).await?;
+    crate::templates::write_file_if_changed(&signature_path, signature.as_bytes()).await?;
     Ok(())
 }
 
@@ -534,26 +570,31 @@ async fn compute_dylib_id(path: &Path, build_signature: &str) -> Result<DylibId>
 /// # Errors
 /// Returns an error if the preview app cannot be launched or connected.
 pub async fn launch_preview_session(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     platform: PreviewPlatform,
     sccache_path: Option<PathBuf>,
+    progress: Option<BuildProgress>,
 ) -> Result<PreviewSession> {
     let requirements_start = Instant::now();
-    let requirements = resolve_preview_requirements(project_path, platform).await?;
+    let requirements = Box::pin(resolve_preview_requirements(host, project_path, platform)).await?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = requirements_start.elapsed().as_millis(),
         "Preview resolved runtime requirements"
     );
     let expected_fingerprint = requirements.runtime_fingerprint.clone();
+    let expected_protocol_commit = requirements.expected_protocol_commit.clone();
     let tcp_config = PreviewTcpConfig::from_env()
         .map_err(|e| eyre::eyre!(e))
         .wrap_err("Invalid preview TCP config")?;
 
     let connect_start = Instant::now();
     if let Some(session) = try_connect_existing_preview_app(
+        host,
         tcp_config,
         &expected_fingerprint,
+        &expected_protocol_commit,
         platform,
         sccache_path.clone(),
     )
@@ -566,40 +607,51 @@ pub async fn launch_preview_session(
         return Ok(session);
     }
 
-    let project = open_preview_support_project(&requirements).await?;
-    let running = launch_preview_app_for_platform(&project, platform).await?;
+    let project = open_preview_support_project(host, &requirements, platform).await?;
+    let running = launch_preview_app_for_platform(&project, platform, progress.as_ref()).await?;
     build_preview_session_from_launch(
+        host,
         running,
         platform,
         tcp_config,
         expected_fingerprint,
+        expected_protocol_commit,
         sccache_path,
     )
     .await
 }
 
 async fn try_connect_existing_preview_app(
+    host: &crate::toolchain::Host,
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: &str,
+    expected_protocol_commit: &str,
     platform: PreviewPlatform,
     sccache_path: Option<PathBuf>,
 ) -> Result<Option<PreviewSession>> {
     let probe = match platform {
         PreviewPlatform::Macos => {
-            PreviewAppClient::probe_registered(expected_fingerprint, PreviewRuntimePlatform::Macos)
-                .await?
+            PreviewAppClient::probe_registered(
+                host,
+                expected_fingerprint,
+                PreviewRuntimePlatform::Macos,
+                expected_protocol_commit,
+            )
+            .await?
         }
-        PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
+        PreviewPlatform::IosSimulator | PreviewPlatform::Ios => {
             PreviewAppClient::probe_ports(
+                host,
                 tcp_config,
                 expected_fingerprint,
                 preview_runtime_platform(platform),
+                expected_protocol_commit,
             )
             .await
         }
     };
     let client = match probe {
-        PreviewProbe::Connected(client) => client,
+        PreviewProbe::Connected(client) => *client,
         // Not an error here: a support app from another checkout is exactly the
         // case this function exists to decline, and the caller goes on to launch
         // one that matches. Saying so keeps the launch from looking unexplained.
@@ -619,6 +671,7 @@ async fn try_connect_existing_preview_app(
         owns_app: false,
         sccache_path,
         runtime_fingerprint: expected_fingerprint.to_string(),
+        host: host.clone(),
     }))
 }
 
@@ -627,24 +680,113 @@ const fn preview_runtime_platform(platform: PreviewPlatform) -> PreviewRuntimePl
         PreviewPlatform::Macos => PreviewRuntimePlatform::Macos,
         PreviewPlatform::IosSimulator => PreviewRuntimePlatform::IosSimulator,
         PreviewPlatform::Ios => PreviewRuntimePlatform::Ios,
-        PreviewPlatform::Android => PreviewRuntimePlatform::Android,
     }
 }
 
-async fn open_preview_support_project(requirements: &PreviewRequirements) -> Result<Project> {
+/// The commit a `waterui-preview-protocol` build at `manifest_dir` stamps
+/// into `PreviewProtocolInfo::build_commit`: the last commit touching that
+/// crate's directory, read exactly as the crate's own `build.rs` reads it
+/// (`git log -1 --format=%h --abbrev=12 -- .`). A directory that is not a git
+/// worktree answers `unknown`, which is also what the build script stamps.
+async fn preview_protocol_commit(host: &crate::toolchain::Host, manifest_dir: &Path) -> String {
+    use std::ffi::OsStr;
+    let commit = host
+        .run(
+            "git",
+            [
+                OsStr::new("-C"),
+                manifest_dir.as_os_str(),
+                OsStr::new("log"),
+                OsStr::new("-1"),
+                OsStr::new("--format=%h"),
+                OsStr::new("--abbrev=12"),
+                OsStr::new("--"),
+                OsStr::new("."),
+            ],
+        )
+        .await;
+    commit.map_or_else(
+        |_| "unknown".to_string(),
+        |commit| {
+            let commit = commit.trim();
+            if commit.is_empty() {
+                "unknown".to_string()
+            } else {
+                commit.to_string()
+            }
+        },
+    )
+}
+
+/// The directory the `waterui-preview-protocol` manifest lives in for a
+/// `waterui` package root — either the checkout itself or the package the
+/// app's own metadata resolved.
+async fn protocol_commit_from_metadata(
+    host: &crate::toolchain::Host,
+    metadata: &cargo_metadata::Metadata,
+) -> Result<String> {
+    let protocol = metadata
+        .packages
+        .iter()
+        .find(|package| package.name == "waterui-preview-protocol")
+        .ok_or_else(|| {
+            eyre::eyre!("resolved metadata names no waterui-preview-protocol package")
+        })?;
+    let dir = protocol
+        .manifest_path
+        .as_std_path()
+        .parent()
+        .ok_or_else(|| eyre::eyre!("waterui-preview-protocol manifest has no parent directory"))?
+        .to_path_buf();
+    Ok(preview_protocol_commit(host, &dir).await)
+}
+
+/// The build target a preview on `platform` links its module for.
+const fn preview_target_platform(platform: PreviewPlatform) -> TargetPlatform {
+    match platform {
+        PreviewPlatform::Macos => TargetPlatform::MacOS,
+        PreviewPlatform::IosSimulator => TargetPlatform::IOSSimulator,
+        PreviewPlatform::Ios => TargetPlatform::IOS,
+    }
+}
+
+/// Every triple the preview support app and its module workspace can build
+/// for — one per [`PreviewPlatform`], the serving set of the support
+/// manifest's shared `[profile]` overrides and the workspace root that
+/// carries them.
+fn preview_targets() -> Vec<target_lexicon::Triple> {
+    [
+        PreviewPlatform::Macos,
+        PreviewPlatform::IosSimulator,
+        PreviewPlatform::Ios,
+    ]
+    .iter()
+    .map(|platform| preview_target_platform(*platform).triple())
+    .collect()
+}
+
+async fn open_preview_support_project(
+    host: &crate::toolchain::Host,
+    requirements: &PreviewRequirements,
+    platform: PreviewPlatform,
+) -> Result<Project> {
     info!("No preview app running, launching...");
-    let preview_app_path = preview_support_path()?;
+    let preview_app_path = preview_support_path(host)?;
     let ensure_start = Instant::now();
-    ensure_preview_support_app(&preview_app_path, requirements).await?;
+    ensure_preview_support_app(host, &preview_app_path, requirements).await?;
     info!(
         path = %preview_app_path.display(),
         elapsed_ms = ensure_start.elapsed().as_millis(),
         "Preview support app scaffold is up to date"
     );
     let open_start = Instant::now();
-    let project = Project::open(&preview_app_path)
-        .await
-        .wrap_err("Failed to open preview app project")?;
+    let project = Project::open(
+        host,
+        &preview_app_path,
+        ManagedBackends::for_platform(preview_target_platform(platform)),
+    )
+    .await
+    .wrap_err("Failed to open preview app project")?;
     info!(
         path = %preview_app_path.display(),
         elapsed_ms = open_start.elapsed().as_millis(),
@@ -656,133 +798,131 @@ async fn open_preview_support_project(requirements: &PreviewRequirements) -> Res
 async fn launch_preview_app_for_platform(
     project: &Project,
     platform: PreviewPlatform,
+    progress: Option<&BuildProgress>,
 ) -> Result<Running> {
     match platform {
-        PreviewPlatform::Macos => launch_preview_on_macos(project).await,
-        PreviewPlatform::IosSimulator => launch_preview_on_ios_simulator(project).await,
+        PreviewPlatform::Macos => launch_preview_on_macos(project, progress).await,
+        PreviewPlatform::IosSimulator => launch_preview_on_ios_simulator(project, progress).await,
         PreviewPlatform::Ios => {
             bail!("Physical iOS devices are not yet supported for preview");
         }
-        PreviewPlatform::Android => launch_preview_on_android(project).await,
     }
 }
 
-async fn launch_preview_on_macos(project: &Project) -> Result<Running> {
+async fn launch_preview_on_macos(
+    project: &Project,
+    progress: Option<&BuildProgress>,
+) -> Result<Running> {
+    let host = project.host();
     let backend = project
         .apple_backend()
         .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
-    let host = crate::toolchain::Host::current();
     let device = Local;
-    device.launch(&host).await?;
+    device.launch(host).await?;
+    let mut run_options = preview_run_options(host);
+    // The support app detaches and outlives this command; its stdout/stderr go
+    // to a log file the next `water preview` reopens and appends, never a pipe
+    // whose reader is gone (water-rs/cli#197).
+    run_options.set_app_log_file(preview_support_log_path(host)?);
     info!("Building and running preview app on macOS...");
     project
         .run_with_options(
             backend,
             TargetPlatform::MacOS,
             device,
-            preview_run_options(),
+            run_options,
+            progress.cloned(),
         )
         .await
         .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"))
 }
 
-async fn launch_preview_on_ios_simulator(project: &Project) -> Result<Running> {
+async fn launch_preview_on_ios_simulator(
+    project: &Project,
+    progress: Option<&BuildProgress>,
+) -> Result<Running> {
+    let host = project.host();
     let backend = project
         .apple_backend()
         .ok_or_else(|| eyre::eyre!("Apple backend not configured"))?;
-    let host = crate::toolchain::Host::current();
-    let simulator = crate::apple::device::AppleSimulator::select_ios(&host, project, None).await?;
-    simulator.launch(&host).await?;
+    let simulator = crate::apple::device::AppleSimulator::select_ios(project, None).await?;
+    simulator.launch(host).await?;
     info!("Building and running preview app on iOS Simulator...");
     project
         .run_with_options(
             backend,
             TargetPlatform::IOSSimulator,
             simulator,
-            preview_run_options(),
+            preview_run_options(host),
+            progress.cloned(),
         )
         .await
         .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"))
 }
 
-async fn launch_preview_on_android(project: &Project) -> Result<Running> {
-    let backend = project
-        .android_backend()
-        .ok_or_else(|| eyre::eyre!("Android backend not configured"))?;
-    let host = crate::toolchain::Host::current();
-
-    if let Some(device) = crate::android::device::AndroidDevice::scan(&host)
-        .await?
-        .into_iter()
-        .next()
-    {
-        device.launch(&host).await?;
-        info!("Building and running preview app on Android device...");
-        return project
-            .run_android_with_options(backend, device, preview_run_options())
-            .await
-            .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"));
-    }
-
-    let avd_name = crate::android::platform::AndroidPlatform::list_avds(&host)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| eyre::eyre!("No Android devices or emulators available."))?;
-    let emulator = crate::android::device::AndroidEmulator::open(&host, avd_name).await?;
-    emulator.launch(&host).await?;
-    info!("Building and running preview app on Android emulator...");
-    project
-        .run_android_with_options(backend, emulator, preview_run_options())
-        .await
-        .map_err(|e| eyre::eyre!("Failed to run preview app: {e}"))
-}
-
 async fn build_preview_session_from_launch(
+    host: &crate::toolchain::Host,
     running: Running,
     platform: PreviewPlatform,
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: String,
+    expected_protocol_commit: String,
     sccache_path: Option<PathBuf>,
 ) -> Result<PreviewSession> {
     info!("Preview app launched, waiting for TCP connection...");
     let mut running = Box::pin(running);
-    match wait_for_connection_or_crash(&mut running, platform, tcp_config, &expected_fingerprint)
-        .await
+    let failure = match wait_for_connection_or_crash(
+        host,
+        &mut running,
+        platform,
+        tcp_config,
+        &expected_fingerprint,
+        &expected_protocol_commit,
+    )
+    .await
     {
-        ConnectionWaitResult::Ready(client) => Ok(PreviewSession {
-            client,
-            platform,
-            dylib_path: None,
-            running: Some(running),
-            owns_app: true,
-            sccache_path,
-            runtime_fingerprint: expected_fingerprint,
-        }),
-        ConnectionWaitResult::Crashed(message) => {
-            bail!(
+        ConnectionWaitResult::Ready(client) => {
+            return Ok(PreviewSession {
+                client: *client,
+                platform,
+                dylib_path: None,
+                running: Some(running),
+                owns_app: true,
+                sccache_path,
+                runtime_fingerprint: expected_fingerprint,
+                host: host.clone(),
+            });
+        }
+        ConnectionWaitResult::Crashed(crash) => {
+            eyre::eyre!(
                 "Preview app crashed:
-{message}"
-            );
+{crash}"
+            )
         }
         ConnectionWaitResult::Exited => {
-            bail!(
+            eyre::eyre!(
                 "Preview app exited unexpectedly.
 Check the app logs for more information."
-            );
+            )
+        }
+        ConnectionWaitResult::Rejected(rejection) => {
+            eyre::eyre!(
+                "The preview app this run just launched rejected the protocol handshake:
+{rejection}"
+            )
         }
         // An app that answered and was turned away is not a connection problem,
         // and listing connection problems in front of it is how this timeout
         // once sent two debugging sessions at the network.
         ConnectionWaitResult::Timeout(Some(rejection)) => {
-            bail!(
+            eyre::eyre!(
                 "Preview app started but no compatible app ever answered within {} seconds.
 {rejection}",
                 STARTUP_DEADLINE.as_secs()
-            );
+            )
         }
         ConnectionWaitResult::Timeout(None) => {
-            bail!(
+            eyre::eyre!(
                 "Preview app is still running after {} seconds but never accepted a connection.
 Possible causes:
 - The TCP server failed to start
@@ -793,17 +933,19 @@ Try running with WATERUI_CRASH_DEBUG=1 for more details.",
                 STARTUP_DEADLINE.as_secs(),
                 tcp_config.port_start,
                 tcp_config.ports().end()
-            );
+            )
         }
-    }
+    };
+    Pin::into_inner(running).shutdown(StopRequest::Kill).await;
+    Err(failure)
 }
 
 /// Result of waiting for preview-app readiness.
 enum ConnectionWaitResult {
     /// Preview app accepted a connection and completed the protocol handshake.
-    Ready(PreviewAppClient),
-    /// App crashed with error message.
-    Crashed(String),
+    Ready(Box<PreviewAppClient>),
+    /// App crashed.
+    Crashed(Crash),
     /// App exited without crash.
     Exited,
     /// The app stayed alive but never became reachable before the hang backstop.
@@ -812,6 +954,10 @@ enum ConnectionWaitResult {
     /// one did: that is a different failure from silence and has to be reported
     /// as itself.
     Timeout(Option<String>),
+    /// The app this launch started answered its own announced address and was
+    /// rejected by the handshake — it can never become compatible, so waiting
+    /// out the deadline would only hang.
+    Rejected(String),
 }
 
 /// How long a launched preview app may stay alive without ever becoming reachable.
@@ -829,10 +975,12 @@ const STARTUP_DEADLINE: Duration = Duration::from_mins(3);
 /// macOS support apps publish a registry entry once the TCP server is ready, so wait on that
 /// concrete readiness signal instead of sleeping between blind connection retries.
 async fn wait_for_connection_or_crash(
+    host: &crate::toolchain::Host,
     running: &mut Pin<Box<Running>>,
     platform: PreviewPlatform,
     tcp_config: PreviewTcpConfig,
     expected_fingerprint: &str,
+    expected_protocol_commit: &str,
 ) -> ConnectionWaitResult {
     const NON_MACOS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -841,19 +989,25 @@ async fn wait_for_connection_or_crash(
     let ready = match platform {
         PreviewPlatform::Macos => {
             wait_for_registered_preview_ready(
+                host,
                 running,
                 expected_fingerprint,
+                expected_protocol_commit,
                 start,
                 STARTUP_DEADLINE,
             )
             .await
         }
-        PreviewPlatform::IosSimulator | PreviewPlatform::Ios | PreviewPlatform::Android => {
+        PreviewPlatform::IosSimulator | PreviewPlatform::Ios => {
             wait_for_polled_preview_ready(
+                host,
                 running,
                 tcp_config,
-                expected_fingerprint,
-                preview_runtime_platform(platform),
+                PolledPreviewExpectation {
+                    fingerprint: expected_fingerprint,
+                    protocol_commit: expected_protocol_commit,
+                    platform: preview_runtime_platform(platform),
+                },
                 start,
                 STARTUP_DEADLINE,
                 NON_MACOS_POLL_INTERVAL,
@@ -871,8 +1025,10 @@ async fn wait_for_connection_or_crash(
 }
 
 async fn wait_for_registered_preview_ready(
+    host: &crate::toolchain::Host,
     running: &mut Pin<Box<Running>>,
     expected_fingerprint: &str,
+    expected_protocol_commit: &str,
     start: Instant,
     timeout: Duration,
 ) -> ConnectionWaitResult {
@@ -882,14 +1038,21 @@ async fn wait_for_registered_preview_ready(
     // on timeout it is the only thing here that explains anything.
     let mut rejection = None;
 
-    match probe_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start).await
+    match probe_registered_preview(
+        host,
+        expected_fingerprint,
+        expected_protocol_commit,
+        PreviewRuntimePlatform::Macos,
+        start,
+    )
+    .await
     {
         PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
         PreviewProbe::Rejected(reason) => rejection = Some(reason),
         PreviewProbe::Silent => {}
     }
 
-    let registry_dir = preview_instance_registry_dir();
+    let registry_dir = crate::preview::preview_instance_registry_dir(host);
     if let Err(error) = smol::fs::create_dir_all(&registry_dir).await {
         error!(path = %registry_dir.display(), "Failed to create preview registry dir: {error}");
         return ConnectionWaitResult::Timeout(rejection);
@@ -915,8 +1078,14 @@ async fn wait_for_registered_preview_ready(
     };
 
     loop {
-        match probe_registered_preview(expected_fingerprint, PreviewRuntimePlatform::Macos, start)
-            .await
+        match probe_registered_preview(
+            host,
+            expected_fingerprint,
+            expected_protocol_commit,
+            PreviewRuntimePlatform::Macos,
+            start,
+        )
+        .await
         {
             PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
             PreviewProbe::Rejected(reason) => rejection = Some(reason),
@@ -941,11 +1110,11 @@ async fn wait_for_registered_preview_ready(
         select! {
             event = running_event => {
                 if let Some(result) = preview_connection_result_from_device_event(
-                    event,
+                    host,                    event,
                     expected_fingerprint,
+                    expected_protocol_commit,
                     PreviewRuntimePlatform::Macos,
                     start,
-                    &mut rejection,
                 )
                 .await
                 {
@@ -969,11 +1138,21 @@ async fn wait_for_registered_preview_ready(
     }
 }
 
+/// The identity a polled preview app must advertise to count as this
+/// session's app: the runtime fingerprint, protocol commit and platform the
+/// handshake checks it for.
+#[derive(Clone, Copy)]
+struct PolledPreviewExpectation<'a> {
+    fingerprint: &'a str,
+    protocol_commit: &'a str,
+    platform: PreviewRuntimePlatform,
+}
+
 async fn wait_for_polled_preview_ready(
+    host: &crate::toolchain::Host,
     running: &mut Pin<Box<Running>>,
     tcp_config: PreviewTcpConfig,
-    expected_fingerprint: &str,
-    expected_platform: PreviewRuntimePlatform,
+    expectation: PolledPreviewExpectation<'_>,
     start: Instant,
     timeout: Duration,
     poll_interval: Duration,
@@ -981,8 +1160,7 @@ async fn wait_for_polled_preview_ready(
     let mut rejection = None;
 
     loop {
-        match probe_polled_preview(tcp_config, expected_fingerprint, expected_platform, start).await
-        {
+        match probe_polled_preview(host, tcp_config, expectation, start).await {
             PreviewProbe::Connected(client) => return ConnectionWaitResult::Ready(client),
             PreviewProbe::Rejected(reason) => rejection = Some(reason),
             PreviewProbe::Silent => {}
@@ -1001,11 +1179,11 @@ async fn wait_for_polled_preview_ready(
         select! {
             event = running_event => {
                 if let Some(result) = preview_connection_result_from_device_event(
-                    event,
-                    expected_fingerprint,
-                    expected_platform,
+                    host,                    event,
+                    expectation.fingerprint,
+                    expectation.protocol_commit,
+                    expectation.platform,
                     start,
-                    &mut rejection,
                 )
                 .await
                 {
@@ -1023,11 +1201,20 @@ async fn wait_for_polled_preview_ready(
 /// reconnecting afterwards would pay for that handshake twice and reopen the window
 /// for the app to go away in between.
 async fn probe_registered_preview(
+    host: &crate::toolchain::Host,
     expected_fingerprint: &str,
+    expected_protocol_commit: &str,
     expected_platform: PreviewRuntimePlatform,
     start: Instant,
 ) -> PreviewProbe {
-    match PreviewAppClient::probe_registered(expected_fingerprint, expected_platform).await {
+    match PreviewAppClient::probe_registered(
+        host,
+        expected_fingerprint,
+        expected_platform,
+        expected_protocol_commit,
+    )
+    .await
+    {
         Ok(PreviewProbe::Connected(client)) => {
             info!(
                 "Connected to preview app after {}ms",
@@ -1045,13 +1232,19 @@ async fn probe_registered_preview(
 
 /// Probe the configured port range for a ready preview app, keeping the connection.
 async fn probe_polled_preview(
+    host: &crate::toolchain::Host,
     tcp_config: PreviewTcpConfig,
-    expected_fingerprint: &str,
-    expected_platform: PreviewRuntimePlatform,
+    expectation: PolledPreviewExpectation<'_>,
     start: Instant,
 ) -> PreviewProbe {
-    let probe =
-        PreviewAppClient::probe_ports(tcp_config, expected_fingerprint, expected_platform).await;
+    let probe = PreviewAppClient::probe_ports(
+        host,
+        tcp_config,
+        expectation.fingerprint,
+        expectation.platform,
+        expectation.protocol_commit,
+    )
+    .await;
     if matches!(probe, PreviewProbe::Connected(_)) {
         info!(
             "Connected to preview app after {}ms",
@@ -1062,11 +1255,12 @@ async fn probe_polled_preview(
 }
 
 async fn preview_connection_result_from_device_event(
+    host: &crate::toolchain::Host,
     event: Option<DeviceEvent>,
     expected_fingerprint: &str,
+    expected_protocol_commit: &str,
     expected_platform: PreviewRuntimePlatform,
     start: Instant,
-    rejection: &mut Option<String>,
 ) -> Option<ConnectionWaitResult> {
     match event? {
         DeviceEvent::Crashed(message) => {
@@ -1077,14 +1271,24 @@ async fn preview_connection_result_from_device_event(
             info!("App exited after {}ms", start.elapsed().as_millis());
             Some(ConnectionWaitResult::Exited)
         }
+        DeviceEvent::MonitorError { message } => {
+            error!("{message}");
+            None
+        }
         DeviceEvent::Log { level, message } => {
             info!("Preview app log event: {message}");
             if level == tracing::Level::ERROR {
                 error!("{message}");
             }
             if let Some(addr) = parse_preview_listening_addr(&message) {
-                match PreviewAppClient::probe_addr(addr, expected_fingerprint, expected_platform)
-                    .await
+                match PreviewAppClient::probe_addr(
+                    host,
+                    addr,
+                    expected_fingerprint,
+                    expected_platform,
+                    expected_protocol_commit,
+                )
+                .await
                 {
                     PreviewProbe::Connected(client) => {
                         info!(
@@ -1093,10 +1297,13 @@ async fn preview_connection_result_from_device_event(
                         );
                         return Some(ConnectionWaitResult::Ready(client));
                     }
-                    // The app this launch just started announced its own port and
-                    // is the wrong build: that is the finding, and the wait keeps
-                    // it so the deadline can report it instead of guessing.
-                    PreviewProbe::Rejected(reason) => *rejection = Some(reason),
+                    // The app this launch just started announced its own port
+                    // and is the wrong build: its protocol is fixed at build
+                    // time, so it can never become compatible — report it now
+                    // rather than letting the deadline stand in (#197).
+                    PreviewProbe::Rejected(reason) => {
+                        return Some(ConnectionWaitResult::Rejected(reason));
+                    }
                     PreviewProbe::Silent => {}
                 }
             }
@@ -1124,6 +1331,7 @@ async fn drain_terminal_preview_event(
         match event {
             DeviceEvent::Crashed(message) => return ConnectionWaitResult::Crashed(message),
             DeviceEvent::Exited(_) => return ConnectionWaitResult::Exited,
+            DeviceEvent::MonitorError { message } => error!("{message}"),
             _ => {}
         }
     }
@@ -1132,8 +1340,17 @@ async fn drain_terminal_preview_event(
 }
 
 /// Get the path to the preview support app.
-fn preview_support_path() -> Result<PathBuf> {
-    support_app::support_app_path("preview_support")
+fn preview_support_path(host: &crate::toolchain::Host) -> Result<PathBuf> {
+    support_app::support_app_path(host, "preview_support")
+}
+
+/// The file the macOS preview support app's stdout/stderr append to, under the
+/// CLI's `~/.water` state dir beside `preview_support/` — stable across the
+/// pooled instances a later `water preview` reuses.
+fn preview_support_log_path(host: &crate::toolchain::Host) -> Result<PathBuf> {
+    Ok(crate::water_dir::water_home_dir(host)?
+        .join("logs")
+        .join("preview-support.log"))
 }
 
 /// Root of the workspace a preview module joins.
@@ -1142,12 +1359,12 @@ fn preview_support_path() -> Result<PathBuf> {
 /// than read from an opened [`Project`] because the module has to exist before the
 /// support application is scaffolded: resolving the runtime's requirements reads
 /// the module's own Cargo metadata.
-async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
+async fn preview_support_ffi_crate_path(host: &crate::toolchain::Host) -> Result<PathBuf> {
     // The support application's root has to exist before its build-cache path can
     // be derived, because deriving it canonicalizes the root. On the very first
     // preview nothing has scaffolded it yet, and an empty directory is exactly
     // what the scaffolder expects to find.
-    let support_path = preview_support_path()?;
+    let support_path = preview_support_path(host)?;
     smol::fs::create_dir_all(&support_path)
         .await
         .wrap_err("Failed to create the preview support application directory")?;
@@ -1158,9 +1375,11 @@ async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
     // written into it: the module was deleted out from under the `cargo
     // metadata` that reads it, and the first preview after any change to the
     // CLI failed with a manifest path that does not exist.
-    Ok(crate::water_dir::ensure_project_build_cache(&support_path)
-        .await?
-        .join("ffi"))
+    Ok(
+        crate::water_dir::ensure_project_build_cache(host, &support_path)
+            .await?
+            .join("ffi"),
+    )
 }
 
 /// Write the project's preview module into the support runtime's workspace.
@@ -1169,8 +1388,8 @@ async fn preview_support_ffi_crate_path() -> Result<PathBuf> {
 /// previewed project would still be a workspace member, and Cargo resolves every
 /// member of a workspace, so a stale one whose project has since moved or been
 /// deleted breaks the build of an unrelated preview.
-async fn scaffold_preview_module(project: &Project) -> Result<PathBuf> {
-    let support_path = preview_support_path()?;
+async fn scaffold_preview_module(project: &Project, platform: PreviewPlatform) -> Result<PathBuf> {
+    let support_path = preview_support_path(project.host())?;
     // Before anything reads the support runtime's workspace: one left over from
     // a different `WaterUI` checkout points its manifests at a path that may no
     // longer exist, and reading it fails before the scaffolder gets a chance to
@@ -1183,9 +1402,13 @@ async fn scaffold_preview_module(project: &Project) -> Result<PathBuf> {
         .waterui_path
         .as_deref()
         .map(|path| project.root().join(path));
-    support_app::discard_support_app_for_other_runtime(&support_path, runtime_path.as_deref())
-        .await?;
-    let workspace_root = preview_support_ffi_crate_path().await?;
+    support_app::discard_support_app_for_other_runtime(
+        project.host(),
+        &support_path,
+        runtime_path.as_deref(),
+    )
+    .await?;
+    let workspace_root = preview_support_ffi_crate_path(project.host()).await?;
     let modules_root = workspace_root.join(crate::templates::PREVIEW_MODULES_DIR);
     let crate_path = project.preview_dylib_crate_path(&workspace_root);
     if let Ok(mut entries) = smol::fs::read_dir(&modules_root).await {
@@ -1209,15 +1432,51 @@ async fn scaffold_preview_module(project: &Project) -> Result<PathBuf> {
     // not declare it is rejected outright by Cargo, and the root lists whichever
     // modules it finds — so it has to be written after, never before.
     if support_path.join("Water.toml").is_file() {
-        Project::open(&support_path)
-            .await
-            .wrap_err("Failed to open the preview support project")?;
+        Project::open(
+            project.host(),
+            &support_path,
+            ManagedBackends::for_platform(preview_target_platform(platform)),
+        )
+        .await
+        .wrap_err("Failed to open the preview support project")?;
+    } else {
+        // First run: no support project exists yet, so nothing generates the
+        // workspace root the module manifest resolves under. Write a virtual
+        // root now — the managed manifest replaces it once the support
+        // project scaffolds — or `cargo metadata` on the module resolves
+        // without any `[patch]` and picks registry `waterui-*` copies (#197).
+        let framework = project.resolved_framework().await?;
+        let patches = match runtime_path.as_deref() {
+            Some(root) => {
+                let root = root.to_path_buf();
+                smol::unblock(move || {
+                    crate::project_model::templates::collect_framework_checkout_patches(&root)
+                })
+                .await?
+            }
+            None => framework.patches(),
+        };
+        crate::project_model::templates::ffi::write_workspace_root_manifest(
+            &workspace_root,
+            patches,
+            Some(project.root()),
+            Some(
+                &project
+                    .project_packages(framework, &preview_targets())
+                    .await?,
+            ),
+        )
+        .await?;
     }
     Ok(crate_path)
 }
 
 /// Ensure the preview support app exists and matches the current project requirements.
-async fn ensure_preview_support_app(path: &Path, requirements: &PreviewRequirements) -> Result<()> {
+async fn ensure_preview_support_app(
+    host: &crate::toolchain::Host,
+    path: &Path,
+    requirements: &PreviewRequirements,
+) -> Result<()> {
     let desired_signature = preview_signature(requirements);
     let scaffold_path = path.to_path_buf();
     let scaffold_requirements = requirements.clone();
@@ -1226,14 +1485,18 @@ async fn ensure_preview_support_app(path: &Path, requirements: &PreviewRequireme
         PREVIEW_METADATA_FILE,
         &desired_signature,
         "preview support",
-        move || async move { scaffold_preview_app(&scaffold_path, &scaffold_requirements).await },
+        move || async move { scaffold_preview_app(host, &scaffold_path, &scaffold_requirements).await },
     )
     .await
 }
 
-/// Scaffold the preview support app as a normal playground project.
-async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -> Result<()> {
-    use crate::project::{CreateOptions, Manifest as WaterManifest, PackageType};
+/// Scaffold the preview support app as a normal project.
+async fn scaffold_preview_app(
+    host: &crate::toolchain::Host,
+    path: &Path,
+    requirements: &PreviewRequirements,
+) -> Result<()> {
+    use crate::project::{CreateOptions, Manifest as WaterManifest};
     use crate::templates::TemplateContext;
 
     let waterui_path = requirements.waterui_path.clone();
@@ -1242,43 +1505,89 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
         name: "WaterUI Preview".to_string(),
         bundle_identifier: crate::project_types::BundleIdentifier::try_from("dev.waterui.preview")
             .expect("preview support bundle identifier must be valid"),
-        package_type: PackageType::Playground,
         waterui_path: waterui_path.clone(),
         channel: None,
         framework_manifest: None,
-        framework: None,
+        // The support app inherits the previewed project's framework
+        // selection exactly: its scaffold's lockfile and `[patch]` table are
+        // generated against the same revision the app resolves, so a `dev`
+        // project never meets a `stable` support graph (cli#197).
+        framework: Some(requirements.framework.clone()),
+        framework_lock: requirements.framework_lock.clone(),
         author: String::new(),
+        web: None,
     };
 
-    // Create as normal playground project
-    let project = Project::create(path, options)
+    let project = Project::create(host, path, options)
         .await
         .map_err(|e| eyre::eyre!("Failed to create preview app: {e}"))?;
 
     // Mark the preview app as accessory/headless.
     let mut manifest = WaterManifest::open(project.root().join("Water.toml")).await?;
     manifest.package.accessory = true;
+    // The support app hosts the preview TCP server on-device; binding a socket
+    // requires INTERNET in its manifest regardless of what the previewed app
+    // declares.
+    manifest.permissions.insert(
+        crate::project_types::PermissionKey::Internet,
+        crate::project::PermissionEntry::enabled(
+            "Hosts the preview TCP server that the CLI connects to",
+        ),
+    );
     manifest.save(project.root()).await?;
 
-    let ctx = TemplateContext::for_support_playground(
-        "WaterUI Preview",
-        project.crate_name().clone(),
-        crate::project_types::BundleIdentifier::try_from("dev.waterui.preview")
+    let ctx = TemplateContext::for_support_app(
+        host,
+        crate::templates::SupportAppIdentity {
+            display_name: "WaterUI Preview".to_string(),
+            crate_name: project.crate_name().clone(),
+            bundle_identifier: crate::project_types::BundleIdentifier::try_from(
+                "dev.waterui.preview",
+            )
             .expect("preview support bundle identifier must be valid"),
+        },
         waterui_path,
-        &project.resolved_framework().await?,
+        &requirements.framework,
         true,
         Some(requirements.runtime_fingerprint.clone()),
+        project.local_sources(),
     )
     .with_preview_runtime_features(requirements.runtime_features.clone())
     .with_preview_app_dependency(
         requirements.app_crate_name.clone(),
         requirements.app_path.clone(),
-    );
+    )
+    .with_project_packages(requirements.project_packages.clone());
 
-    crate::templates::preview::scaffold(project.root(), &ctx)
+    crate::templates::preview::scaffold(host, project.root(), &ctx)
         .await
         .wrap_err("Failed to scaffold embedded preview app template")?;
+
+    // The manifest the preview template writes supersedes the one the create
+    // pass resolved, so the lock must resolve once more before the locked
+    // project open that follows reads it. Seeding from the previewed app's
+    // lock keeps every version the project's graph already pins.
+    let canonical = requirements
+        .framework
+        .canonical_lock(project.root())
+        .await
+        .wrap_err("Failed to read the channel's canonical lock")?;
+    crate::templates::seed_lockfile(
+        project.root(),
+        &requirements.app_path.join("Cargo.lock"),
+        canonical.as_ref(),
+    )
+    .await
+    .wrap_err("Failed to seed the preview support app's Cargo.lock")?;
+    // `cargo metadata` refreshes the lock in place, keeping the seeded
+    // versions and adding only the entries the support manifest's own
+    // packages need — `generate-lockfile` would re-resolve every crate at
+    // its newest and drift the support app off the project's lock.
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command.manifest_path(project.root().join("Cargo.toml"));
+    host.cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to refresh the preview support app's Cargo.lock")?;
 
     info!("Preview app scaffolded at {}", path.display());
     Ok(())
@@ -1286,32 +1595,33 @@ async fn scaffold_preview_app(path: &Path, requirements: &PreviewRequirements) -
 
 fn preview_signature(requirements: &PreviewRequirements) -> String {
     format!(
-        "template_commit={PREVIEW_TEMPLATE_COMMIT}\nwaterui_dependency={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
+        "template_commit={PREVIEW_TEMPLATE_COMMIT}\nscaffold_generation={PREVIEW_SCAFFOLD_GENERATION}\nwaterui_dependency={}\nruntime_fingerprint={}\ntemplate_fingerprint={}",
         requirements.waterui_path.as_ref().map_or_else(
             || String::from("registry"),
             |path| path.display().to_string()
         ),
         requirements.runtime_fingerprint,
-        crate::templates::preview::template_fingerprint(),
+        crate::templates::preview::template_fingerprint(&requirements.project_packages),
     )
 }
 
 async fn resolve_preview_requirements(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     platform: PreviewPlatform,
 ) -> Result<PreviewRequirements> {
-    let resolved = resolve_preview_metadata(project_path, platform).await?;
+    let resolved = resolve_preview_metadata(host, project_path, platform).await?;
     let metadata = &resolved.metadata;
     let waterui = select_unique_package(metadata, "waterui")?;
     let runtime_features = resolved_package_features(metadata, waterui)?;
     let graph_fingerprint = resolved_graph_fingerprint(metadata)?;
 
     if let Some(requirements) = resolve_preview_requirements_from_manifest(
+        host,
         project_path,
         &runtime_features,
         &graph_fingerprint,
-        &resolved.app_crate_name,
-        &resolved.app_path,
+        &resolved,
     )
     .await?
     {
@@ -1328,14 +1638,20 @@ async fn resolve_preview_requirements(
             .parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| eyre::eyre!("Failed to derive waterui package root path"))?;
-        let fingerprint = compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?;
+        let fingerprint =
+            compute_runtime_fingerprint(host, &waterui_root, &runtime_identity).await?;
         info!(
             waterui_root = %waterui_root.display(),
             elapsed_ms = runtime_fingerprint_start.elapsed().as_millis(),
             "Preview computed dev-mode runtime fingerprint"
         );
+        let protocol_dir = waterui_root.join("components/devtools/preview/protocol");
+        let expected_protocol_commit = preview_protocol_commit(host, &protocol_dir).await;
         return Ok(PreviewRequirements {
             waterui_path: Some(waterui_root),
+            framework: resolved.framework,
+            framework_lock: None,
+            expected_protocol_commit,
             runtime_fingerprint: runtime_fingerprint(
                 &fingerprint,
                 &runtime_features,
@@ -1344,6 +1660,7 @@ async fn resolve_preview_requirements(
             runtime_features,
             app_crate_name: resolved.app_crate_name,
             app_path: resolved.app_path,
+            project_packages: resolved.project_packages,
         });
     } else {
         let source = waterui
@@ -1362,6 +1679,13 @@ async fn resolve_preview_requirements(
 
     Ok(PreviewRequirements {
         waterui_path: None,
+        framework_lock: Some(
+            smol::fs::read(resolved.app_path.join("Water.lock"))
+                .await
+                .wrap_err("the project's Water.lock could not be read")?,
+        ),
+        framework: resolved.framework,
+        expected_protocol_commit: protocol_commit_from_metadata(host, metadata).await?,
         runtime_fingerprint: runtime_fingerprint(
             &runtime_fingerprint_base,
             &runtime_features,
@@ -1370,16 +1694,24 @@ async fn resolve_preview_requirements(
         runtime_features,
         app_crate_name: resolved.app_crate_name,
         app_path: resolved.app_path,
+        project_packages: resolved.project_packages,
     })
 }
 
 async fn resolve_preview_requirements_from_manifest(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     runtime_features: &[String],
     graph_fingerprint: &str,
-    app_crate_name: &crate::project_types::CrateName,
-    app_path: &Path,
+    resolved: &ResolvedPreviewMetadata,
 ) -> Result<Option<PreviewRequirements>> {
+    let ResolvedPreviewMetadata {
+        app_crate_name,
+        app_path,
+        framework,
+        project_packages,
+        ..
+    } = resolved;
     let manifest_open_start = Instant::now();
     let manifest = crate::project::Manifest::open(project_path.join("Water.toml"))
         .await
@@ -1417,7 +1749,7 @@ async fn resolve_preview_requirements_from_manifest(
 
     let runtime_fingerprint_start = Instant::now();
     let runtime_fingerprint = runtime_fingerprint(
-        &compute_runtime_fingerprint(&waterui_root, &runtime_identity).await?,
+        &compute_runtime_fingerprint(host, &waterui_root, &runtime_identity).await?,
         runtime_features,
         graph_fingerprint,
     );
@@ -1428,38 +1760,49 @@ async fn resolve_preview_requirements_from_manifest(
         "Preview resolved runtime requirements from Water.toml"
     );
 
+    let protocol_dir = waterui_root.join("components/devtools/preview/protocol");
+    let expected_protocol_commit = preview_protocol_commit(host, &protocol_dir).await;
     Ok(Some(PreviewRequirements {
         waterui_path: Some(waterui_root),
+        framework: framework.clone(),
+        framework_lock: None,
+        expected_protocol_commit,
         runtime_fingerprint,
         runtime_features: runtime_features.to_vec(),
         app_crate_name: app_crate_name.clone(),
-        app_path: app_path.to_path_buf(),
+        app_path: app_path.clone(),
+        project_packages: project_packages.clone(),
     }))
 }
 
 async fn resolve_preview_metadata(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     platform: PreviewPlatform,
 ) -> Result<ResolvedPreviewMetadata> {
-    let project = Project::open_for_preview_build(project_path).await?;
+    let project = Project::open_for_preview_build(host, project_path).await?;
     ensure_project_dev_feature_for_preview(&project).await?;
-    let manifest_path = scaffold_preview_module(&project).await?.join("Cargo.toml");
+    let framework = project.resolved_framework().await?;
+    let manifest_path = scaffold_preview_module(&project, platform)
+        .await?
+        .join("Cargo.toml");
     let app_crate_name = project.crate_name().clone();
     let app_path = project.root().to_path_buf();
+    let project_packages = project
+        .project_packages(framework, &preview_targets())
+        .await?;
     let metadata_start = Instant::now();
-    let metadata_manifest_path = manifest_path.clone();
     let abi_feature = PreviewLinkMode::for_platform(platform)
         .abi_feature
         .to_string();
-    let metadata = smol::unblock(move || {
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .manifest_path(metadata_manifest_path)
-            .features(cargo_metadata::CargoOpt::SomeFeatures(vec![abi_feature]));
-        command.exec()
-    })
-    .await
-    .wrap_err("Failed to resolve user project Cargo metadata with its dev feature")?;
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command
+        .manifest_path(&manifest_path)
+        .features(cargo_metadata::CargoOpt::SomeFeatures(vec![abi_feature]));
+    let metadata = host
+        .cargo_metadata(&command)
+        .await
+        .wrap_err("Failed to resolve user project Cargo metadata with its dev feature")?;
     info!(
         project_path = %project_path.display(),
         elapsed_ms = metadata_start.elapsed().as_millis(),
@@ -1467,8 +1810,11 @@ async fn resolve_preview_metadata(
     );
     Ok(ResolvedPreviewMetadata {
         metadata,
+        // The metadata outlives the project opened above, so it owns a copy.
+        framework: framework.clone(),
         app_crate_name,
         app_path,
+        project_packages,
     })
 }
 
@@ -1657,17 +2003,5 @@ mod tests {
                 "preview-cdylib+shared-waterui-dylib+prefer-dynamic"
             );
         }
-    }
-
-    #[test]
-    fn android_preview_uses_the_jni_shared_runtime_abi() {
-        let link_mode = PreviewLinkMode::for_platform(PreviewPlatform::Android);
-        assert_eq!(link_mode, PreviewLinkMode::ANDROID_DYNAMIC);
-        assert_eq!(link_mode.crate_type_override, Some("cdylib"));
-        assert!(link_mode.prefer_dynamic);
-        assert_eq!(
-            link_mode.abi_feature,
-            crate::templates::preview_ffi::ANDROID_ABI_FEATURE
-        );
     }
 }

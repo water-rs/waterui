@@ -8,7 +8,11 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::fmt::Display;
 use std::io::{self, IsTerminal, Write};
-use waterui_cli::utils::set_std_output;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use waterui_cli::build::{BuildProgress, CompileEvent};
+use waterui_cli::device::PanicInfo;
+use waterui_cli::toolchain::Host;
 
 /// ANSI styles for output.
 mod styles {
@@ -305,22 +309,42 @@ impl Shell {
         Some(pb)
     }
 
-    /// Display a panic report from a platform crash message.
-    pub fn panic_message(&self, crash_msg: &str) {
-        let report = PanicReport::parse(crash_msg);
-        let _ = self.panic_report(&report);
+    /// The sink a cargo build reports its compile progress into.
+    ///
+    /// Attach it through `BuildOptions::with_progress`. An interactive
+    /// terminal sees every status line cargo prints, rendered above the
+    /// progress area; a piped terminal gets the same lines on stderr, one per
+    /// cargo status event; JSON mode gets a structured `build-progress` record
+    /// per event.
+    #[must_use]
+    pub fn build_progress(&self) -> BuildProgress {
+        let mode = if self.is_json() {
+            CompileRender::Json
+        } else if self.is_terminal() {
+            CompileRender::Interactive
+        } else {
+            CompileRender::Piped
+        };
+        let bars = self.multi_progress.clone();
+        let units = Arc::new(AtomicUsize::new(0));
+        // Every mode renders every event, so a build failure report can tail
+        // the captured output instead of dumping it a second time.
+        BuildProgress::new(move |event| {
+            render_compile_event(mode, &bars, &units, &event, &mut anstream::stderr().lock());
+        })
+        .showing_all_lines()
     }
 
-    /// Temporarily forwards child output while running an interactive command.
-    pub async fn display_output<Fut: Future>(&self, fut: Fut) -> Fut::Output {
-        if self.is_interactive() {
-            set_std_output(true);
-            let result = fut.await;
-            set_std_output(false);
-            result
-        } else {
-            fut.await
-        }
+    /// Display a panic report for an application panic, with the path of the
+    /// crash report the operating system wrote for it, if any.
+    pub fn panic(
+        &self,
+        host: &Host,
+        panic: &PanicInfo,
+        extra: Option<&str>,
+        crash_report: Option<&std::path::Path>,
+    ) {
+        let _ = self.panic_report(host, &PanicReport::from_panic(panic, extra, crash_report));
     }
 
     /// Clears all progress bars before the command exits.
@@ -348,11 +372,14 @@ fn parse_log_tag(msg: &str) -> Option<(&str, &str)> {
     Some((tag, rest))
 }
 
-/// Find a file by walking up from cwd to find workspace root.
+/// Find a file by walking up from the host's working directory.
 ///
 /// Tries to find the file relative to directories containing Cargo.toml.
-fn find_file_in_workspace(relative_path: &std::path::Path) -> Option<std::path::PathBuf> {
-    let cwd = std::env::current_dir().ok()?;
+fn find_file_in_workspace(
+    host: &Host,
+    relative_path: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let cwd = host.cwd();
 
     // First try relative to cwd
     let direct = cwd.join(relative_path);
@@ -361,7 +388,7 @@ fn find_file_in_workspace(relative_path: &std::path::Path) -> Option<std::path::
     }
 
     // Walk up the directory tree looking for Cargo.toml (workspace root indicators)
-    let mut current = cwd.as_path();
+    let mut current = cwd;
     while let Some(parent) = current.parent() {
         let candidate = parent.join(relative_path);
         if candidate.exists() {
@@ -379,7 +406,7 @@ fn find_file_in_workspace(relative_path: &std::path::Path) -> Option<std::path::
     None
 }
 
-/// Parsed panic information for display.
+/// Panic information for display.
 pub struct PanicReport<'a> {
     /// The panic message (e.g., "Test panic: something failed")
     pub message: &'a str,
@@ -389,104 +416,59 @@ pub struct PanicReport<'a> {
     pub line: Option<usize>,
     /// Column number (1-indexed)
     pub column: Option<usize>,
-    /// Additional crash info (exception, signal, etc.)
+    /// Supplemental crash info, such as how the process ended.
     pub extra: Option<&'a str>,
-    /// Path to crash report file
-    pub crash_report_path: Option<&'a str>,
+    /// Path to the crash report file
+    pub crash_report: Option<&'a std::path::Path>,
 }
 
 impl<'a> PanicReport<'a> {
-    /// Parse a crash message into a structured panic report.
-    ///
-    /// Expected format:
-    /// ```text
-    /// Panic: message
-    ///   at file.rs:123:45
-    ///
-    /// Exception: EXC_CRASH, Signal: SIGABRT, Reason: ...
-    ///
-    /// Crash report: /path/to/crash.ips
-    /// ```
-    pub fn parse(crash_msg: &'a str) -> Self {
-        let mut message = crash_msg;
+    /// A report for `panic`, with its `file:line:column` location split out.
+    pub fn from_panic(
+        panic: &'a PanicInfo,
+        extra: Option<&'a str>,
+        crash_report: Option<&'a std::path::Path>,
+    ) -> Self {
         let mut file = None;
         let mut line = None;
         let mut column = None;
-        let mut extra = None;
-        let mut crash_report_path = None;
-
-        // Split into lines for parsing
-        let lines: Vec<&str> = crash_msg.lines().collect();
-
-        for (i, ln) in lines.iter().enumerate() {
-            let ln = ln.trim();
-
-            // Parse "Panic: message"
-            if ln.starts_with("Panic:") {
-                message = ln.strip_prefix("Panic:").unwrap_or(ln).trim();
-            }
-            // Parse "  at file:line:col"
-            else if ln.starts_with("at ") {
-                if let Some(loc) = ln.strip_prefix("at ") {
-                    let parts: Vec<&str> = loc.rsplitn(3, ':').collect();
-                    match parts.as_slice() {
-                        [col, ln_num, path] => {
-                            file = Some(*path);
-                            line = ln_num.parse().ok();
-                            column = col.parse().ok();
-                        }
-                        [ln_num, path] => {
-                            file = Some(*path);
-                            line = ln_num.parse().ok();
-                        }
-                        _ => {}
-                    }
+        if let Some(location) = panic.location.as_deref() {
+            let parts: Vec<&str> = location.rsplitn(3, ':').collect();
+            match parts.as_slice() {
+                [col, ln_num, path] => {
+                    file = Some(*path);
+                    line = ln_num.parse().ok();
+                    column = col.parse().ok();
                 }
-            }
-            // Parse "Crash report: path"
-            else if ln.starts_with("Crash report:") {
-                crash_report_path = ln.strip_prefix("Crash report:").map(str::trim);
-            }
-            // Capture exception/signal info
-            else if ln.starts_with("Exception:") || ln.starts_with("Signal:") {
-                // Find the range of extra info (from this line to before "Crash report:")
-                let extra_end = lines[i..]
-                    .iter()
-                    .position(|l| l.starts_with("Crash report:"))
-                    .map_or(lines.len(), |pos| i + pos);
-                if extra_end > i
-                    && lines[i..extra_end]
-                        .iter()
-                        .map(|line| line.trim())
-                        .any(|line| !line.is_empty())
-                {
-                    // We'll store the first line as extra
-                    extra = Some(lines[i].trim());
+                [ln_num, path] => {
+                    file = Some(*path);
+                    line = ln_num.parse().ok();
                 }
+                _ => {}
             }
         }
 
         Self {
-            message,
+            message: &panic.payload,
             file,
             line,
             column,
             extra,
-            crash_report_path,
+            crash_report,
         }
     }
 }
 
 impl Shell {
     /// Display a panic report with colored output and code context.
-    pub fn panic_report(&self, report: &PanicReport<'_>) -> io::Result<()> {
+    pub fn panic_report(&self, host: &Host, report: &PanicReport<'_>) -> io::Result<()> {
         match &self.output {
-            ShellOut::Human => Self::panic_report_human(report),
+            ShellOut::Human => Self::panic_report_human(host, report),
             ShellOut::Json => Self::panic_report_json(report),
         }
     }
 
-    fn panic_report_human(report: &PanicReport<'_>) -> io::Result<()> {
+    fn panic_report_human(host: &Host, report: &PanicReport<'_>) -> io::Result<()> {
         use std::fs::File;
         use std::io::BufRead;
         use std::path::Path;
@@ -519,8 +501,9 @@ impl Shell {
             let resolved_path = if file_path.is_absolute() {
                 Some(file_path.to_path_buf())
             } else {
-                // Try to find the file by walking up from cwd to find workspace root
-                find_file_in_workspace(file_path)
+                // Try to find the file by walking up from the host's working
+                // directory to find workspace root
+                find_file_in_workspace(host, file_path)
             };
 
             // Try to read and display code context
@@ -573,50 +556,174 @@ impl Shell {
             }
         }
 
-        // Print extra info (exception, signal, etc.)
         if let Some(extra) = report.extra {
             writeln!(stderr)?;
             writeln!(stderr, "{note_style}note{reset}: {extra}")?;
         }
 
-        // Print crash report path
-        if let Some(path) = report.crash_report_path {
+        if let Some(path) = report.crash_report {
             writeln!(stderr)?;
-            writeln!(stderr, "{note_style}crash report{reset}: {path}")?;
+            writeln!(
+                stderr,
+                "{note_style}crash report{reset}: {}",
+                path.display()
+            )?;
         }
 
         stderr.flush()
     }
 
     fn panic_report_json(report: &PanicReport<'_>) -> io::Result<()> {
-        #[derive(Serialize)]
-        struct JsonPanic<'a> {
-            #[serde(rename = "type")]
-            ty: &'static str,
-            message: &'a str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            file: Option<&'a str>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            line: Option<usize>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            column: Option<usize>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            extra: Option<&'a str>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            crash_report: Option<&'a str>,
-        }
-
-        let json = serde_json::to_string(&JsonPanic {
-            ty: "panic",
-            message: report.message,
-            file: report.file,
-            line: report.line,
-            column: report.column,
-            extra: report.extra,
-            crash_report: report.crash_report_path,
-        })?;
+        let json = panic_report_json_line(report)?;
         writeln!(io::stdout(), "{json}")?;
         io::stdout().flush()
+    }
+}
+
+fn panic_report_json_line(report: &PanicReport<'_>) -> serde_json::Result<String> {
+    #[derive(Serialize)]
+    struct JsonPanic<'a> {
+        #[serde(rename = "type")]
+        ty: &'static str,
+        message: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        line: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        column: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        extra: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        crash_report: Option<&'a std::path::Path>,
+    }
+
+    serde_json::to_string(&JsonPanic {
+        ty: "panic",
+        message: report.message,
+        file: report.file,
+        line: report.line,
+        column: report.column,
+        extra: report.extra,
+        crash_report: report.crash_report,
+    })
+}
+
+/// How [`Shell::build_progress`] renders a compile event.
+#[derive(Clone, Copy)]
+enum CompileRender {
+    /// Every line, above the multi-progress area.
+    Interactive,
+    /// Every event as a plain line on stderr, ANSI-stripped.
+    Piped,
+    /// A `build-progress` JSON record per event, on stdout.
+    Json,
+}
+
+fn render_compile_event(
+    mode: CompileRender,
+    bars: &MultiProgress,
+    units: &AtomicUsize,
+    event: &CompileEvent,
+    piped_out: &mut dyn io::Write,
+) {
+    match mode {
+        CompileRender::Interactive => {
+            let _ = bars.println(compile_event_text(units, event));
+        }
+        CompileRender::Piped => {
+            let _ = writeln!(piped_out, "{}", piped_event_line(units, event));
+            let _ = piped_out.flush();
+        }
+        CompileRender::Json => {
+            let record = compile_event_record(units, event);
+            if let Ok(json) = serde_json::to_string(&record) {
+                let mut stdout = io::stdout().lock();
+                let _ = writeln!(stdout, "{json}");
+                let _ = stdout.flush();
+            }
+        }
+    }
+}
+
+/// The line a piped terminal sees for one event: cargo's raw text with any
+/// ANSI decoration stripped — a user-forced color setting leaves it wrapped,
+/// and plain piped output strips it. `Line` events render too: they carry
+/// cargo's `Updating` / `Downloaded` / `Blocking waiting for file lock`
+/// status text — the only signal a piped build's resolve phase emits, and
+/// the difference between a stalled log and a diagnosable one.
+fn piped_event_line(units: &AtomicUsize, event: &CompileEvent) -> String {
+    console::strip_ansi_codes(&compile_event_text(units, event)).into_owned()
+}
+
+/// One cargo status line rendered the way cargo itself renders it, with the
+/// running unit count appended.
+fn compile_event_text(units: &AtomicUsize, event: &CompileEvent) -> String {
+    match event {
+        CompileEvent::Unit {
+            phase,
+            name,
+            version,
+        } => {
+            let count = units.fetch_add(1, Ordering::Relaxed) + 1;
+            version.as_ref().map_or_else(
+                || format!("{phase:>12} {name} ({count})"),
+                |version| format!("{phase:>12} {name} v{version} ({count})"),
+            )
+        }
+        CompileEvent::Finished(text) | CompileEvent::Line(text) => text.clone(),
+    }
+}
+
+/// The JSON record one event becomes: `{ "type": "build-progress", ... }`.
+#[derive(Serialize)]
+struct BuildProgressRecord<'a> {
+    #[serde(rename = "type")]
+    ty: &'static str,
+    phase: String,
+    #[serde(rename = "crate", skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+fn compile_event_record<'a>(
+    units: &AtomicUsize,
+    event: &'a CompileEvent,
+) -> BuildProgressRecord<'a> {
+    match event {
+        CompileEvent::Unit {
+            phase,
+            name,
+            version,
+        } => BuildProgressRecord {
+            ty: "build-progress",
+            phase: phase.to_ascii_lowercase(),
+            name: Some(name),
+            version: version.as_deref(),
+            count: Some(units.fetch_add(1, Ordering::Relaxed) + 1),
+            message: None,
+        },
+        CompileEvent::Finished(text) => BuildProgressRecord {
+            ty: "build-progress",
+            phase: "finished".to_string(),
+            name: None,
+            version: None,
+            count: None,
+            message: Some(console::strip_ansi_codes(text).into_owned()),
+        },
+        CompileEvent::Line(text) => BuildProgressRecord {
+            ty: "build-progress",
+            phase: "output".to_string(),
+            name: None,
+            version: None,
+            count: None,
+            message: Some(console::strip_ansi_codes(text).into_owned()),
+        },
     }
 }
 
@@ -710,4 +817,99 @@ macro_rules! header {
     ($shell:expr, $($arg:tt)*) => {{
         let _ = $shell.header(format!($($arg)*));
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use waterui_cli::build::CompileEvent;
+
+    use indicatif::{MultiProgress, ProgressDrawTarget};
+
+    use super::{
+        CompileRender, PanicReport, panic_report_json_line, piped_event_line, render_compile_event,
+    };
+
+    #[test]
+    fn panic_report_json_includes_extra_only_when_set() {
+        let with_extra = PanicReport {
+            message: "boom",
+            file: None,
+            line: None,
+            column: None,
+            extra: Some("process terminated with signal 6 (SIGABRT)"),
+            crash_report: None,
+        };
+        let with_extra: serde_json::Value = serde_json::from_str(
+            &panic_report_json_line(&with_extra).expect("serialize panic report"),
+        )
+        .expect("panic report JSON parses");
+        assert_eq!(
+            with_extra["extra"],
+            "process terminated with signal 6 (SIGABRT)"
+        );
+
+        let without_extra = PanicReport {
+            message: "boom",
+            file: None,
+            line: None,
+            column: None,
+            extra: None,
+            crash_report: None,
+        };
+        let without_extra: serde_json::Value = serde_json::from_str(
+            &panic_report_json_line(&without_extra).expect("serialize panic report"),
+        )
+        .expect("panic report JSON parses");
+        assert!(without_extra.get("extra").is_none());
+    }
+
+    /// A `Line` event — cargo's `Updating` / `Blocking waiting for file lock`
+    /// status text — is the only signal a piped build emits before the first
+    /// unit compiles; dropping it is what left a nightly run log stuck at
+    /// `Building...` with nothing to diagnose. The test goes through
+    /// `render_compile_event`'s own dispatch, so reintroducing a `Line` drop
+    /// in the `Piped` arm — not just changing the formatter — turns it red.
+    #[test]
+    fn piped_render_keeps_cargo_status_lines() {
+        let bars = MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
+        let units = AtomicUsize::new(0);
+        let mut piped = Vec::new();
+        render_compile_event(
+            CompileRender::Piped,
+            &bars,
+            &units,
+            &CompileEvent::Line("Blocking waiting for file lock on package cache".to_string()),
+            &mut piped,
+        );
+        let rendered = String::from_utf8(piped).expect("piped output is UTF-8");
+        assert_eq!(
+            rendered.trim_end(),
+            "Blocking waiting for file lock on package cache"
+        );
+    }
+
+    /// Piped output is plain text: a user-forced color setting wraps events
+    /// in ANSI, which the render strips, and a unit still counts up.
+    #[test]
+    fn piped_render_strips_ansi_and_counts_units() {
+        let units = AtomicUsize::new(0);
+        let line = piped_event_line(
+            &units,
+            &CompileEvent::Line("\u{1b}[32mUpdating\u{1b}[0m index".to_string()),
+        );
+        assert_eq!(line, "Updating index");
+
+        let line = piped_event_line(
+            &units,
+            &CompileEvent::Unit {
+                phase: "Compiling",
+                name: "waterui".to_string(),
+                version: Some("0.1.0".to_string()),
+            },
+        );
+        assert!(line.contains("Compiling waterui v0.1.0"), "{line}");
+        assert!(line.ends_with("(1)"), "{line}");
+    }
 }

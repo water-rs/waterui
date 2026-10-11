@@ -4,9 +4,10 @@
 //! regular stack: lazy row realization, indexed jumps, deletion, and moving.
 
 use waterui::Identifiable;
+use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove};
-use waterui::prelude::theme_color::{Foreground, MutedForeground};
+use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -20,6 +21,7 @@ struct Record {
     id: u64,
 }
 
+#[state]
 #[derive(Clone)]
 struct DemoState {
     records: ReactiveList<Record>,
@@ -45,53 +47,56 @@ impl DemoState {
 fn record_row(record: Record) -> ListItem {
     ListItem::new(
         vstack((
-            text(format!("Record #{:06}", record.id))
+            text(text!("Record #{id:06}", id = record.id))
                 .sub_headline()
                 .foreground(Foreground),
             text("Materialized only while this row is visible")
                 .caption()
-                .foreground(MutedForeground),
+                .muted(),
         ))
-        .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
+        .leading()
+        .padding_with((10.0, 16.0)),
     )
 }
 
-fn delete_record(ListDelete(index): ListDelete, State(state): State<DemoState>) {
+fn delete_record(ListDelete(index): ListDelete, state: DemoState) {
     let _ = state.records.remove(index);
     *state.remaining.get_mut() -= 1;
 }
 
-fn move_record(ListMove(movement): ListMove, State(state): State<DemoState>) {
+fn move_record(ListMove(movement): ListMove, state: DemoState) {
     let mut records = state.records.snapshot();
     let record = records.remove(movement.from());
     records.insert(movement.to(), record);
     let _ = state.records.replace(records);
 }
 
-fn jump_top(State(state): State<DemoState>) {
-    state.scroll.scroll_to(0);
+fn scroll_top(state: DemoState) {
+    state.scroll.animate_to(0, Animation::default());
 }
 
-fn jump_middle(State(state): State<DemoState>) {
-    state.scroll.scroll_to((state.remaining.get() as usize) / 2);
+fn scroll_middle(state: DemoState) {
+    state.scroll.animate_to(
+        (state.remaining.snapshot() as usize) / 2,
+        Animation::default(),
+    );
 }
 
-fn jump_last(State(state): State<DemoState>) {
-    let remaining = state.remaining.get();
+fn scroll_last(state: DemoState) {
+    let remaining = state.remaining.snapshot();
     if remaining > 0 {
-        state.scroll.scroll_to(remaining as usize - 1);
+        state
+            .scroll
+            .animate_to(remaining as usize - 1, Animation::default());
     }
 }
 
-fn toggle_editing(State(state): State<DemoState>) {
-    state.editing.set(!state.editing.get());
+fn toggle_editing(state: DemoState) {
+    state.editing.toggle();
 }
 
 fn content(state: DemoState) -> impl View {
-    let edit_label = state
-        .editing
-        .map(|editing| if editing { "Done" } else { "Edit" });
+    let edit_label = state.editing.select("Done", "Edit");
     let list = List::for_each(state.records.clone(), record_row)
         .editing(state.editing.clone())
         .on_delete(delete_record)
@@ -106,11 +111,11 @@ fn content(state: DemoState) -> impl View {
                 remaining = state.remaining.clone()
             )
             .sub_headline()
-            .foreground(MutedForeground),
+            .muted(),
             hstack((
-                button("Top").bordered().action(jump_top),
-                button("Middle").bordered().action(jump_middle),
-                button("Last").bordered().action(jump_last),
+                button("Top").bordered().action(scroll_top),
+                button("Middle").bordered().action(scroll_middle),
+                button("Last").bordered().action(scroll_last),
                 button(text!("{edit_label}"))
                     .bordered_prominent()
                     .action(toggle_editing),
@@ -120,9 +125,9 @@ fn content(state: DemoState) -> impl View {
                 "Animated jumps and the draggable scrollbar keep only viewport rows materialized.",
             )
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(8.0)
         .padding(),
         Divider,
@@ -152,7 +157,7 @@ mod bench {
     // rebuild-ratio budget guards that invariant.
     #[waterui::bench(
         demo,
-        theme = hydrolysis_m3::install,
+        theme = hydrolysis_m3::Material3::defaults(),
         viewport = (390, 844),
         max_rebuild_ratio = 0.1,
     )]

@@ -5,6 +5,7 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "chromium")]
 use base64::Engine as _;
@@ -15,12 +16,13 @@ use cef::{
     AcceleratedPaintInfo, Browser, BrowserHost, BrowserSettings, CefString, Client,
     CompositionUnderline, DisplayHandler, Frame, ImplBrowser, ImplBrowserHost, ImplClient,
     ImplDictionaryValue, ImplDisplayHandler, ImplFrame, ImplLifeSpanHandler, ImplLoadHandler,
-    ImplPreferenceManager, ImplRenderHandler, ImplRequestHandler, ImplValue, KeyEvent,
-    KeyEventType, LifeSpanHandler, LoadHandler, MouseButtonType, MouseEvent, PaintElementType,
-    Range, Rect, RenderHandler, Request, RequestContext, RequestContextSettings, RequestHandler,
-    ScreenInfo, TerminationStatus, WindowInfo, WrapClient, WrapDisplayHandler, WrapLifeSpanHandler,
-    WrapLoadHandler, WrapRenderHandler, WrapRequestHandler, browser_host_create_browser_sync,
-    dictionary_value_create, request_context_create_context, value_create,
+    ImplPreferenceManager, ImplRenderHandler, ImplRequestContextHandler, ImplRequestHandler,
+    ImplValue, KeyEvent, KeyEventType, LifeSpanHandler, LoadHandler, MouseButtonType, MouseEvent,
+    PaintElementType, Range, Rect, RenderHandler, Request, RequestContext, RequestContextHandler,
+    RequestContextSettings, RequestHandler, ScreenInfo, TerminationStatus, WindowInfo, WrapClient,
+    WrapDisplayHandler, WrapLifeSpanHandler, WrapLoadHandler, WrapRenderHandler,
+    WrapRequestContextHandler, WrapRequestHandler, browser_host_create_browser_sync,
+    dictionary_value_create, do_message_loop_work, request_context_create_context, value_create,
 };
 #[cfg(feature = "chromium")]
 use futures::channel::oneshot;
@@ -30,6 +32,8 @@ use waterui_chromium::{
     CdpError, ChromiumConfiguration, ChromiumEvent, ChromiumPageHandle, ChromiumProfile,
     CustomChromiumController, PageMode, ScreenshotFormat,
 };
+#[cfg(feature = "chromium")]
+use waterui_core::SerialDispatch;
 #[cfg(feature = "webview")]
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
@@ -243,7 +247,7 @@ pub enum CefPageEvent {
 }
 
 #[cfg(feature = "chromium")]
-type PageWatcher = Box<dyn Fn(CefPageEvent)>;
+type PageWatcher = Rc<dyn Fn(CefPageEvent)>;
 
 struct PageState {
     mode: CefPageMode,
@@ -253,6 +257,10 @@ struct PageState {
     accelerated_paint_received: Cell<bool>,
     #[cfg(feature = "chromium")]
     watchers: RefCell<Vec<PageWatcher>>,
+    /// Events emitted while a watcher still runs; they are delivered after it
+    /// returns, in order, rather than re-entering it.
+    #[cfg(feature = "chromium")]
+    page_events: SerialDispatch<CefPageEvent>,
     #[cfg(feature = "webview")]
     webview_watchers: WatcherSet<BackendEvent>,
     #[cfg(feature = "webview")]
@@ -277,6 +285,8 @@ impl PageState {
             accelerated_paint_received: Cell::new(false),
             #[cfg(feature = "chromium")]
             watchers: RefCell::new(Vec::new()),
+            #[cfg(feature = "chromium")]
+            page_events: SerialDispatch::new(),
             #[cfg(feature = "webview")]
             webview_watchers: WatcherSet::new(),
             #[cfg(feature = "webview")]
@@ -294,9 +304,14 @@ impl PageState {
 
     #[cfg(feature = "chromium")]
     fn emit(&self, event: &CefPageEvent) {
-        for watcher in self.watchers.borrow().iter() {
-            watcher(event.clone());
-        }
+        self.page_events.deliver(event.clone(), |event| {
+            // Snapshot under a short borrow: a watcher that registers another
+            // watcher must not collide with a borrow held across the calls.
+            let watchers = self.watchers.borrow().clone();
+            for watcher in &watchers {
+                watcher(event.clone());
+            }
+        });
     }
 
     #[cfg(feature = "chromium")]
@@ -316,7 +331,7 @@ impl PageState {
             watcher(CefPageEvent::Closed);
             return;
         }
-        self.watchers.borrow_mut().push(Box::new(watcher));
+        self.watchers.borrow_mut().push(Rc::new(watcher));
     }
 
     #[cfg(feature = "chromium")]
@@ -425,6 +440,38 @@ fn new_render_handler(state: Rc<PageState>) -> RenderHandler {
         }
     }
     WaterRenderHandler::new(state)
+}
+
+/// Observes request-context readiness so page creation can wait for it.
+///
+/// The browser context behind a non-incognito request context is built
+/// asynchronously: `CefRequestContext::CreateContext` hands Chromium's
+/// `ProfileManager::CreateProfileAsync` the profile directory, and the
+/// profile-finished callback is posted back onto the CEF UI thread. Until it
+/// runs, `browser_host_create_browser_sync` rejects the context and returns
+/// null. `OnRequestContextInitialized` is CEF's own completion signal, so this
+/// handler only has to record it; the caller then pumps the CEF loop until the
+/// flag lands.
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_request_context_handler(initialized: Rc<Cell<bool>>) -> RequestContextHandler {
+    cef::wrap_request_context_handler! {
+        struct WaterRequestContextHandler {
+            initialized: Rc<Cell<bool>>,
+        }
+
+        impl RequestContextHandler {
+            fn on_request_context_initialized(
+                &self,
+                _request_context: Option<&mut RequestContext>,
+            ) {
+                self.initialized.set(true);
+            }
+        }
+    }
+    WaterRequestContextHandler::new(initialized)
 }
 
 #[allow(
@@ -633,7 +680,7 @@ fn new_request_handler(state: Rc<PageState>) -> RequestHandler {
                             to: destination.clone(),
                         });
                     }
-                    if !self.state.redirects_enabled.borrow().get() {
+                    if !self.state.redirects_enabled.borrow().snapshot() {
                         return 1;
                     }
                 }
@@ -768,7 +815,6 @@ fn new_client(
 pub struct CefPageHandle {
     browser: Browser,
     host: BrowserHost,
-    request_context: RequestContext,
     cdp: CefCdpSession,
     state: Rc<PageState>,
 }
@@ -796,7 +842,24 @@ impl CefPageHandle {
             new_request_handler(Rc::clone(&state)),
             new_display_handler(Rc::clone(&state)),
         );
-        let mut request_context = create_request_context(runtime, &configuration);
+        let (mut request_context, request_context_ready) =
+            create_request_context(runtime, &configuration);
+        // A fresh request context's browser context is initialized
+        // asynchronously (`ProfileManager::CreateProfileAsync` posts its
+        // completion onto the CEF UI thread). `browser_host_create_browser_sync`
+        // rejects a context whose browser context has not finished — returning
+        // null rather than an error — so the pending initialization is pumped
+        // to completion here before the browser is created. Blocking the UI
+        // thread directly would deadlock the very callback being awaited.
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        while !request_context_ready.get() {
+            do_message_loop_work();
+            std::thread::sleep(Duration::from_millis(1));
+            assert!(
+                Instant::now() < ready_deadline,
+                "CEF request context did not finish initializing"
+            );
+        }
         let initial_url = configuration
             .url
             .as_ref()
@@ -805,7 +868,15 @@ impl CefPageHandle {
             Some(&WindowInfo {
                 windowless_rendering_enabled: 1,
                 shared_texture_enabled: 1,
-                external_begin_frame_enabled: 1,
+                // Externally issued begin frames exist only for headless and
+                // Linux/Windows displays: on macOS the display's begin-frame
+                // source is `ExternalBeginFrameSourceMojoMac`, whose issue call
+                // is a `NOTREACHED` no-op — the first send still latches
+                // `begin_frame_pending_`, so every later request silently
+                // early-returns and the compositor never gets kicked again.
+                // With the flag off, CEF paces frames itself on vsync and
+                // damage at `windowless_frame_rate`.
+                external_begin_frame_enabled: i32::from(cfg!(not(target_os = "macos"))),
                 ..Default::default()
             }),
             Some(&mut client),
@@ -832,7 +903,6 @@ impl CefPageHandle {
         let handle = Self {
             browser,
             host,
-            request_context,
             cdp,
             state,
         };
@@ -860,11 +930,21 @@ impl CefPageHandle {
             "headless CEF pages cannot install a frame presenter"
         );
         self.state.frame_sink.replace(Some(Rc::new(sink)));
+        // A windowless browser starts hidden and `RenderWidgetHostViewOSR`
+        // builds its video consumer — the object that issues accelerated
+        // paints — only when the view is shown. Installing a presenter is the
+        // moment this page becomes displayable, so show it here, before the
+        // first resize/invalidation asks Chromium for a frame.
+        self.host.was_hidden(0);
         self.host.was_resized();
         self.host.invalidate(PaintElementType::VIEW);
     }
 
     /// Requests one compositor frame for this windowless browser.
+    ///
+    /// Only meaningful where external begin frames are a real mechanism —
+    /// macOS builds disable them and never call this.
+    #[cfg(not(target_os = "macos"))]
     pub fn request_frame(&self) {
         self.host.send_external_begin_frame();
     }
@@ -980,6 +1060,51 @@ impl CefPageHandle {
     /// Panics when a single-unit UTF-16 character cannot be encoded or a
     /// native key code does not fit CEF's integer input ABI.
     pub fn key(&self, pressed: bool, key: CefKeyInput, modifiers: CefInputModifiers) {
+        let event = Self::key_event(key_event_type(pressed), key, modifiers);
+        self.host.send_key_event(Some(&event));
+        if pressed && event.character != 0 {
+            self.host.send_key_event(Some(&KeyEvent {
+                type_: KeyEventType::CHAR,
+                ..event
+            }));
+        }
+    }
+
+    /// Sends the `CHAR` event of a press separately from its `RAWKEYDOWN`.
+    ///
+    /// A backend that reports a press and the text it produced as two events
+    /// (the surface vocabulary's `Key` then `TextInput`, the web's `keydown`
+    /// then `beforeinput`) cannot bundle the character into the transition —
+    /// it is not known yet. This is the second half of the pair
+    /// [`key`](Self::key) sends in one call when the character is known at
+    /// press time.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `character` needs more than one UTF-16 code unit —
+    /// supplementary-plane text travels by
+    /// [`commit_text`](Self::commit_text) instead — or when a native key
+    /// code does not fit CEF's integer input ABI.
+    pub fn key_char(&self, key: CefKeyInput, character: char, modifiers: CefInputModifiers) {
+        assert!(
+            character.len_utf16() == 1,
+            "a CHAR event carries one UTF-16 code unit; commit longer text instead"
+        );
+        let event = Self::key_event(
+            KeyEventType::CHAR,
+            CefKeyInput {
+                character: Some(character),
+                ..key
+            },
+            modifiers,
+        );
+        self.host.send_key_event(Some(&event));
+    }
+
+    /// Builds the `KeyEvent` the transition and `CHAR` halves of a keystroke
+    /// share — both carry the press's keycodes so CEF correlates them with
+    /// the same physical key.
+    fn key_event(type_: KeyEventType, key: CefKeyInput, modifiers: CefInputModifiers) -> KeyEvent {
         let character = key
             .character
             .filter(|character| character.len_utf16() == 1)
@@ -990,8 +1115,8 @@ impl CefPageHandle {
                     .copied()
                     .expect("one UTF-16 code unit must exist")
             });
-        let event = KeyEvent {
-            type_: key_event_type(pressed),
+        KeyEvent {
+            type_,
             modifiers: modifiers.bits(),
             windows_key_code: windows_key_code(key.keyval),
             native_key_code: i32::try_from(key.native_keycode)
@@ -1000,13 +1125,6 @@ impl CefPageHandle {
             character,
             unmodified_character: character,
             ..Default::default()
-        };
-        self.host.send_key_event(Some(&event));
-        if pressed && character != 0 {
-            self.host.send_key_event(Some(&KeyEvent {
-                type_: KeyEventType::CHAR,
-                ..event
-            }));
         }
     }
 
@@ -1112,8 +1230,11 @@ impl CefPageHandle {
     }
 
     /// Returns the request context this page's browser runs on.
-    pub(crate) const fn request_context(&self) -> &RequestContext {
-        &self.request_context
+    #[cfg(feature = "webview")]
+    pub(crate) fn request_context(&self) -> RequestContext {
+        self.host
+            .request_context()
+            .expect("CEF browser host must expose its request context")
     }
 
     pub(crate) fn navigate(&self, url: &Url) {
@@ -1396,7 +1517,7 @@ impl From<ChromiumConfiguration> for CefPageConfiguration {
 fn create_request_context(
     runtime: &CefRuntime,
     configuration: &CefPageConfiguration,
-) -> RequestContext {
+) -> (RequestContext, Rc<Cell<bool>>) {
     let cache_path = if configuration.profile.incognito {
         assert!(
             configuration.profile.name.is_none() && configuration.profile.data_directory.is_none(),
@@ -1431,6 +1552,8 @@ fn create_request_context(
             .to_string_lossy()
             .into_owned()
     };
+    let initialized = Rc::new(Cell::new(false));
+    let mut handler = new_request_context_handler(Rc::clone(&initialized));
     let context = request_context_create_context(
         Some(&RequestContextSettings {
             cache_path: cache_path.as_str().into(),
@@ -1438,7 +1561,7 @@ fn create_request_context(
             accept_language_list: configuration.language.as_deref().unwrap_or_default().into(),
             ..Default::default()
         }),
-        None,
+        Some(&mut handler),
     )
     .expect("CEF failed to create an isolated request context");
     if let Some(proxy) = configuration.proxy.as_deref() {
@@ -1467,7 +1590,7 @@ fn create_request_context(
             "CEF rejected proxy preference: {error}"
         );
     }
-    context
+    (context, initialized)
 }
 
 /// Describes a Chromium certificate error code for the `WebViewError::Ssl` message.

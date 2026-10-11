@@ -1,0 +1,34 @@
+name: Maintenance task
+description: Refactor, extraction, repo hygiene, or plumbing work
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Maintenance tasks are self-contained pieces of work that are neither defects nor user-facing features: extractions, cleanups, CI plumbing, dependency surgery.
+
+        Title convention: `<area>: <what changes>`, e.g. `ci: the Android FFI leg is never compiled`.
+  - type: textarea
+    id: what
+    attributes:
+      label: What changes
+      description: The concrete change this issue tracks.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: The cost of leaving this as it is — duplication, drift, broken assumptions, blocked work.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Crates, workflows, or repositories touched. Note anything deliberately left out.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Related issues, links, migration notes.

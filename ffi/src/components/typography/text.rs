@@ -22,6 +22,10 @@ pub struct WuiResolvedFont {
     pub family: WuiStr,
     /// The design the platform face is chosen from when `family` is empty.
     pub design: WuiFontDesign,
+    /// Absolute line height in points; `0.0` keeps the face's natural metrics.
+    pub line_height: f32,
+    /// Additional spacing between adjacent glyphs in points.
+    pub letter_spacing: f32,
 }
 
 impl IntoFFI for ResolvedFont {
@@ -34,6 +38,8 @@ impl IntoFFI for ResolvedFont {
                 .family
                 .map_or_else(|| waterui::Str::from("").into_ffi(), IntoFFI::into_ffi),
             design: self.design.into_ffi(),
+            line_height: self.line_height.unwrap_or(0.0),
+            letter_spacing: self.letter_spacing,
         }
     }
 }
@@ -51,12 +57,17 @@ impl IntoRust for WuiResolvedFont {
         let family_str: waterui::Str = unsafe { self.family.into_rust() };
         // SAFETY: `design` is a plain enum value; there is nothing to own.
         let design = unsafe { self.design.into_rust() };
-        let font = if family_str.is_empty() {
+        let mut font = if family_str.is_empty() {
             ResolvedFont::new(self.size, weight)
         } else {
             ResolvedFont::with_family(self.size, weight, family_str)
-        };
-        font.with_design(design)
+        }
+        .with_design(design);
+        // `0.0` encodes "natural metrics"; anything else is an absolute line
+        // height the backend resolved for this slot.
+        font.line_height = (self.line_height > 0.0).then_some(self.line_height);
+        font.letter_spacing = self.letter_spacing;
+        font
     }
 }
 
@@ -306,6 +317,8 @@ pub extern "C" fn waterui_resolved_font_new(size: f32, weight: WuiFontWeight) ->
         weight,
         family: waterui::Str::from("").into_ffi(),
         design: WuiFontDesign::Default,
+        line_height: 0.0,
+        letter_spacing: 0.0,
     }
 }
 

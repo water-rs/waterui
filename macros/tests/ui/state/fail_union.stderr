@@ -1,0 +1,5 @@
+error: #[state] does not support unions
+ --> tests/ui/state/fail_union.rs:7:1
+  |
+7 | union NotState {
+  | ^^^^^

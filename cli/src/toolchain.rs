@@ -2,13 +2,20 @@
 
 use std::convert::Infallible;
 
+pub mod cargo_helpers;
+pub mod cargo_project_config;
 pub mod cmake;
 pub mod doctor;
+pub mod dxc;
+pub mod git;
 pub mod host;
 pub mod linux;
+pub mod managed_tool;
 pub mod meson;
+pub mod msvc;
 pub mod rust;
 pub mod sccache;
+pub mod spirv_tools;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod web;
@@ -54,6 +61,14 @@ pub trait Installation: Send + Sync {
     type Error: Into<eyre::Report> + Send;
     /// Execute the installation plan against `host`.
     fn install(&self, host: &Host) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Whether running the plan modifies the machine outside `~/.water`
+    /// (system package managers, `msiexec`, the Visual Studio installer).
+    /// `water doctor --fix` requires an interactive confirmation or `--yes`
+    /// before it runs such a plan.
+    fn modifies_system(&self) -> bool {
+        false
+    }
 }
 
 /// Optional installation step.
@@ -67,6 +82,10 @@ impl<I: Installation> Installation for Option<I> {
             install.install(host).await.map_err(Into::into)?;
         }
         Ok(())
+    }
+
+    fn modifies_system(&self) -> bool {
+        self.as_ref().is_some_and(Installation::modifies_system)
     }
 }
 
@@ -168,6 +187,16 @@ macro_rules! impl_installations {
                     $ty.install(host).await.map_err(|e| e.into())?;
                 )*
                 Ok(())
+            }
+
+            fn modifies_system(&self) -> bool {
+                let ($($ty,)*) = self;
+                $(
+                    if $ty.modifies_system() {
+                        return true;
+                    }
+                )*
+                false
             }
         }
     };

@@ -1,0 +1,268 @@
+name: Windows
+
+# The Windows test leg is split out of `test.yml` because it needs platform-
+# specific exclusions and compile-only coverage. It is a nightly platform
+# (#379): `nightly.yml` calls it once a day against `dev`, beside the full
+# `test.yml` matrix, and every verification command in it is gating there.
+# It left the pull-request path because its three jobs were 43-65 minutes of
+# cold build on the scarcest runners for every change, whatever it touched.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+  # rust-cache and the install-tool binary caches are the only cache
+  # layers (see the note in ci.yml).
+  CARGO_INCREMENTAL: 0
+  WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
+
+jobs:
+  # Two jobs, not one: the lint passes used to run after the whole test build
+  # in a single job, so clippy waited ~90 minutes behind nextest and the leg
+  # was the last thing standing on every run (#347). Each job compiles its own
+  # graph, but they run side by side, and the critical path is the test job
+  # alone. Coverage is unchanged — every command below is one of the original
+  # job's, split by kind, not dropped.
+  test:
+    name: windows-latest
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      # Retires superseded generations of only this job's cache family
+      # (cargo-sources-Windows-*) on its own ref, then saves the replacement.
+      actions: write
+    # Windows is the slowest platform and needs additional headroom for cold
+    # hosted-runner builds while remaining a hard gate.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      # Nightly lanes restore caches but do not write target archives: the
+      # 10 GB budget belongs to the PR/dev-push gate (#1441). The one
+      # exception is the shared Cargo sources archive — every family a job
+      # restores needs exactly one writer or the key is dead weight, and
+      # this is the only Windows lane that resolves the full feature graph
+      # (the `--features all`/`--all-features` passes below pull optional-
+      # dependency sources the lint lane's default-features clippy never
+      # downloads), so this job owns `cargo-sources-Windows` (retire+save
+      # at the bottom). The Windows target archive no longer competes for
+      # the budget (#458). Tests still run in every supported shape below.
+      # waterui-cli's `artifact_symbols` tests build a wasm32 rlib
+      # fixture at test time; every leg running its suite needs the target.
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: wasm32-unknown-unknown
+          cache: "false"
+      - name: Restore Cargo sources
+        id: cargo-sources
+        uses: ./.github/actions/cargo-sources
+      - uses: ./.github/actions/spirv-tools-windows
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
+      # nextest's fixture setup scripts run the pinned generators through
+      # `uv run` (`.config/nextest.toml`) — the styled test targets resolve
+      # the installed test-font families through system font discovery.
+      - uses: astral-sh/setup-uv@v6
+      # Same for the Cherenkov test targets the workspace pass below
+      # compiles and runs: their fonts and corpus scenes are generated,
+      # not committed. The all-features pass also runs the bench tests
+      # that read scenes/perf.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
+      # Four crates cannot be tested here, for reasons that are not bugs:
+      #
+      # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
+      # the preview system can share one copy of the framework across
+      # dynamically loaded preview libraries. That exports every Rust symbol,
+      # 290k of them, and a PE export table stops at 65535. The preview system
+      # targets macOS, the iOS Simulator and Android, not Windows.
+      #
+      # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
+      # runner does not stage. It is still compiled in the lint job below,
+      # through the crate's own `compile-only` feature, which its build script
+      # honours ahead of `cef-runtime` for exactly this case — so Windows keeps
+      # compile coverage of the backend without provisioning the SDK.
+      #
+      # The `*-example` packages cost the tail of this cold build (#1441):
+      # their own crates plus the dependency trees only they pull (nokhwa,
+      # xcap, maplibre-expr, the waterkit camera/screen stack) were about
+      # a quarter of the 34-minute compile. The six that carry tests of their
+      # own run in the dedicated pass below instead; the other ~30 have no
+      # tests on any platform and are still compiled by the lint job's
+      # `--all-targets` clippy, so no check is lost — only linked binaries.
+      #
+      # Of the six, `chromium-example` cannot link here (one level below its
+      # backend's missing `cef_sandbox`), so it stays out. `stress-example`
+      # runs red here until the Cherenkov pin picks up the upload-staging
+      # timeout fix — that is the honest state of the leg.
+      #
+      # One full-workspace pass under default features. A workspace-wide
+      # `--all-features` pass is structurally impossible — `waterui-ffi`
+      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
+      # enabling `c-api` and `android-jni` together can never build.
+      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
+      - name: Test (examples that carry tests)
+        run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
+      # nextest cannot run doctests, and this workspace has plenty of them.
+      # No example carries a doc comment, so the glob loses no doctest.
+      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example'
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-windows-latest
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+      # Same ordering as the other source writers: retire superseded
+      # generations of this job's own family on this exact ref first, then
+      # save — so the save itself cannot evict a live, unrelated cache.
+      - name: Retire superseded cache generations
+        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/retire-cargo-caches
+        with:
+          families: cargo-sources-${{ runner.os }}-
+          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+          sweep: "true"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Save Cargo sources
+        if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/cargo-sources
+        with:
+          operation: save
+          primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+
+  # Every crate's own optional features, in its own job so the test tarball
+  # above holds one feature variant of the dependency graph instead of two
+  # (#362): this job stores only `~/.cargo`, like the macOS jobs.
+  #
+  # Two passes, because the root crate cannot join a workspace-wide
+  # `--all-features` here: that turns on `dynamic_linking`, which pulls in
+  # `waterui-dylib`, and that crate exports 77k symbols against a PE export
+  # table limit of 65535 — it cannot link on Windows, which is why the
+  # workspace pass in `test` excludes it. So the root `waterui` crate runs on
+  # its own under `--features all` (every feature but that one), and the rest
+  # of the workspace runs under `--all-features` with the root and the dylib
+  # excluded, plus the same four exclusions the Linux `all-features` job in
+  # test.yml carries for crates whose feature sets are mutually exclusive by
+  # construction (#276), `filtrate` — whose `webgl` feature is a deliberate
+  # `compile_error!` off wasm32 (the wasm job lints it where it is legal) —
+  # and `skill_snippets`, whose `dev` feature would turn `dynamic_linking`
+  # back on and whose `compile-gate-tests` transcriptions must never run
+  # (see the Linux job). The two excluded crates with
+  # platform-specific code in their feature shapes run afterwards in the
+  # shapes they have.
+  all-features:
+    name: windows-latest (all features)
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: wasm32-unknown-unknown
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      - uses: ./.github/actions/spirv-tools-windows
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
+      # The all-features pass runs the styled test targets too; nextest's
+      # fixture setup scripts install their fonts through `uv run`
+      # (`.config/nextest.toml`).
+      - uses: astral-sh/setup-uv@v6
+      - name: Test (root crate, every feature but dynamic_linking)
+        run: cargo nextest run --locked --features all --profile ci
+      # The `trybuild_*` binaries each drive a cold fixture build that is
+      # independent of the outer feature set; they already ran once in the
+      # `test` job on this OS, so this pass skips them (see test.yml).
+      - name: Test (all features, workspace)
+        run: |
+          cargo nextest run --locked --workspace --all-features --profile ci `
+            --exclude waterui `
+            --exclude waterui-apple `
+            --exclude cocoa-ui `
+            --exclude waterui-dylib `
+            --exclude '*-example' `
+            --exclude waterui-core `
+            --exclude waterui-ffi `
+            --exclude waterui-browser-cef `
+            --exclude skill_snippets `
+            --exclude filtrate `
+            -E 'not binary(/^trybuild_/)'
+      - name: Test (waterui-core, every stable feature)
+        run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
+      - name: Upload Test Snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-snapshots-windows-latest-all-features
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  lint:
+    name: windows-latest (lint)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      # Restore-only like the rest of this leg (#1441): nightly saves no
+      # cache entries of its own; the 10 GB budget belongs to the gate. This
+      # block used to save a 2.2 GB target tarball on every pull request
+      # fingerprint, ungated.
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # Build scripts run under `cargo check` too, so the shader compiler has
+      # to be present here as well as in the test job.
+      - uses: ./.github/actions/spirv-tools-windows
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
+      # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
+      # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
+      # `--all-targets` compiles them, so the fonts must exist first.
+      # Corpus and perf are read at run time — this job never runs tests.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
+      # Compile the CEF backend without its binary distribution (see the test
+      # job for why it cannot be linked here). Clippy, not check (#1441): the
+      # pass used to re-check a graph the workspace lint already covers while
+      # the crate itself had no lint coverage; now it carries its own.
+      - run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --features compile-only --all-targets -- -D warnings
+      # Windows-only code is invisible to every other leg: a `cfg(windows)` body
+      # is compiled nowhere else, so a lint that fires only there reaches
+      # nobody.
+      - name: Clippy
+        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings

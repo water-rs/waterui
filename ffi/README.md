@@ -145,7 +145,7 @@ let viewId = waterui_view_id(view)
 
 if viewId == waterui_text_id() {
     let textConfig = waterui_force_as_text(view)
-    return Text(textConfig.content.get())
+    return Text(textConfig.content.snapshot())
 } else if viewId == waterui_button_id() {
     // ...
 }
@@ -249,7 +249,7 @@ The `components/` directory contains FFI bindings for each UI component category
 - **`list`** - List, ForEach, LazyVStack
 - **`table`** - Table with columns and rows
 - **`progress`** - ProgressView, ProgressIndicator
-- **`gpu_surface`** - High-performance wgpu rendering surface
+- **`gpu`** - High-performance wgpu rendering surface for `GpuContentView`
 
 Each module defines:
 1. C-compatible struct representations (e.g., `WuiButton`)
@@ -319,11 +319,9 @@ ffi_view!(RatingConfig, WuiRating, rating);
 // 3. Regenerate waterui.h
 // cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 
-// 4. Implement in Swift (water-rs/apple-backend: Sources/WaterUI/Views/Rating.swift)
-// if viewId == waterui_rating_id() {
-//     let config = waterui_force_as_rating(view)
-//     return RatingView(config: config)
-// }
+// 4. Implement the platform realization. The Apple backend is a Rust
+// crate on objc2 (`backends/apple/src`) — it consumes the typed view
+// objects directly, not this C header. Android wires Kotlin over JNI.
 ```
 
 ### Implementing Custom Reactive Properties
@@ -362,11 +360,10 @@ because cbindgen expands the macro-generated exports through `-Zunpretty=expande
 cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 ```
 
-This generates the C header and automatically copies it to:
-- `backends/android/runtime/src/main/cpp/waterui.h` (Android backend, still a submodule here)
-
-The Apple backend keeps its own copy at `Sources/CWaterUI/include/waterui.h` in
-`water-rs/apple-backend`; its CI syncs it from `ffi/waterui.h` in this repository.
+This writes `ffi/waterui.h`. The Android backend keeps its own copy —
+`runtime/src/main/cpp/waterui.h` in `water-rs/android-backend` — and its CI
+syncs it from `ffi/waterui.h` in this repository. The Apple backend
+(`backends/apple`, Rust/objc2) has no C-header dependency.
 
 The header is checked into version control, and CI verifies it's always up-to-date with the Rust code.
 
@@ -479,7 +476,7 @@ When adding a new view type to WaterUI:
 1. Define the Rust view struct in the appropriate component crate
 2. Add FFI bindings in `ffi/src/components/<module>.rs`
 3. Regenerate the C header: `cargo +nightly run --manifest-path ffi/generator/Cargo.toml`
-4. Implement the native renderer in Swift (`water-rs/apple-backend`) and Kotlin (`backends/android`)
+4. Implement the native realization in `backends/apple` (Rust/objc2) and Kotlin (`water-rs/android-backend`)
 5. Update tests to verify FFI contract
 
 The workflow ensures Rust, C header, and native backends stay synchronized.

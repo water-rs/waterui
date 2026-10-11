@@ -15,9 +15,10 @@
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
-use waterui::graphics::{
-    EffectRenderer, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput, wgpu,
+use waterui::graphics::filtrate::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
 };
+use waterui::graphics::wgpu;
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
@@ -217,12 +218,26 @@ fn opacity_section(opacity: &Binding<f64>) -> impl View {
     .padding()
 }
 
+/// The three combined-filter bindings, injected into handlers as one state.
+#[state]
+#[derive(Clone)]
+struct CombinedFilters {
+    blur: Binding<f64>,
+    saturation: Binding<f64>,
+    hue: Binding<f64>,
+}
+
 /// Demo: Combined filters with animation
 fn combined_section(
     combined_blur: &Binding<f64>,
     combined_saturation: &Binding<f64>,
     combined_hue: &Binding<f64>,
 ) -> impl View {
+    let filters = CombinedFilters {
+        blur: combined_blur.clone(),
+        saturation: combined_saturation.clone(),
+        hue: combined_hue.clone(),
+    };
     let animated_blur = combined_blur
         .clone()
         .map(|v| v as f32)
@@ -246,49 +261,31 @@ fn combined_section(
             .min_height(100.0),
         hstack((
             button("Reset")
-                .action(
-                    |State(b): State<Binding<f64>>,
-                     State(s): State<Binding<f64>>,
-                     State(h): State<Binding<f64>>| {
-                        b.set(0.0);
-                        s.set(1.0);
-                        h.set(0.0);
-                    },
-                )
-                .state(combined_blur)
-                .state(combined_saturation)
-                .state(combined_hue),
+                .action(|f: CombinedFilters| {
+                    f.blur.set(0.0);
+                    f.saturation.set(1.0);
+                    f.hue.set(0.0);
+                })
+                .state(&filters),
             button("Dreamy")
-                .action(
-                    |State(b): State<Binding<f64>>, State(s): State<Binding<f64>>| {
-                        b.set(3.0);
-                        s.set(0.7);
-                    },
-                )
-                .state(combined_blur)
-                .state(combined_saturation),
+                .action(|f: CombinedFilters| {
+                    f.blur.set(3.0);
+                    f.saturation.set(0.7);
+                })
+                .state(&filters),
             button("Vibrant")
-                .action(
-                    |State(h): State<Binding<f64>>, State(s): State<Binding<f64>>| {
-                        h.set(180.0);
-                        s.set(1.8);
-                    },
-                )
-                .state(combined_hue)
-                .state(combined_saturation),
+                .action(|f: CombinedFilters| {
+                    f.hue.set(180.0);
+                    f.saturation.set(1.8);
+                })
+                .state(&filters),
             button("Vintage")
-                .action(
-                    |State(b): State<Binding<f64>>,
-                     State(s): State<Binding<f64>>,
-                     State(h): State<Binding<f64>>| {
-                        b.set(1.0);
-                        s.set(0.5);
-                        h.set(30.0);
-                    },
-                )
-                .state(combined_blur)
-                .state(combined_saturation)
-                .state(combined_hue),
+                .action(|f: CombinedFilters| {
+                    f.blur.set(1.0);
+                    f.saturation.set(0.5);
+                    f.hue.set(30.0);
+                })
+                .state(&filters),
         )),
     ))
     .padding()
@@ -338,7 +335,7 @@ pub fn demo() -> impl View {
                 combined_section(&combined_blur, &combined_saturation, &combined_hue),
             )),
         ))
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
 }
 
@@ -374,15 +371,17 @@ fn nested_filter_preview() -> impl View {
 /// content underneath instead of the fill is an output the capture never read.
 struct FillEffect;
 
-impl EffectRenderer for FillEffect {
-    async fn setup(&mut self, _ctx: &ViewEffectContext<'_>) {}
+impl Effect for FillEffect {
+    async fn setup(&mut self, _ctx: &EffectContext<'_>) -> EffectSetupResult {
+        Ok(())
+    }
 
-    fn render(&mut self, input: &ViewEffectInput, output: &ViewEffectOutput) {
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("fill effect"),
-            });
+    fn encode_render(
+        &mut self,
+        _input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("fill effect"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -404,21 +403,21 @@ impl EffectRenderer for FillEffect {
             occlusion_query_set: None,
             multiview_mask: None,
         }));
-        input.queue.submit([encoder.finish()]);
+        Ok(false)
     }
 }
 
-/// A custom `ViewEffect` over a view.
+/// A custom `Effect` over a view.
 ///
-/// `ViewEffect` is the escape hatch for an application's own wgpu effect, and
-/// nothing in this repository exercised it. The swatch grid underneath is
-/// entirely covered by the fill, so this image answers one question: does a
-/// `ViewEffect`'s output reach the screen and the capture at all?
+/// `.effect()` is the escape hatch for an application's own wgpu effect, and
+/// nothing else in this repository exercises it. The swatch grid underneath is
+/// entirely covered by the fill, so this image answers one question: does an
+/// `Effect`'s output reach the screen and the capture at all?
 #[preview]
 fn view_effect_preview() -> impl View {
     vstack((
         text("View effect").headline(),
-        ViewEffect::new(sample_content(), FillEffect).size(220.0, 140.0),
+        sample_content().effect(FillEffect).size(220.0, 140.0),
     ))
     .padding()
 }
@@ -429,10 +428,10 @@ fn view_effect_preview() -> impl View {
 /// filter has to meet a component boundary, which is how an application writes
 /// it.
 fn self_effecting_content() -> impl View {
-    ViewEffect::new(sample_content(), FillEffect)
+    sample_content().effect(FillEffect)
 }
 
-/// A `ViewEffect` inside a filter (#579).
+/// An `Effect` inside a filter (#579).
 ///
 /// A filter captures its content with `CARenderer`, which reads exactly what
 /// `cacheDisplay(in:to:)` and the preview snapshot read. The outer filter

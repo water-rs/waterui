@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::toolchain::{
     Host, Installation, Toolchain, ToolchainError,
+    managed_tool::{LLVM_ARM64_MSI_SHA256, LLVM_ARM64_MSI_URL, ManagedToolError, fetch_pinned},
     winget::{WingetInstallError, ensure_package_installed},
 };
 
@@ -85,9 +86,17 @@ impl Toolchain for WindowsArm64LlvmToolchain {
     }
 }
 
-/// Installation plan for Windows ARM64 LLVM tooling.
+/// Installation plan for Windows ARM64 LLVM tooling — the strategy `check`
+/// selected for this host.
 #[derive(Debug, Clone)]
-pub struct WindowsArm64LlvmInstallation;
+pub enum WindowsArm64LlvmInstallation {
+    /// `winget install LLVM.LLVM`.
+    Winget,
+    /// The pinned `llvm/llvm-project` Windows ARM64 MSI run through
+    /// `msiexec` — no package manager required. Installs to
+    /// `C:\Program Files\LLVM`, which the resolution already probes.
+    Msi,
+}
 
 /// Errors that can occur when installing Windows ARM64 LLVM tooling.
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +109,18 @@ pub enum FailToInstallWindowsArm64Llvm {
     /// winget installation failed.
     #[error("Failed to install LLVM via winget: {0}")]
     WingetInstallFailed(String),
+    /// The pinned MSI could not be downloaded or verified.
+    #[error(transparent)]
+    Managed(#[from] ManagedToolError),
+    /// An installation command failed to spawn.
+    #[error(transparent)]
+    Command(#[from] crate::utils::CommandError),
+    /// An I/O operation failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// `msiexec` exited with a failure.
+    #[error("`msiexec` for the LLVM installer exited with {0}")]
+    MsiexecFailed(std::process::ExitStatus),
     /// LLVM package installed but required binaries are still unavailable.
     #[error(
         "LLVM was installed, but required binaries are still missing ({missing}). Ensure `{}` is accessible and restart shell/terminal.",
@@ -114,10 +135,41 @@ pub enum FailToInstallWindowsArm64Llvm {
 impl Installation for WindowsArm64LlvmInstallation {
     type Error = FailToInstallWindowsArm64Llvm;
 
+    /// `msiexec` writes outside `~/.water` (`C:\Program Files\LLVM`), so the
+    /// doctor fix loop confirms it first.
+    fn modifies_system(&self) -> bool {
+        matches!(self, Self::Msi)
+    }
+
     async fn install(&self, host: &Host) -> Result<(), Self::Error> {
-        ensure_package_installed(host, LLVM_WINGET_PACKAGE_ID)
-            .await
-            .map_err(map_winget_error_for_windows_arm64_llvm)?;
+        match self {
+            Self::Winget => {
+                ensure_package_installed(host, LLVM_WINGET_PACKAGE_ID)
+                    .await
+                    .map_err(map_winget_error_for_windows_arm64_llvm)?;
+            }
+            Self::Msi => {
+                use std::ffi::OsStr;
+                let temp_root = host.temp_dir();
+                let staging = smol::unblock(move || tempfile::tempdir_in(temp_root)).await?;
+                let msi = staging.path().join("LLVM-23.1.1-woa64.msi");
+                fetch_pinned(LLVM_ARM64_MSI_URL, LLVM_ARM64_MSI_SHA256, &msi).await?;
+                let output = host
+                    .output(
+                        "msiexec",
+                        [
+                            OsStr::new("/i"),
+                            msi.as_os_str(),
+                            OsStr::new("/quiet"),
+                            OsStr::new("/norestart"),
+                        ],
+                    )
+                    .await?;
+                if !output.status.success() {
+                    return Err(FailToInstallWindowsArm64Llvm::MsiexecFailed(output.status));
+                }
+            }
+        }
 
         let tools = resolve_llvm_tools(host).await;
         if tools.is_complete() {
@@ -175,15 +227,13 @@ async fn ensure_llvm_tools_available(
     }
 
     if host.which("winget").await.is_ok() {
-        Err(ToolchainError::fixable(WindowsArm64LlvmInstallation))
-    } else {
-        let missing = resolved.missing_components().join(", ");
-        Err(ToolchainError::unfixable(
-            format!("Windows ARM64 LLVM tooling is missing: {missing}"),
-            format!(
-                "Install Microsoft App Installer to enable `winget`, or install LLVM manually and ensure both `{DEFAULT_CLANG_CL_PATH}` and `{DEFAULT_LLVM_LIB_PATH}` are available."
-            ),
+        Err(ToolchainError::fixable(
+            WindowsArm64LlvmInstallation::Winget,
         ))
+    } else {
+        // The pinned llvm-project Windows ARM64 MSI covers hosts without
+        // winget (Windows Server images ship without App Installer).
+        Err(ToolchainError::fixable(WindowsArm64LlvmInstallation::Msi))
     }
 }
 
@@ -285,7 +335,7 @@ mod host_tests {
             .expect("LLVM tooling is only required on Windows ARM64");
         let envs = smol::block_on(WindowsArm64LlvmToolchain.cargo_envs(&host))
             .expect("cargo envs off Windows ARM64 must not probe tools");
-        assert!(envs.is_empty());
+        assert_eq!(envs, [] as [(String, std::ffi::OsString); 0]);
     }
 
     #[test]
@@ -306,15 +356,25 @@ mod host_tests {
         let host = machine.host(Vec::<(String, String)>::new());
         let result = smol::block_on(WindowsArm64LlvmToolchain.check(&host));
         assert!(
-            matches!(result, Err(ToolchainError::Unfixable(_))),
-            "missing LLVM tools without winget must be unfixable: {result:?}"
+            matches!(
+                result,
+                Err(ToolchainError::Fixable(
+                    super::WindowsArm64LlvmInstallation::Msi
+                ))
+            ),
+            "missing LLVM tools without winget falls back to the pinned MSI: {result:?}"
         );
         machine.install("winget");
         let host = machine.host(Vec::<(String, String)>::new());
         let result = smol::block_on(WindowsArm64LlvmToolchain.check(&host));
         assert!(
-            matches!(result, Err(ToolchainError::Fixable(_))),
-            "missing LLVM tools with winget must be fixable: {result:?}"
+            matches!(
+                result,
+                Err(ToolchainError::Fixable(
+                    super::WindowsArm64LlvmInstallation::Winget
+                ))
+            ),
+            "missing LLVM tools with winget must stay on winget: {result:?}"
         );
     }
 }

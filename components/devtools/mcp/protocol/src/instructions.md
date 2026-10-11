@@ -28,6 +28,10 @@ screen; everything you see and do goes through its accessibility tree.
 - `pointer` coordinates are viewport logical pixels — or fractions of a node
   when you pass `node` (`x: 0.5, y: 0.5` is its center); `to_node` anchors a
   drag's end the same way.
+- Use `drop_files` to deliver an OS file drop: absolute `paths` plus a point
+  (`x`, `y`, or a `node` anchor like `pointer`). The drop destination under
+  the point receives the same `FileHovered` → `FileDropped` input a real
+  platform drop emits.
 - Use `key` for named keys (Enter, Tab, Escape, arrows, …) with optional
   modifiers, and `type_text` to enter text into the focused input.
 - Every mutating tool returns the settled accessibility tree, so no follow-up

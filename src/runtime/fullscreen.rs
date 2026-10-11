@@ -7,12 +7,14 @@
 use crate::View;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
 use waterui_core::plugin::Plugin;
+use waterui_macros::state;
 
 /// Manages full-screen overlays for the application.
 ///
 /// This manager uses a `DynamicHandler` to control overlay content.
-/// It can be injected into the `Environment` and accessed from anywhere
-/// in the view hierarchy.
+/// Handlers take it bare (`manager: FullScreenOverlayManager`) once a window
+/// has installed it through `.state(&manager)`.
+#[state]
 #[derive(Clone)]
 pub struct FullScreenOverlayManager {
     handler: DynamicHandler,

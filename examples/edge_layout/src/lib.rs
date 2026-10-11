@@ -7,31 +7,29 @@
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::layout::stack::{HStack, VStack};
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::shape::{RoundedRectangle, ShapeExt};
+use waterui::widget::condition::when;
 
 /// 8 levels of alternating hstack/vstack nesting. Recursion through AnyView
 /// keeps the concrete type finite while stressing deep layout passes.
 fn deep_nest(depth: u32) -> AnyView {
     if depth == 0 {
-        return AnyView::new(text("depth 0").caption().foreground(MutedForeground));
+        return AnyView::new(text("depth 0").caption().muted());
     }
-    let inner = deep_nest(depth - 1);
-    if depth % 2 == 0 {
-        AnyView::new(
-            hstack((text("·").caption(), inner))
+    AnyView::new(
+        when(depth.is_multiple_of(2), move || {
+            hstack((text("·").caption(), deep_nest(depth - 1)))
                 .spacing(2.0)
-                .padding_with(EdgeInsets::symmetric(0.0, 2.0)),
-        )
-    } else {
-        AnyView::new(
-            vstack((text("·").caption(), inner))
+                .padding_horizontal(2.0)
+        })
+        .otherwise(move || {
+            vstack((text("·").caption(), deep_nest(depth - 1)))
                 .spacing(2.0)
-                .alignment(HorizontalAlignment::Leading),
-        )
-    }
+                .leading()
+        }),
+    )
 }
 
 #[derive(Clone, Copy, Identifiable)]
@@ -59,7 +57,7 @@ fn dense_grid() -> impl View {
         },
     )
     .spacing(4.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn hsl(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
@@ -86,7 +84,7 @@ fn constraint_edges() -> impl View {
             RoundedRectangle::new(0.5)
                 .fill(Color::srgb_hex("#EF4444"))
                 .size(0.0, 0.0),
-            text("after zero").caption().foreground(MutedForeground),
+            text("after zero").caption().muted(),
         ))
         .spacing(8.0),
         hstack((
@@ -103,7 +101,7 @@ fn constraint_edges() -> impl View {
         ))
         .spacing(8.0),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(10.0)
 }
 
@@ -114,7 +112,7 @@ pub fn demo() -> impl View {
             text("Edge Layout").title(),
             text("Deep nesting, dense children, constraint edges")
                 .sub_headline()
-                .foreground(MutedForeground),
+                .muted(),
             Divider,
             text("Deep nesting (8 levels)").sub_headline(),
             deep_nest(8),
@@ -126,8 +124,8 @@ pub fn demo() -> impl View {
             constraint_edges(),
             spacer().min_height(16.0),
         ))
-        .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::all(16.0)),
+        .leading()
+        .padding_with(16.0),
     )
 }
 

@@ -11,3 +11,7 @@
     if i18n_dir.is_dir() {
         println!("cargo:rerun-if-changed={}", i18n_dir.display());
     }
+    // With no `rerun-if-changed` at all Cargo watches every file in the
+    // package — `Cargo.lock` included — so this script always names itself
+    // as an input beside the ones watched above.
+    println!("cargo:rerun-if-changed=build.rs");

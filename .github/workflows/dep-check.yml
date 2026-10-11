@@ -9,30 +9,42 @@ permissions:
   issues: write
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+      # Reads the shared `cargo-sources` archive owned by the `lint` job in
+      # test.yml; this job saves nothing, so it cannot evict other caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
 
       - name: Install cargo-edit
-        uses: taiki-e/install-action@v2
+        uses: ./.github/actions/install-tool
         with:
-          tool: cargo-edit
+          tool: cargo-edit@0.13.13
+          path: |
+            ~/.cargo/bin/cargo-add*
+            ~/.cargo/bin/cargo-rm*
+            ~/.cargo/bin/cargo-set-version*
+            ~/.cargo/bin/cargo-upgrade*
 
       - name: Check Rust dependencies
         run: |
           # `cargo upgrade --dry-run` resolves the workspace in place, so it
-          # follows workspace inheritance and the submodule path dependencies
-          # that `cargo outdated`'s temporary copy could not. It prints one
+          # follows workspace inheritance and the patch tables that
+          # `cargo outdated`'s temporary copy could not. It prints one
           # table per crate with something to bump and nothing otherwise; the
           # per-crate progress lines and its dry-run notes are not findings.
           cargo upgrade --dry-run --incompatible 2>&1 | tee upgrade.log \

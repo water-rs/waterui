@@ -1,4 +1,4 @@
-//! Flow Markdown playground.
+//! Flow Markdown example.
 use std::time::Duration;
 
 use waterui::animation::Animation;
@@ -77,7 +77,7 @@ fn current_document_char_count(index: i32) -> i32 {
 }
 
 fn cancel_stream(streaming: &Binding<bool>, stream_revision: &Binding<i32>) {
-    stream_revision.set(stream_revision.get().wrapping_add(1));
+    stream_revision.with_mut(|v| *v = (*v).wrapping_add(1));
     streaming.set(false);
 }
 
@@ -107,12 +107,14 @@ fn start_character_stream(
     document_index: Binding<i32>,
     stream_cps: Binding<i32>,
 ) {
-    let revision = stream_revision.get().wrapping_add(1);
-    stream_revision.set(revision);
+    let revision = stream_revision.with_mut(|revision| {
+        *revision = (*revision).wrapping_add(1);
+        *revision
+    });
     streaming.set(true);
     reset_stream(&markdown, &char_progress);
 
-    let document = current_document_body(document_index.get());
+    let document = current_document_body(document_index.snapshot());
     let char_end_offsets: Vec<usize> = document
         .char_indices()
         .map(|(start, ch)| start + ch.len_utf8())
@@ -124,19 +126,19 @@ fn start_character_stream(
 
     spawn_local(async move {
         for (index, end_offset) in char_end_offsets.into_iter().enumerate() {
-            if stream_revision.get() != revision {
+            if stream_revision.snapshot() != revision {
                 return;
             }
 
             markdown.set(Str::from_static(&document[..end_offset]));
             char_progress.set((index + 1) as i32);
 
-            let cps = stream_cps.get().clamp(STREAM_CPS_MIN, STREAM_CPS_MAX) as u64;
+            let cps = stream_cps.snapshot().clamp(STREAM_CPS_MIN, STREAM_CPS_MAX) as u64;
             let interval = Duration::from_nanos(1_000_000_000u64 / cps);
             sleep(interval).await;
         }
 
-        if stream_revision.get() == revision {
+        if stream_revision.snapshot() == revision {
             streaming.set(false);
         }
     })
@@ -194,9 +196,10 @@ fn configured_flow_config(
 }
 
 /// Aggregates the bindings that the document-control buttons share, so each
-/// button can inject a single `State<StreamControl>` instead of stacking many
+/// button can inject a single `StreamControl` instead of stacking many
 /// `State<Binding<T>>` parameters and matching `.state(...)` calls. See
 /// `docs/api-style.md` for when to prefer this idiom.
+#[state]
 #[derive(Clone)]
 struct StreamControl {
     markdown: Binding<Str>,
@@ -237,9 +240,7 @@ pub fn demo() -> impl View {
     let stream_speed = stream_cps
         .clone()
         .map(|cps| cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-    let stream_status = streaming
-        .clone()
-        .map(|streaming| if streaming { "running" } else { "idle" });
+    let stream_status = streaming.clone().select("running", "idle");
     let flow_summary = animation_preset
         .zip(&animation_cps)
         .zip(&stream_cps)
@@ -263,13 +264,9 @@ pub fn demo() -> impl View {
             configured_flow_config(preset, cps, stream_cps, token_fade_enabled)
         })
         .computed();
-    let token_fade_label = token_fade_enabled.clone().map(|enabled| {
-        if enabled {
-            "Token fade on"
-        } else {
-            "Token fade off"
-        }
-    });
+    let token_fade_label = token_fade_enabled
+        .clone()
+        .select("Token fade on", "Token fade off");
     let document_title_text = document_title.clone();
     let document_number_text = document_number.clone();
     let char_progress_text = char_progress.clone();
@@ -303,7 +300,7 @@ pub fn demo() -> impl View {
         .caption(),
         hstack((
             button("Prev doc")
-                .action(|State(c): State<StreamControl>| {
+                .action(|c: StreamControl| {
                     cancel_stream(&c.streaming, &c.stream_revision);
                     *c.document_index.get_mut() -= 1;
                     reset_stream(&c.markdown, &c.char_progress);
@@ -311,16 +308,19 @@ pub fn demo() -> impl View {
                 .state(&control)
                 .width(PRIMARY_CONTROL_WIDTH),
             button("Next doc")
-                .action(|State(c): State<StreamControl>| {
+                .action(|c: StreamControl| {
                     cancel_stream(&c.streaming, &c.stream_revision);
                     *c.document_index.get_mut() += 1;
                     reset_stream(&c.markdown, &c.char_progress);
                 })
                 .state(&control)
                 .width(WIDE_CONTROL_WIDTH),
+        ))
+        .spacing(8.0),
+        hstack((
             button("Start stream")
                 .bordered_prominent()
-                .action(|State(c): State<StreamControl>| {
+                .action(|c: StreamControl| {
                     start_character_stream(
                         c.markdown.clone(),
                         c.char_progress.clone(),
@@ -333,26 +333,26 @@ pub fn demo() -> impl View {
                 .state(&control)
                 .width(PRIMARY_CONTROL_WIDTH),
             button("Load full")
-                .action(|State(c): State<StreamControl>| {
+                .action(|c: StreamControl| {
                     load_full_document(
                         &c.markdown,
                         &c.char_progress,
                         &c.stream_revision,
                         &c.streaming,
-                        c.document_index.get(),
+                        c.document_index.snapshot(),
                     );
-                })
-                .state(&control)
-                .width(PRIMARY_CONTROL_WIDTH),
-            button("Reset")
-                .action(|State(c): State<StreamControl>| {
-                    cancel_stream(&c.streaming, &c.stream_revision);
-                    reset_stream(&c.markdown, &c.char_progress);
                 })
                 .state(&control)
                 .width(PRIMARY_CONTROL_WIDTH),
         ))
         .spacing(8.0),
+        button("Reset")
+            .action(|c: StreamControl| {
+                cancel_stream(&c.streaming, &c.stream_revision);
+                reset_stream(&c.markdown, &c.char_progress);
+            })
+            .state(&control)
+            .width(PRIMARY_CONTROL_WIDTH),
         text!(
             "Flow animation preset: {preset} | token reveal CPS: {cps} | token fade: {fade_label}",
             preset = flow_preset_text,
@@ -375,6 +375,9 @@ pub fn demo() -> impl View {
                 })
                 .state(&stream_cps)
                 .width(WIDE_CONTROL_WIDTH),
+        ))
+        .spacing(8.0),
+        hstack((
             button("Preset")
                 .action(|State(preset): State<Binding<i32>>| {
                     let mut preset = preset.get_mut();
@@ -396,14 +399,14 @@ pub fn demo() -> impl View {
                 })
                 .state(&animation_cps)
                 .width(SECONDARY_CONTROL_WIDTH),
-            button(text!("{token_fade_label}"))
-                .action(|State(enabled): State<Binding<bool>>| {
-                    enabled.set(!enabled.get());
-                })
-                .state(&token_fade_enabled)
-                .width(TOKEN_CONTROL_WIDTH),
         ))
         .spacing(8.0),
+        button(text!("{token_fade_label}"))
+            .action(|State(enabled): State<Binding<bool>>| {
+                enabled.toggle();
+            })
+            .state(&token_fade_enabled)
+            .width(TOKEN_CONTROL_WIDTH),
         Divider,
         scroll(flow_markdown(markdown).configuration(flow_config).padding()).border(Grey, 1.0),
     ))

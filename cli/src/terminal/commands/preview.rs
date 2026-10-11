@@ -10,33 +10,41 @@ use serde::Deserialize;
 
 use crate::shell::Shell;
 use crate::{error, header, note, success};
-use waterui_cli::artifact_symbols::{ArtifactSymbols, build_host_rlib};
+use waterui_cli::build::BuildProgress;
 use waterui_cli::mcp::preview::PreviewArgs;
 use waterui_cli::preview::request::{
     self, CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewTarget,
+    ResolvedPreviewBackend,
 };
 use waterui_cli::preview::{
-    HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
-    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, PreviewPlatform,
-    launch_preview_session, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
+    ApplePreviewRequest, HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton,
+    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent,
+    HydrolysisPreviewTheme, discover_hydrolysis_preview_exports, launch_preview_session,
+    render_preview_with_apple, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
-use waterui_cli::project::read_project_crate_name;
+use waterui_cli::project::{Manifest, read_project_crate_name};
 
 async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
-    let platform = request::resolve_preview_platform(args.platform)?;
-    request::ensure_hydrolysis_preview_platform(platform)?;
-    let (width, height) = request::parse_frame(&args.frame)?;
     let project_path = crate::project_path::canonicalize(&args.path)?;
+    let manifest = Manifest::open(project_path.join("Water.toml")).await?;
+    let platform = request::resolve_preview_platform(args.platform)?;
+    let target_platform = request::resolve_hydrolysis_test_platform(&manifest, platform)?;
+    request::check_toolchain_for_backend(
+        &waterui_cli::toolchain::Host::current(),
+        ResolvedPreviewBackend::Hydrolysis(target_platform),
+    )
+    .await?;
+    let (width, height) = request::parse_frame(&args.frame)?;
     let crate_name = read_project_crate_name(&project_path).await?;
     let sccache_path =
         super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
     let targets = resolve_test_targets(
         &project_path,
         &crate_name,
-        args.target.as_deref(),
-        args.expr,
-        args.all,
+        &args,
+        target_platform,
         sccache_path.as_deref(),
+        Some(&shell.build_progress()),
     )
     .await?;
     let automation_body = load_automation_body(
@@ -49,17 +57,20 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
     for target in targets {
         header!(shell, "Preview test: {}", target.display_name());
         let spinner = shell.spinner("Building and testing with hydrolysis...");
-        let output = test_preview_with_hydrolysis(
+        let output = Box::pin(test_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
+                host: &waterui_cli::toolchain::Host::current(),
                 project_path: &project_path,
-                source: target.hydrolysis_source(),
+                source: target.source(),
                 theme: args.theme.into(),
+                platform: target_platform,
                 width,
                 height,
                 sccache_path: sccache_path.clone(),
+                progress: Some(shell.build_progress()),
             },
             &automation_body,
-        )
+        ))
         .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
@@ -94,7 +105,7 @@ pub struct Args {
     #[arg(short, long, value_enum)]
     platform: Option<CliPreviewPlatform>,
 
-    /// Rendering backend.
+    /// Rendering backend (must agree with any Water.toml platform declaration).
     #[arg(long, value_enum)]
     backend: Option<CliPreviewBackend>,
 
@@ -118,12 +129,27 @@ pub struct Args {
     #[arg(long)]
     output_dir: Option<PathBuf>,
 
+    /// Android device serial or AVD name (only with `--platform android`).
+    /// Without it the remembered last-used device wins, then an unambiguous
+    /// single candidate, then a picker.
+    #[arg(short, long)]
+    device: Option<String>,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
 }
 
 impl Args {
+    /// The project directory this command works on — the `test`
+    /// subcommand's own `--path` when it runs.
+    pub(crate) fn project_dir(&self) -> &Path {
+        match &self.command {
+            Some(PreviewCommand::Test(test)) => &test.path,
+            None => &self.path,
+        }
+    }
+
     /// The shared preview arguments — the same shape the MCP `preview` tool
     /// accepts, so `water preview` and `tools/call preview` resolve identically.
     fn preview_args(&self, target: &str) -> PreviewArgs {
@@ -134,6 +160,7 @@ impl Args {
             backend: self.backend,
             theme: self.theme,
             platform: self.platform,
+            device: self.device.clone(),
         }
     }
 }
@@ -162,7 +189,7 @@ struct PreviewTestArgs {
     platform: Option<CliPreviewPlatform>,
 
     /// Theme package for Hydrolysis preview testing.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value = "material3")]
     theme: CliHydrolysisPreviewTheme,
 
     /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
@@ -192,7 +219,9 @@ struct PreviewTestArgs {
 )]
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     match args.command {
-        Some(PreviewCommand::Test(args)) => return run_preview_test(shell, args).await,
+        Some(PreviewCommand::Test(args)) => {
+            return Box::pin(run_preview_test(shell, args)).await;
+        }
         None => {}
     }
 
@@ -209,32 +238,68 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     // Resolve through the shared `PreviewArgs` contract — the same arguments
     // the MCP `preview` tool takes.
-    let request = args.preview_args(target).resolve(&crate_name)?;
+    let manifest = Manifest::open(project_path.join("Water.toml")).await?;
+    let request = args.preview_args(target).resolve(&manifest, &crate_name)?;
+    if args.device.is_some()
+        && request.backend
+            != ResolvedPreviewBackend::Hydrolysis(waterui_cli::platform::TargetPlatform::Android)
+    {
+        bail!("`--device` is supported only with `--platform android`.");
+    }
     header!(shell, "Preview: {}", request.target.display_name());
 
-    request::check_toolchain_for_backend(request.platform, request.backend).await?;
+    let kotlin_toolchain = request::check_toolchain_for_backend(
+        &waterui_cli::toolchain::Host::current(),
+        request.backend,
+    )
+    .await?;
 
     // Detect sccache for compilation caching
     let sccache_path =
         super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
 
-    if request.backend == CliPreviewBackend::Hydrolysis {
+    if let ResolvedPreviewBackend::Hydrolysis(platform) = request.backend {
+        let android = if platform == waterui_cli::platform::TargetPlatform::Android {
+            let spinner = shell.spinner("Scanning for devices...");
+            let target = super::select_android_target(
+                shell,
+                &waterui_cli::toolchain::Host::current(),
+                waterui_cli::water_dir::device_memory_key(
+                    waterui_cli::platform::TargetBackend::Hydrolysis,
+                    waterui_cli::platform::TargetPlatform::Android,
+                ),
+                args.device.as_deref(),
+                spinner.as_ref(),
+            )
+            .await;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            Some(target?)
+        } else {
+            None
+        };
         let scenario = load_hydrolysis_scenario(args.scenario.as_deref(), args.output_dir).await?;
         let spinner = shell.spinner("Building and rendering with hydrolysis...");
-        render_preview_with_hydrolysis(
+        Box::pin(render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
+                host: &waterui_cli::toolchain::Host::current(),
                 project_path: &project_path,
-                source: request.target.hydrolysis_source(),
+                source: request.target.source(),
                 theme: request
                     .hydrolysis_theme
                     .expect("hydrolysis preview theme must be resolved"),
+                platform,
                 width: request.width,
                 height: request.height,
                 sccache_path,
+                progress: Some(shell.build_progress()),
             },
             &args.output,
             scenario.as_ref(),
-        )
+            kotlin_toolchain.as_ref(),
+            android,
+        ))
         .await?;
         if let Some(s) = spinner {
             s.finish_and_clear();
@@ -255,6 +320,28 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         bail!("`--scenario` and `--output-dir` are supported only with `--backend hydrolysis`.");
     }
 
+    if request.backend == ResolvedPreviewBackend::Apple {
+        let spinner = shell.spinner("Building and rendering with the Apple backend...");
+        render_preview_with_apple(
+            ApplePreviewRequest {
+                host: &waterui_cli::toolchain::Host::current(),
+                project_path: &project_path,
+                source: request.target.source(),
+                width: request.width,
+                height: request.height,
+                sccache_path,
+                progress: Some(shell.build_progress()),
+            },
+            &args.output,
+        )
+        .await?;
+        if let Some(s) = spinner {
+            s.finish_and_clear();
+        }
+        success!(shell, "Preview saved to {}", args.output.display());
+        return Ok(());
+    }
+
     let PreviewTarget::Function {
         function_path,
         symbol,
@@ -263,11 +350,20 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         bail!("Expression preview is currently supported only with `--backend hydrolysis`.");
     };
 
+    let ResolvedPreviewBackend::SupportApp(preview_platform) = request.backend else {
+        unreachable!("the Hydrolysis arm returned early");
+    };
+
     // Launch preview session (connects to existing app or launches new one)
     let spinner = shell.spinner("Connecting to preview app...");
-    let preview_platform: PreviewPlatform = request.platform.into();
-    let mut session =
-        launch_preview_session(&project_path, preview_platform, sccache_path.clone()).await?;
+    let mut session = Box::pin(launch_preview_session(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        preview_platform,
+        sccache_path.clone(),
+        Some(shell.build_progress()),
+    ))
+    .await?;
     if let Some(s) = spinner {
         s.finish_and_clear();
     }
@@ -443,21 +539,31 @@ fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewSc
 async fn resolve_test_targets(
     project_path: &Path,
     crate_name: &str,
-    target: Option<&str>,
-    force_expression: bool,
-    all: bool,
+    args: &PreviewTestArgs,
+    target_platform: waterui_cli::platform::TargetPlatform,
     sccache_path: Option<&Path>,
+    progress: Option<&BuildProgress>,
 ) -> Result<Vec<PreviewTarget>> {
-    match (all, target) {
+    match (args.all, args.target.as_deref()) {
         (true, Some(_)) => {
             bail!("`--all` cannot be combined with an explicit preview target.");
         }
-        (true, None) if force_expression => {
+        (true, None) if args.expr => {
             bail!("`--all` cannot be combined with `--expr`.");
         }
-        (true, None) => discover_preview_targets(project_path, crate_name, sccache_path).await,
+        (true, None) => {
+            discover_preview_targets(
+                project_path,
+                crate_name,
+                args.theme.into(),
+                target_platform,
+                sccache_path,
+                progress,
+            )
+            .await
+        }
         (false, Some(target)) => {
-            if force_expression {
+            if args.expr {
                 Ok(vec![PreviewTarget::Expression {
                     expression: target.to_string(),
                 }])
@@ -473,22 +579,39 @@ async fn resolve_test_targets(
     }
 }
 
+/// Probe-build the project through its hydrolysis backend and read the
+/// `waterui_preview_*` exports off the app library the build produced. The
+/// probe shares its Cargo profile with the per-target builds `run_preview_test`
+/// then performs, so discovery costs one warm build.
 async fn discover_preview_targets(
     project_path: &Path,
     crate_name: &str,
+    theme: HydrolysisPreviewTheme,
+    target_platform: waterui_cli::platform::TargetPlatform,
     sccache_path: Option<&Path>,
+    progress: Option<&BuildProgress>,
 ) -> Result<Vec<PreviewTarget>> {
-    let rlib = build_host_rlib(project_path, sccache_path).await?;
-    let symbols = ArtifactSymbols::read(&rlib)?;
+    let exports = discover_hydrolysis_preview_exports(
+        &waterui_cli::toolchain::Host::current(),
+        project_path,
+        theme,
+        target_platform,
+        sccache_path.map(Path::to_path_buf),
+        progress.cloned(),
+    )
+    .await?;
     // `#[preview]` exports `waterui_preview_<crate>_<fn>`; crate names are
     // normalized like `function_path_to_symbol` does (dashes become
     // underscores).
     let prefix = format!("waterui_preview_{}_", crate_name.replace('-', "_"));
-    let symbols_found = symbols.leaves_with_prefix(&prefix);
-    if symbols_found.is_empty() {
-        bail!("no `waterui_preview_*` exports found in {}", rlib.display());
+    let found: Vec<String> = exports
+        .into_iter()
+        .filter(|symbol| symbol.starts_with(&prefix))
+        .collect();
+    if found.is_empty() {
+        bail!("no `waterui_preview_*` exports found in {project_path:?}");
     }
-    Ok(symbols_found
+    Ok(found
         .into_iter()
         .map(|symbol| PreviewTarget::Function {
             function_path: symbol[prefix.len()..].to_string(),
@@ -521,6 +644,10 @@ fn emit_child_output(shell: &Shell, output: &str) {
 
 #[cfg(test)]
 mod tests {
+    fn project_manifest() -> Manifest {
+        Manifest::parse("[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.linux]\nbackend = 'hydrolysis'").unwrap()
+    }
+
     use clap::Parser;
 
     use super::*;
@@ -537,11 +664,22 @@ mod tests {
             .args
     }
 
+    /// This host's desktop preview platform label — a resolved `--platform`
+    /// must name the host OS, so tests substitute it rather than hardcoding
+    /// one.
+    fn host_platform_name() -> &'static str {
+        match std::env::consts::OS {
+            "macos" | "linux" | "windows" => std::env::consts::OS,
+            other => panic!("test host {other} has no native preview platform"),
+        }
+    }
+
     #[test]
     fn cli_and_mcp_args_resolve_to_the_same_request() {
         // `water preview --expr --frame 800x600 --backend hydrolysis --theme
-        // material3 --platform macos 'text("hi")'` and the equivalent MCP
+        // material3 --platform <host> 'text("hi")'` and the equivalent MCP
         // `preview` call must produce the identical render request.
+        let platform = host_platform_name();
         let cli_args = parse(&[
             "preview",
             "text(\"hi\")",
@@ -553,41 +691,46 @@ mod tests {
             "--theme",
             "material3",
             "--platform",
-            "macos",
+            platform,
         ]);
         let cli_request = cli_args
             .preview_args(cli_args.target.as_deref().expect("target"))
-            .resolve("demo_app")
+            .resolve(&project_manifest(), "demo_app")
             .expect("cli resolve");
 
-        let mcp_args: PreviewArgs = serde_json::from_str(
-            r#"{
-                "target": "text(\"hi\")",
-                "expr": true,
-                "frame": "800x600",
-                "backend": "hydrolysis",
-                "theme": "material3",
-                "platform": "macos"
-            }"#,
-        )
+        let mcp_args: PreviewArgs = serde_json::from_value(serde_json::json!({
+            "target": "text(\"hi\")",
+            "expr": true,
+            "frame": "800x600",
+            "backend": "hydrolysis",
+            "theme": "material3",
+            "platform": platform,
+        }))
         .expect("mcp args parse");
-        let mcp_request = mcp_args.resolve("demo_app").expect("mcp resolve");
+        let mcp_request = mcp_args
+            .resolve(&project_manifest(), "demo_app")
+            .expect("mcp resolve");
 
         assert_eq!(cli_request, mcp_request);
     }
 
     #[test]
     fn cli_and_mcp_defaults_resolve_to_the_same_request() {
-        let cli_args = parse(&["preview", "views::home", "--platform", "macos"]);
+        let platform = host_platform_name();
+        let cli_args = parse(&["preview", "views::home", "--platform", platform]);
         let cli_request = cli_args
             .preview_args(cli_args.target.as_deref().expect("target"))
-            .resolve("demo_app")
+            .resolve(&project_manifest(), "demo_app")
             .expect("cli resolve");
 
-        let mcp_args: PreviewArgs =
-            serde_json::from_str(r#"{"target": "views::home", "platform": "macos"}"#)
-                .expect("mcp args parse");
-        let mcp_request = mcp_args.resolve("demo_app").expect("mcp resolve");
+        let mcp_args: PreviewArgs = serde_json::from_value(serde_json::json!({
+            "target": "views::home",
+            "platform": platform,
+        }))
+        .expect("mcp args parse");
+        let mcp_request = mcp_args
+            .resolve(&project_manifest(), "demo_app")
+            .expect("mcp resolve");
 
         assert_eq!(cli_request, mcp_request);
     }
@@ -639,15 +782,18 @@ mod tests {
     }
 
     #[test]
-    fn hydrolysis_preview_requires_explicit_theme() {
-        let result = request::resolve_hydrolysis_preview_theme(CliPreviewBackend::Hydrolysis, None);
-        assert!(result.is_err());
+    fn hydrolysis_preview_theme_defaults_to_material3() {
+        let result = request::resolve_hydrolysis_preview_theme(
+            ResolvedPreviewBackend::Hydrolysis(waterui_cli::platform::TargetPlatform::Linux),
+            None,
+        );
+        assert_eq!(result.unwrap(), Some(HydrolysisPreviewTheme::Material3));
     }
 
     #[test]
     fn rejects_theme_for_non_hydrolysis_preview() {
         let result = request::resolve_hydrolysis_preview_theme(
-            CliPreviewBackend::Apple,
+            ResolvedPreviewBackend::SupportApp(waterui_cli::preview::PreviewPlatform::Macos),
             Some(CliHydrolysisPreviewTheme::Material3),
         );
         assert!(result.is_err());

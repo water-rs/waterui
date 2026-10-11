@@ -8,7 +8,7 @@
 //! ## Native vs self-rendered playback
 //!
 //! The same SDR and HDR10 sources exercise either the platform-native player or
-//! WaterUI's self-rendered pipeline (`GpuSurface` + `waterkit-codec`), depending
+//! WaterUI's self-rendered pipeline (`GpuContentView` + `waterkit-codec`), depending
 //! on the selected backend/runtime policy.
 
 use waterui::app::App;
@@ -198,7 +198,9 @@ fn player_shell(
         text("WaterUI Video Player").headline(),
         text!("Now Playing: {title}").body(),
         text!("Source Profile: {profile}").footnote(),
-        overlay(player, buffering_overlay).height(360.0),
+        // A `Fit` player is as tall as its source's aspect ratio makes it at
+        // the width it is given.
+        overlay(player, buffering_overlay).max_width(640.0),
         text!("Status: {status}").footnote(),
         source_grid,
     ))
@@ -214,7 +216,7 @@ fn pill_button(
     selected: &Computed<usize>,
     controller: &PlayerController,
 ) -> impl View {
-    let is_selected = selected.clone().map(move |s| s == index);
+    let is_selected = selected.clone().equal_to(index);
     let controller = controller.clone();
     let selected_bg_opacity = is_selected.clone().select(1.0, 0.0);
     let idle_bg_opacity = is_selected.select(0.0, 1.0);

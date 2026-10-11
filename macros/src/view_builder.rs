@@ -96,7 +96,7 @@ fn runtime_watch_path() -> Result<TokenStream2, TokenStream2> {
     })
 }
 
-fn dependency_path(package: &str) -> Option<TokenStream2> {
+pub fn dependency_path(package: &str) -> Option<TokenStream2> {
     match crate_name(package) {
         Ok(FoundCrate::Itself) => Some(quote!(crate)),
         Ok(FoundCrate::Name(name)) => {

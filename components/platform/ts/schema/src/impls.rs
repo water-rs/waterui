@@ -1,0 +1,156 @@
+//! [`TsType`] for the types the Rust-to-TypeScript mapping defines.
+//!
+//! A nested schema is written as `&<T as TsType>::SCHEMA`: inside a `const`
+//! initializer the reference is extended to `'static`, so an arbitrarily deep
+//! tree is still one constant and the compiler has already resolved every
+//! alias and generic parameter by the time it is encoded.
+
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::{TsMapKey, TsType, TypeSchema, tree::NumberKind};
+
+impl TsType for () {
+    const SCHEMA: TypeSchema = TypeSchema::Unit;
+}
+
+impl TsType for bool {
+    const SCHEMA: TypeSchema = TypeSchema::Bool;
+}
+
+/// One [`TypeSchema::Number`] impl per Rust numeric type.
+macro_rules! number_schemas {
+    ($($ty:ty => $kind:ident),* $(,)?) => {
+        $(
+            impl TsType for $ty {
+                const SCHEMA: TypeSchema = TypeSchema::Number(NumberKind::$kind);
+            }
+        )*
+    };
+}
+
+number_schemas! {
+    f32 => F32,
+    f64 => F64,
+    i8 => I8,
+    i16 => I16,
+    i32 => I32,
+    u8 => U8,
+    u16 => U16,
+    u32 => U32,
+    i64 => I64,
+    u64 => U64,
+    isize => Isize,
+    usize => Usize,
+}
+
+impl TsType for String {
+    const SCHEMA: TypeSchema = TypeSchema::String;
+}
+
+impl TsMapKey for String {}
+
+impl TsType for &'static str {
+    const SCHEMA: TypeSchema = TypeSchema::String;
+}
+
+impl TsMapKey for &'static str {}
+
+impl<T: TsType> TsType for Option<T> {
+    const SCHEMA: TypeSchema = TypeSchema::Option(&T::SCHEMA);
+}
+
+impl<T: TsType> TsType for Vec<T> {
+    const SCHEMA: TypeSchema = TypeSchema::List(&T::SCHEMA);
+}
+
+impl<T: TsType> TsType for &'static [T] {
+    const SCHEMA: TypeSchema = TypeSchema::List(&T::SCHEMA);
+}
+
+impl<T: TsType, const N: usize> TsType for [T; N] {
+    /// A fixed-length tuple, not `T[]`: the length is what the conversion
+    /// enforces on the way back in, so it is what the declared type says.
+    const SCHEMA: TypeSchema = TypeSchema::Array {
+        item: &T::SCHEMA,
+        len: N,
+    };
+}
+
+impl<K: TsMapKey, V: TsType> TsType for BTreeMap<K, V> {
+    const SCHEMA: TypeSchema = TypeSchema::Map {
+        key: &K::SCHEMA,
+        value: &V::SCHEMA,
+    };
+}
+
+impl<K: TsMapKey, V: TsType, S> TsType for HashMap<K, V, S> {
+    const SCHEMA: TypeSchema = TypeSchema::Map {
+        key: &K::SCHEMA,
+        value: &V::SCHEMA,
+    };
+}
+
+/// One [`TypeSchema::Callback`] impl for one callable spelling.
+macro_rules! callback_schema {
+    ($ty:ty, $($argument:ident),*) => {
+        impl<$($argument: TsType),*> TsType for $ty {
+            const SCHEMA: TypeSchema = TypeSchema::Callback(&[$(<$argument as TsType>::SCHEMA),*]);
+        }
+    };
+}
+
+/// One set of impls per callable arity, up to eight arguments: boxed and
+/// atomically reference-counted closures in every `Send`/`Sync` flavour —
+/// `Arc<dyn Fn(A) + Send + Sync>` is the canonical shared callback — bare
+/// `Rc` closures (`Rc` is neither `Send` nor `Sync`, so only that spelling
+/// exists), and plain `fn` pointers. Eight is the documented cap — see
+/// [`TsType`](crate::TsType).
+macro_rules! callback_schemas {
+    ($($argument:ident),*) => {
+        callback_schema!(Box<dyn Fn($($argument),*)>, $($argument),*);
+        callback_schema!(Box<dyn Fn($($argument),*) + Send>, $($argument),*);
+        callback_schema!(Box<dyn Fn($($argument),*) + Sync>, $($argument),*);
+        callback_schema!(Box<dyn Fn($($argument),*) + Send + Sync>, $($argument),*);
+        callback_schema!(Arc<dyn Fn($($argument),*)>, $($argument),*);
+        callback_schema!(Arc<dyn Fn($($argument),*) + Send>, $($argument),*);
+        callback_schema!(Arc<dyn Fn($($argument),*) + Sync>, $($argument),*);
+        callback_schema!(Arc<dyn Fn($($argument),*) + Send + Sync>, $($argument),*);
+        callback_schema!(Rc<dyn Fn($($argument),*)>, $($argument),*);
+        callback_schema!(fn($($argument),*), $($argument),*);
+    };
+}
+
+callback_schemas!();
+callback_schemas!(A);
+callback_schemas!(A, B);
+callback_schemas!(A, B, C);
+callback_schemas!(A, B, C, D);
+callback_schemas!(A, B, C, D, E);
+callback_schemas!(A, B, C, D, E, F);
+callback_schemas!(A, B, C, D, E, F, G);
+callback_schemas!(A, B, C, D, E, F, G, H);
+
+#[cfg(feature = "waterui")]
+mod waterui {
+    use super::{TsMapKey, TsType, TypeSchema};
+
+    impl<T: TsType + 'static> TsType for waterui_core::Binding<T> {
+        const SCHEMA: TypeSchema = TypeSchema::Signal(&T::SCHEMA);
+    }
+
+    impl<T: TsType + 'static> TsType for waterui_core::Computed<T> {
+        const SCHEMA: TypeSchema = TypeSchema::Accessor(&T::SCHEMA);
+    }
+
+    impl TsType for waterui_core::AnyView {
+        const SCHEMA: TypeSchema = TypeSchema::View;
+    }
+
+    impl TsType for suiteki::Str {
+        const SCHEMA: TypeSchema = TypeSchema::String;
+    }
+
+    impl TsMapKey for suiteki::Str {}
+}

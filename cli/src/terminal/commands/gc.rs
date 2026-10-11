@@ -33,6 +33,11 @@ struct BuildCacheArgs {
     /// Report what the managed build cache is holding without removing anything.
     #[arg(long)]
     dry_run: bool,
+
+    /// Remove the shared Cargo target directory (`~/.water/build_cache/target`)
+    /// now instead of waiting for the unused-days policy to collect it.
+    #[arg(long, conflicts_with = "dry_run")]
+    shared_target: bool,
 }
 
 /// Run the gc command.
@@ -49,13 +54,30 @@ async fn run_build_cache(shell: &Shell, args: BuildCacheArgs) -> Result<()> {
         return report_build_cache_usage(shell, &project_path).await;
     }
 
+    if args.shared_target {
+        match water_dir::remove_shared_target_dir(&waterui_cli::toolchain::Host::current()).await? {
+            Some(bytes) => success!(
+                shell,
+                "Removed the shared Cargo target directory ({} reclaimed)",
+                human_bytes(bytes)
+            ),
+            None => note!(shell, "No shared Cargo target directory exists"),
+        }
+        return Ok(());
+    }
+
     header!(
         shell,
         "Cleaning stale managed build cache for {}...",
         project_path.display()
     );
 
-    match water_dir::cleanup_stale_build_caches_for_project(&project_path).await? {
+    match water_dir::cleanup_stale_build_caches_for_project(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+    )
+    .await?
+    {
         BuildCacheGcOutcome::Ran(summary) => {
             success!(
                 shell,
@@ -78,7 +100,9 @@ async fn run_build_cache(shell: &Shell, args: BuildCacheArgs) -> Result<()> {
 async fn report_build_cache_usage(shell: &Shell, project_path: &std::path::Path) -> Result<()> {
     header!(shell, "Managed build cache usage");
 
-    let report = water_dir::survey_build_cache_usage(project_path).await?;
+    let report =
+        water_dir::survey_build_cache_usage(&waterui_cli::toolchain::Host::current(), project_path)
+            .await?;
     if report.entries.is_empty() {
         note!(shell, "The managed build cache is empty");
         return Ok(());

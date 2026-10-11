@@ -50,7 +50,7 @@
 //! button("Search")
 //!     .action(
 //!         |State(query): State<Binding<Str>>, State(history): State<Binding<Vec<Str>>>| {
-//!             history.get_mut().push(query.get());
+//!             history.with_mut(|history| history.push(query.snapshot()));
 //!         },
 //!     )
 //!     .state(&query)
@@ -60,29 +60,51 @@
 //!
 //! ## Environment Extraction
 //!
-//! Any extractor type can be used directly as an `action(...)` parameter. Any
-//! `Clone` type becomes one with [`impl_extractor!`](waterui_core::impl_extractor):
+//! Any extractor type can be used directly as an `action(...)` parameter, and
+//! an owned `Clone` type becomes one with `#[state]` — injected the same way
+//! as `State<T>` values, with `.state(&value)`:
+//!
+//! ```rust
+//! use waterui::prelude::*;
+//!
+//! #[state]
+//! #[derive(Clone)]
+//! struct CurrentUser(Str);
+//! # impl CurrentUser {
+//! #     fn rename(&self, _name: Str) {}
+//! # }
+//!
+//! # fn extracted(user: &CurrentUser) {
+//! button("Rename")
+//!     .action(|user: CurrentUser| {
+//!         user.rename(Str::from("Ada"));
+//!     })
+//!     .state(user);
+//! # }
+//! ```
+//!
+//! [`impl_extractor!`](waterui_core::impl_extractor) is the other channel: it
+//! marks a `Clone` type read straight from the environment — a value installed
+//! with `env.insert(..)` or `.with(..)`, typically by `app(env)` or a backend —
+//! not one injected through `.state()`:
 //!
 //! ```rust
 //! use waterui::impl_extractor;
 //! use waterui::prelude::*;
 //!
 //! #[derive(Clone)]
-//! struct CurrentUser(Str);
-//! impl_extractor!(CurrentUser);
-//!
-//! #[derive(Clone)]
 //! struct DatabaseConnection;
 //! impl_extractor!(DatabaseConnection);
 //! # impl DatabaseConnection {
-//! #     fn save_user_preferences(&self, _user: CurrentUser) {}
+//! #     fn save_user_preferences(&self) {}
 //! # }
 //!
-//! # fn extracted() {
+//! # fn extracted(db: &DatabaseConnection) {
 //! button("Save")
-//!     .action(|db: DatabaseConnection, user: CurrentUser| {
-//!         db.save_user_preferences(user);
-//!     });
+//!     .action(|db: DatabaseConnection| {
+//!         db.save_user_preferences();
+//!     })
+//!     .with(db.clone());
 //! # }
 //! ```
 //!
@@ -109,7 +131,7 @@
 //! # let form_data: Binding<FormData> = binding(FormData::default());
 //! button("Submit")
 //!     .action(|State(data): State<Binding<FormData>>, client: ApiClient| {
-//!         client.submit(data.get());
+//!         client.submit(data.snapshot());
 //!     })
 //!     .state(&form_data);
 //! # }
@@ -166,6 +188,7 @@
 //! # }
 //! ```
 
+use crate::size::ControlSize;
 use core::fmt;
 use core::future::Future;
 use fmt::Debug;
@@ -284,28 +307,6 @@ pub enum ButtonStyle {
     GlassProminent,
 }
 
-/// How large a button is drawn.
-///
-/// Material 3 Expressive scales a button through five sizes that change height,
-/// padding, icon size and corner shape together — not just its height — so the
-/// size is a semantic choice, like the style, rather than a frame the caller
-/// imposes from outside.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
-pub enum ButtonSize {
-    /// The most compact button, for dense rows of actions.
-    ExtraSmall,
-    /// The default size.
-    #[default]
-    Small,
-    /// A roomier button for a screen's main action.
-    Medium,
-    /// A prominent button, large enough to anchor a section.
-    Large,
-    /// The largest button, for hero actions on big surfaces.
-    ExtraLarge,
-}
-
 /// A button style installed on a subtree becomes the default for buttons that
 /// did not pick one, the same way [`LabelDisplayMode`] adapts labels to their
 /// surroundings.
@@ -338,7 +339,7 @@ pub struct ButtonConfig {
     /// The visual style of the button.
     pub style: ButtonStyle,
     /// How large the button is drawn.
-    pub size: ButtonSize,
+    pub size: ControlSize,
 }
 
 impl_debug!(ButtonConfig);
@@ -445,7 +446,7 @@ pub struct Button<Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
-    size: ButtonSize,
+    size: ControlSize,
 }
 
 impl<Action> Button<Action> {
@@ -463,13 +464,14 @@ impl<Action> Button<Action> {
 
     /// Returns the size this button is drawn at.
     #[must_use]
-    pub const fn button_size(&self) -> ButtonSize {
+    pub const fn button_size(&self) -> ControlSize {
         self.size
     }
 
-    /// Sets how large the button is drawn.
+    /// Sets how large the button is drawn. Buttons default to
+    /// [`ControlSize::Small`].
     #[must_use]
-    pub const fn size(mut self, size: ButtonSize) -> Self {
+    pub const fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
         self
     }
@@ -522,7 +524,7 @@ impl Button<fn(&Environment)> {
             label,
             action: noop,
             style: ButtonStyle::Automatic,
-            size: ButtonSize::default(),
+            size: ControlSize::Small,
         }
     }
 }
@@ -727,7 +729,7 @@ mod tests {
                 .semantic_text()
                 .resolve(&Environment::default())
                 .content
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
             "Edit"
@@ -757,7 +759,7 @@ mod tests {
                 .semantic_text()
                 .resolve(&Environment::default())
                 .content
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
             "Edit"
@@ -768,7 +770,7 @@ mod tests {
                 .clone()
                 .resolve(&Environment::default())
                 .accessibility_label()
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
             "Edit document"

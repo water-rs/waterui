@@ -10,7 +10,7 @@ use waterui_core::{
     AnyView, Native, NativeView, View,
     layout::{
         HorizontalAlignment, LayoutDirection, LayoutInvalidationCallback, PlacedSubview,
-        ProposalSize, Rect, Size, SubView, VerticalAlignment,
+        ProposalSize, Rect, Size, SubView, SubviewPlacement, VerticalAlignment,
     },
     view::TupleViews,
     views::{AnyViews, Views, ViewsExt},
@@ -29,7 +29,7 @@ impl DirectionalLayout {
     }
 
     fn mirror(&self, bounds: Rect, frame: Rect) -> Rect {
-        if self.direction.get().is_right_to_left() {
+        if self.direction.snapshot().is_right_to_left() {
             Rect::new(
                 waterui_core::layout::Point::new(
                     bounds.min_x() + bounds.max_x() - frame.max_x(),
@@ -47,7 +47,7 @@ impl Debug for DirectionalLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DirectionalLayout")
             .field("inner", &self.inner)
-            .field("direction", &self.direction.get())
+            .field("direction", &self.direction.snapshot())
             .finish()
     }
 }
@@ -57,30 +57,33 @@ impl Layout for DirectionalLayout {
         self.inner.size_that_fits(proposal, children)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         self.inner
-            .place(bounds, children)
+            .place(bounds, proposal, children)
             .into_iter()
-            .map(|frame| self.mirror(bounds, frame))
+            .map(|placement| {
+                SubviewPlacement::new(self.mirror(bounds, placement.frame), placement.proposal)
+            })
             .collect()
     }
 
+    /// A guide is a position inside a real frame: the placed children already
+    /// carry their physical (mirrored) frames, so the inner layout resolves
+    /// every guide against the frames it actually produced. Unmirroring the
+    /// frames and mirroring the answer back is only equivalent for guides at
+    /// the frame's midpoint.
     fn explicit_horizontal(
         &self,
         alignment: HorizontalAlignment,
         bounds: Rect,
         children: &[PlacedSubview<'_>],
     ) -> Option<f32> {
-        if !self.direction.get().is_right_to_left() {
-            return self.inner.explicit_horizontal(alignment, bounds, children);
-        }
-        let unmirrored = children
-            .iter()
-            .map(|child| PlacedSubview::new(child.view, self.mirror(bounds, child.frame)))
-            .collect::<Vec<_>>();
-        self.inner
-            .explicit_horizontal(alignment, bounds, &unmirrored)
-            .map(|guide| bounds.min_x() + bounds.max_x() - guide)
+        self.inner.explicit_horizontal(alignment, bounds, children)
     }
 
     fn explicit_vertical(
@@ -89,14 +92,7 @@ impl Layout for DirectionalLayout {
         bounds: Rect,
         children: &[PlacedSubview<'_>],
     ) -> Option<f32> {
-        if !self.direction.get().is_right_to_left() {
-            return self.inner.explicit_vertical(alignment, bounds, children);
-        }
-        let unmirrored = children
-            .iter()
-            .map(|child| PlacedSubview::new(child.view, self.mirror(bounds, child.frame)))
-            .collect::<Vec<_>>();
-        self.inner.explicit_vertical(alignment, bounds, &unmirrored)
+        self.inner.explicit_vertical(alignment, bounds, children)
     }
 
     fn explicit_horizontal_alignments(&self) -> Vec<HorizontalAlignment> {
@@ -272,6 +268,7 @@ mod tests {
     use alloc::vec;
 
     use super::*;
+    use crate::ViewDimensions;
     use waterui_core::layout::Point;
 
     #[derive(Debug)]
@@ -282,22 +279,126 @@ mod tests {
             Size::new(100.0, 40.0)
         }
 
-        fn place(&self, _bounds: Rect, _children: &[&dyn SubView]) -> Vec<Rect> {
-            vec![Rect::new(Point::new(10.0, 4.0), Size::new(20.0, 12.0))]
+        fn place(
+            &self,
+            _bounds: Rect,
+            proposal: ProposalSize,
+            _children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            vec![SubviewPlacement::new(
+                Rect::new(Point::new(10.0, 4.0), Size::new(20.0, 12.0)),
+                proposal,
+            )]
+        }
+    }
+
+    /// A leaf that reports a fixed size and an explicit leading guide at a
+    /// local x that may sit outside its own bounds.
+    struct GuidedLeaf {
+        size: Size,
+        guide: f32,
+    }
+
+    impl SubView for GuidedLeaf {
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size).with_horizontal(HorizontalAlignment::Leading, self.guide)
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+        fn priority(&self) -> i32 {
+            0
         }
     }
 
     #[test]
-    fn right_to_left_direction_mirrors_horizontal_placement() {
+    fn rtl_exported_guide_equals_placed_child_guide() {
+        // Directional > nested Padding(leading 10, trailing 6) > leaf with a
+        // negative local guide, at a nonzero origin. A guide is a position
+        // inside a real frame, so it must be resolved from the frame the
+        // child was actually placed in — mirroring the frame and separately
+        // mirroring an aggregate guide disagree for any guide that is not
+        // the width's midpoint.
+        let leaf = GuidedLeaf {
+            size: Size::new(20.0, 10.0),
+            guide: -7.0,
+        };
+        let children: Vec<&dyn SubView> = vec![&leaf];
+        let bounds = Rect::new(Point::new(40.0, 30.0), Size::new(36.0, 10.0));
+        let proposal = ProposalSize::new(Some(36.0), Some(10.0));
+
+        let padding = || {
+            Box::new(crate::padding::PaddingLayout {
+                edges: Computed::constant(crate::padding::EdgeInsets::new(0.0, 0.0, 10.0, 6.0)),
+            }) as Box<dyn Layout>
+        };
+
+        // LTR: leaf at (50,30,20,10); the exported guide is 50 - 7 = 43.
+        let ltr =
+            DirectionalLayout::new(padding(), Computed::constant(LayoutDirection::LeftToRight));
+        assert_eq!(
+            ltr.size_that_fits(proposal, &children),
+            Size::new(36.0, 10.0)
+        );
+        let ltr_placements = ltr.place(bounds, proposal, &children);
+        assert_eq!(
+            ltr_placements[0].frame,
+            Rect::new(Point::new(50.0, 30.0), Size::new(20.0, 10.0))
+        );
+        let ltr_placed: Vec<PlacedSubview> = children
+            .iter()
+            .zip(&ltr_placements)
+            .map(|(child, placement)| PlacedSubview::new(*child, *placement))
+            .collect();
+        assert_eq!(
+            ltr.explicit_horizontal(HorizontalAlignment::Leading, bounds, &ltr_placed),
+            Some(43.0)
+        );
+
+        // RTL: the same leaf lands at (46,30,20,10), so the exported guide
+        // must be the placed child's own resolved guide, 46 - 7 = 39 —
+        // not 76 - 43 = 33, which a second mirroring would report.
+        let rtl =
+            DirectionalLayout::new(padding(), Computed::constant(LayoutDirection::RightToLeft));
+        assert_eq!(
+            rtl.size_that_fits(proposal, &children),
+            Size::new(36.0, 10.0)
+        );
+        let rtl_placements = rtl.place(bounds, proposal, &children);
+        assert_eq!(
+            rtl_placements[0].frame,
+            Rect::new(Point::new(46.0, 30.0), Size::new(20.0, 10.0))
+        );
+        let rtl_placed: Vec<PlacedSubview> = children
+            .iter()
+            .zip(&rtl_placements)
+            .map(|(child, placement)| PlacedSubview::new(*child, *placement))
+            .collect();
+        let exported = rtl.explicit_horizontal(HorizontalAlignment::Leading, bounds, &rtl_placed);
+        assert_eq!(
+            exported,
+            rtl_placed[0].explicit_horizontal(HorizontalAlignment::Leading),
+            "the exported guide must equal the placed child's guide"
+        );
+        assert_eq!(exported, Some(39.0));
+    }
+
+    #[test]
+    fn right_to_left_direction_mirrors_horizontal_placement_bounded_proposal() {
         let layout = DirectionalLayout::new(
             Box::new(OffsetLayout),
             Computed::constant(LayoutDirection::RightToLeft),
         );
-        let frames = layout.place(Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 40.0)), &[]);
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 40.0));
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &[]);
 
         assert_eq!(
-            frames,
-            vec![Rect::new(Point::new(70.0, 4.0), Size::new(20.0, 12.0))]
+            placements,
+            vec![SubviewPlacement::new(
+                Rect::new(Point::new(70.0, 4.0), Size::new(20.0, 12.0)),
+                proposal,
+            )]
         );
     }
 }

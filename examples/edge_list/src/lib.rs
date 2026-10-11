@@ -6,7 +6,6 @@
 
 use waterui::Identifiable;
 use waterui::app::App;
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::collection::List as ReactiveList;
@@ -30,32 +29,27 @@ fn chip_color(index: u64) -> Color {
 }
 
 fn detail_line(n: u64, label: &'static str) -> impl View {
-    text(format!("detail line {n} {label}"))
-        .caption()
-        .foreground(MutedForeground)
+    text(text!("detail line {n} {label}")).caption().muted()
 }
 
 fn record_row(index: u64) -> ListItem {
     let lines = index % 3 + 1;
     let header = hstack((
         Circle.fill(chip_color(index)).size(10.0, 10.0),
-        text(format!("Row #{index} - {lines} detail line(s)")).sub_headline(),
+        text(text!("Row #{index} - {#lines} detail line(s)")).sub_headline(),
     ))
     .spacing(8.0)
-    .alignment(VerticalAlignment::Center);
+    .centered();
 
     let content = match lines {
-        1 => AnyView::new(
-            vstack((header, detail_line(1, "always present")))
-                .alignment(HorizontalAlignment::Leading),
-        ),
+        1 => AnyView::new(vstack((header, detail_line(1, "always present"))).leading()),
         2 => AnyView::new(
             vstack((
                 header,
                 detail_line(1, "always present"),
                 detail_line(2, "makes this row taller"),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
         ),
         _ => AnyView::new(
             vstack((
@@ -64,11 +58,11 @@ fn record_row(index: u64) -> ListItem {
                 detail_line(2, "makes this row taller"),
                 detail_line(3, "tallest variant"),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
         ),
     };
 
-    ListItem::new(content.padding_with(EdgeInsets::symmetric(8.0, 16.0)))
+    ListItem::new(content.padding_with((8.0, 16.0)))
 }
 
 #[preview]
@@ -81,14 +75,14 @@ pub fn demo() -> impl View {
             text("200,000 variable-height rows").title(),
             text("Rows cycle 1-3 detail lines; only viewport rows materialize.")
                 .sub_headline()
-                .foreground(MutedForeground),
+                .muted(),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .padding(),
         Divider,
         list,
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 pub fn app(env: Environment) -> App {

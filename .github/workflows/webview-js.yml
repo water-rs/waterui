@@ -1,0 +1,35 @@
+name: WebView JavaScript
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Bridge unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.4"
+      - name: Run JavaScript bridge tests
+        id: suite
+        run: bun test components/platform/webview/tests/js/ --reporter=junit --reporter-outfile=webview-js.xml
+      - name: Upload JavaScript test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview-js-results
+          path: webview-js.xml
+          if-no-files-found: error
+      - name: Report JavaScript test result
+        if: always()
+        env:
+          RESULT: ${{ steps.suite.outcome }}
+        run: |
+          printf '### WebView JavaScript\n\nBridge unit tests: **%s**\n' "$RESULT" >> "$GITHUB_STEP_SUMMARY"

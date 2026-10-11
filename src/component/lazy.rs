@@ -117,7 +117,7 @@ impl Lazy {
     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
     where
         C: Collection + Clone,
-        C::Item: Identifiable,
+        C::Item: Identifiable + Clone,
         F: 'static + Fn(C::Item) -> V,
         V: View,
     {

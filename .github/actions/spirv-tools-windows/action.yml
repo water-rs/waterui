@@ -1,0 +1,19 @@
+name: Install SPIRV-Tools (Windows)
+description: >
+  cherenkov-gpu's build script optimizes its precompiled SPIR-V with
+  spirv-opt on every non-Apple native target; on Windows the binary comes
+  from the UCRT64 MSYS2 package and must be put on the PATH explicitly.
+
+runs:
+  using: composite
+  steps:
+    - name: Install SPIRV-Tools
+      id: msys2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: UCRT64
+        update: false
+        install: mingw-w64-ucrt-x86_64-spirv-tools
+    - name: Put SPIRV-Tools on the PATH
+      shell: pwsh
+      run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"

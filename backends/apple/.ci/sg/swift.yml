@@ -1,0 +1,27 @@
+id: no-force-cast
+language: Swift
+severity: error
+message: Avoid force-casts in backend runtime paths; use explicit type checks and fail with a clear message.
+rule:
+  pattern: $EXPR as! $TYPE
+---
+id: no-force-try
+language: Swift
+severity: error
+message: Avoid force-try in backend runtime paths; propagate or handle errors explicitly.
+rule:
+  pattern: try! $EXPR
+---
+id: no-main-sync
+language: Swift
+severity: error
+message: Avoid DispatchQueue.main.sync to prevent deadlocks and main-thread inversion.
+rule:
+  pattern: DispatchQueue.main.sync($$$ARGS)
+---
+id: no-dispatch-semaphore
+language: Swift
+severity: error
+message: Avoid DispatchSemaphore in backend runtime paths; prefer structured async coordination.
+rule:
+  pattern: DispatchSemaphore($$$ARGS)

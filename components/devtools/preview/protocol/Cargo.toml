@@ -1,6 +1,6 @@
 [package]
 name = "waterui-preview-protocol"
-version = "0.1.1"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,7 @@ thiserror.workspace = true
 futures-lite = "2.6"
 hex = "0.4"
 dirs.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

@@ -22,12 +22,19 @@
 //! makes a tab remember where you left it: push twice in Inbox, visit Settings,
 //! come back, and the two pushed pages are still there.
 
+use mdi::album as album_icon;
+use mdi::cog;
+use mdi::flag;
+use mdi::image_album;
+use mdi::inbox;
+use mdi::pencil;
+use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
-use waterui::id::Id;
+use waterui::id::{Id, SelfId};
 use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
-use waterui::prelude::theme_color::{Accent, Foreground, MutedForeground, SurfaceVariant};
+use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -153,6 +160,7 @@ fn seed_messages() -> Vec<Message> {
 
 /// State owned above every navigation container, so pushing a page, switching
 /// tabs, or rebuilding a destination never loses it.
+#[state]
 #[derive(Clone)]
 struct Mail {
     messages: Binding<Vec<Message>>,
@@ -263,24 +271,24 @@ pub fn demo() -> impl View {
     Tabs::new(
         &pane,
         vec![
-            Tab::container(Pane::Inbox, label("Inbox").icon(mdi::inbox()), {
+            Tab::container(Pane::Inbox, label("Inbox").icon(inbox()), {
                 let mail = mail.clone();
                 move || inbox_stack(mail.clone())
             })
             .badge(mail.unread_count()),
             Tab::container(
                 Pane::Library,
-                label("Library").icon(mdi::image_album()),
+                label("Library").icon(image_album()),
                 library_split,
             ),
             Tab::container(
                 Pane::Gallery,
-                label("Gallery").icon(mdi::view_gallery()),
+                label("Gallery").icon(view_gallery()),
                 gallery_stack,
             ),
             Tab::container(
                 Pane::Settings,
-                label("Settings").icon(mdi::cog()),
+                label("Settings").icon(cog()),
                 settings_stack,
             ),
         ],
@@ -326,14 +334,14 @@ fn inbox_root(mail: Mail) -> NavigationView {
                     button(text!("{edit_title}"))
                         .style(ButtonStyle::Plain)
                         .action(|State(editing): State<Binding<bool>>| {
-                            editing.set(!editing.get());
+                            editing.toggle();
                         })
                         .state(&mail.editing),
                 ))
                 // Primary: the action the screen exists for.
                 .item(NavigationToolbarItem::action(
                     NavigationToolbarPlacement::PrimaryAction,
-                    label("Compose").icon(mdi::pencil()),
+                    label("Compose").icon(pencil()),
                     |navigator: Navigator<MailRoute>| navigator.push(MailRoute::Compose),
                 ))
                 // Bottom bar and status: iOS uses the bottom toolbar, Android
@@ -347,14 +355,12 @@ fn inbox_root(mail: Mail) -> NavigationView {
                 ))
                 .item(NavigationToolbarItem::new(
                     NavigationToolbarPlacement::Status,
-                    text!("{unread} unread")
-                        .caption()
-                        .foreground(MutedForeground),
+                    text!("{unread} unread").caption().muted(),
                 )),
         )
 }
 
-fn mark_all_read(State(mail): State<Mail>) {
+fn mark_all_read(mail: Mail) {
     for message in mail.messages.get_mut().iter_mut() {
         message.unread = false;
     }
@@ -404,42 +410,38 @@ fn message_row(mail: &Mail, message: Message) -> ListItem {
             // what a mail list must not do.
             let unread = unread.clone();
             hstack((
-                hstack((Accent
-                    .size(8.0, 8.0)
-                    .clip(Circle)
-                    .opacity(unread.map(|unread| if unread { 1.0 } else { 0.0 })),))
-                .size(8.0, 8.0),
+                hstack((Accent.size(8.0, 8.0).clip(Circle).visible(unread),)).size(8.0, 8.0),
                 vstack((
                     hstack((
                         text(message.sender).sub_headline().foreground(Foreground),
                         spacer(),
                         message
                             .flagged
-                            .then(|| mdi::flag().size(14.0, 14.0).foreground(Accent)),
+                            .then(|| flag().size(14.0, 14.0).foreground(Accent)),
                     ))
                     .spacing(6.0),
                     text(message.subject).body().foreground(Foreground),
-                    text(message.preview).caption().foreground(MutedForeground),
+                    text(message.preview).caption().muted(),
                 ))
-                .alignment(HorizontalAlignment::Leading)
+                .leading()
                 .spacing(2.0),
             ))
-            .alignment(VerticalAlignment::Top)
+            .top()
             .spacing(6.0)
-            .padding_with(EdgeInsets::symmetric(8.0, 0.0))
+            .padding_vertical(8.0)
         }),
         MailRoute::Message(id),
     ))
 }
 
-fn delete_message(ListDelete(index): ListDelete, State(mail): State<Mail>) {
+fn delete_message(ListDelete(index): ListDelete, mail: Mail) {
     let Some(id) = visible_id(&mail, index) else {
         return;
     };
     mail.messages.get_mut().retain(|message| message.id != id);
 }
 
-fn move_message(ListMove(movement): ListMove, State(mail): State<Mail>) {
+fn move_message(ListMove(movement): ListMove, mail: Mail) {
     let (Some(moved), Some(target)) = (
         visible_id(&mail, movement.from()),
         visible_id(&mail, movement.to()),
@@ -460,8 +462,8 @@ fn move_message(ListMove(movement): ListMove, State(mail): State<Mail>) {
 /// Rows are addressed by position in the *filtered* list, so an edit maps back
 /// through the same filter the user is looking at.
 fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
-    let messages = mail.messages.get();
-    let query = mail.query.get();
+    let messages = mail.messages.snapshot();
+    let query = mail.query.snapshot();
     let visible = filter_messages(&messages, &query);
     visible.as_slice().get(index).map(|message| message.id)
 }
@@ -482,12 +484,12 @@ fn message_detail(mail: Mail, id: u64) -> NavigationView {
 
     scroll(
         vstack((
-            text!("{sender}").sub_headline().foreground(MutedForeground),
+            text!("{sender}").sub_headline().muted(),
             text!("{body}").body().foreground(Foreground),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(12.0)
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
     .title(text!("{subject}"))
     // A pushed page keeps its title inline, the way a platform back stack does.
@@ -497,7 +499,7 @@ fn message_detail(mail: Mail, id: u64) -> NavigationView {
             NavigationToolbarPlacement::SecondaryAction,
             button(text!("{flag_title}"))
                 .style(ButtonStyle::Plain)
-                .action(move |State(mail): State<Mail>| {
+                .action(move |mail: Mail| {
                     mail.update(id, |message| message.flagged = !message.flagged);
                 })
                 .state(&mail),
@@ -524,11 +526,11 @@ fn compose_page(mail: Mail) -> NavigationView {
              button or the platform back gesture, then use Cancel.",
         )
         .caption()
-        .foreground(MutedForeground),
+        .muted(),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(12.0)
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
     .title("New Message")
     .inline_title()
     .navigation_toolbar(
@@ -550,13 +552,13 @@ fn compose_page(mail: Mail) -> NavigationView {
             )),
     )
     .navigation_pop_enabled(is_empty)
-    .on_navigation_pop_attempted(|State(manager): State<SnackbarManager>| {
+    .on_navigation_pop_attempted(|manager: SnackbarManager| {
         manager.show(Snackbar::new("Discard the draft with Cancel first"));
     })
 }
 
-fn send_draft(State(mail): State<Mail>, State(navigator): State<Navigator<MailRoute>>) {
-    let messages = mail.messages.get();
+fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
+    let messages = mail.messages.snapshot();
     let next_id = messages
         .as_slice()
         .iter()
@@ -569,8 +571,8 @@ fn send_draft(State(mail): State<Mail>, State(navigator): State<Navigator<MailRo
         Message {
             id: next_id,
             sender: Str::from("Me"),
-            subject: mail.draft_subject.get(),
-            preview: mail.draft_body.get(),
+            subject: mail.draft_subject.snapshot(),
+            preview: mail.draft_body.snapshot(),
             unread: false,
             flagged: false,
         },
@@ -579,7 +581,7 @@ fn send_draft(State(mail): State<Mail>, State(navigator): State<Navigator<MailRo
     let _ = navigator.pop();
 }
 
-fn cancel_draft(State(mail): State<Mail>, State(navigator): State<Navigator<MailRoute>>) {
+fn cancel_draft(mail: Mail, navigator: Navigator<MailRoute>) {
     mail.discard_draft();
     let _ = navigator.pop();
 }
@@ -607,43 +609,46 @@ fn placeholder() -> impl View {
         text("No album selected")
             .sub_headline()
             .foreground(Foreground),
-        text("Pick one from the sidebar.")
-            .caption()
-            .foreground(MutedForeground),
+        text("Pick one from the sidebar.").caption().muted(),
     ))
     .spacing(6.0)
 }
 
 fn album_sidebar(selection: Binding<Option<Album>>) -> impl View {
+    const ALBUMS: [Album; 3] = [Album::Recents, Album::Favorites, Album::Shared];
+    // `List::content` keys rows by index, so the album selection travels
+    // through a binding mapped to and from those row ids.
+    let selection = Binding::mapping(
+        &selection,
+        |album| album.map(|album| SelfId::new(album as usize)),
+        move |binding, index| binding.set(index.map(|index| ALBUMS[index.into_inner()])),
+    );
     List::content((Section::new("Albums").content((
-        album_row(Album::Recents, &selection),
-        album_row(Album::Favorites, &selection),
-        album_row(Album::Shared, &selection),
+        album_row(Album::Recents),
+        album_row(Album::Favorites),
+        album_row(Album::Shared),
     )),))
+    // The framework writes the binding on pointer, keyboard and accessibility
+    // input; the platform draws its own selection chrome for the row.
+    .selection(&selection)
 }
 
 /// Static list content is built from row *builders*, so the platform list can
 /// rematerialize a row whenever it scrolls back into view.
-fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> ListItem + 'static {
+fn album_row(album: Album) -> impl Fn() -> ListItem + 'static {
     let count = album.count();
-    let selection = selection.clone();
 
     move || {
-        let tap_selection = selection.clone();
         ListItem::new(
             hstack((
-                mdi::album().size(20.0, 20.0).foreground(Accent),
+                album_icon().size(20.0, 20.0).foreground(Accent),
                 text(album.title()).body().foreground(Foreground),
                 spacer(),
-                text!("{count}").caption().foreground(MutedForeground),
+                text!("{count}").caption().muted(),
             ))
             .spacing(10.0)
-            .padding_with(EdgeInsets::symmetric(10.0, 12.0))
-            .on_tap(move || tap_selection.set(Some(album))),
+            .padding_with((10.0, 12.0)),
         )
-        // The platform draws its own selection chrome; the row only derives
-        // its flag from the state that owns selection.
-        .selected(selection.clone().map(move |current| current == Some(album)))
     }
 }
 
@@ -652,18 +657,18 @@ fn album_detail(album: Album) -> NavigationView {
 
     scroll(
         vstack((
-            text!("{count} photos").body().foreground(MutedForeground),
+            text!("{count} photos").body().muted(),
             text(
                 "On a wide window this is the trailing column beside the \
                  sidebar; on a phone the same declaration collapses into a \
                  pushed page with a back button.",
             )
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
         ))
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .spacing(10.0)
-        .padding_with(EdgeInsets::all(16.0)),
+        .padding_with(16.0),
     )
     .title(album.title())
 }
@@ -690,14 +695,14 @@ fn gallery_stack() -> impl View {
 fn gallery_root() -> NavigationView {
     let tiles: VStack<_> = (0..6).map(photo_tile).collect();
 
-    scroll(tiles.spacing(12.0).padding_with(EdgeInsets::all(16.0)))
+    scroll(tiles.spacing(12.0).padding_with(16.0))
         .title("Gallery")
         .large_title()
 }
 
-fn photo_tile(index: usize) -> AnyView {
-    let tile = NavigationLink::value(
-        Label::new(format!("Photo {index}"), move || {
+fn photo_tile(index: usize) -> impl View {
+    NavigationLink::value(
+        Label::new(text!("Photo {index}"), move || {
             zstack((
                 photo_color(index).size(160.0, 120.0),
                 text!("Photo {index}").sub_headline().foreground(Foreground),
@@ -705,10 +710,8 @@ fn photo_tile(index: usize) -> AnyView {
             .clip(RoundedRectangle::new(0.1))
         }),
         PhotoRoute(index),
-    );
-
-    tile.navigation_transition_source(photo_transition(index))
-        .anyview()
+    )
+    .navigation_transition_source(photo_transition(index))
 }
 
 fn photo_page(index: usize) -> NavigationView {
@@ -721,11 +724,11 @@ fn photo_page(index: usize) -> NavigationView {
             .navigation_transition_destination(photo_transition(index)),
         text(include_str!("gallery_transition_description.txt"))
             .caption()
-            .foreground(MutedForeground),
+            .muted(),
     ))
     .spacing(12.0)
-    .padding_with(EdgeInsets::all(16.0))
-    .title(format!("Photo {index}"))
+    .padding_with(16.0)
+    .title(text!("Photo {index}"))
     .inline_title()
     // The declaration lives on the destination, because the pair it names does.
     .transition(navigation_transition::zoom(photo_transition(index)))
@@ -817,11 +820,11 @@ fn about_page() -> NavigationView {
              this app is declared once and drawn by each platform itself.",
         )
         .body()
-        .foreground(MutedForeground),
+        .muted(),
     ))
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
     .spacing(10.0)
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
     .background(SurfaceVariant)
     .title("About")
     .inline_title()

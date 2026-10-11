@@ -135,7 +135,10 @@ pub fn compare_images(before: &[u8], after: &[u8]) -> eyre::Result<DiffResult> {
     }
 
     let changed = changed_pixels > 0;
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a percentage carries at most three significant digits — the f32 conversion loses nothing"
+    )]
     let percentage = (f64::from(changed_pixels) / f64::from(total_pixels) * 100.0) as f32;
 
     let bbox = if changed {
@@ -208,7 +211,10 @@ pub fn save_diff_image(before: &[u8], after: &[u8], output: &Path) -> eyre::Resu
             if pixels_differ(*before_pixel, *after_pixel) {
                 // Blend the after pixel with red overlay
                 let after = after_pixel.0;
-                #[allow(clippy::cast_possible_truncation)]
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "the midpoint of two u8-range channels fits back into u8"
+                )]
                 let blended = Rgba([
                     u16::midpoint(u16::from(after[0]), u16::from(overlay_r)) as u8,
                     u16::midpoint(u16::from(after[1]), u16::from(overlay_g)) as u8,

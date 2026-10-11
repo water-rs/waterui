@@ -4,7 +4,7 @@
 //! These functions are used by `Gtk4Backend` to implement the `Backend` trait.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use eyre::bail;
 use smol::fs;
@@ -12,12 +12,11 @@ use tracing::info;
 
 use crate::{
     assets, browser_runtime,
-    build::{BuildOptions, RustBuild, RustDynamicLibraries, RustLinkage},
+    build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage},
     device::Artifact,
     gtk4::backend::Gtk4Backend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    utils::run_command_os,
 };
 
 #[cfg(target_os = "linux")]
@@ -29,26 +28,11 @@ const GTK4_INIT_HINT: &str = "initialize GTK4 backend on Linux";
 // Build Utilities
 // ============================================================================
 
-/// Cargo profile directory the GTK4 backend's artifacts land in.
-///
-/// Build, clean and package must agree on this path, so all three go through here.
-async fn gtk4_profile_dir(
-    project: &Project,
-    profile: &str,
-    linkage: RustLinkage,
-) -> eyre::Result<PathBuf> {
-    Ok(project
-        .water_target_dir(linkage)
-        .await?
-        .join(TargetPlatform::Linux.triple().to_string())
-        .join(profile))
-}
-
 /// Build GTK4 binary for the host platform.
 ///
 /// # Errors
 /// Returns an error if the backend manifest is missing, the host is unsupported, or Cargo fails.
-pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Result<PathBuf> {
+pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Result<BuiltTarget> {
     ensure_linux_host()?;
 
     let backend_path = project.backend_path::<Gtk4Backend>();
@@ -61,29 +45,28 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
         );
     }
 
-    let mut build = RustBuild::new(&backend_path, TargetPlatform::Linux.triple())
-        .with_project(project)
+    let mut build = RustBuild::for_project(project, &backend_path, TargetPlatform::Linux.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_linkage(
             options.linkage(),
             &format!("{}/dev", project.crate_name()),
-            Some("$ORIGIN"),
-        );
+            &["$ORIGIN"],
+        )
+        .with_envs(options.cargo_envs().iter().cloned());
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
-    build
+    if let Some(progress) = options.progress() {
+        build = build.with_progress(progress.clone());
+    }
+    let built_target = build
         .build_binary(
             project.gtk_backend_crate_name().as_str(),
             options.is_release(),
         )
         .await
         .map_err(|error| eyre::eyre!("Failed to build GTK4 backend with cargo: {error}"))?;
-
-    build
-        .lib_output_dir(options.is_release())
-        .await
-        .map_err(Into::into)
+    Ok(built_target)
 }
 
 // ============================================================================
@@ -120,7 +103,7 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
             "--package".into(),
             project.gtk_backend_crate_name().as_str().into(),
         ];
-        run_command_os("cargo", args).await?;
+        project.host().run("cargo", args).await?;
     }
 
     Ok(())
@@ -134,78 +117,78 @@ pub async fn clean_gtk4(project: &Project) -> eyre::Result<()> {
 ///
 /// # Errors
 /// Returns an error if the host is unsupported, assets cannot be staged, or the built binary is missing.
-pub async fn package_gtk4(project: &Project, options: PackageOptions) -> eyre::Result<Artifact> {
+pub async fn package_gtk4(
+    project: &Project,
+    options: PackageOptions,
+    built: &BuiltTarget,
+) -> eyre::Result<Artifact> {
     ensure_linux_host()?;
 
     // For GTK4, "packaging" just means locating the built binary
+    // GTK4 uses its own target directory since it's a standalone project
+    let backend_path = project.backend_path::<Gtk4Backend>();
+
+    // Copy project assets and dependency fonts
+    copy_assets_and_fonts(
+        project,
+        &backend_path,
+        &built.app_symbols().await?,
+        options.uses_dev_server(),
+    )
+    .await?;
+
+    let target_dir = &built.profile_dir;
     let profile = if options.is_debug() {
         "debug"
     } else {
         "release"
     };
-    // GTK4 uses its own target directory since it's a standalone project
-    let backend_path = project.backend_path::<Gtk4Backend>();
-
-    // Copy project assets and dependency fonts
-    copy_assets_and_fonts(project, &backend_path).await?;
-
-    let linkage = if options.uses_shared_rust_runtime() {
-        RustLinkage::SharedRuntime
-    } else {
-        RustLinkage::Static
-    };
-    let target_dir = gtk4_profile_dir(project, profile, linkage).await?;
 
     // The binary name is the GTK4 crate name (project-gtk4)
-    let binary_name = project.gtk_backend_crate_name();
-
-    let binary_path = target_dir.join(binary_name.as_ref());
-
-    let final_binary_path = if binary_path.exists() {
-        binary_path
-    } else {
-        let alt_binary_name = binary_name.replace('-', "_");
-        let alt_binary_path = target_dir.join(&alt_binary_name);
-
-        if alt_binary_path.exists() {
-            alt_binary_path
-        } else {
-            bail!(
-                "Built GTK4 binary not found at {}. Did you run build first?",
-                binary_path.display()
-            );
-        }
-    };
+    let final_binary_path = &built.artifact;
     let runtime_plan = project
-        .browser_runtime_plan(TargetPlatform::Linux, crate::platform::TargetBackend::Gtk4)
-        .await?;
-    let runtime_dir = final_binary_path.parent().ok_or_else(|| {
-        eyre::eyre!(
-            "GTK4 binary path has no output directory: {}",
-            final_binary_path.display()
+        .browser_runtime_plan(
+            TargetPlatform::Linux,
+            crate::platform::TargetBackend::Gtk4,
+            &TargetPlatform::Linux.triple(),
         )
-    })?;
+        .await?;
+
+    // The shipped binary and everything `$ORIGIN` resolves beside it stage
+    // into the project's own managed backend directory — the shared Cargo
+    // profile directory would collide two same-named projects on
+    // `<profile>/<product>`.
+    let runtime_dir =
+        crate::platforming::packaging::dist_dir(&backend_path, "linux", Some(profile));
+    fs::create_dir_all(&runtime_dir).await?;
     browser_runtime::stage(
+        project.host(),
         runtime_plan,
         TargetPlatform::Linux,
-        &target_dir,
-        runtime_dir,
+        target_dir,
+        &runtime_dir,
     )
     .await?;
 
     if options.uses_shared_rust_runtime() {
-        RustDynamicLibraries::resolve(runtime_dir, &TargetPlatform::Linux.triple())
+        RustDynamicLibraries::resolve(built, &TargetPlatform::Linux.triple(), project)
             .await?
-            .stage(runtime_dir)
+            .stage(&runtime_dir)
             .await?;
     } else {
-        RustDynamicLibraries::remove_staged(runtime_dir, &TargetPlatform::Linux.triple()).await?;
+        RustDynamicLibraries::remove_staged(&runtime_dir, &TargetPlatform::Linux.triple()).await?;
     }
 
-    Ok(Artifact::new(
-        project.bundle_identifier(),
+    // Ship the binary under the product name; the tagged Cargo artifact name
+    // is internal to the shared target directory.
+    let packaged_binary = crate::platforming::packaging::stage_binary_as(
         final_binary_path,
-    ))
+        &runtime_dir,
+        project.gtk4_binary_name().as_str(),
+    )
+    .await?;
+
+    Ok(Artifact::new(project.bundle_identifier(), packaged_binary))
 }
 
 // ============================================================================
@@ -234,18 +217,32 @@ fn ensure_linux_host() -> eyre::Result<()> {
 ///
 /// For GTK4, assets and fonts are placed alongside the binary in a `resources/`
 /// directory. The binary should load fonts via fontconfig or Pango at runtime.
-async fn copy_assets_and_fonts(project: &Project, backend_path: &Path) -> eyre::Result<()> {
+/// Stage the project's assets and fonts under the backend's `resources`
+/// directory. `symbols` is the app library artifact the target build
+/// produced, whose `waterui_meta_bundle_*` statics declare the asset mounts.
+async fn copy_assets_and_fonts(
+    project: &Project,
+    backend_path: &Path,
+    symbols: &crate::artifact_symbols::ArtifactSymbols,
+    dev_server: bool,
+) -> eyre::Result<()> {
     let resources_dir = backend_path.join("resources");
     fs::create_dir_all(&resources_dir).await?;
 
     // Stage project assets using platform-native conventions.
-    assets::stage_project_assets_for_gtk(project, &resources_dir).await?;
+    let manifest =
+        assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, dev_server).await?;
     assets::stage_hicolor_icons(project, &resources_dir.join("icons")).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations = assets::scan_fonts(project).await?;
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
-    resolved_fonts.extend(assets::scan_project_font_assets(project)?);
+    let font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[waterui_assets_planner::FontPlatform::Linux],
+    )
+    .await?;
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
+    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
 
     if !resolved_fonts.is_empty() {
         // Copy fonts to resources/fonts/

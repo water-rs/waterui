@@ -133,6 +133,7 @@ Implements the `Project` trait, enabling decomposition of struct bindings into s
 **Example from `derive/src/lib.rs` documentation:**
 
 ```rust
+use waterui::Signal;
 use waterui::reactive::{Binding, binding, project::Project};
 use waterui_macros::Project;
 
@@ -151,7 +152,7 @@ let projected = person_binding.project();
 projected.name.set("Bob".to_string());
 projected.age.set(25u32);
 
-let person = person_binding.get();
+let person = person_binding.snapshot();
 assert_eq!(person.name, "Bob");
 assert_eq!(person.age, 25);
 ```
@@ -318,8 +319,8 @@ cargo test -p waterui-macros
 cargo expand --package waterui-macros
 
 # Test in a real project
-cargo install --path cli
-water create macro-test --mode playground
+cargo install --path cli --locked
+water create macro-test
 # Add #[form] to a struct and run
 water run --platform ios
 ```

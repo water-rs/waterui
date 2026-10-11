@@ -18,7 +18,10 @@ use tempfile::TempDir;
 use super::Host;
 
 #[cfg(unix)]
-const FAKE_TOOL_SCRIPT: &str = include_str!("testdata/fake_tools.sh");
+const FAKE_TOOL_SOURCE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/toolchain/testdata/fake_tools.sh"
+);
 #[cfg(windows)]
 const FAKE_TOOL_SCRIPT: &str = include_str!("testdata/fake_tools.cmd");
 
@@ -29,6 +32,12 @@ pub struct TestMachine {
 
 impl TestMachine {
     /// A scratch machine with no tools installed.
+    ///
+    /// The root lives in the system temp dir, outside this repository: a
+    /// machine under the repo would leak repo state into checks that walk
+    /// ancestors (a `rust-toolchain.toml` pin, a `.git` discovery, a
+    /// `Water.toml`), and the fixture's whole contract is that a declared
+    /// host cannot observe real-machine state.
     pub fn new() -> Self {
         let root = tempfile::tempdir().expect("create test machine root");
         let machine = Self { root };
@@ -142,8 +151,8 @@ impl TestMachine {
     /// the scratch SDK; returns the NDK root.
     ///
     /// The fake clang is the dispatcher script, so the host-toolchain probe
-    /// (`clang -x c -c probe.c -o /dev/null`) exits 0 on every platform where
-    /// scripts run — on Windows the `.cmd` name gets cmd dispatch.
+    /// (`clang -x c -c probe.c -o /dev/null`) exits 0.
+    #[cfg(unix)]
     pub fn install_android_ndk(&self, version: &str) -> PathBuf {
         self.executable(
             Path::new("sdk")
@@ -156,6 +165,7 @@ impl TestMachine {
     }
 
     /// Stage `emulator/emulator` inside the scratch SDK.
+    #[cfg(unix)]
     pub fn install_android_emulator(&self) -> PathBuf {
         self.executable(Path::new("sdk").join("emulator").join(emulator_file_name()))
     }
@@ -194,6 +204,35 @@ impl TestMachine {
         K: AsRef<std::ffi::OsStr>,
         V: AsRef<std::ffi::OsStr>,
     {
+        self.host_on_path([self.bin()], vars)
+    }
+
+    /// [`Self::host`] with the Rust toolchain that compiled this test binary
+    /// on `PATH` after the fake tools, for a check that drives a real `cargo`
+    /// (opening a project runs `cargo metadata`) while every other tool it
+    /// spawns stays fake. The toolchain's own `bin/` is named directly, not a
+    /// `rustup` proxy, so no `RUSTUP_HOME` leaks in from the real machine.
+    pub fn host_with_rust_toolchain<K, V>(&self, vars: impl IntoIterator<Item = (K, V)>) -> Host
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
+        let toolchain_bin = Path::new(env!("CARGO"))
+            .parent()
+            .expect("the cargo that built this test lives in a toolchain bin directory")
+            .to_path_buf();
+        self.host_on_path([self.bin(), toolchain_bin], vars)
+    }
+
+    fn host_on_path<K, V>(
+        &self,
+        path_dirs: impl IntoIterator<Item = PathBuf>,
+        vars: impl IntoIterator<Item = (K, V)>,
+    ) -> Host
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
         let mut declared: Vec<(OsString, OsString)> = vec![
             (
                 OsString::from("WATERUI_FAKE_RESPONSES"),
@@ -206,17 +245,78 @@ impl TestMachine {
             vars.into_iter()
                 .map(|(k, v)| (k.as_ref().to_os_string(), v.as_ref().to_os_string())),
         );
-        Host::new([self.bin()], declared).with_cwd(self.root.path().to_path_buf())
+        Host::new(path_dirs, declared).with_cwd(self.root.path().to_path_buf())
     }
 
     fn script(path: PathBuf) -> PathBuf {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create fake tool dir");
         }
-        fs::write(&path, FAKE_TOOL_SCRIPT).expect("write fake tool");
-        make_executable(&path);
+        #[cfg(unix)]
+        {
+            let _ = fs::remove_file(&path);
+            fs::hard_link(dispatcher_source(), &path)
+                .expect("link fake tool to the dispatcher fixture");
+        }
+        #[cfg(windows)]
+        {
+            fs::write(&path, FAKE_TOOL_SCRIPT).expect("write fake tool");
+        }
         path
     }
+}
+
+/// The real toolchain with the Water home redirected to `home`: a project
+/// test that needs real `cargo`/`rustc` runs on the declared host and writes
+/// nothing under `~/.water`.
+pub fn real_toolchain_host(home: impl AsRef<Path>) -> Host {
+    let real = Host::current();
+    let vars = real
+        .envs()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case("PATH"))
+        .map(|(key, value)| (key.to_os_string(), value.to_os_string()));
+    Host::new(real.path_entries(), vars)
+        .with_home(home.as_ref())
+        .with_cwd(home.as_ref().to_path_buf())
+}
+
+/// The per-process copy of the dispatcher that fake tools link to.
+///
+/// A hard link is a real directory entry for the dispatcher's inode, so a
+/// `canonicalize` of the installed tool stays inside the scratch machine
+/// (a symlink would resolve out to the repository), and the exec'd inode
+/// is never opened for write by this process — the `cp` below is what
+/// creates it, deliberately: `fs::write` here would leave a window where
+/// a sibling test thread's `fork` inherits the still-open write
+/// descriptor and keeps the inode write-busy until that child's own
+/// exec, making `execve` of any fake tool fail with `ETXTBSY` ("Text
+/// file busy") — the flake this guards against. The child process's
+/// descriptor cannot be inherited back, so the window cannot exist.
+///
+/// The canonical lives beside the machine roots (the system temp dir),
+/// so links never cross filesystems.
+#[cfg(unix)]
+fn dispatcher_source() -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    static SOURCE: std::sync::OnceLock<(TempDir, PathBuf)> = std::sync::OnceLock::new();
+    let (_, path) = SOURCE.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("create fake-tool source dir");
+        let canonical = dir.path().join("fake_tools.sh");
+        // A child `cp`, never an in-process copy: see above. The real
+        // machine runs it, since the scratch machine has no `cp`.
+        let status = Host::current()
+            .std_command("cp")
+            .arg(FAKE_TOOL_SOURCE)
+            .arg(&canonical)
+            .status()
+            .expect("copy the dispatcher fixture");
+        assert!(status.success(), "cp of the dispatcher fixture failed");
+        fs::set_permissions(&canonical, fs::Permissions::from_mode(0o755))
+            .expect("mark dispatcher fixture executable");
+        (dir, canonical)
+    });
+    path.clone()
 }
 
 /// Platform file name for a fake tool (`sdkmanager` vs `sdkmanager.cmd`).
@@ -249,33 +349,21 @@ fn adb_file_name() -> &'static str {
 }
 
 /// The name `emulator` carries inside `emulator/`.
+#[cfg(unix)]
 fn emulator_file_name() -> &'static str {
-    if cfg!(windows) {
-        "emulator.exe"
-    } else {
-        "emulator"
-    }
+    "emulator"
 }
 
 /// The API level the staged NDK wrapper carries. The host-toolchain probe
 /// accepts any `aarch64-linux-android<api>-clang` wrapper (it picks the lowest
 /// level a prebuilt ships), so the fixture stages the lowest level a current
 /// NDK provides.
+#[cfg(unix)]
 const NDK_WRAPPER_API_LEVEL: u32 = 21;
 
 /// The NDK host clang name the probe looks for
 /// (`aarch64-linux-android<api>-clang`).
-fn ndk_clang_file_name() -> String {
-    let suffix = if cfg!(windows) { ".cmd" } else { "" };
-    format!("aarch64-linux-android{NDK_WRAPPER_API_LEVEL}-clang{suffix}")
-}
-
 #[cfg(unix)]
-fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt as _;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-        .expect("mark fake tool executable");
+fn ndk_clang_file_name() -> String {
+    format!("aarch64-linux-android{NDK_WRAPPER_API_LEVEL}-clang")
 }
-
-#[cfg(windows)]
-fn make_executable(_path: &Path) {}

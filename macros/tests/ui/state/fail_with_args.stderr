@@ -1,0 +1,5 @@
+error: unexpected token
+ --> tests/ui/state/fail_with_args.rs:6:9
+  |
+6 | #[state(channel)]
+  |         ^^^^^^^

@@ -43,6 +43,8 @@ pub fn i18n_block_02() -> impl View {
 // ---------------------------------------------------------------------------
 // i18n.md § "## Switching locale at runtime" — rust block 3/6
 // ---------------------------------------------------------------------------
+// i18n.md writes the path qualified to show where the function lives.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn i18n_block_03() {
     use waterui::locale::{Locale, locales};
 
@@ -151,6 +153,8 @@ pub fn i18n_block_06() -> impl View {
 // `format_currency`, and `waterui::regional::current_settings()`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
+// The prose names `waterui::regional::current_settings()` with its full path.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn i18n_formatting_siblings_prose() {
     use waterui::locale::locales;
     use waterui_locale::format::date::SimpleTime;

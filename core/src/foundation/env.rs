@@ -88,6 +88,7 @@ use crate::{
     View,
     components::Metadata,
     extract::Extractor,
+    layout::StretchAxis,
     metadata::MetadataKey,
     plugin::Plugin,
     view::{Hook, ViewConfiguration},
@@ -488,6 +489,10 @@ impl<V: View, T: 'static> View for With<V, T> {
     fn body(self, env: &Environment) -> impl View {
         let env = env.extending(self.value);
         Metadata::new(self.content, env)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
     }
 }
 

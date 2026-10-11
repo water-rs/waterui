@@ -20,8 +20,10 @@ use waterui_cli::{
     apple::platform::clean_apple,
     gtk4::platform::clean_gtk4,
     hydrolysis::platform::clean_hydrolysis,
-    project::{Manifest, PackageType, Project},
+    platform::TargetBackend as LibTargetBackend,
+    project::{ManagedBackends, Manifest, Project},
     water_dir,
+    winui::platform::clean_winui,
 };
 
 /// Target backend for cleaning.
@@ -35,6 +37,9 @@ pub enum TargetBackend {
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer).
     Hydrolysis,
+    /// `WinUI` backend (Windows).
+    #[value(name = "winui")]
+    WinUi,
     /// All backends.
     All,
 }
@@ -50,8 +55,8 @@ pub struct Args {
     #[arg(long, default_value = ".")]
     path: PathBuf,
 
-    /// Recursively find all valid `WaterUI` projects under `--path` and clean each playground
-    /// project's managed build cache plus each app project's `Cargo` target directory.
+    /// Recursively find all valid `WaterUI` projects under `--path` and clean each
+    /// project's managed build cache.
     #[arg(short = 'r', long)]
     recursive: bool,
 
@@ -62,6 +67,13 @@ pub struct Args {
     /// Skip confirmation prompt in recursive mode.
     #[arg(short = 'y', long)]
     yes: bool,
+}
+
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 /// Run the clean command.
@@ -100,7 +112,12 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         return clean_recursive(shell, &root_path, args.yes).await;
     }
 
-    let project = Project::open(&root_path).await?;
+    let project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &root_path,
+        managed_backends(args.backend),
+    )
+    .await?;
 
     header!(shell, "Cleaning build artifacts...");
 
@@ -112,6 +129,13 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 pb.finish_and_clear();
             }
             success!(shell, "Cleaned all build artifacts");
+            note!(
+                shell,
+                "Shared dependency artifacts in {} are kept for every project on this machine; `water gc build-cache --shared-target` removes them",
+                water_dir::shared_target_dir_path(&waterui_cli::toolchain::Host::current())
+                    .await?
+                    .display()
+            );
         }
         TargetBackend::Apple => {
             let spinner = shell.spinner("Cleaning Apple build artifacts...");
@@ -145,13 +169,34 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             }
             success!(shell, "Cleaned hydrolysis build artifacts");
         }
+        TargetBackend::WinUi => {
+            let spinner = shell.spinner("Cleaning WinUI build artifacts...");
+            clean_winui(&project).await?;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            success!(shell, "Cleaned WinUI build artifacts");
+        }
     }
 
     Ok(())
 }
 
+/// The managed native backends whose generated projects a clean of `backend`
+/// sweeps: the one named, or every one of them for `all`.
+const fn managed_backends(backend: TargetBackend) -> ManagedBackends {
+    match backend {
+        TargetBackend::Apple => ManagedBackends::for_backend(LibTargetBackend::Apple),
+        TargetBackend::Android => ManagedBackends::for_backend(LibTargetBackend::Android),
+        TargetBackend::Gtk4 => ManagedBackends::for_backend(LibTargetBackend::Gtk4),
+        TargetBackend::Hydrolysis => ManagedBackends::for_backend(LibTargetBackend::Hydrolysis),
+        TargetBackend::WinUi => ManagedBackends::for_backend(LibTargetBackend::WinUi),
+        TargetBackend::All => ManagedBackends::ALL,
+    }
+}
+
 async fn clean_global_build_cache(shell: &Shell, yes: bool) -> Result<()> {
-    let cache_root = water_dir::build_cache_root().await?;
+    let cache_root = water_dir::build_cache_root(&waterui_cli::toolchain::Host::current()).await?;
     clean_global_build_cache_root(shell, cache_root, yes).await
 }
 
@@ -210,7 +255,7 @@ async fn clean_recursive(shell: &Shell, root: &Path, yes: bool) -> Result<()> {
     );
 
     let spinner = shell.spinner("Scanning for WaterUI projects...");
-    let cache_plan = CachePlan::discover(shell, root).await?;
+    let cache_plan = CachePlan::discover(root).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -312,10 +357,10 @@ struct CachePlan {
 }
 
 impl CachePlan {
-    async fn discover(shell: &Shell, root: &Path) -> Result<Self> {
+    async fn discover(root: &Path) -> Result<Self> {
         let project_roots = discover_projects(root).await?;
         let project_count = project_roots.len();
-        let cache_dirs = collect_existing_cache_dirs(shell, project_roots).await?;
+        let cache_dirs = collect_existing_cache_dirs(project_roots).await?;
         Ok(Self {
             project_count,
             cache_dirs,
@@ -323,18 +368,16 @@ impl CachePlan {
     }
 }
 
-async fn collect_existing_cache_dirs(
-    shell: &Shell,
-    project_roots: Vec<PathBuf>,
-) -> Result<Vec<PathBuf>> {
+async fn collect_existing_cache_dirs(project_roots: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     let mut cache_dirs = BTreeSet::new();
-    let mut discovered =
-        stream::iter(project_roots.into_iter().map(|project_root| async move {
-            discover_project_cache_dirs(shell, project_root).await
-        }))
-        .buffer_unordered(discovery_parallelism());
-    while let Some(project_cache_dirs) = discovered.next().await.transpose()? {
-        cache_dirs.extend(project_cache_dirs);
+    let mut discovered = stream::iter(
+        project_roots
+            .into_iter()
+            .map(|project_root| async move { discover_project_cache_dir(project_root).await }),
+    )
+    .buffer_unordered(discovery_parallelism());
+    while let Some(cache_dir) = discovered.next().await.transpose()? {
+        cache_dirs.insert(cache_dir);
     }
 
     let mut existing_cache_dirs = Vec::new();
@@ -347,46 +390,14 @@ async fn collect_existing_cache_dirs(
     Ok(collapse_nested_cache_dirs(existing_cache_dirs))
 }
 
-async fn discover_project_cache_dirs(
-    shell: &Shell,
-    project_root: PathBuf,
-) -> Result<BTreeSet<PathBuf>> {
-    let manifest = Manifest::open(project_root.join("Water.toml"))
+async fn discover_project_cache_dir(project_root: PathBuf) -> Result<PathBuf> {
+    // Opening the manifest validates the project before its cache is swept:
+    // an app-mode leftover fails here with the keys to delete.
+    Manifest::open(project_root.join("Water.toml"))
         .await
         .map_err(eyre::Report::from)?;
-
-    let mut cache_dirs = BTreeSet::new();
-    match manifest.package.package_type {
-        PackageType::Playground => {
-            cache_dirs.insert(water_dir::project_build_cache_dir(&project_root).await?);
-        }
-        PackageType::App => match resolve_target_dir(project_root.clone()).await {
-            Ok(target_dir) => {
-                cache_dirs.insert(target_dir);
-            }
-            Err(error) => warn!(
-                shell,
-                "Skipping target cache discovery for {}: {}",
-                project_root.display(),
-                error
-            ),
-        },
-    }
-
-    Ok(cache_dirs)
-}
-
-async fn resolve_target_dir(
-    project_root: PathBuf,
-) -> std::result::Result<PathBuf, cargo_metadata::Error> {
-    smol::unblock(move || {
-        let mut metadata_cmd = cargo_metadata::MetadataCommand::new();
-        metadata_cmd.current_dir(&project_root);
-        metadata_cmd.no_deps();
-        let metadata = metadata_cmd.exec()?;
-        Ok(metadata.target_directory.as_std_path().to_path_buf())
-    })
-    .await
+    water_dir::project_build_cache_dir(&waterui_cli::toolchain::Host::current(), &project_root)
+        .await
 }
 
 fn discover_projects_blocking(root: &Path) -> Vec<PathBuf> {
@@ -533,7 +544,7 @@ mod tests {
         ensure_recursive_root_is_directory, remove_global_build_cache_root, should_skip_dir,
     };
     use waterui_cli::{
-        project::{Manifest, Package, PackageType},
+        project::{Manifest, Package},
         project_types::BundleIdentifier,
     };
 
@@ -619,7 +630,6 @@ mod tests {
     fn write_manifest(project_root: &Path, name: &str) {
         fs::create_dir_all(project_root).expect("create project root");
         let manifest = Manifest::new(Package {
-            package_type: PackageType::Playground,
             name: name.to_owned(),
             // The identifier doubles as the Android package name, so a
             // hyphenated project name cannot be used verbatim.
@@ -630,6 +640,7 @@ mod tests {
             .expect("test bundle identifier must be valid"),
             assets_path: String::from("assets"),
             accessory: false,
+            embedded: false,
         });
         block_on(manifest.save(project_root)).expect("save manifest");
     }

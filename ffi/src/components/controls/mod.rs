@@ -1,3 +1,5 @@
+/// FFI bindings for the `Badge` indicator component.
+pub mod badge;
 /// FFI bindings for the `Button` component.
 pub mod button;
 /// FFI bindings for form controls (text fields, toggles, sliders, pickers, date pickers).

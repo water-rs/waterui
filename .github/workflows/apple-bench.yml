@@ -1,0 +1,57 @@
+name: Apple Benches
+
+permissions:
+  contents: read
+
+# Informational only: this lane never gates a pull request — the `rust`
+# workflow's `cargo bench --no-run` step is the compile gate. It runs the
+# native hot-path benches on cloud macOS, manually or weekly; it is never
+# meant to run on a developer's machine. A weekly cadence keeps the bench
+# code exercised so it does not silently rot.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+concurrency:
+  group: apple-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: native hot paths
+    runs-on: macos-26
+    env:
+      CARGO_TERM_COLOR: always
+      # Same toolchain policy as ci.yml (#328): no compile wrapper on CI.
+      RUSTC_WRAPPER: ""
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-apple-darwin
+          cache: "false"
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
+      # and `main` pushes (source packages are toolchain-independent). This lane never
+      # saves and caches no `target`, so it can never evict the gate's
+      # compile cache.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The benches run against the backend's real AppKit objects — no
+      # seam, header or harness archive exists to link.
+      - name: Benchmark (informational)
+        run: cargo bench -p waterui-apple --locked
+      # Criterion's report tree is the trend series: uploaded under a
+      # stable, branch-scoped name so runs diff cleanly against earlier
+      # baselines (each bench's `new/` vs `baseline/` output is preserved
+      # verbatim inside the archive).
+      - name: Upload Criterion output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.sha }}-${{ github.run_id }}
+          path: target/criterion/
+          if-no-files-found: error

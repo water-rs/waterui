@@ -14,7 +14,7 @@ use waterui::Identifiable; // the derive macro
 use waterui::animation::Animation; // animation curves
 use waterui::component::lazy::Lazy; // reactive stacks over a collection
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with; // scope a value to a subtree
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::reactive::binding; // the general Binding constructor
@@ -42,6 +42,9 @@ fn glue_row_view(row: GlueRow) -> ListItem {
 // SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/16
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
+// `fade.snapshot()` is SKILL.md's deliberate broken line — the section teaches that
+// passing a snapshot freezes the view while still compiling.
+#[allow(unknown_lints, signal_get_in_view)]
 pub fn skill_block_01() {
     let fade = Binding::f32(1.0);
     let blur = Binding::f64(4.0);
@@ -54,7 +57,7 @@ pub fn skill_block_01() {
     };
     let view = Divider;
     let _ = {
-        view.opacity(fade.get()) // frozen forever — a plain f32
+        view.opacity(fade.snapshot()) // frozen forever — a plain f32
     };
     let _ = {
         Photo::new(url).blur(blur.clone()) // reacts
@@ -108,7 +111,7 @@ pub fn skill_block_04() -> impl View {
     button("Search")
         .action(
             |State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
-                hist.get_mut().push(q.get());
+                hist.get_mut().push(q.snapshot());
             },
         )
         .state(&query) // -> first parameter
@@ -122,14 +125,15 @@ pub mod skill_block_05 {
     use super::{GlueRow as Row, ReactiveList, glue_row_view as row_view};
     use waterui::prelude::*;
 
+    #[state]
     #[derive(Clone)]
     pub struct Editor {
         rows: ReactiveList<Row>,
         editing: Binding<bool>,
     }
 
-    fn toggle_editing(State(state): State<Editor>) {
-        state.editing.set(!state.editing.get());
+    fn toggle_editing(state: Editor) {
+        state.editing.toggle();
     }
 
     fn content(state: Editor) -> impl View {
@@ -317,11 +321,7 @@ pub fn skill_block_13() {
     let (a, b, c) = (text("a"), text("b"), text("c"));
     let _ = { hstack((a, b, c)).spacing(8.0) };
     let (a, b) = (text("a"), text("b"));
-    let _ = {
-        vstack((a, b))
-            .alignment(HorizontalAlignment::Leading)
-            .padding()
-    };
+    let _ = { vstack((a, b)).leading().padding() };
     let _ = { zstack((background, content)) };
     let content = text("content");
     let _ = { scroll(content) };
@@ -408,20 +408,23 @@ pub fn skill_block_14() {
 pub fn skill_block_15() {
     use waterui::accessibility::AccessibilityRole;
     use waterui::gesture::Gesture;
-    use waterui::layout::EdgeSet;
+    use waterui::layout::{EdgeSet, SafeAreaRegions};
 
     let (w, h) = (100.0_f32, 40.0_f32);
     let (x, y) = (1.5_f32, 2.5_f32);
     let degrees = 30.0_f32;
     let width = 2.0_f32;
-    let shape = waterui::shape::Circle;
+    use waterui::shape::Circle;
+    let shape = Circle;
 
     let view = Divider;
     let _ = { view.padding() };
     let view = Divider;
     let _ = { view.padding_with(16.0) };
     let view = Divider;
-    let _ = { view.padding_with(EdgeInsets::all(16.0)) };
+    let _ = { view.padding_with((8.0, 16.0)) };
+    let view = Divider;
+    let _ = { view.padding_horizontal(16.0) };
 
     let color = Color::srgb_hex("#3B82F6");
     let view = Divider;
@@ -546,6 +549,8 @@ pub fn skill_block_15() {
     let _ = { view.ignore_safe_area(EdgeSet::ALL) };
     let view = Divider;
     let _ = { view.floating() };
+    let view = Divider;
+    let _ = { view.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -557,12 +562,13 @@ pub mod skill_block_16 {
     use waterui::prelude::*;
 
     use waterui::env::{use_env, with};
+    use waterui::impl_extractor;
 
     #[derive(Clone)]
     pub struct ApiClient {
         base_url: Str,
     }
-    waterui::impl_extractor!(ApiClient); // makes it a handler/`use_env` parameter
+    impl_extractor!(ApiClient); // makes it a handler/`use_env` parameter
 
     fn send(_client: &ApiClient) {}
 
@@ -633,7 +639,8 @@ pub fn skill_block_08_imports_are_live() {
     let _ = LongPressGesture::new(500);
     let _ = TapGesture::new();
     let _ = CursorStyle::Arrow;
-    let _ = DragData::text("payload");
+    let _ = Files::new([waterui::Url::from("file:///tmp/payload")]);
+    let _ = text("tab").draggable(GlueTab);
     let _ = Animation::default();
     let _ = ForEach::new(ReactiveList::<GlueRow>::new(), glue_row_view);
     let _ = binding::<i32>(0);
@@ -641,3 +648,9 @@ pub fn skill_block_08_imports_are_live() {
     let _ = with(text("x"), 1_i32);
     spawn_local(async { sleep(core::time::Duration::from_millis(1)).await }).detach();
 }
+
+/// Glue: an app type made transferable, as the block 8 import implies.
+#[derive(Debug, Clone)]
+struct GlueTab;
+impl Transferable for GlueTab {}
+waterui::reactive::impl_constant!(GlueTab);

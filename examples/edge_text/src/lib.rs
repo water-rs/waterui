@@ -5,18 +5,14 @@
 //! text measurement and line breaking.
 
 use waterui::app::App;
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::preview;
 
 fn section(title: &'static str, content: impl View) -> impl View {
-    vstack((
-        text(title).sub_headline().foreground(MutedForeground),
-        content,
-    ))
-    .alignment(HorizontalAlignment::Leading)
-    .spacing(6.0)
-    .padding_with(EdgeInsets::all(12.0))
+    vstack((text(title).sub_headline().muted(), content))
+        .leading()
+        .spacing(6.0)
+        .padding_with(12.0)
 }
 
 /// 160-char run with no break opportunities — tests overflow wrapping.
@@ -75,7 +71,7 @@ fn size_extremes() -> impl View {
             text("body").body(),
         ))
         .spacing(8.0)
-        .alignment(VerticalAlignment::LastBaseline),
+        .last_baseline(),
     )
 }
 
@@ -96,7 +92,7 @@ pub fn demo() -> impl View {
             text("Edge Text").title(),
             text("Extreme text measurement and line breaking")
                 .sub_headline()
-                .foreground(MutedForeground),
+                .muted(),
             Divider,
             vstack((
                 unbroken(),
@@ -107,7 +103,7 @@ pub fn demo() -> impl View {
                 Divider,
                 mixed_scripts(),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
             vstack((
                 Divider,
                 empties(),
@@ -117,10 +113,10 @@ pub fn demo() -> impl View {
                 long_paragraph(),
                 spacer().min_height(16.0),
             ))
-            .alignment(HorizontalAlignment::Leading),
+            .leading(),
         ))
-        .alignment(HorizontalAlignment::Leading)
-        .padding_with(EdgeInsets::all(16.0)),
+        .leading()
+        .padding_with(16.0),
     )
 }
 

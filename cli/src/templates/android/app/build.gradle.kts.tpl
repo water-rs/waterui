@@ -1,5 +1,7 @@
 plugins {
     id("com.android.application")
+    // --- begin waterui gradle plugins ---
+    // --- end waterui gradle plugins ---
 }
 
 // =============================================================================
@@ -112,7 +114,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "{{ ctx.bundle_identifier }}"
+        applicationId = "{{ ctx.android_package_name() }}"
         minSdk = {{ ctx.android_min_api_level() }}
         targetSdk = 37
         versionCode = 1
@@ -127,8 +129,25 @@ android {
         }
     }
 
+{% if let Some(signing) = ctx.android_signing() %}
+    // Release signing from `[signing.android]` in Water.toml. The passwords are
+    // read from the environment at build time and never written to the project.
+    signingConfigs {
+        create("release") {
+            storeFile = projectRoot.resolve("{{ signing.keystore }}")
+            keyAlias = "{{ signing.key_alias }}"
+            storePassword = System.getenv("{{ signing.store_password_env }}")
+            keyPassword = System.getenv("{{ signing.key_password_env }}")
+        }
+    }
+{% endif %}
     buildTypes {
         release {
+            {% if let Some(signing) = ctx.android_signing() %}
+            if (System.getenv("{{ signing.unsigned_env }}") != "1") {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            {% endif %}
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -136,11 +155,13 @@ android {
     }
     buildFeatures {
         compose = false
+        // `BuildConfig.DEBUG` gates the dev-server URL intent extra.
+        buildConfig = true
     }
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
+        sourceCompatibility = JavaVersion.VERSION_{{ ctx.android_jdk_version() }}
+        targetCompatibility = JavaVersion.VERSION_{{ ctx.android_jdk_version() }}
     }
     sourceSets {
         getByName("main") {
@@ -155,14 +176,15 @@ android {
 }
 
 dependencies {
-    // Use the backend revision embedded into the CLI build in remote mode, local backend otherwise
-    if ({{ ctx.use_remote_dev_backend }}) {
-        implementation("{{ ctx.android_remote_backend_dependency() }}")
-    } else {
-        implementation("dev.waterui.android:runtime")
-    }
+    // --- begin waterui android classpath dependencies ---
+    // --- end waterui android classpath dependencies ---
+
+    // The Kotlin runtime at the revision `android-backend-revision` pins.
+    implementation("{{ ctx.android_runtime_dependency() }}")
 
     implementation("androidx.core:core-ktx:1.19.0")
+    // The launch screen: the platform SplashScreen API on 31+, backported below.
+    implementation("androidx.core:core-splashscreen:1.2.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.13.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")

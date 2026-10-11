@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize, edited]
+  # A release pull request is opened by release-plz with the workflow
+  # token, which triggers no `pull_request` run, so the release job
+  # dispatches this gate on the release branch instead. Its check run lands
+  # on the branch head, which is what the required check reads.
+  workflow_dispatch:
 
 permissions:
   checks: read
@@ -15,7 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: main only accepts merges from dev
+      # Three sources may land on main: the integration branch, the release
+      # pull request release-plz opens from its own `release-plz-*` branch
+      # after a dev merge (the version bump and changelog that publish), and a
+      # `hotfix/*` branch cut from `main` itself. The last one is what AGENTS.md
+      # requires for a fix that belongs to the current release line — release
+      # plumbing, backend pins, scaffold versions — precisely so that landing
+      # it does not drag everything `dev` has accumulated, breaking changes
+      # included, over the version boundary.
+      - name: main only accepts merges from dev, a release-plz branch or a hotfix
+        if: github.event_name == 'pull_request'
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -25,21 +39,25 @@ jobs:
             echo "::error::Pull requests into 'main' must come from this repository, not a fork."
             exit 1
           fi
-          if [ "${HEAD_REF}" != "dev" ]; then
-            echo "::error::Pull requests into 'main' are only allowed from 'dev'. Retarget this pull request at 'dev' instead."
-            exit 1
-          fi
+          case "${HEAD_REF}" in
+            dev|release-plz-*|hotfix/*) ;;
+            *)
+              echo "::error::Pull requests into 'main' are only allowed from 'dev', a release-plz release branch ('release-plz-*'), or a hotfix branch cut from 'main' ('hotfix/*'). Retarget this pull request at 'dev' instead."
+              exit 1
+              ;;
+          esac
           echo "'${HEAD_REF}' -> 'main': source branch allowed."
 
       # This check doubles as the single required check on main: instead of
       # pinning CI job names in the ruleset (which break on every rename), it
       # waits for every other check run and commit status on the PR's head and
-      # merge commits — and goes green only
+      # merge commits — `nightly-healthy` among them — and goes green only
       # when all of them did. Commit statuses are read alongside check runs so
       # reporters that only publish statuses cannot slip past the gate, and an
       # empty result after the discovery window fails instead of passing
       # vacuously before the other workflows have registered their checks.
       - name: wait for every other check on this PR to go green
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -104,3 +122,19 @@ jobs:
             echo "waiting on ${pending} check(s)..."
             sleep 30
           done
+
+      # A release pull request only bumps versions and the changelog of a tree
+      # that already passed CI on its way from dev, so it needs no CI of its
+      # own: the dispatched gate passes on the source branch alone.
+      - name: a dispatched gate only passes a release-plz branch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "${REF_NAME}" in
+            release-plz-*) echo "'${REF_NAME}' is a release-plz release branch." ;;
+            *)
+              echo "::error::The gate is dispatched only for release-plz release branches ('release-plz-*'), not '${REF_NAME}'."
+              exit 1
+              ;;
+          esac

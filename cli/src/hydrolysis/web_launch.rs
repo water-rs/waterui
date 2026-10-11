@@ -125,10 +125,12 @@ pub(super) async fn write_web_shell(project: &Project, site_root: &Path) -> eyre
         .filter(|ch| ch.is_alphanumeric())
         .collect::<String>();
     let ctx = TemplateContext::for_project_manifest(
+        project.host(),
         project.manifest(),
         project.crate_name().clone(),
         app_name,
-        &project.resolved_framework().await?,
+        project.resolved_framework().await?,
+        project.local_sources(),
     );
     let launch = WebLaunch::resolve(project, wasm_bytes)?;
     let index = IndexTemplate { ctx: &ctx, launch }
@@ -174,17 +176,19 @@ mod tests {
     #[test]
     fn index_inlines_the_launch_screen_and_the_dark_override() {
         let manifest = crate::project::Manifest::new(crate::project::Package {
-            package_type: crate::project::PackageType::Playground,
             name: "Demo <App>".to_string(),
             bundle_identifier: BundleIdentifier::try_from("dev.waterui.demo").unwrap(),
             assets_path: "assets".to_string(),
             accessory: false,
+            embedded: false,
         });
         let ctx = TemplateContext::for_project_manifest(
+            &crate::toolchain::Host::current(),
             &manifest,
             CrateName::try_from("demo").unwrap(),
             "Demo",
             &crate::framework::test_fixtures::stable_framework(),
+            &crate::templates::LocalBackendSources::default(),
         );
         let html = IndexTemplate {
             ctx: &ctx,
@@ -205,23 +209,25 @@ mod tests {
         assert!(html.contains("src=\"data:image/png;base64,AAAA\""));
         assert!(html.contains("<title>Demo &#60;App&#62;</title>"), "{html}");
         assert!(html.contains("id=\"waterui-launch\""));
-        assert!(html.contains("<canvas id=\"waterui-canvas\">"));
+        assert!(html.contains("<div id=\"waterui-root\">"));
     }
 
     #[test]
     fn index_omits_the_dark_block_when_nothing_differs() {
         let manifest = crate::project::Manifest::new(crate::project::Package {
-            package_type: crate::project::PackageType::Playground,
             name: "Demo".to_string(),
             bundle_identifier: BundleIdentifier::try_from("dev.waterui.demo").unwrap(),
             assets_path: "assets".to_string(),
             accessory: false,
+            embedded: false,
         });
         let ctx = TemplateContext::for_project_manifest(
+            &crate::toolchain::Host::current(),
             &manifest,
             CrateName::try_from("demo").unwrap(),
             "Demo",
             &crate::framework::test_fixtures::stable_framework(),
+            &crate::templates::LocalBackendSources::default(),
         );
         let html = IndexTemplate {
             ctx: &ctx,

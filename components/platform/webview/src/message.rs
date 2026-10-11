@@ -11,7 +11,7 @@
 //!     .handler("greet", |Json(req): Json<Greet>| async move {
 //!         Json(Greeting { text: format!("Hi {}", req.name) })
 //!     })
-//!     .handler("save", |Json(doc): Json<Doc>, State(db): State<Db>| async move {
+//!     .handler("save", |Json(doc): Json<Doc>, db: Db| async move {
 //!         db.save(doc).await?;
 //!         Ok::<_, SaveError>(())
 //!     })

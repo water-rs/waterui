@@ -56,6 +56,73 @@ use crate::{
     metadata::MetadataKey,
 };
 
+/// A pointer button that can press a gesture.
+///
+/// A touch or a pen contact presses as [`Self::Primary`]; the other buttons
+/// exist on mice and some pens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PointerButton {
+    /// The main button: a left mouse click, a touch, a pen contact.
+    Primary,
+    /// The secondary button, usually a right click.
+    Secondary,
+    /// The middle button, usually a wheel click.
+    Middle,
+    /// The "back" side button.
+    Back,
+    /// The "forward" side button.
+    Forward,
+}
+
+bitflags::bitflags! {
+    /// The set of pointer buttons a gesture responds to.
+    ///
+    /// Tap, long-press and drag gestures respond to [`Self::PRIMARY`] unless
+    /// told otherwise. A gesture that accepts [`Self::SECONDARY`] competes with
+    /// a `.context_menu` at the same point: the context menu wins where one is
+    /// declared, the way platforms reserve the secondary click for it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct PointerButtons: u8 {
+        /// [`PointerButton::Primary`].
+        const PRIMARY = 1 << 0;
+        /// [`PointerButton::Secondary`].
+        const SECONDARY = 1 << 1;
+        /// [`PointerButton::Middle`].
+        const MIDDLE = 1 << 2;
+        /// [`PointerButton::Back`].
+        const BACK = 1 << 3;
+        /// [`PointerButton::Forward`].
+        const FORWARD = 1 << 4;
+    }
+}
+
+impl From<PointerButton> for PointerButtons {
+    fn from(button: PointerButton) -> Self {
+        match button {
+            PointerButton::Primary => Self::PRIMARY,
+            PointerButton::Secondary => Self::SECONDARY,
+            PointerButton::Middle => Self::MIDDLE,
+            PointerButton::Back => Self::BACK,
+            PointerButton::Forward => Self::FORWARD,
+        }
+    }
+}
+
+impl PointerButtons {
+    /// Whether `button` is in this set.
+    #[must_use]
+    pub fn accepts(self, button: PointerButton) -> bool {
+        self.contains(button.into())
+    }
+}
+
+impl Default for PointerButtons {
+    fn default() -> Self {
+        Self::PRIMARY
+    }
+}
+
 /// Represents the phase of a gesture interaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GesturePhase {
@@ -96,6 +163,8 @@ pub struct TapEvent {
     pub location: GesturePoint,
     /// Number of taps that occurred in succession.
     pub count: u32,
+    /// The button that tapped.
+    pub button: PointerButton,
 }
 
 /// Event payload for long-press gestures.
@@ -108,6 +177,8 @@ pub struct LongPressEvent {
     pub location: GesturePoint,
     /// Duration, in platform-defined time units, that the press was held.
     pub duration: f32,
+    /// The button that is held.
+    pub button: PointerButton,
 }
 
 /// Event payload for drag gestures.
@@ -124,6 +195,8 @@ pub struct DragEvent {
     pub translation: GesturePoint,
     /// Velocity of the drag in points per second.
     pub velocity: GesturePoint,
+    /// The button that drags.
+    pub button: PointerButton,
 }
 
 /// Event payload for magnification (pinch) gestures.
@@ -165,19 +238,32 @@ pub struct RotationEvent {
 pub struct TapGesture {
     /// The number of consecutive taps required to trigger this gesture.
     pub count: u32,
+    /// The buttons that can tap; [`PointerButtons::PRIMARY`] by default.
+    pub buttons: PointerButtons,
 }
 
 impl TapGesture {
     /// Creates a tap gesture that requires `count` consecutive taps to activate.
     #[must_use]
     pub const fn repeat(count: u32) -> Self {
-        Self { count }
+        Self {
+            count,
+            buttons: PointerButtons::PRIMARY,
+        }
     }
 
     /// Creates a tap gesture that requires a single tap to activate.
     #[must_use]
     pub const fn new() -> Self {
-        Self { count: 1 }
+        Self::repeat(1)
+    }
+
+    /// Responds to `buttons` instead of the primary button alone — a middle
+    /// click that closes a tab is `TapGesture::new().buttons(PointerButtons::MIDDLE)`.
+    #[must_use]
+    pub const fn buttons(mut self, buttons: PointerButtons) -> Self {
+        self.buttons = buttons;
+        self
     }
 }
 
@@ -193,6 +279,8 @@ impl Default for TapGesture {
 pub struct LongPressGesture {
     /// The minimum duration (in time units) the press must be held.
     pub duration: u32,
+    /// The buttons that can press; [`PointerButtons::PRIMARY`] by default.
+    pub buttons: PointerButtons,
 }
 
 impl LongPressGesture {
@@ -202,7 +290,17 @@ impl LongPressGesture {
     /// platform-specific gesture systems to provide consistent behaviour.
     #[must_use]
     pub const fn new(duration: u32) -> Self {
-        Self { duration }
+        Self {
+            duration,
+            buttons: PointerButtons::PRIMARY,
+        }
+    }
+
+    /// Responds to `buttons` instead of the primary button alone.
+    #[must_use]
+    pub const fn buttons(mut self, buttons: PointerButtons) -> Self {
+        self.buttons = buttons;
+        self
     }
 }
 
@@ -212,13 +310,26 @@ impl LongPressGesture {
 pub struct DragGesture {
     /// The minimum distance the pointer must travel to initiate the drag.
     pub min_distance: f32,
+    /// The buttons that can drag; [`PointerButtons::PRIMARY`] by default.
+    pub buttons: PointerButtons,
 }
 
 impl DragGesture {
     /// Creates a drag gesture requiring the pointer to travel at least `min_distance` units.
     #[must_use]
     pub const fn new(min_distance: f32) -> Self {
-        Self { min_distance }
+        Self {
+            min_distance,
+            buttons: PointerButtons::PRIMARY,
+        }
+    }
+
+    /// Responds to `buttons` instead of the primary button alone — a
+    /// middle-button pan is `DragGesture::new(0.0).buttons(PointerButtons::MIDDLE)`.
+    #[must_use]
+    pub const fn buttons(mut self, buttons: PointerButtons) -> Self {
+        self.buttons = buttons;
+        self
     }
 }
 

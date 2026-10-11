@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
 {% for permission in ctx.android_permissions %}
-    <uses-permission android:name="{{ permission.name }}" />
+    <uses-permission android:name="{{ permission }}" />
 {% endfor %}
 
     <application
@@ -19,12 +19,15 @@
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:exported="true"
             android:launchMode="singleTask"
-            android:supportsPictureInPicture="true">
+            android:supportsPictureInPicture="true"
+            android:theme="@style/Theme.WaterUIApp.Launch">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- begin waterui android manifest components -->
+        <!-- end waterui android manifest components -->
     </application>
 
 </manifest>

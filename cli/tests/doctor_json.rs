@@ -4,22 +4,62 @@
 //! records use the same `DoctorItemRecord` schema the command serializes, so
 //! a schema drift fails to deserialize rather than string-matching.
 
-use std::process::Command;
+use waterui_cli::toolchain::{
+    Host,
+    doctor::{DoctorGroup, DoctorItemRecord, ids},
+};
 
-use waterui_cli::toolchain::doctor::{DoctorItemRecord, ids};
+/// Status vocabulary, diagnostic presence, group label, and scope of one
+/// record. The run is inside a project, which can build with every backend,
+/// so no group is optional.
+fn assert_item_schema(item: &DoctorItemRecord) {
+    assert!(
+        ["ok", "missing", "skipped"].contains(&item.status.as_ref()),
+        "unexpected status {:?} on {}",
+        item.status,
+        item.id
+    );
+    if item.status == "missing" {
+        assert!(
+            item.message
+                .as_deref()
+                .is_some_and(|message| !message.is_empty()),
+            "missing item {} must carry a diagnostic",
+            item.id
+        );
+    }
+    let group = DoctorGroup::of(&item.id);
+    assert_eq!(
+        item.group,
+        group.as_str(),
+        "group label drifted on {}",
+        item.id
+    );
+    assert!(!item.optional, "scope drifted on {}", item.id);
+}
 
 #[test]
 fn doctor_json_emits_typed_item_records_for_every_check() {
     let home = tempfile::tempdir().expect("scratch home for the child process");
-    let output = Command::new(env!("CARGO_BIN_EXE_water"))
+    // `web-package-manager` only emits inside a project declaring `[web]`;
+    // run the child in one so `ids::ALL` is covered exhaustively.
+    let project = tempfile::tempdir().expect("scratch project for the child process");
+    std::fs::write(
+        project.path().join("Water.toml"),
+        "[package]\nname = \"Doctor Fixture\"\nbundle_identifier = \"dev.waterui.doctor_fixture\"\n\n[web]\npackage_manager = \"bun\"\n",
+    )
+    .expect("write fixture manifest");
+    // Redirect the child's home so `ensure_global_config` never writes
+    // `~/.water/config.toml` on the machine running the tests. (dirs'
+    // Windows backend consults the known-folder API, so this is only
+    // effective on Unix; the write itself is a small config file the CLI
+    // owns anyway.)
+    let output = Host::current()
+        .with_env("HOME", home.path())
+        .with_env("USERPROFILE", home.path())
+        .with_cwd(project.path())
+        .std_command(env!("CARGO_BIN_EXE_water"))
         .args(["--json", "doctor"])
-        // Redirect the child's home so `ensure_global_config` never writes
-        // `~/.water/config.toml` on the machine running the tests. (dirs'
-        // Windows backend consults the known-folder API, so this is only
-        // effective on Unix; the write itself is a small config file the CLI
-        // owns anyway.)
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
         .env_remove("RUST_LOG")
         .output()
         .expect("spawn `water doctor --json`");
@@ -50,21 +90,7 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
     assert_eq!(emitted_ids, ids::ALL, "doctor item set/order drifted");
 
     for item in &items {
-        assert!(
-            ["ok", "missing", "skipped"].contains(&item.status.as_ref()),
-            "unexpected status {:?} on {}",
-            item.status,
-            item.id
-        );
-        if item.status == "missing" {
-            assert!(
-                item.message
-                    .as_deref()
-                    .is_some_and(|message| !message.is_empty()),
-                "missing item {} must carry a diagnostic",
-                item.id
-            );
-        }
+        assert_item_schema(item);
     }
 
     // Skipped identity is a `cfg!` property of the platform, not machine
@@ -85,10 +111,16 @@ fn doctor_json_emits_typed_item_records_for_every_check() {
                     | ids::IOS_SIMULATOR_SDK
                     | ids::IOS_SIMULATORS
                     | ids::MACOS_SDK
+                    | ids::APPLE_RUST_TARGETS
             );
-            let linux_item = matches!(*id, ids::LINUX_SYSTEM_PACKAGES | ids::GTK4);
+            let linux_item = matches!(
+                *id,
+                ids::C_TOOLCHAIN | ids::LINUX_SYSTEM_PACKAGES | ids::GTK4
+            );
+            let windows_item = matches!(*id, ids::WINUI | ids::MSVC_BUILD_TOOLS | ids::DXC);
             (apple_item && !cfg!(target_os = "macos"))
                 || (linux_item && !cfg!(target_os = "linux"))
+                || (windows_item && !cfg!(target_os = "windows"))
                 || (*id == ids::WINDOWS_ARM64_LLVM
                     && !cfg!(all(target_os = "windows", target_arch = "aarch64")))
         })

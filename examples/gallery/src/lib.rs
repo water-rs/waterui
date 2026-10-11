@@ -14,14 +14,26 @@
 
 use core::time::Duration;
 
+use mdi::Svg;
+use mdi::chevron_down;
+use mdi::chevron_right;
+use mdi::form_textbox;
+use mdi::format_list_bulleted;
+use mdi::gauge;
+use mdi::gesture_tap_button;
+use mdi::home;
+use mdi::numeric;
+use mdi::text_box_outline;
+use mdi::toggle_switch;
+use mdi::tune;
 use waterui::Color;
 use waterui::Handler;
 use waterui::Identifiable;
+use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::form::picker::{PickerStyle, picker};
-use waterui::layout::HorizontalAlignment;
 use waterui::layout::collection_transition;
 use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
@@ -180,7 +192,7 @@ impl DemoState {
 /// A single catalog entry: a control with its drawer icon and live demo.
 struct Control {
     title: &'static str,
-    icon: fn() -> mdi::Svg,
+    icon: fn() -> Svg,
     section: Section,
     demo: fn(&DemoState) -> AnyView,
 }
@@ -190,49 +202,49 @@ fn controls() -> Vec<Control> {
     vec![
         Control {
             title: "Buttons",
-            icon: mdi::gesture_tap_button,
+            icon: gesture_tap_button,
             section: Section::Actions,
             demo: |s| AnyView::new(buttons_demo(&s.taps)),
         },
         Control {
             title: "Text Field",
-            icon: mdi::form_textbox,
+            icon: form_textbox,
             section: Section::Inputs,
             demo: |s| AnyView::new(text_field_demo(&s.name)),
         },
         Control {
             title: "Slider",
-            icon: mdi::tune,
+            icon: tune,
             section: Section::Inputs,
             demo: |s| AnyView::new(slider_demo(&s.volume)),
         },
         Control {
             title: "Stepper",
-            icon: mdi::numeric,
+            icon: numeric,
             section: Section::Inputs,
             demo: |s| AnyView::new(stepper_demo(&s.quantity)),
         },
         Control {
             title: "Toggle",
-            icon: mdi::toggle_switch,
+            icon: toggle_switch,
             section: Section::Selection,
             demo: |s| AnyView::new(toggle_demo(&s.wifi, &s.bluetooth)),
         },
         Control {
             title: "Picker",
-            icon: mdi::format_list_bulleted,
+            icon: format_list_bulleted,
             section: Section::Selection,
             demo: |s| AnyView::new(picker_demo(&s.size)),
         },
         Control {
             title: "Label",
-            icon: mdi::text_box_outline,
+            icon: text_box_outline,
             section: Section::Display,
             demo: |_| AnyView::new(label_demo()),
         },
         Control {
             title: "Progress",
-            icon: mdi::gauge,
+            icon: gauge,
             section: Section::Display,
             demo: |_| AnyView::new(progress_demo()),
         },
@@ -278,7 +290,7 @@ fn catalog(
 /// layers inside the row's pill, leaving an indicator nested in an indicator.
 fn drawer_item<F, Args>(
     title: &'static str,
-    icon: fn() -> mdi::Svg,
+    icon: fn() -> Svg,
     active: Computed<bool>,
     action: F,
 ) -> impl View
@@ -287,7 +299,7 @@ where
     Args: 'static,
 {
     let indicator: Color = SurfaceVariant.into();
-    let clear: Color = waterui::color::Srgb::WHITE.with_opacity(0.0).into();
+    let clear: Color = Srgb::WHITE.with_opacity(0.0).into();
     let pill = signal_color(active.clone().select(indicator, clear).computed());
     let active_content: Color = Foreground.into();
     let resting_content: Color = MutedForeground.into();
@@ -310,12 +322,12 @@ where
     .a11y_hidden(true)
     .height(DRAWER_ITEM_HEIGHT)
     .max_width(f32::INFINITY)
-    .padding_with(EdgeInsets::new(
+    .padding_with([
         0.0,
         0.0,
         DRAWER_ITEM_LEADING_SPACE,
         DRAWER_ITEM_TRAILING_SPACE,
-    ))
+    ])
     .background(pill)
     // `ActiveIndicatorShape` is `CornerFull`, whose caps are half the row
     // height. `Capsule` says that directly and stays correct at any row
@@ -341,8 +353,8 @@ where
 {
     let muted: Color = MutedForeground.into();
     let chevron = zstack((
-        mdi::chevron_right().visible(open.clone().map(|open| !open)),
-        mdi::chevron_down().visible(open),
+        chevron_right().visible(open.clone().not()),
+        chevron_down().visible(open),
     ))
     .width(DRAWER_ICON_SIZE)
     .height(DRAWER_ICON_SIZE);
@@ -351,12 +363,12 @@ where
         .a11y_hidden(true)
         .height(DRAWER_HEADLINE_HEIGHT)
         .max_width(f32::INFINITY)
-        .padding_with(EdgeInsets::new(
+        .padding_with([
             0.0,
             0.0,
             DRAWER_ITEM_LEADING_SPACE,
             DRAWER_ITEM_TRAILING_SPACE,
-        ))
+        ])
         .on_tap(action)
         .a11y_role(AccessibilityRole::Button)
         .a11y_label(title)
@@ -380,7 +392,7 @@ fn sidebar(
         Row::Item(index) => AnyView::new(item_row(index, selected.clone())),
     })
     .spacing(2.0)
-    .alignment(HorizontalAlignment::Leading);
+    .leading();
 
     // Animate group expand/collapse with Material 3 emphasized easing: items fade
     // and collapse along the stack axis as a group opens or closes, while still
@@ -398,11 +410,11 @@ fn sidebar(
                 .sub_headline()
                 .bold()
                 .foreground(Foreground)
-                .padding_with(EdgeInsets::new(20.0, 12.0, 28.0, 16.0)),
+                .padding_with([20.0, 12.0, 28.0, 16.0]),
             drawer,
         ))
         .spacing(4.0)
-        .alignment(HorizontalAlignment::Leading)
+        .leading()
         .padding_with(EdgeInsets::symmetric(8.0, DRAWER_INDICATOR_INSET)),
     )
 }
@@ -413,12 +425,17 @@ fn sidebar(
 /// group and reconciles the reactive row collection.
 fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> impl View {
     let section = Section::ALL[group];
-    let toggled = open.clone();
-    drawer_headline(section.title(), open, move |_env: Environment| {
-        let expanded = !toggled.get();
-        toggled.set(expanded);
-        set_group_expanded(&rows, group, expanded);
-    })
+    drawer_headline(
+        section.title(),
+        open.clone(),
+        move |State(open): State<Binding<bool>>, State(rows): State<ReactiveList<Row>>| {
+            open.toggle();
+            let expanded = open.snapshot();
+            set_group_expanded(&rows, group, expanded);
+        },
+    )
+    .state(&open)
+    .state(&rows)
 }
 
 /// A selectable control row, nested under its group header. Tapping selects the
@@ -428,19 +445,16 @@ fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> i
 /// a single accessibility node that survives the reactive collection.
 fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
     let control = &controls()[index];
-    let is_selected = selected
-        .clone()
-        .map(move |current| current == Some(index))
-        .computed();
-    let activate = selected.clone();
+    let is_selected = selected.clone().equal_to(Some(index)).computed();
     drawer_item(
         control.title,
         control.icon,
         is_selected,
-        move |_env: Environment| {
-            activate.set(Some(index));
+        move |State(selected): State<Binding<Option<usize>>>| {
+            selected.set(Some(index));
         },
     )
+    .state(&selected)
 }
 
 /// The detail pane for the selected control: its title (in the navigation bar)
@@ -448,10 +462,7 @@ fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
 fn control_detail(index: usize, state: &DemoState) -> NavigationView {
     let all = controls();
     let control = &all[index];
-    NavigationView::new(
-        control.title,
-        (control.demo)(state).padding_with(EdgeInsets::all(20.0)),
-    )
+    NavigationView::new(control.title, (control.demo)(state).padding_with(20.0))
 }
 
 /// Shown before any control is selected (wide layouts).
@@ -460,7 +471,7 @@ fn placeholder() -> impl View {
         text("WaterUI Controls").title().foreground(Foreground),
         text("Choose a control from the navigation drawer to see it live.")
             .body()
-            .foreground(MutedForeground),
+            .muted(),
     ))
     .spacing(10.0)
     .padding()
@@ -468,7 +479,7 @@ fn placeholder() -> impl View {
 
 /// Shared intro line for a demo.
 fn note(text_value: &'static str) -> impl View {
-    text(text_value).body().foreground(MutedForeground)
+    text(text_value).body().muted()
 }
 
 // ---------------------------------------------------------------------------
@@ -495,7 +506,7 @@ fn buttons_demo(taps: &Binding<i32>) -> impl View {
         button("Link").link().action(bump).state(taps),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
@@ -506,18 +517,33 @@ fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
         text!("Wi-Fi {wifi} · Bluetooth {bluetooth}").body(),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn slider_demo(volume: &Binding<f64>) -> impl View {
+    let sizes = [
+        ("Extra small", ControlSize::ExtraSmall),
+        ("Small", ControlSize::Small),
+        ("Medium", ControlSize::Medium),
+        ("Large", ControlSize::Large),
+        ("Extra large", ControlSize::ExtraLarge),
+    ]
+    .map(|(label, size)| {
+        slider(label, volume)
+            .range(0.0..=100.0)
+            .size(size)
+            .value_indicator(|v| Str::from(format!("{v:.0}")))
+    });
+
     vstack((
-        note("Drag the slider; the progress bar reflects the value."),
+        note("Drag a slider; the value indicator follows the thumb and the progress bar reflects the value."),
         slider("Volume", volume).range(0.0..=100.0),
+        vstack(sizes).spacing(8.0),
         text!("Value: {volume}").body(),
         progress(volume.clone().map(|v| v / 100.0)).label("Volume"),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn stepper_demo(quantity: &Binding<i32>) -> impl View {
@@ -527,7 +553,7 @@ fn stepper_demo(quantity: &Binding<i32>) -> impl View {
         text!("Quantity: {quantity}").body(),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn text_field_demo(name: &Binding<Str>) -> impl View {
@@ -537,10 +563,10 @@ fn text_field_demo(name: &Binding<Str>) -> impl View {
         text!("Echo: {name}").body(),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
-fn size_items() -> Vec<waterui::form::picker::PickerItem<&'static str>> {
+fn size_items() -> Vec<PickerItem<&'static str>> {
     vec![
         text("Small").tag("Small"),
         text("Medium").tag("Medium"),
@@ -560,27 +586,27 @@ fn picker_demo(size: &Binding<&'static str>) -> impl View {
         text!("Selected: {size}").body(),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn label_demo() -> impl View {
     vstack((
         note("LabelDisplayMode controls whether the title, icon, or both show."),
         label("Title and Icon")
-            .icon(mdi::home())
+            .icon(home())
             .leading()
             .display_mode(LabelDisplayMode::TitleAndIcon),
         label("Title Only")
-            .icon(mdi::home())
+            .icon(home())
             .leading()
             .display_mode(LabelDisplayMode::TitleOnly),
         label("Icon Only")
-            .icon(mdi::home())
+            .icon(home())
             .leading()
             .display_mode(LabelDisplayMode::IconOnly),
     ))
     .spacing(12.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 fn progress_demo() -> impl View {
@@ -591,7 +617,7 @@ fn progress_demo() -> impl View {
         progress(0.75).label("Almost there"),
     ))
     .spacing(16.0)
-    .alignment(HorizontalAlignment::Leading)
+    .leading()
 }
 
 // ---------------------------------------------------------------------------
@@ -643,13 +669,14 @@ pub fn app(env: Environment) -> App {
 mod tests {
     use super::{catalog, new_state};
     use core::time::Duration;
+    use waterui::Signal;
     use waterui::Str;
-    use waterui_testing::{Role, UiBuilder};
+    use waterui_testing::{Role, Styled, UiBuilder};
 
     /// Selecting each control in turn shows its demo — a smoke test that every
     /// catalog entry resolves and renders (the per-component MD3 visual review was
     /// done out-of-band with GPU snapshots).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn every_control_renders_its_demo(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -683,7 +710,7 @@ mod tests {
 
     /// The drawer lists every group header and control, and the detail pane shows
     /// the selected control's live demo.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn catalog_lists_controls(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -706,7 +733,7 @@ mod tests {
     }
 
     /// Selecting a control shows its live demo in the detail pane.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn selecting_control_shows_demo(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -728,7 +755,7 @@ mod tests {
 
     /// Collapsing a group removes its items (and releases their space), while the
     /// rest of the catalog stays intact.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn collapsing_group_removes_items(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -756,7 +783,7 @@ mod tests {
 
     /// Re-expanding a collapsed group restores its items: the transition's enter
     /// path brings the rows back (and they settle into the accessibility tree).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn expanding_group_restores_items(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -786,7 +813,7 @@ mod tests {
 
     /// A demo control is actually interactive: tapping a button increments the
     /// shared counter (state is owned externally, so it persists across rebuilds).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn button_demo_is_interactive(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -813,7 +840,7 @@ mod tests {
     /// The two styles report different accesskit roles (`Switch` vs.
     /// `CheckBox`), so this also pins that `ToggleStyle` maps to distinct
     /// accessibility semantics rather than one shared role.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn toggle_demo_flips_switch_and_checkbox_bindings(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let wifi = state.wifi.clone();
@@ -849,7 +876,7 @@ mod tests {
 
         app.query().role(Role::SWITCH).label("Wi-Fi").tap();
         assert!(
-            !wifi.get(),
+            !wifi.snapshot(),
             "flipping the Wi-Fi switch should clear its binding"
         );
         app.query()
@@ -860,7 +887,7 @@ mod tests {
 
         app.query().role(Role::CHECKBOX).label("Bluetooth").tap();
         assert!(
-            bluetooth.get(),
+            bluetooth.snapshot(),
             "tapping the Bluetooth checkbox should set its binding"
         );
         app.query()
@@ -874,7 +901,7 @@ mod tests {
     /// increment/decrement moves `DemoState::volume` by the slider's a11y
     /// step (`(range.end() - range.start()) / 100.0`, which is `1.0` for the
     /// demo's `0.0..=100.0` range), and the live echo text tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn slider_demo_increment_decrement_updates_volume(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let volume = state.volume.clone();
@@ -902,7 +929,7 @@ mod tests {
 
         app.query().role(Role::SLIDER).label("Volume").increment();
         assert!(
-            (volume.get() - 41.0).abs() < 0.0001,
+            (volume.snapshot() - 41.0).abs() < 0.0001,
             "incrementing the slider should raise the volume binding by one a11y step"
         );
         assert!(
@@ -915,7 +942,7 @@ mod tests {
 
         app.query().role(Role::SLIDER).label("Volume").decrement();
         assert!(
-            (volume.get() - 40.0).abs() < 0.0001,
+            (volume.snapshot() - 40.0).abs() < 0.0001,
             "decrementing the slider should restore the previous volume"
         );
         assert!(
@@ -931,7 +958,7 @@ mod tests {
     /// increment/decrement moves `DemoState::quantity` by the stepper's fixed
     /// step of `1`, clamped to its `0..=10` range, and the live echo text
     /// tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn stepper_demo_increment_decrement_updates_quantity(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let quantity = state.quantity.clone();
@@ -954,7 +981,7 @@ mod tests {
 
         app.query().label("Quantity").value("2").increment();
         assert_eq!(
-            quantity.get(),
+            quantity.snapshot(),
             3,
             "incrementing the stepper should raise its binding by one"
         );
@@ -968,7 +995,7 @@ mod tests {
 
         app.query().label("Quantity").value("3").decrement();
         assert_eq!(
-            quantity.get(),
+            quantity.snapshot(),
             2,
             "decrementing the stepper should restore the previous quantity"
         );
@@ -984,7 +1011,7 @@ mod tests {
     /// Selecting the Text Field demo and setting its text through
     /// accessibility updates `DemoState::name`, and the live echo text
     /// tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn text_field_demo_set_text_updates_name(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let name = state.name.clone();
@@ -1011,7 +1038,7 @@ mod tests {
             .label("Name")
             .set_text("Ada Lovelace");
         assert_eq!(
-            name.get(),
+            name.snapshot(),
             Str::from("Ada Lovelace"),
             "the text field should update its bound demo state"
         );
@@ -1030,7 +1057,7 @@ mod tests {
     /// control from the re-expanded group swaps the detail heading — which
     /// the [`NavigationView`](waterui::navigation::NavigationView) backend
     /// exposes as accesskit's `Header` role — to that control's title.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn expanding_a_collapsed_group_and_selecting_its_control_switches_the_heading(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -1088,8 +1115,8 @@ mod tests {
     /// Visual acceptance for the drawer: the selected row's active indicator and
     /// the Stepper demo's controls, both reviewed by eye.
     #[ignore = "writes visual acceptance PNG files for direct image review"]
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn catalog_drawer_and_stepper_render(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn catalog_drawer_and_stepper_render(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app: waterui_testing::OffscreenApp = ui.mount_offscreen(move || {
             catalog(

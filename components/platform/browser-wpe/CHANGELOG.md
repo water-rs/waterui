@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/waterui-browser-wpe-v0.1.2...waterui-browser-wpe-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(webview)* an interceptable local asset origin for bundled content
+
+### Fixed
+
+- *(browser-wpe)* build the runtime without the DRM display
+- *(browser-wpe)* disable JPEG XL in the runtime build (no libjxl on jammy)
+- apply rustfmt to the wave-2 engine sources
+
+### Other
+
+- *(browser-wpe)* delete the dead WPE real-engine test target
+- move the water CLI to water-rs/cli
+- reorder suiteki imports ahead of waterui_*
+- [**breaking**] replace waterui-str with the extracted suiteki crate
+
 ## [0.1.2](https://github.com/water-rs/waterui/compare/waterui-browser-wpe-v0.1.1...waterui-browser-wpe-v0.1.2) - 2026-09-11
 
 ### Other

@@ -1,30 +1,47 @@
 //! Safe area handling for layout containers.
 //!
 //! `WaterUI` uses metadata to signal to native renderers which views should extend
-//! into unsafe screen regions (areas obscured by notches, home indicators, status bars, etc.).
+//! into unsafe screen regions (areas obscured by notches, home indicators, status
+//! bars, or the software keyboard).
 //!
 //! # Architecture
 //!
-//! Placing native views against the device insets is the **native backend's**
-//! job, and [`IgnoreSafeArea`] is the metadata hint that opts a view out of it.
-//! Layers that `WaterUI` lays out itself — the window's snackbar and overlay
-//! hosts, which a backend sees as one Rust-laid-out container — cannot be inset
-//! from the outside, so a backend publishes the window's insets through
-//! [`SafeAreaInsets`] and those layers pad themselves.
+//! Placing views against the device insets is the **native backend's** job,
+//! and [`IgnoreSafeArea`] is the metadata hint that opts a view out of it. The
+//! safe area has two regions on each edge — *container* (system bars, display
+//! cutouts, the home indicator, window chrome) and *keyboard* (the software
+//! keyboard and other input-method surfaces) — and [`IgnoreSafeArea`] names the
+//! regions and edges a view ignores; a stack lays its children out inside what
+//! remains.
+//!
+//! A background whose content is a fill (a solid color, a gradient or a
+//! material) extends past its frame to the window edge on every edge it
+//! touches, without moving the content it backs; an `IgnoreSafeArea` on the
+//! fill replaces that default with the regions and edges it names. A scroll
+//! surface extends under the regions of the edges it touches, insets its
+//! content by them, and scrolls the minimum distance that brings a focused
+//! text field clear of the keyboard region; a chrome container extends its
+//! bars under the regions of the edge each touches, and each bar stays
+//! docked to its edge — laid out clear of that edge's container region
+//! only, so the keyboard region covers it instead of lifting it, while the
+//! content the container hosts is laid out clear of both regions.
+//! `docs/layout-spec.md` §7.1 is the normative statement.
+//!
+//! Nothing `WaterUI` lays out itself — the window's snackbar and overlay
+//! hosts included — pads itself against the hardware, because the container
+//! it lives in has already placed it clear of it.
 //!
 //! # Native Backend Responsibilities
 //!
 //! The native renderer must:
-//! 1. **Default behavior**: Apply platform safe area insets to all views
+//! 1. **Default behavior**: Lay content out inside the platform safe area,
+//!    extending the scroll surfaces and chrome containers that touch its edges
 //! 2. **When encountering `IgnoreSafeArea` metadata**:
-//!    - Ignore safe area constraints on the specified edges
-//!    - Allow the view to extend edge-to-edge for those edges
+//!    - Ignore safe area constraints on the specified regions and edges
+//!    - Allow the view to extend edge-to-edge for those regions and edges
 //! 3. **Handle changes**: Re-layout when safe area changes (keyboard, rotation, etc.)
 
-use nami::{Computed, SignalExt, signal::IntoComputed};
-use waterui_core::{Environment, metadata::MetadataKey};
-
-use super::padding::EdgeInsets;
+use waterui_core::metadata::MetadataKey;
 
 /// Specifies which edges should ignore safe area insets.
 ///
@@ -117,11 +134,83 @@ impl EdgeSet {
     }
 }
 
+/// Specifies which safe-area regions a view ignores.
+///
+/// The safe area has two regions on each edge: *container* — the system bars,
+/// display cutouts, the home indicator and window chrome — and *keyboard* —
+/// the software keyboard and other input-method surfaces. A region set always
+/// names at least one region; [`ALL`](Self::ALL), [`CONTAINER`](Self::CONTAINER)
+/// and [`KEYBOARD`](Self::KEYBOARD) are its only values, and
+/// [`on`](Self::on) pairs one with the edges it is ignored on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SafeAreaRegions {
+    container: bool,
+    keyboard: bool,
+}
+
+impl SafeAreaRegions {
+    /// Both regions — the container and the keyboard.
+    pub const ALL: Self = Self {
+        container: true,
+        keyboard: true,
+    };
+
+    /// The container region only.
+    pub const CONTAINER: Self = Self {
+        container: true,
+        keyboard: false,
+    };
+
+    /// The keyboard region only.
+    pub const KEYBOARD: Self = Self {
+        container: false,
+        keyboard: true,
+    };
+
+    /// Whether the set names the container region: system bars, display
+    /// cutouts, the home indicator, window chrome.
+    #[must_use]
+    pub const fn container(self) -> bool {
+        self.container
+    }
+
+    /// Whether the set names the keyboard region: the software keyboard and
+    /// other input-method surfaces.
+    #[must_use]
+    pub const fn keyboard(self) -> bool {
+        self.keyboard
+    }
+
+    /// Names the edges this region set is ignored on — the canonical way to
+    /// build an [`IgnoreSafeArea`].
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// // Lay content out under the keyboard but still above the container inset.
+    /// text!("editor").ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM));
+    /// ```
+    #[must_use]
+    pub const fn on(self, edges: EdgeSet) -> IgnoreSafeArea {
+        IgnoreSafeArea {
+            regions: self,
+            edges,
+        }
+    }
+}
+
 /// Marker metadata indicating this view should ignore safe area insets.
 ///
-/// When a native renderer encounters this metadata, it should:
-/// - In **propose phase**: Use full screen bounds (not safe bounds) for the specified edges
-/// - In **place phase**: Position the view in full screen coordinates for the specified edges
+/// `regions` names which safe-area regions are ignored — the container, the
+/// keyboard, or both — and `edges` the edges they are ignored on. When a
+/// native renderer encounters this metadata, it lays the view out clear of
+/// every region it does not ignore:
+/// - In **propose phase**: the unsafe bands of the ignored regions count as
+///   layout space for the named edges.
+/// - In **place phase**: the view reaches into the ignored regions' bands on
+///   the named edges.
 ///
 /// This allows backgrounds, images, and other visual elements to extend
 /// edge-to-edge while content remains in the safe area.
@@ -137,145 +226,67 @@ impl EdgeSet {
 /// // Only extend to top (under status bar)
 /// let header_view = text!("Inbox");
 /// header_view.ignore_safe_area(EdgeSet::TOP);
+///
+/// // Lay an editor under the keyboard but still above the container inset
+/// let editor = text!("editor");
+/// editor.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IgnoreSafeArea {
-    /// Which edges should ignore the safe area.
+    /// Which safe-area regions are ignored.
+    pub regions: SafeAreaRegions,
+    /// Which edges ignore the named regions.
     pub edges: EdgeSet,
 }
 
 impl MetadataKey for IgnoreSafeArea {}
 
+impl From<EdgeSet> for IgnoreSafeArea {
+    /// An `EdgeSet` alone ignores every region on its edges — the same
+    /// covering `.ignore_safe_area(EdgeSet::ALL)` always gave.
+    fn from(edges: EdgeSet) -> Self {
+        Self {
+            regions: SafeAreaRegions::ALL,
+            edges,
+        }
+    }
+}
+
 impl IgnoreSafeArea {
-    /// Creates a new `IgnoreSafeArea` with the specified edges.
+    /// Creates a new `IgnoreSafeArea` ignoring every region on the specified
+    /// edges.
     #[must_use]
     pub const fn new(edges: EdgeSet) -> Self {
-        Self { edges }
+        Self {
+            regions: SafeAreaRegions::ALL,
+            edges,
+        }
     }
 
-    /// Ignore safe area on all edges.
+    /// Ignore every region on all edges.
     #[must_use]
     pub const fn all() -> Self {
         Self {
+            regions: SafeAreaRegions::ALL,
             edges: EdgeSet::ALL,
         }
     }
 
-    /// Ignore safe area on vertical edges (top and bottom).
+    /// Ignore every region on vertical edges (top and bottom).
     #[must_use]
     pub const fn vertical() -> Self {
         Self {
+            regions: SafeAreaRegions::ALL,
             edges: EdgeSet::VERTICAL,
         }
     }
 
-    /// Ignore safe area on horizontal edges (leading and trailing).
+    /// Ignore every region on horizontal edges (leading and trailing).
     #[must_use]
     pub const fn horizontal() -> Self {
         Self {
+            regions: SafeAreaRegions::ALL,
             edges: EdgeSet::HORIZONTAL,
         }
-    }
-}
-
-/// The window's safe area, published by the platform backend.
-///
-/// A backend that knows its device insets — the notch, the status bar, the home
-/// indicator — installs them here once per window and republishes on rotation.
-/// Rust-side layers that the backend cannot inset for itself, such as the
-/// window's snackbar and overlay hosts, read the value out of the environment
-/// and pad themselves. Backends with no such concept install nothing and
-/// [`SafeAreaInsets::resolve`] answers zero, which is the correct answer for a
-/// desktop window.
-///
-/// This does not replace [`IgnoreSafeArea`]: that stays the hint a backend reads
-/// to let a view span the full screen, and native chrome containers keep
-/// insetting their own content. `SafeAreaInsets` exists for the layers `WaterUI`
-/// lays out itself.
-#[derive(Debug, Clone)]
-pub struct SafeAreaInsets(Computed<EdgeInsets>);
-
-impl SafeAreaInsets {
-    /// Wraps a reactive inset signal.
-    #[must_use]
-    pub fn new(insets: impl IntoComputed<EdgeInsets>) -> Self {
-        Self(insets.into_computed())
-    }
-
-    /// The reactive insets carried by this scope.
-    #[must_use]
-    pub const fn signal(&self) -> &Computed<EdgeInsets> {
-        &self.0
-    }
-
-    /// The insets in force at this position, or zero when no backend published
-    /// any.
-    #[must_use]
-    pub fn resolve(env: &Environment) -> Computed<EdgeInsets> {
-        env.get::<Self>().map_or_else(
-            || EdgeInsets::default().into_computed(),
-            |scope| scope.0.clone(),
-        )
-    }
-
-    /// The insets in force at this position plus a constant `margin`.
-    ///
-    /// This is what an overlay layer wants: clear of the hardware, and then
-    /// clear of the window edge by the theme's own spacing.
-    #[must_use]
-    pub fn resolve_with_margin(env: &Environment, margin: EdgeInsets) -> Computed<EdgeInsets> {
-        Self::resolve(env)
-            .map(move |insets| insets + margin.clone())
-            .into_computed()
-    }
-
-    /// Publishes `insets` to the subtree rendered from `env`.
-    pub fn install(env: &mut Environment, insets: impl IntoComputed<EdgeInsets>) {
-        env.insert(Self::new(insets));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{EdgeInsets, SafeAreaInsets};
-    use nami::{Signal, binding};
-    use waterui_core::Environment;
-
-    #[test]
-    fn resolves_to_zero_when_no_backend_published_insets() {
-        let env = Environment::new();
-        assert_eq!(SafeAreaInsets::resolve(&env).get(), EdgeInsets::default());
-    }
-
-    #[test]
-    fn resolved_insets_track_the_published_signal() {
-        let published = binding(EdgeInsets::new(59.0, 34.0, 0.0, 0.0));
-        let mut env = Environment::new();
-        SafeAreaInsets::install(&mut env, published.clone());
-
-        let resolved = SafeAreaInsets::resolve(&env);
-        assert_eq!(resolved.get().top(), 59.0);
-
-        // Rotation: the same signal reports the new insets without the
-        // consuming subtree being rebuilt.
-        published.set(EdgeInsets::new(0.0, 21.0, 59.0, 59.0));
-        assert_eq!(resolved.get().top(), 0.0);
-        assert_eq!(resolved.get().leading(), 59.0);
-    }
-
-    #[test]
-    fn margin_stacks_on_top_of_the_published_insets() {
-        let mut env = Environment::new();
-        SafeAreaInsets::install(&mut env, EdgeInsets::new(59.0, 34.0, 0.0, 0.0));
-
-        let padded = SafeAreaInsets::resolve_with_margin(&env, EdgeInsets::all(16.0));
-        assert_eq!(padded.get(), EdgeInsets::new(75.0, 50.0, 16.0, 16.0));
-    }
-
-    #[test]
-    fn margin_alone_applies_without_a_backend() {
-        let env = Environment::new();
-        let padded = SafeAreaInsets::resolve_with_margin(&env, EdgeInsets::all(16.0));
-        assert_eq!(padded.get(), EdgeInsets::all(16.0));
     }
 }

@@ -6,7 +6,8 @@ description: Build cross-platform native apps with the WaterUI Rust framework. U
 # Building apps with WaterUI
 
 WaterUI is a Rust UI framework that renders to real native widgets (UIKit/AppKit,
-Android View, GTK4) or to its own GPU renderer, from one view tree. It is
+GTK4) or to its own GPU renderer — Hydrolysis, which is also the Android
+backend — from one view tree. It is
 **fine-grained reactive**: a value change updates exactly the widget that reads it,
 without rebuilding the surrounding tree.
 
@@ -45,17 +46,17 @@ depend on before copying from it.
 ### 1. Pass the signal, never a snapshot of it
 
 Reactive APIs take `impl IntoComputed<T>`, `impl IntoSignalF32`, or `&Binding<T>`.
-Handing them `.get()` reads the value once and freezes it — the UI then never updates,
+Handing them `.snapshot()` reads the value once and freezes it — the UI then never updates,
 and nothing fails at compile time, so this bug is silent.
 
 ```rust
 view.opacity(fade.clone())              // reacts
-view.opacity(fade.get())                // frozen forever — a plain f32
+view.opacity(fade.snapshot())                // frozen forever — a plain f32
 Photo::new(url).blur(blur.clone())      // reacts
 text!("Count: {count}")                 // reacts
 ```
 
-`.get()` belongs inside event handlers and `.map()` closures, where you genuinely want
+`.snapshot()` belongs inside event handlers and `.map()` closures, where you genuinely want
 the value at that instant. It does not belong in a view body.
 
 ### 2. `watch` is not the reactive primitive — it is the escape hatch
@@ -75,10 +76,12 @@ and no collection applies. Check those three first, every time.
 ### 3. Inject handler state with `.state()`, do not capture clones
 
 `.action()` takes a *handler*: a function whose parameters are extractors resolved from
-the environment. `.state(&value)` puts a value in that environment; `State<T>` pulls it
-out. This keeps handlers as plain named functions instead of a thicket of `move` closures.
-The same machinery drives every callback in the framework — `.on_tap`, gestures, drops,
-menu commands, list edits — not just buttons.
+the environment. `.state(&value)` puts a value in that environment; an extractor pulls it
+out. `State<T>` is the wrapper for a type the app does not own — `Binding`, `Rc`, a
+third-party value; a `Clone` type the app *does* own gets `#[state]` once and is then
+written bare. This keeps handlers as plain named functions instead of a thicket of `move`
+closures. The same machinery drives every callback in the framework — `.on_tap`, gestures,
+drops, menu commands, list edits — not just buttons.
 
 ```rust
 button("Increment")
@@ -86,13 +89,14 @@ button("Increment")
     .state(&count)
 ```
 
-Repeated `State<T>` of the **same type** bind positionally: the first `.state()` call
-feeds the first `State<T>` parameter.
+Repeated parameters of the **same state type** bind positionally — bare `#[state]` types
+and `State<T>` spellings share one sequence: the first `.state()` call feeds the first
+parameter of that type.
 
 ```rust
 button("Search")
     .action(|State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
-        hist.get_mut().push(q.get());
+        hist.with_mut(|h| h.push(q.snapshot()));
     })
     .state(&query)      // -> first parameter
     .state(&history)    // -> second parameter
@@ -103,14 +107,15 @@ one `Clone` struct, inject it once on a container, and write handlers as free fu
 This is the idiomatic shape for a real screen:
 
 ```rust
+#[state]
 #[derive(Clone)]
 struct Editor {
     rows: ReactiveList<Row>,
     editing: Binding<bool>,
 }
 
-fn toggle_editing(State(state): State<Editor>) {
-    state.editing.set(!state.editing.get());
+fn toggle_editing(state: Editor) {
+    state.editing.toggle();
 }
 
 fn content(state: Editor) -> impl View {
@@ -203,7 +208,7 @@ use waterui::component::lazy::Lazy;                    // reactive stacks over a
 use waterui::views::ForEach;                           // the collection itself
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with;                                // scope a value to a subtree
 use waterui::task::{sleep, spawn_local};               // async utilities
 ```
@@ -302,7 +307,9 @@ text!("Blur: {blur:.1}")                        // format specs work
 text("0x1F60").monospaced()                     // the platform's fixed-pitch face, same size
 ```
 
-Import the macro and write bare `text!` — never `waterui::text!`. On a `Text`, `.size(..)`
+Import the macro and write bare `text!` — never `waterui::text!`. The same goes for every
+name, inside macro bodies too: bring it into scope with `use` and write `ForEach`, not
+`::waterui_core::views::ForEach`. On a `Text`, `.size(..)`
 is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced()` is a
 design, not a family: it keeps the slot and size and each backend picks its own monospaced
 face, so never spell a font name for code.
@@ -311,7 +318,7 @@ face, so never spell a font name for code.
 
 ```rust
 hstack((a, b, c)).spacing(8.0)
-vstack((a, b)).alignment(HorizontalAlignment::Leading).padding()
+vstack((a, b)).leading().padding()
 zstack((background, content))
 scroll(content)
 spacer()                    // flexible gap
@@ -352,7 +359,7 @@ clearer than a long `when` chain.
 ### Modifiers
 
 ```rust
-.padding() / .padding_with(16.0) / .padding_with(EdgeInsets::all(16.0))
+.padding() / .padding_with(16.0) / .padding_with((8.0, 16.0)) / .padding_horizontal(16.0)
 .background(color) / .foreground(color) / .overlay(view)
 .size(w, h) / .width(w) / .height(h) / .min_width(w) / .max_width(w) / .min_size(..) / .max_size(..)
 .scale(x, y) / .rotation(degrees) / .offset(x, y)     // two arguments, not one
@@ -362,6 +369,7 @@ clearer than a long `when` chain.
 .a11y_label(..) / .a11y_value(..) / .a11y_id("settings.wifi") / .a11y_role(..)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
 .cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating()
+.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))   // regions × edges
 ```
 
 Visual modifiers take signals — pass bindings straight in; the filter row works on *any*
@@ -377,10 +385,11 @@ shared configuration without every intermediate function taking it as a paramete
 
 ```rust
 use waterui::env::{use_env, with};
+use waterui::impl_extractor;
 
 #[derive(Clone)]
 struct ApiClient { base_url: Str }
-waterui::impl_extractor!(ApiClient);          // makes it a handler/`use_env` parameter
+impl_extractor!(ApiClient);                   // makes it a handler/`use_env` parameter
 
 // Seeding, usually in `app(env)`:
 env.insert(client);                            // in place
@@ -404,12 +413,13 @@ value to a subtree rather than the whole app.
 
 Extraction is fast-fail: a missing type panics with a message naming it. That is
 deliberate — wrap the parameter in `Option<T>` (or use `env.get`) where absence is
-legitimate. It is also why a hand-built `Environment::new()` needs a theme installed
-before it can render themed views; theme tokens panic rather than falling back to a
-guessed color.
+legitimate. Theme tokens are the one absence that cannot happen: the runtimes install
+the framework's default colour and font set themselves, and a style's `install_tokens`
+layers over them at mount, so a hand-built `Environment::new()` resolves every `Font`
+and colour slot without an install step.
 
 `.state(&value)` from rule 3 is the same machinery with a narrower scope: it installs into
-the environment of one view, and `State<T>` reads it back.
+the environment of one view, and a `State<T>` or `#[state]`-marked parameter reads it back.
 
 ### Accessibility is part of construction
 
@@ -437,10 +447,10 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Collections | `List` `ListItem` `ForEach` `SignalCollection` `ScrollController` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` |
+| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `Chart` (12 kinds) `Map` |
-| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuSurface` icon sets |
+| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuContentView` `ExternalFrameView` icon sets |
 | Platform | `WebView` `#[js_api]` `waterui-chromium` |
 
 ## Verify before declaring done
@@ -458,6 +468,11 @@ the real accessibility tree with taps and assertions — it is simultaneously an
 interaction test and an accessibility check, which is why a component that cannot be
 tested this way is a bug rather than a gap. Details in
 [references/testing.md](references/testing.md).
+
+Backend selection uses `[platforms.<platform>] backend = "..."` in `Water.toml`;
+`--backend` may confirm, but not contradict, that declaration. Without either,
+the platform default applies. See [platforms and backends](references/project.md#platforms-and-backends),
+including the Hydrolysis requirement for Linux previews.
 
 ## Driving the app from an agent
 
@@ -508,7 +523,7 @@ whole app.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| UI never updates | `.get()` in a view body | pass the binding |
+| UI never updates | `.snapshot()` in a view body | pass the binding |
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `Lazy::for_each` |
 | `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
 | `cannot find function 'when'` / derive `Identifiable` | not in the prelude | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
@@ -516,7 +531,7 @@ whole app.
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
 | `LongPressGesture::new(Duration…)` rejected | duration is a `u32` in backend time units | `LongPressGesture::new(500)` |
 | `.is_empty()` missing on a string signal | different name | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
-| Wrong binding arrives in a handler | positional `State<T>` | first `.state()` → first parameter |
+| Wrong binding arrives in a handler | positional `.state()` extraction | first `.state()` → first parameter of that type |
 | Scrolling or list updates are janky | `watch` over a `Vec` | `List::for_each` / `Lazy::for_each` / `SignalCollection` |
 | `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `Lazy::for_each(..)`, or hand it to a container |
 | `.title("Inbox")` rejects its argument | `Text::title()` (font size) shadows the navigation title | title the container, or `NavigationView::new(title, content)` |

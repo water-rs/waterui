@@ -3,15 +3,13 @@
 /// NDK version the toolchain installs.
 ///
 /// Mirrors the Android runtime's Gradle `ndkVersion`, embedded as a literal so
-/// an installed CLI never has to locate the `WaterUI` source checkout to
-/// answer it. `build.rs` asserts this literal still matches the runtime
-/// Gradle file on every in-workspace build; update it together with
-/// `backends/android/runtime/build.gradle.kts`.
+/// an installed CLI never has to locate any source checkout to answer it. The
+/// runtime lives in `water-rs/android-backend`, pinned as the
+/// `android-backend-revision` of the `water-rs/waterui` revision this crate's
+/// manifest builds against;
+/// `embedded_ndk_version_matches_the_pinned_android_backend` asserts the two
+/// stay in lockstep.
 pub const ANDROID_NDK_VERSION: &str = "29.0.14206865";
-
-/// Workspace-relative path of the Android runtime manifest that declares
-/// `ndkVersion`.
-pub const RUNTIME_BUILD_GRADLE_RELATIVE_PATH: &str = "backends/android/runtime/build.gradle.kts";
 
 /// Extracts the `ndkVersion = "…"` assignment from the Android runtime's
 /// `build.gradle.kts`. Returns `None` when the declaration is absent or
@@ -49,20 +47,28 @@ android {
         );
     }
 
+    /// `ANDROID_NDK_VERSION` must not drift from the runtime Gradle
+    /// declaration. The runtime is the `android-backend-revision` the
+    /// enclosing workspace's root manifest declares, so the comparison
+    /// resolves that commit and fetches `runtime/build.gradle.kts` there —
+    /// network-bound, hence nightly-only.
     #[test]
-    fn embedded_ndk_version_matches_runtime_gradle_declaration() {
-        // Only meaningful inside a WaterUI checkout; a packaged `.crate` test
-        // run has no workspace tree to compare against.
-        let gradle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join(RUNTIME_BUILD_GRADLE_RELATIVE_PATH);
-        let Ok(contents) = std::fs::read_to_string(&gradle) else {
-            return;
-        };
+    #[ignore = "fetches the pinned water-rs/android-backend revision over the network"]
+    fn embedded_ndk_version_matches_the_pinned_android_backend() {
+        let (backend_commit, backend) = crate::pinned_framework::android_backend();
+        let contents = String::from_utf8(crate::pinned_framework::fetch(
+            &crate::pinned_framework::raw_url(
+                &backend,
+                &backend_commit,
+                "runtime/build.gradle.kts",
+            ),
+        ))
+        .expect("runtime build.gradle.kts is UTF-8");
         assert_eq!(
             parse_android_ndk_version_from_runtime_build_gradle(&contents).as_deref(),
             Some(ANDROID_NDK_VERSION),
-            "ANDROID_NDK_VERSION drifted from the runtime Gradle `ndkVersion`",
+            "ANDROID_NDK_VERSION drifted from the pinned android-backend's \
+             runtime `ndkVersion` ({backend}@{backend_commit})"
         );
     }
 }

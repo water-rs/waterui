@@ -8,7 +8,7 @@ use eyre::{Result, bail};
 use crate::{
     android::{
         AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
-        AndroidSdkPlatforms, Java, Kotlin,
+        AndroidSdkPlatforms, Java, Kotlin, KotlinToolchain,
         platform::{ALL_ABIS, AndroidAbi},
     },
     apple::toolchain::{AppleSdk, Xcode},
@@ -17,7 +17,9 @@ use crate::{
         Host, Installation, Toolchain, ToolchainError,
         cmake::Cmake,
         doctor::{CheckStatus, doctor, ids},
-        web::WebToolchain,
+        dxc::Dxc,
+        msvc::MsvcBuildTools,
+        web::web_toolchain,
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
     },
 };
@@ -142,20 +144,26 @@ pub async fn check_apple(host: &Host, sdk: AppleSdk) -> Result<()> {
 
 /// Verify the Android toolchain covers building and packaging for all ABIs.
 ///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
+///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
-pub async fn check_android_build_or_package(host: &Host) -> Result<()> {
+pub async fn check_android_build_or_package(host: &Host) -> Result<KotlinToolchain> {
     check_android_build_or_package_for_abis(host, ALL_ABIS).await
 }
 
 /// Verify the Android toolchain covers building and packaging for `required_abis`.
+///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
 ///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_android_build_or_package_for_abis(
     host: &Host,
     required_abis: &[AndroidAbi],
-) -> Result<()> {
+) -> Result<KotlinToolchain> {
     let sdk = AndroidSdk;
     if let Err(e) = sdk.check(host).await {
         bail!(
@@ -226,22 +234,25 @@ pub async fn check_android_build_or_package_for_abis(
             .await
         );
     }
-    let kotlin = Kotlin;
-    if let Err(e) = kotlin.check(host).await {
-        bail!(
+    let kotlin = match Kotlin::verify(host).await {
+        Ok(kotlin) => kotlin,
+        Err(e) => bail!(
             "{}",
             android_failure_message(host, "Kotlin", &e, AndroidCheckScope::BuildOrPackage).await
-        );
-    }
-    Ok(())
+        ),
+    };
+    Ok(kotlin)
 }
 
 /// Verify the Android toolchain covers running an app (adds `adb` to the build requirements).
 ///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
+///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
-pub async fn check_android_run(host: &Host) -> Result<()> {
-    check_android_build_or_package(host).await?;
+pub async fn check_android_run(host: &Host) -> Result<KotlinToolchain> {
+    let kotlin = check_android_build_or_package(host).await?;
     let platform_tools = AndroidPlatformTools;
     if let Err(e) = platform_tools.check(host).await {
         bail!(
@@ -250,7 +261,7 @@ pub async fn check_android_run(host: &Host) -> Result<()> {
                 .await
         );
     }
-    Ok(())
+    Ok(kotlin)
 }
 
 /// Verify the GTK4 toolchain is installed.
@@ -261,6 +272,18 @@ pub async fn check_gtk4(host: &Host) -> Result<()> {
     let toolchain = Gtk4Toolchain;
     if let Err(e) = toolchain.check(host).await {
         bail!("{}", toolchain_check_message("GTK4", &e));
+    }
+    Ok(())
+}
+
+/// Verify the `WinUI` toolchain is installed.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_winui(host: &Host) -> Result<()> {
+    let toolchain = crate::winui::toolchain::WinUiToolchain;
+    if let Err(e) = toolchain.check(host).await {
+        bail!("{}", toolchain_check_message("WinUI", &e));
     }
     Ok(())
 }
@@ -277,6 +300,17 @@ pub async fn check_hydrolysis(host: &Host) -> Result<()> {
             toolchain_check_message("Windows ARM64 LLVM toolchain", &e)
         );
     }
+    if cfg!(target_os = "windows") {
+        if let Err(e) = MsvcBuildTools.check(host).await {
+            bail!("{}", toolchain_check_message("MSVC C++ build tools", &e));
+        }
+        if let Err(e) = Dxc.check(host).await {
+            bail!(
+                "{}",
+                toolchain_check_message("DirectX Shader Compiler (dxc)", &e)
+            );
+        }
+    }
     Ok(())
 }
 
@@ -285,8 +319,7 @@ pub async fn check_hydrolysis(host: &Host) -> Result<()> {
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_web(host: &Host) -> Result<()> {
-    let toolchain: WebToolchain = Default::default();
-    if let Err(error) = toolchain.check(host).await {
+    if let Err(error) = web_toolchain().check(host).await {
         bail!(
             "Web toolchain check failed: {error}. Run `water doctor --fix` to install fixable components."
         );

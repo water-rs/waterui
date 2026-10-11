@@ -20,7 +20,7 @@
 
 Three types cover everything:
 
-- **`Binding<T>`** — mutable state you own. Read with `.get()`, write with `.set()` /
+- **`Binding<T>`** — mutable state you own. Read with `.snapshot()`, write with `.set()` /
   `.get_mut()`.
 - **`Computed<T>`** — a derived, read-only value. Produced by `.computed()` on any signal.
 - **`impl Signal<Output = T>`** — the trait both implement, plus every transform.
@@ -191,8 +191,8 @@ a signal is moved into a modifier and used again afterwards.
 
 ## Reading state in handlers
 
-Inside an `.action()` handler you are outside the reactive graph, so `.get()` is correct
-there. What you must not do is `.get()` while *building* a view.
+Inside an `.action()` handler you are outside the reactive graph, so `.snapshot()` is correct
+there. What you must not do is `.snapshot()` while *building* a view.
 
 ```rust
 button("Reset")
@@ -205,13 +205,15 @@ Handler parameters are extractors. Besides `State<T>`:
 - `Environment` — the whole environment.
 - `Use<T>` — any `Clone` value installed in the environment (as opposed to `.state()`).
 - `Option<E>` — makes any extractor optional instead of failing.
-- Custom types: `#[derive(Clone)] struct ApiClient; impl_extractor!(ApiClient);` then take
-  `client: ApiClient` as a parameter directly.
+- A `Clone` type the app owns, once marked `#[state]`, is itself an extractor — write the
+  parameter bare (`state: Editor`) and it reads what `.state(&value)` injected.
+- `impl_extractor!(ApiClient)` instead marks a `Clone` type installed as an *environment*
+  value (`env.insert`/`env.with`), a different channel from `.state()`.
 - Context extractors supplied by components, e.g. `Navigator<Route>`, `ListDelete`,
-  `ListMove`, `State<SnackbarManager>`, `WebViewProxy`, `DragData`.
+  `ListMove`, `SnackbarManager`, `WebViewProxy`.
 
 ```rust
-fn delete_row(ListDelete(index): ListDelete, State(state): State<Editor>) {
+fn delete_row(ListDelete(index): ListDelete, state: Editor) {
     let _ = state.rows.remove(index);
 }
 ```
@@ -377,8 +379,8 @@ button("Load")
     .action(
         |State(url): State<Binding<Str>>,
          State(blur): State<Binding<f64>>,
-         State(h): State<DynamicHandler>| {
-            let Ok(parsed) = url.get().as_str().parse::<Url>() else { return };
+         h: DynamicHandler| {
+            let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else { return };
             h.set(Photo::new(parsed).blur(blur.clone()));
         },
     )
@@ -389,8 +391,11 @@ button("Load")
 vstack((slot, /* … */))
 ```
 
+`DynamicHandler` is `#[state]`-marked, so `h: DynamicHandler` reads the `.state(&handler)`
+injection bare while the `Binding`s stay wrapped in `State<..>` (they are foreign types).
+
 Even there, keep the *reactive* properties reactive — the replacement above is built with
-`.blur(blur.clone())`, not `.blur(blur.get())`, so the slider keeps working without
+`.blur(blur.clone())`, not `.blur(blur.snapshot())`, so the slider keeps working without
 another swap.
 
 ## Async, tasks, and lifecycle
@@ -407,12 +412,18 @@ button("Fetch")
 view.task(async { warm_cache().await });   // runs while the view is alive; dropped with it
 view.on_appear(|| debug!("shown"));
 view.on_disappear(|| ());
-view.on_change(&query, |new_value| debug!(?new_value));
+view.on_change(&query, |new_value: Str| debug!(?new_value));
+view.on_change(&query, |new_value: Str, State(history): State<Binding<Vec<Str>>>| {
+    history.append(new_value);
+})
+.state(&history);
 ```
 
-`.on_change(&signal, f)` takes the signal by reference and a plain `Fn(T)` closure — the
-new value arrives **by value**, and this is an ordinary closure, not an extractor handler,
-so it reaches state by capturing cloned bindings.
+`.on_change(&signal, f)` takes the signal by reference and an `EventHandler`: the new value
+arrives first, **by value**, and any state extractors follow it, injected with
+`.state(&binding)` on the view exactly as for `.action`. A binding the handler writes is
+never captured with `let b = b.clone(); move |v| ..` — inject it and take it as
+`State(b): State<Binding<T>>`, so the handler can be a named function.
 
 Free-standing async work — from a synchronous handler, or a background loop driving a
 binding — goes through `waterui::task`:

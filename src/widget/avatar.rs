@@ -159,7 +159,7 @@ impl Avatar {
     ///
     /// This is the general constructor: `fallback` is any view — a monogram of
     /// your own, an icon, a generated identicon. For the ordinary case, where
-    /// the fallback is the initials of the name, use [`avatar`].
+    /// the fallback is the initials of the name, use [`fn@avatar`].
     ///
     /// `name` is required, and required at construction, for the same reason
     /// every `WaterUI` control demands a [`Label`]: a portrait with no name is
@@ -288,7 +288,7 @@ impl View for Avatar {
         let spoken = name.map(|name| name.to_plain()).computed();
 
         let ring_width = ring.as_ref().map_or(0.0, |ring| ring.width);
-        let inner = (size - ring_width * 2.0).max(0.0);
+        let inner = f32::mul_add(ring_width, -2.0, size).max(0.0);
 
         let fallback = fallback.map_or_else(
             || {

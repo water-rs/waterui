@@ -56,28 +56,31 @@ pub async fn write_linux_share_material(
 
 #[cfg(test)]
 mod tests {
-    use crate::project::{CreateOptions, PackageType, Project};
+    use crate::project::{CreateOptions, Project};
     use crate::project_model::project_types::BundleIdentifier;
 
     #[test]
     fn share_tree_carries_desktop_entry_and_hicolor_icons() {
         smol::block_on(async {
             let dir = tempfile::tempdir().expect("temp dir");
+            let host = crate::toolchain::testing::real_toolchain_host(dir.path());
             let root = dir.path().join("share-example");
             let project = Project::create(
+                &host,
                 &root,
                 CreateOptions {
                     name: "Share Example".to_string(),
                     bundle_identifier: BundleIdentifier::try_from("dev.waterui.shareexample")
                         .expect("bundle identifier"),
-                    package_type: PackageType::Playground,
                     waterui_path: None,
                     channel: None,
                     framework_manifest: None,
                     // A channel resolution would fetch the newest release from
                     // GitHub; a unit test resolves a fixture in place instead.
                     framework: Some(crate::framework::test_fixtures::stable_framework()),
+                    framework_lock: None,
                     author: "Lexo Liu".to_string(),
+                    web: None,
                 },
             )
             .await

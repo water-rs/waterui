@@ -2,14 +2,15 @@
 
 use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
-use nami::{Computed, SignalExt};
+use nami::{Computed, Signal, SignalExt};
 use num_traits::ToPrimitive;
 use waterui_core::{
     AnyView, Environment, IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
 };
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, ViewDimensions,
+    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+    ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -17,6 +18,9 @@ use crate::{
 /// Cached measurement for a child during layout
 struct ChildMeasurement {
     dimensions: ViewDimensions,
+    /// The proposal that produced `dimensions`; it is the proposal the child
+    /// is recursively placed with.
+    proposal: ProposalSize,
 }
 
 struct GridMeasurement {
@@ -53,7 +57,7 @@ impl GridLayout {
     ) -> GridMeasurement {
         let num_columns = self.columns.get();
         let num_rows = children.len().div_ceil(num_columns);
-        let spacing = nami::Signal::get(&self.spacing);
+        let spacing = self.spacing.snapshot();
 
         let constrained_width = proposed_width
             .filter(|width| width.is_finite())
@@ -88,6 +92,7 @@ impl GridLayout {
                 let child_proposal = ProposalSize::new(Some(column_widths[column_index]), None);
                 ChildMeasurement {
                     dimensions: child.measure(child_proposal),
+                    proposal: child_proposal,
                 }
             })
             .collect();
@@ -127,23 +132,34 @@ impl GridLayout {
 
 #[allow(clippy::cast_precision_loss)]
 impl Layout for GridLayout {
-    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
-            return Size::zero();
-        }
+    /// A grid relays the union of its children's stretch claims. It has no
+    /// main axis of its own, so axis-relative claims resolve the way they do
+    /// for its cells: `MainAxis` claims nothing, `CrossAxis` fills
+    /// horizontally.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        crate::stack::axisless_stretch_union(children)
+    }
 
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        // An empty grid has no rows, so its height collapses — but it still
+        // answers the proposal width like a populated one.
         let measurement = self.measure_grid(proposal.width, children);
         Size::new(measurement.total_width, measurement.total_height)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
         let num_columns = self.columns.get();
-        let spacing = nami::Signal::get(&self.spacing);
-        let measurement = self.measure_grid(Some(bounds.width()), children);
+        let spacing = self.spacing.snapshot();
+        let measurement = self.measure_grid(proposal.width, children);
 
         let mut placements = Vec::with_capacity(children.len());
         let mut cursor_y = bounds.y();
@@ -221,7 +237,10 @@ impl Layout for GridLayout {
                         .vertical(vertical)
                         .clamp(0.0, child_size.height);
 
-                placements.push(Rect::new(Point::new(child_x, child_y), child_size));
+                placements.push(SubviewPlacement::new(
+                    Rect::new(Point::new(child_x, child_y), child_size),
+                    child_measurement.proposal,
+                ));
 
                 cursor_x += column_width + spacing.width;
             }
@@ -373,12 +392,15 @@ impl Grid {
         self
     }
 
-    /// Sets the alignment for children within their cells.
+    /// Sets the alignment for children within their cells. An [`Alignment`] or one of the
+    /// tokens (`Leading`, `TopTrailing`, `Center`, …).
     #[must_use]
-    pub const fn alignment(mut self, alignment: Alignment) -> Self {
-        self.layout.alignment = alignment;
+    pub fn alignment(mut self, alignment: impl Into<Alignment>) -> Self {
+        self.layout.alignment = alignment.into();
         self
     }
+
+    crate::alignment::two_dimensional_alignment_methods!();
 }
 
 impl View for Grid {
@@ -392,6 +414,17 @@ impl View for Grid {
             .collect::<Vec<AnyView>>();
 
         FixedContainer::new(self.layout, flattened_children)
+    }
+
+    /// Resolves to `FixedContainer` over the same layout and the flattened
+    /// row contents; reports what that container would.
+    fn stretch_axis(&self) -> crate::StretchAxis {
+        let child_axes = self
+            .rows
+            .iter()
+            .flat_map(|row| row.contents.iter().map(View::stretch_axis))
+            .collect::<Vec<_>>();
+        self.layout.stretch_axis(&child_axes)
     }
 }
 
@@ -435,6 +468,95 @@ mod tests {
         }
     }
 
+    struct StretchingSubView {
+        size: Size,
+    }
+
+    impl SubView for StretchingSubView {
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn grid_relays_live_child_stretch() {
+        // A grid has no main axis of its own; §3 requires it to relay the
+        // union of its children's stretch. A filling cell must therefore
+        // stretch the grid's root frame to the window.
+        let layout = GridLayout::new(
+            NonZeroUsize::new(1).unwrap(),
+            Size::zero(),
+            Alignment::Center,
+        );
+
+        let child = StretchingSubView {
+            size: Size::new(20.0, 10.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&child];
+
+        let proposal = ProposalSize::new(Some(100.0), Some(80.0));
+        assert_eq!(
+            layout.size_that_fits(proposal, &children),
+            Size::new(100.0, 10.0),
+            "the grid answers the proposal width and the row's intrinsic height"
+        );
+
+        let axes: Vec<StretchAxis> = children.iter().map(|child| child.stretch_axis()).collect();
+        assert_eq!(
+            layout.stretch_axis(&axes),
+            StretchAxis::Both,
+            "the union of the children's claims"
+        );
+
+        // The root is placed at its answer stretched on declared axes:
+        // 100x10 stretched on both is the whole 100x80 window. Rows keep
+        // their intrinsic height, so the cell still lands at (40,0,20,10).
+        let placements = layout.place(
+            Rect::new(Point::zero(), Size::new(100.0, 80.0)),
+            proposal,
+            &children,
+        );
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::new(40.0, 0.0), Size::new(20.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn empty_grid_retains_finite_width() {
+        // A grid answers the proposal width; with no cells there are no
+        // rows, so the height collapses but the finite width survives.
+        let layout = GridLayout::new(
+            NonZeroUsize::new(2).unwrap(),
+            Size::zero(),
+            Alignment::Center,
+        );
+        let children: Vec<&dyn SubView> = vec![];
+
+        for (proposal, expected) in [
+            (ProposalSize::new(Some(0.0), Some(40.0)), Size::zero()),
+            (
+                ProposalSize::new(Some(100.0), Some(40.0)),
+                Size::new(100.0, 0.0),
+            ),
+            (ProposalSize::UNSPECIFIED, Size::zero()),
+        ] {
+            assert_eq!(layout.size_that_fits(proposal, &children), expected);
+            assert!(
+                layout
+                    .place(Rect::from_size(expected), proposal, &children)
+                    .is_empty(),
+                "an empty grid places no children"
+            );
+        }
+    }
+
     #[test]
     fn test_grid_size_2x2() {
         let layout = GridLayout::new(
@@ -467,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn test_grid_placement() {
+    fn test_grid_placement_bounded_proposal() {
         let layout = GridLayout::new(
             NonZeroUsize::new(2).unwrap(),
             Size::new(10.0, 10.0),
@@ -484,16 +606,17 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
         let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &children);
 
         // Column width: (100 - 10) / 2 = 45
         // Child 1 at (0, 0)
-        assert!((rects[0].x() - 0.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 0.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.x() - 0.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.y() - 0.0).abs() < f32::EPSILON);
 
         // Child 2 at (45 + 10, 0) = (55, 0)
-        assert!((rects[1].x() - 55.0).abs() < f32::EPSILON);
-        assert!((rects[1].y() - 0.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.x() - 55.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.y() - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -547,14 +670,15 @@ mod tests {
         let children: Vec<&dyn SubView> = vec![&mut child1, &mut child2];
 
         let bounds = Rect::new(Point::new(5.0, 7.0), Size::new(f32::INFINITY, 100.0));
-        let rects = layout.place(bounds, &children);
+        let proposal = ProposalSize::new(Some(f32::INFINITY), Some(100.0));
+        let placements = layout.place(bounds, proposal, &children);
 
-        assert_eq!(rects.len(), 2);
-        assert!((rects[0].x() - 5.0).abs() < f32::EPSILON);
-        assert!((rects[0].y() - 7.0).abs() < f32::EPSILON);
-        assert!((rects[0].width() - 40.0).abs() < f32::EPSILON);
-        assert!((rects[1].x() - 55.0).abs() < f32::EPSILON);
-        assert!((rects[1].y() - 7.0).abs() < f32::EPSILON);
-        assert!((rects[1].width() - 20.0).abs() < f32::EPSILON);
+        assert_eq!(placements.len(), 2);
+        assert!((placements[0].frame.x() - 5.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.y() - 7.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.width() - 40.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.x() - 55.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.y() - 7.0).abs() < f32::EPSILON);
+        assert!((placements[1].frame.width() - 20.0).abs() < f32::EPSILON);
     }
 }

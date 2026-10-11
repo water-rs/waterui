@@ -1,0 +1,28 @@
+name: CherenkovPlanes
+options:
+  bundleIdPrefix: dev.cherenkov
+targets:
+  CherenkovPlanes:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.cherenkov.planes
+        INFOPLIST_FILE: Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: CherenkovPlanes-Bridging-Header.h
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: XASKH66XLR
+        # `libapple_planes.a` comes from cargo — build it first:
+        #   cargo build --release --target aarch64-apple-ios \
+        #     --manifest-path ../Cargo.toml
+        #   (for a simulator build, target aarch64-apple-ios-sim instead)
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": $(inherited) $(PROJECT_DIR)/../target/aarch64-apple-ios/release
+        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": $(inherited) $(PROJECT_DIR)/../target/aarch64-apple-ios-sim/release
+        # The Rust static archive carries no link info: the frameworks
+        # cherenkov-gpu's objc2 bindings need are named here.
+        OTHER_LDFLAGS: $(inherited) -lapple_planes -lc++ -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -framework Metal -framework IOSurface -framework CoreGraphics -framework Foundation

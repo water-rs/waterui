@@ -7,8 +7,8 @@
 //!
 //! This module owns the single script and the single envelope. A backend supplies
 //! only a transport: deliver [`SCRIPT`] at document start, hand
-//! [`Request::parse`] whatever `__wateruiSend` produced, and evaluate
-//! [`Reply::resolve_script`] to complete the call.
+//! [`Request::parse`] whatever `__wateruiSend` produced, and complete the call
+//! with [`Reply::resolve_script`] or [`Reply::to_json`].
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -25,6 +25,16 @@ pub const SCRIPT: &str = include_str!("js/bridge.js");
 /// A backend installs a function under this name — a `WebKit` message handler, an
 /// Android `@JavascriptInterface` method, a CDP binding — taking one string.
 pub const SEND_FUNCTION: &str = "__wateruiSend";
+
+/// The [`SEND_FUNCTION`] transport for a `WebKit` web view, injected at
+/// document start ahead of [`SCRIPT`], which calls it.
+///
+/// It posts each envelope to the `__wateruiSend` handler a backend registers
+/// with `addScriptMessageHandlerWithReply:contentWorld:name:` in the page
+/// world, and settles the call from the promise `postMessage` returns. That
+/// promise is `WebKit`'s reply channel, bound to the sending document, so the
+/// backend answers with [`Reply::to_json`] and never evaluates a reply.
+pub const WEBKIT_TRANSPORT: &str = include_str!("js/webkit_transport.js");
 
 /// One `waterui.invoke(...)` call, as parsed from the page.
 ///
@@ -124,6 +134,12 @@ enum ReplyPayload<'a> {
     },
 }
 
+#[derive(Serialize)]
+struct ReplyEnvelope<'a> {
+    ok: bool,
+    payload: ReplyPayload<'a>,
+}
+
 impl Reply {
     /// Builds a failure reply.
     pub fn failure(message: &(impl ToString + ?Sized)) -> Self {
@@ -143,12 +159,35 @@ impl Reply {
     /// `Serialize` implementation, never from the page.
     #[must_use]
     pub fn resolve_script(&self, id: u64) -> String {
-        let json;
-        let (ok, payload) = match self {
+        let (ok, payload) = self.serialized_payload();
+        let payload = serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize");
+        format!("globalThis.__wateruiResolve({id},{ok},{payload});")
+    }
+
+    /// Serializes the reply envelope without binding it to a JavaScript realm.
+    ///
+    /// A backend whose engine offers a reply channel bound to the sending
+    /// document returns this value through it — `WebKit`'s
+    /// `WKScriptMessageHandlerWithReply` and WPE's script-message reply — so
+    /// the engine itself drops a reply whose document has gone. A backend
+    /// without such a channel evaluates [`Self::resolve_script`] in the
+    /// calling context instead.
+    ///
+    /// # Panics
+    /// Panics if the reply envelope cannot be serialized.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        let (ok, payload) = self.serialized_payload();
+        serde_json::to_string(&ReplyEnvelope { ok, payload })
+            .expect("WaterUI bridge reply must serialize")
+    }
+
+    fn serialized_payload(&self) -> (bool, ReplyPayload<'_>) {
+        match self {
             Self::Json(bytes) => {
                 let text = str::from_utf8(bytes).expect("a JSON reply must be UTF-8");
-                json = RawValue::from_string(text.to_owned()).expect("a JSON reply must be JSON");
-                (true, ReplyPayload::Json { json: &json })
+                let json = serde_json::from_str(text).expect("a JSON reply must be JSON");
+                (true, ReplyPayload::Json { json })
             }
             Self::Bytes(bytes) => (
                 true,
@@ -157,9 +196,7 @@ impl Reply {
                 },
             ),
             Self::Failure(message) => (false, ReplyPayload::Failure { message }),
-        };
-        let payload = serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize");
-        format!("globalThis.__wateruiResolve({id},{ok},{payload});")
+        }
     }
 }
 
@@ -190,7 +227,7 @@ mod tests {
     #[test]
     fn a_call_with_no_payload_is_accepted() {
         let request = Request::parse(r#"{"id":2,"name":"ping"}"#).expect("well-formed");
-        assert!(request.payload.is_empty());
+        assert_eq!(request.payload, Vec::<u8>::new());
     }
 
     /// Page script can reach the transport directly, so these must be errors
@@ -227,6 +264,29 @@ mod tests {
         assert_eq!(
             script,
             r#"globalThis.__wateruiResolve(5,false,{"message":"he said \"}\"; alert(1)"});"#
+        );
+    }
+
+    #[test]
+    fn replies_serialize_as_json_for_realm_bound_transports() {
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &Reply::Json(br#"{"answer":42}"#.to_vec()).to_json()
+            )
+            .unwrap(),
+            serde_json::json!({"ok": true, "payload": {"json": {"answer": 42}}})
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&Reply::Bytes(vec![0, 1, 2]).to_json())
+                .unwrap(),
+            serde_json::json!({"ok": true, "payload": {"b64": "AAEC"}})
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &Reply::failure(r#"failure "message""#).to_json()
+            )
+            .unwrap(),
+            serde_json::json!({"ok": false, "payload": {"message": "failure \"message\""}})
         );
     }
 }

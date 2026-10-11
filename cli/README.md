@@ -6,6 +6,10 @@ Cross-platform build orchestration and development tooling for `WaterUI` applica
 
 `waterui-cli` is the command-line interface that powers the `water` binary, the primary tool for building, running, and managing `WaterUI` applications across iOS, macOS, and Android. It abstracts platform-specific build systems (Xcode for Apple, Gradle for Android) and provides a unified developer experience with device management, project scaffolding, and instant view previews.
 
+Apple targets require ARM64. Embedded Apple packages contain ARM64 macOS, iOS device,
+and iOS simulator slices; Intel Apple targets are unsupported. Android, Linux, and
+Windows retain their supported x86 architectures.
+
 The crate is split into two components:
 - **Library** (`src/lib.rs`): Core abstractions for platforms, devices, builds, and project management
 - **Terminal** (`src/terminal/`): User-facing CLI with argument parsing and formatted output
@@ -14,16 +18,33 @@ This separation ensures all business logic lives in the library, while the termi
 
 ## Installation
 
-Install the CLI from source within the `WaterUI` workspace:
+Install the CLI from the framework checkout (it is a workspace member under
+`cli/`):
 
 ```bash
-cargo install --path cli
+cargo install --path cli --locked
 ```
 
 Or build for development (not added to PATH):
 
 ```bash
-cargo build -p waterui-cli
+cargo build
+```
+
+### Shell Completions
+
+Homebrew installs completions automatically; for other install methods,
+`water completions` prints the completion script for your shell on stdout:
+
+```bash
+# zsh
+water completions zsh > ~/.zfunc/_water
+
+# bash
+water completions bash > ~/.local/share/bash-completion/completions/water
+
+# fish
+water completions fish > ~/.config/fish/completions/water.fish
 ```
 
 ## Quick Start
@@ -32,7 +53,7 @@ Create a new `WaterUI` project and run it on iOS Simulator:
 
 ```bash
 # Create a new project
-water create my-app --backends apple,android
+water create my-app
 
 # Run on iOS Simulator
 cd my-app
@@ -42,13 +63,9 @@ water run --platform ios
 water run --platform android
 ```
 
-Create a playground for quick experimentation (auto-managed backends):
-
-```bash
-water create my-experiment --mode playground
-cd my-experiment
-water run --platform ios
-```
+The project directory holds only your Rust crate and its `Water.toml`. The
+CLI generates and manages every backend project (Xcode, Gradle, and the Rust
+backend crates) in its build cache; there is no native project to edit.
 
 ### Preview Views
 
@@ -112,6 +129,8 @@ A build target is a `TargetPlatform` — an enum of the concrete targets
 is fixed and known, so an enum says so, and the per-target work — scanning for
 devices, building for the triple, packaging into a `.app` or `.apk`, cleaning —
 lives in the module for that platform rather than behind an associated type.
+Android's default backend is `Hydrolysis` (self-drawn on HWUI); `--backend
+android` selects the Kotlin Android-View runtime instead.
 
 ```text
 pub enum TargetPlatform {
@@ -178,7 +197,7 @@ pub trait Installation: Send + Sync {
 }
 ```
 
-Example: `AppleToolchain` checks for Xcode, simulators, and rust targets. `AndroidToolchain` checks for Android SDK, NDK, and JDK.
+Example: `Xcode` and `AppleSdk` check the Apple toolchain; `AndroidSdk`, `AndroidNdk`, `Java`, and `Kotlin` cover the Android SDK chain every Android backend builds through.
 
 ## Examples
 
@@ -203,15 +222,10 @@ water run --platform ios --device "iPhone 15 Pro"
 ### Create Project with Local `WaterUI` Development
 
 ```bash
-water create my-app --waterui-path /path/to/waterui --backends apple,android
+water create my-app --waterui-path /path/to/waterui
 ```
 
 This creates a project that uses the local `WaterUI` repository.
-
-When the `water` CLI itself was built from a local, non-release `WaterUI` checkout and you run
-`water create` from somewhere inside the `WaterUI` repository, it automatically detects the repo
-root and uses it as the local `waterui_path`. Use `--waterui-path` explicitly when running that
-development CLI outside the repository.
 
 ### Build Without Running
 
@@ -229,23 +243,22 @@ water clean --all  # Clean all platforms
 ### Check Development Environment
 
 ```bash
-water doctor --platform ios
-water doctor --platform android
+water doctor
 ```
 
-This validates toolchain dependencies (Xcode, Android SDK, Rust targets).
+This validates toolchain dependencies (Xcode, the Android SDK chain, Rust targets). Inside a project every backend is in scope; outside one, doctor checks what the host can build.
 
 ## API Overview
 
 ### Library (`src/lib.rs`)
 
-- **`platform`**: Platform trait and implementations (Apple, Android)
+- **`platform`**: `TargetPlatform`/`TargetBackend` target model
 - **`device`**: Device trait, device types, run options, and events
 - **`project`**: Project management, manifest parsing, create/open
 - **`build`**: Rust build orchestration with cargo
 - **`debug`**: Crash handling and diagnostics
 - **`toolchain`**: Toolchain checking and installation
-- **`backend`**: Backend configuration and scaffolding
+- **`backend`**: Backend configuration and generation
 - **`templates`**: Project scaffolding templates
 - **`apple`**: Apple platform, devices, and backend
 - **`android`**: Android platform, devices, and backend
@@ -274,7 +287,7 @@ The CLI supports:
 - **Instant previews**: Render individual views to PNG without running the full app
 - **Device management**: Automatic device discovery and simulator launching
 - **Interactive creation**: Guided project setup with prompts
-- **Playground mode**: Auto-managed backends for quick prototyping
+- **Managed backends**: The CLI generates every backend project; the project holds only Rust code
 - **Parallel builds**: Device launch overlaps with compilation
 - **Log streaming**: Real-time device logs with level filtering
 - **JSON output**: Machine-readable output with `--json` flag

@@ -24,10 +24,12 @@ use crate::{
             LinuxPackageManagerError, has_supported_package_manager, install_java_jdk,
             install_named_packages,
         },
+        managed_tool::{self, ManagedTool, ManagedToolError},
+        rust::{RustTargetAdditions, SelectedToolchainTargets},
         winget::{WingetInstallError, ensure_package_installed},
     },
     utils::{CommandError, command},
-    water_dir::{HomeDirError, water_home_dir_in},
+    water_dir::{HomeDirError, water_home_dir},
 };
 
 /// Errors from Android SDK/NDK inspection and installation pipelines.
@@ -258,6 +260,24 @@ pub struct Java;
 /// Kotlin toolchain component for Android development.
 #[derive(Debug, Clone, Default)]
 pub struct Kotlin;
+
+/// A `kotlinc` whose `-version` probe reported a compatible version.
+///
+/// [`Kotlin::resolve`] is its only constructor, and every probe launches a
+/// JVM, so one invocation resolves it once and hands it to every consumer
+/// instead of probing again.
+#[derive(Debug, Clone)]
+pub struct KotlinToolchain {
+    compiler: PathBuf,
+}
+
+impl KotlinToolchain {
+    /// The `kotlinc` executable the probe verified.
+    #[must_use]
+    pub fn compiler(&self) -> &Path {
+        &self.compiler
+    }
+}
 
 const ANDROID_LINUX_X86_64_HOST_TOOLS_COMPAT_PACKAGES: &[&str] =
     &["libc6:amd64", "libstdc++6:amd64", "zlib1g:amd64"];
@@ -660,17 +680,48 @@ fn find_sdkmanager_on_host_path(host: &Host) -> Option<PathBuf> {
     None
 }
 
-fn parse_sdkmanager_package_id(line: &str) -> Option<&str> {
+/// The package id a `sdkmanager --list` line carries, if any.
+///
+/// Two layouts exist. Classic sdkmanager draws a `|`-separated table whose
+/// first column is already the `pkg;ver` id; the Android CLI (sdkmanager
+/// 23.x) prints whitespace-aligned columns where the id is slash-separated
+/// (`platforms/android-37.2`) and the second column is its version — or
+/// `unknown` followed by `-> latest` for an installed package. Slash ids are
+/// normalized to the `pkg;ver` form `sdkmanager --install` also accepts, so
+/// the rest of the toolchain keeps one id style.
+fn parse_sdkmanager_package_id(line: &str) -> Option<String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let (first_column, _) = trimmed.split_once('|')?;
-    let package_id = first_column.trim();
-    if package_id.is_empty() || package_id == "Path" || package_id.starts_with('-') {
-        return None;
+    if let Some((first_column, _)) = trimmed.split_once('|') {
+        let package_id = first_column.trim();
+        if package_id.is_empty() || package_id == "Path" || package_id.starts_with('-') {
+            return None;
+        }
+        return Some(package_id.to_owned());
     }
-    Some(package_id)
+    parse_android_cli_package_id(trimmed)
+}
+
+/// One `id version [-> latest] description` row of the Android CLI's
+/// whitespace table. `id` is `/`-separated segments of `[A-Za-z0-9._+-]` and
+/// `version` starts with a digit or reads `unknown` — that pair rule keeps
+/// section headers (`Installed packages:`) and progress lines out.
+fn parse_android_cli_package_id(line: &str) -> Option<String> {
+    let mut columns = line.split_whitespace();
+    let package_id = columns.next()?;
+    let version = columns.next()?;
+    let is_id = package_id
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+        && package_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+'));
+    let is_version =
+        version == "unknown" || version.chars().next().is_some_and(|c| c.is_ascii_digit());
+    (is_id && is_version).then(|| package_id.replace('/', ";"))
 }
 
 /// The `(major, minor)` API-level pair of an Android platform identifier.
@@ -722,24 +773,32 @@ fn compare_version_segments(left: &[u64], right: &[u64]) -> Ordering {
     Ordering::Equal
 }
 
+/// Split a `pkg;ver` id into its numeric base and any `-rc`/`-beta` suffix.
+fn sdk_package_version_parts(id: &str) -> (&str, &str) {
+    let version = id.split_once(';').map_or("", |(_, version)| version);
+    match version.split_once('-') {
+        Some((base, suffix)) => (base, suffix),
+        None => (version, ""),
+    }
+}
+
 fn compare_sdk_package_ids(left: &str, right: &str) -> Ordering {
-    let left_version = left
-        .split_once(';')
-        .map_or("", |(_, version)| version)
+    // A `-rc`/`-beta` suffix on the version does not count toward the numeric
+    // comparison but ranks below the bare release of the same version.
+    let (left_base, left_suffix) = sdk_package_version_parts(left);
+    let (right_base, right_suffix) = sdk_package_version_parts(right);
+    let left_version = left_base
         .split('.')
         .map(parse_numeric_prefix)
         .collect::<Vec<_>>();
-    let right_version = right
-        .split_once(';')
-        .map_or("", |(_, version)| version)
+    let right_version = right_base
         .split('.')
         .map(parse_numeric_prefix)
         .collect::<Vec<_>>();
 
-    match compare_version_segments(&left_version, &right_version) {
-        Ordering::Equal => left.cmp(right),
-        ordering => ordering,
-    }
+    compare_version_segments(&left_version, &right_version)
+        .then_with(|| left_suffix.is_empty().cmp(&right_suffix.is_empty()))
+        .then_with(|| left.cmp(right))
 }
 
 fn find_d8_jar_in_sdk(sdk_root: &Path) -> Option<PathBuf> {
@@ -956,14 +1015,14 @@ async fn run_sdkmanager_output_with_java(
         use std::process::Stdio;
 
         cmd.stdin(Stdio::piped());
-        let mut child = command(&mut cmd).spawn()?;
+        let mut child = command(&mut cmd, host.std_output()).spawn()?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(stdin_payload.as_bytes()).await?;
             stdin.flush().await?;
         }
         child.output().await.map_err(AndroidToolchainError::from)
     } else {
-        command(&mut cmd)
+        command(&mut cmd, host.std_output())
             .output()
             .await
             .map_err(AndroidToolchainError::from)
@@ -1023,7 +1082,6 @@ async fn list_sdk_package_ids(host: &Host) -> Result<Vec<String>, AndroidToolcha
     Ok(stdout
         .lines()
         .filter_map(parse_sdkmanager_package_id)
-        .map(ToOwned::to_owned)
         .collect::<Vec<_>>())
 }
 
@@ -1093,7 +1151,7 @@ fn kotlin_executable_from_home(home: &Path) -> Option<PathBuf> {
 }
 
 fn managed_kotlin_home(host: &Host, version: &str) -> Result<PathBuf, AndroidToolchainError> {
-    Ok(water_home_dir_in(host)?
+    Ok(water_home_dir(host)?
         .join("toolchains/kotlin")
         .join(version))
 }
@@ -1331,33 +1389,6 @@ fn required_android_rust_targets_for_abis(abis: &[AndroidAbi]) -> Vec<String> {
     targets
 }
 
-async fn installed_rustup_targets(host: &Host) -> Result<Vec<String>, CommandError> {
-    let installed = host
-        .run("rustup", ["target", "list", "--installed"])
-        .await?;
-    Ok(installed
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect())
-}
-
-fn missing_android_rust_targets(
-    installed_targets: &[String],
-    required_targets: &[String],
-) -> Vec<String> {
-    required_targets
-        .iter()
-        .filter(|target| {
-            !installed_targets
-                .iter()
-                .any(|installed| installed == *target)
-        })
-        .cloned()
-        .collect()
-}
-
 impl AndroidSdk {
     /// Detect the path to the Android SDK installation on `host`.
     #[must_use]
@@ -1490,7 +1521,7 @@ impl Toolchain for AndroidSdk {
                 Err(ToolchainError::unfixable(
                     "Android SDK not found and winget is unavailable",
                     format!(
-                        "Install Microsoft App Installer to provide winget, then retry `water doctor --fix`. {} {}",
+                        "Download Android Studio from https://developer.android.com/studio, then retry. {} {}",
                         android_cmdline_tools_suggestion(),
                         android_sdk_path_suggestion()
                     ),
@@ -1810,101 +1841,15 @@ impl Installation for AndroidBuildToolsInstallation {
     }
 }
 
-/// Installation procedure for Rust Android targets.
-#[derive(Debug, Clone)]
-pub struct AndroidRustTargetsInstallation {
-    missing_targets: Vec<String>,
-}
-
-impl AndroidRustTargetsInstallation {
-    fn new(missing_targets: Vec<String>) -> Self {
-        assert!(
-            !missing_targets.is_empty(),
-            "AndroidRustTargetsInstallation requires at least one missing target"
-        );
-        Self { missing_targets }
-    }
-}
-
-/// Errors that can occur when installing Rust Android targets.
-#[derive(Debug, thiserror::Error)]
-pub enum FailToInstallAndroidRustTargets {
-    #[error("rustup is required to install Android Rust targets but was not found in PATH.")]
-    RustupNotFound,
-    #[error("Failed to install Rust Android target `{target}`: {source}")]
-    AddTarget {
-        /// Target triple that failed to install.
-        target: String,
-        /// Underlying command error.
-        source: CommandError,
-    },
-    #[error("Failed to list installed Rust targets after installation: {0}")]
-    QueryTargets(CommandError),
-    #[error("Android Rust targets are still missing after installation: {missing_targets}")]
-    StillMissing {
-        /// Comma-separated missing targets.
-        missing_targets: String,
-    },
-}
-
 impl Toolchain for AndroidRustTargets {
-    type Installation = AndroidRustTargetsInstallation;
+    type Installation = RustTargetAdditions;
 
     async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
-        if host.which("rustup").await.is_err() {
-            return Err(ToolchainError::unfixable(
-                "rustup is not available, so Android Rust targets cannot be managed automatically",
-                "Install rustup from https://rustup.rs, then run `water doctor --fix`.",
-            ));
-        }
-
-        let installed_targets = installed_rustup_targets(host).await.map_err(|error| {
-            ToolchainError::unfixable(
-                format!("Failed to query installed Rust targets: {error}"),
-                "Run `rustup target list --installed`; if it fails, repair rustup with `rustup self update` or reinstall rustup.",
-            )
-        })?;
-
-        let missing_targets =
-            missing_android_rust_targets(&installed_targets, &self.required_targets);
-        if missing_targets.is_empty() {
-            Ok(())
-        } else {
-            Err(ToolchainError::fixable(
-                AndroidRustTargetsInstallation::new(missing_targets),
-            ))
-        }
-    }
-}
-
-impl Installation for AndroidRustTargetsInstallation {
-    type Error = FailToInstallAndroidRustTargets;
-
-    async fn install(&self, host: &Host) -> Result<(), Self::Error> {
-        if host.which("rustup").await.is_err() {
-            return Err(FailToInstallAndroidRustTargets::RustupNotFound);
-        }
-
-        for target in &self.missing_targets {
-            host.run("rustup", ["target", "add", target.as_str()])
-                .await
-                .map_err(|source| FailToInstallAndroidRustTargets::AddTarget {
-                    target: target.clone(),
-                    source,
-                })?;
-        }
-
-        let installed_targets = installed_rustup_targets(host)
+        // The targets live on the toolchain the project's `rust-toolchain`
+        // pin (or the rustup default) selects — never a different default.
+        SelectedToolchainTargets::new(self.required_targets.clone())
+            .check(host)
             .await
-            .map_err(FailToInstallAndroidRustTargets::QueryTargets)?;
-        let still_missing = missing_android_rust_targets(&installed_targets, &self.missing_targets);
-        if still_missing.is_empty() {
-            Ok(())
-        } else {
-            Err(FailToInstallAndroidRustTargets::StillMissing {
-                missing_targets: still_missing.join(", "),
-            })
-        }
     }
 }
 
@@ -1925,31 +1870,6 @@ mod tests {
                 "aarch64-linux-android".to_string(),
                 "x86_64-linux-android".to_string()
             ]
-        );
-    }
-
-    #[test]
-    fn missing_android_targets_only_consider_requested_abis() {
-        let required = required_android_rust_targets_for_abis(&[AndroidAbi::Arm64V8a]);
-        let installed = vec![
-            "aarch64-linux-android".to_string(),
-            "armv7-linux-androideabi".to_string(),
-            "x86_64-linux-android".to_string(),
-        ];
-        assert_eq!(
-            missing_android_rust_targets(&installed, &required),
-            [] as [String; 0]
-        );
-    }
-
-    #[test]
-    fn missing_android_targets_report_only_requested_missing_entries() {
-        let required =
-            required_android_rust_targets_for_abis(&[AndroidAbi::Arm64V8a, AndroidAbi::X86]);
-        let installed = vec!["aarch64-linux-android".to_string()];
-        assert_eq!(
-            missing_android_rust_targets(&installed, &required),
-            vec!["i686-linux-android".to_string()]
         );
     }
 
@@ -1999,6 +1919,110 @@ mod tests {
         assert!(kotlin_version_is_compatible("2.0.21", "2.0.21"));
         assert!(kotlin_version_is_compatible("2.1.0", "2.0.21"));
         assert!(!kotlin_version_is_compatible("1.9.24", "2.0.21"));
+    }
+
+    #[test]
+    fn sdkmanager_package_id_parses_classic_pipe_table() {
+        assert_eq!(
+            parse_sdkmanager_package_id(
+                "  platforms;android-36      | 2      | Android SDK Platform 36 | platforms/android-36"
+            ),
+            Some("platforms;android-36".to_string())
+        );
+        assert_eq!(
+            parse_sdkmanager_package_id("  ndk;29.0.14206865 | 29.0.14206865 | NDK (Side by side)"),
+            Some("ndk;29.0.14206865".to_string())
+        );
+        assert_eq!(
+            parse_sdkmanager_package_id("  platform-tools | 36.0.0 | Android SDK Platform-Tools"),
+            Some("platform-tools".to_string())
+        );
+        assert_eq!(
+            parse_sdkmanager_package_id("  Path     | Version | Description | Location"),
+            None
+        );
+        assert_eq!(
+            parse_sdkmanager_package_id("  ------- | ------- | -------"),
+            None
+        );
+    }
+
+    #[test]
+    fn sdkmanager_package_id_parses_android_cli_table() {
+        // cmdline-tools 23.x (Android CLI) prints whitespace columns with
+        // slash-separated ids; installed rows show `installed -> latest`.
+        assert_eq!(
+            parse_sdkmanager_package_id(
+                "  platforms/android-37.2    1.0.0    Android SDK Platform 37.2"
+            ),
+            Some("platforms;android-37.2".to_string())
+        );
+        assert_eq!(
+            parse_sdkmanager_package_id(
+                "  ndk/29.0.14206865    29.0.14206865    NDK (Side by side) 29.0.14206865"
+            ),
+            Some("ndk;29.0.14206865".to_string())
+        );
+        assert_eq!(
+            parse_sdkmanager_package_id(
+                "  system-images/android-26/default/x86    1.0.0    Intel x86 Atom System Image"
+            ),
+            Some("system-images;android-26;default;x86".to_string())
+        );
+        assert_eq!(
+            parse_sdkmanager_package_id(
+                "  cmdline-tools/latest    unknown    ->    23.0.0    Android SDK Command-line Tools (latest)"
+            ),
+            Some("cmdline-tools;latest".to_string())
+        );
+        assert_eq!(
+            parse_sdkmanager_package_id("  platform-tools    37.0.1    Android SDK Platform-Tools"),
+            Some("platform-tools".to_string())
+        );
+        assert_eq!(parse_sdkmanager_package_id("Installed packages:"), None);
+        assert_eq!(parse_sdkmanager_package_id("Available packages:"), None);
+        assert_eq!(
+            parse_sdkmanager_package_id(
+                "[=======================================] 100% Computing updates..."
+            ),
+            None
+        );
+        assert_eq!(parse_sdkmanager_package_id(""), None);
+    }
+
+    #[test]
+    fn sdk_package_id_order_prefers_stable_over_prerelease() {
+        assert_eq!(
+            compare_sdk_package_ids("build-tools;37.0.0", "build-tools;37.0.0-rc2"),
+            Ordering::Greater,
+            "the stable release outranks its release candidates"
+        );
+        assert_eq!(
+            compare_sdk_package_ids("build-tools;36.1.0", "build-tools;37.0.0-rc2"),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn java_major_version_parses_openjdk_and_legacy_layouts() {
+        assert_eq!(
+            parse_java_major_version("openjdk version \"17.0.19\" 2026-04-21"),
+            Some(17)
+        );
+        assert_eq!(
+            parse_java_major_version("openjdk version \"21.0.5\" 2024-10-15"),
+            Some(21)
+        );
+        assert_eq!(
+            parse_java_major_version("openjdk version \"25\" 2025-09-16"),
+            Some(25)
+        );
+        assert_eq!(
+            parse_java_major_version("java version \"1.8.0_361\""),
+            Some(8)
+        );
+        assert_eq!(parse_java_major_version("javac 17.0.19"), None);
+        assert_eq!(parse_java_major_version("not java output"), None);
     }
 
     #[test]
@@ -2179,12 +2203,13 @@ async fn verify_ndk_host_toolchain_executable(
 
     // Unique scratch source for the compile probe; the `NamedTempFile`
     // deletes itself on drop, including on the early-error paths below.
-    let probe_file = smol::unblock(|| -> std::io::Result<tempfile::NamedTempFile> {
+    let temp_root = host.temp_dir();
+    let probe_file = smol::unblock(move || -> std::io::Result<tempfile::NamedTempFile> {
         use std::io::Write as _;
         let mut file = tempfile::Builder::new()
             .prefix("waterui-android-ndk-probe-")
             .suffix(".c")
-            .tempfile()?;
+            .tempfile_in(temp_root)?;
         file.write_all(b"int main(void) { return 0; }\n")?;
         file.flush()?;
         Ok(file)
@@ -2269,8 +2294,9 @@ impl Java {
     ///
     /// Priority order:
     /// 1. Android Studio's bundled JBR (guaranteed compatible with AGP)
-    /// 2. `JAVA_HOME` environment variable (may be incompatible)
-    /// 3. Java from the host `PATH`
+    /// 2. The managed JDK under `~/.water/tools` (a pinned Temurin build)
+    /// 3. `JAVA_HOME` environment variable (may be incompatible)
+    /// 4. Java from the host `PATH`
     pub async fn detect_path(host: &Host) -> Option<PathBuf> {
         if cfg!(target_os = "macos") {
             const ANDROID_STUDIO_JBRS: &[&str] = &[
@@ -2315,6 +2341,12 @@ impl Java {
             }
         }
 
+        if let Some(tool) = managed_tool::jdk()
+            && let Some(java_path) = tool.binary_path(host)
+        {
+            return Some(java_path);
+        }
+
         if let Some(home) = host.env_string("JAVA_HOME") {
             let java_path = PathBuf::from(home)
                 .join("bin")
@@ -2338,9 +2370,35 @@ impl Java {
     }
 }
 
-/// Java installation handler.
-#[derive(Debug, Clone, Default)]
-pub struct JavaInstallation;
+/// Java installation handler — the strategy `check` selected for this host.
+#[derive(Debug, Clone)]
+pub enum JavaInstallation {
+    /// `winget install Microsoft.OpenJDK.21`.
+    Winget,
+    /// `brew install --cask temurin`.
+    Brew,
+    /// The host's Linux package manager.
+    PackageManager,
+    /// A pinned, checksum-verified Temurin JDK unpacked under
+    /// `~/.water/tools` — no package manager required.
+    Managed(ManagedTool),
+}
+
+/// What a missing Java on Windows resolves to: `winget` when present,
+/// otherwise the pinned Temurin JDK unpacked under `~/.water/tools` — no
+/// package manager required.
+async fn missing_java_on_windows(host: &Host) -> ToolchainError<JavaInstallation> {
+    if host.which("winget").await.is_ok() {
+        ToolchainError::fixable(JavaInstallation::Winget)
+    } else if let Some(tool) = managed_tool::jdk() {
+        ToolchainError::fixable(JavaInstallation::Managed(tool))
+    } else {
+        ToolchainError::unfixable(
+            "Java runtime not found and this host has no usable installer",
+            "Download a JDK from https://adoptium.net/temurin/releases/?version=21 and set `JAVA_HOME`, then retry.",
+        )
+    }
+}
 
 /// Errors that can occur when installing Java.
 #[derive(Debug, thiserror::Error)]
@@ -2359,6 +2417,9 @@ pub enum FailToInstallJava {
     UnsupportedPackageManager,
     #[error("Failed to install Java: {0}")]
     InstallFailed(#[from] CommandError),
+    /// The managed JDK archive install failed.
+    #[error(transparent)]
+    Managed(#[from] ManagedToolError),
     #[error(
         "Automatic Java installation is not supported on this host. Install a JDK manually and set `JAVA_HOME`."
     )]
@@ -2369,41 +2430,104 @@ impl Toolchain for Java {
     type Installation = JavaInstallation;
 
     async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
-        if Self::detect_path(host).await.is_some() {
-            Ok(())
-        } else if cfg!(target_os = "windows") {
-            if host.which("winget").await.is_ok() {
-                Err(ToolchainError::fixable(JavaInstallation))
-            } else {
-                Err(ToolchainError::unfixable(
-                    "Java runtime not found and winget is unavailable",
-                    "Install Microsoft App Installer to provide winget, or install a JDK manually and set `JAVA_HOME`.",
-                ))
-            }
-        } else if cfg!(target_os = "macos") {
-            if host.which("brew").await.is_ok() {
-                Err(ToolchainError::fixable(JavaInstallation))
-            } else {
-                Err(ToolchainError::unfixable(
-                    "Java runtime not found and Homebrew is unavailable",
-                    "Install Homebrew to enable automatic fixes, or install a JDK manually and set `JAVA_HOME`.",
-                ))
-            }
-        } else if cfg!(target_os = "linux") {
-            if has_supported_package_manager(host).await {
-                Err(ToolchainError::fixable(JavaInstallation))
-            } else {
-                Err(ToolchainError::unfixable(
-                    "Java runtime not found and no supported package manager was detected",
-                    "Install a JDK manually and set `JAVA_HOME`, then retry.",
-                ))
-            }
+        let Some(java_path) = Self::detect_path(host).await else {
+            return Err(missing_java_error(host).await);
+        };
+        check_java_version(host, &java_path).await
+    }
+}
+
+/// What a host with no usable `java` resolves to: the platform installer
+/// when one exists, otherwise manual steps.
+async fn missing_java_error(host: &Host) -> ToolchainError<JavaInstallation> {
+    if cfg!(target_os = "windows") {
+        missing_java_on_windows(host).await
+    } else if cfg!(target_os = "macos") {
+        if host.which("brew").await.is_ok() {
+            ToolchainError::fixable(JavaInstallation::Brew)
         } else {
-            Err(ToolchainError::unfixable(
-                "Java runtime not found",
-                "Install a JDK manually and set `JAVA_HOME`, then retry.",
-            ))
+            ToolchainError::unfixable(
+                "Java runtime not found and Homebrew is unavailable",
+                format!(
+                    "Download a JDK from https://adoptium.net/temurin/releases/?version={} (or install Homebrew) and set `JAVA_HOME`.",
+                    required_jdk_version()
+                ),
+            )
         }
+    } else if cfg!(target_os = "linux") {
+        if has_supported_package_manager(host).await {
+            ToolchainError::fixable(JavaInstallation::PackageManager)
+        } else {
+            ToolchainError::unfixable(
+                "Java runtime not found and no supported package manager was detected",
+                "Install a JDK manually and set `JAVA_HOME`, then retry.",
+            )
+        }
+    } else {
+        ToolchainError::unfixable(
+            "Java runtime not found",
+            "Install a JDK manually and set `JAVA_HOME`, then retry.",
+        )
+    }
+}
+
+/// The JDK major version `Java::check` enforces — the same
+/// `[package.metadata.waterui-scaffold] android-jdk-version` the
+/// `app/build.gradle.kts` template renders into `JavaVersion.VERSION_*`.
+fn required_jdk_version() -> u32 {
+    build_info::ANDROID_JDK_VERSION.parse().expect(
+        "[package.metadata.waterui-scaffold] android-jdk-version must be a JDK major version",
+    )
+}
+
+/// The feature (major) version `java -version` reports: `openjdk version
+/// "17.0.19"` gives 17; the legacy pre-JEP-223 `1.8` form gives 8.
+fn parse_java_major_version(output: &str) -> Option<u32> {
+    let version = output.split("version \"").nth(1)?.split('"').next()?;
+    let mut segments = version.split(['.', '_', '-']);
+    let major = segments.next()?;
+    if major == "1" {
+        return segments.next()?.parse().ok();
+    }
+    major.parse().ok()
+}
+
+/// The generated Android app compiles at `JavaVersion.VERSION_{required}`, so
+/// the JDK `detect_path` resolved must report at least that major version —
+/// an older one is reported with the version found and the version required
+/// rather than auto-upgraded, because installing a second JDK cannot change
+/// which `java` `JAVA_HOME`/PATH resolves.
+async fn check_java_version(
+    host: &Host,
+    java_path: &Path,
+) -> Result<(), ToolchainError<JavaInstallation>> {
+    let required = required_jdk_version();
+    let found = match host.output(java_path, ["-version"]).await {
+        Ok(output) => parse_java_major_version(&format!(
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )),
+        Err(_) => None,
+    };
+    match found {
+        Some(found) if found >= required => Ok(()),
+        Some(found) => Err(ToolchainError::unfixable(
+            format!(
+                "JDK {required} is required for Android Gradle builds, but {} reports version {found}",
+                java_path.display()
+            ),
+            format!(
+                "Install JDK {required} (https://adoptium.net/temurin/releases/?version={required}) or point JAVA_HOME at a JDK {required} home, then retry."
+            ),
+        )),
+        None => Err(ToolchainError::unfixable(
+            format!(
+                "Could not determine the Java version of {} (`java -version` failed or printed nothing parseable)",
+                java_path.display()
+            ),
+            format!("Point JAVA_HOME at a JDK {required} home, then retry."),
+        )),
     }
 }
 
@@ -2411,24 +2535,26 @@ impl Installation for JavaInstallation {
     type Error = FailToInstallJava;
 
     async fn install(&self, host: &Host) -> Result<(), Self::Error> {
-        if cfg!(target_os = "windows") {
-            ensure_package_installed(host, "Microsoft.OpenJDK.21")
+        match self {
+            Self::Winget => ensure_package_installed(host, "Microsoft.OpenJDK.21")
                 .await
-                .map_err(map_winget_error_for_java)
-        } else if cfg!(target_os = "macos") {
-            let brew = Brew::default();
-            brew.check(host)
+                .map_err(map_winget_error_for_java),
+            Self::Brew => {
+                let brew = Brew::default();
+                brew.check(host)
+                    .await
+                    .map_err(|_| FailToInstallJava::BrewNotFound)?;
+                brew.install_cask(host, "temurin")
+                    .await
+                    .map_err(FailToInstallJava::InstallFailed)
+            }
+            Self::PackageManager => install_java_jdk(host)
                 .await
-                .map_err(|_| FailToInstallJava::BrewNotFound)?;
-            brew.install_cask(host, "temurin")
-                .await
-                .map_err(FailToInstallJava::InstallFailed)
-        } else if cfg!(target_os = "linux") {
-            install_java_jdk(host)
-                .await
-                .map_err(map_linux_error_for_java)
-        } else {
-            Err(FailToInstallJava::UnsupportedPlatform)
+                .map_err(map_linux_error_for_java),
+            Self::Managed(tool) => {
+                tool.install(host).await?;
+                Ok(())
+            }
         }
     }
 }
@@ -2457,8 +2583,12 @@ fn map_winget_error_for_java(error: WingetInstallError) -> FailToInstallJava {
 }
 
 impl Kotlin {
-    /// Detect the path to the kotlinc compiler on `host`.
-    pub async fn detect_path(host: &Host) -> Option<PathBuf> {
+    /// Resolve the Kotlin toolchain on `host`: the first `kotlinc` candidate
+    /// whose `-version` probe reports a version satisfying the required one.
+    ///
+    /// This is the only place the compiler's version is probed — consumers
+    /// take the resolved [`KotlinToolchain`] rather than probing again.
+    pub async fn resolve(host: &Host) -> Option<KotlinToolchain> {
         let required_version = required_kotlin_version();
         let mut candidates = Vec::new();
 
@@ -2525,11 +2655,31 @@ impl Kotlin {
                 continue;
             };
             if kotlin_version_is_compatible(&installed_version, required_version) {
-                return Some(candidate);
+                return Some(KotlinToolchain {
+                    compiler: candidate,
+                });
             }
         }
 
         None
+    }
+
+    /// [`Toolchain::check`] for `Kotlin`, handing back the toolchain it
+    /// resolved so the build that follows consumes it.
+    ///
+    /// # Errors
+    /// Returns the errors [`Toolchain::check`] reports for `Kotlin`.
+    pub async fn verify(
+        host: &Host,
+    ) -> Result<KotlinToolchain, ToolchainError<KotlinInstallation>> {
+        let toolchain = Self::resolve(host)
+            .await
+            .ok_or_else(|| ToolchainError::fixable(KotlinInstallation))?;
+        // Only unix carries an execute bit, so elsewhere finding the file is
+        // the whole check.
+        #[cfg(unix)]
+        Self::reject_non_executable(toolchain.compiler.clone()).await?;
+        Ok(toolchain)
     }
 }
 
@@ -2550,22 +2700,7 @@ impl Toolchain for Kotlin {
     type Installation = KotlinInstallation;
 
     async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
-        let kotlinc_path = Self::detect_path(host)
-            .await
-            .ok_or_else(|| ToolchainError::fixable(KotlinInstallation))?;
-        // Only unix carries an execute bit, so elsewhere finding the file is
-        // the whole check. Both arms are tail expressions rather than an early
-        // `return` under one `cfg`, which would leave the other arm as dead
-        // code on the platform that does compile it.
-        #[cfg(unix)]
-        {
-            Self::reject_non_executable(kotlinc_path).await
-        }
-        #[cfg(not(unix))]
-        {
-            drop(kotlinc_path);
-            Ok(())
-        }
+        Self::verify(host).await.map(|_| ())
     }
 }
 
@@ -2612,7 +2747,7 @@ impl Installation for KotlinInstallation {
         install_managed_kotlin_compiler(host, required_version)
             .await
             .map_err(FailToInstallKotlin::InstallFailed)?;
-        if Kotlin::detect_path(host).await.is_some() {
+        if Kotlin::resolve(host).await.is_some() {
             Ok(())
         } else {
             Err(FailToInstallKotlin::StillMissing)
@@ -2775,8 +2910,10 @@ mod host_tests {
 
     use super::{
         AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
-        AndroidSdkPlatforms, Java, Kotlin, latest_android_platform_package_id,
-        parse_android_platform_api_level, parse_android_version_pair, required_kotlin_version,
+        AndroidSdkPlatforms, Java, Kotlin, latest_android_build_tools_package_id,
+        latest_android_platform_package_id, parse_android_platform_api_level,
+        parse_android_version_pair, required_jdk_version, required_kotlin_version,
+        required_ndk_package_id,
     };
     use crate::toolchain::testing::TestMachine;
     use crate::toolchain::{Host, Toolchain, ToolchainError};
@@ -2845,6 +2982,40 @@ mod host_tests {
         assert_eq!(
             package, "platforms;android-37.1",
             "android-37.1 outranks android-37.0 and android-36.1 (#633)"
+        );
+    }
+
+    #[test]
+    fn sdkmanager_list_accepts_android_cli_columns() {
+        // Real `--list` output captured from cmdline-tools 23.0.0 (the Android
+        // CLI): whitespace-aligned columns and slash-separated ids, so the
+        // parser normalizes them into the `pkg;ver` ids the installers use.
+        let (machine, host) = sdk_machine();
+        machine.install("java");
+        machine.respond(
+            "SDKMANAGER_LIST",
+            include_str!("testdata/sdkmanager_list_android_cli.txt"),
+        );
+        assert_eq!(
+            smol::block_on(latest_android_platform_package_id(&host))
+                .as_deref()
+                .ok(),
+            Some("platforms;android-37.2"),
+            "platforms/android-37.2 is the newest stable platform in the transcript"
+        );
+        assert_eq!(
+            smol::block_on(latest_android_build_tools_package_id(&host))
+                .as_deref()
+                .ok(),
+            Some("build-tools;37.0.0"),
+            "the stable 37.0.0 outranks its 37.0.0-rc previews"
+        );
+        assert_eq!(
+            smol::block_on(required_ndk_package_id(&host))
+                .as_deref()
+                .ok(),
+            Some("ndk;29.0.14206865"),
+            "the pinned NDK resolves through slash-style ids"
         );
     }
 
@@ -3065,6 +3236,10 @@ mod host_tests {
     fn rust_targets_ok_when_all_installed() {
         let machine = TestMachine::new();
         machine.install("rustup");
+        machine.respond(
+            "RUSTUP_ACTIVE_TOOLCHAIN",
+            "stable-x86_64-unknown-fake (default)",
+        );
         // `rustup target list --installed` emits one target per line.
         machine.respond(
             "RUSTUP_INSTALLED_TARGETS",
@@ -3085,6 +3260,10 @@ mod host_tests {
     fn rust_targets_fixable_lists_missing_targets() {
         let machine = TestMachine::new();
         machine.install("rustup");
+        machine.respond(
+            "RUSTUP_ACTIVE_TOOLCHAIN",
+            "stable-x86_64-unknown-fake (default)",
+        );
         let host = machine.host([(
             String::from("WATERUI_FAKE_RUSTUP_INSTALLED_TARGETS"),
             String::from("aarch64-linux-android"),
@@ -3107,14 +3286,62 @@ mod host_tests {
     }
 
     #[test]
+    fn java_ok_when_major_version_satisfies_scaffold() {
+        let machine = TestMachine::new();
+        machine.install("java");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_JAVA_VERSION"),
+            required_jdk_version().to_string(),
+        )]);
+        smol::block_on(Java.check(&host))
+            .expect("a JDK at the scaffold's required major version must be ok");
+    }
+
+    #[test]
+    fn java_too_old_reports_found_and_required_versions() {
+        let machine = TestMachine::new();
+        machine.install("java");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_JAVA_VERSION"),
+            String::from("17.0.19"),
+        )]);
+        let result = smol::block_on(Java.check(&host));
+        let Err(ToolchainError::Unfixable(error)) = result else {
+            panic!("a JDK older than the scaffold requires must fail: {result:?}")
+        };
+        assert!(
+            error.message().contains("17"),
+            "the report names the found version: {}",
+            error.message()
+        );
+        assert!(
+            error
+                .message()
+                .contains(&required_jdk_version().to_string()),
+            "the report names the required version: {}",
+            error.message()
+        );
+    }
+
+    #[test]
     fn java_missing_is_unfixable_without_installer() {
         let machine = TestMachine::new();
         let host = machine.host(Vec::<(String, String)>::new());
         let result = smol::block_on(Java.check(&host));
-        assert!(
-            matches!(result, Err(ToolchainError::Unfixable(_))),
-            "no java and no installer must be unfixable: {result:?}"
-        );
+        // Windows hosts have the managed-Temurin fallback, so a bare Windows
+        // machine is fixable even without winget; elsewhere no package
+        // manager means manual.
+        if cfg!(target_os = "windows") && crate::toolchain::managed_tool::jdk().is_some() {
+            assert!(
+                matches!(result, Err(ToolchainError::Fixable(_))),
+                "no java on Windows without winget falls back to the managed JDK: {result:?}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(ToolchainError::Unfixable(_))),
+                "no java and no installer must be unfixable: {result:?}"
+            );
+        }
     }
 
     #[test]

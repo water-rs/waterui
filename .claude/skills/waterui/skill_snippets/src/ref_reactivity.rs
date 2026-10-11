@@ -359,12 +359,13 @@ pub mod reactivity_block_10 {
     use waterui::prelude::*;
     use waterui::reactive::collection::List as ReactiveList;
 
+    #[state]
     #[derive(Clone)]
     pub struct Editor {
         pub rows: ReactiveList<Row>,
     }
 
-    fn delete_row(ListDelete(index): ListDelete, State(state): State<Editor>) {
+    fn delete_row(ListDelete(index): ListDelete, state: Editor) {
         let _ = state.rows.remove(index);
     }
 
@@ -660,8 +661,8 @@ pub fn reactivity_block_18() -> impl View {
         .action(
             |State(url): State<Binding<Str>>,
              State(blur): State<Binding<f64>>,
-             State(h): State<DynamicHandler>| {
-                let Ok(parsed) = url.get().as_str().parse::<Url>() else {
+             h: DynamicHandler| {
+                let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else {
                     return;
                 };
                 h.set(Photo::new(parsed).blur(blur.clone()));
@@ -715,7 +716,18 @@ pub fn reactivity_block_19() {
     }
     {
         let view = Divider;
-        view.on_change(&query, |new_value| debug!(?new_value));
+        view.on_change(&query, |new_value: Str| debug!(?new_value));
+    }
+    let history: Binding<Vec<Str>> = Binding::container(Vec::new()); // [glue: bound by the prose]
+    {
+        let view = Divider;
+        view.on_change(
+            &query,
+            |new_value: Str, State(history): State<Binding<Vec<Str>>>| {
+                history.append(new_value);
+            },
+        )
+        .state(&history);
     }
 }
 

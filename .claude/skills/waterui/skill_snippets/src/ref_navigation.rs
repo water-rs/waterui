@@ -1,11 +1,15 @@
 //! Snippets from `.claude/skills/waterui/references/navigation.md`, in file
 //! order. Transcription conventions are documented in the crate README.
 
+use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
 
-/// Glue: the app model navigation.md's snippets thread through their views.
+/// Glue: the app's model navigation.md's snippets thread through their views.
+/// `#[state]` marks it an extractor, which `send_draft`'s bare `mail: Mail`
+/// parameter relies on.
+#[state]
 #[derive(Clone)]
 pub struct Mail;
 
@@ -13,7 +17,6 @@ impl Mail {
     fn send_draft(&self) {}
     fn mark_read(&self, _id: u64) {}
 }
-waterui::impl_extractor!(Mail);
 
 /// Glue: the settings route navigation.md refers to.
 #[derive(Clone, PartialEq, Eq)]
@@ -61,6 +64,8 @@ fn now_playing_bar() -> impl View {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Tabs" — rust block 1/13
 // ---------------------------------------------------------------------------
+// navigation.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_01() -> impl View {
     use waterui::navigation::tab_style;
 
@@ -174,7 +179,7 @@ pub fn navigation_extractor_spellings_prose() {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Going back, and destination lifecycle" — rust block 4/13
 // ---------------------------------------------------------------------------
-pub fn send_draft(State(mail): State<Mail>, navigator: Navigator<MailRoute>) {
+pub fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
     mail.send_draft();
     let _ = navigator.pop(); // returns Option<T> and is #[must_use] — bind it
 }
@@ -210,7 +215,7 @@ pub fn navigation_block_06() -> NavigationView {
             .navigation_subtitle(text!("{unread} unread"))
             .searchable(&query, "Search mail") // a field inside the bar, not above the content
             .navigation_pop_enabled(can_leave) // refuse a back gesture reactively
-            .on_navigation_pop_attempted(|State(m): State<SnackbarManager>| {
+            .on_navigation_pop_attempted(|m: SnackbarManager| {
                 m.show(Snackbar::new("Finish the draft first"));
             })
     }
@@ -232,6 +237,8 @@ pub fn navigation_view_new_prose() {
 // navigation.md § "## Toolbars" — rust block 7/13
 // A bare method fragment; applied to a navigation destination receiver.
 // ---------------------------------------------------------------------------
+// navigation.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_07() -> NavigationView {
     use waterui::navigation::{
         NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
@@ -351,15 +358,13 @@ pub fn navigation_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 11/13
+// navigation.md § "## Windows" — rust block 11/14
 // ---------------------------------------------------------------------------
 #[expect(
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn navigation_block_11(env: Environment) -> waterui::app::App {
-    use waterui::app::App;
-
+pub fn navigation_block_11(env: Environment) -> App {
     fn scene() -> impl View {
         text("scene")
     }
@@ -384,36 +389,70 @@ pub fn navigation_block_11(env: Environment) -> waterui::app::App {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`,
-// `.background(..)` with a Color or a Material, `.resizable(bool)`,
-// `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each), and
-// the `WindowState` variants. Not counted as a rust block.
+// navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`
+// with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
+// `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`
+// with a colour and a material, `.background(..)` with a Color or a Material,
+// the three `WindowBackground` variants, `.icon(..)` with a `WindowIcon` or a
+// `Binding<Option<WindowIcon>>`, `set_icon(..)`, `.resizable(bool)`,
+// `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
+// `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
+// `WindowHandle` controls. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
-    use waterui::window::{Window, WindowState, WindowStyle};
+    use waterui::window::{
+        UserAttention, Window, WindowBackground, WindowIcon, WindowLevel, WindowState, WindowStyle,
+    };
 
     let state = binding::<WindowState>(WindowState::default());
 
-    let _ = Window::new("W", state.clone(), || text("c"))
+    let window = Window::new("W", state.clone(), || text("c"))
         .style(WindowStyle::Titled)
         .background(Color::transparent())
         .resizable(true)
         .min_size(Size::new(320.0, 240.0))
-        .max_size(Size::new(1920.0, 1080.0));
-    let _ = Window::new("W", state, || text("c"))
+        .max_size(Size::new(1920.0, 1080.0))
+        .level(WindowLevel::AlwaysOnTop)
+        .resize_increments(Size::new(80.0, 24.0));
+    let handle = window.handle();
+    handle.maximize();
+    handle.request_close();
+    handle.request_attention(UserAttention::Informational);
+    handle.cancel_attention();
+    let _ = Window::new("W", state.clone(), || text("c"))
         .style(WindowStyle::Borderless)
         .background(Material::Regular);
+    let style = binding(WindowStyle::Titled);
+    let background = binding(WindowBackground::Opaque);
+    let window = Window::new("W", state, || text("c"))
+        .style(style.clone())
+        .background(background.clone());
+    window.handle().set_style(WindowStyle::Borderless);
+    window
+        .handle()
+        .set_background(Color::srgb(0, 0, 0).with_opacity(0.8));
+    window.handle().set_background(Material::UltraThin);
+    background.set(WindowBackground::Material(Material::Thin));
+    background.set(WindowBackground::Color(Color::transparent()));
+    let icon = WindowIcon::new(1, 1, vec![255_u8, 0, 0, 255]);
+    let themed_icon = binding(None::<WindowIcon>);
+    let _ = Window::new("W", binding(WindowState::Closed), || text("c")).icon(icon.clone());
+    let window =
+        Window::new("W", binding(WindowState::Closed), || text("c")).icon(themed_icon.clone());
+    window.handle().set_icon(icon);
+    window.handle().set_icon(None);
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;
     let _ = WindowState::Closed;
     let _ = WindowState::Minimized;
+    let _ = WindowState::Maximized;
     let _ = WindowState::Fullscreen;
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 12/13
+// navigation.md § "## Windows" — rust block 12/14
 // ---------------------------------------------------------------------------
 pub fn navigation_block_12() -> impl View {
     use waterui::window::WindowState;
@@ -426,9 +465,39 @@ pub fn navigation_block_12() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows that open and close" — rust block 13/13
+// navigation.md § "## Windows" — rust block 13/14
 // ---------------------------------------------------------------------------
-pub fn navigation_block_13() -> impl View {
+pub fn navigation_block_13() -> waterui::window::Window {
+    fn editor_content() -> impl View {
+        text("editor")
+    }
+
+    use waterui::window::CloseReply;
+    use waterui::window::{Window, WindowState};
+
+    let unsaved = binding(true);
+    // While set, the editor shows a "Discard changes?" prompt whose Discard button
+    // writes `WindowState::Closed` — a close that does not ask again.
+    let confirm_discard = binding(false);
+    let window_state = binding(WindowState::Normal);
+
+    Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
+        let ask = unsaved.snapshot();
+        confirm_discard.set(ask);
+        async move {
+            if ask {
+                CloseReply::Cancel
+            } else {
+                CloseReply::Close
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Windows that open and close" — rust block 14/14
+// ---------------------------------------------------------------------------
+pub fn navigation_block_14() -> impl View {
     fn inspector_content() -> impl View {
         text("inspector")
     }
