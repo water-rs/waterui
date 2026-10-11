@@ -68,8 +68,82 @@ fn scratch_generations_do_not_alias_lifetimes() {
     assert_eq!(plan.images[second.0].generation, 1);
     assert_eq!(plan.materialization(1), None);
     assert_eq!(plan.materialization(3), None);
-    assert_eq!(plan.epoch_at(1).unwrap().passes, 1..3);
-    assert_eq!(plan.epoch_at(3).unwrap().passes, 3..5);
+    // Both generations store into the same part image, back to back, so
+    // one native pass carries them and the second reuses the first's slot.
+    let epoch = plan.epoch_at(1).expect("one epoch covers both generations");
+    assert_eq!(epoch.passes, 1..5);
+    assert_eq!(epoch.slots, 2);
+    let op = |pass: usize| {
+        epoch
+            .ops
+            .iter()
+            .find(|op| op.pass == pass)
+            .expect("every pass of the epoch has an op")
+    };
+    assert_eq!(op(1).target, op(3).target);
+    assert!(op(3).begin);
+}
+
+/// Intervals that store into the same logical image back to back are one
+/// native pass: the output never leaves the executor's slot zero between
+/// them. A clear of that output ends the image, and the pass that clears
+/// it is portable, so neither condition holds across it.
+#[test]
+fn a_cleared_output_separates_two_native_passes() {
+    let frame = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+        pass(Target::Part(0), true, None, 3),
+        pass(Target::Scratch(0), true, None, 4),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 5),
+    ]);
+    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    assert_ne!(plan.targets[2], plan.targets[5]);
+    assert_eq!(plan.epoch_at(1).expect("first epoch").passes, 1..3);
+    assert_eq!(plan.epoch_at(4).expect("second epoch").passes, 4..6);
+    assert_eq!(plan.epochs().count(), 2);
+    assert!(!plan.contains_native_pass(3));
+}
+
+/// A slot a coalesced epoch reuses still holds the previous image's
+/// pixels. The clear the executor draws covers every region the new
+/// image is written over, which with `corresponds` bounding its reads is
+/// what that image's own clear answered before the intervals shared a
+/// pass.
+#[test]
+fn a_reused_slot_clears_every_region_its_image_covers() {
+    let mut passes = vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+        // The second generation opens over a 4×4 corner and is then
+        // written again over 8×8, two passes before it is read.
+        pass(Target::Scratch(0), true, None, 3),
+        pass(Target::Scratch(0), false, None, 4),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 5),
+    ];
+    passes[3].region = [0, 0, 4, 4];
+    passes[4].region = [0, 0, 8, 8];
+    let mut frame = frame(passes);
+    // The read corresponds to the image's own region, as `epoch` demands.
+    frame.instances[5].bounds = [0.0, 0.0, 4.0, 4.0];
+    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    let epoch = plan.epoch_at(1).expect("one epoch covers both generations");
+    assert_eq!(epoch.passes, 1..6);
+    let op = |pass: usize| {
+        epoch
+            .ops
+            .iter()
+            .find(|op| op.pass == pass)
+            .expect("every pass of the epoch has an op")
+    };
+    assert_eq!(op(1).target, op(3).target);
+    // The reuse clears all 8×8 the epoch writes the image over, not just
+    // the 4×4 the opening draw covers.
+    assert!(op(3).begin);
+    assert_eq!(op(3).clear_region, [0, 0, 8, 8]);
+    assert_eq!(plan.materialization(3), None);
 }
 
 #[test]
