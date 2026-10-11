@@ -679,15 +679,16 @@ struct OpaqueOut {
     @location(0) @interpolate(flat) color: vec3<f32>,
 }
 
-// Coverage replay needs only the original local/atlas coordinate, the
-// instance identity, and the conservative ellipse bounds. Pull the uniform
-// primitive fields in the fragment stage instead of duplicating them in
-// every vertex's rasterizer payload.
+// Coverage replay carries the original local/atlas coordinate, instance
+// identity and kind, and the conservative ellipse bounds and radii. Other
+// primitive fields are loaded only by fragments that need them.
 struct PartialOut {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
     @location(1) @interpolate(flat) instance: u32,
-    @location(2) @interpolate(flat) coverage: vec2<f32>,
+    // xy: squared inner/outer ellipse bounds; zw: ellipse radii, or zero.
+    @location(2) @interpolate(flat) coverage: vec4<f32>,
+    @location(3) @interpolate(flat) kind: u32,
 }
 
 @vertex
@@ -751,19 +752,22 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     out.position.z = bitcast<f32>(0x3e000000u + ii * 8u);
     let inst = instances[ii];
     let s = inst.shape;
+    var coverage = vec4<f32>(out.affine1.zw, vec2<f32>(0.0));
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
         let m = inst.affine[0];
         let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
         let h = 0.5 * device_grad_scale(inst.affine) * vec2<f32>(abs(m.w) + abs(m.z), abs(m.y) + abs(m.x));
         let margin = length(h) / min(r.x, r.y);
-        out.affine1.z = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
-        out.affine1.w = (1.0 + margin) * (1.0 + margin);
+        coverage.x = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
+        coverage.y = (1.0 + margin) * (1.0 + margin);
+        coverage.z = r.x;
+        coverage.w = r.y;
     }
     if opaque_span(instances[ii]) {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
-    return PartialOut(out.position, local, ii, out.affine1.zw);
+    return PartialOut(out.position, local, ii, coverage, inst.meta_.x);
 }
 
 @fragment
@@ -774,7 +778,7 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     var cov: f32;
-    switch instances[in.instance].meta_.x {
+    switch in.kind {
         case KIND_GLYPH, KIND_REGION: {
             cov = textureLoad(atlas, vec2<i32>(floor(in.local)), 0).r;
         }
@@ -796,10 +800,8 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
 }
 
 fn partial_shape_coverage(in: PartialOut) -> f32 {
-    let s = instances[in.instance].shape;
     if in.coverage.y > 0.0 {
-        let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
-        let u = abs(in.local) / r;
+        let u = abs(in.local) / in.coverage.zw;
         let rr = dot(u, u);
         if rr < in.coverage.x {
             return 1.0;
@@ -808,6 +810,7 @@ fn partial_shape_coverage(in: PartialOut) -> f32 {
             return 0.0;
         }
     }
+    let s = instances[in.instance].shape;
     return shape_coverage(s, in.local, instances[in.instance].affine, true);
 }
 
