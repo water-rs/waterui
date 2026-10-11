@@ -663,7 +663,7 @@ impl Atlas {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        cells: &[CellWrite],
+        cells: &CellWrites,
     ) {
         if cells.is_empty() {
             return;
@@ -672,7 +672,7 @@ impl Atlas {
         let n = self.layout.shelves.len();
         self.bucket_counts.clear();
         self.bucket_counts.resize(n, 0);
-        for cell in cells {
+        for cell in cells.cells() {
             self.bucket_counts[cell.shelf] += 1;
         }
         self.bucket_next.clear();
@@ -683,7 +683,7 @@ impl Atlas {
         }
         self.bucket_order.clear();
         self.bucket_order.resize(cells.len(), 0);
-        for (idx, cell) in cells.iter().enumerate() {
+        for (idx, cell) in cells.cells().iter().enumerate() {
             let slot = cell.shelf;
             self.bucket_order[self.bucket_next[slot] as usize] =
                 u32::try_from(idx).expect("upload batch fits u32");
@@ -704,22 +704,26 @@ impl Atlas {
             // texels without assembly.
             let single = match bucket {
                 &[idx] => {
-                    let cell = &cells[idx as usize];
+                    let cell = &cells.cells()[idx as usize];
                     (cell.x == x0 && cell.w == w && cell.h == h).then_some(cell)
                 }
                 _ => None,
             };
             let data: &[u8] = if let Some(cell) = single {
                 crate::diag::atlas_cell(device, (cell.x, cell.y, cell.w, cell.h));
-                cell.texels.as_slice()
+                cells.texels(cell)
             } else {
                 self.upload_scratch.clear();
                 self.upload_scratch.resize((w * h) as usize, 0);
                 for &idx in bucket {
-                    let cell = &cells[idx as usize];
+                    let cell = &cells.cells()[idx as usize];
                     let xo = (cell.x - x0) as usize;
                     let yo = (cell.y - shelf.y) as usize;
-                    for (row, line) in cell.texels.chunks_exact(cell.w as usize).enumerate() {
+                    for (row, line) in cells
+                        .texels(cell)
+                        .chunks_exact(cell.w as usize)
+                        .enumerate()
+                    {
                         let dst = (yo + row) * w as usize + xo;
                         self.upload_scratch[dst..dst + cell.w as usize].copy_from_slice(line);
                     }
@@ -1213,7 +1217,7 @@ impl Atlas {
         h: u32,
         texels: &[u8],
     ) -> Option<(u32, u32)> {
-        let mut uploads = Vec::new();
+        let mut uploads = CellWrites::default();
         let hit = self.get(&key).is_some();
         self.begin_commit(&[]);
         let out = self.place_glyph(key, left, top, w, h, texels.to_vec(), &mut uploads);
@@ -1246,7 +1250,7 @@ impl Atlas {
         w: u32,
         h: u32,
         texels: Vec<u8>,
-        writes: &mut Vec<CellWrite>,
+        writes: &mut CellWrites,
     ) -> Option<((u32, u32), Option<u32>)> {
         if let Some(cached) = self.map.get(&key).copied() {
             // A pending raster can hit a cold entry the lowering never
@@ -1294,21 +1298,25 @@ impl Atlas {
             },
         );
         self.slot_keys[slot].insert(hk);
+        let len = texels.len();
+        let arena = writes.push_arena(texels);
         writes.push(CellWrite {
             shelf: slot,
             x: cx,
             y: cy,
             w,
             h,
-            texels,
+            arena,
+            texels: 0..len,
         });
         Some(((cx, cy), Some(cell_shelf)))
     }
 
     /// The [`Self::store_path`] placement half: allocates each cell and
-    /// patches its origin without uploading; texels move into `writes`
-    /// (#169 A3). `None` when a cell does not fit — the caller plans
-    /// first.
+    /// patches its origin without uploading; `arena` is the batch's
+    /// texel arena the cells' byte ranges index, already staged in
+    /// `writes` (#169 A3). `None` when a cell does not fit — the caller
+    /// plans first.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "atlas cells fit u16: the atlas is at most 64kpx per axis"
@@ -1318,7 +1326,8 @@ impl Atlas {
         key: u64,
         emit: PathEmit,
         cells: Vec<CellTexels>,
-        writes: &mut Vec<CellWrite>,
+        arena: u32,
+        writes: &mut CellWrites,
     ) -> Option<()> {
         if let Some(emit) = self.paths.get(&key) {
             // Same: the hit's bands may be cold — pin them or a later
@@ -1346,6 +1355,7 @@ impl Atlas {
                 y: cy,
                 w,
                 h,
+                arena,
                 texels,
             });
         }
@@ -1377,7 +1387,7 @@ impl Atlas {
         h: u32,
         texels: &[u8],
     ) -> Option<()> {
-        let mut uploads = Vec::new();
+        let mut uploads = CellWrites::default();
         self.begin_commit(&[]);
         let out = self.place_mask(key, mask, w, h, texels.to_vec(), &mut uploads);
         self.upload_committed(device, queue, &uploads);
@@ -1398,7 +1408,7 @@ impl Atlas {
         w: u32,
         h: u32,
         texels: Vec<u8>,
-        writes: &mut Vec<CellWrite>,
+        writes: &mut CellWrites,
     ) -> Option<()> {
         if let Some(mask) = self.masks.get(&key) {
             // Same: pin the slot so this commit cannot evict it (#119).
@@ -1417,13 +1427,16 @@ impl Atlas {
         );
         self.slot_keys[slot].insert(key);
         self.insert_mask(key, mask);
+        let len = texels.len();
+        let arena = writes.push_arena(texels);
         writes.push(CellWrite {
             shelf: slot,
             x: cx,
             y: cy,
             w,
             h,
-            texels,
+            arena,
+            texels: 0..len,
         });
         Some(())
     }
@@ -1939,8 +1952,9 @@ struct CellRaster {
     texels: Vec<u8>,
 }
 
-/// One path cell's raster pending its atlas origin: `(w, h, texels)`.
-pub type CellTexels = (u32, u32, Vec<u8>);
+/// One path cell's raster pending its atlas origin: `(w, h, texels)` —
+/// `texels` a byte range of the lowering batch's arena, `w * h` long.
+pub type CellTexels = (u32, u32, Range<usize>);
 
 /// A committed cell's texels, uploaded with its shelf's newly
 /// allocated region rather than on its own (#169 A3).
@@ -1955,8 +1969,86 @@ pub struct CellWrite {
     pub w: u32,
     /// Cell height in texels.
     pub h: u32,
-    /// `w` × `h` coverage texels.
-    pub texels: Vec<u8>,
+    /// The [`CellWrites`] arena `texels` indexes.
+    pub arena: u32,
+    /// `w` × `h` coverage texels as a byte range of `arena`.
+    pub texels: Range<usize>,
+}
+
+/// One commit's staged atlas writes and the texel arenas their byte
+/// ranges index: one arena per lowering batch for path cells, one
+/// owned raster per glyph or mask write.
+///
+/// An arena's bytes are consumed by [`Atlas::upload_committed`], which
+/// copies them into the upload ring's GPU staging — so the arenas live
+/// inside this container until the commit's upload has run. `clear`
+/// then moves the emptied buffers into `spares`, and the next commit's
+/// lowering batches refill them via `take_spares`: a byte buffer is
+/// reused only after the upload consumed it, and CPU buffers never
+/// alias the ring's in-flight staging copies, whose lifetime is the
+/// ring's (see `upload.rs`).
+#[derive(Default)]
+pub struct CellWrites {
+    /// Texel arenas the staged `texels` ranges index.
+    arenas: Vec<Vec<u8>>,
+    /// The staged writes in commit order.
+    cells: Vec<CellWrite>,
+    /// Arena buffers `clear` emptied, ready to seed new lowering
+    /// batches with their capacity intact.
+    spares: Vec<Vec<u8>>,
+}
+
+impl CellWrites {
+    /// Moves `arena` in and returns its index for [`CellWrite::arena`].
+    pub fn push_arena(&mut self, arena: Vec<u8>) -> u32 {
+        let idx = u32::try_from(self.arenas.len()).expect("commit arenas fit u32");
+        self.arenas.push(arena);
+        idx
+    }
+
+    /// Pops up to `n` cleared arena buffers for reuse as new lowering
+    /// batches' texel arenas.
+    pub fn take_spares(&mut self, n: usize) -> Vec<Vec<u8>> {
+        self.spares
+            .drain(self.spares.len().saturating_sub(n)..)
+            .collect()
+    }
+
+    /// Stages a write.
+    pub fn push(&mut self, cell: CellWrite) {
+        self.cells.push(cell);
+    }
+
+    /// The staged writes in commit order.
+    pub fn cells(&self) -> &[CellWrite] {
+        &self.cells
+    }
+
+    /// The staged write count.
+    pub const fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Whether the commit staged no writes.
+    pub const fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    /// Clears the staged writes; the emptied arena buffers pool in
+    /// `spares` for the next commit's lowering batches rather than
+    /// freeing.
+    pub fn clear(&mut self) {
+        self.cells.clear();
+        self.spares.extend(self.arenas.drain(..).map(|mut arena| {
+            arena.clear();
+            arena
+        }));
+    }
+
+    /// The cell's `w` × `h` texel bytes.
+    pub fn texels(&self, cell: &CellWrite) -> &[u8] {
+        &self.arenas[cell.arena as usize][cell.texels.clone()]
+    }
 }
 
 /// The batch placement decision [`Atlas::plan`] reaches (#169 A3).
@@ -2014,7 +2106,7 @@ pub enum PendingRaster {
         texels: Vec<u8>,
     },
     /// A path emission whose cells were rasterized cell by cell; each
-    /// entry of `cells` pairs one `(w, h, texels)` with the cell in
+    /// entry of `cells` pairs one `(w, h, byte range)` with the cell in
     /// `emit` at the same index.
     Path {
         /// The content-hash key.
@@ -2022,7 +2114,8 @@ pub enum PendingRaster {
         /// Spans and cells; each cell's `x`/`y` is set when it is
         /// stored.
         emit: PathEmit,
-        /// Per-cell `(width, height, texels)` in emission order.
+        /// Per-cell `(width, height, byte range)` in emission order,
+        /// indexing the lowering batch's texel arena.
         cells: Vec<CellTexels>,
     },
     /// A path-clip mask; `mask.atlas` is set when it is stored.
@@ -2605,7 +2698,7 @@ mod tests {
         };
         let (space, ink) = (key(3), key(4));
         let other = GlyphKey { font: 8, ..ink };
-        let mut writes = Vec::new();
+        let mut writes = CellWrites::default();
         // One batch on an empty layout: the outline-less glyph twice
         // before any cell opens a shelf.
         atlas.begin_commit(&[]);
@@ -2740,7 +2833,7 @@ mod tests {
         // must reclaim B's band rather than any pinned shelf.
         atlas.begin_commit(&[slot_a, slot_c, slot_e]);
         atlas.enable_evicting();
-        let mut writes = Vec::new();
+        let mut writes = CellWrites::default();
         let key_d = key(4);
         assert!(
             atlas
@@ -2987,7 +3080,10 @@ mod tests {
                     .collect(),
                 ..PathEmit::default()
             },
-            cells: vec![(cw, ch, vec![0x80; (cw * ch) as usize]); count],
+            cells: {
+                let n = (cw * ch) as usize;
+                (0..count).map(|i| (cw, ch, i * n..(i + 1) * n)).collect()
+            },
         };
         let refs = [&raster];
         let AtlasPlan::Resize(size, pages) = atlas.plan(&refs) else {
@@ -2996,12 +3092,13 @@ mod tests {
         assert!(size >= 2048, "the grown edge must take a 1600-wide cell");
         atlas.resize_to(&device, size, pages);
         atlas.begin_commit(&[]);
-        let mut writes = Vec::new();
+        let mut writes = CellWrites::default();
         let PendingRaster::Path { key, emit, cells } = raster else {
             unreachable!("path pending only")
         };
+        let arena = writes.push_arena(vec![0x80; (cw * ch) as usize * count]);
         assert!(
-            atlas.place_path(key, emit, cells, &mut writes).is_some(),
+            atlas.place_path(key, emit, cells, arena, &mut writes).is_some(),
             "every cell of a batch that grew for its edge must place"
         );
     }
@@ -3036,7 +3133,7 @@ mod tests {
                     .collect(),
                 ..PathEmit::default()
             },
-            cells: vec![(cw, ch, vec![0x80; (cw * ch) as usize]); count],
+            cells: vec![(cw, ch, 0..(cw * ch) as usize); count],
         };
         let refs = [&raster];
         assert!(
