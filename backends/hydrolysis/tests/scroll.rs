@@ -15,7 +15,7 @@ mod support;
 
 use accesskit::Role;
 use support::{
-    mount_rendered, mount_semantic, node, node_bounds, node_bounds_with_role, node_id,
+    f64_as_f32, mount_rendered, mount_semantic, node, node_bounds, node_bounds_with_role, node_id,
     node_label_exists, nodes,
 };
 use waterui::View;
@@ -309,8 +309,8 @@ fn a_nested_scroll_reports_its_content_extent_and_scrolls_the_last_chip_in() {
     app.pump_for(std::time::Duration::from_secs(1));
     let archive = node_bounds(app.tree(), "Archive");
     let viewport = nodes(app.tree())
-        .find_map(|(_, node)| (node.label() == Some("chip-rail")).then(node))
-        .and_then(|node| node.bounds())
+        .find_map(|(_, node)| (node.label() == Some("chip-rail")).then_some(node))
+        .and_then(accesskit::Node::bounds)
         .expect("the rail viewport carries bounds");
     assert!(
         archive.x0 >= viewport.x0 - 0.1

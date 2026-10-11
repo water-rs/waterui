@@ -1554,10 +1554,8 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
         covered.y0 + covered.height() > KEYBOARD_TOP + 1.0,
         "precondition: the field starts under the keyboard band, got {covered:?}"
     );
-    {
-        let id = node_id_with_role(app.tree(), Role::TextInput, "Message");
-        app.focus_quiet(id);
-    }
+    let field = node_id_with_role(app.tree(), Role::TextInput, "Message");
+    app.focus_quiet(field);
     app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 

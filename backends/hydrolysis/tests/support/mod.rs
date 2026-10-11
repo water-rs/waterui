@@ -658,10 +658,7 @@ impl RenderedApp {
 
     /// A primary-pointer drag between two viewport points in `steps`
     /// segments.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "step counts are far below 2^24"
-    )]
+    #[expect(clippy::cast_precision_loss, reason = "step counts are far below 2^24")]
     pub fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32, steps: u32) {
         let steps = steps.max(1);
         self.runtime.push_input_event(InputEvent::PointerDown {
@@ -707,10 +704,7 @@ impl RenderedApp {
     /// observable to [`Self::pump_for`] and [`Self::snapshot`]. `kind` is the
     /// pointer kind every event carries; `Touch` is what a real device's
     /// finger produces.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "step counts are far below 2^24"
-    )]
+    #[expect(clippy::cast_precision_loss, reason = "step counts are far below 2^24")]
     #[expect(
         clippy::too_many_arguments,
         reason = "a drag is four coordinates plus its step count, pacing and pointer kind"
@@ -756,10 +750,7 @@ impl RenderedApp {
 
     /// A primary-pointer drag between two viewport points, touch-kind for
     /// the touch-scroll path.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "step counts are far below 2^24"
-    )]
+    #[expect(clippy::cast_precision_loss, reason = "step counts are far below 2^24")]
     pub fn touch_drag_from_to(
         &mut self,
         from_x: f32,

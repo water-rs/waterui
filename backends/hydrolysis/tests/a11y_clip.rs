@@ -265,8 +265,11 @@ fn a_list_row_straddling_the_viewport_edge_activates_its_retained_action() {
 
     let list = node_bounds_with_role(&tree, AccessibilityRole::List);
     let row = node_bounds(&tree, &row_label(1));
+    // The clip edge lies strictly inside the row's extent: the row
+    // straddles it, so its logical bounds run past both sides.
+    let clip_cuts_row_interior = list.y0 - row.y0 > 0.0 && row.y1 - list.y0 > 0.0;
     assert!(
-        row.y0 < list.y0 && list.y0 < row.y1,
+        clip_cuts_row_interior,
         "the straddling row reports its full logical bounds: row={row:?} list={list:?}"
     );
 
@@ -331,8 +334,11 @@ fn a_list_row_partially_straddling_resolves_a_point_inside_the_strip() {
 
     let list = node_bounds_with_role(&tree, AccessibilityRole::List);
     let row = node_bounds(&tree, &row_label(1));
+    // The clip edge lies strictly inside the row's extent: the row
+    // straddles it, so its logical bounds run past both sides.
+    let clip_cuts_row_interior = list.y0 - row.y0 > 0.0 && row.y1 - list.y0 > 0.0;
     assert!(
-        row.y0 < list.y0 && list.y0 < row.y1,
+        clip_cuts_row_interior,
         "the straddling row reports its full logical bounds: row={row:?} list={list:?}"
     );
     let straddled = node_id(&tree, &row_label(1));

@@ -72,7 +72,7 @@ fn assert_image_node<V: waterui::View>(
     case: &str,
     label: &str,
 ) {
-    let mut app = mount_rendered(Environment::new(), move || view(), 320, 240);
+    let mut app = mount_rendered(Environment::new(), view, 320, 240);
     app.settle();
     let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, label);
     assert!(bounds.width() > 0.0, "{case}: width must be positive");
@@ -117,7 +117,7 @@ fn a_picture_offers_its_own_name() {
 
 #[test]
 fn the_application_label_wins_over_the_pictures_own() {
-    let mut app = mount_rendered(Environment::new(), || renamed_picture_view(), 320, 240);
+    let mut app = mount_rendered(Environment::new(), renamed_picture_view, 320, 240);
     app.settle();
     let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, "Severe weather");
     assert!(
@@ -145,12 +145,7 @@ fn decorative_background_view() -> impl waterui::View {
 
 #[test]
 fn an_unlabelled_background_fill_emits_no_accessibility_node() {
-    let mut app = mount_rendered(
-        Environment::new(),
-        || decorative_background_view(),
-        320,
-        240,
-    );
+    let mut app = mount_rendered(Environment::new(), decorative_background_view, 320, 240);
     app.settle();
     assert!(
         !nodes(app.tree()).any(|(_, node)| node.role() == accesskit::Role::Image),
@@ -167,7 +162,7 @@ fn decorative_shape_view() -> impl waterui::View {
 
 #[test]
 fn an_unlabelled_shape_fill_emits_no_accessibility_node() {
-    let mut app = mount_rendered(Environment::new(), || decorative_shape_view(), 320, 240);
+    let mut app = mount_rendered(Environment::new(), decorative_shape_view, 320, 240);
     app.settle();
     assert!(
         !nodes(app.tree()).any(|(_, node)| node.role() == accesskit::Role::Image),
@@ -202,7 +197,7 @@ fn image_role_shape_view() -> impl waterui::View {
 
 #[test]
 fn an_explicit_image_role_keeps_the_shape_in_the_tree() {
-    let mut app = mount_rendered(Environment::new(), || image_role_shape_view(), 320, 240);
+    let mut app = mount_rendered(Environment::new(), image_role_shape_view, 320, 240);
     app.settle();
     assert!(
         nodes(app.tree()).any(|(_, node)| node.role() == accesskit::Role::Image),

@@ -69,6 +69,8 @@ mod test_style {
     use waterui_graphics::draw::{Paint, Recorder};
     use waterui_text::font::Font;
 
+    type TokenInstaller = std::sync::Arc<dyn Fn(&mut Environment) + Send + Sync>;
+
     /// The smallest [`crate::Style`] a rendered mount can run under.
     ///
     /// `TestStyle` exists for tests whose subject is the backend's own
@@ -81,8 +83,6 @@ mod test_style {
     /// `install_tokens` is a no-op by default; a test that probes the token
     /// layer supplies its own installer through [`Self::with_token_installer`]
     /// instead of re-implementing [`WidgetTheme`].
-    type TokenInstaller = std::sync::Arc<dyn Fn(&mut Environment) + Send + Sync>;
-
     #[derive(Clone)]
     pub struct TestStyle {
         token_installer: Option<TokenInstaller>,

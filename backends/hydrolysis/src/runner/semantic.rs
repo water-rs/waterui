@@ -744,9 +744,8 @@ mod tests {
     //! accesskit tree with no GPU, no style, no layout and no encode, and
     //! accessibility actions drive widget state directly.
     //!
-    //! These cannot run until `waterui-testing` (a dev-dependency every test
-    //! target links) carries the `waterui#1125` driver side; the identical
-    //! flow is verified against the public API in an external scratch crate.
+    //! They run without `waterui-testing` — Hydrolysis's own tests stay on
+    //! its own API (water-rs/waterui#1673).
 
     use super::*;
     use accesskit::{Action, ActionRequest, Node as AccessibilityNode, NodeId, Role, TreeId};
