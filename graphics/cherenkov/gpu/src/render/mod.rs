@@ -7437,6 +7437,14 @@ impl GpuRenderer {
         }
         surf.inst_base = inst_base;
         surf.globals_base = globals_base;
+        // Appended `KIND_POLYGON` slots store the painter index locally;
+        // shift it into the shared frame buffer's coordinates.
+        for range in surf.frame.passes.iter().flat_map(|p| p.tier_ranges.iter()) {
+            for index in range.clone() {
+                let inst = &mut surf.frame.instances[usize::try_from(index).unwrap_or(usize::MAX)];
+                inst.grad[0] = f32::from_bits(inst.grad[0].to_bits() + inst_base);
+            }
+        }
         {
             let atlas = &self.atlas;
             if atlas.generation() != self.bound_atlas {
@@ -8272,6 +8280,15 @@ impl GpuRenderer {
                         (inst_base + range.instances.start)..(inst_base + range.instances.end),
                     );
                     stats.draws += 1;
+                }
+                for (tier, range) in pass.tier_ranges.iter().enumerate() {
+                    if !range.is_empty() {
+                        render_pass.draw(
+                            0..(16u32 << tier),
+                            (inst_base + range.start)..(inst_base + range.end),
+                        );
+                        stats.draws += 1;
+                    }
                 }
                 render_pass.set_pipeline(coverage_pipeline(
                     &mut self.coverage_pipelines,
