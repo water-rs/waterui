@@ -234,6 +234,16 @@ jobs:
       - name: Clippy (cherenkov-scene generator)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-scene')
         run: cargo clippy --locked --profile ci-check -p cherenkov-scene --all-targets --features generator -- -D warnings
+      # cherenkov-bench's test targets sit behind the adapter features:
+      # the default-feature workspace pass never enables them, and the
+      # `--all-features` sweep excludes the bench crate (`skia-metal` is
+      # Apple-only), so only the `full`-only `cherenkov-corpus` leg
+      # compiled them — a scene-type field addition broke them silently
+      # (#2559). `check --tests` is the cheap compile on this job's
+      # already-built graph.
+      - name: Check (cherenkov-bench test targets)
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-bench')
+        run: cargo check --locked --profile ci-check -p cherenkov-bench --tests --features cherenkov,cherenkov-cpu
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
