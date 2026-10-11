@@ -217,7 +217,10 @@ struct LamePoint {
 
 fn lame_point(r: vec2<f32>, n: f32, w: f32) -> LamePoint {
     // w^(n-2) is 1 at w = 0 for an ellipse (n = 2) and 0 for n > 2.
-    let wm2 = pow(max(w, 1e-30), n - 2.0);
+    var wm2 = 1.0;
+    if n != 2.0 {
+        wm2 = pow(max(w, 1e-30), n - 2.0);
+    }
     let p = w * wm2;
     let one = 1.0 + w * p;
     let s = pow(one, -1.0 / n);
@@ -574,8 +577,6 @@ fn corner_coverage(a: vec2<f32>, v1: vec2<f32>, v2: vec2<f32>, scale: f32) -> f3
 
 // Coverage of the shape `s` at local point `p`, `m` mapping local to device.
 fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> f32 {
-    let sample = sdf_sample(s, p, specialize_quadratic);
-    let g = sample.gradient;
     // A sharp corner inside this pixel: the exact area inside both
     // half-planes. `a`, `sgn`, and the quadrant radius mirror `sdf_sample`;
     // the strict `<` keeps a corner exactly on a pixel boundary on the
@@ -601,6 +602,8 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_qua
             return corner_coverage(a, v1, v2, scale);
         }
     }
+    let sample = sdf_sample(s, p, specialize_quadratic);
+    let g = sample.gradient;
     return coverage_dir(
         sample.distance,
         device_grad_vec(m, g.xy),
