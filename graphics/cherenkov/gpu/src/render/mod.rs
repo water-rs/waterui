@@ -5794,7 +5794,6 @@ impl GpuRenderer {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[expect(clippy::too_many_lines)]
     fn lower_all(
         &mut self,
         pending: &mut [SurfaceState],
@@ -5818,15 +5817,6 @@ impl GpuRenderer {
                 .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
                 .collect();
             let producers = &currents;
-            // Each lowering batch seeds its texel arena from the buffers
-            // the last commit's `CellWrites::clear` emptied — only after
-            // the atlas upload consumed them — so steady frames refill
-            // pooled capacity instead of allocating afresh. Parallel
-            // lowering keeps one arena per worker.
-            let mut arena_seeds = self
-                .commit_writes
-                .take_spares(pending.len())
-                .into_iter();
             let mut results: Vec<Result<Lowered, RenderError>> = if pending.len() > 1 {
                 let (atlas, images, bitmaps) = (&self.atlas, &self.images, &self.bitmaps);
                 // `FontData`'s COLR cache is a `RefCell` — !Sync — so
@@ -5847,7 +5837,6 @@ impl GpuRenderer {
                         .zip(frames)
                         .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                         .map(|(((surf, fonts), frame), ((groups, inputs), ready))| {
-                            let arena = arena_seeds.next().unwrap_or_default();
                             s.spawn(move || {
                                 Self::lower_content(
                                     surf,
@@ -5862,7 +5851,6 @@ impl GpuRenderer {
                                     groups,
                                     inputs,
                                     ready,
-                                    arena,
                                 )
                             })
                         })
@@ -5890,7 +5878,6 @@ impl GpuRenderer {
                             groups,
                             inputs,
                             ready,
-                            arena_seeds.next().unwrap_or_default(),
                         )
                     })
                     .collect()
@@ -5944,10 +5931,6 @@ impl GpuRenderer {
                 .filter_map(|(id, producer)| producer.current().map(|slot| (*id, slot)))
                 .collect();
             let producers = &currents;
-            let mut arena_seeds = self
-                .commit_writes
-                .take_spares(pending.len())
-                .into_iter();
             let mut results: Vec<Result<Lowered, RenderError>> = pending
                 .iter_mut()
                 .zip(frames)
@@ -5966,7 +5949,6 @@ impl GpuRenderer {
                         groups,
                         inputs,
                         ready,
-                        arena_seeds.next().unwrap_or_default(),
                     )
                 })
                 .collect();
@@ -6285,7 +6267,6 @@ impl GpuRenderer {
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         inputs: &projective::Inputs,
         ready: &FxHashSet<LayerId>,
-        path_arena: Vec<u8>,
     ) -> Result<Lowered, RenderError> {
         surf.frame.reset();
         surf.plan_dirty = false;
@@ -6327,7 +6308,6 @@ impl GpuRenderer {
                 content: &surf.bindings,
             };
             let mut lowering = Lowering::new(&mut surf.frame, surf.size, &mut surf.anchor_scratch);
-            lowering.path_arena = path_arena;
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
@@ -6752,7 +6732,7 @@ impl GpuRenderer {
         let pending = std::mem::take(&mut lowered.pending);
         // The batch's texel arena moves into the commit's writes, which
         // keep it alive until the upload below has consumed its bytes.
-        let arena = writes.push_path_arena(std::mem::take(&mut lowered.path_arena));
+        let arena = writes.push_arena(std::mem::take(&mut lowered.path_arena));
         let mut origins = std::mem::take(&mut self.pending_origins);
         origins.clear();
         for raster in pending {
