@@ -5,6 +5,7 @@ mod bitmap;
 mod colr;
 #[cfg(target_vendor = "apple")]
 mod composite;
+pub mod composition;
 pub mod diag;
 #[cfg(target_os = "linux")]
 pub mod dmabuf_export;
@@ -4353,7 +4354,7 @@ impl GpuRenderer {
             for sf in &dirty {
                 let count = self.frame_pass_count;
                 let meta = self.pass_meta.len();
-                if let Err(error) = self.encode_surface(sf.id, timing, stats) {
+                if let Err(error) = self.encode_surface(sf.id, frame.id, timing, stats) {
                     self.frame_pass_count = count;
                     self.pass_meta.truncate(meta);
                     result = Err(error);
@@ -4509,7 +4510,7 @@ impl GpuRenderer {
             for sf in &dirty {
                 let count = self.frame_pass_count;
                 let meta = self.pass_meta.len();
-                if let Err(error) = self.encode_surface(sf.id, timing, stats) {
+                if let Err(error) = self.encode_surface(sf.id, frame.id, timing, stats) {
                     self.frame_pass_count = count;
                     self.pass_meta.truncate(meta);
                     result = Err(error);
@@ -7028,9 +7029,12 @@ impl GpuRenderer {
         let mut region_max = vec![(0u32, 0u32); max_scratch];
         let passes = surf.frame.passes.iter();
         #[cfg(target_vendor = "apple")]
-        let passes = passes
-            .enumerate()
-            .filter_map(|(index, pass)| surf.composition.materialized_pass(index).then_some(pass));
+        let passes = passes.enumerate().filter_map(|(index, pass)| {
+            surf.composition
+                .materialization(index)
+                .is_some()
+                .then_some(pass)
+        });
         for pass in passes {
             if let Target::Scratch(i) = pass.target {
                 region_max[i].0 = region_max[i].0.max(pass.region[2]);
@@ -7706,6 +7710,17 @@ impl GpuRenderer {
     fn encode_surface(
         &mut self,
         id: SurfaceId,
+        // The frame this surface is encoded for: the composition
+        // attribution's key (#2547), which only the on-chip composition
+        // backend records.
+        #[cfg_attr(
+            not(target_vendor = "apple"),
+            expect(
+                unused_variables,
+                reason = "composition attribution is reported where the planner runs"
+            )
+        )]
+        frame: cherenkov::FrameId,
         timing: filtrate::EffectFrameTiming,
         stats: &mut FrameStats,
     ) -> Result<(), RenderError> {
@@ -7838,6 +7853,12 @@ impl GpuRenderer {
         // `write_uploads` lays them out in pass and level order after the
         // pass slots.
         let mut reduce_slot = 0u32;
+        // Composition attribution (#2547) collects only with a sink
+        // installed; the flag is the whole cost of the disabled path.
+        #[cfg(target_vendor = "apple")]
+        let attribute = self.config.composition_diag.is_some();
+        #[cfg(target_vendor = "apple")]
+        let mut tile_pipelines = Vec::new();
         while i < surf.frame.passes.len() {
             #[cfg(target_vendor = "apple")]
             if let Some(epoch) = surf.composition.epoch_at(i) {
@@ -7866,15 +7887,20 @@ impl GpuRenderer {
                     },
                     surf,
                     i,
-                    &mut encoder,
-                    self.query_set
-                        .as_ref()
-                        .map(|query_set| wgpu::RenderPassTimestampWrites {
-                            query_set,
-                            beginning_of_pass_write_index: Some(self.query_base + 2 * pass_index),
-                            end_of_pass_write_index: Some(self.query_base + 2 * pass_index + 1),
+                    composite::metal::Recording {
+                        encoder: &mut encoder,
+                        timestamps: self.query_set.as_ref().map(|query_set| {
+                            wgpu::RenderPassTimestampWrites {
+                                query_set,
+                                beginning_of_pass_write_index: Some(
+                                    self.query_base + 2 * pass_index,
+                                ),
+                                end_of_pass_write_index: Some(self.query_base + 2 * pass_index + 1),
+                            }
                         }),
-                    stats,
+                        stats,
+                        pipelines: attribute.then_some(&mut tile_pipelines),
+                    },
                 );
                 stats.passes += 1;
                 i = end;
@@ -8950,6 +8976,28 @@ impl GpuRenderer {
             }
             stats.passes += 1;
             i += 1;
+        }
+        #[cfg(target_vendor = "apple")]
+        if let Some(sink) = self.config.composition_diag.as_ref() {
+            // The attachments the composition plan governs: the surface's
+            // parts and the isolation scratches a materialized image
+            // needs, against the epochs' memoryless tile slots.
+            let part_bytes =
+                u64::from(surf.size.0) * u64::from(surf.size.1) * texel_bytes(surf.target.format());
+            let parts = u64::try_from(surf.parts.len()).expect("part count fits u64");
+            let backed = part_bytes * (1 + parts)
+                + surf.scratch.values().map(ScratchTarget::bytes).sum::<u64>();
+            sink.record(composition::frame_report(
+                frame.get(),
+                id.raw(),
+                &surf.frame,
+                &surf.composition,
+                composition::AttachmentBytes {
+                    peak_memoryless_bytes: surf.tile_targets.memoryless_bytes(),
+                    peak_backed_bytes: backed,
+                },
+                tile_pipelines,
+            ));
         }
         #[cfg(target_vendor = "apple")]
         surf.tile_targets.finish_frame();

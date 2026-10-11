@@ -304,6 +304,7 @@ impl Engine for VelloClassic {
             image,
             gpu: GpuSample::whole_frame(frame, gpu_seconds),
             phases: None,
+            composition: None,
             render_seconds: Some(render_seconds),
             readback_seconds: readback_flag.then(|| readback_at.elapsed().as_secs_f64()),
         })
