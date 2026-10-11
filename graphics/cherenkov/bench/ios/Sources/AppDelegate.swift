@@ -28,13 +28,22 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         let status = status
         Thread.detachNewThread {
             let code = BenchRunner(delegate: status).runAll()
+            logger.info("bench finished with code \(code); scheduling restore")
+            // The exit decision lives on this thread, not on the main
+            // queue: a launch whose main queue stops being drained before
+            // the completion block runs would wait forever with its result
+            // already written — a blocked restore must not hold the exit.
+            // exit() needs no UIKit state: the idle-timer override dies
+            // with the process and the system restores screen brightness
+            // when the app leaves the foreground.
             DispatchQueue.main.async {
                 application.isIdleTimerDisabled = false
                 screen.brightness = originalBrightness
-                logger.info("all runs done; exit code \(code)")
-                if CommandLine.arguments.contains("--exit-after-run") {
-                    exit(code)
-                }
+                logger.info("restore delivered on main")
+            }
+            if CommandLine.arguments.contains("--exit-after-run") {
+                logger.info("exiting with code \(code)")
+                exit(code)
             }
         }
     }

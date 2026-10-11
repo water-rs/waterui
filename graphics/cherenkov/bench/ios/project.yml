@@ -23,4 +23,4 @@ targets:
         "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": $(inherited) $(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/release
         # The Rust static archive carries no link info: the frameworks
         # cherenkov-gpu's objc2 bindings need are named here.
-        OTHER_LDFLAGS: $(inherited) -lcherenkov_bench -lc++ -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -framework Metal -framework IOSurface -framework CoreGraphics -framework Foundation
+        OTHER_LDFLAGS: $(inherited) -lcherenkov_bench -lc++ -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -framework Metal -framework IOSurface -framework CoreGraphics -framework Foundation -framework AppIntents
