@@ -47,6 +47,9 @@ waterui = { path = "../../..", features = ["ts", "media"] }
 # the other host that installs it.
 waterui-testing = { path = "../../../testing", features = ["ts"] }
 waterui-preview = { path = "../../devtools/preview/runtime", features = ["ts"] }
+# The style the offscreen test mounts run under — the pointer and geometry
+# tests need a rendered session, and a rendered session needs a `Style`.
+hydrolysis-m3.workspace = true
 # The catalog test reads `waterui_meta_ts_catalog` back out of the test
 # executable's own symbol table, which is the path the `water` CLI takes
 # through a user crate's rlib.

@@ -1,0 +1,14 @@
+retain_public: true
+strict: true
+exclude_tests: true
+retain_assign_only_properties: true
+retain_objc_accessible: true
+retain_objc_annotated: true
+retain_unused_protocol_func_params: true
+disable_redundant_public_analysis: true
+disable_unused_import_analysis: true
+report_exclude:
+  - backends/apple/Tests/**
+index_exclude:
+  - .build/**
+  - backends/apple/Tests/**

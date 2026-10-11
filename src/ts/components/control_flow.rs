@@ -172,7 +172,7 @@ pub fn show(
     };
 
     let (handler, dynamic) = Dynamic::new();
-    handler.set(build(presented.get())?);
+    handler.set(build(presented.snapshot())?);
     let guard = presented.watch(move |context| {
         let view = build(context.into_value())
             .unwrap_or_else(|error| panic!("a <Show> branch could not be rendered: {error}"));

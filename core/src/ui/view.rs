@@ -52,7 +52,7 @@ pub trait View: 'static {
     /// resolves to. Wrappers that only decorate or observe their content
     /// (metadata, `Option`, `Result`, single-element tuples) forward the
     /// content's axis. A composite view whose `body` produces a stretching
-    /// leaf (a `GpuSurface`, a scroll container, a stack with stretchy
+    /// leaf (a `GpuContentView`, a scroll container, a stack with stretchy
     /// children) must declare that leaf's axis here — callers read the axis
     /// before `body` runs and without an [`Environment`], so it cannot be
     /// discovered by expansion.

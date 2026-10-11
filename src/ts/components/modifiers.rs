@@ -22,12 +22,12 @@ use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_core::accessibility::AccessibilityIdentifier;
 use waterui_core::{AnyView, IgnorableMetadata};
-use waterui_graphics::ResolvedColor;
-use waterui_graphics::color::Color;
+use waterui_graphics::WorkingColor;
+use waterui_graphics::color::{Color, Working};
 use waterui_layout::background::BackgroundView;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::Padding;
-use waterui_shape::{Capsule, Circle, Ellipse, Rectangle, RoundedRectangle};
+use waterui_shape::{Capsule, Circle, Ellipse, FixedRoundedRectangle, Rectangle, RoundedRectangle};
 use waterui_ts::engine::{JsError, JsValue};
 use waterui_ts::{Bridge, FromJs as _};
 
@@ -173,21 +173,24 @@ impl From<ShadowValue> for Shadow {
         Self::new(
             value.color.map_or_else(
                 || Color::srgb(0, 0, 0),
-                |color| Color::new(ResolvedColor::from(color)),
+                |color| Color::new(Working(WorkingColor::from(color))),
             ),
             Vector {
                 x: value.x.unwrap_or_default(),
                 y: value.y.unwrap_or_default(),
             },
             value.radius,
-            value.corner_radius.unwrap_or_default(),
+            FixedRoundedRectangle::new(value.corner_radius.unwrap_or_default()),
         )
     }
 }
 
 impl From<BorderValue> for Border {
     fn from(value: BorderValue) -> Self {
-        Self::new(Color::new(ResolvedColor::from(value.color)), value.width)
-            .corner_radius(value.corner_radius.unwrap_or_default())
+        Self::new(
+            Color::new(Working(WorkingColor::from(value.color))),
+            value.width,
+        )
+        .corner_radius(value.corner_radius.unwrap_or_default())
     }
 }

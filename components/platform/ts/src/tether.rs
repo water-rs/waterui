@@ -39,8 +39,8 @@ impl<T: 'static> Signal for Tethered<T> {
     type Output = T;
     type Guard = BoxWatcherGuard;
 
-    fn get(&self) -> Self::Output {
-        self.binding.get()
+    fn snapshot(&self) -> Self::Output {
+        self.binding.snapshot()
     }
 
     fn identity(&self) -> Option<SignalIdentity> {

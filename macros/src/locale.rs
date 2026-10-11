@@ -110,7 +110,7 @@ struct TranslationBundle {
 impl TranslationBundle {
     fn load_from_manifest_dir() -> std::result::Result<Self, String> {
         // CLI-generated backend crates live outside the application crate root
-        // (managed_backends/, the playground build cache), so their
+        // (managed_backends/, the CLI's build cache), so their
         // `CARGO_MANIFEST_DIR` cannot see the app's `i18n/`. Their build
         // scripts pass the directory through `WATERUI_I18N_DIR` instead, which
         // makes `catalog!`/`text!` embed the app's translations even though the

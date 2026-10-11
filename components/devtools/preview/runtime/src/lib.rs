@@ -39,7 +39,9 @@ mod ts;
 mod view;
 
 pub use library::{LoadError, PreviewLibrary};
-pub use renderer::{CustomViewRenderer, RenderResult, RenderResultExt, RenderSize, ViewRenderer};
+pub use renderer::{
+    CustomViewRenderer, RenderError, RenderResult, RenderResultExt, RenderSize, ViewRenderer,
+};
 #[cfg(feature = "ts")]
 pub use ts::with_configured_runtime;
 pub use view::Preview;

@@ -1,6 +1,6 @@
 [package]
 name = "waterui-preview"
-version = "0.1.2"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
@@ -44,6 +44,5 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # previewed project uses TypeScript views, which keeps the JavaScript engine
 # out of every other project's support app.
 ts = ["waterui-internal/ts"]
-
 [lints]
 workspace = true

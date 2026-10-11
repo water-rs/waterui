@@ -1,0 +1,114 @@
+# Event order source: IBus on wl_keyboard + zwp_text_input_v3 (winit-0.30
+# src/platform_impl/linux/wayland/seat/text_input/mod.rs). The compositor
+# delivers every keystroke as a plain keyboard event even while an IME owns
+# the text — including the keys the IME consumed — so `key` (and the
+# keysym-derived `text`) events arrive in the same flush as the preedit they
+# produced. IBus emits CommitText before UpdatePreeditText/HidePreeditText,
+# so the commit arrives BEFORE the cleared preedit.
+# Order derived from the documented flow above (winit source and
+# text-input-v3 semantics); the wl_keyboard co-delivery is not an observed
+# platform trace.
+final_text = "你好"
+selection = [6, 6]
+committing_key_swallowed = true
+
+# Typing "nihao": every keystroke arrives as key + text, and the IME turns it
+# into preedit in the same flush.
+[[step]]
+events = [
+    { key = { logical = "n", code = "KeyN", state = "pressed" } },
+    { text = "n" },
+    { preedit = { text = "n", caret = 1 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "n", code = "KeyN", state = "released" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "i", code = "KeyI", state = "pressed" } },
+    { text = "i" },
+    { preedit = { text = "ni", caret = 2 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "i", code = "KeyI", state = "released" } },
+]
+
+# Space selects the first candidate: IBus commits before clearing the
+# preedit; the space is consumed by the IME and must not insert.
+[[step]]
+events = [
+    { key = { logical = " ", code = "Space", state = "pressed" } },
+    { text = " " },
+    { commit = "你" },
+    { preedit = { text = "" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = " ", code = "Space", state = "released" } },
+]
+
+# The remaining roman letters keep composing as a new candidate.
+[[step]]
+events = [
+    { key = { logical = "h", code = "KeyH", state = "pressed" } },
+    { text = "h" },
+    { preedit = { text = "h", caret = 1 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "h", code = "KeyH", state = "released" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "a", code = "KeyA", state = "pressed" } },
+    { text = "a" },
+    { preedit = { text = "ha", caret = 2 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "a", code = "KeyA", state = "released" } },
+]
+
+# Backspace is consumed by the IME to shorten the composition: it must not
+# reach ordinary key handling or it would delete the committed text.
+[[step]]
+events = [
+    { key = { logical = "Backspace", code = "Backspace", state = "pressed" } },
+    { preedit = { text = "h" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "Backspace", code = "Backspace", state = "released" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "o", code = "KeyO", state = "pressed" } },
+    { text = "o" },
+    { preedit = { text = "ho", caret = 2 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "o", code = "KeyO", state = "released" } },
+]
+
+# Enter confirms the composition: the platform still delivers the key event,
+# so it must be swallowed rather than treated as a newline/submit.
+[[step]]
+events = [
+    { key = { logical = "Enter", code = "Enter", state = "pressed" } },
+    { commit = "好" },
+    { preedit = { text = "" } },
+    { key = { logical = "Enter", code = "Enter", state = "released" } },
+]

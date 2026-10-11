@@ -15,7 +15,7 @@ use crate::{
 /// without the subtree being rebuilt.
 #[derive(Debug, Clone)]
 pub struct PaddingLayout {
-    edges: Computed<EdgeInsets>,
+    pub(crate) edges: Computed<EdgeInsets>,
 }
 
 impl Layout for PaddingLayout {
@@ -26,7 +26,7 @@ impl Layout for PaddingLayout {
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        let edges = self.edges.get();
+        let edges = self.edges.snapshot();
         // The horizontal and vertical space consumed by padding.
         let horizontal_padding = edges.leading + edges.trailing;
         let vertical_padding = edges.top + edges.bottom;
@@ -59,24 +59,25 @@ impl Layout for PaddingLayout {
             child_size.height
         };
 
-        // The final size is the child's size plus the padding.
+        // The final size is the child's size plus the padding. Negative
+        // insets may take the sum below zero; an extent never does.
         Size::new(
-            child_width + horizontal_padding,
-            child_height + vertical_padding,
+            (child_width + horizontal_padding).max(0.0),
+            (child_height + vertical_padding).max(0.0),
         )
     }
 
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         if children.is_empty() {
             return vec![];
         }
 
-        let edges = self.edges.get();
+        let edges = self.edges.snapshot();
         // Create the child's frame by insetting the parent's bound by the padding amount.
         let child_origin = Point::new(bounds.x() + edges.leading, bounds.y() + edges.top);
 
@@ -88,12 +89,10 @@ impl Layout for PaddingLayout {
             (bounds.height() - vertical_padding).max(0.0),
         );
 
-        // The child is measured and placed under the same inset-adjusted
-        // proposal `size_that_fits` offers it.
-        let child_proposal = ProposalSize::new(
-            proposal.width.map(|w| (w - horizontal_padding).max(0.0)),
-            proposal.height.map(|h| (h - vertical_padding).max(0.0)),
-        );
+        // Placement proposes the region the child is placed in: the bounds
+        // less the insets, so a padded child stretched by its container lays
+        // out across the room it actually has.
+        let child_proposal = ProposalSize::new(Some(child_size.width), Some(child_size.height));
 
         vec![SubviewPlacement::new(
             Rect::new(child_origin, child_size),
@@ -465,6 +464,34 @@ mod tests {
         assert_eq!(
             dimensions.explicit_vertical(VerticalAlignment::Top),
             Some(16.0)
+        );
+    }
+
+    /// Negative insets are legal: the container extent is `max(0, child +
+    /// insets)` on each axis, and the child is placed at the inset offset —
+    /// which may sit outside the bounds the container resolved to.
+    #[test]
+    fn negative_insets_clamp_the_container_to_zero() {
+        let layout = PaddingLayout {
+            edges: EdgeInsets::all(-10.0).into_computed(),
+        };
+        let child = MockSubView {
+            size: Size::new(5.0, 5.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&child];
+
+        let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+        assert_eq!(
+            size,
+            Size::zero(),
+            "the container extent clamps at zero, never negative"
+        );
+
+        let placements = layout.place(Rect::from_size(size), ProposalSize::UNSPECIFIED, &children);
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::new(-10.0, -10.0), Size::new(20.0, 20.0)),
+            "the child sits at the inset offset on the inset region"
         );
     }
 }

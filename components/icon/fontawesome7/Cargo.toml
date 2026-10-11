@@ -1,6 +1,6 @@
 [package]
 name = "waterui-icons-fontawesome7"
-version = "0.2.1"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 license = "CC-BY-4.0"
@@ -29,7 +29,7 @@ ignored = ["serde", "serde_json", "arkiv", "dirs", "waterui-icons-codegen"]
 [build-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-arkiv = { version = "0.7", features = ["download"] }
+arkiv = { version = "0.7", default-features = false, features = ["download", "zip"] }
 dirs = "7"
 waterui-icons-codegen.workspace = true
 

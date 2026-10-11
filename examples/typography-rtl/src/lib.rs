@@ -121,13 +121,12 @@ pub fn app(env: Environment) -> App {
 
 #[cfg(test)]
 mod tests {
-    use hydrolysis_m3::install;
 
     use super::typography_and_rtl;
 
     #[waterui::test(
         typography_and_rtl,
-        theme = install,
+        theme = hydrolysis_m3::Material3::defaults(),
         viewport = (720, 1280),
         offscreen
     )]

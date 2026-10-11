@@ -85,7 +85,7 @@ use waterui_url::Url;
 
 let url = Url::parse("https://api.example.com/data.json").unwrap();
 let fetched = url.fetch();
-let cached_url = fetched.get();
+let cached_url = fetched.snapshot();
 ```
 
 `fetch()` requires the crate `std` feature because it uses platform cache directories and HTTP transport.

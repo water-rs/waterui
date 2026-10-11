@@ -11,6 +11,7 @@
 use core::cell::RefCell;
 use std::fmt::Write as _;
 
+use hydrolysis_m3::Material3;
 use nami::Computed;
 use waterui::ts::Components;
 use waterui_core::{AnyView, Environment};
@@ -84,6 +85,11 @@ impl Module {
     /// Mounts the module's view in a test session and hands back the session,
     /// which borrows nothing: the runtime stays alive in `self`.
     ///
+    /// The session is semantic — the GPU-free runtime — so it answers what
+    /// the tree says and does, not where it sits. A test that needs real
+    /// layout geometry or a pointer at a point mounts with
+    /// [`Self::offscreen_app`] instead.
+    ///
     /// # Panics
     ///
     /// Panics when the view has already been mounted.
@@ -96,13 +102,16 @@ impl Module {
         mount_view(view)
     }
 
-    /// Mounts the module's view in an offscreen session, for a test whose
-    /// observable is the rendered frame rather than the tree.
+    /// Mounts the module's view on the rendered runtime under the Material 3
+    /// style and hands back the offscreen session: real layout, so elements
+    /// have bounds; real pointer routing, so a tap at a point reaches the
+    /// chrome under it; and a real frame, for a test whose observable is the
+    /// picture rather than the tree.
     ///
     /// # Panics
     ///
     /// Panics when the view has already been mounted.
-    pub fn offscreen(&self) -> OffscreenApp {
+    pub fn offscreen_app(&self) -> OffscreenApp {
         let view = self
             .view
             .borrow_mut()
@@ -121,9 +130,16 @@ impl Module {
         render(self.app().tree())
     }
 
+    /// The accessibility tree the module's view produces on the rendered
+    /// runtime — the [`Self::tree`] for a test whose cases differ only in
+    /// where a node sits.
+    pub fn offscreen_tree(&self) -> String {
+        render(self.offscreen_app().tree())
+    }
+
     /// The frame the module's view renders.
     pub fn pixels(&self) -> Snapshot {
-        self.offscreen().snapshot()
+        self.offscreen_app().snapshot()
     }
 }
 
@@ -189,22 +205,30 @@ pub fn mount_view(view: AnyView) -> SemanticApp {
     })
 }
 
-/// Mounts one view in an offscreen session.
-///
+/// Mounts one view on the rendered runtime — the [`mount_view`] session
+/// tests use when they need geometry, pointer input, or the frame itself.
 /// The same viewport as [`mount_view`], so a frame and a tree of one view
 /// describe the same layout.
 pub fn mount_view_offscreen(view: AnyView) -> OffscreenApp {
     let view = RefCell::new(Some(view));
-    ui().viewport(320, 240).mount_offscreen(move || {
-        view.borrow_mut()
-            .take()
-            .expect("the test session realizes its root once")
-    })
+    ui().theme(Material3::defaults())
+        .viewport(320, 240)
+        .mount_offscreen(move || {
+            view.borrow_mut()
+                .take()
+                .expect("the test session realizes its root once")
+        })
 }
 
 /// The accessibility tree of a Rust view.
 pub fn rust_tree(view: impl waterui_core::View + 'static) -> String {
     render(mount_view(AnyView::new(view)).tree())
+}
+
+/// The accessibility tree of a Rust view on the rendered runtime — the
+/// [`rust_tree`] an offscreen TypeScript tree compares against.
+pub fn rust_tree_offscreen(view: impl waterui_core::View + 'static) -> String {
+    render(mount_view_offscreen(AnyView::new(view)).tree())
 }
 
 /// The frame a Rust view renders.

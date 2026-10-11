@@ -168,14 +168,22 @@ mod tests {
     fn javascript_template_literals_are_untouched() {
         let result = interpolate(&literal("`hello ${name}`")).expect("interpolates");
         assert_eq!(result.source, "`hello ${name}`");
-        assert!(result.args.is_empty());
+        assert!(
+            result.args.is_empty(),
+            "expected no interpolation args, got {}",
+            result.args.len()
+        );
     }
 
     #[test]
     fn a_doubled_sigil_escapes_a_literal_hole() {
         let result = interpolate(&literal("css`color: @@{c}`")).expect("interpolates");
         assert_eq!(result.source, "css`color: @{c}`");
-        assert!(result.args.is_empty());
+        assert!(
+            result.args.is_empty(),
+            "expected no interpolation args, got {}",
+            result.args.len()
+        );
     }
 
     #[test]

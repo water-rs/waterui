@@ -4,8 +4,8 @@ use std::rc::Rc;
 use waterui_core::gesture::{GestureObserver, LongPressGesture};
 use waterui_core::handler::{BoxedEventAction, EventHandler, boxed_event_handler};
 use waterui_core::{
-    AnyView, Binding, Computed, Dynamic, Environment, Metadata, Signal, SignalExt, View,
-    layout::StretchAxis, reactive::signal::IntoComputed,
+    AnyView, Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt,
+    View, layout::StretchAxis, reactive::signal::IntoComputed,
 };
 use waterui_layout::overlay;
 
@@ -115,7 +115,7 @@ impl View for LivePhoto {
         let motion = Dynamic::watch(is_playing, move |is_playing_now| {
             if is_playing_now {
                 AnyView::new(live_photo_video(
-                    motion_source.get(),
+                    motion_source.snapshot(),
                     playback_state.clone(),
                     report.clone(),
                 ))
@@ -127,7 +127,7 @@ impl View for LivePhoto {
         Metadata::new(
             overlay(Photo::new(still_source).resizable(), motion),
             GestureObserver::new(LongPressGesture::new(activation_duration_ms), move || {
-                if !is_playing_on_press.get() {
+                if !is_playing_on_press.snapshot() {
                     is_playing_on_press.set(true);
                     report_on_press.emit(Event::MotionStarted);
                 }
@@ -151,22 +151,34 @@ impl View for LivePhoto {
 /// moved into one of them.
 #[derive(Clone)]
 struct LivePhotoReporter {
-    handler: Rc<RefCell<Option<BoxedEventAction<Event>>>>,
+    inner: Rc<LivePhotoReporterInner>,
+}
+
+struct LivePhotoReporterInner {
+    handler: RefCell<Option<BoxedEventAction<Event>>>,
+    /// Events emitted while the handler still runs; they are delivered after
+    /// it returns, in order, rather than re-entering it.
+    events: SerialDispatch<Event>,
     env: Environment,
 }
 
 impl LivePhotoReporter {
     fn new(handler: Option<BoxedEventAction<Event>>, env: Environment) -> Self {
         Self {
-            handler: Rc::new(RefCell::new(handler)),
-            env,
+            inner: Rc::new(LivePhotoReporterInner {
+                handler: RefCell::new(handler),
+                events: SerialDispatch::new(),
+                env,
+            }),
         }
     }
 
     fn emit(&self, event: Event) {
-        if let Some(handler) = self.handler.borrow_mut().as_mut() {
-            handler(event, &self.env);
-        }
+        self.inner.events.deliver(event, |event| {
+            if let Some(handler) = self.inner.handler.borrow_mut().as_mut() {
+                handler(event, &self.inner.env);
+            }
+        });
     }
 }
 
@@ -193,4 +205,39 @@ fn live_photo_video(
             _ => {}
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// An event emitted while the handler still runs must queue behind the
+    /// in-flight call instead of re-entering the handler.
+    #[test]
+    fn a_nested_emit_is_delivered_after_the_handler_returns() {
+        let reporter = LivePhotoReporter::new(None, Environment::new());
+        let delivered = Rc::new(RefCell::new(Vec::<String>::new()));
+        let inside = Cell::new(false);
+        let once = Cell::new(false);
+        *reporter.inner.handler.borrow_mut() = Some(Box::new({
+            let reporter = reporter.clone();
+            let delivered = Rc::clone(&delivered);
+            move |event: Event, _env: &Environment| {
+                assert!(
+                    !inside.replace(true),
+                    "the handler must not run re-entrantly"
+                );
+                delivered.borrow_mut().push(format!("{event:?}"));
+                if !once.replace(true) {
+                    reporter.emit(Event::MotionEnded);
+                }
+                inside.set(false);
+            }
+        }));
+
+        reporter.emit(Event::MotionStarted);
+
+        assert_eq!(&*delivered.borrow(), &["MotionStarted", "MotionEnded"]);
+    }
 }

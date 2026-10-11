@@ -216,7 +216,7 @@ mod tests {
         let (hub, receiver) = EventHub::new();
         assert!(!hub.wants(Channel::Frames));
         hub.publish(frame());
-        assert!(receiver.is_empty());
+        assert_eq!(receiver.len(), 0);
     }
 
     #[test]

@@ -46,6 +46,7 @@ use waterui_ts::engine::JsValue;
 
 use support::{
     Module, assert_same_pixels, mount_error, mount_view_offscreen, rust_pixels, rust_tree,
+    rust_tree_offscreen,
 };
 
 /// Mounts the JSX form and the Rust form and asserts they are one tree.
@@ -509,7 +510,7 @@ fn ts_a_text_fields_prompt_is_the_rust_prompt() {
                     children: "Name",
                 })"#,
             ))
-            .offscreen(),
+            .offscreen_app(),
         ),
         &focused(mount_view_offscreen(AnyView::new(
             field("Name", &prompted).prompt(text("Your name")),
@@ -860,8 +861,13 @@ fn ts_a_list_delete_control_reaches_the_javascript_handler() {
         "globalThis.deleted = null;",
         "onDelete: (index) => { globalThis.deleted = index; }",
     ));
-    let mut app = module.app();
-    let row = app.query().label("one").single().bounds();
+    let mut app = module.offscreen_app();
+    let row = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label("one")
+        .single()
+        .bounds();
     app.tap_at(
         row.x() + row.width() - TRAILING_CONTROL_PROBE,
         row.y() + row.height() / 2.0,
@@ -883,8 +889,13 @@ fn ts_a_list_move_control_reaches_the_javascript_handler() {
         "globalThis.movedFrom = null; globalThis.movedTo = null;",
         "onMove: (from, to) => { globalThis.movedFrom = from; globalThis.movedTo = to; }",
     ));
-    let mut app = module.app();
-    let row = app.query().label("one").single().bounds();
+    let mut app = module.offscreen_app();
+    let row = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label("one")
+        .single()
+        .bounds();
     app.tap_at(
         row.x() + row.width() - TRAILING_CONTROL_PROBE,
         row.height().mul_add(0.75, row.y()),
@@ -1142,17 +1153,18 @@ fn ts_padding_takes_every_shape_the_rust_chain_takes() {
         text("Flush").padding_with(EdgeInsets::all(0.0)),
     );
     // A zero inset and the framework's default inset are both `padding`, so the
-    // equivalence above would also hold if `false` were read as `true`. This is
-    // what tells the two apart.
+    // equivalence above would also hold if `false` were read as `true`. The two
+    // differ only in where the text lands, so the trees that tell them apart
+    // are the rendered ones.
     assert_ne!(
         Module::mount(&module(
             r#"waterui.jsx("Text", { padding: false, children: "Flush" })"#
         ))
-        .tree(),
+        .offscreen_tree(),
         Module::mount(&module(
             r#"waterui.jsx("Text", { padding: true, children: "Flush" })"#
         ))
-        .tree(),
+        .offscreen_tree(),
         "a padding of false insets nothing, and a bare padding insets by the default"
     );
 }
@@ -1167,7 +1179,7 @@ fn ts_one_padded_edge_follows_its_own_signal() {
             children: "Inset",
         })"#,
     ));
-    let mut app = module.app();
+    let mut app = module.offscreen_app();
     let before = app.query().identifier("inset").single().bounds();
 
     module.eval("globalThis.gap.set(40)");
@@ -1182,7 +1194,8 @@ fn ts_one_padded_edge_follows_its_own_signal() {
 #[test]
 fn ts_modifier_order_is_the_chain_order() {
     // A background is a view, so where it sits in the chain is visible: in the
-    // first form it covers the padded box, in the second only the text.
+    // first form it covers the padded box, in the second only the text. Where
+    // is geometry, so the trees that say the order are the rendered ones.
     let padding_then_background = Module::mount(&module(
         r#"waterui.jsx("Text", {
             padding: 12,
@@ -1190,7 +1203,7 @@ fn ts_modifier_order_is_the_chain_order() {
             children: "Order",
         })"#,
     ))
-    .tree();
+    .offscreen_tree();
     let background_then_padding = Module::mount(&module(
         r#"waterui.jsx("Text", {
             background: waterui.jsx("Text", { children: "behind" }),
@@ -1198,32 +1211,28 @@ fn ts_modifier_order_is_the_chain_order() {
             children: "Order",
         })"#,
     ))
-    .tree();
+    .offscreen_tree();
     assert_ne!(
         padding_then_background, background_then_padding,
         "`padding → background` and `background → padding` are different views, as they are in Rust"
     );
     assert_eq!(
         padding_then_background,
-        rust_tree(text("Order").padding_with(12.0).background(text("behind"))),
+        rust_tree_offscreen(text("Order").padding_with(12.0).background(text("behind"))),
         "the written order is the chain order"
     );
     assert_eq!(
         background_then_padding,
-        rust_tree(text("Order").background(text("behind")).padding_with(12.0)),
+        rust_tree_offscreen(text("Order").background(text("behind")).padding_with(12.0)),
         "and so is the other one"
     );
 }
 
 /// A colour as the catalog's `{ red, green, blue }` object resolves it.
 fn rgb(red: f32, green: f32, blue: f32) -> waterui::graphics::color::Color {
-    waterui::graphics::color::Color::new(waterui::graphics::ResolvedColor {
-        red,
-        green,
-        blue,
-        headroom: 1.0,
-        opacity: 1.0,
-    })
+    waterui::graphics::color::Color::new(waterui::graphics::color::Working(
+        waterui::graphics::WorkingColor::new([red, green, blue, 1.0]),
+    ))
 }
 
 // The purely visual modifiers — opacity, shadow, border, clip, foreground, a
@@ -1259,7 +1268,7 @@ fn ts_shadow_is_the_rust_shadow() {
             Color::srgb(0, 0, 0),
             Vector { x: 0.0, y: 2.0 },
             4.0,
-            0.0,
+            waterui::shape::FixedRoundedRectangle::new(0.0),
         ))),
     );
 }
@@ -1400,16 +1409,20 @@ fn ts_on_tap_gesture_is_the_rust_gesture() {
 fn ts_a_tap_reaches_the_javascript_handler() {
     // The equivalence above says the tree is the same; this says the handler on
     // the other side of the seam is the one that runs.
+    // A gesture answers a pointer, so the tap is a real tap on the rendered
+    // session, and it lands on a view with nothing but the gesture to answer
+    // it — a button would answer its own `onTap` first — so what runs can
+    // only be the modifier's handler.
     let module = Module::mount(&stateful(
         "globalThis.taps = 0;",
-        r#"waterui.jsx("Button", {
-            onTap: () => {},
+        r#"waterui.jsx("Text", {
             onTapGesture: () => { globalThis.taps += 1; },
             children: "Tap me",
         })"#,
     ));
-    let mut app = module.app();
-    app.query().label("Tap me").tap();
+    let mut app = module.offscreen_app();
+    let target = app.query().label("Tap me").single();
+    target.tap_at(&mut app, 0.5, 0.5);
     app.settle();
     assert_eq!(
         module.eval("globalThis.taps").as_f64(),

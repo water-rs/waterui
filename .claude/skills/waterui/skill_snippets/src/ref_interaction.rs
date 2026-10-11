@@ -4,17 +4,17 @@
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Handlers, everywhere" — rust block 1/8
+// interaction.md § "## Handlers, everywhere" — rust block 1/11
 //
 // At module scope: the section presents these as the imports the rest of the
 // file relies on.
 // ---------------------------------------------------------------------------
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Tap shortcuts" — rust block 2/8
+// interaction.md § "## Tap shortcuts" — rust block 2/11
 // ---------------------------------------------------------------------------
 pub fn interaction_block_02() -> impl View {
     let taps = Binding::i32(0);
@@ -42,7 +42,7 @@ pub fn interaction_tap_siblings_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Gesture recognizers" — rust block 3/8
+// interaction.md § "## Gesture recognizers" — rust block 3/11
 // Listing: four independent recognizers.
 // ---------------------------------------------------------------------------
 pub fn interaction_block_03() {
@@ -68,6 +68,21 @@ pub fn interaction_block_03() {
 }
 
 // ---------------------------------------------------------------------------
+// interaction.md § "## Gesture recognizers" — pointer buttons
+// Listing: restrict a recognizer to a non-primary button.
+// ---------------------------------------------------------------------------
+pub fn interaction_gesture_buttons() {
+    use waterui::gesture::PointerButtons;
+
+    let handler = || ();
+    let view = Divider;
+    let _ = view.gesture(
+        TapGesture::new().buttons(PointerButtons::MIDDLE), // middle click only
+        handler,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // interaction.md § "## Gesture recognizers" (prose): `MagnificationGesture::new`
 // and `RotationGesture::new` "complete the set". Not counted as a rust block.
 // ---------------------------------------------------------------------------
@@ -79,7 +94,7 @@ pub fn interaction_remaining_gestures_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Combining gestures" — rust block 4/8
+// interaction.md § "## Combining gestures" — rust block 4/11
 // ---------------------------------------------------------------------------
 pub fn interaction_block_04() -> impl View {
     let status = Binding::container("Waiting…");
@@ -104,7 +119,7 @@ pub fn interaction_combinators_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Hover" — rust block 5/8
+// interaction.md § "## Hover" — rust block 5/11
 // ---------------------------------------------------------------------------
 pub fn interaction_block_05() -> impl View {
     fn card() -> impl View {
@@ -119,7 +134,7 @@ pub fn interaction_block_05() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Pointer cursor" — rust block 6/8
+// interaction.md § "## Pointer cursor" — rust block 6/11
 // Listing: a plain style, then a derived one.
 // ---------------------------------------------------------------------------
 pub fn interaction_block_06() {
@@ -165,15 +180,21 @@ pub fn interaction_cursor_variants_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Drag and drop" — rust block 7/8
+// interaction.md § "## Drag and drop" — rust block 7/11
 // ---------------------------------------------------------------------------
 pub mod interaction_block_07 {
     use waterui::prelude::*;
 
-    use waterui::drag_drop::DragData;
+    use waterui::drag_drop::Transferable;
+    use waterui::reactive::impl_constant;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Fruit(&'static str);
+    impl Transferable for Fruit {}
+    impl_constant!(Fruit); // lets a plain `Fruit` value be passed to `.draggable(..)`
 
     fn fruit_card(name: &'static str) -> impl View {
-        text(name).padding().draggable(DragData::text(name))
+        text(name).padding().draggable(Fruit(name))
     }
 
     // `+ use<>` keeps the borrowed parameters out of the returned view's lifetime (they are
@@ -185,8 +206,8 @@ pub mod interaction_block_07 {
         ))
         .padding()
         .drop_destination(
-            |State(collected): State<Binding<Vec<String>>>, data: DragData| {
-                collected.with_mut(|v| v.push(data.as_str().to_string()));
+            |fruit: Fruit, State(collected): State<Binding<Vec<String>>>| {
+                collected.with_mut(|v| v.push(fruit.0.to_string()));
             },
         )
         .drop_hover(hovering)
@@ -203,25 +224,55 @@ pub mod interaction_block_07 {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Drag and drop" (prose): `DragData::url(..)`, and
-// `.on_enter(f)` / `.on_exit(f)` chaining in the same position as
-// `.drop_hover(..)`. Not counted as a rust block.
+// interaction.md § "## Drag and drop" (prose): typed destinations for
+// `Str` and `Files`, `.draggable(Str::from(..))`, and `.on_enter(f)` /
+// `.on_exit(f)` chaining in the same position as `.drop_hover(..)`. Not
+// counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_drop_extras_prose() {
-    let _ = DragData::url("https://waterui.dev");
+    let _ = text("copy me").draggable(Str::from("payload"));
+    let _ = Divider.drop_destination(|_text: Str| ());
     let _ = Divider
-        .drop_destination(|_data: DragData| ())
+        .drop_destination(|_files: Files| ())
         .on_enter(|| ())
         .on_exit(|| ());
 }
 
+/// Glue: keeps the module-scope `Transferable` import proven to resolve.
+#[derive(Debug, Clone)]
+pub struct GlueTransferable;
+impl Transferable for GlueTransferable {}
+
 // ---------------------------------------------------------------------------
-// interaction.md § "## Reactive pressed/hover visuals" — rust block 8/8
+// interaction.md § "## Key handling" — rust block 8/11
+// ---------------------------------------------------------------------------
+pub fn interaction_block_08() -> impl View {
+    use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
+
+    let open = Binding::bool(false);
+    let search_panel = || text("Search panel");
+
+    search_panel()
+        .on_key_press(
+            |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+                if press.key == Key::Named(NamedKey::Escape) {
+                    open.set(false);
+                    KeyHandling::Handled
+                } else {
+                    KeyHandling::Ignored
+                }
+            },
+        )
+        .state(&open)
+}
+
+// ---------------------------------------------------------------------------
+// interaction.md § "## Reactive pressed/hover visuals" — rust block 9/11
 // ---------------------------------------------------------------------------
 // The two layers cross-fade through complementary opacity signals — reaching
 // 0.0 here is the documented technique, not a visibility toggle.
 #[allow(unknown_lints, opacity_as_visibility)]
-pub fn interaction_block_08() -> impl View {
+pub fn interaction_block_09() -> impl View {
     let is_hovered = Binding::bool(false);
 
     use waterui::animation::Animation;
@@ -236,4 +287,37 @@ pub fn interaction_block_08() -> impl View {
         text("Hover me").padding(),
     ))
     .scale(scale.clone(), scale)
+}
+
+// ---------------------------------------------------------------------------
+// interaction.md § "## Reporting a control's state" — rust block 10/11
+// ---------------------------------------------------------------------------
+pub fn interaction_block_10() -> impl View {
+    use waterui::interaction::InteractionState;
+    use waterui::reactive::{Binding, binding};
+
+    let state: Binding<InteractionState> = binding(InteractionState::empty());
+    let lift = state.map(|s| {
+        if s.contains(InteractionState::HOVERED) {
+            -6.0
+        } else {
+            0.0
+        }
+    });
+
+    AnyView::new(
+        vstack((text!("Chip"), button("Action").action(|| {})))
+            .offset(0.0, lift)
+            .interaction_state(&state),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// interaction.md § "## Selected controls" — rust block 11/11
+// ---------------------------------------------------------------------------
+pub fn interaction_block_11() -> impl View {
+    use waterui::reactive::{Binding, binding};
+
+    let selection: Binding<i32> = binding(0);
+    text!("Inbox").selected(selection.map(|s| s == 0))
 }

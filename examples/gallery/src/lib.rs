@@ -29,6 +29,7 @@ use mdi::tune;
 use waterui::Color;
 use waterui::Handler;
 use waterui::Identifiable;
+use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
 use waterui::app::App;
@@ -428,8 +429,8 @@ fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> i
         section.title(),
         open.clone(),
         move |State(open): State<Binding<bool>>, State(rows): State<ReactiveList<Row>>| {
-            let expanded = !open.get();
-            open.set(expanded);
+            open.toggle();
+            let expanded = open.snapshot();
             set_group_expanded(&rows, group, expanded);
         },
     )
@@ -520,9 +521,24 @@ fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
 }
 
 fn slider_demo(volume: &Binding<f64>) -> impl View {
+    let sizes = [
+        ("Extra small", ControlSize::ExtraSmall),
+        ("Small", ControlSize::Small),
+        ("Medium", ControlSize::Medium),
+        ("Large", ControlSize::Large),
+        ("Extra large", ControlSize::ExtraLarge),
+    ]
+    .map(|(label, size)| {
+        slider(label, volume)
+            .range(0.0..=100.0)
+            .size(size)
+            .value_indicator(|v| Str::from(format!("{v:.0}")))
+    });
+
     vstack((
-        note("Drag the slider; the progress bar reflects the value."),
+        note("Drag a slider; the value indicator follows the thumb and the progress bar reflects the value."),
         slider("Volume", volume).range(0.0..=100.0),
+        vstack(sizes).spacing(8.0),
         text!("Value: {volume}").body(),
         progress(volume.clone().map(|v| v / 100.0)).label("Volume"),
     ))
@@ -653,13 +669,14 @@ pub fn app(env: Environment) -> App {
 mod tests {
     use super::{catalog, new_state};
     use core::time::Duration;
+    use waterui::Signal;
     use waterui::Str;
-    use waterui_testing::{Role, UiBuilder};
+    use waterui_testing::{Role, Styled, UiBuilder};
 
     /// Selecting each control in turn shows its demo — a smoke test that every
     /// catalog entry resolves and renders (the per-component MD3 visual review was
     /// done out-of-band with GPU snapshots).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn every_control_renders_its_demo(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -693,7 +710,7 @@ mod tests {
 
     /// The drawer lists every group header and control, and the detail pane shows
     /// the selected control's live demo.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn catalog_lists_controls(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -716,7 +733,7 @@ mod tests {
     }
 
     /// Selecting a control shows its live demo in the detail pane.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn selecting_control_shows_demo(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -738,7 +755,7 @@ mod tests {
 
     /// Collapsing a group removes its items (and releases their space), while the
     /// rest of the catalog stays intact.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn collapsing_group_removes_items(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -766,7 +783,7 @@ mod tests {
 
     /// Re-expanding a collapsed group restores its items: the transition's enter
     /// path brings the rows back (and they settle into the accessibility tree).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn expanding_group_restores_items(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -796,7 +813,7 @@ mod tests {
 
     /// A demo control is actually interactive: tapping a button increments the
     /// shared counter (state is owned externally, so it persists across rebuilds).
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn button_demo_is_interactive(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -823,7 +840,7 @@ mod tests {
     /// The two styles report different accesskit roles (`Switch` vs.
     /// `CheckBox`), so this also pins that `ToggleStyle` maps to distinct
     /// accessibility semantics rather than one shared role.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn toggle_demo_flips_switch_and_checkbox_bindings(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let wifi = state.wifi.clone();
@@ -859,7 +876,7 @@ mod tests {
 
         app.query().role(Role::SWITCH).label("Wi-Fi").tap();
         assert!(
-            !wifi.get(),
+            !wifi.snapshot(),
             "flipping the Wi-Fi switch should clear its binding"
         );
         app.query()
@@ -870,7 +887,7 @@ mod tests {
 
         app.query().role(Role::CHECKBOX).label("Bluetooth").tap();
         assert!(
-            bluetooth.get(),
+            bluetooth.snapshot(),
             "tapping the Bluetooth checkbox should set its binding"
         );
         app.query()
@@ -884,7 +901,7 @@ mod tests {
     /// increment/decrement moves `DemoState::volume` by the slider's a11y
     /// step (`(range.end() - range.start()) / 100.0`, which is `1.0` for the
     /// demo's `0.0..=100.0` range), and the live echo text tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn slider_demo_increment_decrement_updates_volume(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let volume = state.volume.clone();
@@ -912,7 +929,7 @@ mod tests {
 
         app.query().role(Role::SLIDER).label("Volume").increment();
         assert!(
-            (volume.get() - 41.0).abs() < 0.0001,
+            (volume.snapshot() - 41.0).abs() < 0.0001,
             "incrementing the slider should raise the volume binding by one a11y step"
         );
         assert!(
@@ -925,7 +942,7 @@ mod tests {
 
         app.query().role(Role::SLIDER).label("Volume").decrement();
         assert!(
-            (volume.get() - 40.0).abs() < 0.0001,
+            (volume.snapshot() - 40.0).abs() < 0.0001,
             "decrementing the slider should restore the previous volume"
         );
         assert!(
@@ -941,7 +958,7 @@ mod tests {
     /// increment/decrement moves `DemoState::quantity` by the stepper's fixed
     /// step of `1`, clamped to its `0..=10` range, and the live echo text
     /// tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn stepper_demo_increment_decrement_updates_quantity(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let quantity = state.quantity.clone();
@@ -964,7 +981,7 @@ mod tests {
 
         app.query().label("Quantity").value("2").increment();
         assert_eq!(
-            quantity.get(),
+            quantity.snapshot(),
             3,
             "incrementing the stepper should raise its binding by one"
         );
@@ -978,7 +995,7 @@ mod tests {
 
         app.query().label("Quantity").value("3").decrement();
         assert_eq!(
-            quantity.get(),
+            quantity.snapshot(),
             2,
             "decrementing the stepper should restore the previous quantity"
         );
@@ -994,7 +1011,7 @@ mod tests {
     /// Selecting the Text Field demo and setting its text through
     /// accessibility updates `DemoState::name`, and the live echo text
     /// tracks it.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn text_field_demo_set_text_updates_name(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let name = state.name.clone();
@@ -1021,7 +1038,7 @@ mod tests {
             .label("Name")
             .set_text("Ada Lovelace");
         assert_eq!(
-            name.get(),
+            name.snapshot(),
             Str::from("Ada Lovelace"),
             "the text field should update its bound demo state"
         );
@@ -1040,7 +1057,7 @@ mod tests {
     /// control from the re-expanded group swaps the detail heading — which
     /// the [`NavigationView`](waterui::navigation::NavigationView) backend
     /// exposes as accesskit's `Header` role — to that control's title.
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
+    #[waterui::test(viewport = (1100, 760))]
     fn expanding_a_collapsed_group_and_selecting_its_control_switches_the_heading(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app = ui.mount(move || {
@@ -1098,8 +1115,8 @@ mod tests {
     /// Visual acceptance for the drawer: the selected row's active indicator and
     /// the Stepper demo's controls, both reviewed by eye.
     #[ignore = "writes visual acceptance PNG files for direct image review"]
-    #[waterui::test(theme = hydrolysis_m3::install, viewport = (1100, 760))]
-    fn catalog_drawer_and_stepper_render(ui: UiBuilder) {
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
+    fn catalog_drawer_and_stepper_render(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app: waterui_testing::OffscreenApp = ui.mount_offscreen(move || {
             catalog(

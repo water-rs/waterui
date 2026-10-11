@@ -17,7 +17,7 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal, SignalExt};
 use waterui_core::Environment;
 use waterui_core::layout::LayoutDirection;
-use waterui_graphics::ResolvedColor;
+use waterui_graphics::WorkingColor;
 use waterui_graphics::color::ColorScheme;
 use waterui_locale::{Locale, layout_direction, locale_binding};
 use waterui_ts_engine::{JsError, JsValue};
@@ -40,7 +40,7 @@ pub struct Theme {
     /// A token the environment does not install is absent rather than
     /// defaulted: a theme that never declared a colour has none, and inventing
     /// one would put a value on screen that no theme chose.
-    pub colors: Vec<(&'static str, ResolvedColor)>,
+    pub colors: Vec<(&'static str, WorkingColor)>,
 }
 
 /// The locale a mounted module formats in, in the shape `useLocale()` reads.
@@ -80,17 +80,22 @@ impl IntoJs for ColorScheme {
     }
 }
 
-impl IntoJs for ResolvedColor {
+impl IntoJs for WorkingColor {
     /// The five channels of a resolved colour, in linear light: `red`,
     /// `green` and `blue` leave 0–1 for a wide-gamut colour, and `headroom`
-    /// above 1 marks an extended-range one.
+    /// above 1 marks an extended-range one. A working colour carries its
+    /// headroom in the components themselves — values past 1.0 are brighter
+    /// than SDR white — so the headroom is the strongest channel, and never
+    /// less than the 1.0 an SDR colour reports.
     fn into_js(self, bridge: &Bridge) -> Result<JsValue, JsError> {
+        let [red, green, blue, opacity] = self.components;
+        let headroom = red.max(green).max(blue).max(1.0);
         Ok(JsValue::Object(vec![
-            (String::from("red"), self.red.into_js(bridge)?),
-            (String::from("green"), self.green.into_js(bridge)?),
-            (String::from("blue"), self.blue.into_js(bridge)?),
-            (String::from("headroom"), self.headroom.into_js(bridge)?),
-            (String::from("opacity"), self.opacity.into_js(bridge)?),
+            (String::from("red"), red.into_js(bridge)?),
+            (String::from("green"), green.into_js(bridge)?),
+            (String::from("blue"), blue.into_js(bridge)?),
+            (String::from("headroom"), headroom.into_js(bridge)?),
+            (String::from("opacity"), opacity.into_js(bridge)?),
         ]))
     }
 }
@@ -130,11 +135,11 @@ impl IntoJs for HostLocale {
 macro_rules! theme_tokens {
     ($($key:ident => $name:literal),* $(,)?) => {
         /// Every installed token, in declaration order.
-        fn token_sources(environment: &Environment) -> Vec<(&'static str, Computed<ResolvedColor>)> {
+        fn token_sources(environment: &Environment) -> Vec<(&'static str, Computed<WorkingColor>)> {
             let mut sources = Vec::new();
             $(
                 if let Some(color) = environment
-                    .query::<waterui_graphics::color::$key, Computed<ResolvedColor>>()
+                    .query::<waterui_graphics::color::$key, Computed<WorkingColor>>()
                 {
                     sources.push(($name, color.clone()));
                 }
@@ -190,10 +195,10 @@ pub fn theme(environment: &Environment) -> Result<Computed<Theme>, JsError> {
         let scheme = scheme.clone();
         let tokens = tokens.clone();
         move || Theme {
-            color_scheme: scheme.get(),
+            color_scheme: scheme.snapshot(),
             colors: tokens
                 .iter()
-                .map(|(name, color)| (*name, color.get()))
+                .map(|(name, color)| (*name, color.snapshot()))
                 .collect(),
         }
     };

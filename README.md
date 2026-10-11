@@ -10,20 +10,37 @@
   </p>
 </div>
 
-`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Vello, and Dew is a CPU renderer frugal enough for microcontrollers.
+`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, GTK4 on Linux. Where no native toolkit fits, Hydrolysis is the self-drawn renderer: it draws through Android's hardware-accelerated renderer (HWUI) on Android and on the GPU through Cherenkov elsewhere.
 
 State is plain values. Put mutable state in a `Binding`, derive from it with `Computed`, and hand those to views. When a value changes, the views that read it update. There is no virtual tree to diff, and changing one string never rebuilds the subtree around it.
 
 ## Getting started
 
+Install the `water` CLI. The installer downloads a prebuilt binary; nothing is
+compiled:
+
 ```bash
-cargo install waterui-cli
-water create counter --mode playground
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+```
+
+Then create and run a project:
+
+```bash
+water create counter
 cd counter
 water run
 ```
 
-A playground is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
+`water update` upgrades the CLI in place, and `water update --check` reports the
+newest release without installing it.
+
+A `WaterUI` project is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
 
 ```rust,ignore
 use waterui::app::App;
@@ -72,15 +89,15 @@ The same surface drives `water preview test` for semantic interaction tests and 
 
 ## Shipping a real app
 
-Playgrounds are for iteration. App mode generates platform projects that belong to you, so they can be customized, signed, and packaged:
+The same project you iterate on is the one that ships: the CLI generates and manages the platform projects, and builds, signs and packages the app from the declarations in `Water.toml`:
 
 ```bash
-water create my-app --backends apple,android
+water create my-app
 cd my-app
 water run --platform ios
 ```
 
-`Water.toml` holds package metadata, enabled backends, permissions, and theming. Add or remove a backend later with `water backend`.
+`Water.toml` holds package metadata, permissions, and theming. The backend is chosen per command — `water run --platform android` builds with Hydrolysis, and `--backend android` selects the Kotlin runtime.
 
 To give the app an icon, drop a square `Icon.svg` or `Icon.png` into `assets/`. The CLI renders every platform format from that one file: full-bleed squares for iOS, the rounded-rect shape for macOS, and adaptive icon layers for Android, so the artwork survives each platform's mask. New projects start with the `WaterUI` logo there until you replace it.
 
@@ -133,14 +150,13 @@ One thing to know early: `watch` replaces the subtree it wraps, losing any state
 | Target | Backend | Renders through |
 | --- | --- | --- |
 | iOS and macOS | Apple | `UIKit` / `AppKit` |
-| Android | Android | Android Views |
+| Android | Hydrolysis | Self-drawn, HWUI `RenderNode` display lists |
 | Linux | GTK4 | GTK4 widgets |
-| macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Vello) |
-| ESP32-S3 / ESP32-C3 | Dew | Self-drawn, CPU, dirty-region |
+| macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Cherenkov) |
 
 ## Status
 
-Pre-1.0. The API still moves, and we break it on purpose when a better shape is found. Apple and Android backends are the most complete; Hydrolysis is close behind; GTK4 and Dew are younger. If you hit a wall, an issue with a small reproduction is genuinely useful.
+Pre-1.0. The API still moves, and we break it on purpose when a better shape is found. The Apple backend is the most complete; Hydrolysis, which also serves Android, is close behind; GTK4 is younger. If you hit a wall, an issue with a small reproduction is genuinely useful.
 
 ## Examples
 
@@ -155,7 +171,7 @@ Pre-1.0. The API still moves, and we break it on purpose when a better shape is 
 To run one from a checkout:
 
 ```bash
-cargo install --locked --git https://github.com/water-rs/cli waterui-cli
+cargo install --locked --path cli
 cd examples/gallery
 water run --platform macos
 ```
@@ -164,8 +180,8 @@ water run --platform macos
 
 - [`core/`](core/) — `View`, `Environment`, layout contracts, reactive integration
 - [`components/`](components/) — layouts, text, controls, forms, navigation, media, charts, and friends
-- [`backends/`](backends/) — Apple, Android, GTK4, Hydrolysis, Dew
-- [`water` CLI](https://github.com/water-rs/cli) — the `water` command and project generators (its own repository)
+- [`backends/`](backends/) — the mainline backends: Apple (`UIKit`/`AppKit`) and Hydrolysis (self-drawn, and the Android backend)
+- [`cli/`](cli/) — `waterui-cli`, the `water` command and project generators (a workspace member)
 - [`ffi/`](ffi/) — the C ABI backends talk through
 - [`testing/`](testing/) — semantic UI testing over the accessibility tree
 - [`examples/`](examples/) — runnable applications
@@ -174,7 +190,7 @@ water run --platform macos
 
 - [API reference](https://docs.rs/waterui)
 - [WaterUI book](https://book.waterui.dev)
-- [CLI guide](https://github.com/water-rs/cli)
+- [CLI guide](cli/README.md)
 - [Roadmap](docs/ROADMAP.md)
 
 ## Contributing
