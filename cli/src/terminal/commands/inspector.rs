@@ -8,39 +8,31 @@ use eyre::Result;
 
 use crate::shell::Shell;
 use crate::{header, note, success};
-use waterui_cli::inspector::{InspectorLaunchOptions, InspectorPlatform, launch_inspector_session};
+use waterui_cli::inspector::{
+    InspectorLaunchOptions, InspectorPlatform, InspectorTarget, launch_inspector_session,
+};
 
-/// Target platform for inspector app.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+/// What the inspector attaches to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CliInspectorPlatform {
-    /// iOS Simulator.
+    /// An application on an iOS Simulator; the inspector runs there too.
     Ios,
-    /// macOS.
+    /// An application on this machine.
     Macos,
-    /// Android Emulator / Device.
+    /// An application on an Android device or emulator. The inspector runs
+    /// here and reaches the device's endpoint through `adb forward`.
     Android,
-}
-
-impl From<CliInspectorPlatform> for InspectorPlatform {
-    fn from(platform: CliInspectorPlatform) -> Self {
-        match platform {
-            CliInspectorPlatform::Ios => Self::IosSimulator,
-            CliInspectorPlatform::Macos => Self::Macos,
-            CliInspectorPlatform::Android => Self::Android,
-        }
-    }
 }
 
 /// Arguments for `water inspector`.
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Runtime app debug endpoint (`host:port`), dialled from the device the
-    /// inspector runs on.
+    /// Runtime app debug endpoint (`host:port`).
     ///
     /// Omit it to attach to a debug build running on this machine, which
-    /// publishes where it is listening. `--platform android` requires it: the
-    /// inspector runs on the device, so an app on that same device is
-    /// `127.0.0.1:<port>`.
+    /// publishes where it is listening. `--platform android` requires it, as
+    /// the endpoint the application bound on the device — the port is what
+    /// the `adb forward` carries.
     #[arg(long)]
     target: Option<String>,
 
@@ -72,11 +64,18 @@ impl Args {
 
 /// Run the inspector command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
-    let platform = InspectorPlatform::from(args.platform);
-    if args.device.is_some() && platform != InspectorPlatform::Android {
+    let inspected_android = args.platform == CliInspectorPlatform::Android;
+    // The inspector itself never runs on the phone: Android freezes a cached
+    // application, so an inspector in front of the inspected application
+    // stops it from answering. An Android target is inspected from here.
+    let platform = match args.platform {
+        CliInspectorPlatform::Ios => InspectorPlatform::IosSimulator,
+        CliInspectorPlatform::Macos | CliInspectorPlatform::Android => InspectorPlatform::Macos,
+    };
+    if args.device.is_some() && !inspected_android {
         eyre::bail!("`--device` is supported only with `--platform android`.");
     }
-    require_device_endpoint(platform, args.target.as_deref(), args.token.as_deref())?;
+    require_device_endpoint(args.platform, args.target.as_deref(), args.token.as_deref())?;
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
@@ -100,11 +99,12 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     note!(shell, "Target runtime endpoint: {}", target);
     note!(shell, "Session token: {}", token);
 
-    let android = if platform == InspectorPlatform::Android {
+    let host = waterui_cli::toolchain::Host::current();
+    let inspector_target = if inspected_android {
         let spinner = shell.spinner("Scanning for devices...");
-        let target = super::select_android_target(
+        let device = super::select_android_target(
             shell,
-            &waterui_cli::toolchain::Host::current(),
+            &host,
             waterui_cli::water_dir::device_memory_key(
                 waterui_cli::platform::TargetBackend::Hydrolysis,
                 waterui_cli::platform::TargetPlatform::Android,
@@ -116,25 +116,37 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         if let Some(pb) = spinner {
             pb.finish_and_clear();
         }
-        Some(target?)
+        // An emulator has no serial before it boots, and adb cannot forward
+        // to a device that is not up.
+        let serial = device?.launch(&host).await?.identifier().to_owned();
+        note!(
+            shell,
+            "Forwarding a local port to {} on {serial}",
+            target.port()
+        );
+        InspectorTarget::AndroidDevice {
+            serial,
+            port: target.port(),
+        }
     } else {
-        None
+        InspectorTarget::Local(target)
     };
 
     let mut session = launch_inspector_session(
-        &waterui_cli::toolchain::Host::current(),
+        &host,
         &project_path,
         platform,
-        android,
         InspectorLaunchOptions {
-            target_addr: target.to_string(),
+            target: inspector_target,
             token: token.clone(),
         },
         Some(shell.build_progress()),
     )
     .await?;
 
-    // Keep the inspector app alive after CLI exits.
+    // Keep the inspector app alive after CLI exits. The `adb forward` it
+    // dials through stays registered with the adb server for the same
+    // reason, and the next session reuses it.
     session.detach();
     success!(shell, "Inspector app launched");
     note!(
@@ -144,20 +156,21 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// An Android inspector needs the endpoint and token spelled out.
+/// Inspecting an Android application needs the endpoint and token spelled
+/// out.
 ///
-/// Discovery lists the endpoints advertised on this computer, and the device
-/// the inspector runs on cannot dial their loopback addresses, so there is
-/// nothing to discover for it.
+/// Discovery lists the endpoints advertised on this computer; an
+/// application on a device advertises nothing here, so there is nothing to
+/// discover for it.
 fn require_device_endpoint(
-    platform: InspectorPlatform,
+    platform: CliInspectorPlatform,
     target: Option<&str>,
     token: Option<&str>,
 ) -> Result<()> {
-    if platform == InspectorPlatform::Android && (target.is_none() || token.is_none()) {
+    if platform == CliInspectorPlatform::Android && (target.is_none() || token.is_none()) {
         eyre::bail!(
-            "`--platform android` needs --target <addr:port> (the endpoint as the device sees it; \
-             127.0.0.1:<port> for an app on the same device) and --token <token>"
+            "`--platform android` needs --target <addr:port> (the endpoint the application bound \
+             on the device; the port is what `adb forward` carries) and --token <token>"
         );
     }
     Ok(())
@@ -234,12 +247,10 @@ fn token_for(addr: SocketAddr) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use waterui_cli::inspector::InspectorPlatform;
+    use super::{CliInspectorPlatform, require_device_endpoint};
 
-    use super::require_device_endpoint;
-
-    const ANDROID_ERROR: &str = "`--platform android` needs --target <addr:port> (the endpoint as \
-        the device sees it; 127.0.0.1:<port> for an app on the same device) and --token <token>";
+    const ANDROID_ERROR: &str = "`--platform android` needs --target <addr:port> (the endpoint the application bound on \
+         the device; the port is what `adb forward` carries) and --token <token>";
 
     #[test]
     fn android_requires_both_the_target_and_the_token() {
@@ -248,12 +259,12 @@ mod tests {
             (Some("127.0.0.1:47123"), None),
             (None, Some("token")),
         ] {
-            let error = require_device_endpoint(InspectorPlatform::Android, target, token)
-                .expect_err("an Android inspector cannot discover its endpoint");
+            let error = require_device_endpoint(CliInspectorPlatform::Android, target, token)
+                .expect_err("an application on a device advertises nothing on this machine");
             assert_eq!(error.to_string(), ANDROID_ERROR);
         }
         require_device_endpoint(
-            InspectorPlatform::Android,
+            CliInspectorPlatform::Android,
             Some("127.0.0.1:47123"),
             Some("token"),
         )
@@ -261,8 +272,8 @@ mod tests {
     }
 
     #[test]
-    fn desktop_platforms_may_discover_their_endpoint() {
-        for platform in [InspectorPlatform::Macos, InspectorPlatform::IosSimulator] {
+    fn local_platforms_may_discover_their_endpoint() {
+        for platform in [CliInspectorPlatform::Macos, CliInspectorPlatform::Ios] {
             require_device_endpoint(platform, None, None).expect("discovery is available");
         }
     }

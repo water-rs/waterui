@@ -1,14 +1,14 @@
 //! Inspector app launcher and session management.
 
 use std::collections::BTreeSet;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use eyre::{Context as _, Result, bail};
 use tracing::info;
 
-use crate::android::device::AndroidTarget;
-use crate::build::{BuildOptions, BuildProfile, BuildProgress};
+use crate::build::BuildProgress;
 use crate::device::{Device, Local, RunOptions, Running, StopRequest};
 use crate::platform::TargetPlatform;
 use crate::project::{ManagedBackends, Project};
@@ -17,12 +17,14 @@ use crate::runtime_fingerprint::{compute_runtime_fingerprint, runtime_package_id
 use crate::support_app;
 use crate::templates::TemplateContext;
 
+use super::forward::AndroidForward;
+
 const INSPECTOR_TEMPLATE_COMMIT: &str = env!("WATERUI_CLI_COMMIT");
 const INSPECTOR_METADATA_FILE: &str = ".waterui-inspector-signature";
 /// Bumped whenever `scaffold_inspector_app` changes what it generates beyond
 /// the templated files (manifest edits, permissions), which the template
 /// fingerprint does not cover.
-const INSPECTOR_SCAFFOLD_GENERATION: u32 = 1;
+const INSPECTOR_SCAFFOLD_GENERATION: u32 = 2;
 
 #[derive(Debug, Clone)]
 struct InspectorRequirements {
@@ -30,22 +32,41 @@ struct InspectorRequirements {
     runtime_fingerprint: String,
 }
 
-/// Target platform for launching Inspector app.
+/// The platform the inspector application itself runs on.
+///
+/// The inspector always runs where the developer is: an application on an
+/// Android device is inspected from here too, over the `adb forward` an
+/// [`InspectorTarget::AndroidDevice`] session opens — a phone cannot show
+/// the inspector and keep the inspected application running, because
+/// Android freezes whichever of the two is in the background.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InspectorPlatform {
     /// iOS Simulator.
     IosSimulator,
     /// macOS.
     Macos,
-    /// Android (device or emulator).
-    Android,
+}
+
+/// Where the endpoint the inspector attaches to lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InspectorTarget {
+    /// An endpoint this machine can dial directly.
+    Local(SocketAddr),
+    /// An endpoint on an Android device, reached through an `adb forward`
+    /// the session owns.
+    AndroidDevice {
+        /// The device's adb serial.
+        serial: String,
+        /// The port the application listens on, as the device sees it.
+        port: u16,
+    },
 }
 
 /// Launch options for Inspector app.
 #[derive(Debug, Clone)]
 pub struct InspectorLaunchOptions {
-    /// Runtime app endpoint address (`host:port`).
-    pub target_addr: String,
+    /// The endpoint of the application to inspect.
+    pub target: InspectorTarget,
     /// One-time token used by runtime endpoint and inspector app.
     pub token: String,
 }
@@ -55,6 +76,11 @@ pub struct InspectorLaunchOptions {
 pub struct InspectorSession {
     /// Current platform.
     pub platform: InspectorPlatform,
+    /// The address the inspector application dials.
+    addr: SocketAddr,
+    /// The `adb forward` that makes a device endpoint reachable here, for
+    /// the sessions that opened one.
+    forward: Option<AndroidForward>,
     /// Running handle for apps launched by this session.
     running: Option<Pin<Box<Running>>>,
     /// Whether this session owns the app lifecycle.
@@ -62,25 +88,41 @@ pub struct InspectorSession {
 }
 
 impl InspectorSession {
-    /// Shutdown the inspector app if this session launched it.
+    /// The address the inspector application dials — the endpoint itself,
+    /// or the local end of the `adb forward` onto a device's endpoint.
+    #[must_use]
+    pub const fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Shutdown the inspector app if this session launched it, and remove
+    /// the `adb forward` it opened.
     ///
     /// # Errors
-    /// This method currently does not return an operational error.
+    /// Returns an error if the `adb forward` cannot be removed.
     pub async fn shutdown(&mut self) -> Result<()> {
         if self.owns_app
             && let Some(running) = self.running.take()
         {
             Pin::into_inner(running).shutdown(StopRequest::Kill).await;
         }
+        if let Some(forward) = self.forward.take() {
+            forward.close().await?;
+        }
         Ok(())
     }
 
     /// Detach inspector app so it keeps running after session drop.
+    ///
+    /// A detached inspector keeps dialling through the `adb forward`, so
+    /// the registration stays on the adb server too; the next session for
+    /// the same device endpoint reuses it rather than opening a second one.
     pub fn detach(&mut self) {
         if let Some(running) = self.running.take() {
             std::mem::forget(running);
             self.owns_app = false;
         }
+        self.forward = None;
     }
 }
 
@@ -89,7 +131,6 @@ const fn inspector_target_platform(platform: InspectorPlatform) -> TargetPlatfor
     match platform {
         InspectorPlatform::Macos => TargetPlatform::MacOS,
         InspectorPlatform::IosSimulator => TargetPlatform::IOSSimulator,
-        InspectorPlatform::Android => TargetPlatform::Android,
     }
 }
 
@@ -99,59 +140,49 @@ fn inspector_targets() -> Vec<target_lexicon::Triple> {
     [InspectorPlatform::Macos, InspectorPlatform::IosSimulator]
         .iter()
         .map(|platform| inspector_target_platform(*platform).triple())
-        .chain(crate::android::platform::android_target_triples())
         .collect()
-}
-
-async fn open_inspector_project(
-    host: &crate::toolchain::Host,
-    inspector_app_path: &Path,
-    platform: InspectorPlatform,
-) -> Result<Project> {
-    match platform {
-        // Android runs the support app through Hydrolysis, whose managed
-        // launcher crate is generated on demand rather than by `Project::open`.
-        InspectorPlatform::Android => {
-            crate::hydrolysis::backend::open_ready(host, inspector_app_path)
-                .await
-                .wrap_err("Failed to open inspector support app project")
-        }
-        InspectorPlatform::Macos | InspectorPlatform::IosSimulator => Project::open(
-            host,
-            inspector_app_path,
-            ManagedBackends::for_platform(inspector_target_platform(platform)),
-        )
-        .await
-        .wrap_err("Failed to open inspector support app project"),
-    }
 }
 
 /// Launch (or relaunch) an inspector support app.
 ///
-/// `android` is the device the caller's selection resolved — required for
-/// [`InspectorPlatform::Android`], ignored elsewhere.
-///
 /// # Errors
-/// Returns an error if the support project cannot be prepared or the inspector app fails to launch.
+/// Returns an error if the endpoint cannot be reached, the support project
+/// cannot be prepared, or the inspector app fails to launch.
 pub async fn launch_inspector_session(
     host: &crate::toolchain::Host,
     project_path: &Path,
     platform: InspectorPlatform,
-    android: Option<AndroidTarget>,
     options: InspectorLaunchOptions,
     progress: Option<BuildProgress>,
 ) -> Result<InspectorSession> {
+    // The endpoint is resolved before the support app is built: a device
+    // that cannot be reached is worth knowing about now rather than after
+    // a compile.
+    let (addr, forward) = match &options.target {
+        InspectorTarget::Local(addr) => (*addr, None),
+        InspectorTarget::AndroidDevice { serial, port } => {
+            let forward = AndroidForward::open(host, serial, *port).await?;
+            (forward.local_addr(), Some(forward))
+        }
+    };
+
     let requirements = resolve_inspector_requirements(host, project_path).await?;
 
     let inspector_app_path = inspector_support_path(host)?;
     ensure_inspector_support_app(host, &inspector_app_path, &requirements).await?;
 
-    let project = open_inspector_project(host, &inspector_app_path, platform).await?;
+    let project = Project::open(
+        host,
+        &inspector_app_path,
+        ManagedBackends::for_platform(inspector_target_platform(platform)),
+    )
+    .await
+    .wrap_err("Failed to open inspector support app project")?;
 
     let mut run_options = RunOptions::new();
     run_options.insert_env_var(
         "WATERUI_INSPECTOR_TARGET_ADDR".to_string(),
-        options.target_addr.clone(),
+        addr.to_string(),
     );
     run_options.insert_env_var("WATERUI_INSPECTOR_TOKEN".to_string(), options.token.clone());
 
@@ -194,29 +225,12 @@ pub async fn launch_inspector_session(
                 .await
                 .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
         }
-        InspectorPlatform::Android => {
-            let target = android.ok_or_else(|| {
-                eyre::eyre!("Internal error: Android inspector launch has no resolved device")
-            })?;
-            target.launch(host).await?;
-            info!("Building and running inspector app on Android...");
-            let kotlin = crate::android::platform::require_kotlin(host).await?;
-            crate::hydrolysis::android::run_on_device(
-                &project,
-                crate::hydrolysis::android::resolve_painter(&project, None),
-                target,
-                run_options,
-                BuildOptions::development(BuildProfile::Debug),
-                progress.clone(),
-                &kotlin,
-            )
-            .await
-            .map_err(|e| eyre::eyre!("Failed to run inspector app: {e}"))?
-        }
     };
 
     Ok(InspectorSession {
         platform,
+        addr,
+        forward,
         running: Some(Box::pin(running)),
         owns_app: true,
     })
@@ -251,8 +265,6 @@ async fn scaffold_inspector_app(
     path: &Path,
     requirements: &InspectorRequirements,
 ) -> Result<()> {
-    use crate::project::Manifest as WaterManifest;
-
     let waterui_path = requirements.waterui_path.clone();
 
     let options = inspector_create_options(waterui_path.clone());
@@ -261,10 +273,6 @@ async fn scaffold_inspector_app(
     let project = Project::create(host, path, options)
         .await
         .map_err(|e| eyre::eyre!("Failed to create inspector app: {e}"))?;
-
-    let mut manifest = WaterManifest::open(project.root().join("Water.toml")).await?;
-    configure_inspector_manifest(&mut manifest);
-    manifest.save(project.root()).await?;
 
     let framework = project.resolved_framework().await?;
     let project_packages = project
@@ -302,22 +310,6 @@ async fn scaffold_inspector_app(
 
     info!("Inspector app scaffolded at {}", path.display());
     Ok(())
-}
-
-/// The support app's `Water.toml` edits over what `water create` writes.
-///
-/// A change here changes the scaffold without changing a template, so it
-/// bumps [`INSPECTOR_SCAFFOLD_GENERATION`].
-fn configure_inspector_manifest(manifest: &mut crate::project::Manifest) {
-    manifest.package.accessory = false;
-    // The inspector dials the inspected application's endpoint; on Android a
-    // socket needs INTERNET regardless of what the inspected app declares.
-    manifest.permissions.insert(
-        crate::project_types::PermissionKey::Internet,
-        crate::project::PermissionEntry::enabled(
-            "Connects to the inspected application's endpoint",
-        ),
-    );
 }
 
 /// The `water create` options the inspector support app is scaffolded from.
@@ -428,35 +420,30 @@ fn select_unique_package<'a>(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{InspectorRequirements, configure_inspector_manifest, inspector_signature};
-    use crate::project::Manifest;
-    use crate::project_types::PermissionKey;
+    use super::{InspectorRequirements, inspector_signature, inspector_targets};
 
-    /// The support app dials the inspected endpoint, so the `Water.toml` it is
-    /// scaffolded with enables `internet` whatever the inspected app declares.
+    /// The inspector runs where the developer is, so the support app is
+    /// built for this machine and the simulator only: an Android triple in
+    /// its serving set would be an on-device inspector coming back.
     #[test]
-    fn the_support_manifest_enables_internet() {
-        let mut manifest = Manifest::parse(
-            "[package]\nname = \"WaterUI Inspector\"\nbundle_identifier = \"dev.waterui.inspector\"\n",
-        )
-        .expect("Water.toml parses");
-        configure_inspector_manifest(&mut manifest);
-
-        let written = toml::to_string(&manifest).expect("manifest serializes");
-        let reread = Manifest::parse(&written).expect("the written manifest parses");
+    fn the_support_app_builds_for_no_android_triple() {
+        let targets: Vec<String> = inspector_targets()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         assert!(
-            reread
-                .permissions
-                .get(&PermissionKey::Internet)
-                .is_some_and(crate::project::PermissionEntry::is_enabled),
-            "{written}"
+            !targets.iter().any(|triple| triple.contains("android")),
+            "{targets:?}"
         );
-        assert!(!reread.package.accessory, "{written}");
+        assert!(
+            targets.iter().any(|triple| triple.contains("darwin")),
+            "{targets:?}"
+        );
     }
 
-    /// The manifest edit lies outside the template fingerprint, so the
-    /// signature carries the scaffold generation that invalidates cached
-    /// support apps when the edit changes.
+    /// A scaffold edit outside the templates lies outside the template
+    /// fingerprint, so the signature carries the scaffold generation that
+    /// invalidates cached support apps when the edit changes.
     #[test]
     fn the_signature_carries_the_scaffold_generation() {
         let signature = inspector_signature(&InspectorRequirements {

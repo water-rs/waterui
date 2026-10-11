@@ -5,6 +5,7 @@
 //! changes made in the UI arrive over a channel, so the task never has to poll
 //! the UI state and the UI never has to know about sockets.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -20,6 +21,16 @@ use crate::model::{Connection, Model};
 
 /// How long to wait before reconnecting after a failure.
 const RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// How long the target has to accept a connection and answer the handshake.
+///
+/// A target that never answers used to leave the inspector waiting with no
+/// explanation (water-rs/waterui#2230): Android suspends a cached
+/// application, so its socket stays accepted and the `Hello` sits unread in
+/// the backlog forever. The wait is bounded instead, and the retry loop
+/// shows what failed and against which endpoint. The bound covers a cold
+/// target that is slow to reply, not one that will never reply.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where to connect and with what credential.
 #[derive(Debug, Clone)]
@@ -71,7 +82,7 @@ pub async fn run(model: Model, target: Target, subscriptions: SubscriptionReceiv
         model.connection.set(Connection::Connecting);
         model.reset_stream();
 
-        if let Err(error) = session(&model, &target, &subscriptions).await {
+        if let Err(error) = session(&model, &target, &subscriptions, HANDSHAKE_TIMEOUT).await {
             model.connection.set(Connection::Failed(Str::from(error)));
         }
         smol::Timer::after(RETRY_DELAY).await;
@@ -87,29 +98,43 @@ async fn session(
     model: &Model,
     target: &Target,
     subscriptions: &SubscriptionReceiver,
+    handshake_timeout: Duration,
 ) -> Result<(), String> {
-    let stream = TcpStream::connect(target.addr)
-        .await
-        .map_err(|error| format!("connect failed: {error}"))?;
+    let stream = within(
+        target.addr,
+        "connecting to",
+        handshake_timeout,
+        TcpStream::connect(target.addr),
+    )
+    .await?
+    .map_err(|error| format!("connect to {} failed: {error}", target.addr))?;
     let _ = stream.set_nodelay(true);
 
     let mut writer = stream.clone();
-    write_frame(
-        &mut writer,
-        &InspectorClientMessage::Hello {
-            token: target.token.clone(),
-            protocol: protocol_info(),
-            channels: model.subscribed.snapshot(),
-        },
+    let hello = InspectorClientMessage::Hello {
+        token: target.token.clone(),
+        protocol: protocol_info(),
+        channels: model.subscribed.snapshot(),
+    };
+    within(
+        target.addr,
+        "sending the handshake to",
+        handshake_timeout,
+        async { write_frame(&mut writer, &hello).await },
     )
-    .await
-    .map_err(|error| format!("handshake failed: {error}"))?;
+    .await?
+    .map_err(|error| format!("handshake with {} failed: {error}", target.addr))?;
 
     let mut reader = BufReader::new(stream);
-    match read_frame::<_, InspectorServerMessage>(&mut reader)
-        .await
-        .map_err(|error| format!("handshake failed: {error}"))?
-    {
+    let reply = within(
+        target.addr,
+        "waiting for the handshake reply from",
+        handshake_timeout,
+        read_frame::<_, InspectorServerMessage>(&mut reader),
+    )
+    .await?
+    .map_err(|error| format!("handshake with {} failed: {error}", target.addr))?;
+    match reply {
         InspectorServerMessage::Welcome {
             target: info,
             available,
@@ -152,6 +177,27 @@ async fn session(
     }
 }
 
+/// Await `work`, giving up after [`HANDSHAKE_TIMEOUT`] with an error that
+/// names what was being attempted and the endpoint it was attempted
+/// against — the only two facts a developer needs to tell a wrong address
+/// from a target that is not answering.
+async fn within<T>(
+    addr: SocketAddr,
+    what: &str,
+    timeout: Duration,
+    work: impl Future<Output = T>,
+) -> Result<T, String> {
+    futures_lite::future::or(async { Ok(work.await) }, async {
+        smol::Timer::after(timeout).await;
+        Err(format!(
+            "{what} {addr} timed out after {timeout:?}. The application may be suspended — \
+             Android freezes an application that is not in the foreground — or nothing is \
+             listening there."
+        ))
+    })
+    .await
+}
+
 enum Step {
     Event(std::io::Result<InspectorServerMessage>),
     Subscribe(Option<ChannelSet>),
@@ -190,5 +236,44 @@ fn apply(model: &Model, message: InspectorServerMessage) -> Option<String> {
             None
         }
         InspectorServerMessage::Error { message } => Some(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+    use std::time::Duration;
+
+    use super::{Target, session, subscription_channel};
+    use crate::model::Model;
+
+    /// A target that accepts the connection and never answers — what an
+    /// Android application looks like once the system has frozen it. The
+    /// handshake must end by itself, and say where it was waiting.
+    #[test]
+    fn a_handshake_with_no_reply_fails_naming_the_endpoint() {
+        // The listener is kept alive and never `accept`ed past the backlog:
+        // the connection is established by the kernel, so the inspector is
+        // left waiting on the reply rather than on the connect.
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind a silent target");
+        let addr: SocketAddr = listener.local_addr().expect("the listener's address");
+
+        let (_sender, receiver) = subscription_channel();
+        let model = Model::new();
+        let target = Target {
+            addr,
+            token: String::from("token"),
+        };
+
+        let error = smol::block_on(session(
+            &model,
+            &target,
+            &receiver,
+            Duration::from_millis(200),
+        ))
+        .expect_err("a target that never answers cannot complete a handshake");
+
+        assert!(error.contains(&addr.to_string()), "{error}");
+        assert!(error.contains("timed out"), "{error}");
     }
 }
