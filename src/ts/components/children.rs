@@ -71,7 +71,7 @@ fn reactive(bridge: &Bridge, child: &JsValue) -> Result<AnyView, JsError> {
             }
         }
     };
-    handler.set(build(&source.get())?);
+    handler.set(build(&source.snapshot())?);
     let guard = source.watch(move |context| {
         let view = build(&context.into_value()).unwrap_or_else(|error| {
             panic!("a reactive child of a TypeScript view could not be realized: {error}")
