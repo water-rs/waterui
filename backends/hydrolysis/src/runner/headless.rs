@@ -388,7 +388,7 @@ impl HeadlessRuntime {
 
     /// Creates a headless runtime for `WaterUI` test hosts.
     ///
-    /// This constructor allows compute-capable software adapters for CI-only
+    /// This constructor allows software adapters for CI-only
     /// semantic testing while keeping [`Self::new`] on production adapter
     /// selection, and resolves font families strictly
     /// ([`FontFamilyResolution::Strict`]): a named family the collection
