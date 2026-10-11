@@ -208,16 +208,6 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     );
 }
 
-/// f32 coverage → `R8Unorm` texels.
-#[expect(clippy::cast_possible_truncation)]
-#[expect(clippy::cast_sign_loss)]
-fn texels(coverage: &[f32]) -> Vec<u8> {
-    coverage
-        .iter()
-        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect()
-}
-
 /// Emits `coverage` as spans and atlas cells: one cell when the grid is
 /// small, otherwise strips of [`STRIP_H`] rows split into full-column span
 /// runs and partial-column cells.
@@ -242,11 +232,15 @@ pub fn emit(coverage: &Coverage) -> Result<(PathEmit, Vec<CellTexels>), RenderEr
         let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
             return Err(RenderError::AtlasFull);
         };
-        let mut rows = Vec::with_capacity(w * h);
+        let mut cell = Vec::with_capacity(w * h);
         for row in 0..h {
-            rows.extend_from_slice(&coverage.data[(y + row) * coverage.w + x..][..w]);
+            cell.extend(
+                coverage.data[(y + row) * coverage.w + x..][..w]
+                    .iter()
+                    .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
+            );
         }
-        rasters.push((w32, h32, texels(&rows)));
+        rasters.push((w32, h32, cell));
         cells.push(PathCell {
             rect: [
                 (coverage.x + x as f64) as f32,
