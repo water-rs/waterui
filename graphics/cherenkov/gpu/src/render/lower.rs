@@ -22,10 +22,10 @@ use crate::render::filter::FilterKey;
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
 use crate::render::instance::{
     ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
-    FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals,
-    Instance, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN,
-    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID,
-    PAINT_TEXTURE, Shape, Stop, affine, blend_code,
+    FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
+    KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
+    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID, PAINT_TEXTURE, Shape, Stop,
+    affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -436,16 +436,15 @@ fn interior_tier(inst: &Instance) -> u32 {
     if inst.meta[0] != KIND_FILL
         || inst.meta[1] != PAINT_SOLID
         || s.exponent != 2.0
-        || f64::from(inst.bounds[2] - inst.bounds[0])
-            * f64::from(inst.bounds[3] - inst.bounds[1])
+        || f64::from(inst.bounds[2] - inst.bounds[0]) * f64::from(inst.bounds[3] - inst.bounds[1])
             < ELLIPSE_TIER16_MIN_AREA
         || s.radii != [s.half[0]; 4]
         || inst.color[3] * inst.params[1] != 1.0
     {
         return 0;
     }
-    let det = f64::from(inst.affine[0].mul_add(inst.affine[3], -(inst.affine[1] * inst.affine[2])))
-        .abs();
+    let det =
+        f64::from(inst.affine[0].mul_add(inst.affine[3], -(inst.affine[1] * inst.affine[2]))).abs();
     let area = std::f64::consts::PI
         * f64::from(s.half[0])
         * f64::from(s.half[0])
@@ -2106,8 +2105,7 @@ impl<'a> Lowering<'a> {
                         dst.shape = src.shape;
                         dst.color = src.color;
                         dst.params = src.params;
-                        dst.grad[0] =
-                            f32::from_bits(u32::try_from(src_index).unwrap_or(u32::MAX));
+                        dst.grad[0] = f32::from_bits(u32::try_from(src_index).unwrap_or(u32::MAX));
                         dst.meta = [KIND_POLYGON, PAINT_SOLID, 0, tier + 1];
                         // The polygon covers the octagon this fill would
                         // have drawn; the low bits tell vs_opaque to
