@@ -2162,7 +2162,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -2531,7 +2531,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -4337,7 +4337,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -4841,7 +4841,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -9310,7 +9310,7 @@ dependencies = [
  "cfg-if 1.0.5",
  "libc",
  "rustix 1.1.5",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -13529,7 +13529,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0#1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0"
+source = "git+https://github.com/water-rs/map-gpu?rev=5c0882a5d757ec8e8be79c169d3bad5e874d0046#5c0882a5d757ec8e8be79c169d3bad5e874d0046"
 dependencies = [
  "blocking",
  "executor-core",
@@ -13547,6 +13547,7 @@ dependencies = [
  "native-executor",
  "parley",
  "rayon",
+ "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
