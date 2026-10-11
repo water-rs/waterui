@@ -338,6 +338,9 @@ jiff.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 waterui = { workspace = true, features = ["dialog", "flow-markdown", "gpu", "snackbar", "video-gpu"] }
 base64 = "0.22"
+# The font-collection tests stage a resource root of their own — a real
+# directory, since the loader reads one from the filesystem.
+tempfile = "3.27"
 # Tolerance assertions for computed geometry and animation values in tests.
 approx = "0.5"
 executor-core = { workspace = true, features = ["async-executor"] }

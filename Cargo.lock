@@ -4600,6 +4600,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "skrifa 0.44.0",
+ "tempfile",
  "thiserror 2.0.21",
  "tiny_http",
  "toml 1.1.6+spec-1.1.0",

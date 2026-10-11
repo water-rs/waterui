@@ -185,13 +185,18 @@ impl DevicePayload {
 
         // Asset mounts ship as the library layout's `waterui_assets`
         // directory, staged through the shared planner and read from there.
+        // The declared faces ship inside it too, as they do in a packaged
+        // app — the preview renders text in the application's own fonts.
         let symbols = build.built.app_symbols().await?;
         let resources_dir = dir.join(PayloadPart::Resources.dir());
         let (libraries, bundle_stamp) = futures_util::try_join!(
             stage_stripped_libraries(project, host, abi, &build, &root),
             async {
-                let manifest = assets::plan_library_resources(project, &symbols, false).await?;
-                assets::write_library_resources(&manifest, &resources_dir).await
+                let (manifest, fonts) = futures_util::try_join!(
+                    assets::plan_library_resources(project, &symbols, false),
+                    hydrolysis_android::resolve_declared_fonts(project),
+                )?;
+                assets::write_android_library_resources(&manifest, &resources_dir, &fonts).await
             },
         )?;
         Self::from_staged(dir, libraries, bundle_stamp).await
