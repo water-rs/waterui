@@ -600,7 +600,7 @@ pub mod anchored_overlay {
         use alloc::rc::Rc;
         use core::cell::Cell;
 
-        use nami::{Binding, binding};
+        use nami::{Binding, Signal, binding};
         use waterui_core::{Environment, View};
 
         use super::AnchoredOverlay;
@@ -652,7 +652,7 @@ pub mod anchored_overlay {
             assert_ne!(first.build, second.build);
 
             first.shared.set(7);
-            assert_eq!(second.shared.get(), 7);
+            assert_eq!(second.shared.snapshot(), 7);
         }
     }
 }
