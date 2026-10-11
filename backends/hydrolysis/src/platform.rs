@@ -1451,6 +1451,63 @@ mod adapter_selection_tests {
         assert!(GPU_REQUIRED_GUIDANCE.contains("waterui-dew"));
         assert!(GPU_REQUIRED_GUIDANCE.contains("diagnostics only"));
     }
+
+    /// The compute fields of a `wgpu::Limits` with every other field at its
+    /// default: `check_limits` is whole-set, and the raster floor
+    /// legitimately exceeds what a compute-free adapter offers elsewhere, so
+    /// the compute fields are compared through the same wgpu comparator on
+    /// their own.
+    fn compute_only(limits: &wgpu::Limits) -> wgpu::Limits {
+        wgpu::Limits {
+            max_compute_workgroup_storage_size: limits.max_compute_workgroup_storage_size,
+            max_compute_invocations_per_workgroup: limits.max_compute_invocations_per_workgroup,
+            max_compute_workgroup_size_x: limits.max_compute_workgroup_size_x,
+            max_compute_workgroup_size_y: limits.max_compute_workgroup_size_y,
+            max_compute_workgroup_size_z: limits.max_compute_workgroup_size_z,
+            max_compute_workgroups_per_dimension: limits.max_compute_workgroups_per_dimension,
+            ..wgpu::Limits::default()
+        }
+    }
+
+    #[test]
+    fn a_compute_free_adapter_is_asked_for_zero_compute_limits() {
+        // A WebGL2-class adapter reports zero for every compute field: the
+        // request must inherit the zeros, not the defaults' nonzero values
+        // that would fail the device request on a capability the pipeline
+        // never uses.
+        let adapter_limits = wgpu::Limits::downlevel_webgl2_defaults();
+        let requested = super::device_limits_for(&adapter_limits);
+        assert_eq!(requested.max_compute_workgroup_storage_size, 0);
+        assert_eq!(requested.max_compute_invocations_per_workgroup, 0);
+        assert_eq!(requested.max_compute_workgroup_size_x, 0);
+        assert_eq!(requested.max_compute_workgroup_size_y, 0);
+        assert_eq!(requested.max_compute_workgroup_size_z, 0);
+        assert_eq!(requested.max_compute_workgroups_per_dimension, 0);
+        assert!(compute_only(&requested).check_limits(&compute_only(&adapter_limits)));
+    }
+
+    #[test]
+    fn compute_limits_stay_at_the_default_floor() {
+        // An adapter offering more than the defaults is still asked for the
+        // defaults, and the rest of the request keeps its values.
+        let adapter_limits = wgpu::Limits {
+            max_compute_workgroup_storage_size: u32::MAX,
+            max_compute_invocations_per_workgroup: u32::MAX,
+            max_compute_workgroup_size_x: u32::MAX,
+            max_compute_workgroup_size_y: u32::MAX,
+            max_compute_workgroup_size_z: u32::MAX,
+            max_compute_workgroups_per_dimension: u32::MAX,
+            ..wgpu::Limits::default()
+        };
+        let requested = super::device_limits_for(&adapter_limits);
+        let defaults = wgpu::Limits::default();
+        assert_eq!(
+            requested.max_compute_workgroups_per_dimension,
+            defaults.max_compute_workgroups_per_dimension
+        );
+        assert_eq!(requested.max_bind_groups, defaults.max_bind_groups);
+        assert!(compute_only(&requested).check_limits(&compute_only(&adapter_limits)));
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1845,11 +1902,42 @@ impl OffscreenSurface {
 /// resolution and alignment taken from the adapter. The engine's raster
 /// pipeline is written against the defaults, so an adapter below them fails
 /// the device request — there is no downlevel limits fallback.
+///
+/// Compute is a device capability, not part of the floor
+/// (`cherenkov_gpu::interop::SharedDevice::has_compute` reports it for the
+/// strategies that can use it), so the compute fields ask for
+/// `min(default, adapter)` — the defaults' nonzero values would fail the
+/// request on an adapter that reports zero compute the pipeline never uses.
+fn device_limits_for(adapter_limits: &wgpu::Limits) -> wgpu::Limits {
+    let defaults = wgpu::Limits::default();
+    wgpu::Limits {
+        max_compute_workgroup_storage_size: defaults
+            .max_compute_workgroup_storage_size
+            .min(adapter_limits.max_compute_workgroup_storage_size),
+        max_compute_invocations_per_workgroup: defaults
+            .max_compute_invocations_per_workgroup
+            .min(adapter_limits.max_compute_invocations_per_workgroup),
+        max_compute_workgroup_size_x: defaults
+            .max_compute_workgroup_size_x
+            .min(adapter_limits.max_compute_workgroup_size_x),
+        max_compute_workgroup_size_y: defaults
+            .max_compute_workgroup_size_y
+            .min(adapter_limits.max_compute_workgroup_size_y),
+        max_compute_workgroup_size_z: defaults
+            .max_compute_workgroup_size_z
+            .min(adapter_limits.max_compute_workgroup_size_z),
+        max_compute_workgroups_per_dimension: defaults
+            .max_compute_workgroups_per_dimension
+            .min(adapter_limits.max_compute_workgroups_per_dimension),
+        ..defaults
+    }
+    .using_resolution(adapter_limits.clone())
+    .using_alignment(adapter_limits.clone())
+}
+
+/// The limits a host-provided adapter is asked for.
 pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
-    let adapter_limits = adapter.limits();
-    wgpu::Limits::default()
-        .using_resolution(adapter_limits.clone())
-        .using_alignment(adapter_limits)
+    device_limits_for(&adapter.limits())
 }
 
 impl PresentationSurface for OffscreenSurface {
