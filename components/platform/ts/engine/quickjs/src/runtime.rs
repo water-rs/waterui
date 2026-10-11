@@ -8,6 +8,7 @@
 //! property names the identity.
 
 use std::any::Any;
+use std::cell::Cell;
 use std::fmt;
 use std::rc::Rc;
 
@@ -97,9 +98,50 @@ struct Retained {
 pub struct QuickJsRuntime {
     /// Owns the underlying `Runtime` — `Context` keeps it alive.
     context: Context,
+    /// The `Context::with` frames this runtime has open on this thread.
+    /// `Context::with` panics on a nested borrow, but JavaScript re-entry
+    /// is real: a `__waterui_host` function invoked mid-call lets Rust
+    /// call back into the runtime while the outer frame still holds the
+    /// lock. Because the runtime is `!Send` and `context` is private, a
+    /// nonzero depth proves that lock is held by this thread for the
+    /// rest of the frame — the precondition [`Ctx::from_raw`] documents.
+    depth: Cell<u32>,
+}
+
+/// Steps the entry depth back on return and on unwind alike.
+struct DepthGuard<'a>(&'a Cell<u32>);
+
+impl Drop for DepthGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
 }
 
 impl QuickJsRuntime {
+    /// Runs `f` on a live [`Ctx`].
+    ///
+    /// The outermost entry locks the runtime through `Context::with`. A
+    /// nested entry — a host function calling `eval`, `call`, `retain` or
+    /// `register` while JavaScript is mid-flight — cannot take a second
+    /// `RefCell` borrow, but it does not need one: the depth proves the
+    /// lock is already held by this thread, so [`Ctx::from_raw`]'s
+    /// documented precondition is met and the fresh `Ctx` can safely go
+    /// to `f`. It cannot outlive the call: `f` is the only place it goes.
+    fn with_ctx<R>(&self, f: impl FnOnce(Ctx) -> Result<R, JsError>) -> Result<R, JsError> {
+        if self.depth.get() != 0 {
+            // SAFETY: `depth != 0` means a `Context::with` closure below
+            // holds the runtime lock on this thread for the whole of this
+            // call — exactly what `Ctx::from_raw` requires.
+            let ctx = unsafe { Ctx::from_raw(self.context.as_raw()) };
+            return f(ctx);
+        }
+        self.context.with(|ctx| {
+            self.depth.set(self.depth.get() + 1);
+            let _depth = DepthGuard(&self.depth);
+            f(ctx)
+        })
+    }
+
     /// The `__waterui_host` namespace object, created empty at construction.
     fn host_namespace<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, JsError> {
         ctx.globals()
@@ -172,7 +214,10 @@ impl QuickJsRuntime {
             JsValue::Undefined => Value::new_undefined(ctx.clone()),
             JsValue::Null => Value::new_null(ctx.clone()),
             JsValue::Bool(value) => Value::new_bool(ctx.clone(), *value),
-            JsValue::Number(value) => Value::new_number(ctx.clone(), *value),
+            // `new_number` shortcuts integral values to the int tag and would
+            // collapse `-0.0` into `+0`; `JS_NewFloat64` still takes the int
+            // tag where the bit pattern allows it, but keeps a negative zero.
+            JsValue::Number(value) => Value::new_float(ctx.clone(), *value),
             JsValue::BigInt(BigInt::Signed(value)) => QBigInt::from_i64(ctx.clone(), *value)
                 .map_err(fail)?
                 .into_value(),
@@ -449,11 +494,14 @@ impl JsRuntime for QuickJsRuntime {
             .map_err(|_| JsError::new("Error", "the context rejected its bridge userdata"))?;
             Ok(())
         })?;
-        Ok(Self { context })
+        Ok(Self {
+            context,
+            depth: Cell::new(0),
+        })
     }
 
     fn eval(&self, source: &str, name: &str) -> Result<JsValue, JsError> {
-        self.context.with(|ctx| {
+        self.with_ctx(|ctx| {
             // Classic scripts are sloppy — matching JavaScriptCore; a bundle
             // opts in with its own `"use strict"` directive.
             let mut options = EvalOptions::default();
@@ -467,7 +515,7 @@ impl JsRuntime for QuickJsRuntime {
     }
 
     fn call(&self, function: &JsFunction, args: &[JsValue]) -> Result<JsValue, JsError> {
-        self.context.with(|ctx| {
+        self.with_ctx(|ctx| {
             let value = restore(&ctx, function.handle())?;
             let function = value.into_function().ok_or_else(|| {
                 JsError::conversion("a JsFunction no longer refers to a function")
@@ -492,7 +540,7 @@ impl JsRuntime for QuickJsRuntime {
     ) -> Result<(), JsError> {
         let host: HostFunction = Rc::new(function);
         let context = self.context.clone();
-        self.context.with(|ctx| {
+        self.with_ctx(|ctx| {
             let function = make_host_function(&ctx, host, context)?;
             Self::host_namespace(&ctx)?
                 .set(name, function)
@@ -501,7 +549,7 @@ impl JsRuntime for QuickJsRuntime {
     }
 
     fn retain(&self, value: &JsValue) -> Result<JsObject, JsError> {
-        self.context.with(|ctx| match value {
+        self.with_ctx(|ctx| match value {
             JsValue::Object(_) | JsValue::ObjectRef(_) | JsValue::Function(_) => {
                 let value = Self::to_js(&ctx, value, 0)?;
                 Ok(JsObject::from_handle(retain_value(
@@ -520,7 +568,11 @@ impl JsRuntime for QuickJsRuntime {
 #[cfg(test)]
 impl waterui_ts_engine::conformance::CollectGarbage for QuickJsRuntime {
     fn collect_garbage(&self) {
-        self.context.with(|ctx| ctx.run_gc());
+        self.with_ctx(|ctx| {
+            ctx.run_gc();
+            Ok(())
+        })
+        .expect("garbage collection cannot fail");
     }
 }
 
@@ -569,5 +621,104 @@ mod tests {
                 "the revoked-proxy probe left a pending exception"
             );
         });
+    }
+
+    /// The nested-borrow regression: a `__waterui_host` function runs
+    /// while the `Context::with` frame that called it still holds the
+    /// runtime lock, so everything it does back into the engine —
+    /// `eval`, `call`, `retain`, `register` — has to re-enter on that
+    /// live context rather than take a second borrow. Before the depth
+    /// guard existed every one of these panicked with
+    /// `RefCell already borrowed`.
+    #[test]
+    fn a_host_function_reenters_every_entry_point() {
+        let runtime = Rc::new(QuickJsRuntime::new().expect("the engine constructs"));
+        let nested = Rc::clone(&runtime);
+        runtime
+            .register("reenter", move |_args| {
+                assert_eq!(nested.depth.get(), 1, "the outer eval still holds the lock");
+
+                // eval
+                assert_eq!(nested.eval("40 + 2", "nested.js")?, JsValue::Number(42.0));
+
+                // call — a function expression crosses as a function handle
+                let JsValue::Function(function) = nested.eval("((x) => x * 2)", "fn.js")? else {
+                    panic!("a function expression crosses as a function");
+                };
+                assert_eq!(
+                    nested.call(&function, &[JsValue::Number(21.0)])?,
+                    JsValue::Number(42.0)
+                );
+
+                // retain
+                let object = nested.eval("({})", "object.js")?;
+                nested.retain(&object)?;
+
+                // register — verified below from the outer frame
+                nested.register("inner", |_args| Ok(JsValue::Number(7.0)))?;
+
+                Ok(JsValue::Bool(true))
+            })
+            .expect("a host function registers");
+
+        assert_eq!(
+            runtime
+                .eval("__waterui_host.reenter()", "outer.js")
+                .expect("the nested host call re-enters on the live context"),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            runtime.depth.get(),
+            0,
+            "the entry depth unwound with the frame"
+        );
+        assert_eq!(
+            runtime
+                .eval("__waterui_host.inner()", "inner.js")
+                .expect("the runtime still evaluates"),
+            JsValue::Number(7.0),
+            "the nested registration landed on the shared context"
+        );
+    }
+
+    /// An error a nested call reports does not strand the depth: the
+    /// failed entry still unwound its frame, so the runtime answers the
+    /// next outer entry.
+    #[test]
+    fn the_entry_depth_recovers_from_a_failed_nested_call() {
+        let runtime = Rc::new(QuickJsRuntime::new().expect("the engine constructs"));
+        let nested = Rc::clone(&runtime);
+        runtime
+            .register("fail_nested", move |_args| {
+                let result = nested.eval("throw new Error('nope')", "nested.js");
+                assert!(result.is_err(), "the nested eval reports the throw");
+                Ok(JsValue::Bool(true))
+            })
+            .expect("a host function registers");
+
+        runtime
+            .eval("__waterui_host.fail_nested()", "outer.js")
+            .expect("the host call settled");
+        assert_eq!(runtime.depth.get(), 0);
+        runtime
+            .eval("1 + 1", "after.js")
+            .expect("the runtime still evaluates");
+    }
+
+    /// A panic unwinding through `with_ctx` still runs the depth guard,
+    /// and the lock `Context::with` released leaves the runtime usable.
+    #[test]
+    fn the_entry_depth_recovers_from_an_unwind() {
+        let runtime = QuickJsRuntime::new().expect("the engine constructs");
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = runtime.with_ctx(|_ctx| -> Result<(), JsError> {
+                panic!("a forced unwind");
+            });
+        }));
+        assert!(unwound.is_err(), "the panic unwound through the frame");
+        assert_eq!(runtime.depth.get(), 0, "the depth guard ran");
+        runtime
+            .eval("1 + 1", "after.js")
+            .expect("the runtime still evaluates");
     }
 }
