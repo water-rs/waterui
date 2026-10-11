@@ -632,3 +632,34 @@ build it with `Label::new(semantic_text, || content)`, which does this for you.
 `.a11y_id` is the escape hatch for views that are hard to label meaningfully; the same
 identifier is what `waterui-testing` queries with `.identifier(..)`. Prefer a real label
 where one exists — the label serves users, the id only serves tests.
+
+## Dialogs (alerts, confirmations)
+
+`.dialog(...)` presents a window-modal alert while its `Binding<bool>` is true — the
+platform's native alert on Apple (`NSAlert` sheet on AppKit, `UIAlertController` on
+UIKit), and elsewhere the self-drawn card on a modal layer that dims the window with
+the `Scrim` theme colour and leaves the wrapped content inert for pointer, keyboard
+and the accessibility tree. Actions declare their role — `Default`, `Cancel`,
+`Destructive` — and the platform does the ordering: the primary (first `Default`)
+action sits rightmost and answers Return, `Cancel` is visually separated on
+iOS, and declaration order holds within each role. Tapping an action runs its handler
+then writes `false` to the binding; writing `false` yourself dismisses without a
+handler. Escape, Android back and the scrim tap are the *cancel path*: they run the
+`Cancel` action's handler, and are no-ops when no `Cancel` exists. At most one
+`Cancel` action is allowed — a second panics; no actions at all gains a single
+acknowledgement in the platform's wording. One dialog presents per window at a time; a
+second one presented meanwhile waits until the first closes.
+
+```rust
+use waterui::dialog::{Dialog, DialogAction};
+
+let presented = binding(false);
+button("Delete")
+    .action({ let presented = presented.clone(); move || presented.set(true) })
+    .dialog(
+        Dialog::new(&presented, "Delete photo?")        // title takes impl IntoText
+            .message("This cannot be undone.")          // optional, also IntoText
+            .action(DialogAction::cancel("Cancel", || {}))
+            .action(DialogAction::destructive("Delete", |_: Environment| trash_photo())),
+    )
+```

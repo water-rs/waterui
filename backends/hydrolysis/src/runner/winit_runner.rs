@@ -1194,6 +1194,7 @@ impl WinitRunner {
         let text = SessionTextEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let closable = window.closable;
+        window.arm_close_requests(&self.env);
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
         runtime

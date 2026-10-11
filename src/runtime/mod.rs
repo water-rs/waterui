@@ -1,4 +1,6 @@
 pub mod app;
+#[cfg(feature = "dialog")]
+pub mod dialog;
 mod entry;
 pub mod error;
 pub mod fullscreen;
@@ -8,11 +10,14 @@ pub mod fullscreen;
 #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 pub mod inspector;
 pub mod metadata;
+#[cfg(test)]
+mod parked_executor;
 pub mod realization;
 #[cfg(feature = "snackbar")]
 pub mod snackbar;
 pub mod task;
 mod termination;
 pub mod window;
+mod window_close;
 
 pub use entry::entry;

@@ -251,6 +251,7 @@ impl SemanticRuntime {
             .get::<MenuShortcutRegistry>()
             .expect("install_headless_window_managers seeds MenuShortcutRegistry")
             .mint_window_id();
+        window.arm_close_requests(&env);
         Self {
             env,
             window: SemanticWindow::new(window, &fonts, window_id, family_resolution),
@@ -466,6 +467,7 @@ impl SemanticRuntime {
                 .get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id();
+            window.arm_close_requests(&self.env);
             self.popup_windows.push(SemanticWindow::new(
                 window,
                 &fonts,
@@ -546,13 +548,14 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
         let changed = match event {
             InputEvent::CloseRequested => {
                 // The rendered runner's close gate (`handle_input_events`):
-                // a non-closable window ignores every close request.
+                // a non-closable window ignores every close request, and a
+                // closable one files it through the close-request machine —
+                // an `on_close_request` handler answers it on the local
+                // executor.
                 if window.window.closable {
-                    window
-                        .window
-                        .state
-                        .set(waterui::window::WindowState::Closed);
-                    should_close = true;
+                    window.window.request_close(env);
+                    should_close =
+                        window.window.state.snapshot() == waterui::window::WindowState::Closed;
                 }
                 true
             }

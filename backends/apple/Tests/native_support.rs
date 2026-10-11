@@ -458,6 +458,11 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
         &background,
         true,
         true,
+        // The declaration this models registers no `on_close_request`
+        // handler, so the embed path's
+        // `has_close_handler().then(|| declaration.handle())` is `None` —
+        // the host window's close button stays unconditional.
+        None,
         mtm,
     );
 

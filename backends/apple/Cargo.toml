@@ -31,6 +31,7 @@ default = [
     "context_menu",
     "cursor",
     "date_picker",
+    "dialog",
     "draggable",
     "drop_destination",
     "dynamic",
@@ -92,6 +93,7 @@ container = []
 context_menu = []
 cursor = []
 date_picker = []
+dialog = ["waterui/dialog", "cocoa-ui/dialog"]
 draggable = []
 drop_destination = []
 dynamic = []

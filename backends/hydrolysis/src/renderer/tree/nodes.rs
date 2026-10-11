@@ -939,6 +939,11 @@ pub(super) enum WrapperEffect {
     /// for the post-flush `render_anchored_overlays` pass, which measures,
     /// places and draws the open overlay at window level above all content.
     AnchoredOverlay(AnchoredOverlayEffect),
+    /// `.dialog(...)`: reports the dialog's presentation to the window's
+    /// dialog stack each flush; the post-flush `render_dialogs` pass draws
+    /// the one on screen in the modal layer above all content — its scrim
+    /// plus the composed card.
+    Dialog(DialogEffect),
 }
 
 impl WrapperEffect {
@@ -956,6 +961,7 @@ impl WrapperEffect {
                 | Self::DropDestination(_)
                 | Self::ContextMenu(_)
                 | Self::AnchoredOverlay(_)
+                | Self::Dialog(_)
                 | Self::LifeCycle(_)
         )
     }
@@ -981,6 +987,23 @@ pub struct AnchoredOverlayEffect {
     /// Identity shared with the registration, so the render pass can match an
     /// open overlay to the anchor that emitted it — and tell that an anchor
     /// that stopped registering left the tree.
+    pub(crate) marker: Rc<()>,
+}
+
+/// The node-owned state of a `.dialog(...)` wrapper. The content slot is
+/// `Rc`-shared because the post-flush render pass — not this node — measures
+/// and flushes the modal layer, and the node keeps it built across closes.
+pub struct DialogEffect {
+    /// The layer content — the dialog's scrim-plus-card modal layer.
+    pub(crate) content: Rc<RefCell<RetainedSubview>>,
+    /// The dialog being presented: its cancel path is what the modal
+    /// environment routes Escape and the Android system back to. Its
+    /// presentation binding is read every flush (subscribing the frame to
+    /// it) and written `false` by the dialog's own dismiss paths and by the
+    /// node leaving the tree.
+    pub(crate) dialog: waterui::dialog::Dialog,
+    /// The node's identity in the window's dialog stack — a node that stops
+    /// reporting left the tree.
     pub(crate) marker: Rc<()>,
 }
 

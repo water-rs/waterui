@@ -528,6 +528,8 @@ impl HeadlessRuntime {
             ),
         ));
 
+        window.arm_close_requests(&env);
+
         let mut platform = HeadlessPlatformWindow::on_context(
             gpu.clone(),
             width.max(1),
@@ -592,6 +594,7 @@ impl HeadlessRuntime {
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        window.arm_close_requests(&self.env);
         RuntimeWindow::new(
             window,
             platform,

@@ -1735,11 +1735,14 @@ where
                 // sent straight to a Windows window: a non-closable window
                 // ignores them all.
                 if runtime.window.closable {
-                    runtime
-                        .window
-                        .state
-                        .set(waterui::window::WindowState::Closed);
-                    should_close = true;
+                    // Files through the close-request machine: an
+                    // `on_close_request` handler answers it on the local
+                    // executor — `Close` writes `Closed` then and the watch
+                    // on `state` wakes the loop for the reap — while a
+                    // handlerless request closes synchronously as before.
+                    runtime.window.request_close(env);
+                    should_close =
+                        runtime.window.state.snapshot() == waterui::window::WindowState::Closed;
                 }
             }
             InputEvent::Moved { x, y } => {
