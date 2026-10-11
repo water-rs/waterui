@@ -3,12 +3,19 @@
 //! estimate. Each newly measured row changes the list's `total_extent`, which
 //! rebinds the list's `ScrollHandle` and advances its generation; the gesture
 //! still owns the scroll view and its writes must keep landing.
+//!
+//! Touch-scroll claim, slop and fling machinery is the backend's own, so the
+//! tests stay here under water-rs/waterui#1673, mounted on `HeadlessRuntime`
+//! under `TestStyle`.
 
-use hydrolysis_m3::Material3;
+mod support;
+
+use accesskit::Role;
+use support::{mount_rendered, nodes};
 use waterui::component::list::{List, ListItem};
 use waterui::component::text;
 use waterui::{View, ViewExt};
-use waterui_testing::{DragOptions, OffscreenApp, Role, VIRTUAL_FRAME, ui};
+use waterui_core::Environment;
 
 const VIEWPORT: (u32, u32) = (390, 844);
 const ROW_COUNT: usize = 120;
@@ -19,13 +26,15 @@ const DRAG_X: f32 = 195.0;
 const DRAG_START_Y: f32 = 760.0;
 /// Each drag sample moves the finger this far up, one sample per frame.
 const DRAG_STEP: f32 = 50.0;
-const DRAG_STEPS: u16 = 12;
+const DRAG_STEPS: u32 = 12;
 /// The fling's lead-in drag: two fast samples a frame apart.
-const FLING_STEPS: u16 = 2;
+const FLING_STEPS: u32 = 2;
 const FLING_DISTANCE: f32 = 240.0;
 /// Frames sampled after release; a ~7000 pt/s Android spline fling runs for
 /// well over a second, far past this window.
 const FLING_FRAMES: usize = 30;
+/// One virtual frame.
+const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
 /// Rows of one to four text lines: every row measures taller or shorter than
 /// the list's single seed estimate, so revealing a row changes the extent.
@@ -46,37 +55,30 @@ fn uneven_list() -> impl View {
     .a11y_label("uneven")
 }
 
-fn mount() -> OffscreenApp {
-    let mut app = ui()
-        .viewport(VIEWPORT.0, VIEWPORT.1)
-        .theme(Material3::defaults())
-        .mount_offscreen(uneven_list);
+fn mount() -> support::RenderedApp {
+    let mut app = mount_rendered(Environment::new(), uneven_list, VIEWPORT.0, VIEWPORT.1);
     app.set_touch_scroll_config(hydrolysis::TouchScrollConfig::android_default());
+    app.settle();
     app
 }
 
-fn list_offset(app: &mut OffscreenApp) -> f64 {
-    app.query()
-        .role(Role::LIST)
-        .label("uneven")
-        .single()
-        .node()
+fn list_offset(app: &mut support::RenderedApp) -> f64 {
+    nodes(app.tree())
+        .find(|(_, node)| node.role() == Role::List && node.label() == Some("uneven"))
+        .expect("the rendered list emits a node")
+        .1
         .scroll_y()
         .expect("the rendered list reports its offset")
-}
-
-const fn touch_drag(steps: u16) -> DragOptions {
-    DragOptions {
-        steps,
-        frame_per_step: true,
-        pointer: hydrolysis::PointerKind::Touch,
-    }
 }
 
 /// The offset after the first `steps` samples of the same drag, read before
 /// the release is processed: one fresh mount per prefix, so the samples are
 /// the per-frame offsets of a single gesture.
-fn offset_after_drag_prefix(steps: u16) -> f64 {
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the drag runs at most a handful of steps"
+)]
+fn offset_after_drag_prefix(steps: u32) -> f64 {
     let mut app = mount();
     // Nothing has scrolled the fresh mount: its offset is the initial
     // value, exactly zero.
@@ -85,26 +87,31 @@ fn offset_after_drag_prefix(steps: u16) -> f64 {
         0.0_f64.to_bits(),
         "the list starts at the top"
     );
-    let distance = DRAG_STEP * f32::from(steps);
+    let distance = DRAG_STEP * steps as f32;
     app.queue_drag_from_to_with(
         DRAG_X,
         DRAG_START_Y,
         DRAG_X,
         DRAG_START_Y - distance,
-        touch_drag(steps),
+        steps,
+        true,
+        hydrolysis::PointerKind::Touch,
     );
     list_offset(&mut app)
 }
 
 #[test]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the drag runs at most a handful of steps"
+)]
 fn a_touch_drag_follows_the_finger_while_rows_measure() {
     let observed: Vec<(f64, f64)> = (1..=DRAG_STEPS)
         .map(|steps| {
-            let expected = f64::from(DRAG_STEP * f32::from(steps)) - TOUCH_SLOP;
+            let expected = f64::from(DRAG_STEP * steps as f32) - TOUCH_SLOP;
             (expected, offset_after_drag_prefix(steps))
         })
         .collect();
-    tracing::info!(?observed, "drag (expected, observed) offset per frame");
     assert!(
         observed
             .iter()
@@ -128,15 +135,16 @@ fn a_touch_fling_keeps_advancing_while_rows_measure() {
         DRAG_START_Y,
         DRAG_X,
         DRAG_START_Y - FLING_DISTANCE,
-        touch_drag(FLING_STEPS),
+        FLING_STEPS,
+        true,
+        hydrolysis::PointerKind::Touch,
     );
     let released_at = list_offset(&mut app);
     let mut offsets = vec![released_at];
     for _ in 0..FLING_FRAMES {
-        app.pump_for(VIRTUAL_FRAME);
+        app.pump_for(FRAME);
         offsets.push(list_offset(&mut app));
     }
-    tracing::info!(?offsets, "fling offset per frame");
     assert!(
         (released_at - (f64::from(FLING_DISTANCE) - TOUCH_SLOP)).abs() < 0.5,
         "the lead-in drag must follow the finger before the fling: {offsets:?}"
@@ -146,6 +154,6 @@ fn a_touch_fling_keeps_advancing_while_rows_measure() {
     assert!(
         offsets[1..].windows(2).all(|pair| pair[1] > pair[0]),
         "the fling must keep advancing for {FLING_FRAMES} frames ({} ms), offsets: {offsets:?}",
-        VIRTUAL_FRAME.as_millis() * u128::try_from(FLING_FRAMES).expect("small")
+        FRAME.as_millis() * u128::try_from(FLING_FRAMES).expect("small")
     );
 }

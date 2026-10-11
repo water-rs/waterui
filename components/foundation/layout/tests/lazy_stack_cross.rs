@@ -8,10 +8,15 @@
 //! `scroll(vstack(..).padding_with((12, 16)))` in a 340-wide window, which
 //! proposes every row 308 — and a sibling probe row reads the answered cross
 //! extent back from its trailing label.
+//!
+//! Moved from `backends/hydrolysis/tests/lazy_stack_cross.rs` under
+//! water-rs/waterui#1673. The proposal and the assertion are authored
+//! geometry — 308 is the shell's 340 less its padding, never a style
+//! metric — so the mounts run under `TestStyle`, the minimal style.
 
 use waterui::prelude::*;
 use waterui_core::id::SelfId;
-use waterui_testing::{OffscreenApp, Role, ui};
+use waterui_testing::{OffscreenApp, Role, TestStyle, ui};
 
 /// Logical points between the viewport edge and a row: the issue's
 /// `padding_with((12, 16))` inside a 340-wide window.
@@ -49,7 +54,7 @@ fn settle_after_scrolling(app: &mut OffscreenApp) {
 fn lazy_probe_width(row: impl Fn() -> AnyView + 'static + Clone) -> f32 {
     let mut app = ui()
         .viewport(340, 900)
-        .theme(hydrolysis_m3::Material3::defaults())
+        .theme(TestStyle::new())
         .mount_offscreen(move || {
             scroll(
                 vstack((
@@ -73,7 +78,7 @@ fn lazy_probe_width(row: impl Fn() -> AnyView + 'static + Clone) -> f32 {
 fn eager_probe_width(row: impl Fn() -> AnyView + 'static + Clone) -> f32 {
     let mut app = ui()
         .viewport(340, 900)
-        .theme(hydrolysis_m3::Material3::defaults())
+        .theme(TestStyle::new())
         .mount_offscreen(move || {
             scroll(
                 vstack((

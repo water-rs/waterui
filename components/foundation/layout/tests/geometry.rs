@@ -1,23 +1,13 @@
-//! Renderer presentation tests for layout geometry: stack bounds
-//! relationships, layout priority, growing-child heights, snackbar width
-//! bounds, and text line limits.
+//! Layout geometry contracts: stack bounds relationships, layout priority,
+//! growing-child heights, snackbar width bounds, and text line limits.
 //!
-//! Received from water-rs/waterui under water-rs/waterui#1130 (class 2 —
-//! renderer presentation); every case names its origin file and asserts what
-//! it asserted there, mounted under `Material3::defaults()` on the rendered
-//! runtime.
-
-mod support {
-    /// Converts a `f32` coordinate to `usize` with `as` saturating truncation.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "test coordinates are non-negative and within usize range"
-    )]
-    pub const fn f32_as_usize(v: f32) -> usize {
-        v as usize
-    }
-}
+//! Moved from `backends/hydrolysis/tests/layout.rs` under
+//! water-rs/waterui#1673. Every assertion here reads geometry
+//! *relationships* — above/before, equal, narrower-than — so the mounts run
+//! under `TestStyle`, the minimal style, instead of the Material 3 theme the
+//! origin used. The legs that pinned a Material 3 metric (the 280-pt field
+//! ideal width) or read rendered ink (the ellipsis run detector) went to
+//! hydrolysis-m3 (water-rs/hydrolysis-m3#113).
 
 use std::time::Duration;
 
@@ -25,7 +15,7 @@ use waterui::View;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarTheme};
-use waterui_testing::{OffscreenApp, Role, Styled, UiBuilder, ui as test_ui};
+use waterui_testing::{OffscreenApp, Role, Styled, TestStyle, UiBuilder, ui as test_ui};
 
 fn visual_shell<V: View>(content: V) -> impl View {
     content.padding_with(20.0).background(Srgb::BLACK)
@@ -50,7 +40,7 @@ fn vstack_view() -> impl View {
 }
 
 // Origin: waterui `testing/tests/layout.rs`.
-#[waterui::test(vstack_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (180, 180))]
+#[waterui::test(vstack_view, theme = TestStyle::new(), offscreen, viewport = (180, 180))]
 fn vstack_renders_children_vertically(app: &mut OffscreenApp) {
     let upper = app.query().role(Role::LABEL).label("Upper card").single();
     let lower = app.query().role(Role::LABEL).label("Lower card").single();
@@ -73,7 +63,7 @@ fn hstack_view() -> impl View {
 }
 
 // Origin: waterui `testing/tests/layout.rs`.
-#[waterui::test(hstack_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (180, 180))]
+#[waterui::test(hstack_view, theme = TestStyle::new(), offscreen, viewport = (180, 180))]
 fn hstack_renders_children_horizontally(app: &mut OffscreenApp) {
     let left = app.query().role(Role::LABEL).label("Left card").single();
     let right = app.query().role(Role::LABEL).label("Right card").single();
@@ -93,7 +83,7 @@ fn zstack_view() -> impl View {
 }
 
 // Origin: waterui `testing/tests/layout.rs`.
-#[waterui::test(zstack_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (180, 180))]
+#[waterui::test(zstack_view, theme = TestStyle::new(), offscreen, viewport = (180, 180))]
 fn zstack_overlays_children(app: &mut OffscreenApp) {
     let background = app
         .query()
@@ -136,7 +126,7 @@ fn layout_priority_view() -> impl View {
 }
 
 // Origin: waterui `testing/tests/layout.rs`.
-#[waterui::test(layout_priority_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (160, 120))]
+#[waterui::test(layout_priority_view, theme = TestStyle::new(), offscreen, viewport = (160, 120))]
 fn layout_priority_protects_the_prioritized_child(app: &mut OffscreenApp) {
     let kept = app
         .query()
@@ -163,23 +153,20 @@ fn layout_priority_protects_the_prioritized_child(app: &mut OffscreenApp) {
 fn a_list_under_a_header_renders_its_rows() {
     let rows = ["FramePump", "VideoTick", "LayoutPass"];
 
-    let mut app: OffscreenApp = test_ui()
-        .viewport(600, 400)
-        .theme(hydrolysis_m3::Material3::defaults())
-        .mount_offscreen(move || {
-            vstack((
-                text("Task").caption(),
-                vstack(
-                    rows.iter()
-                        .map(|row| text(*row).anyview())
-                        .collect::<Vec<_>>(),
-                )
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(8.0),
-            ))
+    let mut app = test_ui().viewport(600, 400).mount(move || {
+        vstack((
+            text("Task").caption(),
+            vstack(
+                rows.iter()
+                    .map(|row| text(*row).anyview())
+                    .collect::<Vec<_>>(),
+            )
             .alignment(HorizontalAlignment::Leading)
-            .spacing(12.0)
-        });
+            .spacing(8.0),
+        ))
+        .alignment(HorizontalAlignment::Leading)
+        .spacing(12.0)
+    });
 
     for row in ["FramePump", "VideoTick", "LayoutPass"] {
         app.query().role(Role::LABEL).label(row).assert_exists();
@@ -196,10 +183,7 @@ const MIN_WIDTH: f32 = 300.0;
 const MAX_WIDTH: f32 = 600.0;
 
 /// Mounts an app whose window shows `snackbar`, and returns it settled.
-fn show(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-    snackbar: Snackbar,
-) -> (OffscreenApp, SnackbarManager) {
+fn show(ui: UiBuilder<Styled<TestStyle>>, snackbar: Snackbar) -> (OffscreenApp, SnackbarManager) {
     let (manager, overlay) = SnackbarManager::new();
     let theme = SnackbarTheme {
         min_width: MIN_WIDTH,
@@ -222,10 +206,8 @@ fn show(
 /// cap it used to stretch to.
 ///
 /// Origin: waterui `tests/snackbar_layout.rs`.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (900, 600))]
-fn a_short_closeable_snackbar_hugs_the_min_width_floor(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[waterui::test(theme = TestStyle::new(), viewport = (900, 600))]
+fn a_short_closeable_snackbar_hugs_the_min_width_floor(ui: UiBuilder<Styled<TestStyle>>) {
     let (mut app, _manager) = show(
         ui,
         Snackbar::new("Saved").duration(Duration::ZERO).closeable(),
@@ -250,8 +232,8 @@ fn a_short_closeable_snackbar_hugs_the_min_width_floor(
 /// A plain bar hugs its message rather than stretching to the cap.
 ///
 /// Origin: waterui `tests/snackbar_layout.rs`.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (900, 600))]
-fn a_plain_snackbar_hugs_its_message(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[waterui::test(theme = TestStyle::new(), viewport = (900, 600))]
+fn a_plain_snackbar_hugs_its_message(ui: UiBuilder<Styled<TestStyle>>) {
     let (mut app, _manager) = show(
         ui,
         Snackbar::new("Copied to clipboard").duration(Duration::ZERO),
@@ -273,8 +255,8 @@ const LONG: &str = "A label long enough to wrap into several lines at this width
 /// A limited text reserves height for its visible lines only.
 ///
 /// Origin: waterui `tests/text_line_limit.rs`.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (600, 600))]
-fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[waterui::test(theme = TestStyle::new(), viewport = (600, 600))]
+fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<TestStyle>>) {
     let mut app = ui.mount_offscreen(|| {
         vstack((
             text(LONG).a11y_label("unlimited").width(150.0),
@@ -303,10 +285,8 @@ fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<hydrolysis_m3::Mat
 /// navigation page and a split view's detail column, and a lazy row inside a
 /// page, which its own flush places after the page's layout at a rect the new
 /// string does not change.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (900, 600))]
-fn a_changed_text_is_measured_again_inside_a_retained_sub_view(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[waterui::test(theme = TestStyle::new(), viewport = (900, 600))]
+fn a_changed_text_is_measured_again_inside_a_retained_sub_view(ui: UiBuilder<Styled<TestStyle>>) {
     use waterui::id::SelfId;
     use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView};
 
@@ -393,8 +373,8 @@ fn a_changed_text_is_measured_again_inside_a_retained_sub_view(
 /// "Bac / k" before button labels defaulted to a single truncated line.
 ///
 /// Origin: waterui `tests/text_line_limit.rs`.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (600, 600))]
-fn compressed_button_labels_stay_on_one_line(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[waterui::test(theme = TestStyle::new(), viewport = (600, 600))]
+fn compressed_button_labels_stay_on_one_line(ui: UiBuilder<Styled<TestStyle>>) {
     let mut app = ui.mount_offscreen(|| {
         hstack((
             button("Back").action(|| {}),
@@ -418,15 +398,15 @@ fn compressed_button_labels_stay_on_one_line(ui: UiBuilder<Styled<hydrolysis_m3:
 }
 
 /// A text field is a `Horizontal` leaf: inside an hstack offered 340 wide,
-/// two fields split the row instead of overflowing at the 280-pt intrinsic
-/// floor. water-rs/hydrolysis#107.
+/// two fields split the row instead of overflowing at the intrinsic floor.
+/// water-rs/hydrolysis#107.
 fn text_field_row_view() -> impl View {
     let first = Binding::container(Str::from(""));
     let last = Binding::container(Str::from(""));
     hstack((field("First name", &first), field("Last name", &last))).size(340.0, 60.0)
 }
 
-#[waterui::test(text_field_row_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (400, 120))]
+#[waterui::test(text_field_row_view, theme = TestStyle::new(), offscreen, viewport = (400, 120))]
 fn text_fields_share_a_340_row(app: &mut OffscreenApp) {
     let first = app
         .query()
@@ -455,37 +435,13 @@ fn text_fields_share_a_340_row(app: &mut OffscreenApp) {
     );
 }
 
-/// With no width proposal on its stretch axis the field keeps its intrinsic
-/// width — the theme's ideal `min_width` (280 under Material 3), not a hard
-/// floor. A horizontal scroll is the container that measures content at
-/// `None` on the scrolling axis; a viewport narrower than 280 keeps the field
-/// at its ideal and lets it overflow into scrollable content.
-fn lone_text_field_view() -> impl View {
-    let value = Binding::container(Str::from(""));
-    scroll_horizontal(field("Field", &value))
-}
-
-#[waterui::test(lone_text_field_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (200, 120))]
-fn lone_text_field_keeps_ideal_width(app: &mut OffscreenApp) {
-    let field = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Field")
-        .single()
-        .bounds();
-    assert!(
-        (field.width() - 280.0).abs() <= 1.0,
-        "an unproposed field should keep the 280-pt ideal width: {field:?}"
-    );
-}
-
 /// In a 600-wide container the field answers the proposal and fills it.
 fn text_field_in_container_view() -> impl View {
     let value = Binding::container(Str::from(""));
     field("Field", &value).size(600.0, 60.0)
 }
 
-#[waterui::test(text_field_in_container_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (640, 120))]
+#[waterui::test(text_field_in_container_view, theme = TestStyle::new(), offscreen, viewport = (640, 120))]
 fn text_field_fills_wide_container(app: &mut OffscreenApp) {
     let field = app
         .query()
@@ -516,7 +472,7 @@ fn wide_url_field_view() -> impl View {
     )
 }
 
-#[waterui::test(wide_url_field_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (360, 200))]
+#[waterui::test(wide_url_field_view, theme = TestStyle::new(), offscreen, viewport = (360, 200))]
 fn wide_field_text_keeps_every_frame(app: &mut OffscreenApp) {
     // `bounds()` reads the snapshot taken at query time, so each pass
     // re-queries.
@@ -583,7 +539,7 @@ fn compressed_row_view() -> impl View {
     .padding_with((6.0, 10.0))
 }
 
-#[waterui::test(compressed_row_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (340, 200))]
+#[waterui::test(compressed_row_view, theme = TestStyle::new(), offscreen, viewport = (340, 200))]
 fn a_compressed_limited_text_leaves_its_spacer_nothing(app: &mut OffscreenApp) {
     let stamp = app.query().label("stamp").single().bounds();
     let badge = app.query().label("badge").single().bounds();
@@ -597,90 +553,5 @@ fn a_compressed_limited_text_leaves_its_spacer_nothing(app: &mut OffscreenApp) {
     assert!(
         (badge.x() + badge.width() - trailing).abs() <= 1.0,
         "the badge should end on the row's trailing edge: {badge:?}"
-    );
-}
-
-/// water-rs/hydrolysis#141 end to end: a line-limited text beside a trailing
-/// sibling compresses into its share and draws the truncation mark — three
-/// ink dots riding the baseline at the leaf's trailing edge — while the
-/// sibling keeps the width it takes when the row has room to spare.
-fn truncated_row_view() -> impl View {
-    vstack((
-        hstack((
-            text("On my way — see you at the gate in about ten minutes")
-                .line_limit(core::num::NonZeroUsize::MIN)
-                .a11y_label("preview"),
-            text("2").a11y_label("tight"),
-        ))
-        .spacing(4.0),
-        hstack((text("x").a11y_label("short"), text("2").a11y_label("free"))).spacing(4.0),
-    ))
-    .spacing(8.0)
-    .leading()
-    .padding_with((6.0, 10.0))
-}
-
-#[waterui::test(truncated_row_view, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (220, 120))]
-fn a_limited_text_truncates_with_an_ellipsis_beside_its_sibling(app: &mut OffscreenApp) {
-    let preview = app.query().label("preview").single().bounds();
-    let tight = app.query().label("tight").single().bounds();
-    let free = app.query().label("free").single().bounds();
-
-    assert!(
-        (tight.width() - free.width()).abs() <= 1.0,
-        "the sibling keeps the width it takes unconstrained: tight={tight:?} free={free:?}"
-    );
-    assert!(
-        preview.x() + preview.width() <= tight.x(),
-        "text and sibling share the row without overlapping: preview={preview:?} tight={tight:?}"
-    );
-
-    // The respelled line ends in "…" — three separated ink dots riding the
-    // baseline. Walk left from the leaf's last inked column while columns
-    // carry ink only below the midline; a clipped line instead ends
-    // mid-glyph with tall ink at its trailing edge.
-    let snapshot = app.snapshot();
-    let x0 = support::f32_as_usize(preview.x().max(0.0));
-    let x1 = (support::f32_as_usize(preview.x() + preview.width())).min(snapshot.width as usize);
-    let y0 = support::f32_as_usize(preview.y().max(0.0));
-    let y1 = (support::f32_as_usize(preview.y() + preview.height())).min(snapshot.height as usize);
-    let mid = y0 + (y1 - y0) / 2;
-    let bg: [u8; 4] = snapshot.rgba8[(y0 * snapshot.width as usize + x0.saturating_sub(6)) * 4..]
-        [..4]
-        .try_into()
-        .unwrap();
-    let ink = |x: usize, y: usize| -> bool {
-        let px: [u8; 4] = snapshot.rgba8[(y * snapshot.width as usize + x) * 4..][..4]
-            .try_into()
-            .unwrap();
-        (0..3).any(|c| px[c].abs_diff(bg[c]) > 48)
-    };
-
-    let last_ink_x = (x0..x1)
-        .rev()
-        .find(|&x| (y0..y1).any(|y| ink(x, y)))
-        .expect("the truncated text drew ink");
-    let tall = |x: usize| (y0..mid).any(|y| ink(x, y));
-    let low = |x: usize| (mid..y1).any(|y| ink(x, y));
-    assert!(
-        !tall(last_ink_x),
-        "the leaf's trailing ink should sit on the baseline — a tall trailing column is a clipped glyph: {preview:?}"
-    );
-    let zone_x0 = (x0..last_ink_x)
-        .rev()
-        .find(|&x| tall(x))
-        .map_or(x0, |x| x + 1);
-
-    let mut runs = 0usize;
-    let mut in_run = false;
-    for x in zone_x0..=last_ink_x {
-        if low(x) && !in_run {
-            runs += 1;
-        }
-        in_run = low(x);
-    }
-    assert!(
-        runs >= 3,
-        "the truncated line should end in a '…' — {runs} baseline ink runs in its tail: {preview:?}"
     );
 }

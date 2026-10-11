@@ -127,6 +127,7 @@ pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};
 pub use executor::drain_parked_local_work;
 pub use executor::{TestLocalExecutor, install_test_executor};
+pub use hydrolysis::testing::TestStyle;
 pub use hydrolysis::{
     AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, PointerKind,
     SemanticRuntime, Style,

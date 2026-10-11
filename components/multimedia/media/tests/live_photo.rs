@@ -1,10 +1,12 @@
-//! Renderer presentation tests for media: the live photo's long-press motion
-//! lifecycle through the pointer pipeline.
+//! Rendered-runtime coverage for `LivePhoto`: the long-press motion lifecycle
+//! through the pointer pipeline — mount the still, hold past the activation
+//! duration, play the motion clip once, and recover to the still, twice.
 //!
-//! Received from water-rs/waterui under water-rs/waterui#1130 (class 2 —
-//! renderer presentation); the case names its origin file and asserts what it
-//! asserted there, mounted under `Material3::defaults()` on the rendered
-//! runtime.
+//! Moved from `backends/hydrolysis/tests/media.rs` under water-rs/waterui#1673:
+//! the lifecycle is the component's contract, and the offscreen mount runs
+//! under `TestStyle` — the minimal style — because every assertion reads the
+//! component's own structure (image nodes, video surface, event stream), never
+//! a style package's chrome.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -37,7 +39,7 @@ use waterui_media::{
     LivePhoto, Url,
     live::{Event as LivePhotoEvent, LivePhotoSource},
 };
-use waterui_testing::{Role, Selector, Styled, UiBuilder, WaitOptions, WaitResult};
+use waterui_testing::{Role, Selector, Styled, TestStyle, UiBuilder, WaitOptions, WaitResult};
 
 fn sample_image_path() -> String {
     let unique = std::time::SystemTime::now()
@@ -75,11 +77,8 @@ fn sample_video_url() -> Url {
     ))
 }
 
-// Origin: waterui `components/multimedia/media/tests/e2e_semantics.rs`.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (180, 140))]
-fn live_photo_long_press_plays_motion_once_and_recovers(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[waterui::test(theme = TestStyle::new(), viewport = (180, 140))]
+fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder<Styled<TestStyle>>) {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
     // Without this the test cannot fail for the reason it exists: motion that

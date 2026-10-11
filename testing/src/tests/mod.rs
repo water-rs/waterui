@@ -1,3 +1,5 @@
+mod harness;
+
 use super::*;
 use std::cell::Cell;
 use std::rc::Rc;

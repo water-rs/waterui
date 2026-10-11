@@ -1,19 +1,25 @@
 //! `.dialog(...)`: presentation by binding, action roles, dismissal writing
 //! the binding back, and the dialog's accessibility tree — semantic mount
 //! plus an offscreen render for the modal layer (water-rs/waterui#1210).
+//!
+//! Moved from `backends/hydrolysis/tests/dialog.rs` under
+//! water-rs/waterui#1673: the dialog is facade behaviour. The offscreen legs
+//! mount under `TestStyle` — the minimal style — because every assertion
+//! reads the accessibility tree, never a style package's chrome; the styled
+//! light/dark PNG captures went to hydrolysis-m3 (water-rs/hydrolysis-m3#113).
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use hydrolysis_m3::Material3;
 use waterui::Binding;
+use waterui::Environment;
 use waterui::Signal as _;
 use waterui::ViewExt as _;
-use waterui::component::{text, vstack};
+use waterui::component::{button, text, vstack};
 use waterui::dialog::{Dialog, DialogAction};
-use waterui_controls::button;
-use waterui_core::Environment;
-use waterui_testing::{AccessKitRole, Role, RuntimeDriver, SemanticApp, ui};
+use waterui_testing::{
+    AccessKitRole, Role, RuntimeDriver, SemanticApp, Styled, TestStyle, UiBuilder, ui,
+};
 
 /// A presented dialog publishes its card as the window's modal alert.
 const ALERT: Role = Role::new(AccessKitRole::AlertDialog);
@@ -250,15 +256,12 @@ fn app_dismissal_closes_without_running_a_handler() {
     app.query().label("Content").assert_exists();
 }
 
-#[test]
-fn presented_dialog_is_in_the_offscreen_a11y_tree() {
+#[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
+fn presented_dialog_is_in_the_offscreen_a11y_tree(ui: UiBuilder<Styled<TestStyle>>) {
     let presented = Binding::bool(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
-    let mut app = ui()
-        .viewport(400, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || fixture(&presented, flag.clone()));
+    let mut app = ui.mount_offscreen(move || fixture(&presented, flag.clone()));
     app.settle();
     app.query().role(ALERT).assert_not_exists();
 
@@ -285,56 +288,6 @@ fn two_cancel_actions_fail_fast() {
         )
     });
     app.settle();
-}
-
-/// A window with real content beneath the modal layer, so the capture shows
-/// whether the scrim dims it or paints over it.
-fn content_fixture(presented: &Binding<bool>) -> impl waterui::View + use<> {
-    let open = presented.clone();
-    vstack((
-        text("Inbox").title(),
-        text("Quarterly report draft — shared with the finance team"),
-        text("Design review notes from Thursday"),
-        text("Travel itinerary for the October offsite"),
-        button("Open").action(move |_: Environment| open.set(true)),
-    ))
-    .dialog(
-        Dialog::new(presented, "Delete 3 messages?")
-            .message("Deleted messages move to the trash and are removed after 30 days.")
-            .action(DialogAction::cancel("Cancel", || {}))
-            .action(DialogAction::destructive("Delete", || {})),
-    )
-}
-
-fn capture_presented(style: Material3, case: &str) {
-    let presented = Binding::bool(false);
-    let shown = presented.clone();
-    let mut app = ui()
-        .viewport(800, 600)
-        .theme(style)
-        .mount_offscreen(move || content_fixture(&presented));
-    app.settle();
-    // The window before the dialog: what the scrim must leave visible.
-    app.capture_snapshot("dialog", case, "closed");
-    shown.set(true);
-    app.settle();
-
-    let captured = app.capture_snapshot("dialog", case, "presented");
-    assert!(
-        captured.path().exists(),
-        "the offscreen render wrote no PNG at {}",
-        captured.path().display()
-    );
-}
-
-#[test]
-fn presented_dialog_renders_over_content_light() {
-    capture_presented(Material3::defaults(), "light");
-}
-
-#[test]
-fn presented_dialog_renders_over_content_dark() {
-    capture_presented(Material3::dark(), "dark");
 }
 
 /// A dialog attached to one view of a larger window: the sibling content
@@ -372,14 +325,13 @@ fn presented_dialog_makes_the_whole_window_inert_on_semantic_mount() {
         .assert_not_exists();
 }
 
-#[test]
-fn presented_dialog_makes_the_whole_window_inert_on_offscreen_mount() {
+#[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
+fn presented_dialog_makes_the_whole_window_inert_on_offscreen_mount(
+    ui: UiBuilder<Styled<TestStyle>>,
+) {
     let presented = Binding::bool(false);
     let shown = presented.clone();
-    let mut app = ui()
-        .viewport(400, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || sibling_fixture(&presented));
+    let mut app = ui.mount_offscreen(move || sibling_fixture(&presented));
     app.settle();
     app.query().label("Sidebar").assert_exists();
 
@@ -423,25 +375,22 @@ fn return_runs_the_primary_action() {
     assert!(!shown.snapshot());
 }
 
-#[test]
-fn scrim_tap_runs_the_cancel_path() {
+#[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
+fn scrim_tap_runs_the_cancel_path(ui: UiBuilder<Styled<TestStyle>>) {
     let presented = Binding::bool(false);
     let shown = presented.clone();
     let cancelled = Rc::new(Cell::new(false));
     let hit = cancelled.clone();
-    let mut app = ui()
-        .viewport(400, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || {
-            let cancelled = cancelled.clone();
-            text("Content").dialog(
-                Dialog::new(&presented, "Leave?")
-                    .action(DialogAction::cancel("Stay", move |_: Environment| {
-                        cancelled.set(true);
-                    }))
-                    .action(DialogAction::new("Leave", || {})),
-            )
-        });
+    let mut app = ui.mount_offscreen(move || {
+        let cancelled = cancelled.clone();
+        text("Content").dialog(
+            Dialog::new(&presented, "Leave?")
+                .action(DialogAction::cancel("Stay", move |_: Environment| {
+                    cancelled.set(true);
+                }))
+                .action(DialogAction::new("Leave", || {})),
+        )
+    });
     app.settle();
     shown.set(true);
     app.settle();
@@ -503,15 +452,14 @@ fn a_second_dialog_waits_in_presentation_order_on_semantic_mount() {
     assert_second_dialog_waits(&mut app, &first, &second);
 }
 
-#[test]
-fn a_second_dialog_waits_in_presentation_order_on_offscreen_mount() {
+#[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
+fn a_second_dialog_waits_in_presentation_order_on_offscreen_mount(
+    ui: UiBuilder<Styled<TestStyle>>,
+) {
     let first = Binding::bool(false);
     let second = Binding::bool(false);
     let (f, s) = (first.clone(), second.clone());
-    let mut app = ui()
-        .viewport(400, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || two_dialogs(&f, &s));
+    let mut app = ui.mount_offscreen(move || two_dialogs(&f, &s));
     app.settle();
     assert_second_dialog_waits(&mut app, &first, &second);
 }
@@ -524,15 +472,12 @@ fn focused_label<R>(app: &SemanticApp<R>) -> Option<String> {
         .and_then(|node| node.label().map(str::to_owned))
 }
 
-#[test]
-fn focus_moves_into_the_dialog_and_returns_on_dismissal() {
+#[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
+fn focus_moves_into_the_dialog_and_returns_on_dismissal(ui: UiBuilder<Styled<TestStyle>>) {
     let presented = Binding::bool(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
-    let mut app = ui()
-        .viewport(400, 300)
-        .theme(Material3::defaults())
-        .mount_offscreen(move || fixture(&presented, flag.clone()));
+    let mut app = ui.mount_offscreen(move || fixture(&presented, flag.clone()));
     app.settle();
     app.press_named_key("Tab");
     app.settle();

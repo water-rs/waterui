@@ -31,6 +31,7 @@ cargo_metadata.workspace = true
 waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 
 [dev-dependencies]
+approx = "0.5"
 async-io = "2.6"
 bitflags.workspace = true
 hydrolysis-m3.workspace = true
