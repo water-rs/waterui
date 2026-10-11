@@ -1247,6 +1247,9 @@ async fn copy_assets_and_fonts(
         symbols,
         dev_server,
         assets::AndroidThemeParent::Material3,
+        // This backend's Kotlin `WaterUiFontTable` loads `assets/fonts` and
+        // its manifest, staged below; the bundle carries no font tree.
+        None,
     )
     .await?;
 

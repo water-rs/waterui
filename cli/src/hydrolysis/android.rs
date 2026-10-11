@@ -461,10 +461,18 @@ pub async fn rendered_android_outputs(
     Ok(templates::hydrolysis_android::rendered_outputs(&ctx)?)
 }
 
-/// The `waterui_android` Gradle project needs these before `cargo build`:
-/// `icons.json` and the other fetched font metadata the icon crates' build
-/// scripts read.
-async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
+/// The faces this project declares for Android, fetched into the font
+/// cache: the files [`copy_assets`] stages inside the asset bundle, where
+/// the runtime's font collection reads them from.
+///
+/// The fetch also writes what the Gradle project needs before `cargo
+/// build` — `icons.json` and the other font metadata the icon crates'
+/// build scripts read — which is why [`prepare_for_build`] runs it ahead
+/// of the build and ignores the paths it answers; the cached fetch makes
+/// the staging call cheap.
+pub(crate) async fn resolve_declared_fonts(
+    project: &Project,
+) -> eyre::Result<Vec<assets::ResolvedFont>> {
     let declarations = assets::scan_fonts(
         project,
         &project
@@ -473,8 +481,7 @@ async fn resolve_declared_fonts(project: &Project) -> eyre::Result<()> {
         &[waterui_assets_planner::FontPlatform::Android],
     )
     .await?;
-    let _resolved = assets::resolve_fonts(project.host(), declarations).await?;
-    Ok(())
+    assets::resolve_fonts(project.host(), declarations).await
 }
 
 /// The artifacts and toolchain context produced by an Android launcher build.
@@ -587,7 +594,7 @@ pub(crate) async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
             backend_path.display()
         );
     }
-    resolve_declared_fonts(project).await
+    resolve_declared_fonts(project).await.map(drop)
 }
 
 /// [`build_with_features`] for a caller that already ran
@@ -712,18 +719,25 @@ pub(crate) async fn stage_runtime_libraries(
 /// Stage the project's `res`/`assets` tree into the generated Gradle app —
 /// platform-theme resources, no `WaterUIFonts.kt` (the host registers no
 /// fonts by reflection).
+///
+/// The faces the project declares ship inside the asset bundle, which is
+/// the one tree an Android package namespaces (#2348) and the one
+/// `HydrolysisEnvironment` syncs to the device: that is where
+/// `hydrolysis::native_collection` reads an application's fonts from.
 async fn copy_assets(
     project: &Project,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
 ) -> eyre::Result<()> {
     let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
+    let fonts = resolve_declared_fonts(project).await?;
     assets::stage_project_assets_for_android(
         project,
         &android_dir,
         symbols,
         dev_server,
         AndroidThemeParent::Platform,
+        Some(&fonts),
     )
     .await?;
     Ok(())
