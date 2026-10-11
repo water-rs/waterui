@@ -626,7 +626,6 @@ pub mod anchored_overlay {
             let builds = Rc::new(Cell::new(0_usize));
 
             let overlay = AnchoredOverlay::new(&presented, {
-                let shared = shared.clone();
                 let builds = Rc::clone(&builds);
                 move || {
                     builds.set(builds.get() + 1);
