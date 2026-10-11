@@ -31,7 +31,7 @@ fn render(
     engine: &Engine<Gpu>,
     draw: impl FnOnce(&mut cherenkov::Recorder),
 ) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(CLEAR);
     let layer = surface.layer();
     surface.update(|tx| {

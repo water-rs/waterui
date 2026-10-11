@@ -1,6 +1,7 @@
 //! CPU-side instance data matching `shader.wgsl` byte for byte.
 
 use bytemuck::{Pod, Zeroable};
+use cherenkov::lowering::rounded_box::RoundedBox;
 
 /// Fill a shape.
 pub const KIND_FILL: u32 = 0;
@@ -56,6 +57,9 @@ pub const EFFECT_RIM: u32 = 4;
 /// No effect on a reduced-scale capture: the plain bilinear sample at
 /// `p · s`, which a texel read cannot express.
 pub const EFFECT_SAMPLE: u32 = 5;
+/// A blur-level ramp over the clip's signed distance: the trilinear
+/// `backdrop_sample_level` at `interior + (edge − interior)·t`.
+pub const EFFECT_LEVEL: u32 = 6;
 /// Smooth colour weights; low 16 bits still identify the mesh paint kind.
 pub const PAINT_MESH_SMOOTH: u32 = 1 << 17;
 
@@ -90,6 +94,12 @@ pub const FLAG_TEX_SRGB: u32 = 0x10;
 /// the destination converts into it, the result converts back. Set when
 /// the isolated plane's storage space differs from the pass's.
 pub const FLAG_BLEND_SRC: u32 = 0x20;
+/// A `PAINT_BACKDROP` member draws against its group's union field: the
+/// instance's clip carries the ancestors only, `uv.xy` bitcast holds the
+/// record run's base `vec4` index and the member's index, and `params.x`
+/// its `outer` extent. The ownership-weighted field replaces the
+/// member's clip coverage for the composite.
+pub const FLAG_UNION: u32 = 0x40;
 
 /// The shader's blend-mode code for a [`cherenkov::BlendMode`]; `0` keeps the
 /// fixed-function source-over composite. Matches `blend_mode` in the WGSL.
@@ -157,11 +167,24 @@ impl Shape {
     }
 }
 
+impl From<RoundedBox> for Shape {
+    fn from(b: RoundedBox) -> Self {
+        Self {
+            half: b.half,
+            aspect: b.aspect,
+            exponent: b.exponent,
+            radii: b.radii,
+        }
+    }
+}
+
 /// One instanced quad, mirroring the WGSL `Instance`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Instance {
-    /// Local-to-device affine: `[a, b, c, d, e, f, 0, 0]`.
+    /// Local-to-device affine: `[a, b, c, d, e, f, 0, 0]`. A
+    /// `PAINT_BACKDROP` span's bounds are device space; its affine is the
+    /// member layer's transform.
     pub affine: [f32; 8],
     /// Quad rectangle `(x0, y0, x1, y1)`, local space except `KIND_GLYPH`
     /// `KIND_SPAN` and `KIND_REGION`, where it is a device-space rectangle.
@@ -175,14 +198,20 @@ pub struct Instance {
     /// The clip shape. A masked clip is a sharp rect, so `aspect` and
     /// `exponent` (unused by its SDF) carry the mask cell size.
     pub clip: Shape,
-    /// Straight-alpha working-space colour.
+    /// Straight-alpha working-space colour. `PAINT_BACKDROP`: x the
+    /// member's recording scale (device pixels per logical pixel), yz the
+    /// device origin of the backdrop copy when the member composites in
+    /// the space the pass does not store (`FLAG_BLEND_SRC`); its alpha
+    /// stays 0, so a member span is never an opaque span.
     pub color: [f32; 4],
     /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
     /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.
     /// `PAINT_TEXTURE`: source region origin.xy. `PAINT_BACKDROP`: the
-    /// capture region's texel origin.xy and the capture scale in z.
+    /// capture region's texel origin.xy, the capture scale in z and the
+    /// capture's level count in w.
     pub grad: [f32; 4],
-    /// Radial: start radius, end radius. Sweep: start angle, end angle.
+    /// Radial: start radius, end radius, identical-circles flag (1 or 0).
+    /// Sweep: start angle, end angle.
     /// Image: local→image affine `[e, f]` and image `[w, h]`.
     pub grad2: [f32; 4],
     /// Glyph/cell: atlas cell origin in texels. zw: mask atlas cell origin.

@@ -286,6 +286,12 @@ impl<S> UiBuilder<S> {
         // `realization::install` skips because their system backend would
         // bridge a native player.
         waterui::realization::install_video(&mut env);
+        // An application's declared fonts are staged by the `water` CLI; a
+        // test binary resolves the package under test's crate-local ones
+        // itself, styled or not, as the application path loads them. A host
+        // that staged them itself — a CLI-launched runtime binary, which
+        // installs an empty `DeclaredFonts` — needs no cargo resolution here.
+        crate::declared_fonts::install_declared_fonts(&mut env);
         env
     }
 
@@ -439,6 +445,12 @@ impl<S: Style> UiBuilder<Styled<S>> {
         // self-drawn video realization applies even where `App::new`'s
         // `realization::install` skipped it.
         waterui::realization::install_video(&mut env);
+        // As on `mount_env`, the package under test's crate-local declared
+        // fonts resolve here unless the layered environment — the app's or
+        // the test's — already carries a `DeclaredFonts`, as a CLI-launched
+        // runtime binary's does (the CLI staged the fonts into the resource
+        // directory).
+        crate::declared_fonts::install_declared_fonts(&mut env);
         self.mount_rendered_window(env, window)
     }
 
@@ -924,6 +936,51 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     /// Waits for expectations using XCTest-like semantics.
     pub fn wait_for(&mut self, expectations: &[Expectation], options: WaitOptions) -> WaitResult {
+        self.wait_bounded(
+            expectations,
+            options.enforce_order,
+            WaitBound::WallClock(Instant::now() + options.timeout),
+        )
+    }
+
+    /// Waits for expectations using XCTest-like semantics, bounded in pumped
+    /// frames rather than wall-clock time.
+    ///
+    /// Use this for readiness produced entirely inside the runtime — a
+    /// gesture deadline, a mount, a rebuild — where the number of frames the
+    /// cascade needs is fixed by the semantics under test, not by how fast
+    /// the host runs each pump. A wall-clock bound makes that wait load
+    /// dependent: under load the same fixed number of pumps costs more real
+    /// time than the budget allowed, and the wait gives up on work still in
+    /// flight. A frame bound counts the work itself, so host speed changes
+    /// only how long the wait takes, never whether it completes
+    /// (water-rs/waterui#2501).
+    ///
+    /// The wait ends early when the runtime settles with an expectation still
+    /// unfulfilled: nothing remains in flight that could produce it, so more
+    /// pumping can only delay the failure report. Readiness that arrives from
+    /// outside the runtime — a decoder worker, a network fetch — is not
+    /// visible to a frame bound while the runtime idles; those need
+    /// [`Self::wait_for`]'s wall-clock deadline.
+    ///
+    /// [`WaitOptions::enforce_order`] does not apply; frame-bounded waits
+    /// observe one cascade, not an ordered sequence.
+    pub fn wait_for_frames(
+        &mut self,
+        expectations: &[Expectation],
+        frame_budget: usize,
+    ) -> WaitResult {
+        self.wait_bounded(expectations, false, WaitBound::Frames(frame_budget))
+    }
+
+    /// The shared [`Self::wait_for`] loop, bounded by either a wall-clock
+    /// deadline or a count of frames the runtime may still pump.
+    fn wait_bounded(
+        &mut self,
+        expectations: &[Expectation],
+        enforce_order: bool,
+        bound: WaitBound,
+    ) -> WaitResult {
         const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
         const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
 
@@ -933,75 +990,33 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         );
 
         let has_inverted = expectations.iter().any(|e| e.inverted);
-        // Order enforcement applies to non-inverted expectations only: an
-        // inverted expectation never "fulfills", so it holds no position in
-        // the required order.
-        let order_ranks = {
-            let mut rank = 0usize;
-            expectations
-                .iter()
-                .map(|expectation| {
-                    if expectation.inverted {
-                        None
-                    } else {
-                        let current = rank;
-                        rank += 1;
-                        Some(current)
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
-        let mut fulfilled = vec![false; expectations.len()];
-        let mut next_order_rank = 0usize;
-        let deadline = Instant::now() + options.timeout;
+        let mut progress = WaitProgress::new(expectations);
+        let mut bound = bound;
         let mut idle_backoff = Duration::ZERO;
 
         loop {
-            for (idx, expectation) in expectations.iter().enumerate() {
-                let condition = self.evaluate_expectation(expectation);
-                if expectation.inverted {
-                    if condition {
-                        return WaitResult::InvertedFulfillment;
-                    }
-                    continue;
-                }
-
-                if fulfilled[idx] {
-                    continue;
-                }
-
-                if condition {
-                    if options.enforce_order {
-                        let rank = order_ranks[idx]
-                            .expect("non-inverted expectation must carry an order rank");
-                        if rank != next_order_rank {
-                            return WaitResult::IncorrectOrder;
-                        }
-                        next_order_rank += 1;
-                    }
-                    fulfilled[idx] = true;
-                }
+            if let Some(result) = self.poll_expectations(expectations, enforce_order, &mut progress)
+            {
+                return result;
             }
 
-            let all_non_inverted = expectations
-                .iter()
-                .enumerate()
-                .all(|(idx, expectation)| expectation.inverted || fulfilled[idx]);
-
+            let all_non_inverted = progress.all_non_inverted(expectations);
             if all_non_inverted && !has_inverted {
                 return WaitResult::Completed;
             }
 
-            let now = Instant::now();
-            if now >= deadline {
-                return if all_non_inverted {
-                    WaitResult::Completed
-                } else {
-                    WaitResult::TimedOut
-                };
+            let bound_spent = match &bound {
+                WaitBound::WallClock(deadline) => Instant::now() >= *deadline,
+                WaitBound::Frames(remaining) => *remaining == 0,
+            };
+            if bound_spent {
+                return wait_bound_outcome(all_non_inverted);
             }
 
             let _ = self.pump_once();
+            if let WaitBound::Frames(remaining) = &mut bound {
+                *remaining = remaining.saturating_sub(1);
+            }
             if !self.runtime.is_settled() {
                 // Scheduled work remains (animations, patches, queued input):
                 // keep pumping virtual frames without wall-clock sleeps.
@@ -1009,26 +1024,77 @@ impl<R: RuntimeDriver> SemanticApp<R> {
                 continue;
             }
 
-            // Quiescent but unfulfilled: the awaited change can only arrive
-            // from outside the runtime (a worker thread, wall-clock async), so
-            // yield real time with exponential backoff.
-            let next_backoff = if idle_backoff.is_zero() {
-                MIN_IDLE_BACKOFF
-            } else {
-                idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
-            };
-            idle_backoff = next_backoff;
+            // Quiescent but unfulfilled: what happens next depends on which
+            // bound the wait runs under.
+            match bound {
+                WaitBound::WallClock(deadline) => {
+                    // The awaited change can only arrive from outside the
+                    // runtime (a worker thread, wall-clock async), so yield
+                    // real time with exponential backoff.
+                    let next_backoff = if idle_backoff.is_zero() {
+                        MIN_IDLE_BACKOFF
+                    } else {
+                        idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
+                    };
+                    idle_backoff = next_backoff;
 
-            let now = Instant::now();
-            if now >= deadline {
-                continue;
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let sleep_for = next_backoff.min(remaining);
-            if !sleep_for.is_zero() {
-                std::thread::sleep(sleep_for);
+                    let now = Instant::now();
+                    if now >= deadline {
+                        continue;
+                    }
+                    let remaining = deadline.saturating_duration_since(now);
+                    let sleep_for = next_backoff.min(remaining);
+                    if !sleep_for.is_zero() {
+                        std::thread::sleep(sleep_for);
+                    }
+                }
+                WaitBound::Frames(_) => {
+                    // A quiescent runtime has nothing in flight that could
+                    // still produce a missing expectation, so the frames
+                    // left buy nothing. Take one more pass through the
+                    // evaluation above before reporting it, though: the pump
+                    // that just settled may itself have landed the awaited
+                    // change, and `all_non_inverted` predates that pump.
+                    bound = WaitBound::Frames(0);
+                }
             }
         }
+    }
+
+    /// Runs one evaluation pass over `expectations`, marking landed
+    /// non-inverted expectations in `progress`, and returns the terminal
+    /// result when an inverted expectation fulfilled or enforced order was
+    /// violated.
+    fn poll_expectations(
+        &mut self,
+        expectations: &[Expectation],
+        enforce_order: bool,
+        progress: &mut WaitProgress,
+    ) -> Option<WaitResult> {
+        for (idx, expectation) in expectations.iter().enumerate() {
+            let condition = self.evaluate_expectation(expectation);
+            if expectation.inverted {
+                if condition {
+                    return Some(WaitResult::InvertedFulfillment);
+                }
+                continue;
+            }
+
+            if progress.fulfilled[idx] || !condition {
+                continue;
+            }
+
+            if enforce_order {
+                let rank = progress.order_ranks[idx]
+                    .expect("non-inverted expectation must carry an order rank");
+                if rank != progress.next_order_rank {
+                    return Some(WaitResult::IncorrectOrder);
+                }
+                progress.next_order_rank += 1;
+            }
+            progress.fulfilled[idx] = true;
+        }
+        None
     }
 
     /// Convenience API mirroring `XCTest` `waitForExistence`.
@@ -1116,6 +1182,12 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// This waits on unapplied work only, never on work that continues by
     /// itself: an app with a running animation is never settled, so settling
     /// here would spend the full pump budget on every query.
+    ///
+    /// Reading the tree never advances time: every pump here is held at the
+    /// current virtual instant. Animations and glides sample the same instant
+    /// to the same values, so the update lands in the phase the clock already
+    /// shows, and only [`OffscreenApp::pump_for`] and the other explicit
+    /// pumping paths move the clock.
     fn sync_tree(&mut self) {
         /// Enough pumps for a change to cascade (a patch that schedules the
         /// next), far below anything a real update needs. Exceeding it means
@@ -1127,7 +1199,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             if !self.runtime.has_pending_semantic_update() {
                 return;
             }
-            self.pump_once();
+            self.pump_held();
         }
     }
 
@@ -1439,7 +1511,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {
         self.ui_focus = outcome.ui_focus;
         if let Some(update) = outcome.tree_update {
-            self.tree = TreeSnapshot::from_update(self.revision, update);
+            self.tree = TreeSnapshot::from_update(self.revision, update, &outcome.content_types);
             self.revision = self
                 .revision
                 .checked_add(1)
@@ -1850,5 +1922,74 @@ impl SemanticApp<HeadlessRuntime> {
         };
         let _ = self.apply_pump_result(outcome);
         timing
+    }
+}
+
+/// How a [`SemanticApp::wait_for`]-family wait is bounded.
+///
+/// A wall-clock deadline counts real elapsed time; use it for changes that
+/// arrive from outside the runtime, where pumped frames only poll. A frame
+/// count bounds the pumped frames the runtime may still spend; each pump
+/// advances the virtual clock one [`VIRTUAL_FRAME`], so the bound counts the
+/// in-runtime work the cascade still has to do instead of how fast the host
+/// runs it.
+enum WaitBound {
+    /// The wall-clock instant after which the wait gives up.
+    WallClock(Instant),
+    /// Frame pumps still available to the wait.
+    Frames(usize),
+}
+
+/// The fulfillment bookkeeping one `wait_for`-family wait carries between
+/// evaluation passes.
+struct WaitProgress {
+    /// Each expectation's rank in the required order (`None` for inverted
+    /// expectations, which never "fulfill" and so hold no position in it).
+    order_ranks: Vec<Option<usize>>,
+    /// Which non-inverted expectations have already landed.
+    fulfilled: Vec<bool>,
+    /// The order rank the next fulfillment must carry.
+    next_order_rank: usize,
+}
+
+impl WaitProgress {
+    fn new(expectations: &[Expectation]) -> Self {
+        let mut rank = 0usize;
+        let order_ranks = expectations
+            .iter()
+            .map(|expectation| {
+                if expectation.inverted {
+                    None
+                } else {
+                    let current = rank;
+                    rank += 1;
+                    Some(current)
+                }
+            })
+            .collect();
+        Self {
+            order_ranks,
+            fulfilled: vec![false; expectations.len()],
+            next_order_rank: 0,
+        }
+    }
+
+    /// Whether every non-inverted expectation has fulfilled.
+    fn all_non_inverted(&self, expectations: &[Expectation]) -> bool {
+        expectations
+            .iter()
+            .enumerate()
+            .all(|(idx, expectation)| expectation.inverted || self.fulfilled[idx])
+    }
+}
+
+/// What a wait reports when its bound runs out: `Completed` when every
+/// non-inverted expectation landed — inverted ones fulfill by staying
+/// unfulfilled for the whole wait — `TimedOut` otherwise.
+const fn wait_bound_outcome(all_non_inverted: bool) -> WaitResult {
+    if all_non_inverted {
+        WaitResult::Completed
+    } else {
+        WaitResult::TimedOut
     }
 }

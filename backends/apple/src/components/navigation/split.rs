@@ -98,15 +98,17 @@ impl Columns {
 mod platform {
     use super::{Columns, Fill};
     use alloc::rc::Rc;
-    use core::cell::RefCell;
+    use core::cell::{Cell, RefCell};
 
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::Retained;
     use cocoa_ui::geometry::Rect;
-    use cocoa_ui::objc2_ui_kit::UISplitViewControllerColumn;
+    use cocoa_ui::objc2::MainThreadOnly;
+    use cocoa_ui::objc2_ui_kit::{UINavigationController, UISplitViewControllerColumn};
     use cocoa_ui::uikit::{HostView, NavContentController, SplitController};
     use cocoa_ui::view;
     use waterui::navigation::{NavigationSplitColumnVisibility, NavigationSplitLayout};
+    use waterui::reactive::Signal;
 
     use crate::contract::KeepAlive;
 
@@ -133,6 +135,7 @@ mod platform {
         columns: Columns,
         nav: Retained<SplitController>,
         mtm: cocoa_ui::MainThreadMarker,
+        applying_selection: Cell<bool>,
     }
 
     /// The sidebar column is a navigation-content host around the sidebar
@@ -152,15 +155,22 @@ mod platform {
         ) = layout.into_parts();
         let mtm = ctx.mtm();
         let nav = SplitController::new(mtm, content.is_some());
-        // SwiftUI collapses a NavigationSplitView onto its sidebar whatever
-        // the selection — the destination's row stays highlighted and the
-        // detail is where a tap goes from there.
-        nav.set_collapsed_top_column(Some(UISplitViewControllerColumn::Primary));
+        nav.set_collapsed_top_column(Some(if content.is_none() && primary.snapshot().is_some() {
+            UISplitViewControllerColumn::Secondary
+        } else {
+            UISplitViewControllerColumn::Primary
+        }));
 
         let sidebar_leaf = ctx.render(sidebar.build());
         let sidebar_vc = NavContentController::new(mtm, sidebar_leaf.view());
         hide_bar_when_base(&sidebar_vc);
-        nav.set_column(UISplitViewControllerColumn::Primary, &sidebar_vc);
+        // UIKit's implicit wrapper unbalances the sidebar's appearance
+        // transition when the split initially collapses onto the detail.
+        let sidebar_nav = UINavigationController::initWithRootViewController(
+            UINavigationController::alloc(mtm),
+            &sidebar_vc,
+        );
+        nav.set_column(UISplitViewControllerColumn::Primary, &sidebar_nav);
 
         let columns = Columns {
             renderer: ctx.renderer(),
@@ -178,7 +188,12 @@ mod platform {
         let nav_for_binds = nav.clone();
         keep.keep(nav.clone());
         let has_middle = columns.content.is_some();
-        let split = Rc::new(Split { columns, nav, mtm });
+        let split = Rc::new(Split {
+            columns,
+            nav,
+            mtm,
+            applying_selection: Cell::new(false),
+        });
 
         if split.columns.content.is_some() {
             split.mount_middle(&mut keep);
@@ -188,15 +203,19 @@ mod platform {
 
         // Selection bindings rebuild the downstream columns.
         let primary = split.columns.primary.clone();
-        split.columns.watchers.borrow_mut().bind(&primary, {
+        split.columns.watchers.borrow_mut().watch(&primary, {
             let split = split.clone();
             move |_| {
+                split.applying_selection.set(true);
                 let mut keep = split.columns.mounted.borrow_mut();
                 if split.columns.content.is_some() {
                     split.mount_middle(&mut keep);
                 } else {
                     split.mount_detail(&mut keep);
                 }
+                drop(keep);
+                split.present_selection();
+                split.applying_selection.set(false);
             }
         });
         if let Some(secondary) = &split.columns.secondary {
@@ -208,6 +227,22 @@ mod platform {
                 }
             });
         }
+
+        nav_for_binds.set_collapse_handler({
+            let split = Rc::downgrade(&split);
+            move |column, collapsed| {
+                let Some(split) = split.upgrade() else { return };
+                if split.columns.content.is_none()
+                    && !split.applying_selection.get()
+                    && split.nav.isCollapsed()
+                    && column == UISplitViewControllerColumn::Primary.0
+                    && !collapsed
+                    && split.columns.primary.snapshot().is_some()
+                {
+                    split.columns.primary.set(None);
+                }
+            }
+        });
 
         split.columns.watchers.borrow_mut().bind(&visibility, {
             let nav = nav_for_binds.clone();
@@ -258,6 +293,21 @@ mod platform {
     }
 
     impl Split {
+        fn present_selection(&self) {
+            if self.columns.content.is_some() {
+                return;
+            }
+            let column = if self.columns.primary.snapshot().is_some() {
+                UISplitViewControllerColumn::Secondary
+            } else {
+                UISplitViewControllerColumn::Primary
+            };
+            self.nav.set_collapsed_top_column(Some(column));
+            if self.nav.isCollapsed() {
+                self.nav.show_column(column);
+            }
+        }
+
         fn mount_middle(&self, keep: &mut KeepAlive) {
             let leaf = self.columns.middle();
             let vc = NavContentController::new(self.mtm, leaf.view());

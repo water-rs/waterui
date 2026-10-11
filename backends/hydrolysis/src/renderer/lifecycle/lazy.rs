@@ -414,7 +414,7 @@ mod tests {
 
         assert_eq!(window.start, 90_000);
         assert_eq!(window.end, 90_010);
-        assert_eq!(window.leading_offset, 90_000.0 * 52.0);
+        approx::assert_relative_eq!(window.leading_offset, 90_000.0 * 52.0);
         assert!(index.measured(89_999).is_none());
     }
 
@@ -425,13 +425,13 @@ mod tests {
         index.set_measured(0, 20.0);
         index.set_measured(2, 5.0);
 
-        assert_eq!(index.total_extent(), 51.0);
-        assert_eq!(index.offset_of(1), 22.0);
-        assert_eq!(index.offset_of(3), 41.0);
+        approx::assert_relative_eq!(index.total_extent(), 51.0);
+        approx::assert_relative_eq!(index.offset_of(1), 22.0);
+        approx::assert_relative_eq!(index.offset_of(3), 41.0);
         let window = index.visible_window(22.0, 41.0);
         assert_eq!(window.start, 1);
         assert_eq!(window.end, 3);
-        assert_eq!(window.leading_offset, 22.0);
+        approx::assert_relative_eq!(window.leading_offset, 22.0);
     }
 
     #[test]
@@ -443,7 +443,7 @@ mod tests {
 
         assert_eq!(window.start, 0);
         assert_eq!(window.end, 0);
-        assert_eq!(index.total_extent(), 0.0);
+        approx::assert_relative_eq!(index.total_extent(), 0.0);
     }
 
     #[test]

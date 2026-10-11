@@ -430,7 +430,21 @@ impl LinearGradient {
     }
 }
 
-/// A gradient between two circles.
+/// A two-point conical gradient between two circles.
+///
+/// With `dc = end_center - start_center`, `dr = end_radius - start_radius`
+/// and `pd = p - start_center`, the parameter at a point `p` is the largest
+/// `t` solving `|pd - t·dc| = start_radius + t·dr` whose circle radius
+/// `start_radius + t·dr` is non-negative. A point with no such `t` is
+/// transparent. A reversed pair (`start_radius > end_radius`) therefore runs
+/// inward.
+///
+/// Identical circles (see [`Self::has_identical_circles`]) take the limit as
+/// the end radius approaches the start radius: `t = -∞` on and inside the
+/// circle and `t = +∞` outside. Under [`Extend::Pad`] that is a hard edge
+/// from the first stop's colour inside to the last stop's colour outside;
+/// under [`Extend::None`] both sides are transparent; [`Extend::Repeat`] and
+/// [`Extend::Reflect`] have no limit and are an invalid paint.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RadialGradient {
@@ -451,6 +465,18 @@ pub struct RadialGradient {
 }
 
 impl RadialGradient {
+    /// Whether the start and end circles are identical: `dc·dc < 1e-12` and
+    /// `|dr| < 1e-12`. Such a gradient is a hard edge at the start radius
+    /// and has no repeat or reflect form.
+    #[must_use]
+    pub fn has_identical_circles(&self) -> bool {
+        let (dcx, dcy) = (
+            self.end_center.x - self.start_center.x,
+            self.end_center.y - self.start_center.y,
+        );
+        dcy.mul_add(dcy, dcx * dcx) < 1e-12 && (self.end_radius - self.start_radius).abs() < 1e-12
+    }
+
     /// Creates a gradient from the centre outwards to `radius`.
     #[must_use]
     pub fn new(center: impl Into<Point>, radius: f64) -> Self {

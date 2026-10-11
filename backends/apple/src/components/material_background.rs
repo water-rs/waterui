@@ -13,32 +13,22 @@
 use alloc::rc::Rc;
 use core::cell::Cell;
 
-use cocoa_ui::material::{self, MaterialLevel};
+use cocoa_ui::material;
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::background::{Material, MaterialBackground};
+use waterui::background::MaterialBackground;
 use waterui_core::IgnorableMetadata;
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
+use crate::window_background::level;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
-
-/// The `Material` thickness as the kit's neutral level.
-const fn level(material: Material) -> MaterialLevel {
-    match material {
-        Material::UltraThin => MaterialLevel::UltraThin,
-        Material::Thin => MaterialLevel::Thin,
-        Material::Regular => MaterialLevel::Regular,
-        Material::Thick => MaterialLevel::Thick,
-        Material::UltraThick => MaterialLevel::UltraThick,
-    }
-}
 
 /// The leaf's live state: the mounted child and the effect view, plus the
 /// last placement proposal the wrapper was selected with — the offer the
@@ -115,9 +105,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
         view::set_translates_autoresizing(&blur, true);
         view::set_translates_autoresizing(mounted.view(), true);
 
-        // `WuiSafeAreaManaging`: a material is chrome, not content — the
-        // blur runs behind the status bar and the home indicator while the
-        // content keeps its own safe-area insets.
+        // A material's whole painted surface is the blur — one fill.
+        // `UIKit`: the fill rule extends it into the touched edge's regions
+        // when a background slot holds it. `AppKit`: it stays a safe-area
+        // manager so the blur still runs behind the window chrome.
+        host.set_is_fill(true);
+        #[cfg(target_os = "macos")]
         host.set_manages_safe_area(true);
 
         let state = Rc::new(MaterialBackgroundState {
@@ -152,8 +145,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     f64::from(size.width),
                     f64::from(size.height),
                 );
+                // The content centers on its negotiated size; the blur is
+                // the fill surface and covers the whole extended frame.
                 view::set_frame(state.child.view(), rect);
-                view::set_frame(&state.blur, rect);
+                view::set_frame(&state.blur, bounds);
             }
         });
 

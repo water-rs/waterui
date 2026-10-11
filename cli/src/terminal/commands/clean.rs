@@ -69,6 +69,13 @@ pub struct Args {
     yes: bool,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// Run the clean command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     if args.global_cache {
@@ -105,7 +112,12 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         return clean_recursive(shell, &root_path, args.yes).await;
     }
 
-    let project = Project::open(&root_path, managed_backends(args.backend)).await?;
+    let project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &root_path,
+        managed_backends(args.backend),
+    )
+    .await?;
 
     header!(shell, "Cleaning build artifacts...");
 
@@ -120,7 +132,9 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             note!(
                 shell,
                 "Shared dependency artifacts in {} are kept for every project on this machine; `water gc build-cache --shared-target` removes them",
-                water_dir::shared_target_dir_path().await?.display()
+                water_dir::shared_target_dir_path(&waterui_cli::toolchain::Host::current())
+                    .await?
+                    .display()
             );
         }
         TargetBackend::Apple => {
@@ -182,7 +196,7 @@ const fn managed_backends(backend: TargetBackend) -> ManagedBackends {
 }
 
 async fn clean_global_build_cache(shell: &Shell, yes: bool) -> Result<()> {
-    let cache_root = water_dir::build_cache_root().await?;
+    let cache_root = water_dir::build_cache_root(&waterui_cli::toolchain::Host::current()).await?;
     clean_global_build_cache_root(shell, cache_root, yes).await
 }
 
@@ -382,7 +396,8 @@ async fn discover_project_cache_dir(project_root: PathBuf) -> Result<PathBuf> {
     Manifest::open(project_root.join("Water.toml"))
         .await
         .map_err(eyre::Report::from)?;
-    water_dir::project_build_cache_dir(&project_root).await
+    water_dir::project_build_cache_dir(&waterui_cli::toolchain::Host::current(), &project_root)
+        .await
 }
 
 fn discover_projects_blocking(root: &Path) -> Vec<PathBuf> {

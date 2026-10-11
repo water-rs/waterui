@@ -207,8 +207,9 @@ fn growing_row_above_viewport_keeps_anchor_row_position() {
     let _ = settle(&mut runtime, &mut at, 4);
 
     controller.scroll_to(ANCHOR);
-    // The glide re-arms every rendered frame until the row lands; give it a
-    // generous floor rather than trusting the settled probe.
+    // The jump lands within a couple of frames, but the target window still
+    // has to materialize and measure; give it a generous floor rather than
+    // trusting the settled probe.
     let updates = settle(&mut runtime, &mut at, 150);
     let before = node_bounds(&updates, Role::ListItem, "Row 30")
         .expect("the anchor row must publish bounds once scrolled to");

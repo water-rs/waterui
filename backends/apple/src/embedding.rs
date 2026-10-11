@@ -213,18 +213,13 @@ pub unsafe fn mount(
     }
     #[cfg(target_os = "ios")]
     {
-        let background = declaration.resolved_background(&env);
-        let background_host = root.clone();
-        keepalive.bind(&background, move |color| {
-            let [r, g, b, a] = color.components;
-            let color = cocoa_ui::uikit::colors::extended_linear_display_p3(
-                f64::from(r),
-                f64::from(g),
-                f64::from(b),
-                f64::from(a),
-            );
-            cocoa_ui::view::set_background_color(&background_host, Some(&color));
-        });
+        crate::windows::bind_background(
+            &mut keepalive,
+            &root,
+            &declaration.resolved_background(&env),
+            &env,
+            mtm,
+        );
         let declarations = std::iter::once(declaration).chain(windows).collect();
         crate::windows::declare(&scenes.state, declarations, &env, 1, mtm);
         keepalive.keep(parts.menu_bar);
@@ -274,7 +269,7 @@ pub(crate) fn mount_content(
     let placed = Rc::clone(&content);
     crate::inspector::install(root, env, keepalive);
     root.set_layout_handler(move |root| {
-        let frame = crate::native_layout::content_frame(placed.view(), root);
+        let frame = crate::native_layout::LayoutContext::of(root).content_frame(placed.view());
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the layout contract uses f32 points"
@@ -313,8 +308,10 @@ fn bind_root(
         };
         let mut declaration = declaration.borrow_mut();
         let toolbar = declaration.toolbar.take();
+        declaration.arm_close_requests(&observed_env);
         *observed_binding.borrow_mut() = Some(crate::windows::bind_root_window(
             window,
+            root,
             &observed_env,
             &declaration.title,
             &declaration.frame,
@@ -327,6 +324,9 @@ fn bind_root(
             &declaration.background.computed(),
             declaration.closable,
             declaration.resizable,
+            declaration
+                .has_close_handler()
+                .then(|| declaration.handle()),
             mtm,
         ));
     });

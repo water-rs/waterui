@@ -87,7 +87,7 @@ reading the emitted MSL signatures and slot assignments against wgpu-hal 29's
 `create_pipeline_layout`. On a macOS host, run:
 
 ```sh
-git clone https://github.com/water-rs/cherenkov && cd cherenkov
+git clone https://github.com/water-rs/waterui && cd waterui
 rustup default stable
 
 # 1. Build for macOS — compiles .metal -> .air -> .metallib via xcrun.
@@ -95,9 +95,9 @@ cargo build -p cherenkov-gpu
 ls target/debug/build/cherenkov-gpu-*/out/*.metallib   # 4 files expected
 
 # 2. Lint + test on Metal hardware.
-cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo nextest run --locked --workspace
-cargo test --locked --workspace --doc
+cargo clippy --locked -p cherenkov-gpu --all-targets -- -D warnings
+cargo nextest run --locked -p cherenkov-gpu
+cargo test --locked -p cherenkov-gpu --doc
 
 # 3. iOS and simulator targets.
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
@@ -107,14 +107,14 @@ cargo check -p cherenkov-gpu --target aarch64-apple-ios-sim
 # 4. Corpus on Metal — must be bit-identical to origin/dev.
 cargo build --locked --release -p cherenkov-bench --features cherenkov
 ./target/release/cherenkov-bench render --engine cherenkov \
-    --corpus scenes/corpus --out-dir out/metal-corpus
+    --corpus graphics/cherenkov/scenes/corpus --out-dir out/metal-corpus
 # Compare against an origin/dev build's output directory: every
 # render-*.json metrics object and every *.engine.png must be identical.
 
 # 5. Steady-frame perf + memory on the perf scenes (Metal device numbers are
 #    the authoritative wall-clock evidence per AGENTS.md):
 ./target/release/cherenkov-bench measure --engine cherenkov \
-    --scene scenes/perf/map --warmup 5 --frames 60 --out out/measure-metal.json
+    --scene graphics/cherenkov/scenes/perf/map --warmup 5 --frames 60 --out out/measure-metal.json
 ```
 
 Expected: build emits `engine{0,1,2}.metallib` + `present.metallib`; tests

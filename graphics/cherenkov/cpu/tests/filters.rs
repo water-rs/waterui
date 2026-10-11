@@ -13,7 +13,7 @@ use cherenkov::{
     BlendMode, Draw, Engine, FrameTime, Group, Next, Offscreen, OffscreenFormat, Visibility,
     WorkingColor,
 };
-use cherenkov_cpu::{BandPixels, Bands, Raster, RasterConfig, RedrawCallback};
+use cherenkov_cpu::{BandPixels, Bands, Raster, RasterConfig};
 use filtrate::{
     AnimatedCallback, AnimatedTarget, AuxData, AuxImage, AuxSource, CpuFilter, CpuFilterError,
     CpuImage, Filter, FilterExt, FilterImage, FilterParam, Footprint, ImageVisitor, Interpolator,
@@ -32,7 +32,7 @@ fn colour_chains_run_on_layers_and_recorded_groups() {
         engine.filter(filters::Brightness(-0.125_f32).then(filters::Brightness(-0.125_f32)));
     let color = WorkingColor::new([0.25, 0.5, 0.75, 1.0]);
     let layer_surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("layer surface");
     let layer = layer_surface.layer();
     layer_surface.update(|tx| {
@@ -45,7 +45,7 @@ fn colour_chains_run_on_layers_and_recorded_groups() {
     });
 
     let group_surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("group surface");
     let group_color = nami::binding(color);
     group_surface.update(|tx| {
@@ -91,7 +91,7 @@ fn filtered_group_isolates_blended_descendant_inside_pass_through_group() {
         1.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
     ]));
     let surface = engine
-        .surface(Offscreen::new((8, 40), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 40), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -143,7 +143,7 @@ fn filtered_group_contains_direct_blended_descendant() {
         1.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
     ]));
     let surface = engine
-        .surface(Offscreen::new((8, 40), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 40), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
@@ -186,10 +186,10 @@ fn filtered_group_contains_direct_blended_descendant() {
 fn nested_spatial_filters_match_full_surface_application_at_band_edges() {
     let engine = engine();
     let unfiltered = engine
-        .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32), || {})
         .expect("unfiltered surface");
     let filtered = engine
-        .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 96), OffscreenFormat::LinearF32), || {})
         .expect("filtered surface");
     let gaussian_kernel = filters::GaussianBlur::new(3.0_f32);
     let box_kernel = filters::Blur(5.0_f32);
@@ -252,17 +252,20 @@ fn band_streamed_filtered_groups_match_offscreen_linear_f32() {
     let filter = engine.filter(filters::GaussianBlur::new(3.0_f32));
     let (sink, streamed_bands) = mpsc::channel();
     let bands = engine
-        .surface(Bands::new(size, OffscreenFormat::LinearF32, move |band| {
-            let pixels = match band.pixels {
-                BandPixels::F32(pixels) => pixels,
-                BandPixels::F16(_) => panic!("expected LinearF32 bands"),
-            };
-            sink.send((band.y, pixels.to_vec()))
-                .expect("stream pixels channel open");
-        }))
+        .surface(
+            Bands::new(size, OffscreenFormat::LinearF32, move |band| {
+                let pixels = match band.pixels {
+                    BandPixels::F32(pixels) => pixels,
+                    BandPixels::F16(_) => panic!("expected LinearF32 bands"),
+                };
+                sink.send((band.y, pixels.to_vec()))
+                    .expect("stream pixels channel open");
+            }),
+            || {},
+        )
         .expect("bands surface");
     let offscreen = engine
-        .surface(Offscreen::new(size, OffscreenFormat::LinearF32))
+        .surface(Offscreen::new(size, OffscreenFormat::LinearF32), || {})
         .expect("offscreen surface");
     let content = |surface: &cherenkov::Surface<Raster>| {
         surface.record(|r| {
@@ -315,7 +318,7 @@ fn rgba8_filter_images_blend_on_the_cpu() {
         mode: filters::BlendMode::Multiply,
     });
     let surface = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
@@ -395,22 +398,31 @@ impl Interpolator for LinearRamp {
     }
 }
 
+/// A host wake callback that counts its calls into `wakes`.
+fn counting(wakes: &Arc<AtomicUsize>) -> impl Fn() + Send + Sync + 'static {
+    let wakes = Arc::clone(wakes);
+    move || {
+        wakes.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// A parameter change re-renders the filter and wakes the host of each
+/// surface running it, through that surface's own wake.
 #[test]
 fn animated_parameters_rerender_and_request_frames() {
     let wakes = Arc::new(AtomicUsize::new(0));
-    let wake_count = Arc::clone(&wakes);
-    let engine = Engine::<Raster>::new(RasterConfig {
-        redraw: Some(RedrawCallback::new(move || {
-            wake_count.fetch_add(1, Ordering::Relaxed);
-        })),
-        ..RasterConfig::default()
-    })
-    .expect("engine");
+    let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32).rate(30..=60))
+        .surface(
+            Offscreen::new((4, 4), OffscreenFormat::LinearF32).rate(30..=60),
+            counting(&wakes),
+        )
         .expect("surface");
     let other_surface = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32).rate(45..=90))
+        .surface(
+            Offscreen::new((4, 4), OffscreenFormat::LinearF32).rate(45..=90),
+            counting(&wakes),
+        )
         .expect("other surface");
     let (parameter, installed) = ScriptedParam::new(0.0);
     let mut callback = None;
@@ -432,9 +444,15 @@ fn animated_parameters_rerender_and_request_frames() {
         engine.render(FrameTime::at(start)).expect("initial frame"),
         Next::Idle
     );
+    // Count only the filter's wakes: installing it woke both hosts.
+    wakes.store(0, Ordering::Relaxed);
 
     fire(&installed, &mut callback, 0.2, None);
-    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        2,
+        "each surface running the filter wakes its host"
+    );
     assert_eq!(
         engine
             .render(FrameTime::at(start + Duration::from_millis(10)))
@@ -451,7 +469,11 @@ fn animated_parameters_rerender_and_request_frames() {
         0.8,
         Some(Box::new(LinearRamp(Duration::from_millis(100)))),
     );
-    assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        4,
+        "a render re-arms each surface's wake"
+    );
     let mid_time = start + Duration::from_millis(60);
     let next = engine
         .render(FrameTime::at(mid_time))
@@ -507,19 +529,15 @@ impl FilterParam for ParkingParam {
 #[test]
 fn hidden_surface_filters_wake_nothing_and_ask_no_frame() {
     let wakes = Arc::new(AtomicUsize::new(0));
-    let wake_count = Arc::clone(&wakes);
-    let engine = Engine::<Raster>::new(RasterConfig {
-        redraw: Some(RedrawCallback::new(move || {
-            wake_count.fetch_add(1, Ordering::Relaxed);
-        })),
-        ..RasterConfig::default()
-    })
-    .expect("engine");
+    let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let hidden = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((4, 4), OffscreenFormat::LinearF32),
+            counting(&wakes),
+        )
         .expect("surface");
     let visible = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32), || {})
         .expect("other surface");
     let (parameter, installed) = ScriptedParam::new(0.0);
     let mut callback = None;
@@ -543,6 +561,8 @@ fn hidden_surface_filters_wake_nothing_and_ask_no_frame() {
         engine.render(FrameTime::at(start)).expect("initial frame"),
         Next::Idle
     );
+    // Count only the filter's wakes: installing it woke the host.
+    wakes.store(0, Ordering::Relaxed);
 
     let parked = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
@@ -582,6 +602,11 @@ fn hidden_surface_filters_wake_nothing_and_ask_no_frame() {
 
     hidden.visibility(Visibility::Visible).expect("show");
     assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "showing the surface asks its host for the frame that shows it"
+    );
+    assert_eq!(
         engine
             .render(FrameTime::at(start + Duration::from_millis(500)))
             .expect("shown frame"),
@@ -596,7 +621,7 @@ fn hidden_surface_filters_wake_nothing_and_ask_no_frame() {
     fire(&installed, &mut callback, 0.4, None);
     assert_eq!(
         wakes.load(Ordering::Relaxed),
-        1,
+        2,
         "a shown surface's filter wakes the host again"
     );
 }
@@ -678,7 +703,7 @@ fn gpu_only_auxiliary_images_return_an_explicit_unsupported_error() {
         image: GpuOnlyImage,
     });
     let surface = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
@@ -698,7 +723,7 @@ fn removing_a_registered_filter_does_not_silently_fallback() {
     let engine = engine();
     let filter = engine.filter(filters::Brightness(0.0_f32));
     let surface = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let layer = surface.layer();
     surface.update(|tx| {

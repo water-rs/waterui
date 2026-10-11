@@ -18,7 +18,7 @@ pub type FrameReplySender<T> = SyncSender<T>;
 
 use cherenkov_record::{ChangeSet, LayerId, ResourceId, SurfaceId};
 
-use crate::backend::{Backend, Display, SurfaceInfo};
+use crate::backend::{Backend, Display, Renderer, SurfaceInfo};
 use crate::config::{MemoryUsage, Pressure};
 use crate::error::{RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next, Readback};
@@ -36,7 +36,8 @@ pub type ResOp<B> = Box<dyn FnOnce(&mut <B as Backend>::Renderer)>;
 /// It installs on the render side, learns the surface and layer it is
 /// installed on, and reports the installed content's declared alpha —
 /// `Some(opaque)` from the producer's current frame, `None` before one
-/// has landed — which the [`Op::Install`] arm notes on the layer.
+/// has landed — which the [`Op::Install`](cherenkov_record::ops::Op::Install)
+/// arm notes on the layer.
 #[cfg(not(target_arch = "wasm32"))]
 pub type InstallOp<B> =
     Box<dyn FnOnce(&mut <B as Backend>::Renderer, SurfaceId, LayerId) -> Option<bool> + Send>;
@@ -108,20 +109,41 @@ impl std::fmt::Debug for FontData {
     }
 }
 
+/// What one rendered frame produces: the aggregate [`Next`], each listed
+/// surface's own deadline, the frame's stats, and the frame's
+/// [`Renderer::FrameCommit`], the work the awaiting caller applies on its
+/// own thread before `render` returns (a window surface's main-thread
+/// present).
+pub type RenderOutcome<B> = Result<
+    (
+        Next,
+        rustc_hash::FxHashMap<SurfaceId, Next>,
+        FrameStats,
+        <<B as Backend>::Renderer as Renderer>::FrameCommit,
+    ),
+    RenderError,
+>;
+
 /// The render result and drained buffers returned to the UI thread.
-#[derive(Debug)]
 pub struct RenderReply<B: Backend> {
-    /// The result of rendering the frame: the aggregate [`Next`] and,
-    /// per surface the frame listed, that surface's own deadline —
-    /// the values the engine publishes through
-    /// [`Surface::next_frame`](crate::Surface::next_frame).
-    pub result: Result<(Next, rustc_hash::FxHashMap<SurfaceId, Next>, FrameStats), RenderError>,
+    /// The result of rendering the frame — the deadlines the engine
+    /// publishes through [`Surface::next_frame`](crate::Surface::next_frame).
+    pub result: RenderOutcome<B>,
     /// The drained commits, including their reusable empty op vectors.
     pub commits: Vec<(SurfaceId, ChangeSet<B>)>,
     /// The persistent reply sender, returned so a disconnected render thread
     /// releases the receiver.
     #[cfg(not(target_arch = "wasm32"))]
     pub sender: FrameReplySender<Self>,
+}
+
+impl<B: Backend> std::fmt::Debug for RenderReply<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderReply")
+            .field("ok", &self.result.is_ok())
+            .field("commits", &self.commits.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Memory usage and its persistent reply sender.
@@ -144,7 +166,7 @@ pub enum Message<B: Backend> {
         /// What it renders into.
         target: B::Target,
         /// The surface's host wake-up, shared with its UI-thread handle.
-        waker: crate::engine::SharedWaker<crate::engine::SurfaceWaker>,
+        waker: Arc<crate::engine::SurfaceWaker>,
         /// Result of the creation.
         reply: Sender<Result<SurfaceInfo, SurfaceError>>,
     },

@@ -28,7 +28,7 @@ use objc2_app_kit::{
     NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::NSRect;
-use objc2_quartz_core::CALayer;
+use objc2_quartz_core::{CALayer, CAMetalLayer};
 
 use crate::PlatformView;
 use crate::callback::{emit, forward, guarded};
@@ -51,8 +51,10 @@ pub struct SurfaceViewIvars {
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
     /// The layer the renderer presents frames into, owned by the view's
     /// host layer.
-    presentation_layer: RefCell<Option<Retained<CALayer>>>,
+    presentation_layer: RefCell<Option<Retained<CAMetalLayer>>>,
     gesture_target: RefCell<Option<Retained<GestureTarget>>>,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
 }
 
 impl fmt::Debug for SurfaceViewIvars {
@@ -393,7 +395,7 @@ impl SurfaceView {
         // are rendered at device-pixel size, so the layer must not rescale
         // them — `contentsScale` carries that.
         let host = CALayer::new();
-        let presentation = CALayer::new();
+        let presentation = CAMetalLayer::new();
         presentation.setOpaque(false);
         // SAFETY: `kCAGravityResize` is a system constant.
         presentation.setContentsGravity(unsafe { objc2_quartz_core::kCAGravityResize });
@@ -430,7 +432,7 @@ impl SurfaceView {
     /// When the presentation layer is gone — it is created in `new` and never
     /// removed, so this cannot happen in a live view.
     #[must_use]
-    pub fn presentation_layer(&self) -> Retained<CALayer> {
+    pub fn presentation_layer(&self) -> Retained<CAMetalLayer> {
         self.ivars()
             .presentation_layer
             .borrow()
@@ -476,6 +478,17 @@ impl SurfaceView {
     #[must_use]
     pub fn as_platform_view(&self) -> &PlatformView {
         self
+    }
+
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
     }
 
     /// Calls `handler` after every layout pass.

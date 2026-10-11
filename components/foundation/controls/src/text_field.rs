@@ -31,6 +31,10 @@ pub struct TextFieldConfig {
     pub prompt: Text,
     /// The type of keyboard to use for input.
     pub keyboard: KeyboardType,
+    /// The semantic content type the field declares for autofill.
+    ///
+    /// `None` declares none — the field is not offered to autofill services.
+    pub content_type: Option<ContentType>,
     /// Optional selected-text menu items.
     ///
     /// These actions are shown by native text selection UI.
@@ -55,6 +59,8 @@ pub struct ResolvedTextFieldConfig {
     pub prompt: TextConfig,
     /// The type of keyboard to use for input.
     pub keyboard: KeyboardType,
+    /// The semantic content type the field declares for autofill.
+    pub content_type: Option<ContentType>,
     /// Optional selected-text menu items resolved for the effective locale.
     pub selection_menu: Computed<Vec<ResolvedMenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
@@ -94,6 +100,41 @@ pub enum KeyboardType {
     PhoneNumber,
 }
 
+/// The semantic content type a text field declares: what the field's content
+/// *means*, for autofill and password/one-time-code services.
+///
+/// This is the shared vocabulary of Apple's text content types and Android's
+/// autofill hints. On Apple platforms it is what makes the system offer a
+/// received SMS code above the keyboard; on Android it hands the autofill
+/// service the matching hint rather than guessing from the label's language.
+/// It is a semantic attribute of the field, not a keyboard layout — a
+/// one-time-code field typically pairs it with `KeyboardType::Number`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+pub enum ContentType {
+    /// A username or account identifier.
+    Username,
+    /// An existing password.
+    Password,
+    /// A new password, in account creation or password change.
+    NewPassword,
+    /// An email address.
+    EmailAddress,
+    /// A telephone number.
+    PhoneNumber,
+    /// A one-time code delivered out of band — an SMS OTP and similar.
+    OneTimeCode,
+    /// A person's full name.
+    PersonName,
+    /// A full street address.
+    PostalAddress,
+    /// A postal or ZIP code.
+    PostalCode,
+    /// A payment card number.
+    CreditCardNumber,
+}
+
 impl TextField {
     /// Creates a new `TextField` with the given label and value binding.
     ///
@@ -117,6 +158,7 @@ impl TextField {
             value: value.clone(),
             prompt: Text::default(),
             keyboard: KeyboardType::default(),
+            content_type: None,
             selection_menu: Computed::constant(Vec::new()),
             line_limit: NonZeroUsize::new(1),
             on_submit: None,
@@ -183,6 +225,17 @@ impl TextField {
         self.0.keyboard = keyboard;
         self
     }
+
+    /// Sets the semantic content type the field declares for autofill —
+    /// what the field's content means, not how it looks. On Apple platforms
+    /// this drives the autofill suggestions above the keyboard, including the
+    /// one-time code the system offers for a received SMS; on Android the
+    /// autofill service sees the matching hint.
+    #[must_use]
+    pub const fn content_type(mut self, content_type: ContentType) -> Self {
+        self.0.content_type = Some(content_type);
+        self
+    }
 }
 
 impl View for TextField {
@@ -194,6 +247,7 @@ impl View for TextField {
             value: self.0.value,
             prompt: self.0.prompt.resolve(env),
             keyboard: self.0.keyboard,
+            content_type: self.0.content_type,
             selection_menu,
             line_limit: self.0.line_limit,
             on_submit: self.0.on_submit,

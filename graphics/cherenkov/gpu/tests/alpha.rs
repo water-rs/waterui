@@ -18,7 +18,7 @@ fn a_disjoint_opacity_layer_passes_through() -> Result<(), Box<dyn std::error::E
         Err(EngineError::Backend(_)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(GREY);
     let layer = surface.layer();
     surface.update(|tx| {
@@ -64,7 +64,7 @@ fn an_overlapping_opacity_layer_still_isolates() -> Result<(), Box<dyn std::erro
         Err(EngineError::Backend(_)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(GREY);
     let layer = surface.layer();
     surface.update(|tx| {
@@ -119,7 +119,7 @@ fn isolation_uses_tile_storage_or_a_region_sized_scratch() -> Result<(), Box<dyn
         Err(EngineError::Backend(_)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((256, 256), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(GREY);
     let layer = surface.layer();
     surface.update(|tx| {
@@ -198,7 +198,7 @@ fn a_child_layer_draws_once() -> Result<(), Box<dyn std::error::Error>> {
         Err(EngineError::Backend(_)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(WorkingColor::new([0.8, 0.8, 0.8, 1.0]));
     let layer = surface.layer();
     surface.update(|tx| {

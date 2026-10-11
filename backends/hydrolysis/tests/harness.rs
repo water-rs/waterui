@@ -189,7 +189,7 @@ fn mount_app_drives_the_app_window_frame_from_the_viewport() {
         "the app's Window::frame must carry the mounted viewport"
     );
     let bounds = app.query().role(Role::LABEL).single().bounds();
-    assert_eq!(bounds.width(), 320.0);
+    approx::assert_relative_eq!(bounds.width(), 320.0);
 }
 
 // Origin: waterui `testing/src/tests.rs`.

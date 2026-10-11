@@ -1,4 +1,5 @@
 use hydrolysis::HeadlessRuntime;
+use waterui::component::text_field::ContentType;
 
 use crate::app::SemanticApp;
 use crate::driver::RuntimeDriver;
@@ -108,6 +109,12 @@ impl<R: RuntimeDriver> Query<'_, R> {
     /// Includes or excludes hidden nodes.
     pub fn hidden(mut self, hidden: bool) -> Self {
         self.selector = self.selector.hidden(hidden);
+        self
+    }
+
+    /// Restricts the query to nodes declaring the given content type.
+    pub fn content_type(mut self, content_type: ContentType) -> Self {
+        self.selector = self.selector.content_type(content_type);
         self
     }
 

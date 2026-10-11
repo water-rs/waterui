@@ -829,6 +829,202 @@ fn collection_membership_enter_animates_then_settles() {
     );
 }
 
+/// The bottom-right pixel — the window background the rows draw over.
+fn background_pixel(snapshot: &crate::runner::HeadlessSnapshot) -> [u8; 4] {
+    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    let offset = ((height - 1) * width + width - 1) * 4;
+    snapshot.rgba8[offset..offset + 4]
+        .try_into()
+        .expect("a pixel is 4 bytes")
+}
+
+/// The color of the bottom-most solid row band in `snapshot` — the last
+/// collection row's rendered pixels. The color is read back from a real frame
+/// rather than reconstructed from the fixture's `srgb` values, so it matches
+/// whatever the surface's color pipeline produces.
+fn bottom_row_color(snapshot: &crate::runner::HeadlessSnapshot) -> [u8; 4] {
+    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    let background = background_pixel(snapshot);
+    for y in (0..height).rev() {
+        let mut counts: std::collections::HashMap<[u8; 4], usize> =
+            std::collections::HashMap::new();
+        for x in 0..width {
+            let offset = (y * width + x) * 4;
+            let pixel: [u8; 4] = snapshot.rgba8[offset..offset + 4]
+                .try_into()
+                .expect("a pixel is 4 bytes");
+            if pixel != background && pixel[3] == 255 {
+                *counts.entry(pixel).or_default() += 1;
+            }
+        }
+        if let Some((color, count)) = counts.into_iter().max_by_key(|(_, count)| *count)
+            && count >= 30
+        {
+            return color;
+        }
+    }
+    panic!("no solid row band found in the frame — the last row never rendered");
+}
+
+/// The first scanline holding at least four pixels of `color`, top to bottom —
+/// the probed row's top edge in this frame. Rows are 120px wide, so an edge's
+/// own scanline carries the row's exact color in quantity while the blended
+/// boundary pixels above it do not.
+fn top_edge(snapshot: &crate::runner::HeadlessSnapshot, color: [u8; 4]) -> Option<usize> {
+    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    (0..height).find(|&y| {
+        (0..width)
+            .filter(|&x| {
+                let offset = (y * width + x) * 4;
+                snapshot.rgba8[offset..offset + 4] == color
+            })
+            .count()
+            >= 4
+    })
+}
+
+/// water-rs/waterui#2200: re-inserting an item whose exit is still mid-flight
+/// must resume the enter from the presence the exit had reached, not restart
+/// it from zero. The bottom row is the probe: its top edge rides the space the
+/// middle row's presence has released, so a presence restart shows as a
+/// position snap (~19px here); a resumed enter moves it by the frame's
+/// ordinary sub-pixel step instead.
+#[test]
+fn collection_membership_exit_reversal_continues_from_sampled_presence() {
+    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+    let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
+
+    // Remove the middle row and let the exit run ~500ms of its 1000ms course:
+    // the bottom row has already slid a visible way into the released space.
+    let _ = list.remove(1);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
+    assert!(
+        mid_edge + 10 < resting_edge,
+        "~500ms into a 1000ms exit the bottom row must already be riding the \
+         released space (rest {resting_edge}, mid {mid_edge})"
+    );
+
+    // Re-insert the same id before the exit finishes: the reversal frame.
+    list.insert(1, SelfId::new(1));
+    let reversal = runtime
+        .pump_at(true, start + Duration::from_millis(532))
+        .snapshot
+        .expect("reversal frame must produce a snapshot");
+    let reversal_edge =
+        top_edge(&reversal, sibling).expect("the bottom row renders on the reversal frame");
+    assert!(
+        reversal_edge.abs_diff(mid_edge) <= 2,
+        "presence must be continuous across the reversal frame: the re-enter \
+         resumes from the sampled presence instead of restarting at zero, so \
+         the sibling holds its position ({mid_edge} -> {reversal_edge})"
+    );
+
+    // The resumed enter then settles at the restored membership.
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == before.rgba8,
+        "after the resumed enter completes, the restored membership must render \
+         pixel-identical to the initial rest frame"
+    );
+}
+
+/// water-rs/waterui#2200: removing an item whose enter is still mid-flight
+/// must resume the exit from the presence the enter had reached, not restart
+/// from full presence. Same probe as the exit reversal: the bottom row's edge
+/// rides the growing row's extent, so a restart would throw it ~19px down in
+/// one frame instead of moving it by a frame step.
+#[test]
+fn collection_membership_enter_reversal_continues_from_sampled_presence() {
+    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+    let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
+
+    // Insert the middle row; ~500ms into the 1000ms enter it occupies half its
+    // slot and has pushed the bottom row a visible way down.
+    list.insert(1, SelfId::new(1));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-enter frame must produce a snapshot");
+    let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-enter");
+    assert!(
+        resting_edge + 10 < mid_edge,
+        "~500ms into a 1000ms enter the bottom row must already be displaced \
+         (rest {resting_edge}, mid {mid_edge})"
+    );
+
+    // Remove it again before the enter finishes: the reversal frame.
+    let _ = list.remove(1);
+    let reversal = runtime
+        .pump_at(true, start + Duration::from_millis(532))
+        .snapshot
+        .expect("reversal frame must produce a snapshot");
+    let reversal_edge =
+        top_edge(&reversal, sibling).expect("the bottom row renders on the reversal frame");
+    assert!(
+        reversal_edge.abs_diff(mid_edge) <= 2,
+        "presence must be continuous across the reversal frame: the exit \
+         resumes from the sampled presence instead of restarting at full \
+         presence, so the sibling holds its position ({mid_edge} -> {reversal_edge})"
+    );
+
+    // The resumed exit settles back at the original membership.
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == before.rgba8,
+        "after the resumed exit completes, the original membership must render \
+         pixel-identical to the initial rest frame"
+    );
+}
+
 /// Pump frames until every filter of `content` has been set up and run once,
 /// then return the frame that rendered them all. Filter setup is asynchronous
 /// (`AppliedFilterRuntime::ensure_setup` spawns it), so the first frames draw

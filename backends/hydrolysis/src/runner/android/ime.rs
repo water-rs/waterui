@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 
-use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow};
+use crate::platform::{InputEvent, KeyState, Modifiers, PlatformWindow};
 use crate::runner::editing::{AnchorInfo, EditingSession, EditingState, EditorContextAction};
 
 use super::host::AndroidSession;
@@ -61,16 +61,16 @@ impl Default for ImeBridge {
 
 impl ImeBridge {
     /// `sendKeyEvent` — a hardware/IME key press the `InputConnection` routed,
-    /// already decoded by Kotlin to a W3C key name.
+    /// already decoded by Kotlin to a W3C key value.
     pub fn key_event(
         platform: &mut super::host::AndroidHostWindow,
-        key: String,
+        key: &str,
         pressed: bool,
         modifiers: Modifiers,
     ) {
-        let code = KeyCode::Named(key);
+        let (code, logical_key) = crate::runner::editing::hardware_key(key);
         platform.push_event(InputEvent::Key {
-            logical_key: code.to_w3c_key(),
+            logical_key,
             key: code,
             physical_code: keyboard_types::Code::Unidentified,
             repeat: false,

@@ -13,6 +13,7 @@
 use std::rc::Rc;
 
 use waterui::app::App;
+use waterui::component::text_field::{ContentType, KeyboardType};
 use waterui::form::secure::Secure;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
@@ -20,10 +21,15 @@ use waterui::reactive::binding;
 use waterui::window::{Window, WindowState};
 use waterui_core::Native;
 
+/// The bindings arrive owned so the returned view holds no borrow of the
+/// window closure's locals; each is only borrowed in the body, which the
+/// pedantic lint reads as `needless_pass_by_value`.
+#[allow(clippy::needless_pass_by_value)]
 fn app_view(
     count: Binding<i32>,
     enabled: Binding<bool>,
     name: Binding<Str>,
+    code: Binding<Str>,
     password: Binding<Secure>,
     volume: Binding<f64>,
 ) -> impl View {
@@ -51,7 +57,12 @@ fn app_view(
             // exceed `TupleViews`' arity once every control the Android landing
             // tests drive sits in a single tuple.
             vstack((
-                TextField::new("Email address", &name).prompt("Autofill: email"),
+                TextField::new("Email address", &name)
+                    .prompt("Autofill: email")
+                    .content_type(ContentType::EmailAddress),
+                TextField::new("Verification code", &code)
+                    .keyboard(KeyboardType::Number)
+                    .content_type(ContentType::OneTimeCode),
                 SecureField::new("Password", &password),
                 text!("Hello, {name}!", name = name),
             )),
@@ -73,9 +84,10 @@ fn build_app() -> App {
                 let count = binding(0);
                 let enabled = binding(false);
                 let name = binding("");
+                let code = binding("");
                 let password = binding(waterui::form::secure::Secure::new(String::new()));
                 let volume = binding(0.5);
-                app_view(count, enabled, name, password, volume)
+                app_view(count, enabled, name, code, password, volume)
             },
         )],
         Environment::new(),

@@ -14,12 +14,17 @@ rem while the .sh consumes piped license confirmations first. Tests must not
 rem rely on stdin being drained on Windows.
 rem
 rem Mutable state (`rustup toolchain install`/`default`/`target add`/
-rem `component add`, `rustup update`, `cargo install`, `espup install`) lives
-rem in files under the fake %HOME% so a `--fix` run mutates the fixture and a
+rem `component add`, `rustup update`, `cargo install`) lives in files
+rem under the fake %HOME% so a `--fix` run mutates the fixture and a
 rem re-check observes the repair. `mkdir`/`copy`/`type`/`for /f` are cmd
 rem builtins, so the restricted PATH is still honored.
 setlocal EnableDelayedExpansion
 set "tool=%~n0"
+
+rem WATERUI_FAKE_LOG names a file every fake invocation appends itself to -
+rem `<tool> <args>` one per line - the seam tests use to assert which tools
+rem ran and with which arguments.
+if defined WATERUI_FAKE_LOG echo %tool% %*>> "%WATERUI_FAKE_LOG%"
 
 rem Defaults matching the .sh `${VAR:-default}` expansions; a declared value
 rem always wins.
@@ -82,7 +87,6 @@ if not "!hay:%~2=!"=="!hay!" (exit /b 0) else (exit /b 1)
 if /i "%tool%"=="rustup" goto :rustup
 if /i "%tool%"=="rustc" goto :rustc
 if /i "%tool%"=="cargo" goto :cargo
-if /i "%tool%"=="espup" goto :espup
 if /i "%tool%"=="xcodebuild" goto :xcodebuild
 if /i "%tool%"=="xcode-select" goto :xcode_select
 if /i "%tool%"=="xcrun" goto :xcrun
@@ -144,6 +148,26 @@ for %%a in (%*) do (
 )
 if "%~1"=="--version" (echo git version 2.43.0 & exit /b 0)
 set "git_args=%*"
+call :contains git_args "rev-parse --is-shallow-repository"
+if %errorlevel%==0 (call :respond GIT_SHALLOW & exit /b !errorlevel!)
+call :contains git_args "rev-parse --verify refs/remotes/origin/dev"
+if %errorlevel%==0 (call :respond GIT_HEAD & exit /b !errorlevel!)
+call :contains git_args "rev-parse --verify"
+if %errorlevel%==0 (call :respond GIT_REVISION & exit /b !errorlevel!)
+call :contains git_args --unshallow
+if %errorlevel%==0 (type nul > .fake-git-unshallowed & exit /b 0)
+call :contains git_args "merge-base --is-ancestor"
+if %errorlevel%==0 (
+    if exist .fake-git-unshallowed (
+        if defined WATERUI_FAKE_GIT_ANCESTOR_COMPLETE exit /b !WATERUI_FAKE_GIT_ANCESTOR_COMPLETE!
+        exit /b 0
+    )
+    if defined WATERUI_FAKE_GIT_ANCESTOR exit /b !WATERUI_FAKE_GIT_ANCESTOR!
+    exit /b 0
+)
+call :contains git_args ls-tree
+if %errorlevel%==0 (call :respond_or_empty GIT_ENTRY & exit /b !errorlevel!)
+if "%~1"=="show" (call :respond GIT_FILE & exit /b !errorlevel!)
 call :contains git_args checkout
 if %errorlevel%==0 if defined WATERUI_FAKE_GIT_CHECKOUT if defined git_dir (
     for /r "%WATERUI_FAKE_GIT_CHECKOUT%" %%f in (*) do (
@@ -285,8 +309,27 @@ exit /b 2
 :cargo
 if not defined WATERUI_FAKE_CARGO_VERSION set "WATERUI_FAKE_CARGO_VERSION=1.95.0"
 if "%1"=="--version" (echo cargo %WATERUI_FAKE_CARGO_VERSION% ^(waterui-test^) & exit /b 0)
+rem `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
+if "%1"=="metadata" (call :respond CARGO_METADATA & exit /b !errorlevel!)
+if "%1"=="tree" goto :cargo_tree
 if "%1"=="install" goto :cargo_install
 if "%1"=="binstall" goto :cargo_install
+exit /b 0
+
+rem The graph is resolved per build target: `cargo tree` answers
+rem `CARGO_TREE_<triple>` for each `--target` flag it is passed - a
+rem multi-target invocation's union is exactly its per-target answers - and
+rem a call naming no `--target` or a triple with no staged response fails.
+:cargo_tree
+set "tree_targets="
+set "prev="
+for %%a in (%*) do (
+    if "!prev!"=="--target" set "tree_targets=!tree_targets! %%a"
+    set "prev=%%a"
+)
+if not defined tree_targets exit /b 2
+for %%t in (!tree_targets!) do if not exist "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_%%t" exit /b 1
+for %%t in (!tree_targets!) do type "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_%%t"
 exit /b 0
 
 rem `cargo install <crate>` drops the crate's binary beside cargo - model that
@@ -300,18 +343,6 @@ for %%a in (%*) do (
     )
 )
 if defined krate if not exist "%~dp0!krate!.cmd" copy /y "%~f0" "%~dp0!krate!.cmd" >nul
-exit /b 0
-
-rem `espup install` lays down the `esp` toolchain's pieces; the RISC-V GCC
-rem lands under %HOME%\.espressif only with --esp-riscv-gcc.
-:espup
-if not "%1"=="install" exit /b 0
-if defined RUSTUP_HOME (set "esp=%RUSTUP_HOME%\toolchains\esp") else (set "esp=%HOME%\.rustup\toolchains\esp")
-mkdir "%esp%\xtensa-esp32-elf-clang\1.0\esp-clang\lib" 2>nul
-mkdir "%esp%\xtensa-esp-elf\1.0\xtensa-esp-elf\bin" 2>nul
-mkdir "%esp%\lib\rustlib\src\rust" 2>nul
-set "args=%*"
-call :contains args --esp-riscv-gcc && (mkdir "%HOME%\.espressif\tools\riscv32-esp-elf\1.0\riscv32-esp-elf\bin" 2>nul)
 exit /b 0
 
 :xcodebuild
@@ -348,7 +379,6 @@ if "%*"=="start-server" (if defined WATERUI_FAKE_ADB_START_SERVER_STATUS (exit /
 set "args=%*"
 call :contains args "emu avd name" && (call :respond_or_empty ADB_EMU_AVD_NAME & exit /b 0)
 call :contains args getprop && (call :respond_or_empty ADB_GETPROP & exit /b 0)
-call :contains args wait-for-device && exit /b 0
 exit /b 0
 
 :emulator

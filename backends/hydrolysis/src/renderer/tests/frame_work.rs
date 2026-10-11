@@ -8,8 +8,8 @@
 //! instrument the frame model is measured against — a fixture's whole-frame
 //! values (`semantic builds`, `recorded view contents`, `font and image
 //! registrations`, `gpu submissions`, `host wakeups`) are what a steady
-//! frame drives to zero, while the fine-grained counters (`live operand
-//! updates`, `layer creations`, `layer removals`) carry the nonzero signal.
+//! frame drives to zero, while the fine-grained counters (`layer
+//! creations`, `layer removals`) carry the nonzero signal.
 //!
 //! The fixtures deliberately assert *which* counter families moved rather
 //! than exact counts: exact numbers are baseline data, and an exact
@@ -26,7 +26,7 @@
 //! * popup opening → `popup_opening_counts` (accessibility)
 //! * scrolling → `scrolling_counts`
 //! * GPU content under clips/effects → `gpu_content_under_clips_and_effects`
-//! * native-view interleaving → documented only: `record_native_view_layer`
+//! * native-view interleaving → documented only: the `WebView` record
 //!   exists solely under `hydrolysis_macos_system_webview` (winit + macOS +
 //!   webview-system) and the `WKWebView` bridge requires a real window — no
 //!   headless harness can mount it.
@@ -130,26 +130,31 @@ fn runtime_with(view: impl View) -> HeadlessRuntime {
     )
 }
 
-/// The frame-work values a fixture reads back. Transient presentations
-/// (popup windows, drawn context menus) install no retained engine layers:
-/// every retained-engine field stays zero on their frames.
+/// The frame-work values a fixture reads back. A popup window is a
+/// separate window: the presenting window's retained-engine fields stay
+/// zero on its frames.
 fn assert_engine_counters_zero(counters: &FrameCounters) {
     let m = counters.frame_work;
-    assert_eq!(m.live_operand_updates, 0, "no live operands update");
     assert_eq!(m.layer_creations, 0, "no retained engine layers mount");
     assert_eq!(m.layer_removals, 0, "no retained engine layers unmount");
 }
 
+/// A drawn context menu presents through the window's retained
+/// context-menu host: its opening frame mounts the menu's layers.
+fn assert_presentation_mounts(counters: &FrameCounters) {
+    let m = counters.frame_work;
+    assert!(
+        m.layer_creations >= 1,
+        "the context-menu host mounts the menu's layers"
+    );
+}
+
 /// The retained-engine counters a fixture whose content mounts as retained
 /// scene layers reads back: the engine mounts its layers on the presented
-/// frame (`layer_creations >= 1`), while a fixture with no reactive input
-/// and no unmount sees no live-operand updates and no removals.
+/// frame (`layer_creations >= 1`), while a fixture with no unmount sees no
+/// removals.
 fn assert_retained_engine_counters(counters: &FrameCounters) {
     let m = counters.frame_work;
-    assert_eq!(
-        m.live_operand_updates, 0,
-        "nothing reactive runs in this fixture"
-    );
     assert!(
         m.layer_creations >= 1,
         "the retained engine mounts the fixture's layers"
@@ -470,7 +475,7 @@ fn context_menu_holes_render() {
         m.structural_patches + m.semantic_builds > 0,
         "mounting the menu mutates the retained tree"
     );
-    assert_engine_counters_zero(&result.profile.counters);
+    assert_presentation_mounts(&result.profile.counters);
 }
 
 /// Popup opening: a mounted popup is a second window the pump's merged a11y

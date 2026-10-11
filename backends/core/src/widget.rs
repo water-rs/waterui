@@ -14,7 +14,7 @@ use waterui_core::{Binding, Computed, Signal};
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::{Paint, Recorder};
+use waterui_graphics::draw::{MaterialRegistry, Paint, Recorder};
 use waterui_text::font::Font;
 
 /// Button layout metrics.
@@ -1140,6 +1140,26 @@ pub trait WidgetTheme {
     /// Return motion policy for navigation transitions.
     fn navigation_motion(&self) -> NavigationMotion;
 
+    /// Declare the theme's backdrop materials in `registry`: both the
+    /// backdrop shaders ([`MaterialShader`] keys, each with its
+    /// [`BackdropShaderSource`]) and the capture classes ([`CaptureClass`]
+    /// keys, each with its [`MaterialCapture`] group parameters) that the
+    /// theme's chrome names when it records a backdrop material with
+    /// [`Recorder::backdrop_material`].
+    ///
+    /// [`MaterialShader`]: waterui_graphics::draw::MaterialShader
+    /// [`BackdropShaderSource`]: waterui_graphics::draw::BackdropShaderSource
+    /// [`CaptureClass`]: waterui_graphics::draw::CaptureClass
+    /// [`MaterialCapture`]: waterui_graphics::draw::MaterialCapture
+    ///
+    /// The contract a backend that realizes backdrop materials follows: it
+    /// calls this once, before it draws any chrome, and keeps the
+    /// registry; it registers every shader with each engine it attaches
+    /// and creates material groups from the capture classes. The theme
+    /// holds no engine handles. The default registers nothing, which is
+    /// right for a theme that records no backdrop material.
+    fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
+
     /// Return metrics for a button style.
     fn button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics;
     /// Return metrics for a button whose label presents only its icon.
@@ -1519,7 +1539,15 @@ pub trait WidgetTheme {
     /// Return tabs layout metrics for items laid out as `layout`.
     fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics;
     /// Draw a tabs bar.
-    fn draw_tabs_bar(&self, recorder: &mut Recorder, bounds: Rect, top_edge: bool);
+    ///
+    /// `surface` is the bar's surface already extended through the safe-area
+    /// regions of every edge it touches.
+    fn draw_tabs_bar(&self, recorder: &mut Recorder, surface: Rect);
+    /// Draw a tabs bar divider.
+    ///
+    /// `divider` is the bar's inner edge: the top row of a bottom bar, the
+    /// trailing column of a sidebar strip.
+    fn draw_tabs_bar_divider(&self, recorder: &mut Recorder, divider: Rect);
     /// Draw the selected tab highlight of an item laid out as `layout`.
     fn draw_tabs_highlight(&self, recorder: &mut Recorder, bounds: Rect, layout: TabItemLayout);
     /// Draw the state layer of a tab button whose item is laid out as

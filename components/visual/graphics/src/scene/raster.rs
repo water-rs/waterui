@@ -142,8 +142,10 @@ impl Rasterizer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(width: u32, height: u32) -> Result<Self, SurfaceError> {
         let engine = Rc::new(Engine::<Raster>::new(RasterConfig::default())?);
-        let surface =
-            engine.surface(Offscreen::new((width, height), OffscreenFormat::LinearF16))?;
+        let surface = engine.surface(
+            Offscreen::new((width, height), OffscreenFormat::LinearF16),
+            || {},
+        )?;
         Ok(Self {
             resources: SceneResources::new(engine.clone()),
             engine,
@@ -170,7 +172,10 @@ impl Rasterizer {
     pub async fn new(width: u32, height: u32) -> Result<Self, SurfaceError> {
         let engine = Rc::new(Engine::<Raster>::new(RasterConfig::default()).await?);
         let surface = engine
-            .surface(Offscreen::new((width, height), OffscreenFormat::LinearF16))
+            .surface(
+                Offscreen::new((width, height), OffscreenFormat::LinearF16),
+                || {},
+            )
             .await?;
         Ok(Self {
             resources: SceneResources::new(engine.clone()),

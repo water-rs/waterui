@@ -460,24 +460,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arboard"
-version = "3.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf"
-dependencies = [
- "clipboard-win",
- "log",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "parking_lot",
- "percent-encoding",
- "windows-sys 0.60.2",
- "wl-clipboard-rs",
- "x11rb",
-]
-
-[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1767,8 +1749,11 @@ dependencies = [
 name = "cherenkov-cpu"
 version = "0.0.0"
 dependencies = [
+ "arrayvec",
  "cherenkov",
  "cherenkov-oracle",
+ "cherenkov-scene",
+ "cherenkov-shader",
  "filtrate",
  "filtrate-core",
  "half",
@@ -1791,6 +1776,7 @@ dependencies = [
  "cherenkov",
  "cherenkov-oracle",
  "cherenkov-scene",
+ "cherenkov-shader",
  "dispatch2",
  "filtrate",
  "filtrate-core",
@@ -1823,9 +1809,11 @@ dependencies = [
  "rustc-hash 2.1.3",
  "skrifa 0.44.0",
  "thiserror 2.0.21",
+ "toml 1.1.6+spec-1.1.0",
  "tracing",
  "wasm-bindgen",
  "wasm-bindgen-test",
+ "web-sys",
  "wgpu 30.0.1",
 ]
 
@@ -2153,7 +2141,6 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-text",
  "objc2-foundation 0.3.2",
- "objc2-io-surface",
  "objc2-map-kit",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -2262,6 +2249,16 @@ dependencies = [
  "libc",
  "unicode-width 0.2.2",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "console_error_panic_hook"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
+dependencies = [
+ "cfg-if 1.0.5",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2534,40 +2531,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows 0.62.2",
-]
-
-[[package]]
-name = "cpal"
-version = "0.18.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1"
-dependencies = [
- "alsa",
- "block2 0.6.2",
- "coreaudio-rs",
- "dasp_sample",
- "futures-channel",
- "futures-util",
- "jni 0.22.4",
- "js-sys",
- "libc",
- "mach2 0.6.0",
- "ndk",
- "ndk-context",
- "num-derive",
- "num-traits",
- "objc2 0.6.4",
- "objc2-audio-toolbox",
- "objc2-avf-audio",
- "objc2-core-audio",
- "objc2-core-audio-types",
- "objc2-core-foundation",
- "objc2-foundation 0.3.2",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "windows 0.62.2",
- "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -3770,63 +3733,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fontcull-font-types"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7187211f698d3144c4278d99cede5f6d67814cd676bbf1d2b8607049b3d76b2"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
-name = "fontcull-klippa"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceb68d1b34e3c675e78f1cabbc49e19c5962d6c6173b7c77d77392431b99840"
-dependencies = [
- "clap",
- "fnv",
- "fontcull-skrifa",
- "fontcull-write-fonts",
- "hashbrown 0.15.5",
- "regex",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "fontcull-read-fonts"
-version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "170928e2d36f9605167b8480acd6e9fc5ef5daaf64fac43d178af9c563adba29"
-dependencies = [
- "bytemuck",
- "fontcull-font-types",
-]
-
-[[package]]
-name = "fontcull-skrifa"
-version = "0.39.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c39120d1806ed11baf0559537bd601c6c60d7bf84ddcc385adea8fb8ff62d35"
-dependencies = [
- "bytemuck",
- "fontcull-read-fonts",
-]
-
-[[package]]
-name = "fontcull-write-fonts"
-version = "0.44.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47b506b0883cf5f8998391cbffa92024143cedcbd0f344fc3f1507dec12956cf"
-dependencies = [
- "fontcull-font-types",
- "fontcull-read-fonts",
- "indexmap 2.14.2",
- "kurbo 0.12.0",
- "log",
-]
-
-[[package]]
 name = "fontdb"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4069,6 +3975,10 @@ name = "futures-timer"
 version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+dependencies = [
+ "gloo-timers 0.4.0",
+ "send_wrapper",
+]
 
 [[package]]
 name = "futures-util"
@@ -4402,6 +4312,7 @@ version = "0.1.0"
 dependencies = [
  "waterui",
  "waterui-core",
+ "web-time",
 ]
 
 [[package]]
@@ -4469,8 +4380,6 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
- "allocator-api2",
- "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -4647,12 +4556,15 @@ dependencies = [
  "accesskit_winit",
  "aither-mcp",
  "android_logger",
+ "approx",
  "async-task",
  "base64 0.22.1",
  "block2 0.6.2",
  "cfg_aliases",
  "cherenkov",
  "cherenkov-gpu",
+ "cherenkov-record",
+ "console_error_panic_hook",
  "cookie",
  "criterion",
  "ctrlc",
@@ -4670,14 +4582,12 @@ dependencies = [
  "kurbo 0.13.1",
  "libc",
  "lru 0.18.5",
- "muda",
  "nami",
  "native-executor",
  "ndk",
  "ndk-context",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
- "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
  "objc2-web-kit",
@@ -4689,7 +4599,9 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
+ "signal-hook",
  "skrifa 0.44.0",
+ "thiserror 2.0.21",
  "tiny_http",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -4700,6 +4612,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "waterkit-clipboard",
+ "waterkit-menu",
  "waterui",
  "waterui-assets",
  "waterui-backend-core",
@@ -4723,9 +4636,14 @@ dependencies = [
  "waterui-testing",
  "waterui-text",
  "waterui-url",
+ "waterui-video",
+ "waterui-watcher-set",
  "waterui-webview",
+ "wayland-client",
+ "wayland-protocols",
  "web-sys",
  "wgpu 30.0.1",
+ "windows 0.62.2",
  "windows-sys 0.52.0",
  "winit",
  "x11-dl",
@@ -4746,7 +4664,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=bc412a1a7e796cedc30d2c62d33fe293634574a8#bc412a1a7e796cedc30d2c62d33fe293634574a8"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=00fe165b8221b74bd0da21dbdd4555c418881555#00fe165b8221b74bd0da21dbdd4555c418881555"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -5557,16 +5475,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "io-kit-sys"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617ee6cf8e3f66f3b4ea67a4058564628cde41901316e19f559e14c7c72c5e7b"
-dependencies = [
- "core-foundation-sys 0.8.7",
- "mach2 0.4.3",
-]
-
-[[package]]
 name = "ios-test-host"
 version = "0.1.0"
 dependencies = [
@@ -6015,9 +5923,9 @@ checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -6104,26 +6012,6 @@ dependencies = [
  "anstyle",
  "clap",
  "escape8259",
-]
-
-[[package]]
-name = "libudev"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78b324152da65df7bb95acfcaab55e3097ceaab02fb19b228a9eb74d55f135e0"
-dependencies = [
- "libc",
- "libudev-sys",
-]
-
-[[package]]
-name = "libudev-sys"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c8469b4a23b962c1396b9b451dda50ef5b283e8dd309d69033475fa9b334324"
-dependencies = [
- "libc",
- "pkg-config",
 ]
 
 [[package]]
@@ -6312,27 +6200,12 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "mach2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "mach2"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a1b95cd5421ec55b445b5ae102f5ea0e768de1f82bd3001e11f426c269c3aea"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "mach2"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "mach2"
@@ -6822,25 +6695,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "muda"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cca139e57da4383727f189e43e66e84fa372347027fc996f9f1a007ec0a37996"
-dependencies = [
- "crossbeam-channel",
- "dpi",
- "keyboard-types",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-core-foundation",
- "objc2-foundation 0.3.2",
- "once_cell",
- "png",
- "thiserror 2.0.21",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "multi-scene-example"
 version = "0.1.0"
 dependencies = [
@@ -6901,7 +6755,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -6926,7 +6780,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap 2.14.2",
@@ -7074,17 +6928,6 @@ name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
-
-[[package]]
-name = "nix"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
-dependencies = [
- "bitflags 1.3.2",
- "cfg-if 1.0.5",
- "libc",
-]
 
 [[package]]
 name = "nix"
@@ -7573,6 +7416,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b034b578389f89a85c055eacc8d8b368be5f04a6c1b07f672bf3aec21d0ef621"
 dependencies = [
+ "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
 ]
@@ -7653,6 +7497,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-haptics"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbf2dae8a5e651adec3af54059cbce15e3aadbf8913da9782e1e1affc29aa512"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-core-image"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7671,6 +7526,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5d563b38d2b97209f8e861173de434bd0214cf020e3423a52624cd1d989f006"
 dependencies = [
  "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-video",
  "objc2-foundation 0.3.2",
 ]
 
@@ -7744,6 +7602,18 @@ name = "objc2-encode"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
+
+[[package]]
+name = "objc2-event-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51bc9ad7325642172110196bacd6af64027ec5549ded7fc6589ea03e0f792bf8"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
 
 [[package]]
 name = "objc2-foundation"
@@ -7848,6 +7718,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-media-player"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85f2a98483f6e76313cb85a5a185eaa3cda86a177b13a8852d56cbd0085bf635"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-media-toolbox"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7887,6 +7771,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-photos"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6ea9a706f18e32cf8a0723e99855af4f135282891e07259301bae9135ae3872"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-photos-ui"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdddde9dfb986546746e3115021a85c4a83e1c5e9037b3c865a688fe9bf94ebb"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-quartz-core"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7914,6 +7821,21 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
+]
+
+[[package]]
+name = "objc2-screen-capture-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -7965,7 +7887,7 @@ dependencies = [
  "objc2-link-presentation",
  "objc2-quartz-core 0.2.2",
  "objc2-symbols",
- "objc2-uniform-type-identifiers",
+ "objc2-uniform-type-identifiers 0.2.2",
  "objc2-user-notifications 0.2.2",
 ]
 
@@ -7999,6 +7921,16 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-uniform-type-identifiers"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7902ac02859fc1f7045f8b598c63f1ae0cc7efeaa06a9bc9f3d9a3c955974fa4"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -9557,7 +9489,7 @@ version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a536bb79db59098ef71a4dd4246c02eb87b316deceb1b68e0cde7167ec01eb"
 dependencies = [
- "cpal 0.17.3",
+ "cpal",
  "dasp_sample",
  "num-rational",
  "symphonia",
@@ -9985,6 +9917,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "send_wrapper"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73"
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10125,25 +10063,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serialport"
-version = "4.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba5f8f29aa20853c4e3e85a33ec580eb66be1f057142e77a333834a318bacf2"
-dependencies = [
- "bitflags 2.13.2",
- "cfg-if 1.0.5",
- "core-foundation 0.10.1",
- "core-foundation-sys 0.8.7",
- "io-kit-sys",
- "libudev",
- "mach2 0.4.3",
- "nix 0.26.4",
- "scopeguard",
- "unescaper",
- "windows-sys 0.52.0",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10183,8 +10102,9 @@ dependencies = [
 
 [[package]]
 name = "shaderloom"
-version = "0.1.2"
-source = "git+https://github.com/water-rs/shaderloom?rev=b0b6870c8b560d902c1de9a4d039c3a921b18b92#b0b6870c8b560d902c1de9a4d039c3a921b18b92"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8c154d4b181547cb1f51464df6aefd0b002d8d5778fddc0311820122d790bc3"
 dependencies = [
  "naga 30.0.1",
  "prettyplease 0.3.0",
@@ -10235,6 +10155,16 @@ name = "sif-itree"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7f45b8998ced5134fb1d75732c77842a3e888f19c1ff98481822e8fbfbf930b"
+
+[[package]]
+name = "signal-hook"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
 
 [[package]]
 name = "signal-hook-registry"
@@ -10665,18 +10595,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "swift-bridge"
-version = "0.1.59"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "384ed39ea10f1cefabb197b7d8e67f0034b15a94ccbb1038b8e020da59bfb0be"
-dependencies = [
- "once_cell",
- "swift-bridge-build",
- "swift-bridge-macro",
- "tokio",
-]
-
-[[package]]
 name = "swift-bridge-build"
 version = "0.1.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10696,18 +10614,6 @@ checksum = "c73bd16155df50708b92306945656e57d62d321290a7db490f299f709fb31c83"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "swift-bridge-macro"
-version = "0.1.59"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1a13dc0dc875d85341dec5b5344a7d713f20eb5650b71086b27d09a6ece272f"
-dependencies = [
- "proc-macro2",
- "quote",
- "swift-bridge-ir",
  "syn 1.0.109",
 ]
 
@@ -11813,15 +11719,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unescaper"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7285e83a80ce76f5e7bce79fa41f68d78ba62d1003cf27bf748ab24413808cf4"
-dependencies = [
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12365,10 +12262,12 @@ dependencies = [
 [[package]]
 name = "waterkit-audio"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "async-channel",
- "cpal 0.18.2",
+ "block2 0.6.2",
+ "cpal",
+ "dispatch2",
  "futures",
  "jni 0.22.4",
  "js-sys",
@@ -12378,10 +12277,18 @@ dependencies = [
  "ndk-context",
  "ndk-sys",
  "num-traits",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-av-foundation",
+ "objc2-avf-audio",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-foundation 0.3.2",
+ "objc2-media-player",
+ "objc2-ui-kit 0.3.2",
  "rodio",
  "smallvec",
  "smol",
- "swift-bridge",
  "symphonia-adapter-fdk-aac",
  "symphonia-codec-aac",
  "symphonia-core 0.6.1",
@@ -12392,6 +12299,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "waterkit-build",
+ "waterkit-core",
  "web-sys",
  "windows 0.62.2",
  "zbus",
@@ -12401,8 +12309,9 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
+ "futures-channel",
  "jni 0.22.4",
  "ndk-context",
  "swift-bridge-build",
@@ -12412,24 +12321,35 @@ dependencies = [
 [[package]]
 name = "waterkit-camera"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "async-channel",
  "core-graphics-types 0.2.0",
+ "dispatch2",
  "futures",
  "image",
  "jni 0.22.4",
+ "ndk",
  "ndk-context",
  "nokhwa",
- "objc",
- "swift-bridge",
+ "objc2 0.6.4",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-io-surface",
+ "objc2-ui-kit 0.3.2",
+ "shaderloom",
  "thiserror 2.0.21",
  "tracing",
  "waterkit-build",
  "waterkit-codec",
  "waterkit-core",
  "waterkit-video-container",
+ "waterkit-video-core",
  "wgpu 30.0.1",
+ "wgpu-external-frame",
  "yuv",
 ]
 
@@ -12439,6 +12359,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "shaderloom",
+ "tracing",
  "waterkit-camera",
  "waterkit-permission",
  "waterui",
@@ -12448,29 +12369,39 @@ dependencies = [
 [[package]]
 name = "waterkit-clipboard"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
- "arboard",
  "async-channel",
+ "block2 0.6.2",
  "blocking",
  "clipboard-rs",
+ "dispatch2",
  "futures",
  "image",
  "jni 0.22.4",
  "ndk-context",
- "percent-encoding",
- "swift-bridge",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-ui-kit 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
+ "rustix 1.1.5",
  "thiserror 2.0.21",
  "tracing",
+ "url",
  "wasm-bindgen-futures",
  "waterkit-build",
+ "waterkit-core",
  "web-sys",
+ "wl-clipboard-rs",
+ "x11rb",
 ]
 
 [[package]]
 name = "waterkit-codec"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "avif-parse",
  "cfg_aliases",
@@ -12481,18 +12412,21 @@ dependencies = [
  "moxcms",
  "ndk",
  "ndk-sys",
+ "num-traits",
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-image 0.3.2",
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
+ "objc2-image-io",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
  "objc2-video-toolbox",
  "rav1d",
  "rav1e",
  "shaderloom",
- "swift-bridge",
  "thiserror 2.0.21",
  "tracing",
  "waterkit-build",
@@ -12506,11 +12440,15 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
+ "dispatch2",
  "executor-core",
+ "futures",
  "jiff",
  "nami",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
  "thiserror 2.0.21",
  "uuid",
 ]
@@ -12518,31 +12456,38 @@ dependencies = [
 [[package]]
 name = "waterkit-dialog"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
  "futures",
  "jni 0.22.4",
- "ndk-context",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "objc2-photos",
+ "objc2-photos-ui",
+ "objc2-ui-kit 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
  "rfd",
  "roxmltree 0.21.1",
- "swift-bridge",
  "thiserror 2.0.21",
  "waterkit-build",
+ "waterkit-core",
  "waterkit-fs",
 ]
 
 [[package]]
 name = "waterkit-fs"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "async-fs",
  "dirs 6.0.0",
  "indexed_db_futures",
  "jni 0.22.4",
+ "objc2-foundation 0.3.2",
  "serde",
  "serde_json",
- "swift-bridge",
  "thiserror 2.0.21",
  "tracing",
  "waterkit-build",
@@ -12552,12 +12497,17 @@ dependencies = [
 [[package]]
 name = "waterkit-haptic"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
+ "block2 0.6.2",
  "futures",
  "jni 0.22.4",
  "ndk-context",
- "swift-bridge",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-haptics",
+ "objc2-foundation 0.3.2",
+ "objc2-ui-kit 0.3.2",
  "thiserror 2.0.21",
  "waterkit-build",
  "waterkit-core",
@@ -12568,16 +12518,19 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "async-channel",
- "async-io",
+ "dispatch2",
  "futures",
  "jiff",
  "jni 0.22.4",
  "js-sys",
- "swift-bridge",
+ "objc2 0.6.4",
+ "objc2-core-location 0.3.2",
+ "objc2-foundation 0.3.2",
  "thiserror 2.0.21",
+ "tracing",
  "wasm-bindgen",
  "waterkit-build",
  "waterkit-core",
@@ -12588,16 +12541,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "waterkit-permission"
+name = "waterkit-menu"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "async-channel",
+ "futures",
+ "keyboard-types",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "thiserror 2.0.21",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "waterkit-permission"
+version = "0.1.4"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
+dependencies = [
+ "async-channel",
+ "block2 0.6.2",
+ "dispatch2",
  "futures",
  "jni 0.22.4",
  "js-sys",
  "ndk-context",
- "swift-bridge",
+ "objc2 0.6.4",
+ "objc2-av-foundation",
+ "objc2-contacts 0.3.2",
+ "objc2-core-location 0.3.2",
+ "objc2-event-kit",
+ "objc2-foundation 0.3.2",
+ "objc2-photos",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "waterkit-build",
@@ -12610,18 +12586,29 @@ dependencies = [
 [[package]]
 name = "waterkit-screen"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "async-channel",
+ "block2 0.6.2",
  "blocking",
  "brightness",
- "core-foundation 0.10.1",
+ "dispatch2",
+ "futures",
  "jni 0.22.4",
+ "libc",
  "ndk-context",
  "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-image 0.3.2",
+ "objc2-core-media",
+ "objc2-core-video",
  "objc2-foundation 0.3.2",
+ "objc2-image-io",
+ "objc2-io-kit",
  "objc2-io-surface",
- "swift-bridge",
+ "objc2-screen-capture-kit",
+ "objc2-ui-kit 0.3.2",
  "thiserror 2.0.21",
  "tracing",
  "waterkit-build",
@@ -12634,7 +12621,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -12645,7 +12632,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12660,7 +12647,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -12668,21 +12655,33 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "aes",
  "async-channel",
+ "block2 0.6.2",
  "bytes",
  "cbc",
+ "core-foundation 0.10.1",
+ "dispatch2",
  "futures",
  "jni 0.22.4",
  "ndk-context",
  "num-traits",
- "swift-bridge",
+ "objc2 0.6.4",
+ "objc2-av-foundation",
+ "objc2-av-kit",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "tracing",
  "waterkit-audio",
  "waterkit-build",
  "waterkit-codec",
+ "waterkit-core",
  "waterkit-video-container",
  "waterkit-video-core",
  "waterkit-video-streaming",
@@ -12691,7 +12690,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=24ff906aaaaeccfee9b014760372140be0113266#24ff906aaaaeccfee9b014760372140be0113266"
+source = "git+https://github.com/water-rs/waterkit?rev=c3ea2a5ad27c6e4eae2168d7e595389b570b6b33#c3ea2a5ad27c6e4eae2168d7e595389b570b6b33"
 dependencies = [
  "async-fs",
  "base64 0.22.1",
@@ -12727,6 +12726,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
+ "cfg_aliases",
  "cocoa-ui",
  "cookie",
  "criterion",
@@ -12738,6 +12738,7 @@ dependencies = [
  "libtest-mimic",
  "native-executor",
  "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
@@ -12745,6 +12746,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "pollster 1.0.1",
  "serde_json",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-panic",
  "tracing-subscriber",
@@ -12755,6 +12757,7 @@ dependencies = [
  "waterui-graphics",
  "waterui-locale",
  "waterui-map",
+ "waterui-preview-protocol",
  "waterui-video",
  "waterui-webview",
  "wgpu-hal 30.0.1",
@@ -12803,6 +12806,7 @@ dependencies = [
 name = "waterui-assets-planner"
 version = "0.5.1"
 dependencies = [
+ "cargo_metadata",
  "heck",
  "serde",
  "serde_json",
@@ -12904,6 +12908,7 @@ dependencies = [
  "serde_json",
  "suiteki",
  "tracing",
+ "tracing-subscriber",
  "waterui-core",
  "waterui-graphics",
  "waterui-url",
@@ -12992,13 +12997,10 @@ dependencies = [
  "ctrlc",
  "der",
  "dialoguer",
- "dirs 7.0.0",
  "dunce",
  "eyre",
+ "filetime",
  "flate2",
- "fontcull-klippa",
- "fontcull-skrifa",
- "fontcull-write-fonts",
  "fs4",
  "fs_extra",
  "futures-lite",
@@ -13011,6 +13013,7 @@ dependencies = [
  "include_dir",
  "indicatif",
  "jiff",
+ "libc",
  "nix 0.31.3",
  "notify",
  "object",
@@ -13027,7 +13030,6 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "serialport",
  "sha1",
  "sha2",
  "shlex 2.0.1",
@@ -13042,6 +13044,7 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "toml_edit 0.25.13+spec-1.1.0",
  "tracing",
+ "tracing-oslog",
  "tracing-subscriber",
  "ttf-parser",
  "unicode-ident",
@@ -13066,6 +13069,8 @@ version = "0.5.1"
 dependencies = [
  "executor-core",
  "nami",
+ "serde",
+ "thiserror 2.0.21",
  "waterui",
  "waterui-core",
  "waterui-icon",
@@ -13088,6 +13093,7 @@ dependencies = [
  "serde",
  "smallvec",
  "suiteki",
+ "thiserror 2.0.21",
  "waterui-macros",
 ]
 
@@ -13301,7 +13307,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=8b1aa2ce3f03d81ca02164f5563f2cefc34fb566#8b1aa2ce3f03d81ca02164f5563f2cefc34fb566"
+source = "git+https://github.com/water-rs/image?rev=a36e16c555bd78ade9e28fad947af66a52f8f071#a36e16c555bd78ade9e28fad947af66a52f8f071"
 dependencies = [
  "half",
  "image",
@@ -13319,6 +13325,7 @@ version = "0.5.2"
 dependencies = [
  "async-channel",
  "futures-lite",
+ "hydrolysis-m3",
  "smol",
  "tracing",
  "waterui",
@@ -13326,6 +13333,7 @@ dependencies = [
  "waterui-controls",
  "waterui-icons-lucide",
  "waterui-inspector-protocol",
+ "waterui-testing",
 ]
 
 [[package]]
@@ -13534,6 +13542,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "waterui",
+ "waterui-controls",
  "waterui-mcp-protocol",
  "waterui-testing",
 ]
@@ -13567,6 +13576,7 @@ dependencies = [
  "waterui-image",
  "waterui-layout",
  "waterui-macros",
+ "waterui-media",
  "waterui-testing",
  "waterui-text",
  "waterui-url",
@@ -13600,7 +13610,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=4364f1ece5373bf322ea99cde595d7b4ec6958dc#4364f1ece5373bf322ea99cde595d7b4ec6958dc"
+source = "git+https://github.com/water-rs/particle?rev=bf663af85211d1f0bcce511b94ac435efad046a6#bf663af85211d1f0bcce511b94ac435efad046a6"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13623,7 +13633,6 @@ dependencies = [
  "blocking",
  "executor-core",
  "futures-lite",
- "image",
  "indexmap 2.14.2",
  "libloading 0.9.0",
  "serde_json",
@@ -13643,6 +13652,7 @@ dependencies = [
  "dirs 7.0.0",
  "futures-lite",
  "hex",
+ "image",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -13684,15 +13694,18 @@ dependencies = [
  "accesskit",
  "async-io",
  "bitflags 2.13.2",
+ "cargo_metadata",
  "executor-core",
  "hydrolysis",
  "hydrolysis-m3",
  "image",
  "kurbo 0.13.1",
  "pollster 1.0.1",
+ "serde",
  "serde_json",
  "sysinfo",
  "waterui",
+ "waterui-assets-planner",
  "waterui-backend-core",
  "waterui-canvas",
  "waterui-core",
@@ -13773,12 +13786,12 @@ dependencies = [
 name = "waterui-url"
 version = "0.5.1"
 dependencies = [
- "async-io",
  "base64 0.23.1",
  "blocking",
  "dirs 7.0.0",
  "executor-core",
  "futures-lite",
+ "futures-timer",
  "mime_guess",
  "nami",
  "nami-core",
@@ -13796,13 +13809,14 @@ dependencies = [
  "thiserror 2.0.21",
  "uuid",
  "waterui-core",
+ "waterui-layout",
  "waterui-url",
 ]
 
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=f43d46521dee1af7660d773e9dbfdf8547ad3480#f43d46521dee1af7660d773e9dbfdf8547ad3480"
+source = "git+https://github.com/water-rs/video-gpu?rev=2772f7fe261e3a1c8b9959bb1ca76292bec3f1ea#2772f7fe261e3a1c8b9959bb1ca76292bec3f1ea"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13816,6 +13830,7 @@ dependencies = [
  "uuid",
  "waterkit-audio",
  "waterkit-codec",
+ "waterkit-core",
  "waterkit-fs",
  "waterkit-video",
  "waterui-controls",
@@ -13837,12 +13852,14 @@ dependencies = [
  "base64 0.23.1",
  "cookie",
  "executor-core",
+ "futures",
  "percent-encoding",
  "serde",
  "serde_json",
  "suiteki",
  "tempfile",
  "thiserror 2.0.21",
+ "tiny_http",
  "tracing",
  "waterui",
  "waterui-core",
@@ -14118,7 +14135,7 @@ dependencies = [
 [[package]]
 name = "wgpu"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -14180,7 +14197,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -14223,7 +14240,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "wgpu-hal 30.0.1",
 ]
@@ -14240,7 +14257,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "wgpu-hal 30.0.1",
 ]
@@ -14248,7 +14265,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "wgpu-hal 30.0.1",
 ]
@@ -14265,24 +14282,28 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "wgpu-hal 30.0.1",
 ]
 
 [[package]]
 name = "wgpu-external-frame"
-version = "0.1.0"
-source = "git+https://github.com/water-rs/wgpu-external-frame?rev=d047b57e6fd8930f95c78b3e4fba7b06cd056b68#d047b57e6fd8930f95c78b3e4fba7b06cd056b68"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "911f341938a2bacb3a3f270082e8cd52d3ae51e667a1a9abe8367ea530a317d5"
 dependencies = [
  "ash",
  "glow",
  "libc",
  "libloading 0.9.0",
+ "ndk",
  "objc2 0.6.4",
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
+ "sync_wrapper",
+ "thiserror 2.0.21",
  "wgpu 30.0.1",
  "windows 0.62.2",
 ]
@@ -14344,7 +14365,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -14409,7 +14430,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "naga 30.0.1",
  "wgpu-types 30.0.1",
@@ -14443,7 +14464,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=4b35d8bc968f6968b3cbae65b6e2e2ee132aa038#4b35d8bc968f6968b3cbae65b6e2e2ee132aa038"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",

@@ -28,12 +28,11 @@ const BENCH_TEST_PREFIX: &str = "waterui_bench_";
 /// Resolves a path against the current directory without requiring it to exist.
 ///
 /// `canonicalize` is unusable here: the directory is created after this point.
-fn absolute_path(path: &Path) -> Result<PathBuf> {
+fn absolute_path(host: &crate::toolchain::Host, path: &Path) -> PathBuf {
     if path.is_absolute() {
-        return Ok(path.to_path_buf());
+        return path.to_path_buf();
     }
-    let cwd = std::env::current_dir().wrap_err("failed to resolve the current directory")?;
-    Ok(cwd.join(path))
+    host.cwd().join(path)
 }
 
 /// One `water bench` invocation.
@@ -71,8 +70,11 @@ pub struct BenchSuiteRun {
 /// # Errors
 /// Returns an error when `cargo-nextest` is missing, the run cannot be
 /// spawned, or the collected reports cannot be read.
-pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> {
-    ensure_nextest_installed().await?;
+pub async fn run_bench_suite(
+    host: &crate::toolchain::Host,
+    options: BenchRunOptions,
+) -> Result<BenchSuiteRun> {
+    ensure_nextest_installed(host).await?;
 
     // Held so a temporary report directory outlives collection.
     let _temp_dir;
@@ -83,7 +85,7 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
         // therefore names two different directories on the two sides — the
         // benches write their reports under the crate, and collection then
         // finds nothing and reports the crate as having no benches at all.
-        let dir = absolute_path(dir)?;
+        let dir = absolute_path(host, dir);
         smol::fs::create_dir_all(&dir)
             .await
             .wrap_err_with(|| format!("failed to create report directory {}", dir.display()))?;
@@ -92,14 +94,16 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
     } else {
         let temp_dir = tempfile::Builder::new()
             .prefix("waterui-bench-")
-            .tempdir()
+            .tempdir_in(host.temp_dir())
             .wrap_err("failed to create temporary bench report directory")?;
         let path = temp_dir.path().to_path_buf();
         _temp_dir = temp_dir;
         path
     };
 
-    let mut command = smol::process::Command::new("cargo");
+    // nextest paints its progress UI on the user's terminal but never reads
+    // stdin — monitored, not interactive.
+    let mut command = smol::process::Command::from(host.monitored_command("cargo"));
     command
         .arg("nextest")
         .arg("run")
@@ -108,14 +112,8 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
         .arg(nextest_filter_expression(options.filter.as_deref()))
         .current_dir(&options.path)
         .env(BENCH_WARMUPS_ENV, options.config.warmups.to_string());
-    // The bench build's `--target`-less compilation is for the host — an
-    // Apple target on macOS — so it carries the same deployment-target floor
-    // the managed builds do.
-    if let Some((key, value)) =
-        crate::apple::platform::apple_deployment_target_env(&target_lexicon::Triple::host())
-    {
-        command.env(key, value);
-    }
+    // Cargo runs in the project and reads its CLI-managed deployment targets
+    // from .cargo/config.toml, just like the user's own cargo commands.
     command
         .env(BENCH_SAMPLES_ENV, options.config.samples.to_string())
         .env(
@@ -123,8 +121,6 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
             options.config.repetitions.to_string(),
         )
         .env(BENCH_REPORT_DIR_ENV, &report_dir)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
         .kill_on_drop(true);
     apply_budget_cap_envs(&mut command, options.budget_caps);
 
@@ -154,8 +150,9 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
 }
 
 /// Fails fast with an install hint when `cargo-nextest` is unavailable.
-async fn ensure_nextest_installed() -> Result<()> {
-    let probe = smol::process::Command::new("cargo")
+async fn ensure_nextest_installed(host: &crate::toolchain::Host) -> Result<()> {
+    let probe = host
+        .command("cargo")
         .arg("nextest")
         .arg("--version")
         .stdout(Stdio::null())

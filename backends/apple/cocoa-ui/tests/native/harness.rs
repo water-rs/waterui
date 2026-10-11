@@ -30,22 +30,7 @@ pub fn marker() -> MainThreadMarker {
     MainThreadMarker::new().expect("the native suite runs every case on the process's main thread")
 }
 
-/// Pumps the main run loop in small turns until `until` answers or
-/// `seconds` elapse — how a synchronous case awaits work enqueued on the
-/// main queue, like a Metal completion's main-thread hop or a later-turn
-/// lifecycle check. Answers whether `until` was reached.
-pub fn pump_main_until(seconds: f64, until: impl Fn() -> bool) -> bool {
-    use cocoa_ui::objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
-    let deadline = NSDate::dateWithTimeIntervalSinceNow(seconds);
-    while !until() && deadline.timeIntervalSinceNow() > 0.0 {
-        // SAFETY: `NSDefaultRunLoopMode` is a system-owned run-loop mode.
-        NSRunLoop::currentRunLoop().runMode_beforeDate(
-            unsafe { NSDefaultRunLoopMode },
-            &NSDate::dateWithTimeIntervalSinceNow(0.02),
-        );
-    }
-    until()
-}
+pub use cocoa_ui::native_test::pump_main_until;
 
 /// One real turn of the main queue — enqueues a marker through the same
 /// dispatch channel completion hops use and returns only once the
@@ -154,14 +139,14 @@ pub fn count_pixels(bytes: &[u8], min: [u8; 4], max: [u8; 4]) -> usize {
 /// unsuccessful completion as a fence that never arrived.
 pub fn fence_flag() -> (
     std::sync::Arc<std::sync::atomic::AtomicU8>,
-    impl Fn(bool) + Send + 'static,
+    impl Fn(Result<(), cocoa_ui::capture::CaptureError>) + Send + 'static,
 ) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU8, Ordering};
     let flag = Arc::new(AtomicU8::new(0));
     let f = Arc::clone(&flag);
-    (flag, move |ok| {
-        f.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
+    (flag, move |result| {
+        f.store(if result.is_ok() { 1 } else { 2 }, Ordering::Relaxed);
     })
 }
 

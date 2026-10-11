@@ -15,7 +15,7 @@ const GREEN: WorkingColor = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
 fn clear_composite_preserves_destination_outside_clip() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -40,7 +40,7 @@ fn clear_composite_preserves_destination_outside_clip() {
 fn blended_descendant_isolates_its_normal_group() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -78,7 +78,7 @@ fn blended_descendant_isolates_its_normal_group() {
 fn tree_layer_isolates_blended_child_layer() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let background = surface.layer();
     let pass = surface.layer();
@@ -115,7 +115,7 @@ fn tree_layer_isolates_blended_child_layer() {
 fn tree_layer_isolates_blended_content_group() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let background = surface.layer();
     let pass = surface.layer();
@@ -148,7 +148,7 @@ fn tree_layer_isolates_blended_content_group() {
 fn nested_tree_layers_isolate_at_the_blending_parent() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let background = surface.layer();
     let outer = surface.layer();
@@ -190,7 +190,7 @@ fn nested_tree_layers_isolate_at_the_blending_parent() {
 fn encoded_group_composites_in_encoded_space() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -231,7 +231,7 @@ fn clipped_blend_layer_scales_source_by_clip_coverage() {
     const GREY: WorkingColor = WorkingColor::new([0.5, 0.5, 0.5, 1.0]);
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((12, 12), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((12, 12), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -305,7 +305,7 @@ fn clipped_blend_layer_scales_source_by_clip_coverage() {
 fn plus_lighter_saturates_alpha_not_colour() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -349,7 +349,7 @@ fn destructive_child_of_root_clears_the_surface_clear_colour() {
     ] {
         let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
         let surface = engine
-            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
             .expect("surface");
         surface.clear_color(GREY);
         let cutout = surface.layer();
@@ -385,7 +385,7 @@ fn destructive_child_of_an_intermediate_layer_stays_isolated() {
     const GREY: WorkingColor = WorkingColor::new([0.5, 0.5, 0.5, 1.0]);
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.clear_color(GREY);
     let pass = surface.layer();
@@ -420,7 +420,7 @@ fn destructive_child_of_an_intermediate_layer_stays_isolated() {
 fn srgb_encoded_members_composite_in_the_encoded_space() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let red = Color::<Srgb>::new([1.0, 0.0, 0.0, 1.0]).to_working();
     let blue = Color::<Srgb>::new([0.0, 0.0, 1.0, 0.5]).to_working();

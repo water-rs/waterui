@@ -3,12 +3,14 @@ package dev.waterui.hydrolysis
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.SparseArray
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.ViewStructure
+import android.view.ViewTreeObserver
 import android.view.WindowInsets
 import android.view.accessibility.AccessibilityNodeProvider
 import android.view.autofill.AutofillValue
@@ -40,8 +42,6 @@ open class HydrolysisHostView
 constructor(context: Context, internal val session: HydrolysisSession? = null) :
     ViewGroup(context) {
 
-    private val scheduler: FrameScheduler? = session?.let { FrameScheduler(it) }
-
     /**
      * The overlay native children (embedded platform views) are laid into,
      * always above the GPU band. Populated from the session's placement frames
@@ -55,6 +55,18 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         AutofillBridge(this, accessibilityProvider)
 
     private var lastMetricsWidth = -1
+
+    /**
+     * The window-local inset bands depend on where the view sits in the
+     * window, and a parent can move it without a layout pass — a collapsing
+     * app bar's offset, a scroll, a translation. Every traversal that draws
+     * re-checks; [pushMetrics] forwards only a changed snapshot.
+     */
+    private val metricsPreDrawListener =
+        ViewTreeObserver.OnPreDrawListener {
+            pushMetrics()
+            true
+        }
     private var lastMetricsHeight = -1
     private var lastDensity = Float.NaN
     private var lastFontScale = Float.NaN
@@ -66,6 +78,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastMaxFlingVelocity = Float.NaN
     private var lastScrollFriction = Float.NaN
     private var lastRootInsets: WindowInsetsCompat? = null
+
+    /**
+     * Wheel axis values are normalized (about ±1 per notch); Android's own
+     * scrolling views multiply them by this configuration's scaled scroll
+     * factors to get pixels, and so does the host.
+     */
+    private val wheelConfiguration = ViewConfiguration.get(context)
 
     /**
      * An IME `WindowInsetsAnimation` is running. While it is, the insets
@@ -107,7 +126,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     }
                 if (imeAnimating && imeRunning) {
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-                    pushMetrics(intArrayOf(ime.left, ime.top, ime.right, ime.bottom))
+                    pushMetrics(windowLocalEdges(ime))
                 } else {
                     // A non-IME animation (e.g. a system-bar hide/show)
                     // lands here too and pushes the persisted
@@ -146,6 +165,18 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var inputContract: InputContract? = null
     private var inputRestartPosted = false
 
+    /**
+     * The deferred `restartInput` [applyEditingState] posts. A connection
+     * created in the meantime already recorded the contract it was built
+     * with; restarting again would only drop the IME's first keystrokes.
+     */
+    private val restartInput = Runnable {
+        inputRestartPosted = false
+        if (InputContract.from(editingState()) == inputContract) return@Runnable
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.restartInput(this)
+    }
+
     init {
         isFocusable = true
         isFocusableInTouchMode = true
@@ -153,16 +184,29 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
         addView(platformViewRegistry.container)
         ViewCompat.setWindowInsetsAnimationCallback(this, insetsAnimationCallback)
-        session?.bind(this)
+        // The session binds only once the view is actually attached — a
+        // created-but-never-attached view must not keep `session.hostView`,
+        // trip the session's single-binding check for the next mount, or
+        // retain its creating Activity.
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         session?.bind(this)
+        viewTreeObserver.addOnPreDrawListener(metricsPreDrawListener)
         pushMetrics()
     }
 
     override fun onDetachedFromWindow() {
+        viewTreeObserver.removeOnPreDrawListener(metricsPreDrawListener)
+        // Nothing this view queued may reach the session after the detach:
+        // a destroyed session tears down inside `unbind` below. The IMM
+        // closes its connections only later, from its own queue — they
+        // refuse once this view is off its window — and a posted restart
+        // would pull editing state.
+        inputConnection = null
+        removeCallbacks(restartInput)
+        inputRestartPosted = false
         session?.unbind(this)
         super.onDetachedFromWindow()
     }
@@ -181,6 +225,25 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         lastRootInsets = WindowInsetsCompat.toWindowInsetsCompat(insets)
         pushMetrics()
         return super.onApplyWindowInsets(insets)
+    }
+
+    /**
+     * The edges of [insets] that actually touch this view in the window —
+     * the per-side intersection of the window-root inset band with the
+     * view's own rect. A view below a toolbar must not avoid the status bar
+     * a second time, nor one above the keyboard the full IME height;
+     * §7.1 wants the region the view truly overlaps.
+     */
+    private fun windowLocalEdges(insets: androidx.core.graphics.Insets): IntArray {
+        val (x, y) = IntArray(2).also { getLocationInWindow(it) }.let { it[0] to it[1] }
+        val windowWidth = rootView?.width ?: width
+        val windowHeight = rootView?.height ?: height
+        return intArrayOf(
+            (insets.left - x).coerceAtLeast(0),
+            (insets.top - y).coerceAtLeast(0),
+            (insets.right - (windowWidth - x - width)).coerceAtLeast(0),
+            (insets.bottom - (windowHeight - y - height)).coerceAtLeast(0),
+        )
     }
 
     private fun pushMetrics(keyboardEdgesOverride: IntArray? = null) {
@@ -203,13 +266,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             // animation runs, the keyboard region comes only from
             // `onProgress`/`onEnd`; a dispatch carrying the end state
             // leaves the last pushed value in place.
-            containerEdges = intArrayOf(bars.left, bars.top, bars.right, bars.bottom)
+            containerEdges = windowLocalEdges(bars)
             keyboardEdges =
                 keyboardEdgesOverride
                     ?: if (imeAnimating) {
                         lastKeyboardInsets
                     } else {
-                        intArrayOf(ime.left, ime.top, ime.right, ime.bottom)
+                        windowLocalEdges(ime)
                     }
         } else {
             containerEdges = intArrayOf(0, 0, 0, 0)
@@ -246,26 +309,28 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         lastMinFlingVelocity = minFlingVelocity
         lastMaxFlingVelocity = maxFlingVelocity
         lastScrollFriction = scrollFriction
-        NativeBridge.nativeSetMetrics(
-            session.nativePtr,
-            width,
-            height,
-            metrics.density,
-            configuration.fontScale,
-            refreshHz,
-            containerEdges[0],
-            containerEdges[1],
-            containerEdges[2],
-            containerEdges[3],
-            keyboardEdges[0],
-            keyboardEdges[1],
-            keyboardEdges[2],
-            keyboardEdges[3],
-            touchSlop,
-            minFlingVelocity,
-            maxFlingVelocity,
-            scrollFriction,
-        )
+        session.withNativePtr(NativeBridge::nativeSetMetrics.name) { ptr ->
+            NativeBridge.nativeSetMetrics(
+                ptr,
+                width,
+                height,
+                metrics.density,
+                configuration.fontScale,
+                refreshHz,
+                containerEdges[0],
+                containerEdges[1],
+                containerEdges[2],
+                containerEdges[3],
+                keyboardEdges[0],
+                keyboardEdges[1],
+                keyboardEdges[2],
+                keyboardEdges[3],
+                touchSlop,
+                minFlingVelocity,
+                maxFlingVelocity,
+                scrollFriction,
+            )
+        }
     }
 
     // ------------------------------------------------------------------
@@ -291,15 +356,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     }
 
     // ------------------------------------------------------------------
-    // Frame scheduling — native asks through the session bridge.
-
-    internal fun requestFrame() {
-        scheduler?.requestFrame("redraw-request")
-    }
-
-    internal fun closeRequested() {
-        (context as? android.app.Activity)?.finish()
-    }
+    // Close — native asks through the session bridge.
 
     // ------------------------------------------------------------------
     // Input — decoded MotionEvents become session input events.
@@ -318,22 +375,26 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     event.actionButton == MotionEvent.BUTTON_TERTIARY -> 2
                 else -> 0
             }
-        NativeBridge.nativePointerEvent(
-            session.nativePtr,
-            action,
-            event.getPointerId(index),
-            event.getX(index),
-            event.getY(index),
-            toolType,
-            button,
-        )
-        when (action) {
-            MotionEvent.ACTION_DOWN -> {
-                requestFocus()
-                scheduler?.setInteractionActive(true)
+        // One scope for the event and its refresh demand: both reach the
+        // session the event did.
+        session.withNativePtr(NativeBridge::nativePointerEvent.name) { ptr ->
+            NativeBridge.nativePointerEvent(
+                ptr,
+                action,
+                event.getPointerId(index),
+                event.getX(index),
+                event.getY(index),
+                toolType,
+                button,
+            )
+            when (action) {
+                MotionEvent.ACTION_DOWN -> {
+                    requestFocus()
+                    session.frameScheduler.setInteractionActive(true)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    session.frameScheduler.setInteractionActive(false)
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                scheduler?.setInteractionActive(false)
         }
         return true
     }
@@ -341,9 +402,19 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         val session = session ?: return super.onGenericMotionEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
-            val dx = -event.getAxisValue(MotionEvent.AXIS_HSCROLL)
-            val dy = -event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-            NativeBridge.nativeScrollEvent(session.nativePtr, event.x, event.y, dx, dy)
+            // Android AXIS_HSCROLL is positive when content moves left; Hydrolysis
+            // input takes winit's opposite sign.
+            val dx =
+                -event.getAxisValue(MotionEvent.AXIS_HSCROLL) *
+                    wheelConfiguration.scaledHorizontalScrollFactor
+            // Android AXIS_VSCROLL is positive when content moves down, matching
+            // Hydrolysis's winit sign.
+            val dy =
+                event.getAxisValue(MotionEvent.AXIS_VSCROLL) *
+                    wheelConfiguration.scaledVerticalScrollFactor
+            session.withNativePtr(NativeBridge::nativeScrollEvent.name) { ptr ->
+                NativeBridge.nativeScrollEvent(ptr, event.x, event.y, dx, dy)
+            }
             return true
         }
         return super.onGenericMotionEvent(event)
@@ -358,21 +429,24 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private fun dispatchKey(event: KeyEvent, pressed: Boolean): Boolean {
         val session = session ?: return false
         val key = w3cKey(event) ?: return false
-        NativeBridge.nativeKeyEvent(
-            session.nativePtr,
-            key,
-            pressed,
-            event.isShiftPressed,
-            event.isCtrlPressed,
-            event.isAltPressed,
-            event.isMetaPressed,
-        )
+        session.withNativePtr(NativeBridge::nativeKeyEvent.name) { ptr ->
+            NativeBridge.nativeKeyEvent(
+                ptr,
+                key,
+                pressed,
+                event.isShiftPressed,
+                event.isCtrlPressed,
+                event.isAltPressed,
+                event.isMetaPressed,
+            )
+        }
         return true
     }
 
     /** Maps a hardware key onto the W3C `key` vocabulary the runner parses. */
     private fun w3cKey(event: KeyEvent): String? {
-        if (event.unicodeChar != 0) return event.unicodeChar.toChar().toString()
+        // Named keys first: Enter and Tab also carry `unicodeChar` ('\n', '\t'),
+        // which is not their W3C value.
         return when (event.keyCode) {
             KeyEvent.KEYCODE_ENTER -> "Enter"
             KeyEvent.KEYCODE_DEL -> "Backspace"
@@ -388,11 +462,50 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             KeyEvent.KEYCODE_MOVE_END -> "End"
             KeyEvent.KEYCODE_PAGE_UP -> "PageUp"
             KeyEvent.KEYCODE_PAGE_DOWN -> "PageDown"
+            KeyEvent.KEYCODE_F1 -> "F1"
+            KeyEvent.KEYCODE_F2 -> "F2"
+            KeyEvent.KEYCODE_F3 -> "F3"
+            KeyEvent.KEYCODE_F4 -> "F4"
+            KeyEvent.KEYCODE_F5 -> "F5"
+            KeyEvent.KEYCODE_F6 -> "F6"
+            KeyEvent.KEYCODE_F7 -> "F7"
+            KeyEvent.KEYCODE_F8 -> "F8"
+            KeyEvent.KEYCODE_F9 -> "F9"
+            KeyEvent.KEYCODE_F10 -> "F10"
+            KeyEvent.KEYCODE_F11 -> "F11"
+            KeyEvent.KEYCODE_F12 -> "F12"
+            KeyEvent.KEYCODE_INSERT -> "Insert"
+            KeyEvent.KEYCODE_SYSRQ -> "PrintScreen"
+            KeyEvent.KEYCODE_BREAK -> "Pause"
+            KeyEvent.KEYCODE_SCROLL_LOCK -> "ScrollLock"
+            KeyEvent.KEYCODE_MENU -> "ContextMenu"
+            KeyEvent.KEYCODE_NUMPAD_ENTER -> "Enter"
             KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.KEYCODE_SHIFT_RIGHT -> "Shift"
             KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.KEYCODE_CTRL_RIGHT -> "Control"
             KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT -> "Alt"
             KeyEvent.KEYCODE_META_LEFT, KeyEvent.KEYCODE_META_RIGHT -> "Meta"
-            else -> null
+            else -> {
+                // `unicodeChar` resolves the key with the full meta state,
+                // and the stock Generic.kcm defines no `ctrl`/`meta`
+                // behaviour for letters, so a Ctrl/Meta chord resolves to 0
+                // and the press would be dropped. Take the character with
+                // Ctrl and Meta masked off; drop Alt only when the layout
+                // maps no Alt character for the key.
+                val stripped =
+                    event.metaState and (KeyEvent.META_CTRL_MASK or KeyEvent.META_META_MASK).inv()
+                val unicode =
+                    event.getUnicodeChar(stripped).takeIf { it != 0 }
+                        ?: event.getUnicodeChar(stripped and KeyEvent.META_ALT_MASK.inv())
+                when {
+                    // A dead key reports its spacing accent with
+                    // COMBINING_ACCENT set; dead-key composition on the
+                    // view path is a separate missing feature, so the W3C
+                    // name goes through instead of a lone combining mark.
+                    unicode and KeyCharacterMap.COMBINING_ACCENT != 0 -> "Dead"
+                    unicode != 0 -> unicode.toChar().toString()
+                    else -> null
+                }
+            }
         }
     }
 
@@ -405,10 +518,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         // Bind to the authoritative session state — the pulled `editorId`
         // becomes this connection's generation token, and the state seeds
         // the mirror so the IMM's first queries agree with the editor.
-        val state =
-            session
-                ?.let { NativeBridge.nativeEditingState(it.nativePtr) }
-                ?.let(::EditingStatePayload)
+        val state = editingState()
         inputContract = InputContract.from(state)
         val password = state?.password == true
         outAttrs.inputType =
@@ -444,6 +554,14 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         return connection
     }
 
+    /** The session's authoritative editing state, pulled synchronously. */
+    private fun editingState(): EditingStatePayload? {
+        val session = session ?: return null
+        return session.withNativePtr(NativeBridge::nativeEditingState.name) { ptr ->
+            NativeBridge.nativeEditingState(ptr)
+        }?.let(::EditingStatePayload)
+    }
+
     /** The session's authoritative editing push — the connection adopts it. */
     internal fun applyEditingState(json: String) {
         val state = EditingStatePayload(json)
@@ -454,20 +572,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             // thread, which would alias that borrow.
             if (!inputRestartPosted) {
                 inputRestartPosted = true
-                post {
-                    inputRestartPosted = false
-                    // A connection created in the meantime already recorded
-                    // the contract it was built with. Restarting again would
-                    // only drop the IME's first keystrokes.
-                    val latest =
-                        session
-                            ?.let { NativeBridge.nativeEditingState(it.nativePtr) }
-                            ?.let(::EditingStatePayload)
-                    if (InputContract.from(latest) == inputContract) return@post
-                    val imm =
-                        context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                    imm.restartInput(this)
-                }
+                post(restartInput)
             }
             return
         }

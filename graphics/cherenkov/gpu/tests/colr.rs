@@ -55,7 +55,7 @@ fn colr_glyphs_render_their_paint_graph() -> Result<(), Box<dyn std::error::Erro
         Err(e) => return Err(e.into()),
     };
     let font = engine.font(FontSource::bytes(bytes))?;
-    let surface = wait!(engine.surface(Offscreen::new((320, 160), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((320, 160), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.glyphs(run(font.id()), WorkingColor::new([1.0, 0.0, 0.0, 1.0]));

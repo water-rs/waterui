@@ -25,8 +25,8 @@ use ndk::native_window::NativeWindow;
 use raw_window_handle::{AndroidDisplayHandle, DisplayHandle, HasDisplayHandle, RawDisplayHandle};
 
 use crate::platform::{
-    SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
-    select_hydrolysis_surface_format,
+    PresentationSurface, SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
+    negotiate_host_output,
 };
 
 /// The Android display's raw handle: the platform has one implicit default
@@ -85,8 +85,6 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
 
 struct AndroidGpuContextInner {
     instance: wgpu::Instance,
-    /// Identity of this device creation chain for the engine pool.
-    context_id: u64,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -188,7 +186,6 @@ impl AndroidGpuContext {
         Ok(Self {
             inner: Arc::new(AndroidGpuContextInner {
                 instance,
-                context_id,
                 adapter,
                 device,
                 queue,
@@ -216,15 +213,31 @@ pub struct AndroidSurface {
     /// This side's own lease on the current native window, used for
     /// `ANativeWindow_setFrameRate`; the lease wgpu holds inside `surface`
     /// dies with it.
-    native_window: Option<NativeWindow>,
+    native_window: Option<WindowLease>,
     config: Option<wgpu::SurfaceConfiguration>,
+    /// The negotiated output the swapchain was configured by — the
+    /// engine's `select_output` result, reported headroom included
+    /// (#2445).
+    selection: Option<cherenkov_gpu::interop::OutputSelection>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// wgpu configuration — valid while between surface generations too.
     width: u32,
     height: u32,
-    /// The high-refresh request currently held, so a no-change demand does
-    /// not re-call the platform.
-    frame_rate_request: Option<f32>,
+    /// The scheduler's high-refresh demand: `true` while the pump runs or a
+    /// touch is held. It belongs to the session, not the window: `detach`
+    /// leaves it in place (the request dies with the old lease anyway) and
+    /// `attach` writes it onto the new one at that window's peak rate.
+    high_refresh: bool,
+}
+
+/// One attachment's native window together with the highest refresh rate
+/// its display offers at the current resolution — the rate a high-refresh
+/// demand asks for. The rate travels with the window because it is the
+/// window's display that bounds it.
+struct WindowLease {
+    window: NativeWindow,
+    /// Positive and finite; the JNI boundary rejects anything else.
+    peak_refresh_hz: f32,
 }
 
 impl AndroidSurface {
@@ -235,9 +248,10 @@ impl AndroidSurface {
             surface: None,
             native_window: None,
             config: None,
+            selection: None,
             width: 0,
             height: 0,
-            frame_rate_request: None,
+            high_refresh: false,
         }
     }
 
@@ -251,11 +265,13 @@ impl AndroidSurface {
     /// attachment first.
     ///
     /// `native_window` is the owned lease obtained from the Kotlin `Surface`
-    /// (`ANativeWindow_fromSurface` acquires the reference it returns).
-    /// Errors leave the attachment detached.
+    /// (`ANativeWindow_fromSurface` acquires the reference it returns), and
+    /// `peak_refresh_hz` the highest rate its display offers at the current
+    /// resolution. Errors leave the attachment detached.
     pub(crate) fn attach(
         &mut self,
         native_window: NativeWindow,
+        peak_refresh_hz: f32,
         width: u32,
         height: u32,
         generation: u64,
@@ -264,7 +280,16 @@ impl AndroidSurface {
         self.width = width;
         self.height = height;
         self.generation = generation;
-        self.native_window = Some(native_window);
+        self.native_window = Some(WindowLease {
+            window: native_window,
+            peak_refresh_hz,
+        });
+        // The frame-rate request is a property of the window, so the demand
+        // the scheduler held across the re-attach goes onto the new lease.
+        if let Err(error) = self.apply_frame_rate() {
+            self.detach();
+            return Err(error);
+        }
         if width == 0 || height == 0 {
             // Zero-sized bands never reach `surface.configure` — the
             // attachment stays parked until a real size arrives.
@@ -274,7 +299,7 @@ impl AndroidSurface {
     }
 
     fn configure(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
-        let Some(window) = self.native_window.as_ref() else {
+        let Some(WindowLease { window, .. }) = self.native_window.as_ref() else {
             return Err(GpuError::new(
                 "hydrolysis android: configure without a native window".to_owned(),
             ));
@@ -295,43 +320,37 @@ impl AndroidSurface {
                     "hydrolysis android: surface creation failed: {error}"
                 ))
             })?;
-        let caps = surface.get_capabilities(&self.gpu.inner.adapter);
-        if caps.formats.is_empty() {
-            return Err(GpuError::new(
-                "hydrolysis android: surface reports no formats".to_owned(),
-            ));
-        }
-        let format = select_hydrolysis_surface_format(&caps);
+        // The (format, colour space) pair, present mode and alpha mode
+        // come from the one negotiation every Hydrolysis host uses (#2445).
+        let selection = negotiate_host_output(&surface, &self.gpu.inner.adapter, false)
+            .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
+            format: selection.format,
+            color_space: selection.color_space,
             width: width.max(1),
             height: height.max(1),
-            // FIFO vsync-paced presentation with the plan's swapchain depth.
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: selection.present_mode,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps
-                .alpha_modes
-                .iter()
-                .copied()
-                .find(|mode| *mode == wgpu::CompositeAlphaMode::Opaque)
-                .unwrap_or(wgpu::CompositeAlphaMode::Auto),
+            alpha_mode: selection.alpha_mode,
             view_formats: vec![],
         };
         surface.configure(&self.gpu.inner.device, &config);
         self.config = Some(config);
+        self.selection = Some(selection);
         self.surface = Some(surface);
         Ok(())
     }
 
     /// Releases the current attachment: the wgpu surface (and the window
-    /// lease it holds) dies first, this side's lease second.
+    /// lease it holds) dies first, this side's lease second. The
+    /// frame-rate demand survives — it is the scheduler's state, not the
+    /// window's — so a re-attached surface gets it back.
     pub(crate) fn detach(&mut self) {
         self.config = None;
+        self.selection = None;
         self.surface = None;
         self.native_window = None;
-        self.frame_rate_request = None;
     }
 
     /// The band's geometry changed: resize bookkeeping plus a reconfigure.
@@ -350,6 +369,7 @@ impl AndroidSurface {
         self.height = height;
         if width == 0 || height == 0 {
             self.config = None;
+            self.selection = None;
             self.surface = None;
             return Ok(());
         }
@@ -376,27 +396,42 @@ impl AndroidSurface {
         true
     }
 
-    /// Requests high refresh while the scheduler reports active interaction
-    /// or animation, and releases the request when it goes idle. A repeat of
-    /// the request the window already holds does not call the platform.
-    pub(crate) fn set_high_refresh_demand(&mut self, demand: Option<f32>) {
-        if self.frame_rate_request == demand {
-            return;
+    /// Requests the attached window's peak refresh rate while the scheduler
+    /// reports active interaction or animation, and releases the request
+    /// when it goes idle. The demand is held, not just applied: a no-change
+    /// call does not re-call the platform, and a demand held while no window
+    /// is attached is written by the next [`Self::attach`].
+    pub(crate) fn set_high_refresh_demand(&mut self, active: bool) -> Result<(), GpuError> {
+        if self.high_refresh == active {
+            return Ok(());
         }
-        let Some(window) = self.native_window.as_ref() else {
-            return;
+        self.high_refresh = active;
+        self.apply_frame_rate()
+    }
+
+    /// Writes the held demand onto the live native window. Between
+    /// attachments there is nothing to write to — [`Self::attach`] applies
+    /// it there. An idle demand writes a rate of 0, which clears the request
+    /// and returns the surface to the system's choice.
+    fn apply_frame_rate(&self) -> Result<(), GpuError> {
+        let Some(lease) = self.native_window.as_ref() else {
+            return Ok(());
+        };
+        let rate = if self.high_refresh {
+            lease.peak_refresh_hz
+        } else {
+            0.0
         };
         // `ANativeWindow_setFrameRate` is API 30. The framework floor is API
         // 31, so the symbol is a direct link, not a run-time lookup.
-        if window
-            .set_frame_rate(
-                demand.unwrap_or(0.0),
-                ndk::native_window::FrameRateCompatibility::Default,
-            )
-            .is_ok()
-        {
-            self.frame_rate_request = demand;
-        }
+        lease
+            .window
+            .set_frame_rate(rate, ndk::native_window::FrameRateCompatibility::Default)
+            .map_err(|error| {
+                GpuError::new(format!(
+                    "hydrolysis android: ANativeWindow_setFrameRate({rate}) failed: {error}"
+                ))
+            })
     }
 }
 
@@ -406,7 +441,7 @@ impl Drop for AndroidSurface {
     }
 }
 
-impl SurfaceProvider for AndroidSurface {
+impl PresentationSurface for AndroidSurface {
     fn adapter(&self) -> &wgpu::Adapter {
         &self.gpu.inner.adapter
     }
@@ -423,6 +458,25 @@ impl SurfaceProvider for AndroidSurface {
         &self.gpu.inner.device_loss
     }
 
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.width = width;
+        self.height = height;
+        if width == 0 || height == 0 {
+            return;
+        }
+        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
+            config.width = width;
+            config.height = height;
+            surface.configure(&self.gpu.inner.device, config);
+        }
+    }
+}
+
+impl SurfaceProvider for AndroidSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         if self.gpu.inner.device_loss.is_lost() {
             // Device loss is unrecoverable for this attachment — report it as
@@ -450,46 +504,31 @@ impl SurfaceProvider for AndroidSurface {
         self.queue().present(output);
     }
 
-    fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
     fn format(&self) -> wgpu::TextureFormat {
         self.config
             .as_ref()
             .map_or(wgpu::TextureFormat::Rgba8Unorm, |config| config.format)
     }
 
-    fn gpu_context_id(&self) -> u64 {
-        self.gpu.inner.context_id
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        let inner = &*self.gpu.inner;
-        cherenkov_gpu::interop::SharedDevice {
-            instance: inner.instance.clone(),
-            adapter: inner.adapter.clone(),
-            device: inner.device.clone(),
-            queue: inner.queue.clone(),
-        }
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.width = width;
-        self.height = height;
-        if width == 0 || height == 0 {
-            return;
-        }
-        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
-            config.width = width;
-            config.height = height;
-            surface.configure(&self.gpu.inner.device, config);
-        }
-    }
-
-    fn premultiply_alpha(&self) -> bool {
-        self.config
+    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+        self.selection
             .as_ref()
-            .is_some_and(|config| config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied)
+            .map_or(cherenkov_gpu::interop::OutputAlpha::Straight, |selection| {
+                cherenkov_gpu::interop::surface_output_alpha(selection.alpha_mode)
+            })
+    }
+
+    fn display_headroom(&self) -> f32 {
+        self.selection
+            .as_ref()
+            .and_then(|selection| selection.reported_headroom)
+            .unwrap_or(1.0)
+    }
+
+    fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+        self.selection.as_ref().map_or_else(
+            || crate::engine::format_output_color(self.format()),
+            cherenkov_gpu::interop::OutputSelection::output_color,
+        )
     }
 }

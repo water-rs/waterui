@@ -19,7 +19,7 @@ use super::protocol::{
     PreviewRuntimePlatform, PreviewTcpConfig, Size,
 };
 
-use waterui_preview_protocol::registry::{PreviewAppInstance, preview_instance_registry_dir};
+use waterui_preview_protocol::registry::PreviewAppInstance;
 use waterui_preview_protocol::transport::{read_frame, write_frame};
 
 /// TCP client for the preview support app.
@@ -28,6 +28,8 @@ pub struct PreviewAppClient {
     stream: TcpStream,
     /// Dylib ids known to be present in the app for this connection.
     present_dylibs: HashSet<DylibId>,
+    /// The preview session's host: timeout escape hatches read through it.
+    host: crate::toolchain::Host,
 }
 
 /// What probing one or more candidate preview apps produced.
@@ -39,7 +41,7 @@ pub struct PreviewAppClient {
 #[derive(Debug)]
 pub enum PreviewProbe {
     /// An app answered the handshake and is a build this CLI can drive.
-    Connected(PreviewAppClient),
+    Connected(Box<PreviewAppClient>),
     /// An app answered and was turned away. The string is the explanation to
     /// put in front of whoever ran `water preview`.
     Rejected(String),
@@ -83,12 +85,13 @@ fn describe_incompatible_app(
 impl PreviewAppClient {
     /// Probe a known preview app socket address.
     pub async fn probe_addr(
+        host: &crate::toolchain::Host,
         addr: SocketAddr,
         expected_waterui_core_fingerprint: &str,
         expected_platform: PreviewRuntimePlatform,
         expected_protocol_commit: &str,
     ) -> PreviewProbe {
-        let stream = match connect_with_timeout(addr, connect_timeout()).await {
+        let stream = match connect_with_timeout(addr, connect_timeout(host)).await {
             Ok(stream) => stream,
             Err(error) => {
                 tracing::warn!("Preview TCP connect failed on {addr}: {error}");
@@ -102,6 +105,7 @@ impl PreviewAppClient {
         let mut client = Self {
             stream,
             present_dylibs: HashSet::new(),
+            host: host.clone(),
         };
 
         // Fast handshake: ensure the server is responsive (not just accepting TCP).
@@ -110,7 +114,7 @@ impl PreviewAppClient {
         // is wedged, causing all requests to hang. A short Ping roundtrip detects this.
         let handshake = AppRequest::Ping;
         match client
-            .request_with_timeout(handshake, handshake_timeout())
+            .request_with_timeout(handshake, handshake_timeout(host))
             .await
         {
             Ok(AppResponse::Pong { protocol }) => {
@@ -120,7 +124,7 @@ impl PreviewAppClient {
                     expected_platform,
                     expected_protocol_commit,
                 ) {
-                    return PreviewProbe::Connected(client);
+                    return PreviewProbe::Connected(Box::new(client));
                 }
 
                 tracing::warn!(
@@ -155,11 +159,14 @@ impl PreviewAppClient {
     /// # Errors
     /// Returns an error if the instance registry cannot be read.
     pub async fn probe_registered(
+        host: &crate::toolchain::Host,
         expected_waterui_core_fingerprint: &str,
         expected_platform: PreviewRuntimePlatform,
         expected_protocol_commit: &str,
     ) -> Result<PreviewProbe> {
-        let instances = smol::unblock(load_live_registered_instances).await?;
+        let registry_dir = crate::preview::preview_instance_registry_dir(host);
+        let instances =
+            smol::unblock(move || load_live_registered_instances(&registry_dir)).await?;
         tracing::info!(
             instance_count = instances.len(),
             "Preview loaded registered app instances"
@@ -179,6 +186,7 @@ impl PreviewAppClient {
             tracing::info!(pid = instance.pid, host = %instance.host, port = instance.port, "Preview trying registered app instance");
             let addr = SocketAddr::new(instance.host, instance.port);
             match Self::probe_addr(
+                host,
                 addr,
                 expected_waterui_core_fingerprint,
                 expected_platform,
@@ -210,6 +218,7 @@ impl PreviewAppClient {
 
     /// Probe the configured port range for a running preview app.
     pub async fn probe_ports(
+        host: &crate::toolchain::Host,
         config: PreviewTcpConfig,
         expected_waterui_core_fingerprint: &str,
         expected_platform: PreviewRuntimePlatform,
@@ -222,6 +231,7 @@ impl PreviewAppClient {
         for port in config.ports() {
             let addr = SocketAddr::new(config.host, port);
             match Self::probe_addr(
+                host,
                 addr,
                 expected_waterui_core_fingerprint,
                 expected_platform,
@@ -492,7 +502,7 @@ impl PreviewAppClient {
     }
 
     async fn request(&mut self, request: AppRequest) -> Result<AppResponse> {
-        let timeout = request_timeout_for(&request);
+        let timeout = request_timeout_for(&self.host, &request);
         self.request_with_timeout(request, timeout).await
     }
 
@@ -553,14 +563,15 @@ fn protocol_is_compatible(
         && protocol.build_commit == expected_protocol_commit
 }
 
-fn load_live_registered_instances() -> io::Result<Vec<(PreviewAppInstance, std::path::PathBuf)>> {
-    let dir = preview_instance_registry_dir();
-    fs::create_dir_all(&dir)?;
+fn load_live_registered_instances(
+    dir: &std::path::Path,
+) -> io::Result<Vec<(PreviewAppInstance, std::path::PathBuf)>> {
+    fs::create_dir_all(dir)?;
 
     let mut candidates = Vec::new();
     let mut stale_paths = Vec::new();
 
-    for entry in fs::read_dir(&dir)? {
+    for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
@@ -636,46 +647,50 @@ fn terminate_registered_instance(
     }
 }
 
-fn connect_timeout() -> Duration {
+fn connect_timeout(host: &crate::toolchain::Host) -> Duration {
     const DEFAULT_MS: u64 = 100;
-    timeout_from_env("WATERUI_PREVIEW_CONNECT_TIMEOUT_MS", DEFAULT_MS)
+    timeout_from_host(host, "WATERUI_PREVIEW_CONNECT_TIMEOUT_MS", DEFAULT_MS)
 }
 
-fn handshake_timeout() -> Duration {
+fn handshake_timeout(host: &crate::toolchain::Host) -> Duration {
     // 500 ms is plenty over loopback, but an `adb forward` channel to a
     // network-connected device rides the adb transport: every frame pays the
     // remote round trip, so a Ping/Pong handshake measures in the hundreds of
     // milliseconds and can exceed a tight cap even on a healthy app.
     const DEFAULT_MS: u64 = 5000;
-    timeout_from_env("WATERUI_PREVIEW_HANDSHAKE_TIMEOUT_MS", DEFAULT_MS)
+    timeout_from_host(host, "WATERUI_PREVIEW_HANDSHAKE_TIMEOUT_MS", DEFAULT_MS)
 }
 
-fn request_timeout() -> Duration {
+fn request_timeout(host: &crate::toolchain::Host) -> Duration {
     const DEFAULT_MS: u64 = 20_000;
-    timeout_from_env("WATERUI_PREVIEW_REQUEST_TIMEOUT_MS", DEFAULT_MS)
+    timeout_from_host(host, "WATERUI_PREVIEW_REQUEST_TIMEOUT_MS", DEFAULT_MS)
 }
 
-fn render_request_timeout() -> Duration {
+fn render_request_timeout(host: &crate::toolchain::Host) -> Duration {
     const DEFAULT_MS: u64 = 120_000;
-    timeout_from_env("WATERUI_PREVIEW_RENDER_TIMEOUT_MS", DEFAULT_MS)
+    timeout_from_host(host, "WATERUI_PREVIEW_RENDER_TIMEOUT_MS", DEFAULT_MS)
 }
 
-fn timeout_from_env(name: &str, default_ms: u64) -> Duration {
-    match std::env::var(name) {
-        Ok(value) => Duration::from_millis(
-            value
-                .parse::<u64>()
-                .unwrap_or_else(|error| panic!("invalid {name} value `{value}`: {error}")),
-        ),
-        Err(std::env::VarError::NotPresent) => Duration::from_millis(default_ms),
-        Err(std::env::VarError::NotUnicode(_)) => panic!("{name} must be valid UTF-8"),
-    }
+fn timeout_from_host(host: &crate::toolchain::Host, name: &str, default_ms: u64) -> Duration {
+    host.env(name).map_or_else(
+        || Duration::from_millis(default_ms),
+        |value| {
+            let value = value
+                .to_str()
+                .unwrap_or_else(|| panic!("{name} must be valid UTF-8"));
+            Duration::from_millis(
+                value
+                    .parse::<u64>()
+                    .unwrap_or_else(|error| panic!("invalid {name} value `{value}`: {error}")),
+            )
+        },
+    )
 }
 
-fn request_timeout_for(request: &AppRequest) -> Duration {
+fn request_timeout_for(host: &crate::toolchain::Host, request: &AppRequest) -> Duration {
     match request {
-        AppRequest::Render { .. } => render_request_timeout(),
-        _ => request_timeout(),
+        AppRequest::Render { .. } => render_request_timeout(host),
+        _ => request_timeout(host),
     }
 }
 

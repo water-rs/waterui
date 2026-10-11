@@ -18,10 +18,10 @@ split_fn! {
 pub fn retained<B: Backend>(config: B::Config) {
     let engine = wait!(Engine::<B>::new(config)).expect("engine");
     let retained = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let full = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let stable = Picture::record(|c| c.fill(Rect::new(1.0, 1.0, 4.0, 4.0), WorkingColor::WHITE));
     let source = Arc::new(gradient());
@@ -85,10 +85,10 @@ split_fn! {
 pub fn composition<B: Backend>(config: B::Config) {
     let engine = wait!(Engine::<B>::new(config)).expect("engine");
     let a = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let b = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let inner = Affine::translate((8.0, -4.0));
     let outer = Affine::scale_non_uniform(1.5, 0.75);
@@ -130,7 +130,7 @@ split_fn! {
 pub fn invalid<B: Backend>(config: B::Config) {
     let engine = wait!(Engine::<B>::new(config)).expect("engine");
     let surface = wait!(engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     for transform in [
         Affine::scale_non_uniform(0.0, 1.0),
@@ -157,10 +157,10 @@ split_fn! {
 pub fn identity<B: Backend>(config: B::Config) {
     let engine = wait!(Engine::<B>::new(config)).expect("engine");
     let plain = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let wrapped = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     plain.update(|tx| {
         tx[plain.root()].content(plain.record(|c| {

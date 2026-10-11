@@ -15,27 +15,21 @@ use crate::interop::{
     ExternalFrame, FrameColor, FramePlanes, GpuContentBox, RgbAlpha,
     wgpu::{Context, Frame},
 };
-use cherenkov::{Instant, ProducerId, RenderError, SurfaceVisibility};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use cherenkov::{CompletionWaker, Instant, ProducerId, RenderError};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::planes::Compositor;
 
 /// A [`GpuProducer`](cherenkov::GpuProducer)'s renderer state: the frame
-/// ring it draws into, its current frame and its wake state. One
-/// producer serves bindings on every surface of its engine; the surfaces
-/// that draw it each frame drive its wake gate.
+/// ring it draws into and its current frame. One producer serves bindings
+/// on every surface of its engine; the surfaces that draw a rendered
+/// producer each frame are the ones its redraw requests wake.
 pub struct Producer {
     /// The rendered producer's content; `None` for a submitted-frame
     /// producer, whose frames come from
     /// [`FrameSink::submit`](cherenkov::FrameSink::submit).
     content: Option<GpuContentBox>,
-    /// The shared dirty flag: the content's redraw flag for a rendered
-    /// producer, the sink's submit flag for a frame producer.
-    dirty: Arc<AtomicBool>,
-    /// The wake gate the surfaces drawing the producer's bindings drive.
-    gate: Arc<cherenkov::WakeGate>,
     /// The rendered producer's frame ring; `None` for a frame producer.
     ring: Option<Ring>,
     /// The ring instance's identity — bumped every time the ring is
@@ -69,7 +63,9 @@ pub struct Producer {
 
 impl Drop for Producer {
     fn drop(&mut self) {
-        self.gate.close();
+        if let Some(content) = &self.content {
+            content.redraw.wakes.clear();
+        }
     }
 }
 
@@ -99,10 +95,8 @@ impl Binding {
 impl Producer {
     /// A rendered producer: draws into its frame ring, one render per
     /// frame at most.
-    pub fn rendered(content: GpuContentBox) -> Self {
+    pub const fn rendered(content: GpuContentBox) -> Self {
         Self {
-            dirty: Arc::clone(&content.redraw.dirty),
-            gate: Arc::clone(&content.redraw.gate),
             content: Some(content),
             ring: None,
             ring_epoch: 0,
@@ -119,14 +113,12 @@ impl Producer {
         }
     }
 
-    /// A submitted-frame producer: `dirty` and `gate` are the
-    /// [`FrameSink`](cherenkov::FrameSink)'s shared wake state — a submit
-    /// marks the producer dirty and wakes while the gate is open.
-    pub const fn submitted(dirty: Arc<AtomicBool>, gate: Arc<cherenkov::WakeGate>) -> Self {
+    /// A submitted-frame producer: its frames arrive through
+    /// [`submit`](Self::submit), and the render loop wakes the surfaces
+    /// each one lands on.
+    pub const fn submitted() -> Self {
         Self {
             content: None,
-            dirty,
-            gate,
             ring: None,
             ring_epoch: 0,
             size: (0, 0),
@@ -168,23 +160,31 @@ impl Producer {
     /// content — its frame dropped with the device and the sink's next
     /// submit supplies one on the new device.
     pub fn into_content(mut self) -> Option<GpuContentBox> {
-        self.content.take()
+        let content = self.content.take();
+        if let Some(content) = &content {
+            content.redraw.wakes.clear();
+        }
+        content
     }
 
-    /// The surfaces that drew the producer this frame: a redraw request
-    /// or a submission wakes the host while one of them is announced
-    /// visible — the frame-membership model `update_filter_activity`
-    /// applies to filters.
-    pub fn set_gate(&self, surfaces: &[SurfaceVisibility]) {
-        self.gate.set(surfaces);
+    /// The surfaces that drew the producer this frame: a rendered
+    /// producer's redraw request wakes the host of each — the
+    /// frame-membership model `update_filter_activity` applies to filters.
+    /// A frame producer's frames wake the surfaces they land on instead.
+    pub fn set_wakes(&self, surfaces: &[CompletionWaker]) {
+        if let Some(content) = &self.content {
+            content.redraw.wakes.set(surfaces, &content.redraw.dirty);
+        }
     }
 
     pub fn wants_redraw(&self) -> bool {
         // A rendered producer without a current frame has never drawn;
-        // a frame producer waiting on its first submit is not stale.
-        (self.content.is_some() && self.current.is_none())
-            || self.again
-            || self.dirty.load(Ordering::Acquire)
+        // a frame producer's frames mark the surfaces they land on
+        // changed, so it is never stale.
+        self.again
+            || self.content.as_ref().is_some_and(|content| {
+                self.current.is_none() || content.redraw.dirty.load(Ordering::Acquire)
+            })
     }
 
     /// A submission's frame becomes the producer's current frame — the
@@ -256,8 +256,7 @@ impl Producer {
     /// per frame. When every ring buffer is compositor-held the frame is
     /// skipped with the redraw flag kept: the CPU never blocks.
     ///
-    /// A submitted-frame producer draws nothing: its flag is consumed
-    /// here, the submitted frame having landed through
+    /// A submitted-frame producer draws nothing: its frame landed through
     /// [`submit`](Self::submit).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render(
@@ -270,10 +269,8 @@ impl Producer {
         scale: f32,
     ) -> Result<(), RenderError> {
         if self.content.is_none() {
-            // A submitted-frame producer draws nothing: its flag is
-            // consumed, the submitted frame having landed through
-            // [`submit`](Self::submit).
-            self.dirty.swap(false, Ordering::AcqRel);
+            // A submitted-frame producer draws nothing: its frame landed
+            // through [`submit`](Self::submit).
             return Ok(());
         }
         let maximum = device.limits().max_texture_dimension_2d;
@@ -295,7 +292,12 @@ impl Producer {
         }
         // Consume before setup/render, so an asynchronous request during either
         // remains pending and schedules another frame.
-        self.dirty.swap(false, Ordering::AcqRel);
+        self.content
+            .as_ref()
+            .expect("checked above")
+            .redraw
+            .dirty
+            .store(false, Ordering::Release);
         if !self.initialized {
             let content = self.content.as_mut().expect("checked above");
             let redraw = content.redraw.clone();
@@ -364,7 +366,6 @@ impl Producer {
         scale: f32,
     ) -> Result<(), RenderError> {
         if self.content.is_none() {
-            self.dirty.swap(false, Ordering::AcqRel);
             return Ok(());
         }
         let maximum = device.limits().max_texture_dimension_2d;
@@ -381,7 +382,12 @@ impl Producer {
         {
             return Ok(());
         }
-        self.dirty.swap(false, Ordering::AcqRel);
+        self.content
+            .as_ref()
+            .expect("checked above")
+            .redraw
+            .dirty
+            .store(false, Ordering::Release);
         if !self.initialized {
             let content = self.content.as_mut().expect("checked above");
             let redraw = content.redraw.clone();

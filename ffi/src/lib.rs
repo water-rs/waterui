@@ -2198,7 +2198,7 @@ use crate::views::{WuiAnyViews, signal_vec_views};
 use waterui::metadata::context_menu::ResolvedContextMenu;
 use waterui_controls::menu::{
     CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem, ResolvedNestedMenu, Shortcut,
-    ShortcutModifiers,
+    ShortcutKey, ShortcutModifiers,
 };
 use waterui_core::handler::SharedAction;
 use waterui_icon::SystemIcon;
@@ -2291,12 +2291,57 @@ impl IntoFFI for ShortcutModifiers {
     }
 }
 
+/// Which kind of key a [`WuiShortcutKey`] carries.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiShortcutKeyTag {
+    /// A key that produces one character, in `character`.
+    Character = 0,
+    /// A named key, its W3C `KeyboardEvent.key` name in `name`.
+    Named = 1,
+}
+
+ffi_safe!(WuiShortcutKeyTag);
+
+/// FFI-safe shortcut key: one character, or a named key from the W3C
+/// `KeyboardEvent.key` vocabulary.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiShortcutKey {
+    /// Which of `character` and `name` holds the key.
+    pub tag: WuiShortcutKeyTag,
+    /// The key's Unicode scalar value for `Character`; 0 for `Named`.
+    pub character: u32,
+    /// The W3C key name (`Delete`, `F5`, `ArrowLeft`, …) for `Named`; empty
+    /// for `Character`.
+    pub name: WuiStr,
+}
+
+impl IntoFFI for ShortcutKey {
+    type FFI = WuiShortcutKey;
+
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Character(character) => WuiShortcutKey {
+                tag: WuiShortcutKeyTag::Character,
+                character: u32::from(character),
+                name: Str::default().into_ffi(),
+            },
+            Self::Named(named) => WuiShortcutKey {
+                tag: WuiShortcutKeyTag::Named,
+                character: 0,
+                name: Str::from(named.to_string()).into_ffi(),
+            },
+        }
+    }
+}
+
 /// FFI-safe keyboard shortcut payload.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiShortcut {
-    /// The key equivalent.
-    pub key: WuiStr,
+    /// The key the shortcut fires on.
+    pub key: WuiShortcutKey,
     /// The shortcut modifiers.
     pub modifiers: WuiShortcutModifiers,
 }
@@ -2420,7 +2465,10 @@ fn optional_shortcut(shortcut: Option<Shortcut>) -> *mut WuiShortcut {
 ///
 /// A declared `MenuItem::Quit` has no counterpart: an FFI host never starts
 /// the application's termination machine, so it has no application quit,
-/// and like every other host without one it omits the item.
+/// and like every other host without one it omits the item. A declared
+/// `MenuItem::CloseWindow` has none either: the host owns the windows it
+/// shows, so like every host whose windows the application cannot close it
+/// omits the item.
 #[derive(Debug, Clone)]
 enum FfiMenuItem {
     Command(ResolvedCommand),
@@ -2430,13 +2478,13 @@ enum FfiMenuItem {
 
 impl FfiMenuItem {
     /// The item an FFI host renders for `item`, or `None` for a declared
-    /// Quit.
+    /// Quit or Close Window.
     fn crossing(item: ResolvedMenuItem) -> Option<Self> {
         match item {
             ResolvedMenuItem::Command(command) => Some(Self::Command(command)),
             ResolvedMenuItem::Divider => Some(Self::Divider),
             ResolvedMenuItem::Menu(menu) => Some(Self::Menu(menu)),
-            ResolvedMenuItem::Quit => None,
+            ResolvedMenuItem::Quit | ResolvedMenuItem::CloseWindow => None,
         }
     }
 }

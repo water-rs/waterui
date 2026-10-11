@@ -105,6 +105,10 @@ fn key(runtime: &mut HeadlessRuntime, key: KeyCode, state: KeyState) {
 /// The M3 list-item shape morph: 8 resting, 12 hovered, 16 pressed. The theme
 /// sees the radii resolved against the control's reported state.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the radii are the theme's literal per-state tokens selected as-is, not interpolated values"
+)]
 fn state_layer_radii_morph_with_reported_state() {
     let mut env = test_environment();
     env.install(
@@ -139,20 +143,45 @@ fn state_layer_radii_morph_with_reported_state() {
             .map(|(_, radii)| radii.top_left)
             .expect("the state layer draws every frame")
     };
-    assert_eq!(last_radii(), 8.0, "resting radii");
+    assert!(
+        last_radii() == 8.0,
+        "resting radii: left {:?}, right {:?}",
+        last_radii(),
+        8.0
+    );
 
     pointer_move(&mut runtime, 400.0, 300.0);
-    assert_eq!(last_radii(), 12.0, "hovered radii");
+    assert!(
+        last_radii() == 12.0,
+        "hovered radii: left {:?}, right {:?}",
+        last_radii(),
+        12.0
+    );
 
     pointer_down(&mut runtime, 400.0, 300.0);
-    assert_eq!(last_radii(), 16.0, "pressed radii");
+    assert!(
+        last_radii() == 16.0,
+        "pressed radii: left {:?}, right {:?}",
+        last_radii(),
+        16.0
+    );
 
     pointer_up(&mut runtime, 400.0, 300.0);
     pointer_move(&mut runtime, 400.0, 300.0);
-    assert_eq!(last_radii(), 12.0, "released but still hovered");
+    assert!(
+        last_radii() == 12.0,
+        "released but still hovered: left {:?}, right {:?}",
+        last_radii(),
+        12.0
+    );
 
     pointer_move(&mut runtime, 10.0, 10.0);
-    assert_eq!(last_radii(), 8.0, "back to rest");
+    assert!(
+        last_radii() == 8.0,
+        "back to rest: left {:?}, right {:?}",
+        last_radii(),
+        8.0
+    );
 }
 
 /// `.interaction_state` receives the outermost interactive control's state,

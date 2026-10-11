@@ -82,16 +82,32 @@ pub trait Renderer: 'static {
     /// A font [`Renderer::prepare_font`] validated, ready for
     /// [`Renderer::add_font`].
     type Font: RenderTransfer + 'static;
+    /// The part of a rendered frame the render thread hands to the
+    /// frame's awaiting caller: on platforms whose system compositor owns
+    /// presentation, the work that must land on the platform's main
+    /// thread for the frame's parts to present (Apple window surfaces:
+    /// the `CATransaction` of layer geometry and drawable presents).
+    /// [`Engine::render`](crate::Engine::render) applies it on the
+    /// awaiting thread right after the reply arrives, so a frame's
+    /// present is ordered before the next frame's acquire. `()` where a
+    /// frame commits nothing off the render thread.
+    type FrameCommit: RenderTransfer + 'static;
+
+    /// Applies the frame's [`Self::FrameCommit`] on the awaiting caller's
+    /// thread. Called by [`Engine::render`](crate::Engine::render) before
+    /// it returns. A backend whose commits are main-thread-bound asserts
+    /// the caller is on that thread here: a render whose surfaces present
+    /// on the platform main thread must be awaited on it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_frame_commit(_commit: Self::FrameCommit) {}
 
     /// Creates the render-side state for surface `id`. `waker` is the
-    /// surface's host wake-up for render-side completions that land after
-    /// a render (a promoted plane's attach on the main queue); it wakes
-    /// nothing while the surface is hidden. A source the backend drives on
-    /// its own that wakes the host through another callback (a GPU
-    /// producer, a filter) gates that wake with a
-    /// [`WakeGate`](crate::WakeGate) over the
-    /// [`visibility`](crate::CompletionWaker::visibility) of the surfaces
-    /// it draws into.
+    /// surface's host wake-up: for render-side completions that land after
+    /// a render (a promoted plane's attach on the main queue), and for the
+    /// redraw requests of the sources the backend drives on its own (a GPU
+    /// producer, a filter), which keep the wakers of the surfaces they draw
+    /// into in a [`SurfaceWakes`](crate::SurfaceWakes). It wakes nothing
+    /// while the surface is hidden.
     ///
     /// # Errors
     /// [`SurfaceError`] when the target cannot be drawn.
@@ -111,8 +127,8 @@ pub trait Renderer: 'static {
     /// While a surface is hidden the render loop leaves it out of every
     /// [`Frame`], and [`FrameRedraw`] counts only visible surfaces: custom
     /// GPU content and filters on a hidden surface want no redraw. Their
-    /// host wakes stop earlier, through their [`WakeGate`](crate::WakeGate),
-    /// the moment the host hides the surface. Content ops, installs and
+    /// host wakes stop earlier, through the surface's own waker, the moment
+    /// the host hides the surface. Content ops, installs and
     /// resource changes still arrive while it is hidden. When it becomes
     /// visible again the next frame lists it, and a producer or filter
     /// that asked for a redraw while it was hidden is drawn then.
@@ -203,7 +219,7 @@ pub trait Renderer: 'static {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> Result<FrameRedraw, RenderError>;
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError>;
 
     /// Executes on the owning JS thread, yielding for browser operations.
     ///
@@ -214,7 +230,7 @@ pub trait Renderer: 'static {
         &mut self,
         frame: &Frame<'_>,
         stats: &mut FrameStats,
-    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>>;
+    ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>;
 
     /// Returns all GPU timings accumulated since the previous call,
     /// oldest first. Timings stay on the renderer rather than being

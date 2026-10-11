@@ -266,11 +266,13 @@ impl IntoFFI for ListConfig {
         let (target_index, scroll_generation) = self.scroll_controller.map_or_else(
             || (core::ptr::null_mut(), core::ptr::null_mut()),
             |controller| {
+                // The FFI carries the request's target only: it drops the
+                // animation, so the external runtime jumps to the target.
                 (
                     controller
-                        .target()
-                        .map(|index| {
-                            i32::try_from(index)
+                        .request()
+                        .map(|request| {
+                            i32::try_from(request.target)
                                 .expect("list scroll target exceeds the platform index range")
                         })
                         .computed()

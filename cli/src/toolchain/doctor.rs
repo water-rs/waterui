@@ -4,9 +4,9 @@
 //! fully determined by that host's environment, PATH, and filesystem — never
 //! by ambient process state. Each [`DoctorItem`] carries a stable
 //! machine-readable `id` (`DoctorItem::id`) for `--json` output and tests,
-//! the [`DoctorGroup`] it is reported under, and whether the backend it
-//! belongs to is in scope for the surrounding project (or, without one, for
-//! the host).
+//! the [`DoctorGroup`] it is reported under, and whether the backend or
+//! platform it belongs to is in scope for the surrounding project (or,
+//! without one, for the host).
 
 use std::borrow::Cow;
 use std::future::Future;
@@ -30,7 +30,6 @@ use crate::{
         toolchain::{AppleSdk, Xcode},
     },
     device::Device,
-    esp32::{chip::Esp32Chip, toolchain::Esp32Toolchain},
     framework::manifest_rust_version,
     gtk4::toolchain::Gtk4Toolchain,
     platform::TargetPlatform,
@@ -105,8 +104,6 @@ pub enum DoctorGroup {
     Gtk4,
     /// The Android SDK chain and its Java/Kotlin/CMake helpers.
     Android,
-    /// The Espressif toolchain the Dew backend flashes with.
-    Esp32,
     /// Build accelerators and cargo helper binaries.
     Helpers,
 }
@@ -122,7 +119,6 @@ impl DoctorGroup {
         Self::WinUi,
         Self::Gtk4,
         Self::Android,
-        Self::Esp32,
         Self::Helpers,
     ];
 
@@ -137,7 +133,6 @@ impl DoctorGroup {
             Self::WinUi => "winui",
             Self::Gtk4 => "gtk4",
             Self::Android => "android",
-            Self::Esp32 => "esp32",
             Self::Helpers => "helpers",
         }
     }
@@ -153,23 +148,25 @@ impl DoctorGroup {
             Self::WinUi => "WinUI",
             Self::Gtk4 => "GTK4",
             Self::Android => "Android",
-            Self::Esp32 => "ESP32 (Dew)",
             Self::Helpers => "Build helpers",
         }
     }
 
-    /// The backend the group checks for; `None` for the Rust toolchain,
+    /// What the group's scope keys on; `None` for the Rust toolchain,
     /// host tools, and the helpers, which are always in scope.
+    ///
+    /// The Android group keys on the platform rather than on the Kotlin
+    /// backend: its toolchain serves every backend that builds for
+    /// Android, so it is in scope wherever any of them is.
     #[must_use]
-    pub const fn backend(&self) -> Option<TargetBackend> {
+    pub const fn scope_key(&self) -> Option<DoctorScope> {
         match self {
             Self::Rust | Self::Host | Self::Helpers => None,
-            Self::Apple => Some(TargetBackend::Apple),
-            Self::Hydrolysis => Some(TargetBackend::Hydrolysis),
-            Self::WinUi => Some(TargetBackend::WinUi),
-            Self::Gtk4 => Some(TargetBackend::Gtk4),
-            Self::Android => Some(TargetBackend::Android),
-            Self::Esp32 => Some(TargetBackend::Dew),
+            Self::Apple => Some(DoctorScope::Backend(TargetBackend::Apple)),
+            Self::Hydrolysis => Some(DoctorScope::Backend(TargetBackend::Hydrolysis)),
+            Self::WinUi => Some(DoctorScope::Backend(TargetBackend::WinUi)),
+            Self::Gtk4 => Some(DoctorScope::Backend(TargetBackend::Gtk4)),
+            Self::Android => Some(DoctorScope::Platform(TargetPlatform::Android)),
         }
     }
 
@@ -209,7 +206,6 @@ impl DoctorGroup {
             | ids::CMAKE
             | ids::JAVA
             | ids::KOTLIN => Self::Android,
-            ids::ESP32_TOOLCHAIN => Self::Esp32,
             ids::SCCACHE | ids::CARGO_HELPERS => Self::Helpers,
             other => unreachable!("doctor item id `{other}` is not in `ids::ALL`"),
         }
@@ -483,9 +479,6 @@ pub mod ids {
     pub const WASM32_TARGET: &str = "wasm32-target";
     /// `wasm-pack` binary.
     pub const WASM_PACK: &str = "wasm-pack";
-    /// The Espressif `esp` toolchain, its clang/GCC/`rust-src` pieces, and the
-    /// `espflash`/`ldproxy` helpers an ESP32 build drives.
-    pub const ESP32_TOOLCHAIN: &str = "esp32-toolchain";
     /// Cargo-installed helper binaries the CLI's workflows invoke
     /// (`cargo-nextest` for `water bench`).
     pub const CARGO_HELPERS: &str = "cargo-helpers";
@@ -543,7 +536,6 @@ pub mod ids {
         CMAKE,
         JAVA,
         KOTLIN,
-        ESP32_TOOLCHAIN,
         SCCACHE,
         CARGO_HELPERS,
     ];
@@ -560,18 +552,46 @@ fn unfixable_message(error: &UnfixableToolchain) -> String {
 /// Why a backend is (or is not) checked in the current run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendScope {
-    /// The run is inside a project, which can build with every backend.
-    Selected,
-    /// No project surrounds the run and the host can build for the backend.
-    HostDefault,
     /// Neither: the backend is reported with its hints but does not fail
     /// the run.
     Optional,
+    /// No project surrounds the run and the host can build for the backend.
+    HostDefault,
+    /// The run is inside a project, which can build with every backend.
+    Selected,
 }
 
 impl BackendScope {
     const fn is_in_scope(self) -> bool {
         matches!(self, Self::Selected | Self::HostDefault)
+    }
+}
+
+/// What a doctor item's scope keys on.
+///
+/// A [`TargetBackend`] keys on itself; a [`TargetPlatform`] keys on the
+/// platform itself. The Android toolchain — SDK, NDK, Java, Kotlin and
+/// friends — is a platform requirement the Kotlin runtime and Hydrolysis
+/// share, so the Android group keys on the platform and is in scope
+/// wherever Android is targeted — which on a bare host is never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoctorScope {
+    /// In scope when this backend is.
+    Backend(TargetBackend),
+    /// In scope when the host builds for this platform or a project
+    /// selects it.
+    Platform(TargetPlatform),
+}
+
+impl From<TargetBackend> for DoctorScope {
+    fn from(backend: TargetBackend) -> Self {
+        Self::Backend(backend)
+    }
+}
+
+impl From<TargetPlatform> for DoctorScope {
+    fn from(platform: TargetPlatform) -> Self {
+        Self::Platform(platform)
     }
 }
 
@@ -586,15 +606,47 @@ struct ProjectContext {
 }
 
 impl ProjectContext {
-    /// Whether `backend` is checked in this run and why.
+    /// Whether `key` is checked in this run and why.
     ///
-    /// Inside a project every backend is [`BackendScope::Selected`]: the CLI
-    /// generates whichever backend a command selects. Outside a project the host decides: the backends the
-    /// machine can build for — Apple on macOS, `WinUI` on Windows, GTK4 on
-    /// Linux, Hydrolysis on every desktop host — are
-    /// [`BackendScope::HostDefault`]; Android and Dew need a project to
-    /// select them and are optional everywhere.
-    fn scope(&self, backend: TargetBackend) -> BackendScope {
+    /// Inside a project every backend and every platform is
+    /// [`BackendScope::Selected`]: the CLI generates whichever backend a
+    /// command selects. Outside a project the host decides: the backends
+    /// the machine can build for — Apple on macOS, `WinUI` on Windows,
+    /// GTK4 on Linux, Hydrolysis on every desktop host — are
+    /// [`BackendScope::HostDefault`]; the Kotlin Android backend needs a
+    /// project to select it and is optional everywhere.
+    ///
+    /// A [`DoctorScope::Platform`] key is host-default only when the host
+    /// itself builds for the platform — never for Android: Hydrolysis
+    /// cross-compiling to Android does not mean the host targets Android,
+    /// so the Android group stays optional without a project, exactly as
+    /// the Kotlin backend does.
+    fn scope(&self, key: impl Into<DoctorScope>) -> BackendScope {
+        match key.into() {
+            DoctorScope::Backend(backend) => self.backend_scope(backend),
+            DoctorScope::Platform(platform) => self.platform_scope(platform),
+        }
+    }
+
+    /// A platform's scope comes from the platform itself: outside a
+    /// project it is host-default only when the host builds for it — its
+    /// own Apple toolchain on macOS, its own desktop on Linux or Windows.
+    /// Android, the web and the ESP32 chips are cross-compiled targets a
+    /// project must select.
+    fn platform_scope(&self, platform: TargetPlatform) -> BackendScope {
+        self.manifest.as_ref().map_or_else(
+            || {
+                if platform.host_builds() {
+                    BackendScope::HostDefault
+                } else {
+                    BackendScope::Optional
+                }
+            },
+            |_| BackendScope::Selected,
+        )
+    }
+
+    fn backend_scope(&self, backend: TargetBackend) -> BackendScope {
         self.manifest.as_ref().map_or_else(
             || {
                 let host_builds = match backend {
@@ -602,7 +654,7 @@ impl ProjectContext {
                     TargetBackend::WinUi => cfg!(target_os = "windows"),
                     TargetBackend::Gtk4 => cfg!(target_os = "linux"),
                     TargetBackend::Hydrolysis => true,
-                    TargetBackend::Android | TargetBackend::Dew => false,
+                    TargetBackend::Android => false,
                 };
                 if host_builds {
                     BackendScope::HostDefault
@@ -614,8 +666,8 @@ impl ProjectContext {
         )
     }
 
-    fn in_scope(&self, backend: TargetBackend) -> bool {
-        self.scope(backend).is_in_scope()
+    fn in_scope(&self, key: impl Into<DoctorScope>) -> bool {
+        self.scope(key).is_in_scope()
     }
 
     /// The `skipped` message for a project-gated item whose backend is out
@@ -625,21 +677,6 @@ impl ProjectContext {
         format!(
             "Optional: checked inside a WaterUI project, which can build with the {backend} backend."
         )
-    }
-
-    /// The chips the project's ESP32 (Dew) backend can target: the chip
-    /// `[esp32]` declares, or every supported chip. `None` when no project
-    /// is present.
-    fn esp32_chips(&self) -> Option<eyre::Result<Vec<Esp32Chip>>> {
-        let manifest = self.manifest.as_ref()?;
-        if let Some(config) = &manifest.esp32 {
-            return Some(config.resolved_chip().map(|chip| vec![chip]));
-        }
-        Some(Ok(vec![
-            Esp32Chip::Esp32S3,
-            Esp32Chip::Esp32C3,
-            Esp32Chip::Esp32P4,
-        ]))
     }
 }
 
@@ -825,7 +862,11 @@ async fn apple_rust_targets_check(host: &Host, project: &ProjectContext) -> Doct
 /// The Android SDK chain. The component probes need `sdkmanager`, so they
 /// follow the SDK probe; the rustup targets, run targets, and the `CMake` /
 /// Java / Kotlin helpers are independent of it and run alongside.
-async fn android_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem> {
+///
+/// The group serves every Android backend — the Kotlin runtime and
+/// Hydrolysis alike — so the probes are unconditional and the items'
+/// [`DoctorItem::optional`] flag carries the scope.
+async fn android_checks(host: &Host) -> Vec<DoctorItem> {
     let components = async {
         let sdk = toolchain_check(
             host,
@@ -873,29 +914,15 @@ async fn android_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorItem
         }
         items
     };
-    let rust_targets = async {
-        // The rustup targets only need rustup — they are probed regardless
-        // of SDK state, and only when Android is in scope.
-        if project.in_scope(TargetBackend::Android) {
-            toolchain_check(
-                host,
-                ids::ANDROID_RUST_TARGETS,
-                "Android Rust Targets",
-                "Required for Android Rust cross-compilation",
-                AndroidRustTargets::default(),
-            )
-            .await
-        } else {
-            DoctorItem::skipped_with_message(
-                ids::ANDROID_RUST_TARGETS,
-                "Android Rust Targets",
-                ProjectContext::out_of_scope_message("Android"),
-            )
-        }
-    };
     let (mut items, rust_targets, run_targets, cmake, java, kotlin) = join!(
         components,
-        rust_targets,
+        toolchain_check(
+            host,
+            ids::ANDROID_RUST_TARGETS,
+            "Android Rust Targets",
+            "Required for Android Rust cross-compilation",
+            AndroidRustTargets::default(),
+        ),
         android_run_target_check(host),
         toolchain_check(
             host,
@@ -1045,7 +1072,7 @@ async fn hydrolysis_checks(host: &Host, project: &ProjectContext) -> Vec<DoctorI
         web_package_manager,
     ) = join!(
         windows_checks(host),
-        spirv_opt_check(host, project),
+        spirv_opt_check(host),
         windows_arm64_llvm,
         web,
         web_package_manager_check(host, project)
@@ -1099,33 +1126,14 @@ async fn windows_checks(host: &Host) -> (DoctorItem, DoctorItem) {
     }
 }
 
-/// Whether this run can produce a target `cherenkov-gpu` emits SPIR-V for.
-///
-/// The engine's build script invokes `spirv-opt` for every non-Apple native
-/// target — Linux, Windows and Android — while Apple targets compile to
-/// Metal instead. Outside a project the host decides: a Linux or Windows
-/// host always has such a target in scope (GTK4/`WinUI`, and Hydrolysis's
-/// own native desktop build); on macOS the only host-default targets are
-/// Apple, so `spirv-opt` only matters once a project selects the Android
-/// backend Hydrolysis cross-compiles to.
-fn spirv_opt_required(project: &ProjectContext) -> bool {
-    project.in_scope(TargetBackend::Android)
-        || project.in_scope(TargetBackend::Gtk4)
-        || project.in_scope(TargetBackend::WinUi)
-        || (project.in_scope(TargetBackend::Hydrolysis) && !cfg!(target_os = "macos"))
-}
-
-/// `spirv-opt` (SPIRV-Tools), scoped by [`spirv_opt_required`]. The item's
-/// `Ok` report carries the binary's own `--version` line.
-async fn spirv_opt_check(host: &Host, project: &ProjectContext) -> DoctorItem {
+/// `spirv-opt` (SPIRV-Tools). The engine's build script invokes it for
+/// every non-Apple native `cherenkov-gpu` target — Linux, Windows and
+/// Android — while Apple targets compile to Metal instead. The item rides
+/// the Hydrolysis group, which is host-default on every host — so the
+/// probe is unconditional. The item's `Ok` report carries the binary's own
+/// `--version` line.
+async fn spirv_opt_check(host: &Host) -> DoctorItem {
     const NAME: &str = "SPIRV-Tools (spirv-opt)";
-    if !spirv_opt_required(project) {
-        return DoctorItem::skipped_with_message(
-            ids::SPIRV_OPT,
-            NAME,
-            "Only required for Linux, Windows, or Android targets — Apple targets compile to Metal.",
-        );
-    }
     match SpirvTools.check(host).await {
         Ok(()) => {
             let mut item = DoctorItem::ok(ids::SPIRV_OPT, NAME);
@@ -1145,46 +1153,9 @@ async fn spirv_opt_check(host: &Host, project: &ProjectContext) -> DoctorItem {
     }
 }
 
-/// The Espressif-side toolchain — `esp` Rust fork, clang/GCC, `rust-src`,
-/// `espflash`/`ldproxy`, QEMU — when the project selects a Dew/ESP32 backend.
-async fn esp32_check(host: &Host, project: &ProjectContext) -> DoctorItem {
-    const NAME: &str = "ESP32 toolchain";
-    let Some(chips) = project.esp32_chips() else {
-        return DoctorItem::skipped_with_message(
-            ids::ESP32_TOOLCHAIN,
-            NAME,
-            ProjectContext::out_of_scope_message("ESP32"),
-        );
-    };
-    let chips = match chips {
-        Ok(chips) => chips,
-        Err(error) => {
-            return DoctorItem::missing(
-                ids::ESP32_TOOLCHAIN,
-                NAME,
-                format!("Invalid `[esp32]` configuration: {error}"),
-            );
-        }
-    };
-    match Esp32Toolchain::new(chips).check(host).await {
-        Ok(()) => DoctorItem::ok(ids::ESP32_TOOLCHAIN, NAME),
-        Err(ToolchainError::Fixable(installation)) => DoctorItem::fixable(
-            ids::ESP32_TOOLCHAIN,
-            NAME,
-            installation.describe(),
-            installation,
-            host,
-        ),
-        Err(ToolchainError::Unfixable(error)) => {
-            DoctorItem::missing(ids::ESP32_TOOLCHAIN, NAME, unfixable_message(&error))
-        }
-    }
-}
-
 /// The cargo-installed helper binaries a project's workflows invoke —
 /// `cargo-nextest` for `water bench`. Platform helpers that are also cargo
-/// installs (`wasm-pack`, `espflash`/`ldproxy`) are covered by their own
-/// platform items.
+/// installs (`wasm-pack`) are covered by their own platform items.
 async fn cargo_helpers_check(host: &Host) -> DoctorItem {
     const NAME: &str = "Cargo helpers";
     match CargoHelpers::new(["cargo-nextest"]).check(host).await {
@@ -1326,9 +1297,11 @@ async fn winui_check(host: &Host) -> DoctorItem {
 /// independent probes run concurrently; the report is returned once all of
 /// them have answered.
 ///
-/// Which backends are in scope is [`ProjectContext::scope`]'s decision:
-/// inside a project the manifest's, outside it the host's. Items of an
-/// out-of-scope backend are marked [`DoctorItem::optional`].
+/// Which groups are in scope is `ProjectContext::scope`'s decision:
+/// inside a project every backend is selected, outside it the host's
+/// capabilities decide — and a platform-keyed group follows whichever
+/// backend serves it. Items of an out-of-scope group are marked
+/// [`DoctorItem::optional`].
 pub async fn doctor(host: &Host) -> Vec<DoctorItem> {
     let project = project_context(host).await;
     let (
@@ -1339,7 +1312,6 @@ pub async fn doctor(host: &Host) -> Vec<DoctorItem> {
         hydrolysis,
         winui,
         android,
-        esp32,
         sccache,
         cargo_helpers,
     ) = join!(
@@ -1349,8 +1321,7 @@ pub async fn doctor(host: &Host) -> Vec<DoctorItem> {
         Box::pin(linux_checks(host)),
         Box::pin(hydrolysis_checks(host, &project)),
         Box::pin(winui_check(host)),
-        Box::pin(android_checks(host, &project)),
-        Box::pin(esp32_check(host, &project)),
+        Box::pin(android_checks(host)),
         Box::pin(toolchain_check(
             host,
             ids::SCCACHE,
@@ -1369,14 +1340,13 @@ pub async fn doctor(host: &Host) -> Vec<DoctorItem> {
     items.push(winui);
     items.push(gtk4);
     items.extend(android);
-    items.push(esp32);
     items.push(sccache);
     items.push(cargo_helpers);
     for item in &mut items {
         item.optional = item
             .group
-            .backend()
-            .is_some_and(|backend| !project.in_scope(backend));
+            .scope_key()
+            .is_some_and(|key| !project.in_scope(key));
     }
     items
 }
@@ -1430,7 +1400,7 @@ async fn rust_toolchain_check(host: &Host, project: &ProjectContext) -> DoctorIt
 #[cfg(test)]
 mod tests {
     use super::{BackendScope, CheckStatus, DoctorGroup, ProjectContext, doctor, ids, sections};
-    use crate::platform::TargetBackend;
+    use crate::platform::{TargetBackend, TargetPlatform};
     use crate::toolchain::testing::TestMachine;
     use semver::Version;
 
@@ -1455,8 +1425,16 @@ mod tests {
         ids::ANDROID_NDK,
     ];
 
+    /// The Android toolchain items the scope test asserts on.
+    const ANDROID_ITEMS: &[&str] = &[
+        ids::ANDROID_SDK,
+        ids::ANDROID_RUST_TARGETS,
+        ids::JAVA,
+        ids::KOTLIN,
+    ];
+
     /// A minimal `Water.toml` app manifest; `extra` is appended verbatim
-    /// (`[esp32]`, `[web]`, ...).
+    /// (`[web]`, `[hydrolysis]`, ...).
     fn manifest(extra: &str) -> String {
         format!(
             "[package]\nname = \"Fixture\"\nbundle_identifier = \"dev.waterui.fixture\"\n\n{extra}"
@@ -1513,11 +1491,11 @@ mod tests {
             );
         }
 
-        // Without a manifest the Android rust targets are not required, so
-        // the item is skipped rather than blocked or probed.
+        // The rustup targets need only rustup, so they are probed even
+        // with the SDK absent — on this bare host they are missing.
         assert_eq!(
             item(&items, ids::ANDROID_RUST_TARGETS).status,
-            CheckStatus::Skipped
+            CheckStatus::Missing
         );
 
         let run_targets = item(&items, ids::ANDROID_RUN_TARGETS);
@@ -1564,8 +1542,8 @@ mod tests {
         ] {
             assert!(item(&items, id).is_fixable(), "{id} must be fixable");
         }
-        // The manifest selects the Android backend, so the rustup targets are
-        // probed; with no rustup on the fake PATH they are unfixable.
+        // The rustup targets are probed regardless of SDK state; with no
+        // rustup on the fake PATH they are unfixable.
         let rust_targets = item(&items, ids::ANDROID_RUST_TARGETS);
         assert_eq!(rust_targets.status, CheckStatus::Missing);
         assert!(!rust_targets.is_fixable());
@@ -1697,32 +1675,16 @@ mod tests {
         assert!(wasm_pack.is_fixable());
     }
 
-    /// `spirv-opt` is probed wherever a non-Apple native target is in scope
-    /// — every Linux/Windows host and any project — and skipped only on a
-    /// project-less macOS host, where just Apple targets apply.
+    /// `spirv-opt` is probed on every host: the item rides the Hydrolysis
+    /// group, which is host-default everywhere.
     #[test]
-    fn doctor_spirv_opt_matches_the_target_scope() {
+    fn doctor_probes_spirv_opt_on_every_host() {
         let machine = TestMachine::new();
         let host = machine.host(Vec::<(String, String)>::new());
         let items = smol::block_on(doctor(&host));
         let spirv_opt = item(&items, ids::SPIRV_OPT);
-        if cfg!(target_os = "macos") {
-            assert_eq!(spirv_opt.status, CheckStatus::Skipped);
-        } else {
-            assert_eq!(spirv_opt.status, CheckStatus::Missing);
-            assert!(!spirv_opt.optional);
-        }
-
-        let project_machine = TestMachine::new();
-        project_machine.file("Water.toml", &manifest(""));
-        let host = project_machine.host(Vec::<(String, String)>::new());
-        let items = smol::block_on(doctor(&host));
-        let spirv_opt = item(&items, ids::SPIRV_OPT);
-        assert_eq!(
-            spirv_opt.status,
-            CheckStatus::Missing,
-            "a project can always build a SPIR-V target"
-        );
+        assert_eq!(spirv_opt.status, CheckStatus::Missing);
+        assert!(!spirv_opt.optional);
     }
 
     /// With `spirv-opt` staged on PATH the item is `Ok` and reports the
@@ -1743,7 +1705,8 @@ mod tests {
     }
 
     /// Outside a project the host decides: Hydrolysis everywhere, Apple on
-    /// macOS, GTK4 on Linux, `WinUI` on Windows; Android and Dew optional.
+    /// macOS, GTK4 on Linux, `WinUI` on Windows; the Kotlin Android backend
+    /// optional.
     #[test]
     fn scope_outside_a_project_follows_the_host() {
         let project = project_less();
@@ -1755,7 +1718,6 @@ mod tests {
             project.scope(TargetBackend::Android),
             BackendScope::Optional
         );
-        assert_eq!(project.scope(TargetBackend::Dew), BackendScope::Optional);
         let host_only = |backend, on_host: bool| {
             let expected = if on_host {
                 BackendScope::HostDefault
@@ -1769,6 +1731,51 @@ mod tests {
         host_only(TargetBackend::WinUi, cfg!(target_os = "windows"));
     }
 
+    /// The Android group's scope keys on the platform, whichever backend
+    /// serves it: no host targets Android natively — Hydrolysis merely
+    /// cross-compiles to it — so the platform and its toolchain items are
+    /// optional without a project and selected inside one.
+    #[test]
+    fn android_scope_covers_whichever_backend_serves_it() {
+        let project = project_less();
+        assert_eq!(
+            project.scope(TargetBackend::Android),
+            BackendScope::Optional,
+            "selecting the Kotlin backend still takes a project"
+        );
+        assert_eq!(
+            project.scope(TargetPlatform::Android),
+            BackendScope::Optional,
+            "no host targets Android without a project selecting it"
+        );
+        assert_eq!(
+            project_with("").scope(TargetPlatform::Android),
+            BackendScope::Selected
+        );
+
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let items = smol::block_on(doctor(&host));
+        for id in ANDROID_ITEMS {
+            assert!(
+                item(&items, id).optional,
+                "{id} is optional without a project"
+            );
+        }
+
+        // A project targets Android through the Hydrolysis default, so the
+        // same items are required inside one.
+        machine.file("Water.toml", &manifest(""));
+        let host = machine.host(Vec::<(String, String)>::new());
+        let items = smol::block_on(doctor(&host));
+        for id in ANDROID_ITEMS {
+            assert!(
+                !item(&items, id).optional,
+                "{id} is required in a Hydrolysis-default Android project"
+            );
+        }
+    }
+
     /// Inside a project every backend is in scope: the CLI generates
     /// whichever one a command selects.
     #[test]
@@ -1780,7 +1787,6 @@ mod tests {
             TargetBackend::Gtk4,
             TargetBackend::Hydrolysis,
             TargetBackend::WinUi,
-            TargetBackend::Dew,
         ] {
             assert_eq!(
                 project.scope(backend),
@@ -1790,8 +1796,8 @@ mod tests {
         }
     }
 
-    /// Outside a project the host's backends are probed and Android / ESP32
-    /// are reported as optional rather than skipped-as-unselected.
+    /// Outside a project the host's backends are probed — the Android
+    /// toolchain is not: no host targets Android without a project.
     #[test]
     fn doctor_checks_the_hosts_backends_outside_a_project() {
         let machine = TestMachine::new();
@@ -1813,20 +1819,12 @@ mod tests {
         if cfg!(target_os = "linux") {
             assert!(!item(&items, ids::GTK4).optional);
         }
-        for id in [
-            ids::ANDROID_SDK,
-            ids::ANDROID_RUST_TARGETS,
-            ids::ESP32_TOOLCHAIN,
-        ] {
+        for id in [ids::ANDROID_SDK, ids::ANDROID_RUST_TARGETS] {
             assert!(
                 item(&items, id).optional,
                 "{id} is optional without a project"
             );
         }
-        assert_eq!(
-            item(&items, ids::ESP32_TOOLCHAIN).status,
-            CheckStatus::Skipped
-        );
     }
 
     /// The terminal groups follow the new-user order: Rust, the host's
@@ -1843,11 +1841,13 @@ mod tests {
         let first_optional = sections.iter().position(|section| section.optional);
         let last_required_backend = sections
             .iter()
-            .rposition(|section| !section.optional && section.group.backend().is_some());
+            .rposition(|section| !section.optional && section.group.scope_key().is_some());
         if let (Some(first_optional), Some(last_required)) = (first_optional, last_required_backend)
         {
             assert!(last_required < first_optional);
         }
+        // No host targets Android without a project — Hydrolysis merely
+        // cross-compiles to it — so the Android group is optional.
         assert!(
             sections
                 .iter()
@@ -1866,7 +1866,7 @@ mod tests {
     #[test]
     fn doctor_probes_every_backend_inside_a_project() {
         let machine = TestMachine::new();
-        machine.file("Water.toml", &manifest("[esp32]\nchip = \"esp32c3\"\n"));
+        machine.file("Water.toml", &manifest(""));
         let host = machine.host(Vec::<(String, String)>::new());
         let items = smol::block_on(doctor(&host));
 
@@ -1874,7 +1874,6 @@ mod tests {
             ids::ANDROID_RUST_TARGETS,
             ids::WASM32_TARGET,
             ids::WASM_PACK,
-            ids::ESP32_TOOLCHAIN,
         ] {
             assert_eq!(
                 item(&items, id).status,
@@ -1888,27 +1887,6 @@ mod tests {
                 CheckStatus::Missing
             );
         }
-    }
-
-    /// An `[esp32]` chip the CLI does not support is a diagnostic,
-    /// not a skipped item.
-    #[test]
-    fn doctor_reports_invalid_esp32_chip() {
-        let machine = TestMachine::new();
-        machine.file("Water.toml", &manifest("[esp32]\nchip = \"atmega328p\"\n"));
-        let host = machine.host(Vec::<(String, String)>::new());
-        let items = smol::block_on(doctor(&host));
-
-        let esp32 = item(&items, ids::ESP32_TOOLCHAIN);
-        assert_eq!(esp32.status, CheckStatus::Missing);
-        assert!(
-            esp32
-                .message
-                .as_deref()
-                .is_some_and(|message| message.contains("Invalid")),
-            "the invalid chip must be diagnosed: {:?}",
-            esp32.message
-        );
     }
 
     /// A `--fix` pass runs each fixable item's install; a re-diagnosis must

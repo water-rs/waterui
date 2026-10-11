@@ -11,7 +11,7 @@ use waterui_core::{
 };
 
 use crate::{
-    component::menu::{Menu, MenuBarView},
+    component::menu::{CloseWindowChord, Menu, MenuBarView},
     window::Window,
 };
 
@@ -312,13 +312,17 @@ impl App {
     }
 
     /// Consume the app and return the parts a runner needs, with the values
-    /// installed by [`App::state`] layered over its environment.
+    /// installed by [`App::state`] layered over its environment, and the
+    /// Close Window chord decided from its menu bar installed — every
+    /// environment a runner hands its menus carries the one decision.
     #[must_use]
     pub fn into_parts(self) -> AppParts {
+        let mut env = self.states.layered_on(&self.env);
+        env.insert(CloseWindowChord::new(&self.menu_bar, &env));
         AppParts {
             windows: self.windows,
             menu_bar: self.menu_bar,
-            env: self.states.layered_on(&self.env),
+            env,
             last_window: self.last_window,
             termination: self.termination,
         }
@@ -346,7 +350,7 @@ mod tests {
     use waterui_locale::locales;
 
     use super::*;
-    use crate::component::menu::CommandExt as _;
+    use crate::component::menu::{CommandExt as _, Shortcut};
 
     #[test]
     fn application_direction_tracks_locale_binding() {
@@ -422,6 +426,26 @@ mod tests {
             })
             .expect("the menu must contain the declared command");
         command.action.call(&parts.env);
+    }
+
+    /// The environment `into_parts` hands a runner decides the Close
+    /// Window chord once, from the declared menu bar: a bar that binds ⌘W
+    /// on its own command leaves every Close Window item ⇧⌘W.
+    #[test]
+    fn the_menu_bar_decides_the_close_window_chord() {
+        let parts = App::new(|| (), Environment::new())
+            .menu_bar(Menu::new(
+                "File",
+                "Close Tab"
+                    .action(|| {})
+                    .shortcut(Shortcut::new('w').command()),
+            ))
+            .into_parts();
+        assert_eq!(
+            CloseWindowChord::of(&parts.env),
+            Some(Shortcut::new('w').command().shift()),
+            "the bar's own ⌘W command moves every Close Window item to ⇧⌘W"
+        );
     }
 
     #[test]

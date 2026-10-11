@@ -2,7 +2,7 @@
 //!
 //! Workload: a 200-row list of mixed-length body text plus one long
 //! paragraph, re-measured at three wrap widths — the pattern a live resize
-//! or list rebuild drives through `text_dimensions_from_layout`. This is the
+//! or list rebuild drives through `TextService::dimensions`. This is the
 //! regression gate for the ink-extent work that measure performs per glyph
 //! since #237.
 //!

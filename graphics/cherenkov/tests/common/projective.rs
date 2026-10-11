@@ -46,7 +46,7 @@ impl<'e, B: Backend + ProjectiveLayers> Scene<'e, B> {
     /// independent scene tree, same as a fresh engine's surface.
     fn new(engine: &'e Engine<B>, setup: impl FnOnce(&mut cherenkov::LayerEdit<B>)) -> Self {
         let surface = engine
-            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF32))
+            .surface(Offscreen::new(SIZE, OffscreenFormat::LinearF32), || {})
             .expect("surface");
         let layer = surface.layer();
         surface.update(|tx| {

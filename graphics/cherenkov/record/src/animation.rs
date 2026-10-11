@@ -168,6 +168,26 @@ impl<T: Animatable> std::fmt::Debug for AnimationTrack<T> {
     }
 }
 
+impl<T: Animatable> AnimationTrack<T> {
+    /// Evaluates the track at `t`, returning `(position, velocity, done)`:
+    /// the same evaluation the engine's sampler runs, so a host that knows
+    /// a track's start can place its values — and, for a [`Curve`], its
+    /// completion at `start + duration` — on its own clock. An instant
+    /// before `start` evaluates to the track's initial state.
+    #[must_use]
+    pub fn sample(&self, t: Instant) -> (T, T::Lanes, bool) {
+        let dt = t.duration_since(self.start).as_secs_f64();
+        let (pos, vel, done) = eval_lanes(
+            self.from.into_lanes(),
+            self.velocity,
+            self.target.into_lanes(),
+            &self.animation,
+            dt,
+        );
+        (T::from_lanes(pos), vel, done)
+    }
+}
+
 impl Animatable for f64 {
     type Lanes = [Self; 1];
     fn into_lanes(self) -> Self::Lanes {
@@ -567,6 +587,46 @@ pub fn decay_step<L: Lanes>(from: L, velocity: L, deceleration: f64, dt: f64) ->
     let k = deceleration.max(1e-9);
     let e = (-k * dt).exp();
     (from.add_scaled(&velocity, (1.0 - e) / k), velocity.scale(e))
+}
+
+/// The closed-form evaluation a running track and its host share:
+/// `(position, velocity, done)` in lane space `dt` seconds after the
+/// track's start. A settled spring reports its target exactly; a curve
+/// reports its velocity so a retarget can inherit it.
+pub(crate) fn eval_lanes<L: Lanes>(
+    from: L,
+    velocity: L,
+    target: L,
+    animation: &Animation,
+    dt: f64,
+) -> (L, L, bool) {
+    match animation {
+        Animation::Spring(spring) => {
+            let (pos, vel) = spring_step(from, velocity, target, spring, dt);
+            if settled(pos, vel, target) {
+                (target, L::zero(), true)
+            } else {
+                (pos, vel, false)
+            }
+        }
+        Animation::Curve(curve) => {
+            let duration = curve.duration.as_secs_f64();
+            let t01 = if duration <= 0.0 { 1.0 } else { dt / duration };
+            let delta = target.sub(&from);
+            let pos = from.add_scaled(&delta, curve_value(curve, t01));
+            // v = Δ·e′(t)/duration so a retarget can inherit it.
+            let vel = if duration > 0.0 {
+                delta.scale(curve_slope(curve, t01) / duration)
+            } else {
+                L::zero()
+            };
+            (pos, vel, t01 >= 1.0)
+        }
+        Animation::Decay(decay) => {
+            let (pos, vel) = decay_step(from, velocity, decay.deceleration, dt);
+            (pos, vel, vel.max_abs() < 1e-3)
+        }
+    }
 }
 
 /// The total distance a decay covers from `velocity`: `|v| / k`.

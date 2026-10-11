@@ -526,7 +526,7 @@ fn read_pixels(
     output: &wgpu::Texture,
 ) -> Result<Vec<[f32; 4]>, Box<dyn std::error::Error>> {
     let (target, destinations) = TextureTarget::new((16, 16));
-    let destination = engine.surface(target)?;
+    let destination = engine.surface(target, || {})?;
     let destination_texture = destinations.try_recv()?;
     let delivery = cherenkov_gpu::interop::shader_delivery(wgpu::Backend::Vulkan, &shared.device)?;
     let mut presenter = Presenter::new(&shared.device, delivery);
@@ -602,7 +602,7 @@ fn ahb_rgb_import_decodes_known_pixels() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -654,7 +654,7 @@ fn ahb_yuv_external_format_decodes_neutral() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -711,7 +711,7 @@ fn scene(shared: SharedDevice) -> (Engine<Gpu>, Surface<Gpu>, Layer) {
     })
     .expect("engine");
     let (target, _) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let layer = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
@@ -836,7 +836,7 @@ fn two_layers_replace_retire_and_release_fence() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     textures.try_recv().expect("output texture");
     let (a, b) = (surface.layer(), surface.layer());
     // Two attachments of one generation deduplicate the acquisition.
@@ -901,7 +901,7 @@ fn native_op_survives_engine_buffer_and_atlas_regrowth() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -1013,7 +1013,7 @@ fn next_generation_after_release() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -1094,7 +1094,7 @@ fn cancellation_and_teardown() {
     })
     .expect("engine");
     let (target, _) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
     sink.submit(ExternalFrame::native(frame).expect("external"));
@@ -1133,7 +1133,7 @@ fn report_counts_and_timings() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let imported = frame.imported_bytes();

@@ -1504,9 +1504,10 @@ fn a_field_in_a_nested_scroll_is_cleared_once(ui: UiBuilder<Styled<hydrolysis_m3
 }
 
 /// Tab content above the bottom bar is `Covered` on its bottom edge: the
-/// page's frame ends at the bar's top and a background fill inside extends
-/// nowhere through the bar — the snapshot shows the fill stopping at the
-/// tab bar's top edge.
+/// page's frame ends at the bar's top, the bar's bottom edge sits on the
+/// container boundary, and a background fill inside extends nowhere
+/// through the bar — the snapshot shows the fill stopping at the tab
+/// bar's top edge.
 #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
 fn a_tab_page_background_stops_at_the_tab_bar(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
     use waterui::navigation::{Tab, Tabs};
@@ -1538,11 +1539,362 @@ fn a_tab_page_background_stops_at_the_tab_bar(ui: UiBuilder<Styled<hydrolysis_m3
     let page = app.query().label("tab-page").single().bounds();
     let bar = app.query().role(Role::TAB_LIST).single().bounds();
     assert!(
-        (page.y() + page.height() - bar.y()).abs() <= 1.0,
-        "the page's bottom edge sits at the tab bar's top edge, \
-         page {page:?} bar {bar:?}"
+        (bar.y() + bar.height() - CONTAINER_TOP).abs() <= 1.0
+            && (page.y() + page.height() - bar.y()).abs() <= 1.0,
+        "with the keyboard down the bar ends on the container boundary and \
+         the page's bottom edge sits at the bar's top edge, page {page:?} \
+         bar {bar:?}"
     );
     app.capture_snapshot("safe-area", "tab-page-background", "insets");
+}
+
+/// §7.1's chrome rule: a bottom tab bar stays docked to its edge — laid out
+/// clear of the container region only — so a keyboard deeper than the
+/// bottom container inset covers the bar instead of lifting it, whether the
+/// keyboard stops partway up the band or covers it outright. The tab's
+/// hosted content keeps the deeper boundary: a focused field inside it
+/// still clears the keyboard.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_tab_bar_stays_docked_under_the_keyboard(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    use waterui::navigation::{Tab, Tabs};
+
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
+    let selection = Binding::container(0i32);
+    let value = Binding::container(waterui::Str::from(""));
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            Tabs::new(
+                &selection,
+                vec![
+                    Tab::new(0i32, "Messages", {
+                        let value = value.clone();
+                        move || {
+                            NavigationView::new(
+                                "Messages",
+                                zstack((
+                                    ScrollView::vertical(vstack((
+                                        spacer().size(390.0, 560.0),
+                                        field("Message", &value).size(350.0, 44.0),
+                                        spacer().size(390.0, 380.0),
+                                    )))
+                                    .a11y_label("tab-page"),
+                                    vstack((
+                                        spacer(),
+                                        card("edge")
+                                            .ignore_safe_area(
+                                                SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                                            )
+                                            .a11y_label("tab-content-edge"),
+                                    )),
+                                )),
+                            )
+                        }
+                    }),
+                    Tab::new(1i32, "Settings", move || {
+                        NavigationView::new("Settings", text("settings"))
+                    }),
+                ],
+            )
+        });
+    app.settle();
+
+    // Two keyboard depths on the bottom edge: one that only partly covers
+    // the band — deeper than the container inset, shallower than inset
+    // plus bar height — and one that covers it outright. The band ends on
+    // the container boundary either way.
+    for (bottom_inset, keyboard_top, covers_band) in
+        [(60.0_f32, 784.0, false), (336.0, KEYBOARD_TOP, true)]
+    {
+        keyboard.set(EdgeInsets::new(0.0, bottom_inset, 0.0, 0.0));
+        app.settle();
+
+        let bar = app.query().role(Role::TAB_LIST).single().bounds();
+        assert!(
+            (bar.y() + bar.height() - CONTAINER_TOP).abs() <= 1.0,
+            "bottom_inset={bottom_inset}: the tab bar docks at the \
+             container boundary under the keyboard, got {bar:?}"
+        );
+        assert!(
+            if covers_band {
+                bar.y() > keyboard_top + 1.0
+            } else {
+                bar.y() < keyboard_top
+            },
+            "bottom_inset={bottom_inset}: the band {} the keyboard's top, \
+             got {bar:?}",
+            if covers_band {
+                "sits wholly under"
+            } else {
+                "pokes above"
+            },
+        );
+
+        // The hosted content keeps the deeper boundary — it stops at the
+        // higher of the band's top edge and the keyboard's top: the bar's
+        // top under the partway keyboard, the keyboard boundary under the
+        // deep one, where the covered band stays out of reach even for
+        // the card's `.ignore_safe_area(.keyboard)` release.
+        let content_bottom = bar.y().min(keyboard_top);
+        let content = app.query().label("tab-content-edge").single().bounds();
+        assert!(
+            (content.y() + content.height() - content_bottom).abs() <= 1.0,
+            "bottom_inset={bottom_inset}: the hosted content ends at the \
+             deeper boundary, got {content:?}"
+        );
+        let page = app.query().label("tab-page").single().bounds();
+        assert!(
+            (page.y() + page.height() - content_bottom).abs() <= 1.0,
+            "bottom_inset={bottom_inset}: the page surface stops at the \
+             deeper boundary under the docked bar, got {page:?}"
+        );
+    }
+
+    // The loop's last leg left the deep keyboard up: a focused field in
+    // the hosted content still clears to the keyboard boundary.
+    let covered = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Message")
+        .single()
+        .bounds();
+    assert!(
+        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        "precondition: the field starts under the keyboard band, got {covered:?}"
+    );
+    app.query().role(Role::TEXT_INPUT).label("Message").focus();
+    app.settle();
+    app.pump_for(Duration::from_secs(1));
+
+    let cleared = app
+        .query()
+        .role(Role::TEXT_INPUT)
+        .label("Message")
+        .single()
+        .bounds();
+    assert!(
+        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        "the hosted surface clears the field to the keyboard boundary, \
+         got {cleared:?}"
+    );
+}
+
+/// A `NavigationView` bottom toolbar is the same docked chrome: under a
+/// keyboard deeper than the bottom inset, its items sit in the band under
+/// the keyboard region instead of riding on top of it.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_navigation_bottom_toolbar_stays_docked_under_the_keyboard(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::navigation::{
+        NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+    };
+
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(KEYBOARD_INSETS);
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            NavigationView::new("Home", vstack((card("content"), spacer()))).navigation_toolbar(
+                NavigationToolbar::new(vec![NavigationToolbarItem::action(
+                    NavigationToolbarPlacement::BottomBar,
+                    "New",
+                    || {},
+                )]),
+            )
+        });
+    app.settle();
+
+    let item = app
+        .query()
+        .role(Role::BUTTON)
+        .label("New")
+        .single()
+        .bounds();
+    assert!(
+        item.y() > KEYBOARD_TOP + 1.0 && item.y() + item.height() <= CONTAINER_TOP + 1.0,
+        "the bottom toolbar item sits in the container band under the \
+         keyboard, got {item:?}"
+    );
+}
+
+/// The canonical `Tab::container` shape — hidden-bar `NavigationView` →
+/// `NavigationStack` → page `NavigationView` carrying a bottom toolbar:
+/// the dock the tab bar establishes has to reach the page's chrome
+/// through every hosted/`content_area_for` hop, so the page toolbar
+/// stacks on the docked tab bar with the keyboard down and up, never
+/// riding onto the keyboard while the tab bar sits under it.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::navigation::{
+        NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement, Tab,
+        Tabs,
+    };
+
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
+    let selection = Binding::container(0i32);
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            Tabs::new(
+                &selection,
+                vec![
+                    Tab::container(0i32, "Messages", move || {
+                        NavigationStack::new(
+                            NavigationView::new("Root", vstack((card("content"), spacer())))
+                                .navigation_toolbar(NavigationToolbar::new(vec![
+                                    NavigationToolbarItem::action(
+                                        NavigationToolbarPlacement::BottomBar,
+                                        "New",
+                                        || {},
+                                    ),
+                                ])),
+                        )
+                    }),
+                    Tab::container(1i32, "Settings", move || {
+                        NavigationStack::new(NavigationView::new("Settings", text("settings")))
+                    }),
+                ],
+            )
+        });
+    app.settle();
+
+    // The stacking gap and the item's `y` are measured with the keyboard
+    // down; the keyboard covering the tab bar's band must leave both
+    // identical — the dock lands on the same edge either way.
+    let item_down = app
+        .query()
+        .role(Role::BUTTON)
+        .label("New")
+        .single()
+        .bounds();
+    let bar_down = app.query().role(Role::TAB_LIST).single().bounds();
+    let gap_down = bar_down.y() - item_down.y() - item_down.height();
+
+    keyboard.set(KEYBOARD_INSETS);
+    app.settle();
+
+    let item = app
+        .query()
+        .role(Role::BUTTON)
+        .label("New")
+        .single()
+        .bounds();
+    let bar = app.query().role(Role::TAB_LIST).single().bounds();
+    assert!(
+        (item.y() - item_down.y()).abs() <= 0.5
+            && (bar.y() - item.y() - item.height() - gap_down).abs() <= 0.5,
+        "with the keyboard covering the tab bar the toolbar item keeps \
+         its y ({:.1} -> {:.1}) and its stacking gap ({:.1} -> {:.1}), \
+         item {item:?} tab bar {bar:?}",
+        item_down.y(),
+        item.y(),
+        gap_down,
+        bar.y() - item.y() - item.height(),
+    );
+}
+
+/// A `Tabs` inside navigation content that does not reach the bottom edge
+/// docks its own bar at its own frame's bottom — the dock the outer bar
+/// establishes applies only to content whose edge lands on it, not to
+/// every descendant carrying the boundary down a `child()` chain.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar(
+    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
+) {
+    use waterui::navigation::{
+        NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement, Tab, Tabs,
+    };
+
+    let container = waterui::binding(SAFE_INSETS);
+    let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
+    let selection = Binding::container(0i32);
+    let inner = Binding::container(0i32);
+    let mut app = ui
+        .environment(env_with_keyboard(&container, &keyboard))
+        .mount_offscreen(move || {
+            Tabs::new(
+                &selection,
+                vec![
+                    Tab::new(0i32, "Outer", {
+                        let inner = inner.clone();
+                        move || {
+                            NavigationView::new(
+                                "Outer",
+                                vstack((
+                                    Tabs::new(
+                                        &inner,
+                                        vec![
+                                            Tab::new(0i32, "Inner A", move || {
+                                                NavigationView::new("A", text("a"))
+                                            }),
+                                            Tab::new(1i32, "Inner B", move || {
+                                                NavigationView::new("B", text("b"))
+                                            }),
+                                        ],
+                                    )
+                                    .size(370.0, 200.0),
+                                    card("below").a11y_label("below-inner"),
+                                    spacer(),
+                                )),
+                            )
+                            // The outer bar's bottom dock is what the inner
+                            // tabs must not inherit: it lands on the
+                            // container boundary, far past the nested
+                            // frame's own edge.
+                            .navigation_toolbar(
+                                NavigationToolbar::new(vec![NavigationToolbarItem::action(
+                                    NavigationToolbarPlacement::BottomBar,
+                                    "New",
+                                    || {},
+                                )]),
+                            )
+                        }
+                    }),
+                    Tab::new(1i32, "Other", move || {
+                        NavigationView::new("Other", text("other"))
+                    }),
+                ],
+            )
+        });
+    app.settle();
+
+    for keyboard_up in [false, true] {
+        if keyboard_up {
+            keyboard.set(KEYBOARD_INSETS);
+            app.settle();
+        }
+        let mut bars: Vec<_> = app
+            .query()
+            .role(Role::TAB_LIST)
+            .all()
+            .iter()
+            .map(waterui_testing::ElementRef::bounds)
+            .collect();
+        bars.sort_by(|a, b| a.y().partial_cmp(&b.y()).unwrap());
+        assert_eq!(
+            bars.len(),
+            2,
+            "expected exactly two tab lists, got {bars:?}"
+        );
+        let [inner_bar, outer_bar] = [bars[0], bars[1]];
+        let below = app.query().label("below-inner").single().bounds();
+        assert!(
+            inner_bar.y() + inner_bar.height() <= below.y() + 1.0,
+            "keyboard_up={keyboard_up}: a nested tab bar that does not reach \
+             the dock stays inside its own frame, above the next sibling, \
+             inner bar {inner_bar:?} sibling {below:?}"
+        );
+        assert!(
+            (outer_bar.y() + outer_bar.height() - CONTAINER_TOP).abs() <= 1.0,
+            "keyboard_up={keyboard_up}: the outer bar stays docked on the \
+             container boundary, got {outer_bar:?}"
+        );
+    }
 }
 
 /// A drawn context-menu panel hosts its accessory under the panel's own
@@ -1697,4 +2049,115 @@ fn a_navigation_page_without_a_bar_passes_the_edge_through(
          window edge, got {hero:?}"
     );
     app.capture_snapshot("safe-area", "nav-barless-pass-through", "insets");
+}
+
+/// §7.1 "Chrome" capture vehicle — this test exists to export the offscreen
+/// PNG captures a human reviews; its assertions only gate the captures on the
+/// layout being what it should be. The bars' paint extension has no a11y or
+/// layout signal by design, so the snapshots are the evidence:
+/// `navigation-chrome-extension/{insets,transition}` show a navigation
+/// stack's bar surfaces covering the status band and the bottom inset —
+/// settled and mid-push — and `tab-bar-extension/insets` the bottom-docked
+/// tab bar's surface at the window edge.
+#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
+fn chrome_surface_extension_captures(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    use waterui::navigation::{
+        NavigationLink, NavigationStack, NavigationToolbar, NavigationToolbarItem,
+        NavigationToolbarPlacement, Tab, Tabs,
+    };
+    use waterui::{Str, ViewExt};
+
+    let insets = waterui::binding(SAFE_INSETS);
+    let query = waterui::binding(Str::from(""));
+    let mut app = ui
+        .clone()
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            NavigationStack::new(
+                NavigationView::new(
+                    "Inbox",
+                    vstack((
+                        card("mail"),
+                        NavigationLink::new("Open Detail", || {
+                            NavigationView::new("Detail", text("detail body"))
+                                .navigation_bar_color(Color::new(Srgb::new(0.55, 0.2, 0.7)))
+                        }),
+                        spacer(),
+                    ))
+                    .background(Color::new(Srgb::new(0.08, 0.1, 0.2))),
+                )
+                .navigation_bar_color(Color::new(Srgb::new(0.55, 0.2, 0.7)))
+                .navigation_toolbar(
+                    NavigationToolbar::default()
+                        .item(NavigationToolbarItem::new(
+                            NavigationToolbarPlacement::TopBarTrailing,
+                            button("Add").action(|| {}),
+                        ))
+                        .item(NavigationToolbarItem::new(
+                            NavigationToolbarPlacement::BottomBar,
+                            button("Mark All").action(|| {}),
+                        )),
+                )
+                .searchable(&query, "Search mail"),
+            )
+        });
+    app.settle();
+    app.capture_snapshot("safe-area", "navigation-chrome-extension", "insets");
+
+    // Mid-push: the queued pointer events arm the transition and one pumped
+    // clock window lands the capture inside the fade-through.
+    let link = app
+        .query()
+        .role(Role::BUTTON)
+        .label("Open Detail")
+        .single()
+        .bounds();
+    let (x, y) = (
+        link.x() + link.width() / 2.0,
+        link.y() + link.height() / 2.0,
+    );
+    app.queue_pointer_down(x, y);
+    app.queue_pointer_up(x, y);
+    app.pump_for(Duration::from_millis(180));
+    app.capture_snapshot("safe-area", "navigation-chrome-extension", "transition");
+
+    let selection = Binding::container(0i32);
+    let mut app = ui
+        .environment(env_with_insets(&insets))
+        .mount_offscreen(move || {
+            Tabs::new(
+                &selection,
+                vec![
+                    Tab::new(0i32, "Messages", move || {
+                        NavigationView::new(
+                            "Messages",
+                            vstack((card("chat list"), spacer()))
+                                .background(Color::new(Srgb::new(0.08, 0.1, 0.2)))
+                                .a11y_label("tab-page"),
+                        )
+                    }),
+                    Tab::new(1i32, "Settings", move || {
+                        NavigationView::new("Settings", text("settings"))
+                    }),
+                ],
+            )
+        });
+    app.settle();
+
+    let bar = app.query().role(Role::TAB_LIST).single().bounds();
+    assert!(
+        (bar.y() + bar.height() - CONTAINER_TOP).abs() <= 1.0,
+        "the tab bar's frame keeps the navigation-band boundary, got {bar:?}"
+    );
+    let title = app
+        .query()
+        .role(Role::HEADER)
+        .label("Messages")
+        .single()
+        .bounds();
+    assert!(
+        title.y() >= SAFE_INSETS.top() - 1.0,
+        "the nested page's title stays inside the safe area, got {title:?}"
+    );
+    app.capture_snapshot("safe-area", "tab-bar-extension", "insets");
 }

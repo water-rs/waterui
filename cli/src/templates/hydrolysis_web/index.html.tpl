@@ -2,7 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- `viewport-fit=cover` lets the canvas reach under the status bar and home
+         indicator; the runtime reads the safe-area insets and lays content inside them. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <title>{{ ctx.app_display_name }}</title>
     <style>
@@ -106,7 +108,7 @@
         <div class="waterui-launch-progress-bar"></div>
       </div>
     </div>
-    <canvas id="waterui-canvas"></canvas>
+    <div id="waterui-root"></div>
     <input id="waterui-ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" />
     <script type="module" src="./bootstrap.js"></script>
   </body>

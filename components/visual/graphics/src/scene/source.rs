@@ -9,6 +9,7 @@
 //!
 //! [`SceneResources`]: crate::resources::SceneResources
 //! [`SceneBackend`]: crate::resources::SceneBackend
+//! [`ResourceError`]: crate::draw::ResourceError
 
 use alloc::borrow::Cow;
 use alloc::string::String;

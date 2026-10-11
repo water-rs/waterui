@@ -123,9 +123,12 @@ pub struct PlatformViewTable {
 }
 
 impl PlatformViewTable {
-    /// Records a leaf's frame during the current flush.
-    pub fn record(&mut self, placement: PlatformViewPlacement) {
-        self.current.push(placement);
+    /// Writes the frame's complete set wholesale — the retained path's
+    /// frame-end record is idempotent: however many frame-end sites run
+    /// in one presented frame (build plus refresh-after-build, say), each
+    /// leaves `current` holding exactly the staged placements.
+    pub fn record_frame(&mut self, placements: Vec<PlatformViewPlacement>) {
+        self.current = placements;
     }
 
     /// Ends a flush: promote the recorded set. Call exactly once per encoded

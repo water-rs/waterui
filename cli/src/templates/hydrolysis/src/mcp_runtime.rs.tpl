@@ -10,9 +10,14 @@ pub(crate) fn run() {
         crate::run_config::load_run_config::<McpRunConfig>(MCP_RUN_CONFIG_ENV, "mcp");
     waterui_mcp::serve_stdio(
         || {
-            let env = waterui::configure_environment!(waterui::env::Environment::new());
-            let app = {{ ctx.crate_name_ident() }}::app(env);
+            let app = {{ ctx.crate_name_ident() }}::app(
+                waterui::configure_environment!(waterui::env::Environment::new()),
+            );
+            let mut builder_env = waterui::env::Environment::new();
+            // The CLI staged the graph's declared fonts into the resource directory.
+            builder_env.insert(hydrolysis::DeclaredFonts::default());
             ui()
+                .environment(builder_env)
                 .viewport(config.width, config.height)
                 .runtime(RuntimeFlavor::Application)
                 .scale_factor(config.scale_factor)

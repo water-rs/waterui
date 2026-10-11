@@ -5,6 +5,8 @@ pub mod app_mode;
 pub mod assets;
 pub mod framework;
 pub mod gradle_wrapper;
+pub mod patch_tables;
+pub mod platforms;
 pub mod project;
 pub mod project_types;
 pub mod support_app;

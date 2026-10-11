@@ -71,11 +71,16 @@ use waterui_core::id::TaggedView;
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
 
+/// Plays an impact haptic. `Haptic::impact` is async; the event that
+/// triggers it does not wait for it.
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
-    if let Err(error) = Haptic::impact(intensity) {
-        tracing::debug!(%error, "failed to trigger impact haptic");
-    }
+    spawn_local(async move {
+        if let Err(error) = Haptic::impact(intensity).await {
+            tracing::debug!(%error, "failed to trigger impact haptic");
+        }
+    })
+    .detach();
 }
 
 /// Extension trait for views, adding common styling and configuration methods.
@@ -268,6 +273,29 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn background<B: IntoBackground>(self, background: B) -> B::Output<Self> {
         background.apply_background(self)
+    }
+
+    /// Groups the backdrop materials in this view's subtree.
+    ///
+    /// The materials inside share one capture of what lies behind the
+    /// group, and the style may merge them into one shape where they come
+    /// close, as a toolbar's glass controls do. The style decides whether
+    /// and how they merge; the nearest enclosing group wins. See
+    /// [`MaterialGroup`](crate::background::MaterialGroup) for the contract.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// hstack((
+    ///     text!("Back").padding().background(Glass::regular()),
+    ///     text!("Share").padding().background(Glass::regular()),
+    /// ))
+    /// .material_group();
+    /// ```
+    fn material_group(self) -> IgnorableMetadata<crate::background::MaterialGroup> {
+        IgnorableMetadata::new(AnyView::new(self), crate::background::MaterialGroup)
     }
 
     /// Sets the foreground color for this view and all its descendants.
@@ -1151,6 +1179,40 @@ pub trait ViewExt: View + Sized {
         overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
     ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay> {
         Metadata::new(self, overlay)
+    }
+
+    /// Presents `dialog` window-modal while its `is_presented` binding is
+    /// `true`.
+    ///
+    /// The dialog renders full-window wherever it is attached — the content
+    /// beneath is inert to pointer, keyboard and accessibility while it is up.
+    /// Choosing an action runs that action's handler and writes
+    /// `is_presented = false`; Escape, the Android back gesture and the scrim
+    /// tap run the `Cancel` action's handler the same way, and do nothing when
+    /// no `Cancel` action was declared. One dialog presents per window at a
+    /// time; a second one waits in presentation order.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::dialog::{Dialog, DialogAction};
+    /// use waterui::prelude::*;
+    ///
+    /// let confirm = binding(false);
+    /// button("Discard")
+    ///     .action({
+    ///         let confirm = confirm.clone();
+    ///         move || confirm.set(true)
+    ///     })
+    ///     .dialog(
+    ///         Dialog::new(&confirm, "Discard changes?")
+    ///             .action(DialogAction::destructive("Discard", || {}))
+    ///             .action(DialogAction::cancel("Keep", || {})),
+    ///     );
+    /// ```
+    #[cfg(feature = "dialog")]
+    fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog> {
+        Metadata::new(self, dialog)
     }
 
     /// Sets the minimum row height of every list inside this view, in points.

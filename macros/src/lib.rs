@@ -940,12 +940,10 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     // at compile time using CARGO_PKG_NAME
     let expanded = quote! {
         #(#fn_attrs)*
-        // `dev` is the scaffold's development-linkage feature (the generated
-        // backend enables `<app>/dev` on `water run`/`preview`/`build`); a
-        // crate without it has no preview host, so without the export the
-        // function is dead code there.
-        #[allow(unexpected_cfgs)]
-        #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+        // The preview export is gated on `debug_assertions` (the gate the
+        // `waterui_meta_*` records use); a release build has no preview host,
+        // so without the export the function is dead code there.
+        #[cfg_attr(not(debug_assertions), allow(dead_code))]
         #fn_vis #fn_sig #fn_block
 
         // Generate C export symbol for preview

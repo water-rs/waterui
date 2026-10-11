@@ -28,9 +28,10 @@ pub fn of(pass: &Pass) -> Option<Resolve> {
     pass.capture.and_then(|capture| capture.resolve)
 }
 
-/// Whether a reduced capture pass resolves through the group's staging
-/// texture: its clip-only composites draw over the 1:1 device copy
-/// first, so the pass's draws target the staging texture in device space.
+/// Whether a reduced capture pass resolves through the surface's
+/// staging texture: its looked-through composites, from levels that
+/// painted before the capture, draw over the 1:1 device copy first, so
+/// the pass's draws target the staging texture in device space.
 pub const fn staged(pass: &Pass) -> bool {
     !pass.ranges.is_empty()
 }
@@ -55,8 +56,9 @@ pub fn params(pass: &Pass) -> Params {
     })
 }
 
-/// The device-space region a pass's draws cover: the staging texture's
-/// device rect for a staged resolve, the pass's own region otherwise.
+/// The device-space region a pass's draws cover: the shared staging
+/// texture's device rect for a staged resolve, the pass's own region
+/// otherwise.
 pub fn draw_region(pass: &Pass) -> [u32; 4] {
     match of(pass) {
         Some(resolve) if staged(pass) => resolve.device,
@@ -64,12 +66,23 @@ pub fn draw_region(pass: &Pass) -> [u32; 4] {
     }
 }
 
-/// One capture region's cached resolve bind group, valid while the
-/// globals buffer and the source view are the ones it binds.
+/// A cached resolve bind group — a direct region's or a staging
+/// slot's — valid while the globals buffer and source view are the
+/// ones it binds.
 pub struct Bind {
     globals: wgpu::Buffer,
     source: wgpu::TextureView,
     group: wgpu::BindGroup,
+}
+
+impl Bind {
+    /// The view the group samples. A cached bind keeps that view's
+    /// texture alive until the bind is dropped, so a texture its
+    /// source is replaced under is only freed once every bind on the
+    /// old view is.
+    pub const fn source(&self) -> &wgpu::TextureView {
+        &self.source
+    }
 }
 
 /// The resolve pipeline's layout and its pipelines by target format,

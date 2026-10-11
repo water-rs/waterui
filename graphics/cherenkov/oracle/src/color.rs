@@ -87,24 +87,27 @@ pub(crate) fn mat3_inv(m: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
     inv
 }
 
-type Mat3 = [[f64; 3]; 3];
+/// A row-major 3×3 matrix.
+pub(crate) type Mat3 = [[f64; 3]; 3];
+
+/// The matrix product `a · b`.
+pub(crate) fn mat3_product(a: &Mat3, b: &Mat3) -> Mat3 {
+    let mut out = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            out[i][j] = a[i][2].mul_add(b[2][j], a[i][1].mul_add(b[1][j], a[i][0] * b[0][j]));
+        }
+    }
+    out
+}
 
 /// Precomputed `linear sRGB -> linear P3` and `Rec. 2020 -> linear P3`
 /// matrices.
 fn build_matrices() -> (Mat3, Mat3, Mat3) {
     let p3_inv = mat3_inv(&P3_TO_XYZ);
-    let mm = |a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]| -> [[f64; 3]; 3] {
-        let mut out = [[0.0; 3]; 3];
-        for i in 0..3 {
-            for j in 0..3 {
-                out[i][j] = a[i][2].mul_add(b[2][j], a[i][1].mul_add(b[1][j], a[i][0] * b[0][j]));
-            }
-        }
-        out
-    };
     (
-        mm(&p3_inv, &SRGB_TO_XYZ),
-        mm(&p3_inv, &REC2020_TO_XYZ),
+        mat3_product(&p3_inv, &SRGB_TO_XYZ),
+        mat3_product(&p3_inv, &REC2020_TO_XYZ),
         mat3_inv(&SRGB_TO_XYZ),
     )
 }
@@ -187,7 +190,12 @@ pub fn hlg_encode_channel(c: f64) -> f64 {
 /// BT.2100 HLG inverse OETF: the encoded signal back to the scene signal.
 #[must_use]
 pub fn hlg_decode_channel(e: f64) -> f64 {
-    let e = e.clamp(0.0, 1.0);
+    hlg_inverse_oetf(e.clamp(0.0, 1.0))
+}
+
+/// The BT.2100 HLG inverse OETF on a non-negative signal, its logarithmic
+/// segment continued above `1.0` (super-white codes).
+pub(crate) fn hlg_inverse_oetf(e: f64) -> f64 {
     if e <= 0.5 {
         e * e / 3.0
     } else {

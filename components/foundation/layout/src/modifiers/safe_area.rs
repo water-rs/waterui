@@ -21,7 +21,10 @@
 //! surface extends under the regions of the edges it touches, insets its
 //! content by them, and scrolls the minimum distance that brings a focused
 //! text field clear of the keyboard region; a chrome container extends its
-//! bars under the regions they touch.
+//! bars under the regions of the edge each touches, and each bar stays
+//! docked to its edge — laid out clear of that edge's container region
+//! only, so the keyboard region covers it instead of lifting it, while the
+//! content the container hosts is laid out clear of both regions.
 //! `docs/layout-spec.md` §7.1 is the normative statement.
 //!
 //! Nothing `WaterUI` lays out itself — the window's snackbar and overlay

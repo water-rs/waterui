@@ -226,13 +226,10 @@ impl HostedView for GpuContentView {
     ) -> Box<dyn HostedRenderer> {
         // `engine_content` answers the same content object every time, so a
         // renderer rebuilt after device loss re-installs it with its state.
-        let redraw = redraw.clone();
-        let producer = waterui_graphics::cherenkov_gpu::interop::GpuContentBox::new(
-            self.engine_content(),
-            move || redraw.request_redraw(),
-        );
+        let producer =
+            waterui_graphics::cherenkov_gpu::interop::GpuContentBox::new(self.engine_content());
         Box::new(
-            GpuContentRenderer::new(runtime, context, producer, size)
+            GpuContentRenderer::new(runtime, context, producer, size, redraw.clone())
                 .expect("the engine layer installs on a live context"),
         )
     }

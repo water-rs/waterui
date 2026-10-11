@@ -22,6 +22,24 @@ categories = ["gui"]
 android-kotlin-version = "2.3.21"
 android-jdk-version = "21"
 
+# The host triples dist builds and ships the CLI for (Rust target-triple
+# syntax). The musl target is what makes Alpine installable: dist offers a
+# `*-linux-musl` archive to `*-linux-musl-dynamic` hosts natively and keeps
+# it as the fallback for `*-linux-gnu` hosts whose glibc is below
+# `min-glibc-version`. The list lives here rather than in
+# dist-workspace.toml because `build.rs` embeds it: the Linux and Windows
+# tables of every generated manifest serve exactly these hosts, and a
+# packaged build still carries its own manifest.
+[package.metadata.dist]
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+]
+
 [[bin]]
 name = "water"
 path = "src/terminal/main.rs"
@@ -30,7 +48,7 @@ path = "src/terminal/main.rs"
 # Windows `canonicalize` returns extended-length paths that no other tool
 # reports; `dunce` gives the plain one and is `canonicalize` elsewhere.
 dunce = "1.0"
-cargo_metadata = "0.23.1"
+cargo_metadata.workspace = true
 # Cargo configuration load and resolution — the same hierarchical merge,
 # environment and `target.<triple>`/`target.<cfg>` precedence Cargo applies,
 # resolving the rustflags a build's flag set joins.
@@ -48,6 +66,10 @@ futures-lite = "2.6"
 async-channel = "2.5"
 async-lock = "3.4"
 reflink-copy = "0.1.30"
+# Stamps a staged copy's mtime by path rather than through a file handle:
+# on Windows `SetFileTime` needs `FILE_WRITE_ATTRIBUTES`, which `File::open`
+# does not request — and the copy may keep its read-only source's mode.
+filetime = "0.2"
 serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 serde_json = "1.0"
 schemars = { version = "1.2", features = ["derive"] }
@@ -62,7 +84,6 @@ semver = "1.0"
 # Reads DT_NEEDED out of staged Android native libraries so packaging only
 # ships libc++_shared.so when a library actually links it.
 object = { version = "0.37", features = ["wasm"] }
-serialport = { version = "4", optional = true }
 which = "8.0.6"
 notify = { version = "8", default-features = false, features = ["macos_kqueue"], optional = true }
 
@@ -87,7 +108,6 @@ unicode-ident = "1"
 shlex = "2"
 
 # Asset/font downloading dependencies
-dirs = "7"                    # Platform-specific directories (cache, config, etc.)
 hex = "0.4"                   # Hex encoding for hashes
 sha2 = "0.11"                 # SHA256 hashing
 sysinfo = { version = "0.39", default-features = false, features = ["system"] } # Preview support-process discovery
@@ -111,7 +131,7 @@ remove_dir_all = "1.0"
 # `version` fields are what `cargo publish` keeps — a release therefore
 # cannot ship until versions carrying those APIs publish.
 waterui-assets-core = { workspace = true, features = ["remote"] }
-waterui-assets-planner.workspace = true
+waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true
@@ -132,8 +152,6 @@ pathdiff = "0.2"
 plist = "1.10"
 url = "2.5"
 fs4 = "1.1.0"
-fontcull-klippa = { version = "0.1.2", optional = true }
-fontcull-write-fonts = { version = "0.44.3", optional = true }
 toml_edit = { version = "=0.25.13", features = ["serde"] }
 cargo-lock = { version = "=10.1.0", default-features = false }
 rustc-demangle = "0.1"
@@ -147,12 +165,7 @@ axoupdater = "0.10.2"
 tokio = { version = "1.48", default-features = false, features = ["rt", "net", "time"] }
 
 [features]
-default = ["esp32", "svg-icons", "preview"]
-# ESP32 board serial-port detection and `[esp32] font_ranges`
-# subsetting. Without it, `water devices` lists no serial ports, board
-# auto-detection is skipped (QEMU and `--device <port>` still work), and
-# font subsetting is unsupported.
-esp32 = ["dep:serialport", "dep:fontcull-klippa", "dep:fontcull-write-fonts"]
+default = ["svg-icons", "preview"]
 # SVG app-icon sources rasterized through usvg/resvg. Without it only raster
 # icon sources are accepted and the bundled default icon is a PNG.
 svg-icons = ["dep:resvg"]
@@ -164,6 +177,10 @@ preview = ["dep:notify"]
 zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "native-tls"] }
 core-graphics = "0.25"
 core-foundation = "0.10"
+# `confstr(_CS_DARWIN_USER_TEMP_DIR)`: the per-user temp directory `std` falls
+# back to when `TMPDIR` is unset, which `Host::temp_dir` reproduces without
+# reading the process environment.
+libc = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 # Process-group signalling for the `water run` web dev server (SIGTERM/SIGKILL
@@ -192,6 +209,10 @@ der = "0.7"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 rcgen = "=0.14.8"
+tracing-oslog = "0.3"
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.31", features = ["fs", "process", "signal"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -213,10 +234,7 @@ toml = "1.1.5"
 workspace = true
 
 [dev-dependencies]
-fontcull-skrifa = "0.39.2"
 syn = { version = "2", features = ["full"] }
 
 [package.metadata.cargo-machete]
 ignored = ["roxmltree"]
-
-

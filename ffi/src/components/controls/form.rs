@@ -11,7 +11,7 @@ use waterui::{
         size::ControlSize,
         slider::{SliderConfig, ValueFormatter},
         stepper::StepperConfig,
-        text_field::{KeyboardType, ResolvedTextFieldConfig},
+        text_field::{ContentType, KeyboardType, ResolvedTextFieldConfig},
         toggle::{ToggleConfig, ToggleStyle},
     },
 };
@@ -30,6 +30,76 @@ into_ffi! {KeyboardType, non_exhaustive, pub enum WuiKeyboardType {
     PhoneNumber
 }}
 
+/// C ABI mirror of `Option<ContentType>` — `None` declares no content type.
+///
+/// Written by hand rather than through `into_ffi!` because the FFI side
+/// carries the option inside the enum: `WuiContentType_None` is the value a
+/// field without a declared content type sends.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub enum WuiContentType {
+    /// The field declares no content type.
+    None,
+    /// Mirrors `ContentType::Username`.
+    Username,
+    /// Mirrors `ContentType::Password`.
+    Password,
+    /// Mirrors `ContentType::NewPassword`.
+    NewPassword,
+    /// Mirrors `ContentType::EmailAddress`.
+    EmailAddress,
+    /// Mirrors `ContentType::PhoneNumber`.
+    PhoneNumber,
+    /// Mirrors `ContentType::OneTimeCode`.
+    OneTimeCode,
+    /// Mirrors `ContentType::PersonName`.
+    PersonName,
+    /// Mirrors `ContentType::PostalAddress`.
+    PostalAddress,
+    /// Mirrors `ContentType::PostalCode`.
+    PostalCode,
+    /// Mirrors `ContentType::CreditCardNumber`.
+    CreditCardNumber,
+}
+
+impl IntoFFI for Option<ContentType> {
+    type FFI = WuiContentType;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            None => WuiContentType::None,
+            Some(ContentType::Username) => WuiContentType::Username,
+            Some(ContentType::Password) => WuiContentType::Password,
+            Some(ContentType::NewPassword) => WuiContentType::NewPassword,
+            Some(ContentType::EmailAddress) => WuiContentType::EmailAddress,
+            Some(ContentType::PhoneNumber) => WuiContentType::PhoneNumber,
+            Some(ContentType::OneTimeCode) => WuiContentType::OneTimeCode,
+            Some(ContentType::PersonName) => WuiContentType::PersonName,
+            Some(ContentType::PostalAddress) => WuiContentType::PostalAddress,
+            Some(ContentType::PostalCode) => WuiContentType::PostalCode,
+            Some(ContentType::CreditCardNumber) => WuiContentType::CreditCardNumber,
+        }
+    }
+}
+
+impl crate::IntoRust for WuiContentType {
+    type Rust = Option<ContentType>;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::None => None,
+            Self::Username => Some(ContentType::Username),
+            Self::Password => Some(ContentType::Password),
+            Self::NewPassword => Some(ContentType::NewPassword),
+            Self::EmailAddress => Some(ContentType::EmailAddress),
+            Self::PhoneNumber => Some(ContentType::PhoneNumber),
+            Self::OneTimeCode => Some(ContentType::OneTimeCode),
+            Self::PersonName => Some(ContentType::PersonName),
+            Self::PostalAddress => Some(ContentType::PostalAddress),
+            Self::PostalCode => Some(ContentType::PostalCode),
+            Self::CreditCardNumber => Some(ContentType::CreditCardNumber),
+        }
+    }
+}
+
 /// FFI representation of the `TextField` component.
 #[repr(C)]
 #[derive(Debug)]
@@ -42,6 +112,9 @@ pub struct WuiTextField {
     pub prompt: WuiText,
     /// The on-screen keyboard variant to present while editing.
     pub keyboard: WuiKeyboardType,
+    /// The semantic content type the field declares for autofill —
+    /// `WuiContentType_None` when it declares none.
+    pub content_type: WuiContentType,
     /// Context menu items offered when the user selects text in the field.
     pub selection_menu: *mut crate::views::WuiAnyViews,
     /// Maximum number of lines the field accepts.
@@ -68,6 +141,7 @@ impl IntoFFI for ResolvedTextFieldConfig {
             value: self.value.into_ffi(),
             prompt: self.prompt.into_ffi(),
             keyboard: self.keyboard.into_ffi(),
+            content_type: self.content_type.into_ffi(),
             selection_menu: crate::menu_items_views(&self.selection_menu),
             line_limit: self.line_limit.map_or(0, core::num::NonZeroUsize::get),
             on_submit: self.on_submit.into_ffi(),

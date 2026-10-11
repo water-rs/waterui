@@ -70,6 +70,9 @@ impl InteractionKey {
 struct WidgetInteractionEntry {
     hovering: bool,
     handles: Option<Rc<InteractionLayerHandles>>,
+    /// The retained node that bound this key — the cell a state change
+    /// marks so only the owning widget re-records.
+    owner: std::rc::Weak<crate::renderer::mount::NodeCell>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -159,10 +162,58 @@ impl InteractionEngine {
         self.reported.get(key).copied().unwrap_or_default()
     }
 
-    pub(crate) fn bind_hover(&mut self, key: &InteractionKey) -> (HoverSlot, bool) {
+    pub(crate) fn bind_hover(
+        &mut self,
+        key: &InteractionKey,
+        owner: &std::rc::Rc<crate::renderer::mount::NodeCell>,
+    ) -> (HoverSlot, bool) {
         self.active.insert(key.clone());
-        let hovering = self.states.entry(key.clone()).or_default().hovering;
+        let entry = self.states.entry(key.clone()).or_default();
+        entry.owner = std::rc::Rc::downgrade(owner);
+        let hovering = entry.hovering;
         (HoverSlot { key: key.clone() }, hovering)
+    }
+
+    /// Marks the owners of `keys` — the keys a `HoverSync` or press-clear
+    /// actually changed, never every active key. A dead owner (its node
+    /// dropped) is skipped; the root cell stays out of this so
+    /// window-global state does not wake the whole tree.
+    pub(crate) fn mark_owners<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a InteractionKey>,
+        bits: crate::renderer::mount::Dirty,
+    ) {
+        for key in keys {
+            if let Some(owner) = self.states.get(key).and_then(|entry| entry.owner.upgrade()) {
+                owner.mark(bits);
+            }
+        }
+    }
+
+    /// Marks the owners a press clear changed: chrome-dependent presses
+    /// LAYOUT (their chrome samples interaction state), the rest PAINT.
+    pub(crate) fn mark_press_clear(&self, clear: &PressClear) {
+        self.mark_owners(&clear.chrome_keys, crate::renderer::mount::Dirty::LAYOUT);
+        self.mark_owners(&clear.paint_keys, crate::renderer::mount::Dirty::PAINT);
+    }
+
+    /// Marks the owners a hover sync changed: handler/chrome keys LAYOUT,
+    /// repaint-only keys PAINT.
+    pub(crate) fn mark_hover_sync(&self, sync: &super::hit_test::HoverSync) {
+        self.mark_owners(&sync.chrome_keys, crate::renderer::mount::Dirty::LAYOUT);
+        self.mark_owners(&sync.paint_keys, crate::renderer::mount::Dirty::PAINT);
+    }
+
+    /// The registering cell of `key`, for dispatch-side mark attribution.
+    pub(crate) fn owner_of(
+        &self,
+        key: &InteractionKey,
+    ) -> Option<std::rc::Weak<crate::renderer::mount::NodeCell>> {
+        self.states.get(key).map(|entry| entry.owner.clone())
+    }
+
+    pub(crate) fn key_active(&self, key: &InteractionKey) -> bool {
+        self.states.contains_key(key)
     }
 
     pub(crate) fn set_hovering(&mut self, slot: &HoverSlot, hovering: bool) {
@@ -199,12 +250,17 @@ impl InteractionEngine {
     )]
     pub(crate) fn clear_all_presses(&mut self, now: Instant) -> PressClear {
         let mut clear = PressClear::default();
-        for state in self.states.values() {
+        for (key, state) in &self.states {
             if let Some(handles) = &state.handles
                 && handles.release(now)
             {
                 clear.visual_changed = true;
-                clear.chrome_changed |= handles.chrome_state_dependent();
+                if handles.chrome_state_dependent() {
+                    clear.chrome_changed = true;
+                    clear.chrome_keys.push(key.clone());
+                } else {
+                    clear.paint_keys.push(key.clone());
+                }
             }
         }
         clear
@@ -231,6 +287,7 @@ impl InteractionEngine {
         motion: &InteractionMotion,
         animation_controller: &mut AnimationController,
         now: Instant,
+        owner: &std::rc::Rc<crate::renderer::mount::NodeCell>,
     ) -> (
         WidgetInteractionState,
         PressSlot,
@@ -238,6 +295,7 @@ impl InteractionEngine {
     ) {
         self.active.insert(key.clone());
         let interaction_state = self.states.entry(key.clone()).or_default();
+        interaction_state.owner = std::rc::Rc::downgrade(owner);
         let press_slot = PressSlot {
             key: key.clone(),
             modal: false,
@@ -383,11 +441,15 @@ pub struct PressSlot {
 
 /// Outcome of releasing all active presses: `visual_changed` replays state
 /// layers, `chrome_changed` means a pressed widget's chrome samples
-/// interaction state and must re-render.
-#[derive(Debug, Default, Clone, Copy)]
+/// interaction state and must re-render. The key lists attribute the
+/// change: `chrome_keys` take LAYOUT, `paint_keys` PAINT — marking touches
+/// only the owners whose press actually released.
+#[derive(Debug, Default)]
 pub struct PressClear {
     pub visual_changed: bool,
     pub(crate) chrome_changed: bool,
+    pub(crate) chrome_keys: Vec<InteractionKey>,
+    pub(crate) paint_keys: Vec<InteractionKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -476,6 +538,7 @@ mod tests {
         let owner = Rc::new(());
         let key = InteractionKey::for_rc(&owner, 0);
 
+        let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
         let bind =
             |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
                 engine.begin_rebuild_frame();
@@ -491,6 +554,7 @@ mod tests {
                     &motion,
                     controller,
                     now,
+                    &cell_owner,
                 );
                 controller.finish_rebuild_frame_with_inactive_slot_retention(false);
                 engine.finish_rebuild_frame();
@@ -540,6 +604,7 @@ mod tests {
         let owner = Rc::new(());
         let key = InteractionKey::for_rc(&owner, 0);
 
+        let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
         let bind =
             |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
                 engine.begin_rebuild_frame();
@@ -555,6 +620,7 @@ mod tests {
                     &motion,
                     controller,
                     now,
+                    &cell_owner,
                 );
                 controller.finish_rebuild_frame_with_inactive_slot_retention(false);
                 engine.finish_rebuild_frame();
@@ -621,6 +687,7 @@ mod tests {
         let owner = Rc::new(());
         let key = InteractionKey::for_rc(&owner, 0);
 
+        let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
         let bind = |engine: &mut InteractionEngine,
                     controller: &mut AnimationController,
                     now: Instant,
@@ -639,6 +706,7 @@ mod tests {
                 &motion,
                 controller,
                 now,
+                &cell_owner,
             );
             controller.finish_rebuild_frame_with_inactive_slot_retention(false);
             engine.finish_rebuild_frame();

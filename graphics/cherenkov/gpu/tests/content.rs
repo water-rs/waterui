@@ -66,25 +66,25 @@ impl GpuContent for Producer {
 split_test! {
 fn content_is_retained_clipped_and_wakes_an_idle_host() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wake = wakes.clone();
+    let surface = wait!(engine.surface(
+        Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+        move || {
+            wake.fetch_add(1, Ordering::Relaxed);
+        }
+    ))?;
     let layer = surface.layer();
     let setups = Arc::new(AtomicUsize::new(0));
     let frames = Arc::new(AtomicUsize::new(0));
     let drops = Arc::new(AtomicUsize::new(0));
-    let wakes = Arc::new(AtomicUsize::new(0));
     let (send, colors) = mpsc::channel();
-    let wake = wakes.clone();
-    let content = GpuContentBox::new(
-        Producer {
-            colors,
-            setups: setups.clone(),
-            frames: frames.clone(),
-            drops: drops.clone(),
-        },
-        move || {
-            wake.fetch_add(1, Ordering::Relaxed);
-        },
-    );
+    let content = GpuContentBox::new(Producer {
+        colors,
+        setups: setups.clone(),
+        frames: frames.clone(),
+        drops: drops.clone(),
+    });
     let redraw = content.redraw_handle();
     let producer = engine.gpu_producer(content);
     send.send(wgpu::Color::RED)?;
@@ -111,13 +111,14 @@ fn content_is_retained_clipped_and_wakes_an_idle_host() -> Result<(), Box<dyn st
         1,
         "idle render retains producer texture"
     );
+    let before = wakes.load(Ordering::Relaxed);
     send.send(wgpu::Color::GREEN)?;
     redraw.request_redraw();
     redraw.request_redraw();
     assert_eq!(
         wakes.load(Ordering::Relaxed),
-        1,
-        "requests coalesce until consumed"
+        before + 1,
+        "requests wake the drawing surface's host and coalesce until consumed"
     );
     assert_eq!(wait!(engine.render(FrameTime::now()))?, Next::Idle);
     assert_eq!(frames.load(Ordering::Relaxed), 2);
@@ -181,27 +182,31 @@ split_test! {
 fn hidden_surface_pulls_no_content_and_shows_current_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
-    let other = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wake = |wakes: &Arc<AtomicUsize>| {
+        let wakes = Arc::clone(wakes);
+        move || {
+            wakes.fetch_add(1, Ordering::Relaxed);
+        }
+    };
+    let surface = wait!(engine.surface(
+        Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+        wake(&wakes)
+    ))?;
+    let other = wait!(engine.surface(
+        Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+        wake(&wakes)
+    ))?;
     let producer_layer = surface.layer();
     let fill_layer = surface.layer();
     let frames = Arc::new(AtomicUsize::new(0));
-    let producer_wakes = Arc::new(AtomicUsize::new(0));
     let (send, colors) = mpsc::channel();
-    let content = GpuContentBox::new(
-        Producer {
-            colors,
-            setups: Arc::new(AtomicUsize::new(0)),
-            frames: frames.clone(),
-            drops: Arc::new(AtomicUsize::new(0)),
-        },
-        {
-            let wakes = producer_wakes.clone();
-            move || {
-                wakes.fetch_add(1, Ordering::Relaxed);
-            }
-        },
-    );
+    let content = GpuContentBox::new(Producer {
+        colors,
+        setups: Arc::new(AtomicUsize::new(0)),
+        frames: frames.clone(),
+        drops: Arc::new(AtomicUsize::new(0)),
+    });
     let redraw = content.redraw_handle();
     let fill = nami::binding(WorkingColor::WHITE);
     let recorded =
@@ -215,13 +220,9 @@ fn hidden_surface_pulls_no_content_and_shows_current_state()
     assert_eq!(wait!(engine.render(FrameTime::now()))?, Next::Idle);
     assert_eq!(frames.load(Ordering::Relaxed), 1);
 
-    let wakes = Arc::new(AtomicUsize::new(0));
-    engine.set_waker({
-        let wakes = wakes.clone();
-        move || {
-            wakes.fetch_add(1, Ordering::Relaxed);
-        }
-    });
+    // Count only the wakes from here on: building the scene woke the host
+    // before its first render.
+    wakes.store(0, Ordering::Relaxed);
     surface.visibility(Visibility::Hidden)?;
     // The reply lands only after the render thread applied the hide.
     let _ = wait!(engine.memory());
@@ -229,14 +230,9 @@ fn hidden_surface_pulls_no_content_and_shows_current_state()
     redraw.request_redraw();
     fill.set(WorkingColor::BLACK);
     assert_eq!(
-        producer_wakes.load(Ordering::Relaxed),
-        0,
-        "a hidden surface's producer wakes no host"
-    );
-    assert_eq!(
         wakes.load(Ordering::Relaxed),
         0,
-        "a hidden surface's operand wakes no host"
+        "a hidden surface's producer and operand wake no host"
     );
     other.clear_color(WorkingColor::WHITE);
     assert_eq!(wakes.load(Ordering::Relaxed), 1, "the visible surface wakes");
@@ -282,8 +278,8 @@ fn hidden_surface_pulls_no_content_and_shows_current_state()
     send.send(wgpu::Color::BLUE)?;
     redraw.request_redraw();
     assert_eq!(
-        producer_wakes.load(Ordering::Relaxed),
-        1,
+        wakes.load(Ordering::Relaxed),
+        3,
         "a visible surface's producer wakes the host again"
     );
     Ok(())
@@ -340,7 +336,7 @@ fn producer_samples_engine_time_and_keeps_setup_across_display_changes()
 use cherenkov::Instant;
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface =
-        wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16).rate(30..=120)))?;
+        wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16).rate(30..=120), || {}))?;
     let (adapter, adapters) = mpsc::channel();
     let (samples, times) = mpsc::channel();
     let producer = engine.gpu_producer(GpuContentBox::new(
@@ -348,8 +344,7 @@ use cherenkov::Instant;
             adapter,
             samples,
             first: true,
-        },
-        || {},
+        }
     ));
     surface.update(|tx| {
         tx[surface.root()].content(producer.at((8, 8)));
@@ -473,57 +468,60 @@ impl filtrate::Effect for CallbackEffect {
 /// the host hides the surface, before the render thread has applied the
 /// change: the render thread is parked across the hide and the requests.
 /// Showing the surface draws both, and both wake the host again (#204).
+/// The producer and the filter draw on two surfaces, so each one's wakes
+/// are counted by its own surface's host.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn hidden_wakes_stop_before_the_render_thread_applies_the_hide()
 -> Result<(), Box<dyn std::error::Error>> {
-    use cherenkov_gpu::interop::{EffectBox, RedrawCallback};
+    use cherenkov_gpu::interop::EffectBox;
 
-    let filter_wakes = Arc::new(AtomicUsize::new(0));
-    let engine = Engine::<Gpu>::new(GpuConfig {
-        redraw: Some(RedrawCallback::new({
-            let wakes = filter_wakes.clone();
-            move || {
-                wakes.fetch_add(1, Ordering::Relaxed);
-            }
-        })),
-        ..GpuConfig::default()
-    })?;
-    let surface = engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))?;
-    let producer_layer = surface.layer();
-    let filtered_layer = surface.layer();
-    let frames = Arc::new(AtomicUsize::new(0));
+    let engine = Engine::<Gpu>::new(GpuConfig::default())?;
+    let counting = |wakes: &Arc<AtomicUsize>| {
+        let wakes = wakes.clone();
+        move || {
+            wakes.fetch_add(1, Ordering::Relaxed);
+        }
+    };
     let producer_wakes = Arc::new(AtomicUsize::new(0));
+    let filter_wakes = Arc::new(AtomicUsize::new(0));
+    let surface = engine.surface(
+        Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+        counting(&producer_wakes),
+    )?;
+    let filtered = engine.surface(
+        Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+        counting(&filter_wakes),
+    )?;
+    let producer_layer = surface.layer();
+    let filtered_layer = filtered.layer();
+    let frames = Arc::new(AtomicUsize::new(0));
     let (send, colors) = mpsc::channel();
-    let content = GpuContentBox::new(
-        Producer {
-            colors,
-            setups: Arc::new(AtomicUsize::new(0)),
-            frames: frames.clone(),
-            drops: Arc::new(AtomicUsize::new(0)),
-        },
-        {
-            let wakes = producer_wakes.clone();
-            move || {
-                wakes.fetch_add(1, Ordering::Relaxed);
-            }
-        },
-    );
+    let content = GpuContentBox::new(Producer {
+        colors,
+        setups: Arc::new(AtomicUsize::new(0)),
+        frames: frames.clone(),
+        drops: Arc::new(AtomicUsize::new(0)),
+    });
     let redraw = content.redraw_handle();
     let (callbacks, installed) = mpsc::channel();
     let effect = engine.effect(EffectBox::from(CallbackEffect(callbacks)));
     send.send(wgpu::Color::RED)?;
     surface.update(|tx| {
-        tx[surface.root()]
-            .push(&producer_layer)
-            .push(&filtered_layer);
+        tx[surface.root()].push(&producer_layer);
         tx[&producer_layer].content(engine.gpu_producer(content).at((8, 8)));
+    });
+    filtered.update(|tx| {
+        tx[filtered.root()].push(&filtered_layer);
         tx[&filtered_layer].filter(effect.id()).content(
-            surface.record(|c| c.fill(Rect::new(8.0, 8.0, 16.0, 16.0), WorkingColor::WHITE)),
+            filtered.record(|c| c.fill(Rect::new(8.0, 8.0, 16.0, 16.0), WorkingColor::WHITE)),
         );
     });
     assert_eq!(engine.render(FrameTime::now())?, Next::Idle);
     let callback = installed.try_recv()?;
+    // Count only the sources' wakes: building the scene woke both hosts.
+    producer_wakes.store(0, Ordering::Relaxed);
+    filter_wakes.store(0, Ordering::Relaxed);
 
     let parked = Arc::new(std::sync::Barrier::new(2));
     let release = Arc::new(std::sync::Barrier::new(2));
@@ -532,7 +530,9 @@ fn hidden_wakes_stop_before_the_render_thread_applies_the_hide()
         release: release.clone(),
     }));
     parked.wait();
-    let hidden = surface.visibility(Visibility::Hidden);
+    let hidden = surface
+        .visibility(Visibility::Hidden)
+        .and_then(|()| filtered.visibility(Visibility::Hidden));
     redraw.request_redraw();
     callback();
     let woke = (
@@ -554,6 +554,10 @@ fn hidden_wakes_stop_before_the_render_thread_applies_the_hide()
 
     send.send(wgpu::Color::GREEN)?;
     surface.visibility(Visibility::Visible)?;
+    filtered.visibility(Visibility::Visible)?;
+    // Showing each surface asked its host for the frame that shows it.
+    producer_wakes.store(0, Ordering::Relaxed);
+    filter_wakes.store(0, Ordering::Relaxed);
     assert_eq!(engine.render(FrameTime::now())?, Next::Idle);
     assert_eq!(
         frames.load(Ordering::Relaxed),
@@ -581,8 +585,8 @@ split_test! {
 /// frame's drawn bindings across surfaces (#268).
 fn one_setup_serves_bindings_on_two_surfaces() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let first = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
-    let second = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let first = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
+    let second = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     let first_layer = first.layer();
     let second_layer = second.layer();
     let setups = Arc::new(AtomicUsize::new(0));
@@ -594,8 +598,7 @@ fn one_setup_serves_bindings_on_two_surfaces() -> Result<(), Box<dyn std::error:
             setups: setups.clone(),
             frames: frames.clone(),
             drops: Arc::new(AtomicUsize::new(0)),
-        },
-        || {},
+        }
     ));
     send.send(wgpu::Color::RED)?;
     first.update(|tx| {
@@ -639,8 +642,8 @@ split_test! {
 /// later change resizes the attachment without another setup (#268).
 fn bindings_size_the_attachment_to_the_larger() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let first = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
-    let second = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let first = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
+    let second = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     let first_layer = first.layer();
     let second_layer = second.layer();
     let (adapter, adapters) = mpsc::channel();
@@ -650,8 +653,7 @@ fn bindings_size_the_attachment_to_the_larger() -> Result<(), Box<dyn std::error
             adapter,
             samples,
             first: false,
-        },
-        || {},
+        }
     ));
     first.update(|tx| {
         tx[first.root()].push(&first_layer);
@@ -717,16 +719,15 @@ split_test! {
 fn a_redraw_every_frame_producer_renders_once_per_engine_frame()
 -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let first = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
-    let second = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let first = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
+    let second = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     let first_layer = first.layer();
     let second_layer = second.layer();
     let frames = Arc::new(AtomicUsize::new(0));
     let producer = engine.gpu_producer(GpuContentBox::new(
         AlwaysProducer {
             frames: frames.clone(),
-        },
-        || {},
+        }
     ));
     first.update(|tx| {
         tx[first.root()].push(&first_layer);
@@ -755,7 +756,7 @@ split_test! {
 fn device_replacement_rebuilds_the_producer_with_one_more_setup()
 -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     let layer = surface.layer();
     let setups = Arc::new(AtomicUsize::new(0));
     let frames = Arc::new(AtomicUsize::new(0));
@@ -766,8 +767,7 @@ fn device_replacement_rebuilds_the_producer_with_one_more_setup()
             setups: setups.clone(),
             frames: frames.clone(),
             drops: Arc::new(AtomicUsize::new(0)),
-        },
-        || {},
+        }
     ));
     send.send(wgpu::Color::RED)?;
     surface.update(|tx| {
@@ -787,7 +787,7 @@ fn device_replacement_rebuilds_the_producer_with_one_more_setup()
         panic!("a rendered producer drains its content")
     };
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     let layer = surface.layer();
     let producer = engine.gpu_producer(content);
     send.send(wgpu::Color::GREEN)?;
@@ -824,8 +824,8 @@ split_test! {
 fn capture_first_producer_renders_on_the_transient_target()
 -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let persistent = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
-    let transient = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let persistent = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
+    let transient = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     let transient_layer = transient.layer();
     let persistent_layer = persistent.layer();
     let setups = Arc::new(AtomicUsize::new(0));
@@ -837,8 +837,7 @@ fn capture_first_producer_renders_on_the_transient_target()
             setups: setups.clone(),
             frames: frames.clone(),
             drops: Arc::new(AtomicUsize::new(0)),
-        },
-        || {},
+        }
     ));
     send.send(wgpu::Color::RED)?;
     transient.update(|tx| {

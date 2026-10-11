@@ -20,7 +20,6 @@ use cocoa_ui::scroll::{
     ScrollObservation, enclosing_scroll_view, observe_scroll_viewport, scroll_viewport,
 };
 use cocoa_ui::{Rect, Retained, view};
-use waterui::animation::Animation;
 use waterui::id::{Id as RawId, SelfId};
 use waterui::layout::container::LazyContainer;
 use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis};
@@ -46,35 +45,6 @@ use cocoa_ui::uikit::{HitTest, HostView};
 
 /// A child's identity: the collection id `AnyViews` answers for an index.
 type ItemId = SelfId<RawId>;
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
-}
 
 /// `resolveVisibleWindow`'s answer: the first index inside the range, one
 /// past the last, and the offset the first starts at.
@@ -512,7 +482,7 @@ fn deliver_children(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<Pe
         let Some((snapshot, ids, metadata)) = pending.borrow_mut().take() else {
             break;
         };
-        with_platform_animation(&metadata, {
+        crate::animation::with_platform_animation(&metadata, {
             let state = Rc::clone(state);
             move || {
                 let mut borrowed = state.borrow_mut();

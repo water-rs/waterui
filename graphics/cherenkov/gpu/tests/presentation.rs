@@ -49,11 +49,11 @@ fn exported_texture_preserves_hdr_and_updates_after_resize()
         ..GpuConfig::default()
     }))?;
     let (target, textures) = TextureTarget::new((16, 16));
-    let source = wait!(engine.surface(target))?;
+    let source = wait!(engine.surface(target, || {}))?;
     source.clear_color(WorkingColor::new([4.0, 0.5, 0.0, 0.5]));
     let texture = textures.try_recv()?;
     let (target, destinations) = TextureTarget::new((16, 16));
-    let destination = wait!(engine.surface(target))?;
+    let destination = wait!(engine.surface(target, || {}))?;
     let output = destinations.try_recv()?;
     wait!(engine.render(FrameTime::now()))?;
     let delivery = shader_delivery(backend, &device)?;
@@ -138,7 +138,7 @@ fn hardware_and_shader_srgb_store_the_same_premultiplied_bytes()
         ..GpuConfig::default()
     }))?;
     let (target, textures) = TextureTarget::new((1, 1));
-    let surface = wait!(engine.surface(target))?;
+    let surface = wait!(engine.surface(target, || {}))?;
     let source = textures.recv()?;
     let view = source.create_view(&wgpu::TextureViewDescriptor::default());
     let delivery = shader_delivery(backend, &device)?;

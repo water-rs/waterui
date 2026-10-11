@@ -47,7 +47,7 @@ where
             .create_surface(
                 id,
                 Offscreen::new(size, OffscreenFormat::LinearF16).into(),
-                unhosted_waker(),
+                super::unhosted_waker(),
             )
             .expect("surface");
         let _ = renderer.set_content(
@@ -163,7 +163,7 @@ where
             .create_surface(
                 id,
                 Offscreen::new(size, OffscreenFormat::LinearF16).into(),
-                unhosted_waker(),
+                super::unhosted_waker(),
             )
             .expect("surface");
         let _ = renderer.set_content(
@@ -476,7 +476,7 @@ fn updates(list: &crate::DisplayList, frame: u32) -> Vec<SlotUpdate> {
                     value.mul_add(3., 1.),
                     WorkingColor::new([0.1, 0.2, 0.3, 0.5]),
                 )),
-                Command::Picture { .. } | Command::BeginTransform { .. } => {
+                Command::Picture { .. } | Command::Text { .. } | Command::BeginTransform { .. } => {
                     Operand::Transform(Affine::translate((value * 5., value * 3.)))
                 }
                 Command::BeginGroup { .. } => {
@@ -503,6 +503,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
                         random(step, 12).mul_add(0.4, 0.8),
                     ),
                 animation: Some(Animation::Curve(Curve::linear(Duration::from_millis(40)))),
+                start: None,
             },
         ));
     }
@@ -512,6 +513,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
             Prop {
                 target: if step % 16 == 6 { 0.6 } else { 1. },
                 animation: Some(Animation::Curve(Curve::linear(Duration::from_millis(40)))),
+                start: None,
             },
         ));
     }
@@ -525,6 +527,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
             Prop {
                 target: Vec2::new(1., 2.),
                 animation: None,
+                start: None,
             },
         ));
     }
@@ -676,13 +679,4 @@ async fn assert_patch_counts<R: Renderer>(
         u32::try_from(list.len()).unwrap(),
         "a glyph-count change must rebuild only its layer"
     );
-}
-
-/// A surface wake-up with no host behind it: the harness drives the
-/// renderer directly and renders on its own schedule.
-fn unhosted_waker() -> crate::CompletionWaker {
-    let engine = crate::engine::SharedWaker::new(crate::engine::Waker::new());
-    crate::CompletionWaker::new(&crate::engine::SharedWaker::new(
-        crate::engine::SurfaceWaker::new(engine),
-    ))
 }

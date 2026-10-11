@@ -5,8 +5,6 @@ use std::path::Path;
 
 use eyre::{Context as _, Result, bail};
 
-use crate::utils::run_command_os;
-
 pub const INSTALL_NAME: &str = "@rpath/libwaterui_dylib.dylib";
 
 /// The `-l` link name `staged_name` implies — the recorded runtime file
@@ -34,10 +32,10 @@ pub fn runtime_link_name(staged_name: &str) -> String {
     }
 }
 
-pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
+pub async fn prepare_host_runtime(host: &crate::toolchain::Host, path: &Path) -> Result<()> {
     require_runtime(path)?;
-    if install_name(path).await? != INSTALL_NAME {
-        run_command_os(
+    if install_name(host, path).await? != INSTALL_NAME {
+        host.run(
             "install_name_tool",
             [
                 OsStr::new("-id"),
@@ -48,7 +46,7 @@ pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
         .await
         .wrap_err("Failed to assign the shared WaterUI runtime install name")?;
     }
-    if install_name(path).await? != INSTALL_NAME {
+    if install_name(host, path).await? != INSTALL_NAME {
         bail!(
             "Shared WaterUI runtime {} did not retain install name {}",
             path.display(),
@@ -60,13 +58,13 @@ pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
 
 /// Give a module the canonical `@rpath/<file>` install name a bundled
 /// executable binds when it links the file by path. Idempotent.
-pub async fn canonicalize_install_name(path: &Path) -> Result<()> {
+pub async fn canonicalize_install_name(host: &crate::toolchain::Host, path: &Path) -> Result<()> {
     let file_name = path
         .file_name()
         .ok_or_else(|| eyre::eyre!("Module {} has no file name", path.display()))?;
     let wanted = format!("@rpath/{}", file_name.to_string_lossy());
-    if install_name(path).await? != wanted {
-        run_command_os(
+    if install_name(host, path).await? != wanted {
+        host.run(
             "install_name_tool",
             [
                 OsStr::new("-id"),
@@ -77,7 +75,7 @@ pub async fn canonicalize_install_name(path: &Path) -> Result<()> {
         .await
         .wrap_err("Failed to assign the module install name")?;
     }
-    if install_name(path).await? != wanted {
+    if install_name(host, path).await? != wanted {
         bail!(
             "Module {} did not retain install name {}",
             path.display(),
@@ -87,11 +85,15 @@ pub async fn canonicalize_install_name(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn retarget_module(module_path: &Path, runtime_path: &Path) -> Result<()> {
+pub async fn retarget_module(
+    host: &crate::toolchain::Host,
+    module_path: &Path,
+    runtime_path: &Path,
+) -> Result<()> {
     require_runtime(runtime_path)?;
-    let current_install_name = install_name(runtime_path).await?;
+    let current_install_name = install_name(host, runtime_path).await?;
     if current_install_name != INSTALL_NAME {
-        run_command_os(
+        host.run(
             "install_name_tool",
             [
                 OsStr::new("-change"),
@@ -104,7 +106,8 @@ pub async fn retarget_module(module_path: &Path, runtime_path: &Path) -> Result<
         .wrap_err("Failed to redirect preview module to the host WaterUI runtime")?;
     }
 
-    let output = run_command_os("otool", [OsStr::new("-L"), module_path.as_os_str()])
+    let output = host
+        .run("otool", [OsStr::new("-L"), module_path.as_os_str()])
         .await
         .wrap_err("Failed to inspect preview module linkage")?;
     let references = linked_libraries(&output)
@@ -128,8 +131,9 @@ fn require_runtime(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn install_name(path: &Path) -> Result<String> {
-    let output = run_command_os("otool", [OsStr::new("-D"), path.as_os_str()])
+async fn install_name(host: &crate::toolchain::Host, path: &Path) -> Result<String> {
+    let output = host
+        .run("otool", [OsStr::new("-D"), path.as_os_str()])
         .await
         .wrap_err_with(|| format!("Failed to inspect dynamic library {}", path.display()))?;
     output

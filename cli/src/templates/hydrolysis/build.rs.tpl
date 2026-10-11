@@ -16,6 +16,27 @@ fn main() {
     );
     let mut resource = winresource::WindowsResource::new();
     resource.set_icon("app-icon.ico");
+    // The subclassing APIs hydrolysis uses (SetWindowSubclass,
+    // GetWindowSubclass, RemoveWindowSubclass, DefSubclassProc) are only
+    // exported by comctl32 v6, which the system binds only when the
+    // executable declares the Common-Controls v6 dependency — without it
+    // the loader resolves comctl32 v5.82 and the process cannot start.
+    resource.set_manifest(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+          type="win32"
+          name="Microsoft.Windows.Common-Controls"
+          version="6.0.0.0"
+          processorArchitecture="*"
+          publicKeyToken="6595b64144ccf1df"
+          language="*"/>
+    </dependentAssembly>
+  </dependency>
+</assembly>"#,
+    );
     resource
         .compile()
         .expect("failed to embed the Windows icon resource");

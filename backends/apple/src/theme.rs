@@ -30,6 +30,15 @@ pub struct ThemeSignals {
     fonts: Vec<Box<dyn Fn()>>,
 }
 
+impl core::fmt::Debug for ThemeSignals {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ThemeSignals")
+            .field("colors", &self.colors.len())
+            .field("fonts", &self.fonts.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Installs and observes the theme owned by a mounted `UIKit` controller.
 #[cfg(target_os = "ios")]
 pub fn install_controller(

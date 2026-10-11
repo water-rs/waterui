@@ -1376,7 +1376,7 @@ pub(crate) mod tests {
         pub fn new() -> Self {
             let (engine, probe) = null_engine();
             let surface = engine
-                .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+                .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
                 .expect("surface");
             let _ = probe.try_iter().count();
             Self {

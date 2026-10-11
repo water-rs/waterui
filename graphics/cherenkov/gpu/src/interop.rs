@@ -2,8 +2,9 @@
 
 pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
-    DestinationPrimaries, DisplayProbe, OutputAlpha, OutputColor, OutputRequest, OutputSelection,
-    Presenter, SelectionReason, TextureOutput, TransferEncoding, select_output,
+    ColorRange, ColorRangeInterval, ColorSpaceRequest, DestinationPrimaries, DisplayProbe,
+    OutputAlpha, OutputColor, OutputRequest, OutputSelection, Presenter, SelectionReason,
+    TextureOutput, TransferEncoding, select_output, surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;
@@ -90,17 +91,16 @@ impl std::fmt::Debug for GpuContentBox {
 }
 
 impl GpuContentBox {
-    /// Creates a producer with the host's event-loop wake callback.
-    /// The callback must be safe to invoke from a producer thread, including
-    /// while the engine is idle (for example, a window event-loop proxy).
+    /// Boxes a producer. Its redraw requests wake the hosts of the
+    /// surfaces that draw it, each through the wake the surface was
+    /// created with.
     #[must_use]
-    pub fn new(content: impl GpuContent, wake: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn new(content: impl GpuContent) -> Self {
         Self {
             content: Box::new(content),
             redraw: RedrawHandle {
                 dirty: Arc::new(AtomicBool::new(true)),
-                gate: Arc::new(cherenkov::WakeGate::default()),
-                wake: Arc::new(wake),
+                wakes: Arc::new(cherenkov::SurfaceWakes::default()),
             },
         }
     }
@@ -116,9 +116,8 @@ impl GpuContentBox {
 #[derive(Clone)]
 pub struct RedrawHandle {
     pub(crate) dirty: Arc<AtomicBool>,
-    /// Open while the content is composed on a visible surface.
-    pub(crate) gate: Arc<cherenkov::WakeGate>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    /// The wakes of the surfaces whose frames draw the content.
+    pub(crate) wakes: Arc<cherenkov::SurfaceWakes>,
 }
 
 impl std::fmt::Debug for RedrawHandle {
@@ -130,13 +129,15 @@ impl std::fmt::Debug for RedrawHandle {
 }
 
 impl RedrawHandle {
-    /// Marks the producer's output stale. Requests coalesce until consumed.
-    /// Detached or removed content, and content on a surface the host has
-    /// announced hidden, retains the request without waking the host; the
-    /// frame that draws it again draws its latest state.
+    /// Marks the producer's output stale and wakes the host of each
+    /// surface whose frames draw it, through the surface's own wake.
+    /// Requests coalesce until a frame consumes them. Detached or removed
+    /// content, and content on a surface the host has announced hidden,
+    /// retains the request without waking the host; the frame that draws
+    /// it again draws its latest state.
     pub fn request_redraw(&self) {
-        if !self.dirty.swap(true, Ordering::AcqRel) && self.gate.is_open() {
-            (self.wake)();
+        if !self.dirty.swap(true, Ordering::AcqRel) {
+            self.wakes.wake();
         }
     }
 
@@ -174,28 +175,6 @@ impl<C: GpuContent> Content for C {
 
     fn render(&mut self, frame: &mut wgpu::Frame<'_>) {
         GpuContent::render(self, frame);
-    }
-}
-
-/// A host event-loop callback callable from the engine or producer threads.
-#[derive(Clone)]
-pub struct RedrawCallback(Arc<dyn Fn() + Send + Sync>);
-
-impl RedrawCallback {
-    /// Wraps the host's display-link or event-loop wake operation.
-    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(wake))
-    }
-
-    /// Asks the host to schedule an engine frame.
-    pub fn wake(&self) {
-        (self.0)();
-    }
-}
-
-impl std::fmt::Debug for RedrawCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedrawCallback").finish_non_exhaustive()
     }
 }
 
@@ -477,7 +456,7 @@ impl FrameColor {
         reference_white: 203.0,
         hlg_peak: 0.0,
     };
-    /// BT.2020 full-range video with PQ transfer on BT.2020 primaries.
+    /// BT.2020 studio-range video with PQ transfer on BT.2020 primaries.
     pub const BT2020_PQ: Self = Self {
         matrix: YuvMatrix::Bt2020,
         range: YuvRange::Video,
@@ -1017,6 +996,7 @@ pub mod dmabuf {
 #[cfg(target_os = "android")]
 pub mod android {
     pub use crate::render::surface_control::ffi::{ASurfaceControl, CreateFailed, SurfaceControl};
+    pub use crate::render::surface_control::planes::HostedSurface;
 
     /// A surface realized as child surface controls of a host's parent
     /// surface control.
@@ -1082,6 +1062,15 @@ pub mod android {
             Self::SurfaceControl(target)
         }
     }
+}
+
+/// Apple interop: system objects hosted on the engine's planes.
+#[cfg(target_vendor = "apple")]
+pub mod apple {
+    #[cfg(not(target_os = "macos"))]
+    pub use crate::render::planes::apple::HostedLayer;
+    #[cfg(target_os = "macos")]
+    pub use crate::render::planes::apple::HostedView;
 }
 
 /// Apple interop: importing Metal resources onto the shared device.
@@ -1176,6 +1165,8 @@ pub mod metal {
 /// same thread, and nothing is boxed behind an unsafe `Send`.
 #[cfg(target_arch = "wasm32")]
 pub mod web {
+    pub use crate::render::planes::web::{DomTarget, HostedElement};
+
     use super::{InvalidFrame, wgpu};
     use wasm_bindgen::JsCast;
     use wgpu::webgpu;

@@ -12,14 +12,15 @@ use std::fmt;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_core_foundation::CGRect;
-use objc2_foundation::{NSObjectProtocol, NSString};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIColor, UIImage, UIImageSymbolConfiguration, UIImageView,
-    UITraitCollection, UIViewContentMode,
+    UIResponder, UITraitDisplayScale, UIView, UIViewContentMode,
 };
 
+use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::guarded;
 use crate::geometry::Size;
 use crate::image::ScaleMode;
@@ -37,7 +38,8 @@ pub struct ImageViewIvars {
     symbol_name: RefCell<Option<String>>,
     on_layout: RefCell<Option<LifecycleHandler>>,
     on_window_changed: RefCell<Option<LifecycleHandler>>,
-    on_backing_changed: RefCell<Option<LifecycleHandler>>,
+    /// The display-scale registration serving backing-scale subscribers.
+    backing_changed: RefCell<Option<TraitChangeObservation>>,
 }
 
 impl fmt::Debug for ImageViewIvars {
@@ -49,10 +51,7 @@ impl fmt::Debug for ImageViewIvars {
                 "on_window_changed",
                 &self.on_window_changed.borrow().is_some(),
             )
-            .field(
-                "on_backing_changed",
-                &self.on_backing_changed.borrow().is_some(),
-            )
+            .field("backing_changed", &self.backing_changed.borrow().is_some())
             .finish()
     }
 }
@@ -60,7 +59,7 @@ impl fmt::Debug for ImageViewIvars {
 define_class!(
     // SAFETY: `UIImageView` inherits `initWithFrame:` as a valid initializer,
     // which `ImageView::new` calls, and the class does not implement `Drop`.
-    #[unsafe(super(UIImageView))]
+    #[unsafe(super(UIImageView, UIView, UIResponder, NSObject))]
     #[name = "CocoaUiImageView"]
     #[thread_kind = MainThreadOnly]
     #[ivars = ImageViewIvars]
@@ -107,20 +106,6 @@ define_class!(
                 }
             });
         }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(traitCollectionDidChange:))]
-        fn trait_collection_did_change_override(&self, previous: Option<&UITraitCollection>) {
-            guarded("ImageView traitCollectionDidChange:", || {
-                // SAFETY: see the module safety note.
-                let _: () =
-                    unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
-                let handler = self.ivars().on_backing_changed.borrow().clone();
-                if let Some(handler) = handler {
-                    handler(self);
-                }
-            });
-        }
     }
 );
 
@@ -132,7 +117,7 @@ impl ImageView {
             symbol_name: RefCell::new(None),
             on_layout: RefCell::new(None),
             on_window_changed: RefCell::new(None),
-            on_backing_changed: RefCell::new(None),
+            backing_changed: RefCell::new(None),
         });
         // SAFETY: `initWithFrame:` is the inherited designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
@@ -164,13 +149,17 @@ impl ImageView {
             .replace(Some(Rc::new(handler)));
     }
 
-    /// Calls `handler` when the trait collection changes —
-    /// `traitCollectionDidChange:`, which a display-scale change rides on.
-    /// The handler decides whether the change matters to it.
+    /// Calls `handler` when the view's display scale changes — the
+    /// `UITraitDisplayScale` trait, which a backing-scale change rides on.
+    /// The handler decides whether the change matters to it. Replaces any
+    /// handler set before.
     pub fn set_backing_changed_handler(&self, handler: impl Fn(&Self) + 'static) {
-        self.ivars()
-            .on_backing_changed
-            .replace(Some(Rc::new(handler)));
+        let registration = register_trait_change::<UIView, _>(
+            self,
+            UITraitDisplayScale::class().as_ref(),
+            handler,
+        );
+        self.ivars().backing_changed.replace(Some(registration));
     }
 
     /// The image the view draws; `None` clears it.

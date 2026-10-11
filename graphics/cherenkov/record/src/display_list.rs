@@ -12,6 +12,7 @@ use crate::paint::{ImageId, Paint, Sampling};
 use crate::resource::ResourceId;
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, Group, Shadow};
+use crate::text::TextLayoutId;
 
 /// One recorded command.
 ///
@@ -66,6 +67,13 @@ pub enum Command {
         /// Where it is placed.
         transform: Affine,
     },
+    /// Draw a text layout the render target registered.
+    Text {
+        /// The layout.
+        layout: TextLayoutId,
+        /// Where it is placed.
+        transform: Affine,
+    },
     /// Clip the scope to a shape.
     BeginClip {
         /// The clip shape.
@@ -103,7 +111,7 @@ pub enum OperandKind {
     Stroke,
     /// The shadow of a shadow command.
     Shadow,
-    /// The transform of a picture or a transform scope.
+    /// The transform of a picture, a text layout or a transform scope.
     Transform,
     /// The group style of a group scope.
     Group,
@@ -347,7 +355,8 @@ impl TryFrom<DisplayListData> for DisplayList {
                 | Command::Shadow { .. }
                 | Command::Glyphs { .. }
                 | Command::Image { .. }
-                | Command::Picture { .. } => {}
+                | Command::Picture { .. }
+                | Command::Text { .. } => {}
             }
         }
         match open.pop() {
@@ -405,10 +414,10 @@ impl DisplayList {
     }
 
     /// Whether any command, including those of nested pictures, samples
-    /// `resource`: a glyph run's font, an image draw, or an image or shader
-    /// paint of a fill, stroke or glyph run. Content never names a backdrop
-    /// shader; layers sample those through the tree. A render target's
-    /// resource-liveness bookkeeping.
+    /// `resource`: a glyph run's font, an image draw, a text layout draw, or
+    /// an image or shader paint of a fill, stroke or glyph run. Content never
+    /// names a backdrop shader; layers sample those through the tree. A render
+    /// target's resource-liveness bookkeeping.
     #[must_use]
     pub fn references(&self, resource: ResourceId) -> bool {
         self.commands.iter().any(|command| match command {
@@ -419,6 +428,7 @@ impl DisplayList {
                 resource == ResourceId::Font(run.font) || paint.references(resource)
             }
             Command::Image { image, .. } => resource == ResourceId::Image(*image),
+            Command::Text { layout, .. } => resource == ResourceId::TextLayout(*layout),
             Command::Picture { picture, .. } => picture.display_list().references(resource),
             Command::Shadow { .. }
             | Command::BeginClip { .. }
@@ -493,7 +503,10 @@ impl DisplayList {
                     *dst = new;
                     command
                 }
-                (Command::Picture { transform, .. }, Operand::Transform(new)) => {
+                (
+                    Command::Picture { transform, .. } | Command::Text { transform, .. },
+                    Operand::Transform(new),
+                ) => {
                     *transform = new;
                     command
                 }
@@ -545,7 +558,9 @@ impl DisplayList {
             (Command::Shadow { shadow, .. }, OperandKind::Shadow) => Operand::Shadow(*shadow),
             (Command::Image { dst, .. }, OperandKind::Rect) => Operand::Rect(*dst),
             (
-                Command::Picture { transform, .. } | Command::BeginTransform { transform, .. },
+                Command::Picture { transform, .. }
+                | Command::Text { transform, .. }
+                | Command::BeginTransform { transform, .. },
                 OperandKind::Transform,
             ) => Operand::Transform(*transform),
             (Command::BeginGroup { group, .. }, OperandKind::Group) => Operand::Group(*group),
@@ -690,6 +705,7 @@ const fn operand_count(command: &Command) -> u8 {
         Command::Stroke { .. } => 3,
         Command::Image { .. }
         | Command::Picture { .. }
+        | Command::Text { .. }
         | Command::BeginClip { .. }
         | Command::BeginTransform { .. }
         | Command::BeginGroup { .. } => 1,
@@ -731,9 +747,12 @@ impl<'a> Iterator for Operands<'a> {
             }
             (Command::Glyphs { run, .. }, 0) => (OperandKind::Run, OperandRef::Run(run)),
             (Command::Image { dst, .. }, 0) => (OperandKind::Rect, OperandRef::Rect(dst)),
-            (Command::Picture { transform, .. } | Command::BeginTransform { transform, .. }, 0) => {
-                (OperandKind::Transform, OperandRef::Transform(transform))
-            }
+            (
+                Command::Picture { transform, .. }
+                | Command::Text { transform, .. }
+                | Command::BeginTransform { transform, .. },
+                0,
+            ) => (OperandKind::Transform, OperandRef::Transform(transform)),
             (Command::BeginGroup { group, .. }, 0) => {
                 (OperandKind::Group, OperandRef::Group(group))
             }
@@ -822,6 +841,7 @@ pub fn translucent_within(list: &DisplayList, range: Range<usize>) -> bool {
             Command::Fill { .. }
             | Command::Stroke { .. }
             | Command::Glyphs { .. }
+            | Command::Text { .. }
             | Command::Image { .. }
             | Command::Shadow { .. } => {
                 return true;

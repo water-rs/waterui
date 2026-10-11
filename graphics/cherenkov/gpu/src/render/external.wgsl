@@ -85,11 +85,17 @@ fn ext_decode(c: vec3<f32>, transfer: u32) -> vec3<f32> {
             return pow(num / den, vec3<f32>(1.0 / 0.1593017578125));
         }
         case EXT_T_HLG: {
-            // BT.2100 HLG inverse OETF: scene-linear [0,1].
-            let lo = c * c / 3.0;
-            let hi = (exp((c - vec3<f32>(0.55991073)) / vec3<f32>(0.17883277))
+            // BT.2100-2 Table 5 inverse OETF: E = E'^2 / 3 for E' <= 0.5,
+            // (exp((E' - c)/a) + b)/12 above. Its domain is E' >= 0: a
+            // sub-black (footroom) code clamps to black — squaring one
+            // would yield positive light. Above 1 the logarithmic
+            // segment continues (super-white), matching
+            // cherenkov-oracle's `hlg_inverse_oetf(c.max(0.0))`.
+            let e = max(c, vec3<f32>(0.0));
+            let lo = e * e / 3.0;
+            let hi = (exp((e - vec3<f32>(0.55991073)) / vec3<f32>(0.17883277))
                       + vec3<f32>(0.28466892)) / vec3<f32>(12.0);
-            return select(hi, lo, c <= vec3<f32>(0.5));
+            return select(hi, lo, e <= vec3<f32>(0.5));
         }
         default: {
             return c;
@@ -119,7 +125,15 @@ fn ext_hlg(rgb: vec3<f32>) -> vec3<f32> {
         return rgb;
     }
     let ys = dot(params.luma.xyz, rgb);
-    return rgb * pow(max(ys, 0.0), params.site.z - 1.0);
+    // BT.2100-2 §3 OOTF: F_D = alpha * Ys^(gamma - 1) * E. Below a
+    // ~334-nit display peak gamma - 1 is negative, where pow(0, gamma - 1)
+    // is +inf and black's zero channels make 0 * inf NaN; the OOTF's limit
+    // at Ys = 0 is black for every gamma — the branch present.wgsl's
+    // `hlg_inverse_ootf` and cherenkov-oracle take as well.
+    if ys <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    return rgb * pow(ys, params.site.z - 1.0);
 }
 
 // The YUV plane decode at frame pixel `px` (pixel centres are at

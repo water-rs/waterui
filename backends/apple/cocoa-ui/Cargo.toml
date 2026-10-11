@@ -44,12 +44,24 @@ map = ["dep:objc2-map-kit", "dep:objc2-core-location"]
 # `macOS` (`AVPlayerView`), where `avkit.rs` uses it.
 avkit = ["dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-av-kit"]
 # The `WebKit` surface (`web_kit` module) carries the `WebKit` and `Security`
-# framework links; opt-in so apps without a web view link neither.
-webview = ["dep:objc2-web-kit", "dep:objc2-security"]
+# framework links; opt-in so apps without a web view link neither. `CFNumber`
+# carries `CFBoolean`, the toll-free type `web_kit` tells a JavaScript
+# boolean from a number by.
+webview = [
+    "dep:objc2-web-kit",
+    "dep:objc2-security",
+    "objc2-core-foundation/CFNumber",
+]
+# The alert surfaces (`appkit::alert` `NSAlert`, `uikit::alert`
+# `UIAlertController`) — the `dialog` leaf's platform objects.
+dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 # Harness-only reach for `tests/native`: compiles the doc(hidden)
 # test-support entry points that touch implementation-private surfaces
-# (`accessory_overlay_window_for_test`), never part of a production build.
-native-test = []
+# (`accessory_overlay_window_for_test`), the harnesses' shared
+# `native_test::pump_main_until` and, on iOS, the `uikit::native_test`
+# application the `native_app` harnesses run their cases in — never part of
+# a production build.
+native-test = ["dep:libtest-mimic"]
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 block2 = "0.6"
@@ -71,17 +83,12 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "CGAffineTransform",
     "CGColor",
     "CGColorSpace",
+    "CGGradient",
     "CGPath",
     "CGBitmapContext",
     "CGContext",
     "CGDataProvider",
     "CGImage",
-] }
-objc2-io-surface = { version = "0.3", default-features = false, features = [
-    "std",
-    "IOSurfaceRef",
-    "IOSurfaceTypes",
-    "objc2-core-foundation",
 ] }
 objc2-core-text = { version = "0.3", default-features = false, features = [
     "std",
@@ -109,6 +116,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSLocale",
     "NSNotification",
     "NSValue",
+    "NSNull",
     "NSObjCRuntime",
     "NSOperation",
     "NSProcessInfo",
@@ -143,7 +151,7 @@ objc2-web-kit = { version = "0.3", default-features = false, features = [
     "WKNavigationDelegate",
     "WKNavigationResponse",
     "WKScriptMessage",
-    "WKScriptMessageHandler",
+    "WKScriptMessageHandlerWithReply",
     "WKSecurityOrigin",
     "WKUIDelegate",
     "WKUserContentController",
@@ -170,6 +178,7 @@ objc2-metal = { version = "0.3", default-features = false, features = [
     "MTLRenderPass",
     "MTLBuffer",
     "MTLAllocation",
+    "MTLDrawable",
     "MTLResource",
     "objc2-io-surface",
     "block2",
@@ -181,10 +190,11 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
     "CADisplayLink",
     "CAEDRMetadata",
     "CAFrameRateRange",
-    "CAGradientLayer",
     "CALayer",
     "CAMediaTiming",
     "CAShapeLayer",
+    "CAMetalDisplayLink",
+    "CAMetalLayer",
     "CARenderer",
     "CATransaction",
     "CATransform3D",
@@ -282,6 +292,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "objc2-core-foundation",
     "NSAppearance",
+    "NSAlert",
     "NSApplication",
     "NSAccessibility",
     "NSAccessibilityConstants",
@@ -319,6 +330,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSControl",
     "NSButton",
     "NSClipView",
+    "NSTextContent",
     "NSCursor",
     "NSLayoutAnchor",
     "NSScrollView",
@@ -400,10 +412,13 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 
 [target.'cfg(target_os = "ios")'.dependencies]
 bitflags = "2"
+# The `native-test` harness application runs the `native_app` trials.
+libtest-mimic = { version = "0.8", optional = true }
 objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "std",
     "objc2-core-foundation",
     "objc2-quartz-core",
+    "UIAlertController",
     "UIApplication",
     "UIColor",
     "UIControl",
@@ -444,6 +459,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UIActivityIndicatorView",
     "UIStepper",
     "UITextField",
+    "UITextView",
     "UITextInputTraits",
     "UIFontDescriptor",
     "UITraitCollection",
@@ -456,11 +472,16 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UIDatePicker",
     "UIView",
     "UIViewController",
+    "UIViewControllerTransitionCoordinator",
+    "UIViewControllerTransitioning",
     "UIScrollView",
     "UIViewAnimating",
     "UIViewPropertyAnimator",
     "UITimingCurveProvider",
     "UITimingParameters",
+    "UILayoutGuide",
+    "UIKeyboardLayoutGuide",
+    "UITrackingLayoutGuide",
     "UIWindow",
     "UIWindowScene",
     "objc2-quartz-core",

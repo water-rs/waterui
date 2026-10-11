@@ -70,6 +70,8 @@ pub fn window_in_opening_environment(mut window: Window, env: &Environment) -> W
 #[derive(Clone)]
 pub struct ContextMenuTarget {
     pub(crate) bounds: kurbo::Rect,
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     pub(crate) depth: usize,
     pub(crate) order: usize,
     pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,
@@ -136,6 +138,13 @@ pub struct PopupMenuState {
     /// binding — for the pointer-down outside-interaction dismissal and the
     /// anchor-left-the-tree close.
     pub(crate) presented_anchored_overlays: Vec<PresentedAnchoredOverlay>,
+    /// The window's open `.dialog` presentations in presentation order —
+    /// which one is on screen, which wait, and which closed with their node.
+    pub(crate) dialog_stack: DialogStack,
+    /// The front dialog this frame's flush registered — its modal
+    /// environment and retained layer content. The post-flush
+    /// `render_dialogs` takes it.
+    pub(crate) front_dialog: Option<RegisteredDialog>,
 }
 
 #[derive(Clone)]
@@ -351,7 +360,7 @@ fn shortcut_hint_styled(
     disabled: bool,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> StyledStr {
-    let mut styled = StyledStr::plain(shortcut_hint_text(shortcut)).foreground({
+    let mut styled = StyledStr::plain(shortcut.to_string()).foreground({
         let color = Color::new(waterui::theme::color::MutedForeground);
         if disabled {
             color.with_opacity(0.38)
@@ -1335,6 +1344,9 @@ impl SemanticCore {
         if nodes.is_empty() {
             return false;
         }
+        // The menu's rows carry this window's identity, so a Close Window
+        // row they fire targets its owner window, not the popup.
+        let env = &env.extending(self.window_id);
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let popup_origin = popup_window_origin(origin, env);
@@ -1363,6 +1375,9 @@ impl SemanticCore {
         if nodes.is_empty() {
             return false;
         }
+        // The menu's rows carry this window's identity, so a Close Window
+        // row they fire targets its owner window, not the popup.
+        let env = &env.extending(self.window_id);
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let (window, state) = semantic_popup_menu_window(nodes, group.clone(), 0);
@@ -1371,7 +1386,7 @@ impl SemanticCore {
             .expect("hydrolysis popup menus require PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1398,7 +1413,7 @@ impl SemanticCore {
             .expect("hydrolysis picker menus require PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1431,7 +1446,7 @@ impl SemanticCore {
             .expect("hydrolysis picker menus require PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1503,7 +1518,7 @@ impl SemanticCore {
             .expect("hydrolysis color picker requires PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1525,7 +1540,7 @@ impl SemanticCore {
             .expect("hydrolysis date picker requires PopupWindowManager in environment")
             .show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
-        self.request_refresh();
+        self.context_mark_layout();
         true
     }
 
@@ -1560,20 +1575,20 @@ impl SemanticCore {
         preview: Rc<RefCell<Option<RetainedSubview>>>,
         accessory: Rc<RefCell<Option<RetainedSubview>>>,
     ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let order = self.hit_test.next_hit_test_order();
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        self.hit_test.context_menu_targets.push(ContextMenuTarget {
+        self.register_retained(
+            ContextMenuTarget {
+                owner: std::rc::Weak::new(),
+                bounds,
+                depth,
+                order: 0,
+                items,
+                env: env.clone(),
+                dismiss_requests,
+                preview,
+                accessory,
+            },
             bounds,
-            depth,
-            order,
-            items,
-            env: env.clone(),
-            dismiss_requests,
-            preview,
-            accessory,
-        });
+            |regs| &mut regs.context_menu_targets,
+        );
     }
 }

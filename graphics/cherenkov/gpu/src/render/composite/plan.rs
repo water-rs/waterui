@@ -356,7 +356,7 @@ impl ExecutionPlan {
 }
 
 pub fn read_kind(frame: &Frame, range: &DrawRange) -> ReadKind {
-    if range.source.is_none() || matches!(range.pipeline, PipelineKind::Effect(_)) {
+    if range.source.is_none() || matches!(range.pipeline, PipelineKind::Effect { .. }) {
         ReadKind::Opaque
     } else if frame.instances[range.instances.start as usize..range.instances.end as usize]
         .iter()

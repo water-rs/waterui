@@ -7,6 +7,10 @@ pluginManagement {
         mavenCentral()
         gradlePluginPortal()
     }
+    plugins {
+        // --- begin waterui gradle plugin versions ---
+        // --- end waterui gradle plugin versions ---
+    }
 }
 
 dependencyResolutionManagement {

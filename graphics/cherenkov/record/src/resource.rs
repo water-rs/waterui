@@ -5,19 +5,22 @@
 use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::paint::{ImageId, ShaderId};
+use crate::text::TextLayoutId;
 
 /// A resource registered with a render target that installed content can
 /// draw.
 ///
 /// A target frees a released resource only once no installed content draws
 /// it. A backdrop shader is never named by a command: content samples
-/// fonts, images and shader paints only.
+/// fonts, images, text layouts and shader paints only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceId {
     /// A font.
     Font(FontId),
     /// An image.
     Image(ImageId),
+    /// A text layout.
+    TextLayout(TextLayoutId),
     /// A user shader.
     Shader(ShaderId),
     /// A backdrop effect shader.
@@ -29,6 +32,7 @@ impl std::fmt::Display for ResourceId {
         match self {
             Self::Font(id) => write!(f, "font {}", id.raw()),
             Self::Image(id) => write!(f, "image {}", id.raw()),
+            Self::TextLayout(id) => write!(f, "text layout {}", id.raw()),
             Self::Shader(id) => write!(f, "shader {}", id.raw()),
             Self::BackdropShader(id) => write!(f, "backdrop shader {}", id.raw()),
         }

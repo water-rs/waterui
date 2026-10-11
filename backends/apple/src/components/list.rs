@@ -27,7 +27,7 @@ use waterui::component::list::{
 };
 use waterui::id::{Id as RawId, SelfId};
 use waterui::layout::padding::EdgeInsets;
-use waterui::layout::scroll::ScrollController;
+use waterui::layout::scroll::{ScrollController, ScrollRequest};
 use waterui::reactive::Signal;
 use waterui::reactive::binding::Binding;
 use waterui::reactive::collection::CollectionChange;
@@ -37,7 +37,9 @@ use waterui::resolve::Resolvable;
 use waterui::text::{StyledStr, Text};
 use waterui::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 use waterui_backend_core::Environment;
+use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
+use waterui_core::interaction::Disabled;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext, Renderer};
@@ -249,11 +251,12 @@ fn index_path_for_flat(groups: &[SectionGroup], flat: usize) -> Option<(usize, u
     None
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", feature = "navigation"))]
 /// `containsNavigationLink`: walk the primary-content chain looking for a
 /// navigation-link wrapper — a matched node gives the row a disclosure
 /// indicator. The Rust path tags the wrapper with an accessibility
-/// identifier rather than a Swift class name.
+/// identifier rather than a Swift class name. Only the `navigation` port
+/// sets that identifier, so the probe exists only alongside it.
 fn contains_navigation_link(view: &cocoa_ui::PlatformView) -> bool {
     let mut current = view::retain_base(view);
     loop {
@@ -425,6 +428,10 @@ struct Shared {
     /// `measuredRowHeights`: the row contract the height delegate reports,
     /// refreshed from both `viewFor`/`cellForRow` layout passes.
     measured_heights: HashMap<ItemId, f64>,
+    /// The `Disabled` signal each rendered row resolved under, by item id —
+    /// recorded on the row's own render pass, so a `.disabled` binding flip
+    /// takes effect without a reload (water-rs/waterui#2244).
+    disabled_rows: RefCell<HashMap<ItemId, Computed<bool>>>,
 }
 
 impl fmt::Debug for Shared {
@@ -444,6 +451,9 @@ impl Shared {
         self.regroup();
         let seen: HashSet<ItemId> = self.item_ids.iter().copied().collect();
         self.measured_heights.retain(|id, _| seen.contains(id));
+        self.disabled_rows
+            .get_mut()
+            .retain(|id, _| seen.contains(id));
     }
 
     /// Regroups over the current `item_ids` — after a local delete or
@@ -456,6 +466,18 @@ impl Shared {
             self.uses_sections,
             &self.env,
         );
+    }
+
+    /// Whether `flat`'s row resolved under `.disabled` on its last render
+    /// — such a row is inert the way a disabled `Button` cannot be
+    /// pressed: pointer and accessibility-driven selection both refuse it
+    /// while its label and disabled state still report
+    /// (water-rs/waterui#2244). Rows never rendered answer `false`.
+    fn row_disabled(&self, flat: usize) -> bool {
+        self.disabled_rows
+            .borrow()
+            .get(&self.item_ids[flat])
+            .is_some_and(Signal::snapshot)
     }
 
     /// `writeSelectionFromTable`: `flat` item indexes selected on the
@@ -482,7 +504,12 @@ impl Shared {
             .expect("list item index is in bounds");
         let insets = item.insets;
         let deletable = item.deletable;
-        let leaf = self.renderer.render(item.content);
+        // The row's `Disabled` signal comes from the scope this render
+        // resolves the content under — the same pass, not a second walk.
+        let (leaf, resolved_env) = self.renderer.render_resolved(item.content);
+        self.disabled_rows
+            .borrow_mut()
+            .insert(self.item_ids[flat], Disabled::resolve(&resolved_env, false));
         (insets, deletable, leaf)
     }
 
@@ -525,35 +552,6 @@ impl fmt::Debug for RowPayload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RowPayload").finish_non_exhaustive()
     }
-}
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
 }
 
 /// Whether `metadata` carries an explicit animation — the `setEditing` /
@@ -675,7 +673,7 @@ fn apply_contents_change(
     let pending_retry = Rc::clone(pending);
     let table_inner = table.clone();
     let metadata_retry = metadata.clone();
-    with_platform_animation(&metadata, move || {
+    crate::animation::with_platform_animation(&metadata, move || {
         let Ok(mut borrowed) = state_inner.try_borrow_mut() else {
             // `Shared` is still borrowed by materialization: the batch goes
             // back behind anything newer and the flush is rescheduled.
@@ -1054,6 +1052,11 @@ mod platform_impl {
         let Some(flat) = flat_index(&state.borrow().groups, index.section, index.row) else {
             return;
         };
+        // A `.disabled` row is inert — accessibility activation must not
+        // select it, the way a pointer press must not.
+        if state.borrow().row_disabled(flat) {
+            return;
+        }
         if selected.contains(&flat) {
             table.deselect_row(index, false);
         } else {
@@ -1088,7 +1091,12 @@ mod platform_impl {
             let (item_insets, deletable, leaf) = self.state.borrow().render_row(flat);
             let explicit_insets = item_insets.as_ref().map(kit_insets);
             let insets = explicit_insets.unwrap_or_else(|| native_insets(cell));
+            // Without the `navigation` port nothing tags the wrapper, so no
+            // row can carry a link.
+            #[cfg(feature = "navigation")]
             let shows_disclosure = contains_navigation_link(leaf.view());
+            #[cfg(not(feature = "navigation"))]
+            let shows_disclosure = false;
             let mounted = Rc::new(leaf.mount(cell));
             cell.configure(mounted.view(), insets, shows_disclosure);
             let height = mounted.view().heightAnchor().constraintEqualToConstant(0.0);
@@ -1280,6 +1288,10 @@ mod platform_impl {
             if let Some(on_move) = &state.on_move {
                 on_move(&state.env, Move::new(source, adjusted));
             }
+        }
+
+        fn should_select(&self, _table: &TableView, index: IndexPath) -> bool {
+            !self.state.borrow().row_disabled(self.flat(index))
         }
 
         fn did_select_row(&self, table: &TableView, index: IndexPath) {
@@ -1594,7 +1606,10 @@ mod platform_impl {
         fn should_select(&self, _table: &TableView, row: usize) -> bool {
             let state = self.state.borrow();
             state.selection.allows_selection()
-                && matches!(state.flat_layout.get(row), Some(FlatEntry::Row(_)))
+                && match state.flat_layout.get(row) {
+                    Some(&FlatEntry::Row(flat)) => !state.row_disabled(flat),
+                    _ => false,
+                }
         }
 
         fn selection_did_change(&self, table: &TableView) {
@@ -1694,34 +1709,115 @@ const fn platform_weight(weight: waterui::text::font::FontWeight) -> f64 {
     }
 }
 
+/// Closes an animated request's distance to the approach bound before
+/// the animation starts. The current item is the first whose row bottom
+/// lies below the viewport's top — read from the offset, so a viewport
+/// showing only a section header or footer still has one. A `target` item
+/// further than
+/// [`ANIMATED_ROW_SCROLL_APPROACH`](waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH)
+/// from it is jumped to within the bound through the unanimated row jump
+/// — which also ends any flight in progress — so the animation glides
+/// over the final stretch only.
+fn approach(state: &Rc<RefCell<Shared>>, table: &TableView, target: usize) {
+    // Flatten under a short borrow, released before reading row geometry
+    // and jumping — both can measure rows, which borrows `state` mutably.
+    // Each item's row, indexed by flat item.
+    #[cfg(target_os = "ios")]
+    let rows: Vec<IndexPath> = state
+        .borrow()
+        .groups
+        .iter()
+        .enumerate()
+        .flat_map(|(section, group)| (0..group.count).map(move |row| IndexPath { section, row }))
+        .collect();
+    #[cfg(target_os = "macos")]
+    let rows: Vec<usize> = state
+        .borrow()
+        .flat_layout
+        .iter()
+        .enumerate()
+        .filter_map(|(row, entry)| matches!(entry, FlatEntry::Row(_)).then_some(row))
+        .collect();
+    let top = table.viewport_top();
+    let current = rows.partition_point(|&row| table.row_bottom(row) <= top);
+    let Some(item) = animated_row_scroll_approach(current, target) else {
+        return;
+    };
+    #[cfg(target_os = "ios")]
+    {
+        table.scroll_to_row(rows[item], false);
+        table.layout_if_needed();
+    }
+    #[cfg(target_os = "macos")]
+    table.scroll_row_to_top(rows[item]);
+}
+
 /// Wires a `ScrollController<usize>` into the table: a generation bump
-/// scrolls the target row to the top.
+/// scrolls the target row to the top — with the request's animation, if
+/// it carries one: `Animation::Default` is the native animated row
+/// scroll, and an explicit animation drives the offset on the frame
+/// clock along the core curve, landing where the jump would have. An
+/// animated request first closes in through [`approach`], so a far
+/// target animates only its final stretch.
 fn wire_controller(
     leaf: &mut NativeLeaf,
     table: &Retained<TableView>,
     state: &Rc<RefCell<Shared>>,
     controller: &ScrollController<usize>,
 ) {
-    let target = controller.target();
+    let request = controller.request();
     let generation = controller.generation();
-    leaf.watch(&target, |_| {});
-    let apply = |state: &Shared, table: &TableView, target_row: usize| {
+    leaf.watch(&request, |_| {});
+    let apply = |state: &Rc<RefCell<Shared>>, table: &TableView, request: &ScrollRequest<usize>| {
+        // Resolve the row under a short borrow and release it before the
+        // scroll call: driving the table can run `layoutSubviews` → row
+        // measuring, which borrows `state` again — mutably.
         #[cfg(target_os = "ios")]
-        if let Some((section, row)) = index_path_for_flat(&state.groups, target_row) {
-            table.layout_if_needed();
-            table.scroll_to_row(IndexPath { section, row });
-        }
+        let target = index_path_for_flat(&state.borrow().groups, request.target)
+            .map(|(section, row)| IndexPath { section, row });
         #[cfg(target_os = "macos")]
-        if let Some(row) = state
+        let target = state
+            .borrow()
             .flat_layout
             .iter()
-            .position(|entry| *entry == FlatEntry::Row(target_row))
-        {
-            table.scroll_row_to_top(row);
+            .position(|entry| *entry == FlatEntry::Row(request.target));
+        let Some(target) = target else {
+            return;
+        };
+        #[cfg(target_os = "ios")]
+        table.layout_if_needed();
+        if request.animation.is_some() {
+            approach(state, table, request.target);
+        }
+        match request.animation.as_ref() {
+            #[cfg(target_os = "ios")]
+            None => table.scroll_to_row(target, false),
+            #[cfg(target_os = "ios")]
+            Some(Animation::Default) => table.scroll_to_row(target, true),
+            #[cfg(target_os = "ios")]
+            Some(animation) => {
+                table.animate_scroll_to_row(
+                    target,
+                    animation.duration().as_secs_f64(),
+                    crate::animation::progress(animation),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            None => table.scroll_row_to_top(target),
+            #[cfg(target_os = "macos")]
+            Some(Animation::Default) => table.scroll_row_to_top_animated(target),
+            #[cfg(target_os = "macos")]
+            Some(animation) => {
+                table.animate_scroll_row_to_top(
+                    target,
+                    animation.duration().as_secs_f64(),
+                    crate::animation::progress(animation),
+                );
+            }
         }
     };
     if generation.snapshot() > 0 {
-        apply(&state.borrow(), table, target.snapshot());
+        apply(state, table, &request.snapshot());
     }
     leaf.watch(&generation, {
         let state = Rc::downgrade(state);
@@ -1730,7 +1826,7 @@ fn wire_controller(
             if *ctx.value() > 0
                 && let (Some(state), Some(table)) = (state.upgrade(), table.load())
             {
-                apply(&state.borrow(), &table, target.snapshot());
+                apply(&state, &table, &request.snapshot());
             }
         }
     });
@@ -1786,6 +1882,7 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         theme_insets,
         resolved_min_height: min_row_height(config.min_row_height, stock_height),
         measured_heights: HashMap::new(),
+        disabled_rows: RefCell::new(HashMap::new()),
     }));
 
     #[cfg(target_os = "ios")]
