@@ -22,7 +22,9 @@ import tempfile
 from typing import Any
 
 
-SCENES = ("map", "chart", "text-page", "ui-list", "effects")
+SCENES = ("map", "chart", "text-page", "ui-list", "effects", "road-network", "brick-grid")
+ENGINE_PATH = Path("graphics/cherenkov")
+BENCH_PATH = ENGINE_PATH / "bench"
 DEFAULT_ENGINES = ("cherenkov", "cherenkov-cpu")
 # Lifecycle snapshots compared per scene, in report order (#169 A5).
 # Older reports lack `preparation`, `warmup_peak` and `post_retire`; a
@@ -150,7 +152,7 @@ def ensure_clean_except_owned_files(path: Path, *, allow_bench: bool) -> None:
         name = line[3:]
         if name == WORKTREE_MARKER:
             continue
-        if allow_bench and (name == "bench" or name.startswith("bench/")):
+        if allow_bench and (name == str(BENCH_PATH) or name.startswith(f"{BENCH_PATH}/")):
             continue
         unexpected.append(line)
     if unexpected:
@@ -161,7 +163,7 @@ def ensure_clean_except_owned_files(path: Path, *, allow_bench: bool) -> None:
 
 def overlay_bench(repo: Path, harness: str, base: Path) -> None:
     result = command(
-        ["git", "-C", str(repo), "archive", "--format=tar", harness, "bench"],
+        ["git", "-C", str(repo), "archive", "--format=tar", harness, str(BENCH_PATH)],
         binary_output=True,
     )
     if result.returncode:
@@ -186,11 +188,11 @@ def overlay_bench(repo: Path, harness: str, base: Path) -> None:
         except (OSError, tarfile.TarError) as error:
             raise GateError(f"could not extract harness bench archive: {error}") from error
 
-        replacement = temporary_path / "bench"
+        replacement = temporary_path / BENCH_PATH
         if not replacement.is_dir():
-            raise GateError(f"harness {harness} contains no bench directory")
-        destination = base / "bench"
-        backup = base / ".memory-gate-bench-old"
+            raise GateError(f"harness {harness} contains no {BENCH_PATH} directory")
+        destination = base / BENCH_PATH
+        backup = base / ENGINE_PATH / ".memory-gate-bench-old"
         if backup.exists():
             raise GateError(f"refusing to replace leftover path {backup}")
         destination.rename(backup)
@@ -210,6 +212,20 @@ def cargo_target_directory(path: Path) -> Path:
         raise GateError(f"cargo metadata failed in {path}:\n{result.stdout}{result.stderr}")
     metadata = json.loads(result.stdout)
     return Path(metadata["target_directory"])
+
+
+def generate_scenes(path: Path, out: Path, side: str, *, fonts_only: bool) -> None:
+    args = [
+        "uv", "run", "--python", "3.12", "--with-requirements",
+        "scenes/fonts/tools/requirements.txt", "python", "scenes/tools/generate.py",
+    ]
+    if fonts_only:
+        args.append("--fonts-only")
+    result = command(args, cwd=path / ENGINE_PATH)
+    log = out / f"generate-{side}.log"
+    log.write_text(result.stdout + result.stderr, encoding="utf-8")
+    if result.returncode:
+        raise GateError(f"scene generation failed for {side}; see {log}")
 
 
 def build(path: Path, out: Path, side: str) -> Path:
@@ -679,7 +695,9 @@ def main() -> int:
     if harness_commit is not None:
         overlay_bench(repo, harness_commit, base)
 
-    scene_root = head
+    generate_scenes(base, out, "base", fonts_only=True)
+    generate_scenes(head, out, "head", fonts_only=False)
+    scene_root = head / ENGINE_PATH
     if not all(
         (scene_root / "scenes" / "perf" / scene / "scene.json").is_file()
         for scene in SCENES
