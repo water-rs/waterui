@@ -2020,7 +2020,10 @@ fn sha256_hex(s: &str) -> String {
     hex::encode(result)
 }
 
-pub use unified::{build_manifest as plan_library_resources, write_library_resources};
+pub use unified::{
+    build_manifest as plan_library_resources, write_android_library_resources,
+    write_library_resources,
+};
 
 /// The directory name the staged asset bundle carries inside an Android
 /// `src/main/assets/` root.
@@ -2043,14 +2046,17 @@ pub async fn stage_project_assets_for_apple(
 
 /// Stage project assets for Android packaging (res + assets/raw).
 /// `symbols` is the target build's app library — see
-/// [`stage_project_assets_for_apple`].
+/// [`stage_project_assets_for_apple`]. `fonts` are the declared faces that
+/// ship inside the asset bundle, where the Hydrolysis runtime reads an
+/// application's fonts from — see [`unified::stage_for_android`].
 pub async fn stage_project_assets_for_android(
     project: &Project,
     backend_path: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    fonts: &[ResolvedFont],
 ) -> eyre::Result<BundleManifest> {
-    unified::stage_for_android(project, backend_path, symbols, dev_server).await
+    unified::stage_for_android(project, backend_path, symbols, dev_server, fonts).await
 }
 
 /// Stage project assets for the Hydrolysis Android preview library module
@@ -2058,14 +2064,17 @@ pub async fn stage_project_assets_for_android(
 /// `symbols` is the target build's app library — see
 /// [`stage_project_assets_for_apple`].
 ///
+/// `fonts` are the declared faces that ship inside the bundle.
+///
 /// Returns the manifest and the staged `waterui_assets` directory.
 pub async fn stage_project_assets_for_android_library(
     project: &Project,
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    fonts: &[ResolvedFont],
 ) -> eyre::Result<(BundleManifest, PathBuf)> {
-    unified::stage_for_android_library(project, module_dir, symbols, dev_server).await
+    unified::stage_for_android_library(project, module_dir, symbols, dev_server, fonts).await
 }
 
 /// Render the project's macOS `.icns` app icon for hand-assembled bundles.

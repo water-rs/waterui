@@ -60,7 +60,7 @@ pub use large_file::LargeFile;
 pub use waterui_assets_core::download_remote_bytes;
 #[cfg(all(feature = "remote", not(target_arch = "wasm32")))]
 pub use waterui_assets_core::download_remote_bytes;
-pub use waterui_assets_core::{AssetError, AssetKind, WINDOW_ICON_FILE};
+pub use waterui_assets_core::{AssetError, AssetKind, STAGED_FONTS_DIR, WINDOW_ICON_FILE};
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use waterui_assets_core::{AtomicWriteOutcome, write_bytes_atomically};
 #[cfg(feature = "std")]

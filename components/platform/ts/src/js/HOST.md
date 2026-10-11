@@ -113,6 +113,11 @@ Modifier attributes apply in written attribute order, left to right, exactly
 like a Rust modifier chain. The runtime guarantees the calls arrive in that
 order; the host applies them in receive order. `value` is a reactive input.
 
+The schema crate publishes the same rule as `MODIFIER_ORDER_SENTENCE`, the
+sentence the `.d.ts` generator opens every modifier attribute's doc comment
+with — the ordering rule is stated where a wrongly ordered pair would be
+written, not only where the contract is described.
+
 A modifier attribute that arrives through a JSX spread is rejected by the
 runtime before any host call — the host never has to detect that case.
 

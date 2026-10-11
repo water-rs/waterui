@@ -278,16 +278,17 @@ pub async fn build_aar(
     // `waterui_assets` ships inside the AAR exactly as it ships inside an
     // APK — `HydrolysisEnvironment.prepare` syncs the same tree at runtime.
     // What the app scaffold stages beyond it (`res`, theme, icons) is the
-    // host application's own, never the library's. No font tree ships beside
-    // it: the runtime's Android collection scans the platform font
-    // directories (`text::fonts::android_collection`), nothing reads a
-    // packaged `assets/fonts`, and that shared root is the host app's
-    // namespace to win at merge time (#2348).
+    // host application's own, never the library's. The declared faces ride
+    // inside the bundle, not in a tree beside it: that shared root is the
+    // host app's namespace to win at merge time (#2348), and the bundle is
+    // what `text::fonts::native_collection` reads an application's fonts
+    // from on Android.
     assets::stage_project_assets_for_android_library(
         project,
         &module_dir,
         &built.app_symbols().await?,
         false,
+        &super::resolve_declared_fonts(project).await?,
     )
     .await?;
 

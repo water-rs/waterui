@@ -497,12 +497,13 @@ impl HeadlessRuntime {
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
         ));
-        // The application's fonts, built once: the system collection plus the
-        // staged fonts directory, exactly as the windowed runners load them.
+        // The application's fonts, built once: the platform's collection plus
+        // the staged fonts directory, exactly as the windowed runners load
+        // them.
         // Every window's renderer is seeded from this collection, and a
         // self-drawn component that typesets text itself reads it out of the
         // environment instead of enumerating the system's fonts for itself.
-        let fonts = crate::text::fonts::platform_collection(&env);
+        let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install

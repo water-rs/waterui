@@ -75,6 +75,10 @@ fn app_view(
     )
 }
 
+/// The app the host mounts, in the environment a generated launcher gives
+/// one: `configure_environment!` captures the `ResourceContext` rooted at
+/// the assets the Kotlin host synced, which is where the font collection
+/// reads the application's staged faces from.
 fn build_app() -> App {
     App::new_with_windows(
         [Window::new(
@@ -90,7 +94,7 @@ fn build_app() -> App {
                 app_view(count, enabled, name, code, password, volume)
             },
         )],
-        Environment::new(),
+        waterui::configure_environment!(Environment::new()),
     )
 }
 

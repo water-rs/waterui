@@ -20,8 +20,6 @@ use waterui_text::FontCollection;
 #[cfg(not(target_arch = "wasm32"))]
 use super::super::DeclaredFonts;
 
-#[cfg(target_os = "android")]
-pub use super::android_fonts::android_collection;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use super::web_fonts::WebFonts;
 
@@ -237,34 +235,43 @@ impl ResourceFontFamilies {
     }
 }
 
-/// The collection this platform shapes text with: on Android the faces the
-/// platform font directories ship, elsewhere [`native_collection`] — the
-/// system's fonts plus the application's staged font resources.
-///
-/// Android has no resource-directory scan: `native_collection` would only
-/// look where nothing on that platform stages fonts, so the collection the
-/// Android session builds from `/system/fonts` and its overlay partitions
-/// answers instead. The environment is unused there — Android collections
-/// carry no `ResourceContext`-rooted files — and used everywhere else.
-#[cfg(target_os = "android")]
-#[must_use]
-pub fn platform_collection(_env: &waterui_core::Environment) -> FontCollection {
-    android_collection()
+/// Whether `path` names a font file this loader registers.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn is_font_file(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("ttf" | "otf" | "ttc" | "otc")
+    )
 }
 
-/// The collection this platform shapes text with — [`native_collection`] on
-/// every non-Android, non-wasm target. See the Android variant above.
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-#[must_use]
-pub fn platform_collection(env: &waterui_core::Environment) -> FontCollection {
-    native_collection(env)
+/// The directory an application's staged fonts live in.
+///
+/// Everywhere but Android that is the fonts directory the host installed. An
+/// Android package namespaces exactly one asset tree, the `waterui_assets`
+/// bundle `HydrolysisEnvironment` syncs, and the host application wins every
+/// path shared beside it (water-rs/waterui#2348), so the build stages the
+/// faces inside that bundle and they are read from there.
+#[cfg(not(target_arch = "wasm32"))]
+fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::PathBuf {
+    #[cfg(target_os = "android")]
+    return resources.assets().join(waterui_assets::STAGED_FONTS_DIR);
+    #[cfg(not(target_os = "android"))]
+    resources.fonts().to_path_buf()
 }
 
-/// The system's fonts plus every `.ttf`/`.otf` under the application's staged
-/// fonts directory and every file of the environment's [`DeclaredFonts`],
-/// with the recognized script fallbacks installed.
+/// The platform's own fonts plus every font file under the application's
+/// staged fonts directory and every file of the environment's
+/// [`DeclaredFonts`], with the recognized script fallbacks installed.
 ///
-/// The fonts directory is the one owned by the environment's required
+/// The platform's own faces are the ones `fontique` enumerates, except on
+/// Android: `fontique` has no source there, so
+/// [`super::android_fonts::platform_font_context`] scans the platform font
+/// directories instead. The application's half is the same on every target.
+///
+/// The fonts directory is [`staged_fonts_dir`] of the environment's required
 /// [`waterui_core::ResourceContext`] and is never probed from the process's
 /// working directory or executable location, so an embedded host's fonts come
 /// from the roots it installed.
@@ -276,11 +283,14 @@ pub fn platform_collection(env: &waterui_core::Environment) -> FontCollection {
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
-    let root = waterui_core::ResourceContext::from_environment(env).fonts();
-    let mut font_cx = parley::FontContext::new();
+    let root = staged_fonts_dir(waterui_core::ResourceContext::from_environment(env));
     let mut resource_fonts = ResourceFontFamilies::default();
+    #[cfg(target_os = "android")]
+    let mut font_cx = super::android_fonts::platform_font_context(&mut resource_fonts);
+    #[cfg(not(target_os = "android"))]
+    let mut font_cx = parley::FontContext::new();
     if root.is_dir() {
-        let entries = std::fs::read_dir(root).unwrap_or_else(|error| {
+        let entries = std::fs::read_dir(&root).unwrap_or_else(|error| {
             panic!(
                 "hydrolysis native font loader failed to read `{}`: {error}",
                 root.display()
@@ -294,10 +304,7 @@ pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
                 )
             });
             let path = entry.path();
-            let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-                continue;
-            };
-            if !extension.eq_ignore_ascii_case("ttf") && !extension.eq_ignore_ascii_case("otf") {
+            if !is_font_file(&path) {
                 continue;
             }
             register_font_file(&mut font_cx, &mut resource_fonts, &path);
@@ -388,6 +395,104 @@ mod tests {
 
     fn languages(tags: &[&str]) -> Vec<String> {
         tags.iter().map(ToString::to_string).collect()
+    }
+
+    /// A staged resource root under `dir`: the fonts directory a non-Android
+    /// host installs, carrying `files`, and the environment an application
+    /// is constructed in.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn staged_environment(
+        dir: &std::path::Path,
+        files: &[(&str, &[u8])],
+    ) -> (waterui_core::Environment, std::path::PathBuf) {
+        let fonts = dir.join("fonts");
+        std::fs::create_dir_all(&fonts).expect("the staged fonts directory is created");
+        for (name, bytes) in files {
+            std::fs::write(fonts.join(name), bytes).expect("a staged file is written");
+        }
+        let mut env = waterui_core::Environment::new();
+        env.insert(waterui_core::ResourceContext::new(
+            dir.join("waterui_assets"),
+            &fonts,
+        ));
+        (env, fonts)
+    }
+
+    /// The application's own faces reach the collection every native target
+    /// builds, and reach it as the fallback role their file name names: a
+    /// staged Roboto is the collection's sans-serif, which no platform's
+    /// unconfigured collection resolves to a family of that name
+    /// (water-rs/waterui#2433).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_staged_face_is_registered_with_its_fallback_role() {
+        let roboto = super::installed_font_bytes("Roboto");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (env, _) = staged_environment(
+            dir.path(),
+            &[
+                ("Roboto-Regular.ttf", &roboto),
+                // Only font files are read: the loader panics on a file it
+                // cannot parse, so a stray manifest beside the faces would
+                // take the process down.
+                ("waterui-fonts.json", b"{}"),
+            ],
+        );
+
+        super::native_collection(&env).use_fonts(|fonts| {
+            let staged = fonts
+                .collection
+                .family_id("Roboto")
+                .expect("the staged face's family is registered");
+            assert!(
+                fonts
+                    .collection
+                    .generic_families(parley::fontique::GenericFamily::SansSerif)
+                    .any(|family| family == staged),
+                "the staged generic face answers sans-serif"
+            );
+        });
+    }
+
+    /// A face a dependency declares is registered too, wherever its file
+    /// sits — an icon crate's fetched face is never inside the staged tree.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_declared_face_is_registered_from_outside_the_staged_tree() {
+        let bungee = super::installed_font_bytes("Bungee Color");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let declared = dir.path().join("BungeeColor-Regular.ttf");
+        std::fs::write(&declared, &bungee).expect("the declared face is written");
+        let (mut env, _) = staged_environment(dir.path(), &[]);
+        env.insert(crate::text::DeclaredFonts::new([declared]));
+
+        super::native_collection(&env).use_fonts(|fonts| {
+            assert!(
+                fonts.collection.family_id("Bungee Color").is_some(),
+                "the declared face's family is registered"
+            );
+        });
+    }
+
+    /// An application that staged nothing still gets the platform's own
+    /// faces — the collection is the platform's plus the application's,
+    /// never one or the other.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_platform_s_own_faces_are_always_there() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut env = waterui_core::Environment::new();
+        env.insert(waterui_core::ResourceContext::new(
+            dir.path().join("waterui_assets"),
+            dir.path().join("fonts"),
+        ));
+
+        super::native_collection(&env).use_fonts(|fonts| {
+            assert!(
+                fonts.collection.family_names().next().is_some(),
+                "the platform's collection enumerates its faces"
+            );
+        });
     }
 
     #[test]
