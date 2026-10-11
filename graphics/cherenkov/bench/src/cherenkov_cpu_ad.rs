@@ -1604,6 +1604,7 @@ impl Engine for Cherenkov {
             image,
             gpu: Vec::new(),
             phases: None,
+            composition: None,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })

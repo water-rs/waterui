@@ -74,7 +74,7 @@ pub mod vello_cpu_ad;
 #[cfg(feature = "vello-hybrid")]
 pub mod vello_hybrid_ad;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cherenkov_oracle::F32Image;
 use cherenkov_scene::{Feature, Scene, SceneError};
@@ -270,6 +270,48 @@ pub struct Phases {
     pub wait: f64,
 }
 
+/// What one frame's composition kept on chip and what it materialized
+/// (issue #2547).
+///
+/// Summed over the frame's encoded surfaces, so the counters sit beside
+/// that frame's timing sample. Only an adapter whose planner decides
+/// on-chip composition reports it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Composition {
+    /// Tile epochs the frame encoded.
+    pub epochs: u32,
+    /// Canonical passes the frame's plan held.
+    pub passes: u32,
+    /// Logical images an epoch kept in an attachment slot.
+    pub on_chip_images: u32,
+    /// Logical bytes those images would have cost had they been
+    /// materialized.
+    pub on_chip_logical_bytes: u64,
+    /// Logical images written to device memory.
+    pub materialized_images: u32,
+    /// Logical bytes of the materialized images' regions.
+    pub materialized_logical_bytes: u64,
+    /// Per-reason counts of the materialized images, keyed by the
+    /// planner's stable reason names (`"neighborhood-read"`,
+    /// `"slot-limit"`, ...). Sorted, so the JSON is stable.
+    pub reasons: BTreeMap<&'static str, u32>,
+    /// Peak memoryless attachment bytes — tile storage the frame did not
+    /// take from device memory.
+    pub peak_memoryless_bytes: u64,
+    /// Peak device-memory attachment bytes the composition plan governs.
+    pub peak_backed_bytes: u64,
+    /// Logical bytes written into intermediates.
+    pub logical_bytes_written: u64,
+    /// Logical bytes sampled from intermediates.
+    pub logical_bytes_read: u64,
+    /// Logical bytes copied between images (snapshots and captures).
+    pub logical_bytes_copied: u64,
+    /// Read-after-write boundaries the backend had to order.
+    pub barriers: u32,
+    /// Tile composition pipelines created on first use in this frame.
+    pub pipelines_created: u32,
+}
+
 /// The result of [`Engine::submit`].
 #[derive(Debug)]
 pub struct Submit {
@@ -282,6 +324,10 @@ pub struct Submit {
     /// Render-thread CPU timings for Cherenkov GPU; `None` when the adapter
     /// does not expose phase timings.
     pub phases: Option<Phases>,
+    /// What this frame's composition kept on chip and why it materialized
+    /// the rest; `None` when the adapter reports no composition
+    /// attribution (#2547).
+    pub composition: Option<Composition>,
     /// Wall-clock seconds this call spent rasterizing before any readback
     /// began (queue drains and timestamp markers included), where the
     /// adapter separates the two stages; `None` otherwise.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::render::composition::Materialization;
 use crate::render::instance::{Instance, KIND_SPAN};
 use crate::render::lower::{DrawRange, Pass, ShaderVariant};
 
@@ -53,8 +54,8 @@ fn scratch_generations_do_not_alias_lifetimes() {
     assert_ne!(first, second);
     assert_eq!(plan.images[first.0].generation, 0);
     assert_eq!(plan.images[second.0].generation, 1);
-    assert!(!plan.materialized_pass(1));
-    assert!(!plan.materialized_pass(3));
+    assert_eq!(plan.materialization(1), None);
+    assert_eq!(plan.materialization(3), None);
     assert_eq!(plan.epoch_at(1).unwrap().passes, 1..3);
     assert_eq!(plan.epoch_at(3).unwrap().passes, 3..5);
 }
@@ -69,12 +70,12 @@ fn attachment_budget_materializes_outer_image_without_recomputing() {
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
     ]);
     let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, 2);
-    assert!(plan.materialized_pass(1));
-    assert!(!plan.materialized_pass(2));
+    assert_eq!(plan.materialization(1), Some(Materialization::SlotLimit));
+    assert_eq!(plan.materialization(2), None);
     assert_eq!(plan.epoch_at(2).unwrap().passes, 2..4);
     let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, 4);
-    assert!(!plan.materialized_pass(1));
-    assert!(!plan.materialized_pass(2));
+    assert_eq!(plan.materialization(1), None);
+    assert_eq!(plan.materialization(2), None);
     assert_eq!(plan.epoch_at(1).unwrap().passes, 1..5);
 }
 
@@ -88,6 +89,10 @@ fn neighborhood_reads_and_overlapping_snapshots_materialize() {
     frame.instances[2].meta[1] = crate::render::instance::PAINT_BACKDROP;
     let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, 4);
     assert!(plan.epoch_at(1).is_none());
+    assert_eq!(
+        plan.materialization(1),
+        Some(Materialization::NeighborhoodRead)
+    );
     frame.instances[2].meta[1] = PAINT_TEXTURE;
     frame.passes[2].backdrop_copy = Some([0, 0, 16, 16]);
     let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, 4);
@@ -96,6 +101,10 @@ fn neighborhood_reads_and_overlapping_snapshots_materialize() {
     frame.passes[2].ranges[0].instances.end = 4;
     let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, 4);
     assert!(plan.epoch_at(1).is_none());
+    assert_eq!(
+        plan.materialization(1),
+        Some(Materialization::FrozenSnapshot)
+    );
 }
 
 #[test]
@@ -121,5 +130,191 @@ fn cached_paint_updates_preserve_lifetimes_and_motion_rechecks_locality() {
     assert!(!cache.update(&mut plan, &frame, format, 2));
     assert_eq!(plan.targets[1], image);
     assert!(plan.epoch_at(1).is_none());
-    assert!(plan.materialized_pass(1));
+    assert_eq!(
+        plan.materialization(1),
+        Some(Materialization::NeighborhoodRead)
+    );
+}
+
+/// Every reason the planner can name, each from the frame shape that
+/// provokes it (#2547). The three remaining reasons are asserted where
+/// their behaviour is already tested: `SlotLimit` in
+/// `attachment_budget_materializes_outer_image_without_recomputing`,
+/// `NeighborhoodRead` and `FrozenSnapshot` in
+/// `neighborhood_reads_and_overlapping_snapshots_materialize`.
+#[test]
+fn every_materialization_reason_is_attributed() {
+    let format = wgpu::TextureFormat::Rgba16Float;
+    let fuses = vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+    ];
+
+    // A surface part is the frame's output: never an epoch's intermediate.
+    let plan = ExecutionPlan::build(&frame(fuses.clone()), format, 4);
+    assert_eq!(plan.materialization(0), Some(Materialization::Persistent));
+    assert_eq!(plan.materialization(1), None);
+
+    // Written and never read: no producer-to-consumer interval at all.
+    let plan = ExecutionPlan::build(
+        &frame(vec![
+            pass(Target::Part(0), true, None, 0),
+            pass(Target::Scratch(0), true, None, 1),
+        ]),
+        format,
+        4,
+    );
+    assert_eq!(plan.materialization(1), Some(Materialization::NoInterval));
+
+    // The last consumer writes the image itself, so the interval has no
+    // other image to store into.
+    let plan = ExecutionPlan::build(
+        &frame(vec![
+            pass(Target::Part(0), true, None, 0),
+            pass(Target::Scratch(0), true, None, 1),
+            pass(Target::Scratch(0), false, Some(Source::Scratch(0)), 2),
+        ]),
+        format,
+        4,
+    );
+    assert_eq!(
+        plan.materialization(1),
+        Some(Materialization::OutputNotEligible)
+    );
+
+    // An inner image whose last consumer is past the interval's end
+    // escapes it.
+    let plan = ExecutionPlan::build(
+        &frame(vec![
+            pass(Target::Part(0), true, None, 0),
+            pass(Target::Scratch(0), true, None, 1),
+            pass(Target::Scratch(1), true, None, 2),
+            pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 3),
+            pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
+            pass(Target::Part(0), false, Some(Source::Scratch(1)), 5),
+        ]),
+        format,
+        4,
+    );
+    assert_eq!(plan.materialization(1), Some(Materialization::External));
+
+    // A scratch format the tile attachments cannot carry.
+    let plan = ExecutionPlan::build(&frame(fuses.clone()), wgpu::TextureFormat::Rgba8Unorm, 4);
+    assert_eq!(plan.materialization(1), Some(Materialization::Format));
+
+    // The second write composites in a different space than the image it
+    // continues: fusing would move the conversion point.
+    let mut shifted = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Scratch(0), false, None, 2),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 3),
+    ]);
+    shifted.passes[2].space = cherenkov::BlendSpace::SrgbEncoded;
+    let plan = ExecutionPlan::build(&shifted, format, 4);
+    assert_eq!(plan.materialization(1), Some(Materialization::BlendSpace));
+
+    // The intermediate covers pixels the epoch's attachment region, which
+    // is its output's, does not.
+    let mut wider = frame(fuses.clone());
+    wider.passes[1].region = [0, 0, 32, 32];
+    let plan = ExecutionPlan::build(&wider, format, 4);
+    assert_eq!(plan.materialization(1), Some(Materialization::Region));
+
+    // A blend the on-chip executor does not implement.
+    let mut projective = frame(fuses);
+    projective.passes[2].ranges[0].pipeline = PipelineKind::Projective { replace: false };
+    let plan = ExecutionPlan::build(&projective, format, 4);
+    assert_eq!(
+        plan.materialization(1),
+        Some(Materialization::UnsupportedOp)
+    );
+}
+
+#[test]
+fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
+    use crate::render::composition::{self, AttachmentBytes, ImageKind};
+
+    // 16x16 rgba16float: the fixture's region in the attachment format.
+    const REGION_BYTES: u64 = 16 * 16 * 8;
+
+    let format = wgpu::TextureFormat::Rgba16Float;
+    let fused = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+    ]);
+    let plan = ExecutionPlan::build(&fused, format, 4);
+    let report = composition::frame_report(
+        7,
+        3,
+        &fused,
+        &plan,
+        AttachmentBytes {
+            peak_memoryless_bytes: REGION_BYTES,
+            peak_backed_bytes: 4 * REGION_BYTES,
+        },
+        Vec::new(),
+    );
+
+    assert_eq!((report.frame, report.surface, report.passes), (7, 3, 3));
+    assert_eq!(report.epochs.len(), 1);
+    assert_eq!(report.epochs[0].passes, 1..3);
+    assert_eq!(report.epochs[0].slots, 2);
+    assert_eq!(report.epochs[0].on_chip_images, 1);
+    // The scratch stays in a slot; only the part reaches memory.
+    assert_eq!(report.on_chip.len(), 1);
+    assert_eq!(report.on_chip[0].kind, ImageKind::Scratch);
+    assert_eq!(report.on_chip[0].logical_bytes, REGION_BYTES);
+    assert_eq!(report.materialized.len(), 1);
+    assert_eq!(report.materialized[0].kind, ImageKind::Part);
+    assert_eq!(report.materialized[0].reason, Materialization::Persistent);
+    assert_eq!(report.attachments.peak_memoryless_bytes, REGION_BYTES);
+    assert_eq!(report.attachments.peak_backed_bytes, 4 * REGION_BYTES);
+    // One intermediate written, read once, ordered by the epoch itself.
+    assert_eq!(report.traffic.logical_bytes_written, REGION_BYTES);
+    assert_eq!(report.traffic.logical_bytes_read, REGION_BYTES);
+    assert_eq!(report.traffic.logical_bytes_copied, 0);
+    assert_eq!(report.traffic.barriers, 0);
+    assert!(report.pipelines.is_empty());
+
+    // The same frame with a neighborhood read: the planner materializes
+    // the intermediate, and the read of it becomes an ordered boundary.
+    let mut blurred = frame(vec![
+        pass(Target::Part(0), true, None, 0),
+        pass(Target::Scratch(0), true, None, 1),
+        pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
+    ]);
+    blurred.instances[2].meta[1] = crate::render::instance::PAINT_BACKDROP;
+    let plan = ExecutionPlan::build(&blurred, format, 4);
+    let report = composition::frame_report(
+        8,
+        3,
+        &blurred,
+        &plan,
+        AttachmentBytes::default(),
+        Vec::new(),
+    );
+    assert!(report.epochs.is_empty());
+    assert!(report.on_chip.is_empty());
+    let scratch = report
+        .materialized
+        .iter()
+        .find(|image| image.kind == ImageKind::Scratch)
+        .expect("the intermediate is materialized");
+    assert_eq!(scratch.reason, Materialization::NeighborhoodRead);
+    assert_eq!(scratch.logical_bytes, REGION_BYTES);
+    assert_eq!(report.traffic.barriers, 1);
+
+    // The sink hands the recorded reports back in order, once.
+    let sink = composition::Sink::new();
+    assert!(sink.is_empty());
+    sink.record(report.clone());
+    sink.record(report);
+    assert_eq!(sink.len(), 2);
+    let drained = sink.take();
+    assert_eq!(drained.len(), 2);
+    assert_eq!(drained[0].frame, 8);
+    assert!(sink.take().is_empty());
 }
