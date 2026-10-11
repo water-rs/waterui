@@ -622,4 +622,103 @@ mod tests {
             );
         });
     }
+
+    /// The nested-borrow regression: a `__waterui_host` function runs
+    /// while the `Context::with` frame that called it still holds the
+    /// runtime lock, so everything it does back into the engine —
+    /// `eval`, `call`, `retain`, `register` — has to re-enter on that
+    /// live context rather than take a second borrow. Before the depth
+    /// guard existed every one of these panicked with
+    /// `RefCell already borrowed`.
+    #[test]
+    fn a_host_function_reenters_every_entry_point() {
+        let runtime = Rc::new(QuickJsRuntime::new().expect("the engine constructs"));
+        let nested = Rc::clone(&runtime);
+        runtime
+            .register("reenter", move |_args| {
+                assert_eq!(nested.depth.get(), 1, "the outer eval still holds the lock");
+
+                // eval
+                assert_eq!(nested.eval("40 + 2", "nested.js")?, JsValue::Number(42.0));
+
+                // call — a function expression crosses as a function handle
+                let JsValue::Function(function) = nested.eval("((x) => x * 2)", "fn.js")? else {
+                    panic!("a function expression crosses as a function");
+                };
+                assert_eq!(
+                    nested.call(&function, &[JsValue::Number(21.0)])?,
+                    JsValue::Number(42.0)
+                );
+
+                // retain
+                let object = nested.eval("({})", "object.js")?;
+                nested.retain(&object)?;
+
+                // register — verified below from the outer frame
+                nested.register("inner", |_args| Ok(JsValue::Number(7.0)))?;
+
+                Ok(JsValue::Bool(true))
+            })
+            .expect("a host function registers");
+
+        assert_eq!(
+            runtime
+                .eval("__waterui_host.reenter()", "outer.js")
+                .expect("the nested host call re-enters on the live context"),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            runtime.depth.get(),
+            0,
+            "the entry depth unwound with the frame"
+        );
+        assert_eq!(
+            runtime
+                .eval("__waterui_host.inner()", "inner.js")
+                .expect("the runtime still evaluates"),
+            JsValue::Number(7.0),
+            "the nested registration landed on the shared context"
+        );
+    }
+
+    /// An error a nested call reports does not strand the depth: the
+    /// failed entry still unwound its frame, so the runtime answers the
+    /// next outer entry.
+    #[test]
+    fn the_entry_depth_recovers_from_a_failed_nested_call() {
+        let runtime = Rc::new(QuickJsRuntime::new().expect("the engine constructs"));
+        let nested = Rc::clone(&runtime);
+        runtime
+            .register("fail_nested", move |_args| {
+                let result = nested.eval("throw new Error('nope')", "nested.js");
+                assert!(result.is_err(), "the nested eval reports the throw");
+                Ok(JsValue::Bool(true))
+            })
+            .expect("a host function registers");
+
+        runtime
+            .eval("__waterui_host.fail_nested()", "outer.js")
+            .expect("the host call settled");
+        assert_eq!(runtime.depth.get(), 0);
+        runtime
+            .eval("1 + 1", "after.js")
+            .expect("the runtime still evaluates");
+    }
+
+    /// A panic unwinding through `with_ctx` still runs the depth guard,
+    /// and the lock `Context::with` released leaves the runtime usable.
+    #[test]
+    fn the_entry_depth_recovers_from_an_unwind() {
+        let runtime = QuickJsRuntime::new().expect("the engine constructs");
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = runtime.with_ctx(|_ctx| -> Result<(), JsError> {
+                panic!("a forced unwind");
+            });
+        }));
+        assert!(unwound.is_err(), "the panic unwound through the frame");
+        assert_eq!(runtime.depth.get(), 0, "the depth guard ran");
+        runtime
+            .eval("1 + 1", "after.js")
+            .expect("the runtime still evaluates");
+    }
 }
