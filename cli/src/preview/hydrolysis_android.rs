@@ -293,41 +293,24 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
         prepare_run(host, adb, serial, run_config, &staging).await?
     };
 
-    // The device read is the authority: the parts it is stale in install
-    // whether or not the record predicted them — a part it missed still
-    // ships, serially — and the record is rewritten to the state the run
-    // leaves. The forward lookup rides beside the shipping and the
-    // install; the host probe waits for both, so a fresh host starts only
-    // once the payload it will report as loaded is in place, and a reused
-    // host's connection is not held open across a long resources push.
-    let stale = payload.stale_parts(&held);
-    let missed: Vec<PayloadPart> = stale
-        .iter()
-        .copied()
-        .filter(|part| !predicted.contains(part))
-        .collect();
-    let staged_push = pushed || !missed.is_empty();
-    let ((), forward) = futures_util::try_join!(
-        async {
-            if !missed.is_empty() {
-                info!(
-                    ?missed,
-                    "The device disagrees with the install record; shipping the rest serially"
-                );
-                push_staged(host, adb, serial, payload, &missed, &staging).await?;
-            }
-            if !stale.is_empty() {
-                info!(?stale, "Installing the changed preview payload parts");
-                install_staged(host, adb, serial, payload, &stale, &staging).await?;
-            }
-            write_install_record(
-                &record_path,
-                &InstallRecord::after_install(&held, &stale, payload),
-            )
-            .await
-        },
+    // The forward lookup rides beside the shipping and the install; the
+    // host probe waits for both, so a fresh host starts only once the
+    // payload it will report as loaded is in place, and a reused host's
+    // connection is not held open across a long resources push.
+    let (shipped, forward) = futures_util::try_join!(
+        ship_payload(
+            host,
+            adb,
+            serial,
+            payload,
+            &held,
+            &predicted,
+            &staging,
+            &record_path,
+        ),
         device_host::open_forward(host, adb, serial),
     )?;
+    let staged_push = pushed || shipped;
     let render = async {
         let mut link = forward
             .link(
@@ -361,6 +344,59 @@ async fn render_on_device(host: &Host, render: &DeviceRender<'_>) -> Result<()> 
     rendered?;
     removed.transpose()?;
     Ok(())
+}
+
+/// Put the payload parts `held` — the stamps the device itself reported —
+/// shows stale into the run directory, and rewrite the install record at
+/// `record_path` to the state that leaves.
+///
+/// The device read is the authority over the record `predicted` the run's
+/// overlapped push from: a stale part the record missed is not staged
+/// yet, so it ships here, serially, before everything stale installs in
+/// one call. Answers whether this call staged anything of its own, which
+/// the caller adds to its own push when deciding whether `staging` needs
+/// removing.
+///
+/// # Errors
+/// Returns an error when a part cannot be pushed or installed, or the
+/// record cannot be written.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one device run's whole shipping state"
+)]
+async fn ship_payload(
+    host: &Host,
+    adb: &Adb,
+    serial: &str,
+    payload: &DevicePayload,
+    held: &HeldStamps,
+    predicted: &[PayloadPart],
+    staging: &str,
+    record_path: &Path,
+) -> Result<bool> {
+    let stale = payload.stale_parts(held);
+    let missed: Vec<PayloadPart> = stale
+        .iter()
+        .copied()
+        .filter(|part| !predicted.contains(part))
+        .collect();
+    if !missed.is_empty() {
+        info!(
+            ?missed,
+            "The device disagrees with the install record; shipping the rest serially"
+        );
+        push_staged(host, adb, serial, payload, &missed, staging).await?;
+    }
+    if !stale.is_empty() {
+        info!(?stale, "Installing the changed preview payload parts");
+        install_staged(host, adb, serial, payload, &stale, staging).await?;
+    }
+    write_install_record(
+        record_path,
+        &InstallRecord::after_install(held, &stale, payload),
+    )
+    .await?;
+    Ok(!missed.is_empty())
 }
 
 /// `path`, which the run directory holds, as the host resolves it relative
