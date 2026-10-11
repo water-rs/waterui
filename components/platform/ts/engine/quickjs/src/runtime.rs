@@ -214,7 +214,10 @@ impl QuickJsRuntime {
             JsValue::Undefined => Value::new_undefined(ctx.clone()),
             JsValue::Null => Value::new_null(ctx.clone()),
             JsValue::Bool(value) => Value::new_bool(ctx.clone(), *value),
-            JsValue::Number(value) => Value::new_number(ctx.clone(), *value),
+            // `new_number` shortcuts integral values to the int tag and would
+            // collapse `-0.0` into `+0`; `JS_NewFloat64` still takes the int
+            // tag where the bit pattern allows it, but keeps a negative zero.
+            JsValue::Number(value) => Value::new_float(ctx.clone(), *value),
             JsValue::BigInt(BigInt::Signed(value)) => QBigInt::from_i64(ctx.clone(), *value)
                 .map_err(fail)?
                 .into_value(),
