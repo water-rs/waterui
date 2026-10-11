@@ -3,7 +3,6 @@
 mod bindings;
 mod bitmap;
 mod colr;
-#[cfg(target_vendor = "apple")]
 mod composite;
 pub mod composition;
 pub mod diag;
@@ -345,10 +344,11 @@ struct SurfaceState {
     hosted: FxHashMap<LayerId, planes::HostedBinding>,
     shader_textures: FxHashMap<std::sync::Arc<paint::Key>, paint::Texture>,
     frame: LoweredFrame,
-    /// Image lifetimes and attachment assignment, before physical allocation.
-    #[cfg(target_vendor = "apple")]
+    /// Image lifetimes and attachment assignment, before physical
+    /// allocation. Planned only where the backend has a tile executor
+    /// (issue #2549): elsewhere the plan stays empty and unplanned, and
+    /// every pass keeps its backed attachment.
     composition: composite::plan::ExecutionPlan,
-    #[cfg(target_vendor = "apple")]
     composition_cache: composite::cache::Cache,
     #[cfg(target_vendor = "apple")]
     tile_targets: composite::metal::Attachments,
@@ -3015,9 +3015,7 @@ impl Renderer for GpuRenderer {
                 hosted: FxHashMap::default(),
                 shader_textures: FxHashMap::default(),
                 frame: LoweredFrame::default(),
-                #[cfg(target_vendor = "apple")]
                 composition: composite::plan::ExecutionPlan::default(),
-                #[cfg(target_vendor = "apple")]
                 composition_cache: composite::cache::Cache::default(),
                 #[cfg(target_vendor = "apple")]
                 tile_targets: composite::metal::Attachments::default(),
@@ -3495,12 +3493,10 @@ impl Renderer for GpuRenderer {
                 }
             }
             surf.scratch.clear();
+            surf.composition = composite::plan::ExecutionPlan::default();
+            surf.composition_cache = composite::cache::Cache::default();
             #[cfg(target_vendor = "apple")]
-            {
-                surf.composition = composite::plan::ExecutionPlan::default();
-                surf.composition_cache = composite::cache::Cache::default();
-                surf.tile_targets.clear();
-            }
+            surf.tile_targets.clear();
             surf.coverage_depth = None;
             surf.backdrop = [None, None];
             surf.staging = [None, None];
@@ -3711,7 +3707,6 @@ impl Renderer for GpuRenderer {
                         as u64
                 })
                 .sum::<u64>();
-        #[cfg(target_vendor = "apple")]
         let cpu = cpu
             + self
                 .surfaces
@@ -6908,6 +6903,44 @@ impl GpuRenderer {
         }
     }
 
+    /// What this engine's tile executor can hold, or `None` where there
+    /// is none to plan for (issue #2549).
+    ///
+    /// Apple executes epochs through `composite::metal`, whose
+    /// attachment set and shader variants bind four slots — slot zero
+    /// stores the epoch's output, the other three carry live
+    /// intermediates — and whose attachment fetches sit in one raster
+    /// order group, so accesses to a slot are ordered per pixel within a
+    /// pass. The executor's shaders come from the prebuilt metallib
+    /// (#57) and its attachments are `Rgba16Float`, so a frame whose
+    /// isolation scratches are stored in another format can never place
+    /// one on chip and is not planned at all.
+    ///
+    /// Issue #2191 adds the Vulkan executor; until then every other
+    /// target returns `None` and no planning runs.
+    #[cfg_attr(
+        not(target_vendor = "apple"),
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "no executor on this target: the answer needs no engine state (#2549)"
+        )
+    )]
+    fn tile_limits(&self) -> Option<composite::plan::Limits> {
+        #[cfg(target_vendor = "apple")]
+        {
+            (self.shader_delivery == shaders::ShaderDelivery::Metallib
+                && self.scratch_format == TARGET_FORMAT)
+                .then_some(composite::plan::Limits {
+                    slots: composite::metal::SLOTS,
+                    format: TARGET_FORMAT,
+                    ordering: composite::plan::Ordering::PerPixel,
+                })
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        None
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one surface's frame application and buffer growth"
@@ -6938,6 +6971,9 @@ impl GpuRenderer {
         stats.projective_realized += u32::try_from(realize.len()).unwrap_or(u32::MAX);
         stats.projective_composed += u32::try_from(composed.len()).unwrap_or(u32::MAX);
         self.allocate_projective(id, realize, composed)?;
+        // What the backend's tile executor can hold, read before the
+        // surface is borrowed for the frame's attachment planning.
+        let tile_limits = self.tile_limits();
         // Scratch textures for the frame's deepest isolation level.
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
@@ -6996,20 +7032,14 @@ impl GpuRenderer {
                 surf.drop_resolve_binds_on(&self.device, &view, "backdrop resolve");
             }
         }
-        #[cfg(target_vendor = "apple")]
-        {
-            let tile_slots = if self.shader_delivery == shaders::ShaderDelivery::Metallib
-                && self.scratch_format == TARGET_FORMAT
-            {
-                2
-            } else {
-                0
-            };
+        // Planning runs only for a backend that can execute an epoch;
+        // with no executor there are no limits and no plan (#2549).
+        if let Some(limits) = tile_limits {
             surf.composition_cache.update(
                 &mut surf.composition,
                 &surf.frame,
                 self.scratch_format,
-                tile_slots,
+                limits,
             );
         }
         let max_scratch = surf
@@ -7027,14 +7057,19 @@ impl GpuRenderer {
             .unwrap_or(0);
         // The largest region each isolation depth must hold this frame.
         let mut region_max = vec![(0u32, 0u32); max_scratch];
-        let passes = surf.frame.passes.iter();
-        #[cfg(target_vendor = "apple")]
-        let passes = passes.enumerate().filter_map(|(index, pass)| {
-            surf.composition
-                .materialization(index)
-                .is_some()
-                .then_some(pass)
-        });
+        // A pass whose image an epoch keeps on chip needs no backed
+        // scratch; every pass of an unplanned frame does.
+        let passes = surf
+            .frame
+            .passes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pass)| {
+                surf.composition
+                    .materialization(index)
+                    .is_some()
+                    .then_some(pass)
+            });
         for pass in passes {
             if let Target::Scratch(i) = pass.target {
                 region_max[i].0 = region_max[i].0.max(pass.region[2]);
@@ -7351,11 +7386,14 @@ impl GpuRenderer {
         // Backdrop textures for blend composites, sized like the scratch
         // pool to the largest region copied this frame.
         let mut backdrop_max = [(0u32, 0u32); 2];
-        let passes = surf.frame.passes.iter();
-        #[cfg(target_vendor = "apple")]
-        let passes = passes.enumerate().filter_map(|(index, pass)| {
-            (!surf.composition.contains_native_pass(index)).then_some(pass)
-        });
+        let passes = surf
+            .frame
+            .passes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pass)| {
+                (!surf.composition.contains_native_pass(index)).then_some(pass)
+            });
         for pass in passes {
             if let Some(r) = pass.backdrop_copy {
                 let slot = match pass.target {
@@ -7608,7 +7646,6 @@ impl GpuRenderer {
                         resolve::params(pass),
                     )
                 });
-                #[cfg(target_vendor = "apple")]
                 let globals = globals.enumerate().map(|(index, (mut g, params))| {
                     if let Some(origin) = surf.composition.attachment_origin(index) {
                         g.attachment_origin = origin.map(|value| value as f32);
@@ -7711,15 +7748,7 @@ impl GpuRenderer {
         &mut self,
         id: SurfaceId,
         // The frame this surface is encoded for: the composition
-        // attribution's key (#2547), which only the on-chip composition
-        // backend records.
-        #[cfg_attr(
-            not(target_vendor = "apple"),
-            expect(
-                unused_variables,
-                reason = "composition attribution is reported where the planner runs"
-            )
-        )]
+        // attribution's key (#2547), recorded for a planned frame.
         frame: cherenkov::FrameId,
         timing: filtrate::EffectFrameTiming,
         stats: &mut FrameStats,
@@ -7857,8 +7886,12 @@ impl GpuRenderer {
         // installed; the flag is the whole cost of the disabled path.
         #[cfg(target_vendor = "apple")]
         let attribute = self.config.composition_diag.is_some();
+        // Only an executor creates tile pipelines, so where there is
+        // none this stays the empty list the report carries (#2549).
         #[cfg(target_vendor = "apple")]
         let mut tile_pipelines = Vec::new();
+        #[cfg(not(target_vendor = "apple"))]
+        let tile_pipelines = Vec::new();
         while i < surf.frame.passes.len() {
             #[cfg(target_vendor = "apple")]
             if let Some(epoch) = surf.composition.epoch_at(i) {
@@ -8977,8 +9010,14 @@ impl GpuRenderer {
             stats.passes += 1;
             i += 1;
         }
-        #[cfg(target_vendor = "apple")]
-        if let Some(sink) = self.config.composition_diag.as_ref() {
+        // Only a planned frame has logical images to attribute; a
+        // target with no tile executor records nothing (#2549).
+        if let Some(sink) = self
+            .config
+            .composition_diag
+            .as_ref()
+            .filter(|_| surf.composition.is_planned())
+        {
             // The attachments the composition plan governs: the surface's
             // parts and the isolation scratches a materialized image
             // needs, against the epochs' memoryless tile slots.
@@ -8987,13 +9026,17 @@ impl GpuRenderer {
             let parts = u64::try_from(surf.parts.len()).expect("part count fits u64");
             let backed = part_bytes * (1 + parts)
                 + surf.scratch.values().map(ScratchTarget::bytes).sum::<u64>();
+            #[cfg(target_vendor = "apple")]
+            let peak_memoryless_bytes = surf.tile_targets.memoryless_bytes();
+            #[cfg(not(target_vendor = "apple"))]
+            let peak_memoryless_bytes = 0;
             sink.record(composition::frame_report(
                 frame.get(),
                 id.raw(),
                 &surf.frame,
                 &surf.composition,
                 composition::AttachmentBytes {
-                    peak_memoryless_bytes: surf.tile_targets.memoryless_bytes(),
+                    peak_memoryless_bytes,
                     peak_backed_bytes: backed,
                 },
                 tile_pipelines,
