@@ -72,6 +72,11 @@ pub struct FrameSample {
     /// order; omitted when the backend provides none.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub phases: Vec<PhaseSample>,
+    /// What this frame's composition kept on chip and why the rest was
+    /// materialized (`measure --composition`, issue #2547); omitted when
+    /// the run collected no attribution.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub composition: Option<crate::Composition>,
 }
 
 /// CPU placement of a `measure` run.

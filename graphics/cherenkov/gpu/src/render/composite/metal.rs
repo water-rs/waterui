@@ -6,6 +6,7 @@ use cherenkov::FrameStats;
 use objc2_metal::{MTLResource, MTLStorageMode};
 use rustc_hash::FxHashMap;
 
+use crate::render::composition as report;
 use crate::render::lower::{PipelineKind, ShaderVariant, Target};
 use crate::render::{Bind1Key, ScratchTarget, SurfaceState, create_target, make_bind1};
 
@@ -56,6 +57,23 @@ impl Attachments {
         self.textures.clear();
     }
 
+    /// The bytes of memoryless attachment storage this frame's epochs
+    /// bound: what the same attachments would have cost in device memory
+    /// had the hardware not kept them in tile memory (#2547). Sizes the
+    /// frame did not use are excluded, so it is this frame's live set.
+    pub fn memoryless_bytes(&self) -> u64 {
+        self.textures
+            .iter()
+            .filter(|(_, entry)| entry.used)
+            .map(|((width, height), entry)| {
+                u64::from(*width)
+                    * u64::from(*height)
+                    * crate::render::texel_bytes(wgpu::TextureFormat::Rgba16Float)
+                    * u64::try_from(entry.targets.len()).unwrap_or(u64::MAX)
+            })
+            .sum()
+    }
+
     /// Animated bounds must not retain every historical attachment size.
     pub fn finish_frame(&mut self) {
         self.textures
@@ -79,11 +97,16 @@ pub struct Executor {
 }
 
 impl Executor {
+    /// The pipeline for `key`, created on first use. `created` is set
+    /// when this call built it — the attribution report's first-use
+    /// event (#2547); the flag costs one store, so the hot path pays
+    /// nothing for it.
     fn pipeline(
         &mut self,
         device: &wgpu::Device,
         layout: &wgpu::PipelineLayout,
         key: Key,
+        created: &mut bool,
     ) -> &wgpu::RenderPipeline {
         let module = self.module.get_or_insert_with(|| {
             let mut entries: Vec<wgpu::PassthroughShaderEntryPoint<'static>> =
@@ -118,6 +141,7 @@ impl Executor {
             }
         });
         self.pipelines.entry(key).or_insert_with(|| {
+            *created = true;
             let entry = match key.variant {
                 0 => format!("tile_{}_simple", key.target),
                 1 => format!("tile_{}_shadow", key.target),
@@ -168,6 +192,35 @@ impl Executor {
     }
 }
 
+/// Records a first-use pipeline creation when the attribution report is
+/// collecting; with no report this is one `Option` test (#2547).
+fn note(
+    pipelines: &mut Option<&mut Vec<report::PipelineCreated>>,
+    created: bool,
+    pass: usize,
+    key: Key,
+) {
+    if !created {
+        return;
+    }
+    if let Some(pipelines) = pipelines {
+        pipelines.push(report::PipelineCreated {
+            pass,
+            target: key.target,
+            source: key.source,
+            variant: match key.variant {
+                0 => report::Variant::Simple,
+                1 => report::Variant::Shadow,
+                2 => report::Variant::Source,
+                3 => report::Variant::Clear,
+                _ => unreachable!("closed tile shader set"),
+            },
+            replace: key.replace,
+            slots: key.slots,
+        });
+    }
+}
+
 /// Borrowed resources shared with the materialized encoder; attachment
 /// textures are never installed in sampled bind groups.
 pub struct Resources<'a> {
@@ -179,6 +232,20 @@ pub struct Resources<'a> {
     pub images: &'a FxHashMap<u64, crate::render::GpuImage>,
     pub bitmaps: &'a FxHashMap<crate::render::bitmap::BitmapKey, crate::render::GpuBitmap>,
     pub atlas: &'a crate::render::glyph::Atlas,
+}
+
+/// Where one epoch's encode records: the command encoder it is written
+/// to, that pass's timestamp writes, the frame statistics it counts into,
+/// and the attribution collector when a report is being built (#2547).
+pub struct Recording<'a, 'b> {
+    /// The encoder the epoch's single render pass is recorded on.
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// Timestamp writes bracketing the pass, when the engine times it.
+    pub timestamps: Option<wgpu::RenderPassTimestampWrites<'b>>,
+    /// The frame's statistics.
+    pub stats: &'a mut FrameStats,
+    /// First-use tile pipeline creations, when a report is collecting.
+    pub pipelines: Option<&'a mut Vec<report::PipelineCreated>>,
 }
 
 #[expect(
@@ -194,10 +261,14 @@ pub fn encode(
     resources: &Resources<'_>,
     surf: &mut SurfaceState,
     first_pass: usize,
-    encoder: &mut wgpu::CommandEncoder,
-    timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
-    stats: &mut FrameStats,
+    recording: Recording<'_, '_>,
 ) {
+    let Recording {
+        encoder,
+        timestamps,
+        stats,
+        mut pipelines,
+    } = recording;
     let epoch = surf
         .composition
         .epoch_at(first_pass)
@@ -267,17 +338,21 @@ pub fn encode(
         pass.set_viewport(x as f32, y as f32, width as f32, height as f32, 0.0, 1.0);
         pass.set_scissor_rect(x, y, width, height);
         if op.begin && used[usize::from(op.target)] {
+            let key = Key {
+                target: op.target,
+                source: op.target,
+                variant: 3,
+                replace: true,
+                slots: epoch.slots,
+            };
+            let mut created = false;
             pass.set_pipeline(executor.pipeline(
                 resources.device,
                 resources.layout,
-                Key {
-                    target: op.target,
-                    source: op.target,
-                    variant: 3,
-                    replace: true,
-                    slots: epoch.slots,
-                },
+                key,
+                &mut created,
             ));
+            note(&mut pipelines, created, op.pass, key);
             pass.draw(0..3, 0..1);
             stats.draws += 1;
             stats.pipeline_switches += 1;
@@ -300,17 +375,21 @@ pub fn encode(
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
             };
+            let key = Key {
+                target: op.target,
+                source: source.unwrap_or(op.target),
+                variant,
+                replace: range.pipeline == PipelineKind::Replace,
+                slots: epoch.slots,
+            };
+            let mut created = false;
             pass.set_pipeline(executor.pipeline(
                 resources.device,
                 resources.layout,
-                Key {
-                    target: op.target,
-                    source: source.unwrap_or(op.target),
-                    variant,
-                    replace: range.pipeline == PipelineKind::Replace,
-                    slots: epoch.slots,
-                },
+                key,
+                &mut created,
             ));
+            note(&mut pipelines, created, op.pass, key);
             let key: Bind1Key = (None, false, range.image.clone(), range.mask);
             let bind = surf.binds1.entry(key).or_insert_with(|| {
                 stats.bind_groups_created += 1;

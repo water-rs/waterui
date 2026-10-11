@@ -965,6 +965,7 @@ impl Engine for SkiaCpu {
             image,
             gpu: Vec::new(),
             phases: None,
+            composition: None,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
@@ -1407,6 +1408,7 @@ impl Engine for SkiaVk {
             image,
             gpu: GpuSample::whole_frame(frame, gpu_seconds),
             phases: None,
+            composition: None,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })
@@ -1739,6 +1741,7 @@ mod graphite_metal {
                 image,
                 gpu: GpuSample::whole_frame(frame, gpu_seconds),
                 phases: None,
+                composition: None,
                 render_seconds: Some(render_seconds),
                 readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
             })
