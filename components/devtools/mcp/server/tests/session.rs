@@ -1,12 +1,11 @@
 //! Drives `waterui_mcp::serve` over a `DuplexTransport`: initialize, list the
 //! tools, find a button, click it through `act`, and screenshot.
 //!
-//! Received from water-rs/waterui under water-rs/waterui#1130 (class 2 —
-//! renderer presentation: the session mounts an `OffscreenApp` and drives
-//! pointer and screenshot behavior), asserted exactly as the origin asserted,
-//! under `Material3::defaults()`.
+//! The session mounts an `OffscreenApp` and drives pointer and screenshot
+//! behavior, asserted under `Material3::defaults()`.
 //!
-//! Origin: waterui `components/devtools/mcp/server/tests/session.rs`.
+//! Returned from `backends/hydrolysis/tests/mcp.rs` under
+//! water-rs/waterui#1673: the suite belongs to the crate that owns `serve`.
 
 use aither_mcp::protocol::{
     CallToolParams, CallToolResult, Content, InitializeParams, InitializeResult, JsonRpcRequest,

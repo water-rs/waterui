@@ -24,7 +24,13 @@ use waterui::layout::scroll::ScrollView;
 use waterui::navigation::NavigationView;
 use waterui::prelude::*;
 use waterui::{AnyView, Binding, Color, View};
-use waterui_testing::{DragOptions, Role, Styled, UiBuilder};
+mod support;
+
+use accesskit::Role;
+use support::{
+    f64_as_f32, mount_rendered, node_bounds, node_bounds_only_role, node_bounds_with_role,
+    node_exists, node_id, node_id_with_role,
+};
 
 /// The window insets these tests publish — a status bar at the top, a
 /// navigation bar at the bottom and a small cutout on the leading edge.
@@ -35,10 +41,10 @@ const SAFE_INSETS: EdgeInsets = EdgeInsets::new(48.0, 34.0, 8.0, 8.0);
 const KEYBOARD_INSETS: EdgeInsets = EdgeInsets::new(0.0, 336.0, 0.0, 0.0);
 
 /// The window-space y where the keyboard band starts for the test viewport.
-const KEYBOARD_TOP: f32 = 508.0;
+const KEYBOARD_TOP: f64 = 508.0;
 
 /// The window-space y where the container (navigation bar) band starts.
-const CONTAINER_TOP: f32 = 844.0 - 34.0;
+const CONTAINER_TOP: f64 = 844.0 - 34.0;
 
 fn card(label: &'static str) -> impl View {
     text(label).body().foreground(Srgb::WHITE)
@@ -73,80 +79,72 @@ fn env_with_keyboard(
 
 /// §7.1 "Layout avoids the regions": the root lays out inside the deepest
 /// region on every edge.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn root_content_stays_inside_the_safe_area(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn root_content_stays_inside_the_safe_area() {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || vstack((card("inbox"),)).alignment(HorizontalAlignment::Leading));
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || vstack((card("inbox"),)).alignment(HorizontalAlignment::Leading),
+        390,
+        844,
+    );
 
-    let bounds = app
-        .query()
-        .role(Role::LABEL)
-        .label("inbox")
-        .single()
-        .bounds();
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "inbox");
     assert!(
-        (bounds.x() - SAFE_INSETS.leading()).abs() <= 1.0
-            && (bounds.y() - SAFE_INSETS.top()).abs() <= 1.0,
+        (bounds.x0 - f64::from(SAFE_INSETS.leading())).abs() <= 1.0
+            && (bounds.y0 - f64::from(SAFE_INSETS.top())).abs() <= 1.0,
         "root content should start at the safe-area origin \
          ({}, {}), got {bounds:?}",
-        SAFE_INSETS.leading(),
-        SAFE_INSETS.top()
+        f64::from(SAFE_INSETS.leading()),
+        f64::from(SAFE_INSETS.top())
     );
 }
 
 /// `.ignore_safe_area(ALL)` lays the root content out edge-to-edge.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn ignore_safe_area_all_reaches_the_window_origin(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn ignore_safe_area_all_reaches_the_window_origin() {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             vstack((card("chrome"),))
                 .alignment(HorizontalAlignment::Leading)
                 .ignore_safe_area(EdgeSet::ALL)
-        });
+        },
+        390,
+        844,
+    );
 
-    let bounds = app
-        .query()
-        .role(Role::LABEL)
-        .label("chrome")
-        .single()
-        .bounds();
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "chrome");
     assert!(
-        bounds.x().abs() <= 1.0 && bounds.y().abs() <= 1.0,
+        bounds.x0.abs() <= 1.0 && bounds.y0.abs() <= 1.0,
         "ignore_safe_area(ALL) content should start at the window origin, got {bounds:?}"
     );
 }
 
 /// `.ignore_safe_area(TOP)` releases only the top inset: the content slides
 /// under the status bar but keeps the leading safe edge.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn ignore_safe_area_releases_only_the_flagged_edges(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn ignore_safe_area_releases_only_the_flagged_edges() {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             vstack((card("header"),))
                 .alignment(HorizontalAlignment::Leading)
                 .ignore_safe_area(EdgeSet::TOP)
-        });
+        },
+        390,
+        844,
+    );
 
-    let bounds = app
-        .query()
-        .role(Role::LABEL)
-        .label("header")
-        .single()
-        .bounds();
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "header");
     assert!(
-        bounds.y().abs() <= 1.0,
+        bounds.y0.abs() <= 1.0,
         "a TOP-released view should reach the window top, got {bounds:?}"
     );
     assert!(
-        (bounds.x() - SAFE_INSETS.leading()).abs() <= 1.0,
+        (bounds.x0 - f64::from(SAFE_INSETS.leading())).abs() <= 1.0,
         "the leading edge stays inside the safe area, got {bounds:?}"
     );
 }
@@ -155,63 +153,57 @@ fn ignore_safe_area_releases_only_the_flagged_edges(
 /// frame ends on. The first child of a vstack ends on the top boundary and
 /// its TOP declaration releases it to the window edge; the second child ends
 /// mid-surface — the same declaration releases nothing for it.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn an_ignore_releases_only_on_an_edge_the_frame_touches(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn an_ignore_releases_only_on_an_edge_the_frame_touches() {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             vstack((
                 card("top-touches").ignore_safe_area(EdgeSet::TOP),
                 card("below").ignore_safe_area(EdgeSet::TOP),
             ))
             .alignment(HorizontalAlignment::Leading)
-        });
+        },
+        390,
+        844,
+    );
 
-    let top = app
-        .query()
-        .role(Role::LABEL)
-        .label("top-touches")
-        .single()
-        .bounds();
+    let top = node_bounds_with_role(app.tree(), Role::Label, "top-touches");
     assert!(
-        top.y().abs() <= 1.0,
+        top.y0.abs() <= 1.0,
         "the touching edge releases to the window origin, got {top:?}"
     );
 
-    let below = app
-        .query()
-        .role(Role::LABEL)
-        .label("below")
-        .single()
-        .bounds();
+    let below = node_bounds_with_role(app.tree(), Role::Label, "below");
     // "below" sits one spacing under the first child's released height. A
     // release would have shifted its origin up by the container depth; its
     // frame does not touch the top boundary, so nothing releases.
     assert!(
-        (below.y() - (top.height() + 10.0)).abs() <= 1.0,
+        (below.y0 - (top.height() + 10.0)).abs() <= 1.0,
         "a non-touching edge releases nothing, got {below:?}"
     );
 }
 
 /// A later insets write — rotation, split-screen or the IME arriving —
 /// re-lays the window out against the new value.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_safe_area_change_relays_out_the_root(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn a_safe_area_change_relays_out_the_root() {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || vstack((card("inbox"),)).alignment(HorizontalAlignment::Leading));
-    let first = app.query().label("inbox").single().bounds();
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || vstack((card("inbox"),)).alignment(HorizontalAlignment::Leading),
+        390,
+        844,
+    );
+    let first = node_bounds(app.tree(), "inbox");
 
     insets.set(EdgeInsets::new(80.0, 34.0, 24.0, 8.0));
     app.settle();
 
-    let moved = app.query().label("inbox").single().bounds();
+    let moved = node_bounds(app.tree(), "inbox");
     assert!(
-        (moved.y() - 80.0).abs() <= 1.0 && (moved.x() - 24.0).abs() <= 1.0,
+        (moved.y0 - 80.0).abs() <= 1.0 && (moved.x0 - 24.0).abs() <= 1.0,
         "the root should track the updated insets: was {first:?}, now {moved:?}"
     );
 }
@@ -221,8 +213,8 @@ fn a_safe_area_change_relays_out_the_root(ui: UiBuilder<Styled<hydrolysis_m3::Ma
 /// accessibility bounds have to follow it there: under a top inset the link a
 /// finger lands on is the one drawn below the status bar, not one inset above
 /// it. Tapping the reported bounds must also activate the link.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn navigation_page_targets_follow_the_safe_area(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn navigation_page_targets_follow_the_safe_area() {
     use waterui::navigation::{NavigationLink, NavigationStack, NavigationView};
 
     fn stack() -> impl View {
@@ -235,37 +227,28 @@ fn navigation_page_targets_follow_the_safe_area(ui: UiBuilder<Styled<hydrolysis_
     }
 
     let no_insets = waterui::binding(EdgeInsets::default());
-    let mut bare = ui
-        .clone()
-        .environment(env_with_insets(&no_insets))
-        .mount_offscreen(stack);
-    let unshifted = bare
-        .query()
-        .role(Role::BUTTON)
-        .label("Open Detail")
-        .single()
-        .bounds();
+    let mut bare = mount_rendered(env_with_insets(&no_insets), stack, 390, 844);
+    let unshifted = node_bounds_with_role(bare.tree(), Role::Button, "Open Detail");
 
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(stack);
-    let link = app.query().role(Role::BUTTON).label("Open Detail").single();
-    let shifted = link.bounds();
+    let mut app = mount_rendered(env_with_insets(&insets), stack, 390, 844);
+    let shifted = node_bounds_with_role(app.tree(), Role::Button, "Open Detail");
     // The link is centred in the page, so the horizontal insets move it by
     // half their difference; the top inset moves it down whole.
-    let expected_x = unshifted.x() + (SAFE_INSETS.leading() - SAFE_INSETS.trailing()) / 2.0;
-    let expected_y = unshifted.y() + SAFE_INSETS.top();
+    let expected_x =
+        unshifted.x0 + (f64::from(SAFE_INSETS.leading()) - f64::from(SAFE_INSETS.trailing())) / 2.0;
+    let expected_y = unshifted.y0 + f64::from(SAFE_INSETS.top());
     assert!(
-        (shifted.x() - expected_x).abs() <= 1.0 && (shifted.y() - expected_y).abs() <= 1.0,
+        (shifted.x0 - expected_x).abs() <= 1.0 && (shifted.y0 - expected_y).abs() <= 1.0,
         "the page's link should sit inside the safe area at ({expected_x}, {expected_y}): \
          {unshifted:?} without insets, {shifted:?} with {SAFE_INSETS:?}"
     );
 
-    link.tap(&mut app);
+    let link_id = node_id_with_role(app.tree(), Role::Button, "Open Detail");
+    app.tap_node(link_id, 0.5, 0.5);
     app.settle();
     assert!(
-        app.query().role(Role::BUTTON).label("Back").exists(),
+        node_exists(app.tree(), Role::Button, "Back"),
         "a tap on the link's reported bounds must push the detail page"
     );
 }
@@ -279,18 +262,16 @@ fn navigation_page_targets_follow_the_safe_area(ui: UiBuilder<Styled<hydrolysis_
 /// re-lay out context-free and the probe's `.ignore_safe_area` release
 /// would silently release nothing, ending at the keyboard boundary
 /// instead of the released one.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_retained_navigation_page_keeps_its_context_on_steady_frames(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_retained_navigation_page_keeps_its_context_on_steady_frames() {
     use waterui::navigation::NavigationStack;
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let draft = Binding::container(waterui::Str::from(""));
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             NavigationStack::new(NavigationView::new(
                 "Compose",
                 vstack((
@@ -302,17 +283,23 @@ fn a_retained_navigation_page_keeps_its_context_on_steady_frames(
                     ),
                 )),
             ))
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
     // Focusing the field invalidates a frame without moving the page's
     // layout: the retained subtree flushes on a steady frame, where a
     // frame-scoped context would already be gone.
-    app.query().role(Role::TEXT_INPUT).label("composer").focus();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "composer");
+        app.focus_quiet(id);
+    }
     app.pump_for(Duration::from_millis(250));
 
-    let probe = app.query().label("compose-area").single().bounds();
+    let probe = node_bounds(app.tree(), "compose-area");
     assert!(
-        (probe.y() + probe.height() - CONTAINER_TOP).abs() <= 1.0,
+        (probe.y0 + probe.height() - CONTAINER_TOP).abs() <= 1.0,
         "the released page should still end at {CONTAINER_TOP} on a steady \
          frame, got {probe:?}"
     );
@@ -322,19 +309,17 @@ fn a_retained_navigation_page_keeps_its_context_on_steady_frames(
 /// the scroll surface's facts are laid out only while the hosting widget
 /// still has a context, so a second field focused under the keyboard band
 /// must still scroll clear inside a `NavigationStack`.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_second_field_in_a_navigation_stack_still_clears_the_keyboard(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_second_field_in_a_navigation_stack_still_clears_the_keyboard() {
     use waterui::navigation::NavigationStack;
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let first = Binding::container(waterui::Str::from(""));
     let second = Binding::container(waterui::Str::from(""));
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             NavigationStack::new(NavigationView::new(
                 "Compose",
                 ScrollView::vertical(vstack((
@@ -344,37 +329,36 @@ fn a_second_field_in_a_navigation_stack_still_clears_the_keyboard(
                     spacer().size(390.0, 300.0),
                 ))),
             ))
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
 
-    let covered = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Second")
-        .single()
-        .bounds();
+    let covered = node_bounds_with_role(app.tree(), Role::TextInput, "Second");
     assert!(
-        covered.y() + covered.height() > KEYBOARD_TOP,
+        covered.y0 + covered.height() > KEYBOARD_TOP,
         "precondition: the second field starts under the keyboard band, \
          got {covered:?}"
     );
 
-    app.query().role(Role::TEXT_INPUT).label("First").focus();
-    app.settle();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "First");
+        app.focus_quiet(id);
+    }
+    app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
-    app.query().role(Role::TEXT_INPUT).label("Second").focus();
-    app.settle();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "Second");
+        app.focus_quiet(id);
+    }
+    app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
-    let cleared = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Second")
-        .single()
-        .bounds();
+    let cleared = node_bounds_with_role(app.tree(), Role::TextInput, "Second");
     assert!(
-        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        (cleared.y0 + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
         "the second field scrolls clear of the keyboard, got {cleared:?}"
     );
 }
@@ -383,26 +367,24 @@ fn a_second_field_in_a_navigation_stack_still_clears_the_keyboard(
 /// `Opacity` over the color is still a fill, so the translucent paint runs
 /// on through the keyboard band to the window edge exactly as the opaque
 /// case does (snapshot).
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_fill_inside_opacity_still_extends(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn a_fill_inside_opacity_still_extends() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((card("content"), spacer()))
                 .alignment(HorizontalAlignment::Leading)
                 .background(Color::new(Srgb::new(0.2, 0.5, 0.9)).opacity(0.6))
-        });
+        },
+        390,
+        844,
+    );
 
-    let content = app
-        .query()
-        .role(Role::LABEL)
-        .label("content")
-        .single()
-        .bounds();
+    let content = node_bounds_with_role(app.tree(), Role::Label, "content");
     assert!(
-        (content.y() - SAFE_INSETS.top()).abs() <= 1.0,
+        (content.y0 - f64::from(SAFE_INSETS.top())).abs() <= 1.0,
         "the content frame keeps the boundary, got {content:?}"
     );
     app.capture_snapshot("safe-area", "fill-inside-opacity", "keyboard");
@@ -412,28 +394,24 @@ fn a_fill_inside_opacity_still_extends(ui: UiBuilder<Styled<hydrolysis_m3::Mater
 /// keyboard but still clear of the container (navigation-bar) inset: the
 /// bottom edge slides under the keyboard band and stops at
 /// `window height - container bottom`.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn ignoring_only_the_keyboard_region_keeps_the_container_inset(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn ignoring_only_the_keyboard_region_keeps_the_container_inset() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((spacer(), card("composer")))
                 .alignment(HorizontalAlignment::Leading)
                 .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))
-        });
+        },
+        390,
+        844,
+    );
 
-    let bounds = app
-        .query()
-        .role(Role::LABEL)
-        .label("composer")
-        .single()
-        .bounds();
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "composer");
     assert!(
-        (bounds.y() + bounds.height() - CONTAINER_TOP).abs() <= 1.0,
+        (bounds.y0 + bounds.height() - CONTAINER_TOP).abs() <= 1.0,
         "the keyboard region is released but the container inset still binds: \
          expected bottom {CONTAINER_TOP}, got {bounds:?}"
     );
@@ -443,28 +421,24 @@ fn ignoring_only_the_keyboard_region_keeps_the_container_inset(
 /// releases nothing: the keyboard region is the deeper one on that edge and
 /// still binds, so the frame ends on the keyboard boundary exactly as if no
 /// declaration were present.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn ignoring_only_the_container_region_releases_nothing_under_the_keyboard(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn ignoring_only_the_container_region_releases_nothing_under_the_keyboard() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((spacer(), card("composer")))
                 .alignment(HorizontalAlignment::Leading)
                 .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM))
-        });
+        },
+        390,
+        844,
+    );
 
-    let bounds = app
-        .query()
-        .role(Role::LABEL)
-        .label("composer")
-        .single()
-        .bounds();
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "composer");
     assert!(
-        (bounds.y() + bounds.height() - KEYBOARD_TOP).abs() <= 1.0,
+        (bounds.y0 + bounds.height() - KEYBOARD_TOP).abs() <= 1.0,
         "the keyboard region still binds: expected bottom {KEYBOARD_TOP}, got {bounds:?}"
     );
 
@@ -474,14 +448,9 @@ fn ignoring_only_the_container_region_releases_nothing_under_the_keyboard(
     keyboard.set(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
     app.settle();
 
-    let released = app
-        .query()
-        .role(Role::LABEL)
-        .label("composer")
-        .single()
-        .bounds();
+    let released = node_bounds_with_role(app.tree(), Role::Label, "composer");
     assert!(
-        (released.y() + released.height() - 844.0).abs() <= 1.0,
+        (released.y0 + released.height() - 844.0).abs() <= 1.0,
         "the CONTAINER release ends on the window edge — the bottom grew by \
          the container inset (34) once the keyboard left, got {released:?}"
     );
@@ -491,15 +460,13 @@ fn ignoring_only_the_container_region_releases_nothing_under_the_keyboard(
 /// bottom boundary paints through the keyboard and container bands to the
 /// window edge. The paint extension is a snapshot-only fact — the fill's own
 /// frame (and every a11y bound) stays on the boundary.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_fill_background_paints_under_the_keyboard_region(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_fill_background_paints_under_the_keyboard_region() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((
                 spacer(),
                 text("composer")
@@ -509,18 +476,16 @@ fn a_fill_background_paints_under_the_keyboard_region(
                     .background(Srgb::new(0.0, 0.35, 0.85)),
             ))
             .alignment(HorizontalAlignment::Leading)
-        });
+        },
+        390,
+        844,
+    );
 
-    let bounds = app
-        .query()
-        .role(Role::LABEL)
-        .label("composer")
-        .single()
-        .bounds();
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "composer");
     // The text sits 8 pt inside its `padding_with(8.0)` chrome; the padded
     // frame, not the label, is what ends on the keyboard boundary.
     assert!(
-        (bounds.y() + bounds.height() - (KEYBOARD_TOP - 8.0)).abs() <= 1.0,
+        (bounds.y0 + bounds.height() - (KEYBOARD_TOP - 8.0)).abs() <= 1.0,
         "the content's frame ends on the keyboard boundary, got {bounds:?}"
     );
     app.capture_snapshot("safe-area", "fill-under-keyboard", "keyboard");
@@ -529,15 +494,13 @@ fn a_fill_background_paints_under_the_keyboard_region(
 /// An `.ignore_safe_area` on an ancestor does not replace the fill's own
 /// default: a TOP declaration on the tree leaves a bottom background fill
 /// extending under the keyboard region.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((
                 card("header"),
                 spacer(),
@@ -549,26 +512,19 @@ fn a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom(
             ))
             .alignment(HorizontalAlignment::Leading)
             .ignore_safe_area(EdgeSet::TOP)
-        });
+        },
+        390,
+        844,
+    );
 
-    let header = app
-        .query()
-        .role(Role::LABEL)
-        .label("header")
-        .single()
-        .bounds();
+    let header = node_bounds_with_role(app.tree(), Role::Label, "header");
     assert!(
-        header.y().abs() <= 1.0,
+        header.y0.abs() <= 1.0,
         "the ancestor's TOP ignore released the header under the status bar, got {header:?}"
     );
-    let composer = app
-        .query()
-        .role(Role::LABEL)
-        .label("composer")
-        .single()
-        .bounds();
+    let composer = node_bounds_with_role(app.tree(), Role::Label, "composer");
     assert!(
-        (composer.y() + composer.height() - (KEYBOARD_TOP - 8.0)).abs() <= 1.0,
+        (composer.y0 + composer.height() - (KEYBOARD_TOP - 8.0)).abs() <= 1.0,
         "the composer frame still ends on the keyboard boundary, got {composer:?}"
     );
     app.capture_snapshot("safe-area", "fill-under-ancestor-top-ignore", "keyboard");
@@ -577,15 +533,13 @@ fn a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom(
 /// A background fill inside a `KEYBOARD.on(BOTTOM)` subtree ignores the
 /// keyboard region (its frame ends on the container boundary) but still
 /// extends through the container band it does not ignore.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_fill_under_a_keyboard_ignore_extends_through_the_container_band(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_fill_under_a_keyboard_ignore_extends_through_the_container_band() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((
                 spacer(),
                 text("composer")
@@ -596,16 +550,14 @@ fn a_fill_under_a_keyboard_ignore_extends_through_the_container_band(
             ))
             .alignment(HorizontalAlignment::Leading)
             .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))
-        });
+        },
+        390,
+        844,
+    );
 
-    let composer = app
-        .query()
-        .role(Role::LABEL)
-        .label("composer")
-        .single()
-        .bounds();
+    let composer = node_bounds_with_role(app.tree(), Role::Label, "composer");
     assert!(
-        (composer.y() + composer.height() - (CONTAINER_TOP - 8.0)).abs() <= 1.0,
+        (composer.y0 + composer.height() - (CONTAINER_TOP - 8.0)).abs() <= 1.0,
         "the composer frame ends on the container boundary, got {composer:?}"
     );
     app.capture_snapshot("safe-area", "fill-under-keyboard-ignore", "keyboard");
@@ -614,13 +566,13 @@ fn a_fill_under_a_keyboard_ignore_extends_through_the_container_band(
 /// §7.1's fill rule names background fills only: a `Divider` at the bottom
 /// edge and a bare `Color` strip at the top edge keep their own frames — no
 /// paint reaches into a region for them (snapshot read).
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn non_fill_leaves_at_an_edge_do_not_extend(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn non_fill_leaves_at_an_edge_do_not_extend() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((
                 Color::new(Srgb::new(0.8, 0.1, 0.1)).size(390.0, 4.0),
                 card("content"),
@@ -628,16 +580,14 @@ fn non_fill_leaves_at_an_edge_do_not_extend(ui: UiBuilder<Styled<hydrolysis_m3::
                 Divider,
             ))
             .alignment(HorizontalAlignment::Leading)
-        });
+        },
+        390,
+        844,
+    );
 
-    let content = app
-        .query()
-        .role(Role::LABEL)
-        .label("content")
-        .single()
-        .bounds();
+    let content = node_bounds_with_role(app.tree(), Role::Label, "content");
     assert!(
-        (content.y() - (SAFE_INSETS.top() + 4.0 + 10.0)).abs() <= 1.0,
+        (content.y0 - (f64::from(SAFE_INSETS.top()) + 4.0 + 10.0)).abs() <= 1.0,
         "the color strip's laid-out frame stays inside the container inset, \
          got {content:?}"
     );
@@ -649,15 +599,13 @@ fn non_fill_leaves_at_an_edge_do_not_extend(ui: UiBuilder<Styled<hydrolysis_m3::
 /// paints no further than its laid-out frame even at the bottom edge. The
 /// paint extension never changes a layout bound, so the snapshot is the
 /// check: the band stays the window background.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_non_fill_background_stays_inside_the_keyboard_region(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_non_fill_background_stays_inside_the_keyboard_region() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((
                 spacer(),
                 text("composer")
@@ -667,7 +615,10 @@ fn a_non_fill_background_stays_inside_the_keyboard_region(
                     .background(text("backdrop").foreground(Srgb::new(0.0, 0.5, 0.0))),
             ))
             .alignment(HorizontalAlignment::Leading)
-        });
+        },
+        390,
+        844,
+    );
 
     app.capture_snapshot("safe-area", "non-fill-under-keyboard", "keyboard");
 }
@@ -676,61 +627,50 @@ fn a_non_fill_background_stays_inside_the_keyboard_region(
 /// scrolls a focused text field the minimum distance that brings it clear —
 /// its bottom lands exactly on the keyboard boundary — on focus, and again
 /// while the keyboard inset grows.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let value = Binding::container(waterui::Str::from(""));
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             ScrollView::vertical(vstack((
                 spacer().size(390.0, 560.0),
                 field("Message", &value).size(350.0, 44.0),
                 spacer().size(390.0, 380.0),
             )))
-        });
+        },
+        390,
+        844,
+    );
 
     // The surface extends under the keyboard, so the field at the bottom of the
     // content is painted (and reported) inside the band it must escape.
-    let covered = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let covered = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        covered.y0 + covered.height() > KEYBOARD_TOP + 1.0,
         "precondition: the field starts under the keyboard band, got {covered:?}"
     );
 
-    app.query().role(Role::TEXT_INPUT).label("Message").focus();
-    app.settle();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "Message");
+        app.focus_quiet(id);
+    }
+    app.pump_for(Duration::from_millis(500));
 
-    let cleared = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let cleared = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        (cleared.y0 + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
         "the field's bottom lands exactly on the keyboard boundary, got {cleared:?}"
     );
 
     keyboard.set(EdgeInsets::new(0.0, 400.0, 0.0, 0.0));
-    app.settle();
+    app.pump_for(Duration::from_millis(500));
 
-    let tracked = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let tracked = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        (tracked.y() + tracked.height() - (844.0 - 400.0)).abs() <= 0.5,
+        (tracked.y0 + tracked.height() - (844.0 - 400.0)).abs() <= 0.5,
         "the surface tracks the growing keyboard inset, got {tracked:?}"
     );
 }
@@ -738,16 +678,14 @@ fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard(
 /// The clearance bound is `min(keyboard top, the surface's own frame bottom)`:
 /// a `vstack((scroll(form), toolbar))` whose scroll frame ends above the
 /// keyboard scrolls the field to the frame's bottom, not into the toolbar.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let value = Binding::container(waterui::Str::from(""));
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((
                 ScrollView::vertical(vstack((
                     spacer().size(390.0, 560.0),
@@ -756,26 +694,27 @@ fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar(
                 ))),
                 card("toolbar").size(390.0, 56.0),
             ))
-        });
+        },
+        390,
+        844,
+    );
 
     // Scroll frame: root content (48..508) minus the toolbar's 56 and the
     // vstack's 10 spacing → 48..442.
     let surface_bottom = KEYBOARD_TOP - 56.0 - 10.0;
 
-    app.query().role(Role::TEXT_INPUT).label("Message").focus();
-    app.settle();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "Message");
+        app.focus_quiet(id);
+    }
+    app.pump_for(Duration::from_millis(500));
     // The clearance glides; pump it fully past the settle cap so the
     // assertion reads the converged position.
     app.pump_for(Duration::from_secs(1));
 
-    let cleared = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let cleared = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        (cleared.y() + cleared.height() - surface_bottom).abs() <= 0.5,
+        (cleared.y0 + cleared.height() - surface_bottom).abs() <= 0.5,
         "the field clears to the scroll surface's own frame bottom \
          ({surface_bottom}), got {cleared:?}"
     );
@@ -783,15 +722,15 @@ fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar(
 
 /// A `List` is a scroll surface: a text field in a row under the keyboard
 /// band is scrolled clear to the list's frame bottom on focus.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_list_row_field_scrolls_clear_of_the_keyboard(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn a_list_row_field_scrolls_clear_of_the_keyboard() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let value = Binding::container(waterui::Str::from(""));
     let field_row = 10;
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             List::for_each((0..40).map(SelfId::new).collect::<Vec<_>>(), {
                 let value = value.clone();
                 move |item| {
@@ -802,31 +741,27 @@ fn a_list_row_field_scrolls_clear_of_the_keyboard(ui: UiBuilder<Styled<hydrolysi
                     }
                 }
             })
-        });
+        },
+        390,
+        844,
+    );
 
-    let covered = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let covered = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        covered.y0 + covered.height() > KEYBOARD_TOP + 1.0,
         "precondition: the row field starts under the keyboard band, got {covered:?}"
     );
 
-    app.query().role(Role::TEXT_INPUT).label("Message").focus();
-    app.settle();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "Message");
+        app.focus_quiet(id);
+    }
+    app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
-    let cleared = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let cleared = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        (cleared.y0 + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
         "the list scrolls the field's bottom onto the keyboard boundary, got {cleared:?}"
     );
 }
@@ -834,32 +769,28 @@ fn a_list_row_field_scrolls_clear_of_the_keyboard(ui: UiBuilder<Styled<hydrolysi
 /// The scroll surface's lazy viewport covers the extended frame: a lazy stack
 /// builds the rows laid out under the keyboard band, not just the avoided
 /// window.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_lazy_stack_in_a_scroll_builds_rows_under_the_keyboard_band(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_lazy_stack_in_a_scroll_builds_rows_under_the_keyboard_band() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             ScrollView::vertical(VStack::for_each(
                 (0..40).map(SelfId::new).collect::<Vec<_>>(),
                 |item| Frame::new(text(format!("row-{}", *item))).size(390.0, 30.0),
             ))
-        });
+        },
+        390,
+        844,
+    );
 
     // Row 15 sits at window y ≈ 48 + 15 * (30 + 10) = 648 — inside the
     // keyboard band. Without the surface's extension the lazy viewport ends
     // at the avoided bottom (508) and the row is never built.
-    let row = app
-        .query()
-        .role(Role::LABEL)
-        .label("row-15")
-        .single()
-        .bounds();
+    let row = node_bounds_with_role(app.tree(), Role::Label, "row-15");
     assert!(
-        row.y() > KEYBOARD_TOP && row.y() < 844.0,
+        row.y0 > KEYBOARD_TOP && row.y0 < 844.0,
         "the row under the keyboard band is built and placed, got {row:?}"
     );
 }
@@ -868,32 +799,28 @@ fn a_lazy_stack_in_a_scroll_builds_rows_under_the_keyboard_band(
 /// under non-zero regions keeps scrolling — every frame's layout rebind keeps
 /// the live drag handle valid instead of dropping the gesture after the
 /// first frame.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             ScrollView::vertical(vstack(
                 (0..30)
                     .map(|i| Frame::new(text(format!("row-{i}"))).size(390.0, 30.0))
                     .collect::<Vec<_>>(),
             ))
-        });
+        },
+        390,
+        844,
+    );
 
     // A touch drag is what claims a scroll view on a real device; the host
     // reports its gesture constants through `PlatformWindow::touch_scroll_config`.
     app.set_touch_scroll_config(hydrolysis::TouchScrollConfig::android_default());
 
-    let before = app
-        .query()
-        .role(Role::LABEL)
-        .label("row-8")
-        .single()
-        .bounds();
+    let before = node_bounds_with_role(app.tree(), Role::Label, "row-8");
 
     // A 250 pt drag sampled over five frames: each move lands on its own
     // pump, so a stale scroll handle would drop everything after frame one.
@@ -902,23 +829,16 @@ fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets(
         400.0,
         195.0,
         150.0,
-        DragOptions {
-            steps: 5,
-            frame_per_step: true,
-            pointer: hydrolysis::PointerKind::Touch,
-        },
+        5,
+        true,
+        hydrolysis::PointerKind::Touch,
     );
     app.pump_for(Duration::from_millis(500));
     app.settle();
 
-    let after = app
-        .query()
-        .role(Role::LABEL)
-        .label("row-8")
-        .single()
-        .bounds();
+    let after = node_bounds_with_role(app.tree(), Role::Label, "row-8");
     assert!(
-        before.y() - after.y() >= 100.0,
+        before.y0 - after.y0 >= 100.0,
         "the drag scrolled the content substantially across frames: \
          was {before:?}, now {after:?}"
     );
@@ -929,41 +849,40 @@ fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets(
 /// frame a sub-pixel off the boundary. A touch within half a physical
 /// pixel at the window's scale is still a touch — the nested declaration
 /// on the grown frame edge releases to the window edge.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_fractional_geometry_still_touches_the_boundary(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_fractional_geometry_still_touches_the_boundary() {
     // 2.75x-density container insets: nothing in this geometry is an
     // integer — not the boundary (844 - 24.38), not the release amounts,
     // not the composer's measured text height.
     const FRACTIONAL_INSETS: EdgeInsets = EdgeInsets::new(47.24, 24.38, 8.2, 8.6);
     let container = waterui::binding(FRACTIONAL_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .scale_factor(2.75)
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
-            vstack((
-                spacer(),
-                vstack((spacer(), card("composer")))
-                    .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM)),
-            ))
-            .alignment(HorizontalAlignment::Leading)
-            .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))
-        });
+    let mut app = {
+        let mut app = mount_rendered(
+            env_with_keyboard(&container, &keyboard),
+            move || {
+                vstack((
+                    spacer(),
+                    vstack((spacer(), card("composer")))
+                        .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM)),
+                ))
+                .alignment(HorizontalAlignment::Leading)
+                .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))
+            },
+            390,
+            844,
+        );
+        app.set_scale_factor(2.75);
+        app
+    };
 
     // The outer release moves the bottom boundary to the container edge
     // (819.62); the inner stack's f32-grown frame edge lands a sub-pixel
     // off it. Its CONTAINER declaration still touches and releases the
     // composer through the navigation-bar band to the window edge.
-    let composer = app
-        .query()
-        .role(Role::LABEL)
-        .label("composer")
-        .single()
-        .bounds();
+    let composer = node_bounds_with_role(app.tree(), Role::Label, "composer");
     assert!(
-        (composer.y() + composer.height() - 844.0).abs() <= 1.0,
+        (composer.y0 + composer.height() - 844.0).abs() <= 1.0,
         "the nested declaration touches within half a physical pixel and \
          releases to the window edge, got {composer:?}"
     );
@@ -974,13 +893,13 @@ fn a_fractional_geometry_still_touches_the_boundary(
 /// empty one: a background `Color` carrying `.ignore_safe_area(EdgeSet::NONE)`
 /// names no edge, so it releases nothing and no default extension applies.
 /// The snapshot is the check: the bands stay the window background.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_fill_with_an_empty_ignore_extends_nowhere(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn a_fill_with_an_empty_ignore_extends_nowhere() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((
                 spacer(),
                 text("composer")
@@ -992,19 +911,17 @@ fn a_fill_with_an_empty_ignore_extends_nowhere(ui: UiBuilder<Styled<hydrolysis_m
                     ),
             ))
             .alignment(HorizontalAlignment::Leading)
-        });
+        },
+        390,
+        844,
+    );
 
-    let bounds = app
-        .query()
-        .role(Role::LABEL)
-        .label("composer")
-        .single()
-        .bounds();
+    let bounds = node_bounds_with_role(app.tree(), Role::Label, "composer");
     // The declaration names no edges, so the padded frame still ends on the
     // keyboard boundary — the layout precondition a default extension
     // would share.
     assert!(
-        (bounds.y() + bounds.height() - (KEYBOARD_TOP - 8.0)).abs() <= 1.0,
+        (bounds.y0 + bounds.height() - (KEYBOARD_TOP - 8.0)).abs() <= 1.0,
         "the frame still ends on the boundary, got {bounds:?}"
     );
     app.capture_snapshot("safe-area", "fill-declared-none", "keyboard");
@@ -1014,30 +931,28 @@ fn a_fill_with_an_empty_ignore_extends_nowhere(ui: UiBuilder<Styled<hydrolysis_m
 /// every edge: a full-height background touches both the top and bottom
 /// boundaries, and only the named edge reaches the window edge — the
 /// status-bar band keeps the window background (snapshot).
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_fill_ignore_names_the_only_edge_that_extends(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn a_fill_ignore_names_the_only_edge_that_extends() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((card("content"), spacer()))
                 .alignment(HorizontalAlignment::Leading)
                 .background(Color::new(Srgb::new(0.75, 0.4, 0.0)).ignore_safe_area(EdgeSet::BOTTOM))
-        });
+        },
+        390,
+        844,
+    );
 
     // The named bottom edge's release is the fill's whole extension. The
     // assertion is a precondition — the card keeps the container inset —
     // and the snapshot is the check: the background paints to the window
     // bottom edge and nowhere else.
-    let content = app
-        .query()
-        .role(Role::LABEL)
-        .label("content")
-        .single()
-        .bounds();
+    let content = node_bounds_with_role(app.tree(), Role::Label, "content");
     assert!(
-        (content.y() - SAFE_INSETS.top()).abs() <= 1.0,
+        (content.y0 - f64::from(SAFE_INSETS.top())).abs() <= 1.0,
         "the content frame keeps the container inset, got {content:?}"
     );
     app.capture_snapshot("safe-area", "fill-ignore-bottom-edge-only", "keyboard");
@@ -1049,68 +964,60 @@ fn a_fill_ignore_names_the_only_edge_that_extends(ui: UiBuilder<Styled<hydrolysi
 /// at 2.625, a real device density: the hosted frame maps from the layout
 /// record, so the clearance lands on the boundary in logical units
 /// whatever the window's scale.
-fn navigation_hosted_form_clears_the_focused_field(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-    scale: f64,
-) {
+fn navigation_hosted_form_clears_the_focused_field(scale: f64) {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let value = Binding::container(waterui::Str::from(""));
-    let mut app = ui
-        .scale_factor(scale)
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
-            NavigationView::new(
-                "Compose",
-                ScrollView::vertical(vstack((
-                    spacer().size(390.0, 560.0),
-                    field("Message", &value).size(350.0, 44.0),
-                    spacer().size(390.0, 380.0),
-                ))),
-            )
-        });
+    let mut app = {
+        let mut app = mount_rendered(
+            env_with_keyboard(&container, &keyboard),
+            move || {
+                NavigationView::new(
+                    "Compose",
+                    ScrollView::vertical(vstack((
+                        spacer().size(390.0, 560.0),
+                        field("Message", &value).size(350.0, 44.0),
+                        spacer().size(390.0, 380.0),
+                    ))),
+                )
+            },
+            390,
+            844,
+        );
+        app.set_scale_factor(scale);
+        app
+    };
 
-    let covered = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let covered = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        covered.y0 + covered.height() > KEYBOARD_TOP + 1.0,
         "precondition at scale {scale}: the field starts under the keyboard \
          band, got {covered:?}"
     );
 
-    app.query().role(Role::TEXT_INPUT).label("Message").focus();
-    app.settle();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "Message");
+        app.focus_quiet(id);
+    }
+    app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
-    let cleared = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let cleared = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        (cleared.y0 + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
         "at scale {scale} the navigation-hosted surface clears the field to \
          the keyboard boundary, got {cleared:?}"
     );
 }
 
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_form_inside_navigation_content_clears_the_focused_field(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
-    navigation_hosted_form_clears_the_focused_field(ui, 1.0);
+#[test]
+fn a_form_inside_navigation_content_clears_the_focused_field() {
+    navigation_hosted_form_clears_the_focused_field(1.0);
 }
 
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_form_inside_navigation_content_clears_the_focused_field_at_device_scale(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
-    navigation_hosted_form_clears_the_focused_field(ui, 2.625);
+#[test]
+fn a_form_inside_navigation_content_clears_the_focused_field_at_device_scale() {
+    navigation_hosted_form_clears_the_focused_field(2.625);
 }
 
 /// A navigation page's background fill stays inside the content frame: the
@@ -1119,42 +1026,48 @@ fn a_form_inside_navigation_content_clears_the_focused_field_at_device_scale(
 /// top stop at the bar's inner edge. Paint is the check — the snapshot
 /// shows the fill beginning at the bar and the scrolled rows clipping at
 /// the bar's inner edge, never covering the title.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_navigation_page_background_stays_below_the_bar(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_navigation_page_background_stays_below_the_bar() {
     let insets = waterui::binding(SAFE_INSETS);
     let offset = waterui::binding(waterui::layout::Point::zero());
-    let mut app = ui.environment(env_with_insets(&insets)).mount_offscreen({
-        let offset = offset.clone();
-        move || {
-            NavigationView::new(
-                "Home",
-                ScrollView::vertical(vstack((
-                    card("row one"),
-                    card("row two"),
-                    card("row three"),
-                    spacer().size(390.0, 1400.0),
-                )))
-                .report_offset(&offset)
-                .background(Color::new(Srgb::new(0.85, 0.2, 0.3)))
-                .a11y_label("page-scroll"),
-            )
-        }
-    });
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        {
+            let offset = offset.clone();
+            move || {
+                NavigationView::new(
+                    "Home",
+                    ScrollView::vertical(vstack((
+                        card("row one"),
+                        card("row two"),
+                        card("row three"),
+                        spacer().size(390.0, 1400.0),
+                    )))
+                    .report_offset(&offset)
+                    .background(Color::new(Srgb::new(0.85, 0.2, 0.3)))
+                    .a11y_label("page-scroll"),
+                )
+            }
+        },
+        390,
+        844,
+    );
     app.settle();
 
     // Read the bar's own bounds — the navigation-bar a11y node carries the
     // laid-out bar rect, so the test does not restate the theme metric.
-    let bar = app.query().role(Role::NAVIGATION).single().bounds();
-    let scroll = app.query().label("page-scroll").single().bounds();
+    let bar = node_bounds_only_role(app.tree(), Role::Navigation);
+    let scroll = node_bounds(app.tree(), "page-scroll");
     assert!(
-        (scroll.y() - (bar.y() + bar.height())).abs() <= 1.0,
+        (scroll.y0 - (bar.y0 + bar.height())).abs() <= 1.0,
         "the page's scroll surface starts at the bar's inner edge, \
          got scroll {scroll:?} with bar {bar:?}"
     );
 
-    app.query().label("page-scroll").scroll_down();
+    {
+        let id = node_id(app.tree(), "page-scroll");
+        app.scroll_down(id);
+    }
     app.settle();
     assert!(
         offset.snapshot().y > 1.0,
@@ -1169,29 +1082,25 @@ fn a_navigation_page_background_stays_below_the_bar(
 /// boundary — the bar's band covers it — so the hero stays at the content
 /// top, below the bar (48 inset + the bar's height), never at the window
 /// edge.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn an_ignore_top_inside_navigation_content_stays_below_the_bar(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn an_ignore_top_inside_navigation_content_stays_below_the_bar() {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             NavigationView::new(
                 "Hero",
                 vstack((card("hero").ignore_safe_area(EdgeSet::TOP), card("below"))),
             )
-        });
+        },
+        390,
+        844,
+    );
 
-    let bar = app.query().role(Role::NAVIGATION).single().bounds();
-    let hero = app
-        .query()
-        .role(Role::LABEL)
-        .label("hero")
-        .single()
-        .bounds();
+    let bar = node_bounds_only_role(app.tree(), Role::Navigation);
+    let hero = node_bounds_with_role(app.tree(), Role::Label, "hero");
     assert!(
-        (hero.y() - (bar.y() + bar.height())).abs() <= 1.0,
+        (hero.y0 - (bar.y0 + bar.height())).abs() <= 1.0,
         "the covered top edge releases nothing: the hero stays below the \
          bar, got hero {hero:?} with bar {bar:?}"
     );
@@ -1203,15 +1112,13 @@ fn an_ignore_top_inside_navigation_content_stays_below_the_bar(
 /// painting the band, the page's frame ending on the boundary. A release
 /// probe at the page's bottom edge discriminates reachability: released
 /// past the keyboard, it lands on the container boundary.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_navigation_page_touching_the_bottom_still_extends_its_fill() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             NavigationView::new(
                 "Home",
                 vstack((
@@ -1226,16 +1133,19 @@ fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
                 .background(Color::new(Srgb::new(0.2, 0.6, 0.35)))
                 .a11y_label("page"),
             )
-        });
+        },
+        390,
+        844,
+    );
 
-    let page = app.query().label("page").single().bounds();
+    let page = node_bounds(app.tree(), "page");
     assert!(
-        (page.y() + page.height() - KEYBOARD_TOP).abs() <= 1.0,
+        (page.y0 + page.height() - KEYBOARD_TOP).abs() <= 1.0,
         "the page's frame still ends on the keyboard boundary, got {page:?}"
     );
-    let docked = app.query().label("docked").single().bounds();
+    let docked = node_bounds(app.tree(), "docked");
     assert!(
-        (docked.y() + docked.height() - CONTAINER_TOP).abs() <= 1.0,
+        (docked.y0 + docked.height() - CONTAINER_TOP).abs() <= 1.0,
         "the bottom edge is reachable: the release lands the probe at \
          {CONTAINER_TOP}, got {docked:?}"
     );
@@ -1246,17 +1156,15 @@ fn a_navigation_page_touching_the_bottom_still_extends_its_fill(
 /// the overlay inherits the window's boundaries, and a tooltip mid-window
 /// touches none of them, so its fill extends nowhere — the snapshot shows
 /// a small fill under the anchor, not a window-flooding one.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn an_anchored_overlay_fill_stays_at_its_own_frame(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn an_anchored_overlay_fill_stays_at_its_own_frame() {
     use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
 
     let insets = waterui::binding(SAFE_INSETS);
     let open = waterui::binding(true);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             vstack((
                 spacer().size(390.0, 200.0),
                 text("anchor").body().anchored_overlay(
@@ -1272,17 +1180,15 @@ fn an_anchored_overlay_fill_stays_at_its_own_frame(
                 spacer(),
             ))
             .alignment(HorizontalAlignment::Leading)
-        });
+        },
+        390,
+        844,
+    );
 
-    let anchor = app
-        .query()
-        .role(Role::LABEL)
-        .label("anchor")
-        .single()
-        .bounds();
-    let tip = app.query().role(Role::LABEL).label("tip").single().bounds();
+    let anchor = node_bounds_with_role(app.tree(), Role::Label, "anchor");
+    let tip = node_bounds_with_role(app.tree(), Role::Label, "tip");
     assert!(
-        tip.y() >= anchor.y() + anchor.height() - 1.0,
+        tip.y0 >= anchor.y0 + anchor.height() - 1.0,
         "the tip presents below its anchor, anchor {anchor:?} tip {tip:?}"
     );
     assert!(
@@ -1297,17 +1203,15 @@ fn an_anchored_overlay_fill_stays_at_its_own_frame(
 /// detail column's leading edge is not on the host's leading boundary, so
 /// it is covered — the snapshot shows the fill starting at the column's
 /// leading edge with the sidebar unpainted-over beside it.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1400, 900))]
-fn a_split_detail_background_does_not_cross_the_sidebar(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_split_detail_background_does_not_cross_the_sidebar() {
     use waterui::navigation::NavigationSplitView;
 
     let insets = waterui::binding(SAFE_INSETS);
     let selection = Binding::container(Some(0i32));
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             NavigationSplitView::new(
                 &selection,
                 || {
@@ -1323,18 +1227,16 @@ fn a_split_detail_background_does_not_cross_the_sidebar(
                     )
                 },
             )
-        });
+        },
+        1400,
+        900,
+    );
     app.settle();
 
-    let sidebar = app.query().role(Role::LIST).single().bounds();
-    let detail = app
-        .query()
-        .role(Role::LABEL)
-        .label("detail-fill")
-        .single()
-        .bounds();
+    let sidebar = node_bounds_only_role(app.tree(), Role::List);
+    let detail = node_bounds_with_role(app.tree(), Role::Label, "detail-fill");
     assert!(
-        detail.x() >= sidebar.x() + sidebar.width() - 1.0,
+        detail.x0 >= sidebar.x0 + sidebar.width() - 1.0,
         "the detail column starts at or past the sidebar's trailing edge, \
          sidebar {sidebar:?} detail {detail:?}"
     );
@@ -1347,10 +1249,8 @@ fn a_split_detail_background_does_not_cross_the_sidebar(
 /// a band the outer declaration already released. Both directions run:
 /// KEYBOARD under the navigation view with CONTAINER inside, and CONTAINER
 /// under the navigation view with KEYBOARD inside.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn nested_releases_never_move_the_navigation_boundary_inward(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn nested_releases_never_move_the_navigation_boundary_inward() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
 
@@ -1358,25 +1258,22 @@ fn nested_releases_never_move_the_navigation_boundary_inward(
     // regions end up released, so the inner declaration extends the
     // content outward to the window edge — never inward to a re-covered
     // boundary.
-    let mut keyboard_first = ui
-        .clone()
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut keyboard_first = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             NavigationView::new(
                 "Outer",
                 vstack((spacer(), card("inner")))
                     .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM)),
             )
             .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))
-        });
-    let inner = keyboard_first
-        .query()
-        .role(Role::LABEL)
-        .label("inner")
-        .single()
-        .bounds();
+        },
+        390,
+        844,
+    );
+    let inner = node_bounds_with_role(keyboard_first.tree(), Role::Label, "inner");
     assert!(
-        (inner.y() + inner.height() - 844.0).abs() <= 1.0,
+        (inner.y0 + inner.height() - 844.0).abs() <= 1.0,
         "KEYBOARD under nav + CONTAINER inside: the bottom edge lands on the \
          window edge, got {inner:?}"
     );
@@ -1384,24 +1281,22 @@ fn nested_releases_never_move_the_navigation_boundary_inward(
     // Outer releases the container region, inner names the keyboard: the
     // inner declaration releases outward past the container band to the
     // window edge.
-    let mut container_first = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut container_first = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             NavigationView::new(
                 "Outer",
                 vstack((spacer(), card("inner")))
                     .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM)),
             )
             .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM))
-        });
-    let inner = container_first
-        .query()
-        .role(Role::LABEL)
-        .label("inner")
-        .single()
-        .bounds();
+        },
+        390,
+        844,
+    );
+    let inner = node_bounds_with_role(container_first.tree(), Role::Label, "inner");
     assert!(
-        (inner.y() + inner.height() - 844.0).abs() <= 1.0,
+        (inner.y0 + inner.height() - 844.0).abs() <= 1.0,
         "CONTAINER under nav + KEYBOARD inside: the bottom edge lands on the \
          window edge, got {inner:?}"
     );
@@ -1411,39 +1306,38 @@ fn nested_releases_never_move_the_navigation_boundary_inward(
 /// change scrolls the field clear inside the early pass, so the very frame
 /// the inset arrives already paints the field above the new keyboard top —
 /// not one frame later.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_keyboard_inset_change_clears_the_field_on_that_frame(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let value = Binding::container(waterui::Str::from(""));
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             ScrollView::vertical(vstack((
                 spacer().size(390.0, 560.0),
                 field("Message", &value).size(350.0, 44.0),
                 spacer().size(390.0, 380.0),
             )))
-        });
+        },
+        390,
+        844,
+    );
 
-    app.query().role(Role::TEXT_INPUT).label("Message").focus();
-    app.settle();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "Message");
+        app.focus_quiet(id);
+    }
+    app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
     keyboard.set(EdgeInsets::new(0.0, 400.0, 0.0, 0.0));
     // One frame — not a settle. The clearance must already be painted.
     app.pump_for(Duration::from_millis(16));
 
-    let tracked = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let tracked = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        (tracked.y() + tracked.height() - (844.0 - 400.0)).abs() <= 0.5,
+        (tracked.y0 + tracked.height() - (844.0 - 400.0)).abs() <= 0.5,
         "the field is already clear on the frame the inset arrived, got {tracked:?}"
     );
 }
@@ -1453,14 +1347,14 @@ fn a_keyboard_inset_change_clears_the_field_on_that_frame(
 /// a safe-area context, so the outer surface owns the clearance — the
 /// field lands on the keyboard boundary, never over-scrolled by a second
 /// surface reading the field's pre-clearance rect.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_field_in_a_nested_scroll_is_cleared_once(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn a_field_in_a_nested_scroll_is_cleared_once() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
     let value = Binding::container(waterui::Str::from(""));
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             ScrollView::vertical(vstack((
                 spacer().size(390.0, 430.0),
                 ScrollView::vertical(vstack((
@@ -1471,34 +1365,30 @@ fn a_field_in_a_nested_scroll_is_cleared_once(ui: UiBuilder<Styled<hydrolysis_m3
                 .size(350.0, 200.0),
                 spacer().size(390.0, 380.0),
             )))
-        });
+        },
+        390,
+        844,
+    );
 
     // The inner surface is context-free (§7.1: a scroll surface's content
     // stays context-free): its field at 510..554 sits under the keyboard
     // band inside the outer surface's extended window.
-    let covered = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let covered = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        covered.y0 + covered.height() > KEYBOARD_TOP + 1.0,
         "precondition: the nested field starts under the keyboard band, got {covered:?}"
     );
 
-    app.query().role(Role::TEXT_INPUT).label("Message").focus();
-    app.settle();
+    {
+        let id = node_id_with_role(app.tree(), Role::TextInput, "Message");
+        app.focus_quiet(id);
+    }
+    app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
-    let cleared = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let cleared = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        (cleared.y0 + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
         "the owning surface clears the nested field exactly once, got {cleared:?}"
     );
 }
@@ -1508,15 +1398,15 @@ fn a_field_in_a_nested_scroll_is_cleared_once(ui: UiBuilder<Styled<hydrolysis_m3
 /// container boundary, and a background fill inside extends nowhere
 /// through the bar — the snapshot shows the fill stopping at the tab
 /// bar's top edge.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_tab_page_background_stops_at_the_tab_bar(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn a_tab_page_background_stops_at_the_tab_bar() {
     use waterui::navigation::{Tab, Tabs};
 
     let insets = waterui::binding(SAFE_INSETS);
     let selection = Binding::container(0i32);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             Tabs::new(
                 &selection,
                 vec![
@@ -1533,14 +1423,17 @@ fn a_tab_page_background_stops_at_the_tab_bar(ui: UiBuilder<Styled<hydrolysis_m3
                     }),
                 ],
             )
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
 
-    let page = app.query().label("tab-page").single().bounds();
-    let bar = app.query().role(Role::TAB_LIST).single().bounds();
+    let page = node_bounds(app.tree(), "tab-page");
+    let bar = node_bounds_only_role(app.tree(), Role::TabList);
     assert!(
-        (bar.y() + bar.height() - CONTAINER_TOP).abs() <= 1.0
-            && (page.y() + page.height() - bar.y()).abs() <= 1.0,
+        (bar.y0 + bar.height() - CONTAINER_TOP).abs() <= 1.0
+            && (page.y0 + page.height() - bar.y0).abs() <= 1.0,
         "with the keyboard down the bar ends on the container boundary and \
          the page's bottom edge sits at the bar's top edge, page {page:?} \
          bar {bar:?}"
@@ -1554,17 +1447,17 @@ fn a_tab_page_background_stops_at_the_tab_bar(ui: UiBuilder<Styled<hydrolysis_m3
 /// keyboard stops partway up the band or covers it outright. The tab's
 /// hosted content keeps the deeper boundary: a focused field inside it
 /// still clears the keyboard.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_tab_bar_stays_docked_under_the_keyboard(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn a_tab_bar_stays_docked_under_the_keyboard() {
     use waterui::navigation::{Tab, Tabs};
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
     let selection = Binding::container(0i32);
     let value = Binding::container(waterui::Str::from(""));
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             Tabs::new(
                 &selection,
                 vec![
@@ -1597,7 +1490,10 @@ fn a_tab_bar_stays_docked_under_the_keyboard(ui: UiBuilder<Styled<hydrolysis_m3:
                     }),
                 ],
             )
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
 
     // Two keyboard depths on the bottom edge: one that only partly covers
@@ -1610,17 +1506,17 @@ fn a_tab_bar_stays_docked_under_the_keyboard(ui: UiBuilder<Styled<hydrolysis_m3:
         keyboard.set(EdgeInsets::new(0.0, bottom_inset, 0.0, 0.0));
         app.settle();
 
-        let bar = app.query().role(Role::TAB_LIST).single().bounds();
+        let bar = node_bounds_only_role(app.tree(), Role::TabList);
         assert!(
-            (bar.y() + bar.height() - CONTAINER_TOP).abs() <= 1.0,
+            (bar.y0 + bar.height() - CONTAINER_TOP).abs() <= 1.0,
             "bottom_inset={bottom_inset}: the tab bar docks at the \
              container boundary under the keyboard, got {bar:?}"
         );
         assert!(
             if covers_band {
-                bar.y() > keyboard_top + 1.0
+                bar.y0 > keyboard_top + 1.0
             } else {
-                bar.y() < keyboard_top
+                bar.y0 < keyboard_top
             },
             "bottom_inset={bottom_inset}: the band {} the keyboard's top, \
              got {bar:?}",
@@ -1636,16 +1532,16 @@ fn a_tab_bar_stays_docked_under_the_keyboard(ui: UiBuilder<Styled<hydrolysis_m3:
         // top under the partway keyboard, the keyboard boundary under the
         // deep one, where the covered band stays out of reach even for
         // the card's `.ignore_safe_area(.keyboard)` release.
-        let content_bottom = bar.y().min(keyboard_top);
-        let content = app.query().label("tab-content-edge").single().bounds();
+        let content_bottom = bar.y0.min(keyboard_top);
+        let content = node_bounds(app.tree(), "tab-content-edge");
         assert!(
-            (content.y() + content.height() - content_bottom).abs() <= 1.0,
+            (content.y0 + content.height() - content_bottom).abs() <= 1.0,
             "bottom_inset={bottom_inset}: the hosted content ends at the \
              deeper boundary, got {content:?}"
         );
-        let page = app.query().label("tab-page").single().bounds();
+        let page = node_bounds(app.tree(), "tab-page");
         assert!(
-            (page.y() + page.height() - content_bottom).abs() <= 1.0,
+            (page.y0 + page.height() - content_bottom).abs() <= 1.0,
             "bottom_inset={bottom_inset}: the page surface stops at the \
              deeper boundary under the docked bar, got {page:?}"
         );
@@ -1653,28 +1549,19 @@ fn a_tab_bar_stays_docked_under_the_keyboard(ui: UiBuilder<Styled<hydrolysis_m3:
 
     // The loop's last leg left the deep keyboard up: a focused field in
     // the hosted content still clears to the keyboard boundary.
-    let covered = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let covered = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        covered.y() + covered.height() > KEYBOARD_TOP + 1.0,
+        covered.y0 + covered.height() > KEYBOARD_TOP + 1.0,
         "precondition: the field starts under the keyboard band, got {covered:?}"
     );
-    app.query().role(Role::TEXT_INPUT).label("Message").focus();
-    app.settle();
+    let field = node_id_with_role(app.tree(), Role::TextInput, "Message");
+    app.focus_quiet(field);
+    app.pump_for(Duration::from_millis(500));
     app.pump_for(Duration::from_secs(1));
 
-    let cleared = app
-        .query()
-        .role(Role::TEXT_INPUT)
-        .label("Message")
-        .single()
-        .bounds();
+    let cleared = node_bounds_with_role(app.tree(), Role::TextInput, "Message");
     assert!(
-        (cleared.y() + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
+        (cleared.y0 + cleared.height() - KEYBOARD_TOP).abs() <= 0.5,
         "the hosted surface clears the field to the keyboard boundary, \
          got {cleared:?}"
     );
@@ -1683,19 +1570,17 @@ fn a_tab_bar_stays_docked_under_the_keyboard(ui: UiBuilder<Styled<hydrolysis_m3:
 /// A `NavigationView` bottom toolbar is the same docked chrome: under a
 /// keyboard deeper than the bottom inset, its items sit in the band under
 /// the keyboard region instead of riding on top of it.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_navigation_bottom_toolbar_stays_docked_under_the_keyboard(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_navigation_bottom_toolbar_stays_docked_under_the_keyboard() {
     use waterui::navigation::{
         NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
     };
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             NavigationView::new("Home", vstack((card("content"), spacer()))).navigation_toolbar(
                 NavigationToolbar::new(vec![NavigationToolbarItem::action(
                     NavigationToolbarPlacement::BottomBar,
@@ -1703,17 +1588,15 @@ fn a_navigation_bottom_toolbar_stays_docked_under_the_keyboard(
                     || {},
                 )]),
             )
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
 
-    let item = app
-        .query()
-        .role(Role::BUTTON)
-        .label("New")
-        .single()
-        .bounds();
+    let item = node_bounds_with_role(app.tree(), Role::Button, "New");
     assert!(
-        item.y() > KEYBOARD_TOP + 1.0 && item.y() + item.height() <= CONTAINER_TOP + 1.0,
+        item.y0 > KEYBOARD_TOP + 1.0 && item.y0 + item.height() <= CONTAINER_TOP + 1.0,
         "the bottom toolbar item sits in the container band under the \
          keyboard, got {item:?}"
     );
@@ -1725,10 +1608,8 @@ fn a_navigation_bottom_toolbar_stays_docked_under_the_keyboard(
 /// through every hosted/`content_area_for` hop, so the page toolbar
 /// stacks on the docked tab bar with the keyboard down and up, never
 /// riding onto the keyboard while the tab bar sits under it.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement, Tab,
         Tabs,
@@ -1737,9 +1618,9 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar(
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
     let selection = Binding::container(0i32);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             Tabs::new(
                 &selection,
                 vec![
@@ -1760,41 +1641,34 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar(
                     }),
                 ],
             )
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
 
     // The stacking gap and the item's `y` are measured with the keyboard
     // down; the keyboard covering the tab bar's band must leave both
     // identical — the dock lands on the same edge either way.
-    let item_down = app
-        .query()
-        .role(Role::BUTTON)
-        .label("New")
-        .single()
-        .bounds();
-    let bar_down = app.query().role(Role::TAB_LIST).single().bounds();
-    let gap_down = bar_down.y() - item_down.y() - item_down.height();
+    let item_down = node_bounds_with_role(app.tree(), Role::Button, "New");
+    let bar_down = node_bounds_only_role(app.tree(), Role::TabList);
+    let gap_down = bar_down.y0 - item_down.y0 - item_down.height();
 
     keyboard.set(KEYBOARD_INSETS);
     app.settle();
 
-    let item = app
-        .query()
-        .role(Role::BUTTON)
-        .label("New")
-        .single()
-        .bounds();
-    let bar = app.query().role(Role::TAB_LIST).single().bounds();
+    let item = node_bounds_with_role(app.tree(), Role::Button, "New");
+    let bar = node_bounds_only_role(app.tree(), Role::TabList);
     assert!(
-        (item.y() - item_down.y()).abs() <= 0.5
-            && (bar.y() - item.y() - item.height() - gap_down).abs() <= 0.5,
+        (item.y0 - item_down.y0).abs() <= 0.5
+            && (bar.y0 - item.y0 - item.height() - gap_down).abs() <= 0.5,
         "with the keyboard covering the tab bar the toolbar item keeps \
          its y ({:.1} -> {:.1}) and its stacking gap ({:.1} -> {:.1}), \
          item {item:?} tab bar {bar:?}",
-        item_down.y(),
-        item.y(),
+        item_down.y0,
+        item.y0,
         gap_down,
-        bar.y() - item.y() - item.height(),
+        bar.y0 - item.y0 - item.height(),
     );
 }
 
@@ -1802,10 +1676,8 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar(
 /// docks its own bar at its own frame's bottom — the dock the outer bar
 /// establishes applies only to content whose edge lands on it, not to
 /// every descendant carrying the boundary down a `child()` chain.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
     use waterui::navigation::{
         NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement, Tab, Tabs,
     };
@@ -1814,9 +1686,9 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar(
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
     let selection = Binding::container(0i32);
     let inner = Binding::container(0i32);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             Tabs::new(
                 &selection,
                 vec![
@@ -1860,7 +1732,10 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar(
                     }),
                 ],
             )
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
 
     for keyboard_up in [false, true] {
@@ -1868,29 +1743,26 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar(
             keyboard.set(KEYBOARD_INSETS);
             app.settle();
         }
-        let mut bars: Vec<_> = app
-            .query()
-            .role(Role::TAB_LIST)
-            .all()
-            .iter()
-            .map(waterui_testing::ElementRef::bounds)
+        let mut bars: Vec<_> = support::nodes(app.tree())
+            .filter(|(_, node)| node.role() == Role::TabList)
+            .filter_map(|(_, node)| node.bounds())
             .collect();
-        bars.sort_by(|a, b| a.y().partial_cmp(&b.y()).unwrap());
+        bars.sort_by(|a, b| a.y0.partial_cmp(&b.y0).unwrap());
         assert_eq!(
             bars.len(),
             2,
             "expected exactly two tab lists, got {bars:?}"
         );
         let [inner_bar, outer_bar] = [bars[0], bars[1]];
-        let below = app.query().label("below-inner").single().bounds();
+        let below = node_bounds(app.tree(), "below-inner");
         assert!(
-            inner_bar.y() + inner_bar.height() <= below.y() + 1.0,
+            inner_bar.y0 + inner_bar.height() <= below.y0 + 1.0,
             "keyboard_up={keyboard_up}: a nested tab bar that does not reach \
              the dock stays inside its own frame, above the next sibling, \
              inner bar {inner_bar:?} sibling {below:?}"
         );
         assert!(
-            (outer_bar.y() + outer_bar.height() - CONTAINER_TOP).abs() <= 1.0,
+            (outer_bar.y0 + outer_bar.height() - CONTAINER_TOP).abs() <= 1.0,
             "keyboard_up={keyboard_up}: the outer bar stays docked on the \
              container boundary, got {outer_bar:?}"
         );
@@ -1901,14 +1773,12 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar(
 /// frame (`with_frame` on the window root context): the accessory's
 /// background stays inside the panel — the snapshot shows a small tinted
 /// accessory row, not a window-wide fill.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_context_menu_panel_background_stays_at_the_panel(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_context_menu_panel_background_stays_at_the_panel() {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             Frame::new(
                 button("host").action(|| {}).context_menu(
                     ContextMenu::new(vec!["Copy".action(|| {})]).accessory(
@@ -1921,24 +1791,22 @@ fn a_context_menu_panel_background_stays_at_the_panel(
             )
             .width(160.0)
             .height(80.0)
-        });
-    app.settle();
-
-    let host = app
-        .query()
-        .role(Role::BUTTON)
-        .label("host")
-        .single()
-        .bounds();
-    // A secondary click opens the menu; the accessory forces the drawn
-    // presentation so the panel renders inside this window's scene.
-    app.secondary_click_at(
-        host.x() + host.width() / 2.0,
-        host.y() + host.height() / 2.0,
+        },
+        390,
+        844,
     );
     app.settle();
 
-    let preview = app.query().label("preview-panel").single().bounds();
+    let host = node_bounds_with_role(app.tree(), Role::Button, "host");
+    // A secondary click opens the menu; the accessory forces the drawn
+    // presentation so the panel renders inside this window's scene.
+    app.secondary_click_at(
+        f64_as_f32(host.x0 + host.width() / 2.0),
+        f64_as_f32(host.y0 + host.height() / 2.0),
+    );
+    app.settle();
+
+    let preview = node_bounds(app.tree(), "preview-panel");
     assert!(
         preview.width() <= 200.0 && preview.height() <= 120.0,
         "the panel keeps its own small frame rather than flooding the \
@@ -1951,17 +1819,22 @@ fn a_context_menu_panel_background_stays_at_the_panel(
 /// materialized items — the `LazyStack` layout arm used to leave it unset,
 /// so items always saw `None`. Items inherit the window's boundaries like
 /// static siblings: the last row's bottom edge is reachable, so the release
-/// probe inside it lands on the container boundary (the row's fixed
-/// intrinsic height places its bottom edge exactly on the boundary).
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+/// probe inside it lands on the container boundary.
+///
+/// The fixture cannot assume where item edges land — placement depends on
+/// style metrics — so it publishes no keyboard at first, reads where the
+/// bottom-anchored stack put the last row's bottom edge, and then
+/// publishes a keyboard region whose boundary lies exactly there. The
+/// probe is the row itself, so the released measure grows the row's top
+/// edge upward while its bottom edge stays anchored on the boundary —
+/// the release cannot shift the edge it released.
+#[test]
+fn a_lazy_stack_outside_a_scroll_gives_items_a_context() {
     let container = waterui::binding(SAFE_INSETS);
-    let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let mut app = ui
-        .environment(env_with_keyboard(&container, &keyboard))
-        .mount_offscreen(move || {
+    let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
+    let mut app = mount_rendered(
+        env_with_keyboard(&container, &keyboard),
+        move || {
             vstack((
                 spacer(),
                 VStack::for_each((0..4).map(SelfId::new).collect::<Vec<_>>(), |item| {
@@ -1972,20 +1845,20 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
                     };
                     if *item == 3 {
                         AnyView::new(
-                            vstack((
-                                // Fixed spacer standing in for `spacer()`:
-                                // a stretchy child in a lazy item panics
-                                // (water-rs/waterui#1930) — restore it once
-                                // that lands.
-                                spacer().size(390.0, 16.0),
-                                edge_probe(
-                                    card("lazy 3"),
-                                    "lazy-3",
-                                    SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
-                                ),
-                            ))
-                            .spacing(0.0)
-                            .background(color),
+                            // The probe is the whole row: its bottom edge
+                            // coincides with the stack's anchored bottom
+                            // edge, which a bottom-anchored stack cannot
+                            // shift when the released measure grows the
+                            // row — the growth slides the row's top up,
+                            // not its bottom off the boundary.
+                            edge_probe(
+                                Frame::new(text("lazy 3"))
+                                    .width(390.0)
+                                    .height(40.0)
+                                    .background(color),
+                                "lazy-3",
+                                SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                            ),
                         )
                     } else {
                         AnyView::new(
@@ -1997,14 +1870,31 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
                     }
                 }),
             ))
-        });
-    app.settle();
+        },
+        390,
+        844,
+    );
+    // A lazy stack keeps a small perpetual measure queue under this runtime,
+    // so the test pumps a bounded window instead of settling.
+    app.pump_for(Duration::from_millis(500));
 
-    let last = app.query().label("lazy-3").single().bounds();
+    // Wherever the row's probe landed, a keyboard band whose top edge sits
+    // exactly on its bottom edge makes that edge reachable; the release
+    // then extends the probe's bounds down to the container boundary.
+    let laid = node_bounds(app.tree(), "lazy-3");
+    keyboard.set(EdgeInsets::new(
+        0.0,
+        f64_as_f32(844.0 - (laid.y0 + laid.height())),
+        0.0,
+        0.0,
+    ));
+    app.pump_for(Duration::from_millis(500));
+
+    let last = node_bounds(app.tree(), "lazy-3");
     assert!(
-        (last.y() + last.height() - CONTAINER_TOP).abs() <= 1.0,
+        (last.y0 + last.height() - CONTAINER_TOP).abs() <= 1.0,
         "the last lazy item's bottom edge is reachable: the release lands \
-         it at {CONTAINER_TOP}, got {last:?}"
+         it at {CONTAINER_TOP}, got {last:?} (laid {laid:?})"
     );
     app.capture_snapshot("safe-area", "lazy-stack-item-fill", "keyboard");
 }
@@ -2015,14 +1905,12 @@ fn a_lazy_stack_outside_a_scroll_gives_items_a_context(
 /// extends through the status band — no chrome covers the band. The hero
 /// probe on the page's top edge discriminates reachability: released, it
 /// lands on the window edge itself.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn a_navigation_page_without_a_bar_passes_the_edge_through(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) {
+#[test]
+fn a_navigation_page_without_a_bar_passes_the_edge_through() {
     let insets = waterui::binding(SAFE_INSETS);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             NavigationView::new(
                 "Home",
                 vstack((
@@ -2034,17 +1922,20 @@ fn a_navigation_page_without_a_bar_passes_the_edge_through(
                 .a11y_label("page"),
             )
             .navigation_bar_visibility(false)
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
 
-    let page = app.query().label("page").single().bounds();
+    let page = node_bounds(app.tree(), "page");
     assert!(
-        (page.y() - SAFE_INSETS.top()).abs() <= 1.0,
+        (page.y0 - f64::from(SAFE_INSETS.top())).abs() <= 1.0,
         "with no bar the page starts at the status boundary, got {page:?}"
     );
-    let hero = app.query().label("hero").single().bounds();
+    let hero = node_bounds(app.tree(), "hero");
     assert!(
-        hero.y().abs() <= 1.0,
+        hero.y0.abs() <= 1.0,
         "the top edge is reachable: the release lands the hero at the \
          window edge, got {hero:?}"
     );
@@ -2059,8 +1950,8 @@ fn a_navigation_page_without_a_bar_passes_the_edge_through(
 /// stack's bar surfaces covering the status band and the bottom inset —
 /// settled and mid-push — and `tab-bar-extension/insets` the bottom-docked
 /// tab bar's surface at the window edge.
-#[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844))]
-fn chrome_surface_extension_captures(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+#[test]
+fn chrome_surface_extension_captures() {
     use waterui::navigation::{
         NavigationLink, NavigationStack, NavigationToolbar, NavigationToolbarItem,
         NavigationToolbarPlacement, Tab, Tabs,
@@ -2069,10 +1960,9 @@ fn chrome_surface_extension_captures(ui: UiBuilder<Styled<hydrolysis_m3::Materia
 
     let insets = waterui::binding(SAFE_INSETS);
     let query = waterui::binding(Str::from(""));
-    let mut app = ui
-        .clone()
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             NavigationStack::new(
                 NavigationView::new(
                     "Inbox",
@@ -2100,31 +1990,26 @@ fn chrome_surface_extension_captures(ui: UiBuilder<Styled<hydrolysis_m3::Materia
                 )
                 .searchable(&query, "Search mail"),
             )
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
     app.capture_snapshot("safe-area", "navigation-chrome-extension", "insets");
 
     // Mid-push: the queued pointer events arm the transition and one pumped
     // clock window lands the capture inside the fade-through.
-    let link = app
-        .query()
-        .role(Role::BUTTON)
-        .label("Open Detail")
-        .single()
-        .bounds();
-    let (x, y) = (
-        link.x() + link.width() / 2.0,
-        link.y() + link.height() / 2.0,
-    );
-    app.queue_pointer_down(x, y);
-    app.queue_pointer_up(x, y);
+    let link = node_bounds_with_role(app.tree(), Role::Button, "Open Detail");
+    let (x, y) = (link.x0 + link.width() / 2.0, link.y0 + link.height() / 2.0);
+    app.queue_pointer_down(f64_as_f32(x), f64_as_f32(y));
+    app.queue_pointer_up(f64_as_f32(x), f64_as_f32(y));
     app.pump_for(Duration::from_millis(180));
     app.capture_snapshot("safe-area", "navigation-chrome-extension", "transition");
 
     let selection = Binding::container(0i32);
-    let mut app = ui
-        .environment(env_with_insets(&insets))
-        .mount_offscreen(move || {
+    let mut app = mount_rendered(
+        env_with_insets(&insets),
+        move || {
             Tabs::new(
                 &selection,
                 vec![
@@ -2141,22 +2026,20 @@ fn chrome_surface_extension_captures(ui: UiBuilder<Styled<hydrolysis_m3::Materia
                     }),
                 ],
             )
-        });
+        },
+        390,
+        844,
+    );
     app.settle();
 
-    let bar = app.query().role(Role::TAB_LIST).single().bounds();
+    let bar = node_bounds_only_role(app.tree(), Role::TabList);
     assert!(
-        (bar.y() + bar.height() - CONTAINER_TOP).abs() <= 1.0,
+        (bar.y0 + bar.height() - CONTAINER_TOP).abs() <= 1.0,
         "the tab bar's frame keeps the navigation-band boundary, got {bar:?}"
     );
-    let title = app
-        .query()
-        .role(Role::HEADER)
-        .label("Messages")
-        .single()
-        .bounds();
+    let title = node_bounds_with_role(app.tree(), Role::Header, "Messages");
     assert!(
-        title.y() >= SAFE_INSETS.top() - 1.0,
+        title.y0 >= f64::from(SAFE_INSETS.top()) - 1.0,
         "the nested page's title stays inside the safe area, got {title:?}"
     );
     app.capture_snapshot("safe-area", "tab-bar-extension", "insets");

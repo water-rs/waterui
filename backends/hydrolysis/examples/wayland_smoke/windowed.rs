@@ -70,6 +70,6 @@ pub fn main() {
     // defaults before the first frame; the app-level environment carries none.
     run(
         app(Environment::new()),
-        hydrolysis_m3::Material3::defaults(),
+        hydrolysis::testing::TestStyle::new(),
     );
 }

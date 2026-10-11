@@ -4,10 +4,9 @@
 //! parent–child structure, while `perform_accessibility_action` is asserted to
 //! mutate the bound state each action targets.
 //!
-//! These cannot run until `waterui-testing` (a dev-dependency every test
-//! target links) carries the `waterui#1130` driver side; they are written
-//! against the pinned waterui API so they compile and run unchanged after the
-//! repin.
+//! They run on [`SemanticRuntime`] directly — no `waterui-testing` driver —
+//! which keeps this crate's own coverage free of a testing-harness
+//! dependency (water-rs/waterui#1673).
 
 use accesskit::{
     Action, ActionData, ActionRequest, Node, NodeId, Role, Toggled, TreeId, TreeUpdate,

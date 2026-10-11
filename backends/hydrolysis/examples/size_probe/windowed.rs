@@ -54,6 +54,6 @@ pub fn main() {
             )],
             Environment::new(),
         ),
-        hydrolysis_m3::Material3::defaults(),
+        hydrolysis::testing::TestStyle::new(),
     );
 }

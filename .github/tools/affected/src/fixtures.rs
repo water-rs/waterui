@@ -2,17 +2,18 @@
 //! script rules in `<root>/.config/nextest.toml` against the package graph.
 //!
 //! The `test-fonts` setup script installs the font families that the
-//! styled suites resolve through system font discovery. Those suites are
-//! the test binaries that link `waterui-testing`, so the packages the
-//! script must serve are a fact of the package graph: every workspace
-//! member whose test build reaches `waterui-testing`. nextest's filterset
-//! language cannot state that set exactly — `rdeps(waterui-testing)`
-//! follows dev-dependency edges at every hop, so it also takes in each
-//! package that merely depends on a crate whose own tests use
-//! `waterui-testing`, which is nearly the whole workspace. The rule
-//! therefore names its packages, and this check fails whenever the names
-//! drift from the graph, listing the packages missing from the rule and
-//! the packages it serves for no reason.
+//! rendered suites resolve through system font discovery. Those suites are
+//! the test binaries that link `waterui-testing` — plus `hydrolysis` itself,
+//! whose own test targets render text under `testing::TestStyle` through a
+//! dev-dependency on the crate under test — so the packages the script must
+//! serve are a fact of the package graph: every workspace member whose test
+//! build reaches one of those crates. nextest's filterset language cannot
+//! state that set exactly — `rdeps(waterui-testing)` follows dev-dependency
+//! edges at every hop, so it also takes in each package that merely depends
+//! on a crate whose own tests use `waterui-testing`, which is nearly the
+//! whole workspace. The rule therefore names its packages, and this check
+//! fails whenever the names drift from the graph, listing the packages
+//! missing from the rule and the packages it serves for no reason.
 //!
 //! The filter is evaluated with nextest's own filterset engine, once per
 //! test binary of every workspace member, so the check sees exactly what
@@ -35,8 +36,16 @@ use serde::Deserialize;
 /// The setup script whose package set the graph determines.
 const TEST_FONTS: &str = "test-fonts";
 
-/// The crate whose linkage defines a font consumer.
-const TESTING_CRATE: &str = "waterui-testing";
+/// The crates whose linkage defines a font consumer.
+///
+/// `waterui-testing` is the styled-suite linkage: a package whose tests
+/// reach it mounts rendered, font-shaping fixtures. `hydrolysis` joins it
+/// because the backend's own test targets link the crate back through a
+/// dev-dependency on itself — they render the same deterministic families
+/// under `testing::TestStyle` and must not lose the fonts when the
+/// `waterui-testing` edge they used to carry went away
+/// (water-rs/waterui#1673).
+const CONSUMER_CRATES: [&str; 2] = ["waterui-testing", "hydrolysis"];
 
 #[derive(Deserialize)]
 struct NextestConfig {
@@ -76,19 +85,24 @@ impl Setup {
     }
 }
 
-/// The workspace members whose test binaries link `waterui-testing`: the
-/// member itself and its dev-dependencies seed a closure over normal and
+/// The workspace members whose test binaries link a font-consumer crate:
+/// the member itself and its dev-dependencies seed a closure over normal and
 /// build links, because cargo does not make dev-dependencies transitive.
 pub fn font_consumers(graph: &PackageGraph) -> BTreeSet<String> {
     let members: Vec<PackageMetadata<'_>> = graph
         .resolve_workspace()
         .packages(DependencyDirection::Forward)
         .collect();
-    let testing = members
+    let consumer_crates: BTreeSet<_> = CONSUMER_CRATES
         .iter()
-        .find(|package| package.name() == TESTING_CRATE)
-        .unwrap_or_else(|| panic!("{TESTING_CRATE} is not a workspace member"))
-        .id();
+        .map(|name| {
+            members
+                .iter()
+                .find(|package| package.name() == *name)
+                .unwrap_or_else(|| panic!("{name} is not a workspace member"))
+                .id()
+        })
+        .collect();
     let mut consumers = BTreeSet::new();
     for member in &members {
         let mut stack: Vec<_> = member
@@ -110,7 +124,7 @@ pub fn font_consumers(graph: &PackageGraph) -> BTreeSet<String> {
                 }
             }
         }
-        if reached.contains(testing) {
+        if reached.intersection(&consumer_crates).next().is_some() {
             consumers.insert(member.name().to_string());
         }
     }
@@ -268,13 +282,14 @@ pub fn check(root: &Utf8Path, graph: &PackageGraph) -> bool {
         consistent = false;
         eprintln!(
             "{path}: under profile `{profile}`, the {TEST_FONTS} setup script \
-             does not serve exactly the packages whose tests link {TESTING_CRATE}"
+             does not serve exactly the packages whose tests link a font-consumer crate \
+             ({CONSUMER_CRATES:?})"
         );
         if !missing.is_empty() {
-            eprintln!("  missing (their tests link {TESTING_CRATE}): {missing:?}");
+            eprintln!("  missing (their tests link a consumer crate): {missing:?}");
         }
         if !extra.is_empty() {
-            eprintln!("  extra (their tests do not link {TESTING_CRATE}): {extra:?}");
+            eprintln!("  extra (their tests link no consumer crate): {extra:?}");
         }
     }
     consistent

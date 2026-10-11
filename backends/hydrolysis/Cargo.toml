@@ -312,6 +312,11 @@ web-sys = { version = "0.3", optional = true, features = [
 ] }
 
 [dev-dependencies]
+# The crate's own test targets need the `accessibility` and `testing`
+# feature APIs — the headless runtimes' `new_for_tests` constructors, the
+# merged-tree queries and `testing::TestStyle` — and a dev-dependency on the
+# package itself is what turns them on for test builds (water-rs/waterui#1673).
+hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 # The renderer itself knows nothing about `Canvas`: it resolves to a
 # `SceneView` before it reaches layout. The tests still author canvases, which
 # is what keeps that resolution honest.
@@ -319,20 +324,10 @@ waterui-canvas.workspace = true
 # The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine
 # crate does not re-export.
 cherenkov-record.workspace = true
-# The wayland examples need a widget theme; m3 is independently maintained.
-hydrolysis-m3.workspace = true
-waterui-testing.workspace = true
 waterui-navigation.workspace = true
-# The presentation tests received from waterui exercise these component crates
-# directly: live photos (media), the MCP session harness (mcp, aither-mcp,
-# futures-lite, serde_json).
-waterui-media.workspace = true
 # The #210 regression test drives a real `ReactiveImage`: its handle's `set`
 # is the same call the decode pipeline makes when an image lands.
 waterui-image.workspace = true
-waterui-mcp.workspace = true
-aither-mcp = { workspace = true, features = ["server"] }
-futures-lite.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # The protocol tests compose the async-call script on the host too —
@@ -356,10 +351,6 @@ waterui-webview = { workspace = true, features = ["conformance"] }
 # `complex-scripts` on the parley dep, no warning may be emitted at all.
 icu_provider = { version = "2.3", features = ["logging"] }
 tracing-log = "0.2"
-# The frame-profile example renders a packaged icon set and a chart through
-# the real pipeline.
-waterui-icons-lucide.workspace = true
-waterui-chart.workspace = true
 # Drives the text-measure bench (`benches/text_measure.rs`).
 criterion = "0.8"
 # The text-measure bench rides the real layout path; `harness = false` hands
@@ -375,12 +366,6 @@ required-features = ["testing"]
 name = "real_engine_macos"
 harness = false
 required-features = ["webview-system", "winit"]
-
-# The headless frame-pipeline profiler: representative scenes rendered
-# offscreen through the real pipeline, one JSON document per scene.
-[[example]]
-name = "frame_profile"
-required-features = ["frame-profile"]
 
 [features]
 default = []
