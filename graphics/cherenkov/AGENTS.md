@@ -90,7 +90,7 @@ belong to water-rs/waterui.
   on every supported device (#1); there is no low-end tier. Compute is a
   device capability, never part of the floor: `SharedDevice::has_compute`
   reports it, and strategies may use it when present — water-rs/waterui#2536's
-  coverage route selects on it.
+  coverage route is designed to select on it.
 - **Upgrading wgpu** moves the whole stack at once, because an application can
   link only one wgpu (#63).
 
